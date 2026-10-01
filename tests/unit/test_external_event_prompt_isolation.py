@@ -470,6 +470,7 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     )
     runtime = MagicMock()
     runtime.context.local_event_limit = 2_048
+    runtime.context.window_tokens = 96_000
     empty_retrieval = MagicMock(blocks=(), hits=())
 
     ordinary_event = replace(
@@ -477,7 +478,7 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
         canonical_conversation_id="conv-stable",
     )
     ordinary = _assembler(relationship_enabled=False)
-    ordinary._ensure_lightweight_backlog = AsyncMock()  # type: ignore[method-assign]
+    ordinary._ensure_turn_generation = AsyncMock()  # type: ignore[method-assign]
     ordinary._load_history_snapshot = AsyncMock(  # type: ignore[method-assign]
         return_value=snapshot
     )
@@ -520,7 +521,7 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
         canonical_conversation_id="conv-stable",
     )
     wakeup = _assembler(relationship_enabled=False)
-    wakeup._ensure_lightweight_backlog = AsyncMock()  # type: ignore[method-assign]
+    wakeup._ensure_turn_generation = AsyncMock()  # type: ignore[method-assign]
     wakeup._load_history_snapshot = AsyncMock(  # type: ignore[method-assign]
         return_value=snapshot
     )
@@ -614,6 +615,7 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
         },
     )
     runtime = MagicMock()
+    runtime.context.window_tokens = 96_000
     runtime.plugins.max_total_prompt_characters = 8_000
     composed = composer.compose(
         inbound=None,
@@ -688,12 +690,18 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
 async def test_external_wakeup_and_ordinary_turn_send_the_same_provider_shape(
     database: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from types import SimpleNamespace
+
     from qq_ai_bot.services.main_agent_backend import MainAgentBackend
+    from qq_ai_bot.services.main_agent_contract import MainAgentContract
 
     monkeypatch.setattr(MainAgentBackend, "response_feedback", lambda *_args: None)
     provider = FakeLLMProvider(lambda _request: "ok")
     harness = build_harness(database, make_settings(database.url), provider)
     chat = harness.processor._chat
+    chat.runtime.runner.main_contract = MainAgentContract(
+        chat, SimpleNamespace(snapshot=lambda: [])
+    )
     runtime_config = await chat._runtime_config.snapshot(user_id="1001", group_id=None)
     stable_prefix = (
         ChatMessage(role="system", content="stable instructions"),
@@ -1125,7 +1133,7 @@ def _covered_external_turn(
         canonical_conversation_id="conv-covered",
     )
     assembler = _assembler()
-    assembler._ensure_lightweight_backlog = AsyncMock()  # type: ignore[method-assign]
+    assembler._ensure_turn_generation = AsyncMock()  # type: ignore[method-assign]
     assembler._load_history_snapshot = AsyncMock(  # type: ignore[method-assign]
         return_value=_HistoryPromptWindow(
             recent=(),
@@ -1148,6 +1156,7 @@ def _covered_external_turn(
     )
     runtime = MagicMock()
     runtime.context.local_event_limit = 2_048
+    runtime.context.window_tokens = 96_000
     return assembler, event, turn, runtime
 
 

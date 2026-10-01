@@ -22,7 +22,13 @@ def canonical_schema_revision(root: Path | None = None) -> str:
 
 
 _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
-    "runtime_automation_budgets": frozenset({"run_id", "models", "tools"}),
+    "runtime_protocol_objects": frozenset({"sha256", "byte_size", "prepared_at", "deleting"}),
+    "runtime_protocol_refs": frozenset({"work_id", "sha256"}),
+    "runtime_protocol_usage": frozenset({"id", "byte_size"}),
+    "runtime_automation_budgets": frozenset(
+        {"run_id", "models", "tools", "model_limit", "tool_limit"}
+    ),
+    "tool_artifacts": frozenset({"handle_id", "work_id", "effect_key", "deleting", "sha256"}),
     "runtime_work_recovery": frozenset(
         {"work_id", "activation_id", "exit_reason", "failure_json", "attempts", "not_before"}
     ),
@@ -262,9 +268,15 @@ async def require_canonical_schema(database_url: str) -> None:
                     raise CanonicalSchemaError("database canonical schema is incomplete")
                 quoted_table = table.replace('"', '""')
                 column_rows = await connection.execute(text(f'PRAGMA table_info("{quoted_table}")'))
-                columns = {str(row[1]) for row in column_rows}
+                column_info = list(column_rows)
+                columns = {str(row[1]) for row in column_info}
                 if not required.issubset(columns):
                     raise CanonicalSchemaError("database canonical schema is incomplete")
+                if table in {"runtime_work_budgets", "runtime_automation_budgets"}:
+                    if any(
+                        row[3] for row in column_info if row[1] in {"model_limit", "tool_limit"}
+                    ):
+                        raise CanonicalSchemaError("database budget limits must be nullable")
 
             foreign_key_rows = await connection.execute(text("PRAGMA foreign_key_check"))
             if foreign_key_rows.first() is not None:
@@ -327,9 +339,20 @@ async def require_canonical_schema(database_url: str) -> None:
                 text("SELECT name, sql FROM sqlite_master WHERE type='trigger'")
             )
             triggers = {str(row[0]): str(row[1]) for row in trigger_rows}
+            from qq_ai_bot.runtime.protocol_schema import QUOTA_SQL
             from qq_ai_bot.runtime.work_recovery_schema import quota_trigger_sql
 
-            for name, expected in {**PROJECTION_TRIGGERS_CURRENT, **quota_trigger_sql()}.items():
+            protocol_triggers = {
+                statement.split()[5]: statement
+                for statement in QUOTA_SQL
+                if statement.startswith("CREATE TRIGGER")
+            }
+
+            for name, expected in {
+                **PROJECTION_TRIGGERS_CURRENT,
+                **quota_trigger_sql(),
+                **protocol_triggers,
+            }.items():
                 actual = triggers.get(name, "").replace("IF NOT EXISTS ", "")
                 expected = expected.replace("IF NOT EXISTS ", "")
                 if " ".join(actual.split()) != " ".join(expected.split()):

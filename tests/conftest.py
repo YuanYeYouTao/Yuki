@@ -151,12 +151,9 @@ def build_harness(
     user_profiles = UserProfileService(profiles)
     processed_events = ProcessedEventRepository(database)
     rollup_config = RollupPolicyConfig(
-        raw_tail_events=settings.conversation_rollup_raw_tail_events,
-        raw_tail_characters=settings.conversation_rollup_raw_tail_characters,
-        trigger_events=settings.conversation_rollup_trigger_events,
-        trigger_characters=settings.conversation_rollup_trigger_characters,
-        stop_events=settings.conversation_rollup_stop_events,
-        stop_characters=settings.conversation_rollup_stop_characters,
+        context_token_budget=settings.context_window_tokens,
+        trigger_ratio=settings.conversation_rollup_trigger_ratio,
+        target_ratio=settings.conversation_rollup_target_ratio,
         batch_max_events=settings.conversation_rollup_batch_max_events,
         batch_max_characters=settings.conversation_rollup_batch_max_characters,
         summary_max_characters=settings.conversation_rollup_summary_max_characters,

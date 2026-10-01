@@ -164,6 +164,9 @@ class WorkScheduler:
         await self.repository.wake_context_rollups()
         if time.monotonic() - self._last_reclaim > 600:
             await self.repository.reclaim_terminal()
+            from qq_ai_bot.runtime.protocol_store import ProtocolStore
+
+            await ProtocolStore(self.repository.database).cleanup()
             self._last_reclaim = time.monotonic()
         async with self.repository.database.sessions() as session:
             rows = (

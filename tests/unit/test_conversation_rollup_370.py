@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 from tests.conftest import make_settings
@@ -37,7 +37,6 @@ from qq_ai_bot.conversation.rollup.models import (
 from qq_ai_bot.conversation.rollup.prompt_accounting import (
     durable_uncovered_characters,
     prompt_accounting_characters,
-    prompt_visible_event_count,
 )
 from qq_ai_bot.conversation.rollup.renderer import (
     projection_characters,
@@ -46,8 +45,6 @@ from qq_ai_bot.conversation.rollup.renderer import (
 from qq_ai_bot.conversation.rollup.repository import (
     ConversationRollupRepository,
     ConversationScopeRepository,
-    eligible_prefix,
-    protected_tail_start,
 )
 from qq_ai_bot.conversation.rollup.service import ConversationRollupService
 from qq_ai_bot.conversation.rollup.worker import ConversationRollupWorker
@@ -57,7 +54,7 @@ from qq_ai_bot.domain.messages import ChatResponse, InboundMessage, SenderIdenti
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
-from qq_ai_bot.services.context_assembler import ContextAssembler, _HistoryPromptWindow
+from qq_ai_bot.services.context_assembler import ContextAssembler
 
 
 def test_rollup_source_projection_renders_stored_utc_in_default_timezone() -> None:
@@ -76,7 +73,10 @@ def test_rollup_source_projection_renders_stored_utc_in_default_timezone() -> No
         group_id="1049765710",
     )
 
-    assert rollup_source_projection(event) == ("[2026-08-20T19:21:42+08:00] 查无此人: 这是什么")
+    projection = rollup_source_projection(event)
+    assert "2026-08-20T19:21:42+08:00" in projection
+    assert "#32865>这是什么" in projection
+    assert "查无此人" in projection
 
 
 def _reply_mention_events() -> tuple[EventRecord, ...]:
@@ -122,7 +122,7 @@ def test_prompt_accounting_matches_assembler_and_outweighs_projection() -> None:
     events = _reply_mention_events()
     prompt_chars = prompt_accounting_characters(events)
     projection_chars = sum(projection_characters(event) for event in events)
-    assert projection_chars < prompt_chars
+    assert projection_chars > prompt_chars  # Source includes identity and reply relationships.
 
     settings = make_settings("sqlite+aiosqlite:///:memory:")
     assembler = ContextAssembler(
@@ -171,12 +171,7 @@ def test_prompt_accounting_matches_assembler_and_outweighs_projection() -> None:
 
 def _policy(*, batch_max_events: int = 100) -> RollupPolicyConfig:
     return RollupPolicyConfig(
-        raw_tail_events=2,
-        raw_tail_characters=100_000,
-        trigger_events=2,
-        trigger_characters=100_000,
-        stop_events=0,
-        stop_characters=0,
+        context_token_budget=100,
         batch_max_events=batch_max_events,
         batch_max_characters=100_000,
         summary_max_characters=2_000,
@@ -653,12 +648,7 @@ async def test_foreground_claim_prevents_background_result_overwrite(database: D
 
 async def test_single_protected_event_never_creates_permanent_job(database: Database) -> None:
     policy = RollupPolicyConfig(
-        raw_tail_events=1,
-        raw_tail_characters=1,
-        trigger_events=2,
-        trigger_characters=2,
-        stop_events=0,
-        stop_characters=0,
+        context_token_budget=100,
         batch_max_events=10,
         batch_max_characters=10,
         summary_max_characters=100,
@@ -678,141 +668,11 @@ async def test_single_protected_event_never_creates_permanent_job(database: Data
     assert job is None
 
 
-def test_prompt_event_caps_use_trigger_and_stop_not_tail_plus_one() -> None:
-    assembler = ContextAssembler(
-        settings=make_settings("sqlite+aiosqlite:///:memory:"),
-        ledger=MagicMock(),
-        people=MagicMock(),
-        memory_context=MagicMock(),
-        relationships=MagicMock(),
-        time_service=MagicMock(),
-        rollup_repository=MagicMock(),
-        rollup_service=MagicMock(),
-    )
-
-    assert assembler._prompt_event_admit(event_limit=2048, coverage_end=0) == 2047
-    assert assembler._prompt_event_admit(event_limit=2048, coverage_end=100) == 512
-    assert assembler._prompt_event_target(event_limit=2048, coverage_end=100) == 128
-    assert assembler._prompt_event_admit(event_limit=1024, coverage_end=100) == 512
-
-
-async def test_foreground_does_not_nibble_between_protected_tail_and_trigger(
-    database: Database,
-) -> None:
-    settings = make_settings(
-        database.url,
-        local_context_event_limit=16,
-        conversation_rollup_raw_tail_events=8,
-        conversation_rollup_trigger_events=4,
-        conversation_rollup_stop_events=2,
-        conversation_rollup_raw_tail_characters=100_000,
-        conversation_rollup_trigger_characters=100_000,
-        conversation_rollup_stop_characters=10_000,
-        conversation_rollup_batch_max_events=8,
-        conversation_rollup_batch_max_characters=100_000,
-        conversation_rollup_summary_max_characters=2_000,
-        conversation_rollup_foreground_max_batches=4,
-    )
-    policy = RollupPolicyConfig(
-        raw_tail_events=settings.conversation_rollup_raw_tail_events,
-        raw_tail_characters=settings.conversation_rollup_raw_tail_characters,
-        trigger_events=settings.conversation_rollup_trigger_events,
-        trigger_characters=settings.conversation_rollup_trigger_characters,
-        stop_events=settings.conversation_rollup_stop_events,
-        stop_characters=settings.conversation_rollup_stop_characters,
-        batch_max_events=settings.conversation_rollup_batch_max_events,
-        batch_max_characters=settings.conversation_rollup_batch_max_characters,
-        summary_max_characters=settings.conversation_rollup_summary_max_characters,
-    )
-    uow = ScopedEventLedgerUnitOfWork(database, config=policy)
-    repository = ConversationRollupRepository(database, policy)
-    service = ConversationRollupService(models=None, config=policy, timeout_seconds=0.1)
-    assembler = ContextAssembler(
-        settings=settings,
-        ledger=MagicMock(),
-        people=MagicMock(),
-        memory_context=MagicMock(),
-        relationships=MagicMock(),
-        time_service=MagicMock(),
-        rollup_repository=repository,
-        rollup_service=service,
-    )
-    scope = ConversationScope.group("bot-hysteresis", "group-hysteresis")
-    await _append(uow, scope, 12)
-    claim = await repository.claim_next_job(lease_owner="seed", lease_seconds=30)
-    assert claim is not None
-    candidate = await repository.candidate_for_claim(claim)
-    assert candidate is not None
-    summary, _kind = service.extractive(candidate)
-    await repository.commit_candidate(
-        claim, candidate, summary_text=summary, summary_kind=RollupKind.EXTRACTIVE
-    )
-    seeded, seeded_rollup, _job = await repository.status(scope)
-    assert seeded is not None and seeded_rollup is not None
-    assert seeded.uncovered_event_count == 8
-    seeded_revision = seeded_rollup.revision
-    seeded_coverage = seeded_rollup.covered_through_event_id
-
-    await _append(uow, scope, 3, start=13)
-    dead_zone, dead_rollup, _job = await repository.status(scope)
-    assert dead_zone is not None and dead_rollup is not None
-    assert dead_zone.uncovered_event_count == 11
-    await assembler._ensure_lightweight_backlog(
-        scope,
-        ConversationTurnSnapshot(
-            scope_id=dead_zone.id,
-            scope_key=dead_zone.scope.key,
-            generation=dead_zone.generation,
-            trigger_event_id=dead_zone.last_event_id,
-            coordinator_version=1,
-        ),
-        event_limit=settings.local_context_event_limit,
-    )
-    after_dead, after_dead_rollup, _job = await repository.status(scope)
-    assert after_dead is not None and after_dead_rollup is not None
-    assert after_dead.uncovered_event_count == 11
-    assert after_dead_rollup.revision == seeded_revision
-    assert after_dead_rollup.covered_through_event_id == seeded_coverage
-
-    await _append(uow, scope, 2, start=16)
-    over_trigger, over_rollup, _job = await repository.status(scope)
-    assert over_trigger is not None and over_rollup is not None
-    assert over_trigger.uncovered_event_count == 13
-    assert over_rollup.revision == seeded_revision
-    committed = await service.ensure_extractive_coverage(
-        repository=repository,
-        scope=scope,
-        lease_seconds=30,
-        max_batches=4,
-    )
-    assert committed >= 1
-    compacted, compacted_effective, _job = await repository.status(scope)
-    assert compacted is not None and compacted_effective is not None
-    assert compacted.uncovered_event_count == 13
-    assert compacted_effective.summary_kind is RollupKind.EMERGENCY
-    assert compacted_effective.covered_through_event_id > seeded_coverage
-    snapshot = await repository.load_prompt_snapshot(scope)
-    assert snapshot.rewrite_pending is True
-    assert snapshot.overlay is not None
-    assert snapshot.effective_coverage == compacted_effective.covered_through_event_id
-    async with database.sessions() as session:
-        semantic = await session.get(ConversationRollupModel, claim.conversation_id)
-        assert semantic is not None
-        assert semantic.revision == seeded_revision
-        assert semantic.covered_through_event_id == seeded_coverage
-        assert semantic.summary_kind == RollupKind.EXTRACTIVE.value
-
-
 async def test_lightweight_backlog_triggers_on_prompt_ruler_not_projection(
     database: Database,
 ) -> None:
     policy = RollupPolicyConfig(
-        raw_tail_events=2,
-        raw_tail_characters=100_000,
-        trigger_events=32,
-        trigger_characters=100_000,
-        stop_events=0,
-        stop_characters=0,
+        context_token_budget=1_000,
         batch_max_events=8,
         batch_max_characters=100_000,
         summary_max_characters=2_000,
@@ -871,8 +731,8 @@ async def test_lightweight_backlog_triggers_on_prompt_ruler_not_projection(
         bot_display_name=policy.bot_display_name,
         timezone=policy.timezone,
     )
-    admit = (projection + prompt) // 2
-    assert projection < admit <= prompt
+    admit = prompt
+    assert projection > prompt
     assert remaining_prompt < admit
     async with database.immediate_session() as session:
         from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
@@ -892,6 +752,7 @@ async def test_lightweight_backlog_triggers_on_prompt_ruler_not_projection(
         scope=scope,
         lease_seconds=30,
         max_batches=4,
+        token_budget=100,
     )
     assert committed >= 1
     compacted, compacted_effective, _job = await repository.status(scope)
@@ -926,140 +787,6 @@ def _counted_events(count: int, *, body: str) -> tuple[EventRecord, ...]:
         )
         for index in range(1, count + 1)
     )
-
-
-def test_long_messages_raise_character_index_and_keep_eligible_prefix() -> None:
-    policy = RollupPolicyConfig(
-        raw_tail_events=4,
-        raw_tail_characters=200,
-        trigger_events=8,
-        trigger_characters=100_000,
-        stop_events=0,
-        stop_characters=0,
-        batch_max_events=8,
-        batch_max_characters=100_000,
-        summary_max_characters=2_000,
-    )
-    events = _counted_events(6, body="z" * 500)
-    start = protected_tail_start(events, policy)
-    protected = events[start:]
-    assert prompt_visible_event_count(protected) == policy.raw_tail_events
-    assert tuple(event.id for event in protected) == (3, 4, 5, 6)
-    eligible = eligible_prefix(events, policy)
-    assert eligible
-    assert eligible[-1].id < events[start].id
-
-
-async def test_event_floor_between_character_target_and_admit_skips_extractive() -> None:
-    settings = make_settings(
-        "sqlite+aiosqlite:///:memory:",
-        local_context_event_limit=2048,
-        conversation_rollup_raw_tail_events=256,
-        conversation_rollup_trigger_events=1024,
-        conversation_rollup_stop_events=0,
-        conversation_rollup_raw_tail_characters=20_480,
-        conversation_rollup_trigger_characters=81_920,
-        conversation_rollup_stop_characters=0,
-    )
-    events = _counted_events(256, body="y" * 80)
-    current = events[-1]
-    history = events
-    prompt = prompt_accounting_characters(history)
-    target = (
-        settings.conversation_rollup_raw_tail_characters
-        + settings.conversation_rollup_stop_characters
-    )
-    admit = (
-        settings.conversation_rollup_raw_tail_characters
-        + settings.conversation_rollup_trigger_characters
-    )
-    assert target < prompt <= admit
-    rollup_service = MagicMock()
-    rollup_service.ensure_extractive_coverage = AsyncMock(
-        side_effect=AssertionError("admit-window turns must not extractive")
-    )
-    assembler = ContextAssembler(
-        settings=settings,
-        ledger=MagicMock(),
-        people=MagicMock(),
-        memory_context=MagicMock(),
-        relationships=MagicMock(),
-        time_service=MagicMock(),
-        rollup_repository=MagicMock(),
-        rollup_service=rollup_service,
-    )
-    inbound = InboundMessage(
-        message_id="msg-current",
-        event_type="message",
-        scope_type=ScopeType.GROUP,
-        sender=SenderIdentity(user_id="10009", group_card="Carol"),
-        text="now",
-        bot_user_id="bot-floor",
-        group_id="group-floor",
-    )
-    dummy_current = EventRecord(
-        id=10_000,
-        bot_user_id="bot-floor",
-        platform_message_id="msg-current",
-        scope_type=ScopeType.GROUP,
-        sender_user_id="10009",
-        sender_group_card="Carol",
-        direction="inbound",
-        content="now",
-        visual_summary="",
-        segments=(),
-        occurred_at=datetime(2026, 8, 20, 1, 0, tzinfo=UTC),
-        group_id="group-floor",
-    )
-    snapshot = _HistoryPromptWindow(
-        recent=history,
-        rollup_text="seed",
-        coverage_end=1,
-        revision=1,
-        rollup=None,
-        rollup_mode="extractive",
-    )
-    view = assembler._uncovered_prompt_view(
-        history,
-        current_event_id=dummy_current.id,
-        content="now",
-        yuki_account_ids=inbound.yuki_account_ids,
-        current_message_override=None,
-        current_event=dummy_current,
-    )
-    assert view is not None
-    assert view.rendered_characters == prompt
-    character_target = assembler._prompt_character_target(
-        remainder=1_000_000,
-        rollup_text="seed",
-        coverage_end=1,
-    )
-    character_admit = assembler._prompt_character_admit(
-        remainder=1_000_000,
-        rollup_text="seed",
-        coverage_end=1,
-    )
-    assert character_target < view.rendered_characters <= character_admit
-    await assembler._ensure_uncovered_fits_budget(
-        snapshot=snapshot,
-        recent=history,
-        current_event_id=dummy_current.id,
-        content="now",
-        yuki_account_ids=inbound.yuki_account_ids,
-        current_message_override=None,
-        remainder=1_000_000,
-        event_limit=settings.local_context_event_limit,
-        identity=ConversationScope.group("bot-floor", "group-floor"),
-        current_event=dummy_current,
-        turn=ConversationTurnSnapshot(
-            scope_id=1,
-            scope_key="bot:bot-floor:group:group-floor",
-            generation=1,
-            trigger_event_id=current.id,
-            coordinator_version=1,
-        ),
-    )
-    rollup_service.ensure_extractive_coverage.assert_not_called()
 
 
 _NOW = datetime(2026, 8, 24, tzinfo=UTC)
@@ -1558,12 +1285,7 @@ async def test_v2_emergency_overlay_does_not_mutate_semantic_checkpoint(
 
 def _catchup_semantic_policy() -> RollupPolicyConfig:
     return RollupPolicyConfig(
-        raw_tail_events=2,
-        raw_tail_characters=100_000,
-        trigger_events=2,
-        trigger_characters=100_000,
-        stop_events=1,
-        stop_characters=0,
+        context_token_budget=100,
         batch_max_events=1,
         batch_max_characters=100_000,
         summary_max_characters=2_000,

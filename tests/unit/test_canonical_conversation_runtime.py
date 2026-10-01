@@ -612,12 +612,7 @@ async def test_delete_person_removes_canonical_private_and_group_overlays(
         await ensure_person(session, "1001", now=_NOW)
         await ensure_space(session, "2001", now=_NOW)
     policy = RollupPolicyConfig(
-        raw_tail_events=2,
-        raw_tail_characters=100_000,
-        trigger_events=2,
-        trigger_characters=100_000,
-        stop_events=0,
-        stop_characters=0,
+        context_token_budget=100,
         batch_max_events=100,
         batch_max_characters=100_000,
         summary_max_characters=2_000,

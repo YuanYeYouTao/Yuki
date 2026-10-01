@@ -95,7 +95,23 @@ async def test_compaction_keeps_explicit_task_after_restart(database, tmp_path, 
         control.lease, control.current["id"], None, models=3, tools=2
     )
     control.current = await control.repository.get(control.current["id"])
-    control.known_effects = [{"run_id": "original-execution", "pending": True}]
+    key = first.call_key("original-execution")
+    await control.repository.prepare_effect(control.lease, control.current["id"], key, "tool")
+    await control.repository.record_effect(
+        key,
+        "accepted",
+        {
+            "outcome": {
+                "tool": "terminal_exec",
+                "run_id": "original-execution",
+                "pending": True,
+                "uncertain": False,
+                "side_effecting": True,
+                "ok": True,
+            },
+            "result": "original execution accepted",
+        },
+    )
     first.record_search_sources(
         [
             (
@@ -129,6 +145,10 @@ async def test_compaction_keeps_explicit_task_after_restart(database, tmp_path, 
         assert "Public search excerpt from the earlier investigation" in source_message
         assert '"truncated": false' in source_message
         assert "file:///private/secret" not in source_message
+    for _ in range(20):
+        restored.append(ChatMessage("assistant", "Completed public investigation notes. " * 200))
+    for _ in range(16):
+        restored.append(ChatMessage("assistant", "Recent completed check."))
     compacted = await resumed.compact("Completed checks, pending execution remains")
     assert compacted.chain_id != restored.chain_id
     assert compacted.request().messages[:2] == (fresh_system, task)
@@ -139,6 +159,10 @@ async def test_compaction_keeps_explicit_task_after_restart(database, tmp_path, 
     assert row["model_requests"] == 3 and row["tool_calls"] == 2
     again = WorkSession(control, resumed.contract)
     await again.restore(TurnTranscript((fresh_task,)), compaction_brief=fresh_task)
+    for _ in range(20):
+        again.transcript.append(ChatMessage("assistant", "Further completed checks. " * 200))
+    for _ in range(16):
+        again.transcript.append(ChatMessage("assistant", "Recent completed check."))
     twice = await again.compact("A second bounded summary")
     assert twice.request().messages[:2] == (fresh_system, task)
     await control.repository.release(control.lease)
@@ -786,7 +810,7 @@ async def test_corrupt_compaction_anchor_is_unavailable(
         raw = await session.scalar(
             select(journal.c.payload_json).where(journal.c.work_id == control.current["id"])
         )
-        payload = json.loads(raw)
+        payload = await first.journal.objects.hydrate(json.loads(raw))
         payload["metadata"]["compaction_anchor"] = bad_anchor
         await session.execute(
             update(journal)
@@ -1042,16 +1066,22 @@ async def test_compaction_is_local_fence_before_any_tool_execution(
         work_control=control,
         compaction_brief=task if with_anchor else None,
     )
-    monkeypatch.setattr(WorkSession, "needs_compaction", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        "qq_ai_bot.services.agent_runner.estimate_request_tokens",
+        lambda request: 128000 if request.tools else 8000,
+    )
     # Run owns session creation; the legacy no-anchor case must fail before dispatch.
     result = await chat.runtime.runner.run((ChatMessage("system", "fixed"), task), runtime, backend)
     assert result.work_state == "suspended"
-    assert result.outcome.failure.code == ("ValueError" if with_anchor else "JournalUnavailable")
+    assert result.outcome.failure.code == (
+        "work_compaction_incomplete" if with_anchor else "JournalUnavailable"
+    )
     backend.execute.assert_not_awaited()
     assert len(provider.requests) == (1 if with_anchor else 0)
     if with_anchor:
-        assert provider.requests[0].tools == fixed
-        assert provider.requests[0].tool_choice == "auto"
+        assert provider.requests[0].tools == ()
+        assert provider.requests[0].native_tools == ()
+        assert provider.requests[0].tool_choice is None
     row = await control.repository.get(control.current["id"])
     assert row["tool_calls"] == 0
     assert row["model_requests"] == (1 if with_anchor else 0)

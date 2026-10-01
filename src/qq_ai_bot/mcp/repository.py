@@ -5,12 +5,16 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
+import tempfile
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from itertools import islice
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import delete, func, insert, literal, select
+from sqlalchemy import and_, delete, func, insert, literal, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -606,12 +610,44 @@ class MCPRepository:
 class ToolArtifactRepository:
     """Store complete oversized results in bounded files, not SQLite."""
 
-    def __init__(self, database: Database, root: Path, *, retention_seconds: int) -> None:
+    def __init__(
+        self,
+        database: Database,
+        root: Path,
+        *,
+        retention_seconds: int,
+        max_artifact_bytes: int = 64 * 1024 * 1024,
+        max_total_bytes: int = 512 * 1024 * 1024,
+    ) -> None:
         if retention_seconds <= 0:
             raise ValueError("artifact retention must be positive")
         self._database = database
         self._root = root
         self._retention = retention_seconds
+        self._max_artifact_bytes = max_artifact_bytes
+        self._max_total_bytes = max_total_bytes
+        self._storage_lock = asyncio.Lock()
+        self._orphan_iterator: Iterator[Path] | None = None
+        # One application-owned store is also used for durable Work receipts.
+        database.work_result_store = self
+
+    @staticmethod
+    def _protected() -> Any:
+        from qq_ai_bot.runtime.subagent_schema import children
+        from qq_ai_bot.runtime.work_schema_v1 import work
+
+        cutoff = datetime.now(UTC).timestamp() - 7 * 86400
+        retained = or_(
+            work.c.state.not_in(("completed", "failed", "cancelled")), work.c.updated >= cutoff
+        )
+        own = select(work.c.id).where(work.c.id == ToolArtifactModel.work_id, retained).exists()
+        parent = (
+            select(children.c.work_id)
+            .join(work, work.c.id == children.c.root_id)
+            .where(children.c.work_id == ToolArtifactModel.work_id, retained)
+            .exists()
+        )
+        return or_(own, parent)
 
     def configure_retention(self, retention_seconds: int) -> None:
         if retention_seconds <= 0:
@@ -626,32 +662,74 @@ class ToolArtifactRepository:
         content: str,
         media_type: str,
         retention_seconds: int | None = None,
+        work_id: str | None = None,
+        effect_key: str | None = None,
     ) -> str:
+        from qq_ai_bot.runtime.effect_outcomes import current_result_capture
+
+        capture = current_result_capture.get()
+        if capture is not None and work_id is None:
+            work_id, effect_key = capture.work_id, capture.effect_key
         handle = uuid.uuid4().hex
         relative = f"{handle}.json"
         path = self._root / relative
         encoded = content.encode("utf-8")
-        await asyncio.to_thread(self._root.mkdir, parents=True, exist_ok=True)
-        await asyncio.to_thread(path.write_bytes, encoded)
+        digest = hashlib.sha256(encoded).hexdigest()
+        if len(encoded) > self._max_artifact_bytes:
+            raise ValueError("tool_artifact_capacity")
         retention = retention_seconds if retention_seconds is not None else self._retention
         if retention <= 0:
             raise ValueError("artifact retention must be positive")
-        now = datetime.now(UTC)
-        async with self._database.sessions() as session:
-            session.add(
-                ToolArtifactModel(
-                    handle_id=handle,
-                    provider_id=provider_id[:128],
-                    tool_name=tool_name[:255],
-                    relative_path=relative,
-                    media_type=media_type[:128],
-                    byte_size=len(encoded),
-                    created_at=now,
-                    expires_at=now + timedelta(seconds=retention),
+        await asyncio.to_thread(self._root.mkdir, parents=True, exist_ok=True)
+        async with self._storage_lock:
+            async with self._database.sessions() as reader:
+                used = await reader.scalar(
+                    select(func.coalesce(func.sum(ToolArtifactModel.byte_size), 0))
                 )
-            )
-            await session.commit()
+            if int(used or 0) + len(encoded) > self._max_total_bytes:
+                raise ValueError("tool_artifact_capacity")
+            await asyncio.to_thread(self._publish, path, encoded)
+            now = datetime.now(UTC)
+            try:
+                async with self._database.immediate_session() as session:
+                    if work_id is not None:
+                        from qq_ai_bot.runtime.work_schema_v1 import work
+
+                        if not await session.scalar(select(work.c.id).where(work.c.id == work_id)):
+                            raise ValueError("tool_artifact_work_unavailable")
+                    session.add(
+                        ToolArtifactModel(
+                            handle_id=handle,
+                            provider_id=provider_id[:128],
+                            tool_name=tool_name[:255],
+                            relative_path=relative,
+                            media_type=media_type[:128],
+                            byte_size=len(encoded),
+                            created_at=now,
+                            expires_at=now + timedelta(seconds=retention),
+                            work_id=work_id,
+                            effect_key=effect_key,
+                            sha256=digest,
+                            deleting=False,
+                        )
+                    )
+            except BaseException:
+                # A cancellation can arrive after COMMIT. Leave publication for
+                # bounded orphan maintenance instead of deleting a durable ref.
+                raise
         return handle
+
+    @staticmethod
+    def _publish(path: Path, encoded: bytes) -> None:
+        descriptor, temporary = tempfile.mkstemp(prefix=".publishing-", dir=path.parent)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
 
     async def read(
         self,
@@ -674,12 +752,19 @@ class ToolArtifactRepository:
             return None
         async with self._database.sessions() as session:
             row = await session.get(ToolArtifactModel, handle_id)
-            if row is None or _as_utc(row.expires_at) <= datetime.now(UTC):
+            if row is None or row.deleting:
+                return None
+            if _as_utc(row.expires_at) <= datetime.now(UTC) and not await session.scalar(
+                select(ToolArtifactModel.handle_id).where(
+                    ToolArtifactModel.handle_id == handle_id, self._protected()
+                )
+            ):
                 return None
             relative = row.relative_path
             provider_id = row.provider_id
             tool_name = row.tool_name
             byte_size = row.byte_size
+            digest = row.sha256
         file_path = (self._root / relative).resolve()
         root = self._root.resolve()
         if root not in file_path.parents:
@@ -691,9 +776,14 @@ class ToolArtifactRepository:
                 byte_size=byte_size,
             )
         try:
-            content = await asyncio.to_thread(file_path.read_text, encoding="utf-8")
+            raw = await asyncio.to_thread(file_path.read_bytes)
+            if len(raw) != byte_size or (digest and hashlib.sha256(raw).hexdigest() != digest):
+                return _artifact_error("artifact_corrupt", "Artifact 完整性校验失败")
+            content = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return _artifact_error("artifact_corrupt", "Artifact 不是有效 UTF-8")
         except OSError:
-            return None
+            return _artifact_error("artifact_missing", "Artifact 正文缺失，执行回执仍然有效")
         if operation == "text":
             return _read_text_artifact(
                 handle_id,
@@ -756,26 +846,119 @@ class ToolArtifactRepository:
             max_characters=max_characters,
         )
 
+    def _orphan_candidates(self, cutoff: float) -> list[tuple[Path, tuple[int, int, int]]]:
+        if self._orphan_iterator is None:
+            self._orphan_iterator = self._root.glob("*")
+        paths = list(islice(self._orphan_iterator, 128))
+        if len(paths) < 128:
+            self._orphan_iterator = None
+        result = []
+        for path in paths:
+            name = path.name
+            immutable = (
+                name.endswith(".json")
+                and len(name) == 37
+                and all(character in "0123456789abcdef" for character in name[:-5])
+            )
+            if not immutable and not name.startswith(".publishing-"):
+                continue
+            try:
+                if path.is_symlink() or not path.is_file():
+                    continue
+                info = path.stat()
+                if info.st_mtime < cutoff:
+                    result.append((path, (info.st_ino, info.st_size, info.st_mtime_ns)))
+            except OSError:
+                continue
+        return result
+
+    @staticmethod
+    def _remove_orphan(path: Path, identity: tuple[int, int, int]) -> bool:
+        try:
+            if path.is_symlink():
+                return False
+            info = path.stat()
+            if (info.st_ino, info.st_size, info.st_mtime_ns) != identity:
+                return False
+            path.unlink()
+            return True
+        except OSError:
+            return False
+
+    async def _cleanup_orphans(self, cutoff: float) -> int:
+        candidates = await asyncio.to_thread(self._orphan_candidates, cutoff)
+        if not candidates:
+            return 0
+        # create() holds the same lock through publication and metadata commit.
+        # Immutable UUID names are never reused, so an old unregistered file
+        # cannot gain a new owner between this read and its physical removal.
+        async with self._database.sessions() as reader:
+            registered = set(
+                await reader.scalars(
+                    select(ToolArtifactModel.relative_path).where(
+                        ToolArtifactModel.relative_path.in_(
+                            tuple(path.name for path, _ in candidates)
+                        )
+                    )
+                )
+            )
+        removed = 0
+        for path, identity in candidates:
+            if path.name not in registered:
+                removed += int(await asyncio.to_thread(self._remove_orphan, path, identity))
+        return removed
+
     async def cleanup(self) -> int:
         now = datetime.now(UTC)
-        async with self._database.sessions() as session:
-            rows = tuple(
-                (
-                    await session.execute(
-                        select(ToolArtifactModel).where(ToolArtifactModel.expires_at <= now)
-                    )
-                ).scalars()
+        removed = 0
+        async with self._storage_lock:
+            removed += await self._cleanup_orphans(now.timestamp() - 86400)
+            eligible = or_(
+                ToolArtifactModel.deleting.is_(True),
+                and_(ToolArtifactModel.expires_at <= now, ~self._protected()),
             )
+            async with self._database.sessions() as reader:
+                candidates = list(
+                    await reader.scalars(
+                        select(ToolArtifactModel.handle_id)
+                        .where(eligible)
+                        .order_by(ToolArtifactModel.expires_at)
+                        .limit(128)
+                    )
+                )
+            if not candidates:
+                return removed
+            async with self._database.immediate_session() as writer:
+                rows = list(
+                    (
+                        await writer.execute(
+                            update(ToolArtifactModel)
+                            .where(ToolArtifactModel.handle_id.in_(candidates), eligible)
+                            .values(deleting=True)
+                            .returning(ToolArtifactModel)
+                        )
+                    ).scalars()
+                )
             for row in rows:
                 path = (self._root / row.relative_path).resolve()
                 if self._root.resolve() in path.parents:
                     try:
                         await asyncio.to_thread(path.unlink, missing_ok=True)
                     except OSError:
-                        pass
-                await session.delete(row)
-            await session.commit()
-            return len(rows)
+                        continue
+                else:
+                    continue
+                async with self._database.immediate_session() as writer:
+                    deleted = await writer.scalar(
+                        delete(ToolArtifactModel)
+                        .where(
+                            ToolArtifactModel.handle_id == row.handle_id,
+                            ToolArtifactModel.deleting.is_(True),
+                        )
+                        .returning(ToolArtifactModel.handle_id)
+                    )
+                    removed += int(deleted is not None)
+        return removed
 
 
 def _read_text_artifact(

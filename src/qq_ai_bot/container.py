@@ -221,7 +221,6 @@ class ApplicationContainer:
         self.vision: VisionService | None = media.vision
         self.emoji_module = EmojiModule(
             settings=settings.emoji,
-            conversation_settings=settings.conversation,
             repository=self.emoji_repository,
             analyses=self.media_analyses,
             resolver=self.media_resolver,
@@ -391,6 +390,9 @@ class ApplicationContainer:
             works, self.work_resumer, chat_admission_enabled=self.settings.runtime_work_enabled
         )
         self.database.subagents_enabled = self.settings.subagents_enabled
+        self.database.subagent_concurrency = self.settings.subagent_concurrency
+        self.database.subagent_max_queued = self.settings.subagent_max_queued
+        self.database.subagent_max_active_per_root = self.settings.subagent_max_active_per_root
         children = SubagentRepository(works)
         self.subagent_execution = SubagentExecution(
             works,
@@ -407,7 +409,6 @@ class ApplicationContainer:
                 open_self_memory=self.chat.open_self_memory_session,
                 backend_factory=lambda runtime: MainAgentBackend(self.chat, runtime),
                 web_capabilities=self.chat.web_capabilities,
-                context_token_limit=self.settings.subagent_context_token_limit,
             ),
         )
         self.subagent_scheduler = SubagentScheduler(
@@ -416,6 +417,7 @@ class ApplicationContainer:
             self.subagent_execution,
             admission_enabled=self.settings.subagents_enabled,
             global_llm_concurrency=self.settings.global_llm_concurrency,
+            max_concurrency=self.settings.subagent_concurrency,
         )
         self.runtime.register_worker("runtime_work", self.work_scheduler)
         self.runtime.register_worker("subagents", self.subagent_scheduler)

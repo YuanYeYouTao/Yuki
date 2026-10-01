@@ -59,15 +59,15 @@ class PromptProjectionRepository:
         self,
         database: Database,
         *,
-        max_context_characters: int,
+        max_view_bytes: int = 8 * 1024 * 1024,
         total_bytes: int = 16 * 1024 * 1024,
         maximum_views: int = 128,
         reclaim: bool = False,
     ) -> None:
-        if min(max_context_characters, total_bytes, maximum_views) <= 0:
+        if min(max_view_bytes, total_bytes, maximum_views) <= 0:
             raise ValueError("invalid projection budget")
         self.database = database
-        self.view_bytes = min(max_context_characters * 4, 1024 * 1024)
+        self.view_bytes = min(max_view_bytes, total_bytes)
         self.total_bytes, self.maximum_views = total_bytes, maximum_views
         self.reclaim = reclaim
 
@@ -124,7 +124,7 @@ class PromptProjectionRepository:
                 raise ValueError("projection keys must be SHA-256 fingerprints")
         if rebuild_reason is not None and rebuild_reason not in REBUILD_REASONS:
             raise ValueError("invalid projection rebuild reason")
-        if len(items) > 2048 or not all(isinstance(item, dict) for item in items):
+        if len(items) > 262_144 or not all(isinstance(item, dict) for item in items):
             raise ProjectionCapacityError("projection item limit exceeded")
         payload = json.dumps(items, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
         size = len(payload.encode("utf-8"))

@@ -11,7 +11,7 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.sqlite import insert
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
@@ -23,9 +23,10 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
+from qq_ai_bot.runtime.protocol_store import ProtocolStore
 from qq_ai_bot.runtime.subagent_schema import media, media_refs
 from qq_ai_bot.runtime.work_media import externalize, hydrate, references
-from qq_ai_bot.runtime.work_repository import WorkConflict, WorkLease, WorkRepository, bounded_json
+from qq_ai_bot.runtime.work_repository import WorkConflict, WorkLease, WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, journal, work
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 
@@ -107,6 +108,7 @@ class JournalSnapshot:
 class WorkJournal:
     def __init__(self, repository: WorkRepository) -> None:
         self.repository = repository
+        self.objects = ProtocolStore(repository.database)
 
     async def load(self, lease: WorkLease, work_id: str, contract: str) -> JournalSnapshot:
         async with self.repository.database.sessions() as session:
@@ -129,9 +131,13 @@ class WorkJournal:
                 not lease.work_id and row["source_revision"] != source.prompt_source_revision
             )
             result = dict(row)
+            file_media: set[str] = set()
+            payload: Any
             try:
-                payload = json.loads(result["payload_json"])
-            except ValueError as exc:
+                payload = await self.objects.hydrate(json.loads(result["payload_json"]))
+                file_media = set(payload.get("file_media", []))
+                result["payload_json"] = json.dumps(payload, ensure_ascii=False)
+            except (ValueError, OSError, KeyError, TypeError) as exc:
                 raise JournalUnavailable("work_journal_corrupt") from exc
             if not isinstance(payload, dict) or not isinstance(payload.get("metadata", {}), dict):
                 raise JournalUnavailable("work_journal_corrupt")
@@ -198,6 +204,11 @@ class WorkJournal:
                     ).all()
                 }
                 try:
+                    for digest in refs & file_media:
+                        blobs[digest] = await self.objects.get_bytes(digest)
+                except (OSError, ValueError) as exc:
+                    raise JournalUnavailable("work_journal_media_missing") from exc
+                try:
                     payload = hydrate(payload, blobs)
                     result["payload_json"] = json.dumps(payload, ensure_ascii=False)
                 except (ValueError, KeyError) as exc:
@@ -238,55 +249,29 @@ class WorkJournal:
         blobs: dict[str, bytes] = {}
         # Opaque Responses items retain insertion order all the way to the next
         # HTTP request; generic bounded_json sorts keys and changes that prefix.
+        prepared = externalize(
+            {
+                "transcript": encode_transcript(transcript),
+                "pending": pending,
+                "metadata": metadata,
+            },
+            blobs,
+        )
+        for digest, content in blobs.items():
+            if await self.objects.put_bytes(content) != digest:
+                raise ValueError("work_protocol_media_hash_mismatch")
+        prepared["file_media"] = list(blobs)
         payload = json.dumps(
-            externalize(
-                {
-                    "transcript": encode_transcript(transcript),
-                    "pending": pending,
-                    "metadata": metadata,
-                },
-                blobs,
-            ),
+            await self.objects.manifest(prepared),
             ensure_ascii=False,
             allow_nan=False,
         )
-        if len(payload.encode("utf-8")) > 4 * 1024 * 1024:
+        if len(payload.encode("utf-8")) > 1024 * 1024:
             raise ValueError("work_record_too_large")
-        async with self.repository.database.sessions() as session, session.begin():
-            await self.repository._assert_lease(session, lease)
-            source = await session.get(CanonicalConversationModel, lease.conversation_id)
-            if source is None or source.generation != lease.generation:
-                raise WorkConflict("work_journal_generation_changed")
-            if not lease.work_id and source.prompt_source_revision != source_revision:
-                raise WorkConflict("work_journal_source_changed")
-            if phase == "response":
-                from qq_ai_bot.runtime.work_recovery_schema import recovery
-
-                await session.execute(
-                    update(recovery)
-                    .where(recovery.c.work_id == work_id)
-                    .values(attempts=0, failure_json="{}", not_before=0)
-                )
-            await session.execute(
-                update(work)
-                .where(work.c.id == work_id)
-                .values(
-                    checkpoint_json=func.json_set(
-                        work.c.checkpoint_json,
-                        "$.execution_evidence",
-                        func.json(bounded_json(metadata.get("effects", []), 65536)),
-                    )
-                )
-            )
-            previous_media = set(
-                await session.scalars(
-                    select(media_refs.c.sha256).where(media_refs.c.work_id == work_id)
-                )
-            )
-            # Prepared inputs own their images until staged inputs are paired
-            # into the journal. Saving the current transcript must retain them.
+        # Reference extraction and JSON parsing happen before the writer begins.
+        async with self.repository.database.sessions() as reader:
             input_media: set[str] = set()
-            for value in await session.scalars(
+            for value in await reader.scalars(
                 select(inputs.c.payload_json).where(
                     inputs.c.conversation_id == lease.conversation_id,
                     inputs.c.generation == lease.generation,
@@ -295,65 +280,67 @@ class WorkJournal:
                 )
             ):
                 input_media.update(references(json.loads(value)))
-            next_media = set(blobs) | input_media
-            existing_blobs = (
-                set(await session.scalars(select(media.c.sha256).where(media.c.sha256.in_(blobs))))
-                if blobs
-                else set()
-            )
-            missing = tuple(sorted(blobs.keys() - existing_blobs))
-            for offset in range(0, len(missing), 256):
-                await session.execute(
-                    insert(media).on_conflict_do_nothing(),
-                    [
-                        {"sha256": digest, "content": blobs[digest]}
-                        for digest in missing[offset : offset + 256]
-                    ],
-                )
-            added = tuple(sorted(next_media - previous_media))
-            for offset in range(0, len(added), 256):
-                await session.execute(
-                    insert(media_refs).on_conflict_do_nothing(),
-                    [
-                        {"work_id": work_id, "sha256": digest}
-                        for digest in added[offset : offset + 256]
-                    ],
-                )
-            stale = previous_media - next_media
-            if stale:
-                await session.execute(
-                    delete(media_refs).where(
-                        media_refs.c.work_id == work_id, media_refs.c.sha256.in_(stale)
+        next_media = input_media
+        async with self.objects.publication(work_id) as prepared_objects:
+            async with self.repository.database.immediate_session() as session:
+                await self.repository._assert_lease(session, lease)
+                source = await session.get(CanonicalConversationModel, lease.conversation_id)
+                if source is None or source.generation != lease.generation:
+                    raise WorkConflict("work_journal_generation_changed")
+                if not lease.work_id and source.prompt_source_revision != source_revision:
+                    raise WorkConflict("work_journal_source_changed")
+                if phase == "response":
+                    from qq_ai_bot.runtime.work_recovery_schema import recovery
+
+                    await session.execute(
+                        update(recovery)
+                        .where(recovery.c.work_id == work_id)
+                        .values(attempts=0, failure_json="{}", not_before=0)
+                    )
+                previous_media = set(
+                    await session.scalars(
+                        select(media_refs.c.sha256).where(media_refs.c.work_id == work_id)
                     )
                 )
+                # Prepared inputs own their images until staged inputs are paired
+                # into the journal. Saving the current transcript must retain them.
+                added = tuple(sorted(next_media - previous_media))
+                for offset in range(0, len(added), 256):
+                    await session.execute(
+                        insert(media_refs).on_conflict_do_nothing(),
+                        [
+                            {"work_id": work_id, "sha256": digest}
+                            for digest in added[offset : offset + 256]
+                        ],
+                    )
+                # Input append can race the prepare-reader. Keep active Work media
+                # refs until archive/privacy cleanup; a paired save is not ownership.
+                await self.objects.publish_refs(session, work_id, prepared_objects)
+                values = dict(
+                    work_id=work_id,
+                    chain_id=transcript.chain_id,
+                    contract=contract,
+                    source_revision=source.prompt_source_revision,
+                    phase=phase,
+                    payload_json=payload,
+                    updated=time.time(),
+                )
                 await session.execute(
-                    delete(media).where(
-                        media.c.sha256.in_(stale),
-                        media.c.sha256.not_in(select(media_refs.c.sha256)),
+                    insert(journal)
+                    .values(**values)
+                    .on_conflict_do_update(
+                        index_elements=[journal.c.work_id],
+                        set_=values,
                     )
                 )
-            values = dict(
-                work_id=work_id,
-                chain_id=transcript.chain_id,
-                contract=contract,
-                source_revision=source.prompt_source_revision,
-                phase=phase,
-                payload_json=payload,
-                updated=time.time(),
-            )
-            await session.execute(
-                insert(journal)
-                .values(**values)
-                .on_conflict_do_update(
-                    index_elements=[journal.c.work_id],
-                    set_=values,
-                )
-            )
 
     async def invalidate(self, lease: WorkLease, work_id: str) -> None:
         async with self.repository.database.sessions() as session, session.begin():
             await self.repository._assert_lease(session, lease)
+            from qq_ai_bot.runtime.protocol_schema import refs as protocol_refs
+
             await session.execute(delete(journal).where(journal.c.work_id == work_id))
+            await session.execute(delete(protocol_refs).where(protocol_refs.c.work_id == work_id))
             await session.execute(delete(media_refs).where(media_refs.c.work_id == work_id))
             await session.execute(
                 delete(media).where(media.c.sha256.not_in(select(media_refs.c.sha256)))

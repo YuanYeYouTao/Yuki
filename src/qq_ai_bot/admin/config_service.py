@@ -1447,6 +1447,19 @@ class RuntimeConfigService:
             ),
             context=ContextRuntimeConfig(
                 local_event_limit=int(cast(int, value("context.local_event_limit"))),
+                window_tokens=int(cast(int, value("context.window_tokens"))),
+                work_window_tokens=int(cast(int, value("context.work_window_tokens"))),
+                compaction_trigger_ratio=float(
+                    cast(float, value("context.compaction_trigger_ratio"))
+                ),
+                compaction_target_ratio=float(
+                    cast(float, value("context.compaction_target_ratio"))
+                ),
+                compaction_output_tokens=int(cast(int, value("context.compaction_output_tokens"))),
+                rollup_output_tokens=int(cast(int, value("context.rollup_output_tokens"))),
+                rollup_summary_characters=int(
+                    cast(int, value("context.rollup_summary_characters"))
+                ),
             ),
             memory=MemoryRetrievalRuntimeConfig(
                 retrieval_enabled=bool(value("memory.retrieval_enabled")),
@@ -1981,11 +1994,15 @@ class RuntimeConfigService:
         delete_override: bool,
         session: AsyncSession | None = None,
     ) -> None:
-        if key not in {"reply.delay_min_seconds", "reply.delay_max_seconds"}:
+        if key in {"context.compaction_target_ratio", "context.compaction_trigger_ratio"}:
+            pair = ("context.compaction_target_ratio", "context.compaction_trigger_ratio")
+        elif key in {"reply.delay_min_seconds", "reply.delay_max_seconds"}:
+            pair = ("reply.delay_min_seconds", "reply.delay_max_seconds")
+        else:
             return
         records = list(
             await self._repository.list_all(
-                keys=("reply.delay_min_seconds", "reply.delay_max_seconds"),
+                keys=pair,
                 session=session,
             )
         )
@@ -2015,10 +2032,24 @@ class RuntimeConfigService:
                     canonical_space_id=scope_id if scope_type is ConfigScopeType.GROUP else None,
                 )
             )
-        self._validate_reply_delay_records(tuple(records))
+        self._validate_ordered_pair_records(
+            tuple(records), *pair, strict=pair[0].startswith("context.")
+        )
 
     def _validate_reply_delay_records(
         self, records: tuple[RuntimeConfigOverrideRecord, ...]
+    ) -> None:
+        self._validate_ordered_pair_records(
+            records, "reply.delay_min_seconds", "reply.delay_max_seconds"
+        )
+
+    def _validate_ordered_pair_records(
+        self,
+        records: tuple[RuntimeConfigOverrideRecord, ...],
+        minimum_key: str,
+        maximum_key: str,
+        *,
+        strict: bool = False,
     ) -> None:
         """Check USER > GROUP > GLOBAL precedence in linear space and time.
 
@@ -2026,8 +2057,6 @@ class RuntimeConfigService:
         overridden, the other endpoint's group extrema cover every pairing.
         Keep this check in the caller's transaction with mutation and audit.
         """
-        minimum_key = "reply.delay_min_seconds"
-        maximum_key = "reply.delay_max_seconds"
         values: dict[tuple[str, ConfigScopeType, str], float] = {}
         users: set[str] = set()
         groups: set[str] = set()
@@ -2064,8 +2093,10 @@ class RuntimeConfigService:
         )
 
         def require_order(minimum: float, maximum: float) -> None:
-            if minimum > maximum:
-                raise ValueError("reply.delay_min_seconds 不能大于 reply.delay_max_seconds")
+            if minimum > maximum or (strict and minimum == maximum):
+                raise ValueError(
+                    f"{minimum_key} 必须小于{'或等于' if not strict else ''} {maximum_key}"
+                )
 
         require_order(global_min, global_max)
         highest_group_min, lowest_group_max = global_min, global_max

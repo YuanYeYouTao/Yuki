@@ -84,7 +84,7 @@ class ConversationRollupWorker:
                 "model_timeout_total": self.metrics.model_timeouts,
                 "model_empty_total": self.metrics.model_empty,
                 "model_preempted_total": self.metrics.model_preempted,
-                "max_output_tokens": self._service._max_output_tokens,
+                "max_output_tokens": self.metrics.max_output_tokens,
                 "model_timeout_seconds": self._service._timeout_seconds,
                 "extractive_total": self.metrics.extractive_fallbacks,
                 "infrastructure_retry_total": self.metrics.infrastructure_retries,

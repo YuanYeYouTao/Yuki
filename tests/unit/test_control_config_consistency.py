@@ -63,6 +63,36 @@ async def test_cross_scope_validation_uses_canonical_owners(database: Database):
 
 
 @pytest.mark.asyncio
+async def test_context_windows_are_hot_and_watermarks_validate_inherited_scopes(database):
+    runtime, person, space = await setup(database)
+    original = await runtime.snapshot(user_id=person.text, group_id=space.text)
+    assert original.context.window_tokens == 96000
+    assert (await set_value(runtime, "context.window_tokens", 160000)).success
+    assert (
+        await set_value(runtime, "context.work_window_tokens", 192000, "group", space.text)
+    ).success
+    assert (
+        await set_value(runtime, "context.compaction_output_tokens", 4096, "user", person.text)
+    ).success
+    assert (await set_value(runtime, "context.compaction_trigger_ratio", 0.8)).success
+    assert (
+        await set_value(runtime, "context.compaction_target_ratio", 0.7, "user", person.text)
+    ).success
+    refused = await set_value(
+        runtime, "context.compaction_trigger_ratio", 0.65, "group", space.text
+    )
+    assert not refused.success and refused.error_category == "validation_error"
+    actual = await runtime.snapshot(user_id=person.text, group_id=space.text)
+    assert (actual.context.window_tokens, actual.context.work_window_tokens) == (160000, 192000)
+    assert actual.context.compaction_output_tokens == 4096
+    assert (actual.context.compaction_trigger_ratio, actual.context.compaction_target_ratio) == (
+        0.8,
+        0.7,
+    )
+    assert original.context.window_tokens == 96000
+
+
+@pytest.mark.asyncio
 async def test_delete_and_rollback_revalidate_inherited_values(database: Database):
     runtime, _, space = await setup(database)
     assert (await set_value(runtime, "reply.delay_min_seconds", 5)).success

@@ -23,7 +23,7 @@ from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.persistence.repositories import MediaAnalysisRepository
 from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
 from qq_ai_bot.services.media_resolver import MediaResolver
-from qq_ai_bot.settings_domains import ConversationSettings, EmojiSettings
+from qq_ai_bot.settings_domains import EmojiSettings
 from qq_ai_bot.vision.base import VisionProvider
 
 
@@ -42,7 +42,6 @@ class EmojiModule:
         self,
         *,
         settings: EmojiSettings,
-        conversation_settings: ConversationSettings,
         repository: EmojiRepository,
         analyses: MediaAnalysisRepository,
         resolver: MediaResolver,
@@ -54,7 +53,6 @@ class EmojiModule:
         bot_display_name: str = "Yuki",
     ) -> None:
         self._settings = settings
-        self._conversation_settings = conversation_settings
         self._repository = repository
         self._analyses = analyses
         self._resolver = resolver
@@ -76,7 +74,6 @@ class EmojiModule:
             replacement=EmojiReplacementService(
                 model_executor=self._models,
                 model=self._models.model_name(ModelTask.EMOJI_REPLACEMENT),
-                max_prompt_characters=self._conversation_settings.max_context_characters,
             ),
         )
         collector = EmojiCollector(

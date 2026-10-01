@@ -57,7 +57,7 @@ async def projection_storage_cases(database, conversation_id):
         source = await session.get(CanonicalConversationModel, conversation_id)
         generation, starts = source.generation, source.starts_after_event_id
         source_revision = source.prompt_source_revision
-    repository = PromptProjectionRepository(database, max_context_characters=128)
+    repository = PromptProjectionRepository(database, max_view_bytes=512)
     args = dict(
         view_key="a" * 64,
         conversation_id=conversation_id,
@@ -87,7 +87,7 @@ async def projection_storage_cases(database, conversation_id):
     first = await repository.commit(**args, items=[{"text": "旧名字"}], rebuild_reason="bootstrap")
     copied = first.items()
     copied[0]["text"] = "mutated"
-    reopened = PromptProjectionRepository(database, max_context_characters=128)
+    reopened = PromptProjectionRepository(database, max_view_bytes=512)
     assert (await reopened.read(args["view_key"])).items() == [{"text": "旧名字"}]
     cas = dict(expected_epoch=first.epoch_id, expected_revision=first.revision)
     with pytest.raises(ProjectionConflict, match="cannot be rewritten"):
@@ -154,7 +154,7 @@ async def projection_storage_cases(database, conversation_id):
             select(func.coalesce(func.sum(PromptProjectionModel.byte_size), 0))
         )
     tiny = PromptProjectionRepository(
-        database, max_context_characters=128, total_bytes=int(existing_bytes) + 45
+        database, max_view_bytes=512, total_bytes=int(existing_bytes) + 45
     )
     results = await asyncio.gather(
         *(
@@ -174,7 +174,7 @@ async def projection_storage_cases(database, conversation_id):
 
     await projection_invalidation_cases(database, repository, args)
     reclaiming = PromptProjectionRepository(
-        database, max_context_characters=128, maximum_views=1, reclaim=True
+        database, max_view_bytes=512, maximum_views=1, reclaim=True
     )
     first_key, second_key = "8" * 64, "9" * 64
     first = await reclaiming.commit(

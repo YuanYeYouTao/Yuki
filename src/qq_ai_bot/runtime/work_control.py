@@ -174,7 +174,7 @@ class WorkControl:
             return None
         from qq_ai_bot.runtime.subagent_repository import SubagentRepository
 
-        children = await SubagentRepository(self.repository).list(self.current["id"])
+        children = await SubagentRepository(self.repository).unfinished(self.current["id"])
         unfinished = [r for r in children if r["state"] not in {"completed", "failed", "cancelled"}]
         if any(r["state"] in {"queued", "running", "waiting_external"} for r in unfinished):
             return "waiting_external"
@@ -182,55 +182,83 @@ class WorkControl:
             return "suspended"
         return None
 
+    async def effect_evidence(self) -> list[dict[str, Any]]:
+        if self.current is None:
+            return []
+        return await self.repository.effect_evidence(self.lease, self.current["id"])
+
+    async def refresh_effects(self) -> None:
+        if self.current is None:
+            self.known_effects = []
+        else:
+            recent = await self.repository.effect_evidence(
+                self.lease,
+                self.current["id"],
+                limit=64,
+            )
+            unresolved = await self.repository.effect_evidence(
+                self.lease, self.current["id"], only_unresolved=True
+            )
+            self.known_effects = list(
+                {item["effect_key"]: item for item in [*recent, *unresolved]}.values()
+            )
+
+    async def has_unresolved_effects(
+        self,
+        *,
+        pending: bool = True,
+        uncertain: bool = True,
+    ) -> bool:
+        if self.current is None:
+            return False
+        return await self.repository.has_unresolved_effects(
+            self.lease,
+            self.current["id"],
+            pending=pending,
+            uncertain=uncertain,
+        )
+
     async def reconcile_completed_children(self) -> None:
         if self.current is None:
             return
-        if not self.lease.work_id:
-            from qq_ai_bot.runtime.subagent_repository import SubagentRepository
+        # Run receipts resolve original effects; no result is copied from a child
+        # checkpoint into a second authority list.
+        from qq_ai_bot.capabilities.results import normalize_legacy_result
+        from qq_ai_bot.runtime.effect_outcomes import execution_evidence
 
-            for child in await SubagentRepository(self.repository).list(self.current["id"]):
-                if child["state"] != "completed":
-                    continue
-                evidence = (
-                    json.loads(child["result_json"])
-                    .get("checkpoint", {})
-                    .get("execution_evidence", [])
-                )
-                self.known_effects[:] = [
-                    e for e in self.known_effects if e.get("child_id") != child["work_id"]
-                ]
-                self.known_effects.append(
-                    {
-                        "child_id": child["work_id"],
-                        "ok": True,
-                        "tool": "subagent_result",
-                        "artifacts": list(
-                            dict.fromkeys(
-                                a for e in evidence if e.get("ok") for a in e.get("artifacts", [])
-                            )
-                        ),
-                        "side_effecting": any(
-                            e.get("ok") and e.get("side_effecting") for e in evidence
-                        ),
-                    }
-                )
-        run_ids = list(
-            dict.fromkeys(
-                effect["run_id"]
-                for effect in self.known_effects
-                if isinstance(effect.get("run_id"), str)
-                and (effect.get("pending") or effect.get("uncertain"))
-            )
+        evidence = await self.repository.effect_evidence(
+            self.lease,
+            self.current["id"],
+            only_unresolved=True,
         )
-        for result in await self.repository.completed_children(
-            self.lease, self.current["id"], run_ids
-        ):
-            self.observe_result(
-                "sandbox_completion",
-                json.dumps({"ok": True, "data": result}),
-                True,
-                side_effecting=False,
-            )
+        owners: dict[str, list[str]] = {}
+        for effect in evidence:
+            identity = effect.get("run_id")
+            if isinstance(identity, str) and (effect.get("pending") or effect.get("uncertain")):
+                owners.setdefault(effect["work_id"], []).append(identity)
+        for owner, ids in owners.items():
+            ids = list(dict.fromkeys(ids))
+            for offset in range(0, len(ids), 32):
+                for result in await self.repository.completed_children(
+                    self.lease,
+                    owner,
+                    ids[offset : offset + 32],
+                ):
+                    receipt = normalize_legacy_result(
+                        {"ok": True, "data": result},
+                        provider_id="core",
+                        tool_name="sandbox_completion",
+                    )
+                    outcome = execution_evidence(
+                        receipt, tool="sandbox_completion", side_effecting=False
+                    )
+                    await self.repository.resolve_run_effects(
+                        self.lease,
+                        owner,
+                        result["run_id"],
+                        outcome,
+                    )
+        await self.refresh_effects()
 
     async def take_inputs(self, attempt: str) -> tuple[ChatMessage, ...]:
         pending = await self.pending()
@@ -252,15 +280,9 @@ class WorkControl:
             )
             if size + len(content.encode()) > 8192 and selected:
                 break
-            remaining = 8192 - size
-            if len(content.encode("utf-8")) > remaining:
-                marker = "\n[本轮输入已截断；完整内容按 event_id 查询]"
-                content = (
-                    content.encode("utf-8")[: remaining - len(marker.encode("utf-8"))].decode(
-                        "utf-8", errors="ignore"
-                    )
-                    + marker
-                )
+            # This is a batching quantum, not permission to erase a user's
+            # requirements. One oversized input stays whole; capacity planning
+            # either admits it or preserves the original Work with an explanation.
             size += len(content.encode())
             selected.append(item["id"])
             if self.session is not None:
@@ -330,95 +352,21 @@ class WorkControl:
         side_effecting: bool = True,
         arguments: str = "{}",
     ) -> None:
+        """Bounded model-view cache only; lifecycle reads durable effect facts."""
         if name in WORK_CONTROL_NAMES or not executed:
             return
-        try:
-            value = json.loads(result)
-        except (ValueError, TypeError):
-            return
-        if not isinstance(value, dict):
-            return
-        body = value.get("progress", value.get("data", value.get("result", value)))
-        if not isinstance(body, dict):
-            return
-        identity = body.get("run_id")
-        artifacts: list[str] = []
+        from qq_ai_bot.capabilities.results import normalize_legacy_result
+        from qq_ai_bot.runtime.effect_outcomes import execution_evidence
 
-        def collect(item: Any, depth: int = 0) -> None:
-            if depth > 5 or len(artifacts) >= 32:
-                return
-            if isinstance(item, dict):
-                if isinstance(item.get("artifact_id"), str):
-                    artifacts.append(item["artifact_id"])
-                for child in item.values():
-                    collect(child, depth + 1)
-            elif isinstance(item, list):
-                for child in item[:32]:
-                    collect(child, depth + 1)
-
-        collect(body)
-        delivered: list[str] = []
-        caption_delivered = False
-        delivered_message = False
-        try:
-            args = json.loads(arguments)
-        except ValueError:
-            args = {}
-        if (
-            name == "send_message"
-            and isinstance(args, dict)
-            and isinstance(args.get("artifact_id"), str)
-        ):
-            file_receipt = body.get("file", body)
-            if isinstance(file_receipt, dict) and file_receipt.get("status") == "succeeded":
-                delivered.append(args["artifact_id"])
-                artifacts.append(args["artifact_id"])
-                caption = body.get("caption")
-                caption_delivered = bool(
-                    isinstance(args.get("text"), str)
-                    and args["text"].strip()
-                    and (
-                        (isinstance(caption, dict) and caption.get("status") == "succeeded")
-                        or (
-                            args.get("attachment_kind") == "image"
-                            and body.get("status") == "succeeded"
-                        )
-                    )
-                )
-        if name == "send_message" and isinstance(args, dict):
-            delivered_message = bool(
-                isinstance(args.get("text"), str)
-                and args["text"].strip()
-                and (
-                    caption_delivered
-                    if args.get("attachment_kind") == "file"
-                    else body.get("status") == "succeeded"
-                )
-            )
-        entry = {
-            "tool": name,
-            "side_effecting": side_effecting,
-            "artifacts": artifacts,
-            "delivered_artifacts": delivered,
-            "caption_delivered": caption_delivered,
-            "delivered_message": delivered_message,
-            "delivery_target": body.get("target") if delivered or delivered_message else None,
-            "run_id": identity,
-            "ok": bool(value.get("ok", not value.get("error")))
-            and not body.get("error")
-            and body.get("status") not in {"failed", "cancelled", "uncertain", "unknown"}
-            and body.get("exit_code") in (None, 0),
-            "pending": bool(body.get("pending"))
-            or body.get("status") in {"running", "queued", "waiting"},
-            "uncertain": bool(value.get("uncertain") or body.get("uncertain"))
-            or body.get("status") in {"uncertain", "unknown"},
-        }
+        outcome = normalize_legacy_result(result, provider_id="display", tool_name=name)
+        entry = execution_evidence(
+            outcome, tool=name, side_effecting=side_effecting, arguments=arguments
+        )
+        identity = entry.get("run_id")
         if identity:
-            prior = [item for item in self.known_effects if item.get("run_id") == identity]
-            # A read receipt resolves the same execution; it does not erase
-            # the fact that the parent actually started a mutating job.
+            previous = [item for item in self.known_effects if item.get("run_id") == identity]
             entry["side_effecting"] = side_effecting or any(
-                item.get("side_effecting", False) for item in prior
+                item.get("side_effecting") for item in previous
             )
             self.known_effects[:] = [
                 item for item in self.known_effects if item.get("run_id") != identity
@@ -655,22 +603,21 @@ class WorkControl:
             if not self.lease.work_id:
                 from qq_ai_bot.runtime.subagent_repository import SubagentRepository
 
-                children = await SubagentRepository(self.repository).list(self.current["id"])
+                children = await SubagentRepository(self.repository).unfinished(self.current["id"])
                 if any(
                     row["state"] not in {"completed", "failed", "cancelled"} for row in children
                 ):
                     raise ValueError("work_has_unfinished_subagents")
             await self.reconcile_completed_children()
-            if any(
-                effect.get("pending") or effect.get("uncertain") for effect in self.known_effects
-            ):
+            if await self.has_unresolved_effects():
                 raise ValueError("work_has_unresolved_execution")
+            facts = await self.effect_evidence()
             kind = self.current["output_kind"]
             if kind == "artifact":
                 selected = args.get("artifact_ids")
                 known = {
                     identity
-                    for effect in self.known_effects
+                    for effect in facts
                     if effect.get("ok") or effect.get("delivered_artifacts")
                     for identity in effect.get("artifacts", [])
                 }
@@ -685,7 +632,7 @@ class WorkControl:
                     raise ValueError("work_completion_requires_verified_artifacts")
                 delivered = {
                     identity
-                    for effect in self.known_effects
+                    for effect in facts
                     for identity in effect.get("delivered_artifacts", [])
                 }
                 if self.current["deliver_artifacts"] and not set(selected) <= delivered:
@@ -705,7 +652,7 @@ class WorkControl:
                     }
                     explained = {
                         identity
-                        for effect in self.known_effects
+                        for effect in facts
                         if effect.get("caption_delivered")
                         and effect.get("delivery_target") == target
                         for identity in effect.get("delivered_artifacts", [])
@@ -730,7 +677,7 @@ class WorkControl:
                 }
                 self.completion_delivered = any(
                     effect.get("delivered_message") and effect.get("delivery_target") == target
-                    for effect in self.known_effects
+                    for effect in facts
                 )
                 # Explicit completion may be silent. The model's final text is
                 # internal state; it never becomes a fallback outbound message.
@@ -741,8 +688,7 @@ class WorkControl:
                 # remain separately backed by their original tool receipts.
                 self.final_delivery = True
             elif kind == "state_change" and not any(
-                effect.get("ok") and effect.get("side_effecting", True)
-                for effect in self.known_effects
+                effect.get("ok") and effect.get("side_effecting", True) for effect in facts
             ):
                 raise ValueError("work_completion_requires_execution_evidence")
             self.ending = "completed"

@@ -57,3 +57,14 @@ flowchart LR
 - `services/main_agent_backend.py`：执行授权、工具回执与业务效果围栏。
 - `capabilities/`：descriptor、catalog、policy、binding、协调器和结果预算。
 - `mcp/`、`plugin_host/`：各来源的注册和执行适配；不建立第二套 Yuki 主循环。
+
+
+持久 Work 在结果预算之前从类型化执行结果保存 `ok/status/run_id/pending/uncertain/error_code`
+和副作用事实。展示摘要与最近 64 条视图不能裁决“可以重跑”“可以继续修改”或“可以完成”；
+这些判断精确读取原 Work/root 下的持久效果回执。可信原执行查询只结算同一原 `run_id`。
+模型回执按 UTF-8 字节留出元数据余量；正文归档失败仍保留已知执行事实，并禁止重复执行。
+
+超大完整结果复用工具 artifact 文件存储，单对象最多 64 MiB、总登记容量默认 512 MiB。
+活动 Work 及仍活动 root 的 child 结果不受显示缓存 TTL 清理；终态至少保留七天，
+隐私删除释放其拥有的结果。清理先标记删除围栏、再删除文件、最后清理元数据，可恢复中断。
+工作区不可变文本分页使用字节偏移，跨 UTF-8 字符边界保留完整字符。

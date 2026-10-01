@@ -6,14 +6,15 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
-from dataclasses import replace
+from dataclasses import asdict, replace
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.domain.messages import ChatMessage, ToolCall
+from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ToolCall
+from qq_ai_bot.model_runtime.capacity import estimate_request_tokens, estimate_text_tokens
 from qq_ai_bot.runtime.work_journal import (
     JournalUnavailable,
     WorkJournal,
@@ -21,6 +22,7 @@ from qq_ai_bot.runtime.work_journal import (
     encode_transcript,
 )
 from qq_ai_bot.runtime.work_repository import WorkCapacityError, WorkConflict
+from qq_ai_bot.runtime.work_schema_v1 import inputs
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 from qq_ai_bot.web.base import WebSearchValidationError, normalize_public_url
 
@@ -159,8 +161,8 @@ class WorkSession:
                     )
                 )
         if not row and control.current and control.current["model_requests"]:
-            evidence = json.loads(control.current["checkpoint_json"]).get("execution_evidence", [])
-            control.known_effects = list(evidence)
+            await control.refresh_effects()
+            evidence = control.known_effects
             initial.append(
                 ChatMessage(
                     role="user",
@@ -246,7 +248,7 @@ class WorkSession:
             self.event_ids = list(metadata.get("event_ids", []))
             self.source_keys = list(metadata.get("source_keys", []))
             self.input_ids = list(metadata.get("input_ids", []))
-            control.known_effects = list(metadata.get("effects", []))
+            await control.refresh_effects()
             if (
                 row["phase"] in {"delivery", "delivered"}
                 and self._source_present()
@@ -280,6 +282,7 @@ class WorkSession:
                 control.lease, self.input_ids, control.current["id"]
             )
         await control.reconcile_completed_children()
+        await control.refresh_effects()
         await control.restore_handoff(self.handoff_work_id)
         if control.handoff_work_id is not None:
             self.transcript.append(
@@ -309,28 +312,132 @@ class WorkSession:
             return None
         return str(current["source_key"])
 
-    async def needs_compaction(self) -> bool:
-        if self.control.current is None:
-            return False
-        from sqlalchemy import LargeBinary, func, select
+    def public_records(self) -> list[dict[str, Any]]:
+        assert self.transcript is not None
+        records = []
+        for item in self.transcript.portable_entries():
+            value = asdict(item)
+            # Signed reasoning/opaque protocol state are preserved in private
+            # objects, never rendered as a user instruction for the summarizer.
+            value.pop("response_item", None)
+            value.pop("reasoning_content", None)
+            images = value.pop("images", ())
+            if images:
+                value["images_retained_in_protocol_record"] = len(images)
+            records.append(value)
+        return records
 
-        from qq_ai_bot.runtime.work_recovery_schema import quota
-        from qq_ai_bot.runtime.work_schema_v1 import journal
-
-        async with self.control.repository.database.sessions() as session:
-            size = await session.scalar(
-                select(func.length(journal.c.payload_json.cast(LargeBinary))).where(
-                    journal.c.work_id == self.control.current["id"]
-                )
+    async def summary_source(self) -> str:
+        assert self.control.current is not None
+        records = self.public_records()
+        outputs = {
+            (
+                item.get("call_id") or item.get("tool_call_id"),
+                item.get("output", item.get("content")),
             )
-            total = await session.scalar(select(quota.c.bytes).where(quota.c.id == 1))
-        return (
-            bool(self.progress.get("compacting"))
-            or int(size or 0) >= 3 * 1024 * 1024
-            or (int(total or 0) >= 56 * 1024 * 1024 and int(size or 0) >= 128 * 1024)
+            for item in records
+            if item.get("call_id") or item.get("tool_call_id")
+        }
+        assistants = {
+            json.dumps([item.get("content") or "", item.get("tool_calls") or []], sort_keys=True)
+            for item in records
+            if item.get("role") == "assistant"
+        }
+        observations = []
+        for original in self.progress.get("model_observations", []):
+            observation = dict(original)
+            # Native responses need a public projection, whereas portable
+            # responses and tool outputs already have an exact transcript row.
+            # Compare paired identities and complete contents before omitting
+            # duplicates; citations/native events remain independent evidence.
+            signature = json.dumps(
+                [observation.get("content") or "", observation.get("tool_calls") or []],
+                sort_keys=True,
+            )
+            if signature in assistants:
+                observation.pop("content", None)
+                observation.pop("tool_calls", None)
+            observation["results"] = [
+                {key: value for key, value in result.items() if key != "output"}
+                if (result.get("call_id"), result.get("output")) in outputs
+                else result
+                for result in observation.get("results", [])
+            ]
+            observations.append(observation)
+        return json.dumps(
+            {
+                "work_id": self.control.current["id"],
+                "source": self.control.source,
+                "task_inputs": await self.task_inputs(),
+                "records": records,
+                "model_observations": observations,
+                "effects": await self.compaction_evidence(),
+            },
+            ensure_ascii=False,
         )
 
-    async def compact(self, summary: str) -> TurnTranscript:
+    async def task_inputs(self) -> list[dict[str, Any]]:
+        """User source records remain independent of a lossy generated summary."""
+        if self.control.current is None:
+            return []
+        result = []
+        cursor = 0
+        async with self.control.repository.database.sessions() as reader:
+            while True:
+                rows = (
+                    (
+                        await reader.execute(
+                            select(inputs)
+                            .where(
+                                inputs.c.work_id == self.control.current["id"],
+                                inputs.c.conversation_id == self.control.lease.conversation_id,
+                                inputs.c.generation == self.control.lease.generation,
+                                inputs.c.state.in_(("staged", "consumed")),
+                                inputs.c.kind == "message",
+                                inputs.c.id > cursor,
+                            )
+                            .order_by(inputs.c.id)
+                            .limit(128)
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+                if not rows:
+                    break
+                for row in rows:
+                    payload = json.loads(row["payload_json"])
+                    if payload.get("signal"):
+                        continue
+                    result.append(
+                        {
+                            "input_id": row["id"],
+                            "event_id": row["event_id"],
+                            "source_key": row["source_key"],
+                            "text": payload.get("text", ""),
+                        }
+                    )
+                cursor = rows[-1]["id"]
+        return result
+
+    async def compaction_evidence(self) -> list[dict[str, Any]]:
+        """All unresolved facts plus a bounded successful receipt projection."""
+        assert self.control.current is not None
+        repository = self.control.repository
+        identity = self.control.current["id"]
+        pending = await repository.effect_evidence(
+            self.control.lease, identity, only_unresolved=True
+        )
+        recent = await repository.effect_evidence(self.control.lease, identity, limit=32)
+        return list({item["effect_key"]: item for item in [*recent, *pending]}.values())
+
+    async def compact(
+        self,
+        summary: str,
+        *,
+        target_tokens: int = 64000,
+        request_template: ChatRequest | None = None,
+    ) -> TurnTranscript:
         if not summary.strip() or len(summary.encode()) > 65536:
             raise ValueError("invalid_worker_compaction_summary")
         assert self.transcript is not None
@@ -339,8 +446,28 @@ class WorkSession:
         previous = self.transcript.chain_id
         # Explicit task anchor is immutable across resumes and independent of
         # conversation-history layout or this activation's newly composed state.
-        self.transcript = TurnTranscript(self.compaction_anchor.request().messages)
-        self.transcript.append(
+        original = self.transcript
+        previous_manifest = await self.journal.objects.manifest(
+            {"transcript": encode_transcript(original), "pending": self.pending, "metadata": {}}
+        )
+        previous_ref = await self.journal.objects.put(previous_manifest)
+        tail = []
+        for record in self.public_records():
+            try:
+                capsule = json.loads(record.get("content") or "null")
+            except (ValueError, TypeError):
+                capsule = None
+            if isinstance(capsule, dict) and capsule.get("kind") == "explicit_context_compaction":
+                continue  # Never recursively embed a previous compaction capsule.
+            tail.append(record)
+        tail = tail[-16:]
+        rounds = [
+            *self.progress.get("retained_tool_rounds", []),
+            *self.progress.get("model_observations", []),
+        ][-8:]
+        evidence = await self.compaction_evidence()
+        candidate = TurnTranscript(self.compaction_anchor.request().messages)
+        candidate.append(
             ChatMessage(
                 role="user",
                 content=json.dumps(
@@ -348,13 +475,40 @@ class WorkSession:
                         "kind": "explicit_context_compaction",
                         "previous_chain_id": previous,
                         "summary": summary,
-                        "execution_evidence": self.control.known_effects,
+                        "task_inputs": await self.task_inputs(),
+                        "execution_evidence": evidence,
+                        "previous_protocol_ref": previous_ref,
+                        "recent_raw_records": tail,
+                        "recent_tool_rounds": rounds,
                         "instruction": "继续原目标；先核对原执行 ID，不能因压缩重跑或重复发布。",
                     },
                     ensure_ascii=False,
                 ),
             )
         )
+        if request_template is not None:
+            size = estimate_request_tokens(
+                replace(
+                    request_template,
+                    messages=candidate.request().messages,
+                    request_chain_id=candidate.chain_id,
+                    continuation=None,
+                    continuation_items=(),
+                    continuation_messages=(),
+                    function_outputs=(),
+                )
+            )
+            original_size = estimate_request_tokens(request_template)
+        else:
+            size = estimate_text_tokens(
+                json.dumps(encode_transcript(candidate), ensure_ascii=False)
+            )
+            original_size = estimate_text_tokens(
+                json.dumps(encode_transcript(original), ensure_ascii=False)
+            )
+        if size > target_tokens or size >= original_size * 0.90:
+            raise WorkCapacityError("work_compaction_no_capacity_improvement")
+        self.transcript = candidate
         self.progress["compacting"] = False
         self.progress["context_tokens"] = 0
         self.progress["chain_links"] = [
@@ -365,7 +519,13 @@ class WorkSession:
                 "reason": "capacity_or_context",
             },
         ][-64:]
-        await self.save("paired")
+        self.progress.pop("model_observations", None)
+        self.progress["retained_tool_rounds"] = rounds
+        try:
+            await self.save("paired")
+        except BaseException:
+            self.transcript = original
+            raise
         return self.transcript
 
     def require_compaction_anchor(self) -> None:
@@ -396,10 +556,11 @@ class WorkSession:
                 source_revision=self.source_revision,
                 metadata={
                     "sequence": self.sequence,
-                    "event_ids": self.event_ids[-256:],
-                    "source_keys": self.source_keys[-256:],
+                    "event_ids": list(dict.fromkeys(self.event_ids[:1] + self.event_ids[-255:])),
+                    "source_keys": list(
+                        dict.fromkeys(self.source_keys[:1] + self.source_keys[-255:])
+                    ),
                     "input_ids": self.input_ids[-256:],
-                    "effects": self.control.known_effects,
                     "ending": self.control.ending,
                     "progress": self.progress,
                     "handoff_work_id": self.handoff_work_id,
@@ -413,8 +574,14 @@ class WorkSession:
                 raise WorkCapacityError("work_checkpoint_capacity") from exc
             raise
         except ValueError as exc:
-            if str(exc) in {"work_record_too_large", "work_journal_capacity"}:
-                raise WorkCapacityError("work_checkpoint_capacity") from exc
+            if str(exc) in {
+                "work_record_too_large",
+                "work_journal_capacity",
+                "work_protocol_object_capacity",
+                "work_protocol_storage_capacity",
+                "work_protocol_reference_deleting",
+            }:
+                raise WorkCapacityError(str(exc)) from exc
             raise
 
     async def execute(
@@ -437,7 +604,7 @@ class WorkSession:
         if (
             side_effecting
             and not allow_pending
-            and any(effect.get("uncertain") for effect in control.known_effects)
+            and await control.has_unresolved_effects(pending=False)
         ):
             return json.dumps(
                 {
@@ -450,7 +617,18 @@ class WorkSession:
             )
         key = self.call_key(call.id)
         if not await control.repository.prepare_effect(
-            control.lease, control.current["id"], key, "tool"
+            control.lease,
+            control.current["id"],
+            key,
+            "tool",
+            outcome={
+                "tool": call.function.name,
+                "side_effecting": side_effecting,
+                "ok": False,
+                "pending": False,
+                "uncertain": False,
+                "executed": False,
+            },
         ):
             return await self.journal.effect_result(key)
         from qq_ai_bot.runtime.work_budget import WorkBudgetExceeded
@@ -484,21 +662,92 @@ class WorkSession:
         audit_source = (control.lease.conversation_id, control.lease.generation, privacy_generation)
         audits: list[Callable[[], Awaitable[None]]] = []
         audit_token = _TOOL_AUDITS.set((key, audit_source, audits))
+        from qq_ai_bot.runtime.effect_outcomes import (
+            ResultCapture,
+            current_result_capture,
+            execution_evidence,
+        )
+
+        capture = ResultCapture(control.current["id"], key)
+        capture_token = current_result_capture.set(capture)
         try:
             result = await invoke()
         except BaseException as exc:
             try:
-                await control.repository.record_effect(
-                    key,
-                    "unknown",
-                    {"error": "execution_interrupted"},
-                )
+                if capture.outcome is None:
+                    await control.repository.record_effect(
+                        key, "unknown", {"error": "execution_interrupted"}
+                    )
+                else:
+                    # The backend returned a typed outcome before presentation
+                    # persistence failed. Body loss cannot erase execution facts.
+                    evidence = execution_evidence(
+                        capture.outcome,
+                        tool=call.function.name,
+                        side_effecting=side_effecting,
+                        arguments=call.function.arguments,
+                    )
+                    fallback = json.dumps(
+                        {
+                            **evidence,
+                            "result_unavailable": True,
+                            "result_error": "tool_result_publication_failed",
+                            "replay_forbidden": True,
+                        },
+                        ensure_ascii=False,
+                    )
+                    await control.repository.record_effect(
+                        key,
+                        "accepted",
+                        {
+                            "result": fallback,
+                            "outcome": evidence,
+                            "artifact_handle": capture.artifact_handle,
+                        },
+                    )
             except Exception as secondary:
                 exc.add_note(f"effect receipt persistence deferred: {type(secondary).__name__}")
             raise
         finally:
             _TOOL_AUDITS.reset(audit_token)
-        await control.repository.record_effect(key, "accepted", {"result": result})
+            current_result_capture.reset(capture_token)
+        if capture.outcome is None:
+            # Legacy test/host backends normalize once at the execution boundary;
+            # production kernel supplies the typed original before any truncation.
+            from qq_ai_bot.capabilities.results import normalize_legacy_result
+
+            capture.outcome = normalize_legacy_result(
+                result, provider_id="legacy", tool_name=call.function.name
+            )
+        evidence = execution_evidence(
+            capture.outcome,
+            tool=call.function.name,
+            side_effecting=side_effecting,
+            arguments=call.function.arguments,
+        )
+        await control.repository.record_effect(
+            key,
+            "accepted",
+            {
+                "result": result,
+                "outcome": evidence,
+                "artifact_handle": capture.artifact_handle,
+            },
+        )
+        if (
+            capture.outcome.provider_id == "core"
+            and call.function.name
+            in {"get_code_run", "terminal_read", "cancel_code_run", "terminal_control"}
+            and isinstance(evidence.get("run_id"), str)
+            and not evidence["pending"]
+            and not evidence["uncertain"]
+        ):
+            await control.repository.resolve_run_effects(
+                control.lease,
+                control.current["id"],
+                evidence["run_id"],
+                evidence,
+            )
         # No audit runs after an uncertain effect commit. Cancellation after this
         # commit propagates without replacing its already-confirmed effect.
         for audit in audits:

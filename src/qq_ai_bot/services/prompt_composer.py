@@ -248,7 +248,7 @@ class PromptComposer:
             )
         history = self._conversation_history(context)
         remaining = (
-            self._settings.max_context_characters
+            runtime.context.window_tokens * 3
             + runtime.plugins.max_total_prompt_characters
             - sum(len(message.content or "") for message in history)
             - len(context.current_message.content or "")
@@ -266,7 +266,14 @@ class PromptComposer:
     def _conversation_history(context: AssembledContext) -> tuple[ChatMessage, ...]:
         if not context.rollup_text.strip():
             return context.history_messages
-        return (render_rollup_message(context.rollup_text), *context.history_messages)
+        return (
+            render_rollup_message(
+                context.rollup_text,
+                kind=context.metrics.rollup_mode,
+                covered_through_event_id=context.prompt_effective_coverage,
+            ),
+            *context.history_messages,
+        )
 
     def _finalize(
         self,

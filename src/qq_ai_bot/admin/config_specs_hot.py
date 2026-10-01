@@ -16,6 +16,77 @@ def hot_config_specs() -> tuple[ConfigSpec, ...]:
     return (
         *tuple(
             _spec(
+                key,
+                title,
+                "运行时请求容量政策；模型实际输入/联合窗口上限仍在执行前核验。",
+                value_type="integer",
+                minimum=minimum,
+                maximum=maximum,
+                scopes=_GGU,
+                getter=_field(field),
+                settings_fields=(field,),
+                category="context",
+            )
+            for key, title, field, minimum, maximum in (
+                ("context.window_tokens", "聊天输入窗口", "context_window_tokens", 8192, 2097152),
+                (
+                    "context.work_window_tokens",
+                    "Work 输入窗口",
+                    "work_context_window_tokens",
+                    8192,
+                    2097152,
+                ),
+                (
+                    "context.compaction_output_tokens",
+                    "Work 摘要输出预算",
+                    "work_compaction_max_output_tokens",
+                    1024,
+                    32768,
+                ),
+                (
+                    "context.rollup_output_tokens",
+                    "群史摘要输出预算",
+                    "conversation_rollup_max_output_tokens",
+                    1024,
+                    32768,
+                ),
+                (
+                    "context.rollup_summary_characters",
+                    "群史摘要完整正文上限",
+                    "conversation_rollup_summary_max_characters",
+                    1024,
+                    65536,
+                ),
+            )
+        ),
+        *tuple(
+            _spec(
+                key,
+                title,
+                "按有效输入窗口的比例计算；目标水位必须低于触发水位。",
+                value_type="number",
+                minimum=0.10,
+                maximum=0.95,
+                scopes=_GGU,
+                getter=_field(field),
+                settings_fields=(field,),
+                category="context",
+            )
+            for key, title, field in (
+                (
+                    "context.compaction_trigger_ratio",
+                    "压缩触发水位",
+                    "conversation_rollup_trigger_ratio",
+                ),
+                (
+                    "context.compaction_target_ratio",
+                    "压缩目标水位",
+                    "conversation_rollup_target_ratio",
+                ),
+            )
+        ),
+        *tuple(
+            _spec(
                 f"memory.automatic_{kind}_threshold",
                 f"自动召回{title}门槛",
                 "仅作用于自动注入；必须与验收后的 embedding profile 指纹配套。",
@@ -665,8 +736,7 @@ def hot_config_specs() -> tuple[ConfigSpec, ...]:
         _spec(
             "context.local_event_limit",
             "近期本地事件数量",
-            "主 Agent 每轮扫描当前场景最近聊天事件的安全上限；须不小于 "
-            "CONVERSATION_ROLLUP_RAW_TAIL_EVENTS + CONVERSATION_ROLLUP_TRIGGER_EVENTS。",
+            "主 Agent 每轮读取近期本地事件的资源上限；语义窗口和压缩水位按 token 热配置计算。",
             aliases=("上下文消息数量", "近期聊天条数"),
             value_type="integer",
             minimum=1,

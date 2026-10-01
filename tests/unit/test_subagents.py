@@ -185,6 +185,13 @@ async def test_worker_independent_lease_messages_and_dormant_resume(database, tm
 async def test_shared_budget_reserves_parent_capacity_atomically(database, tmp_path):
     repo, workers, parent_lease, parent, identity = await stack(database, tmp_path)
     child_lease = await workers.acquire(identity)
+    # Explicit finite budgets retain the parent reserve; new roots default to unlimited.
+    async with database.sessions() as session, session.begin():
+        await session.execute(
+            insert(budgets).values(
+                root_id=parent["id"], models=0, tools=0, model_limit=120, tool_limit=160
+            )
+        )
     await repo.checkpoint(parent_lease, parent["id"], None, models=110, tools=151)
     outcomes = await asyncio.gather(
         *(repo.checkpoint(child_lease, identity, None, models=1, tools=1) for _ in range(3)),
@@ -202,6 +209,98 @@ async def test_shared_budget_reserves_parent_capacity_atomically(database, tmp_p
         assert row["models"] == 120 and row["tools"] == 160
     await repo.release(child_lease)
     await repo.release(parent_lease)
+
+
+@pytest.mark.asyncio
+async def test_default_budget_continues_past_old_root_and_run_limits(database, tmp_path):
+    from qq_ai_bot.runtime.work_budget_schema import budgets as current_budgets
+
+    repo, workers, parent_lease, parent, identity = await stack(database, tmp_path)
+    child_lease = await workers.acquire(identity)
+    await repo.checkpoint(parent_lease, parent["id"], None, models=200, tools=200)
+    await repo.checkpoint(child_lease, identity, None, models=200, tools=200)
+    async with database.sessions() as session:
+        row = (await session.execute(select(current_budgets))).mappings().one()
+        assert row["model_limit"] is None and row["tool_limit"] is None
+        assert row["models"] == 400 and row["tools"] == 400
+    await repo.release(child_lease)
+    await repo.release(parent_lease)
+
+
+@pytest.mark.asyncio
+async def test_child_capacity_counts_active_and_pages_all_history(database, tmp_path):
+    repo, workers, lease, parent, identity = await stack(database, tmp_path)
+    identities = [identity]
+    for number in range(6):
+        await workers.cancel(lease, parent["id"], identities[-1])
+        identities.append(
+            await workers.start(
+                lease, parent["id"], f"spawn:{number}", {"goal": "draw", "output_kind": "answer"}
+            )
+        )
+    assert {row["work_id"] for row in await workers.list(parent["id"])} == set(identities)
+    assert [row["work_id"] for row in await workers.unfinished(parent["id"])] == identities[-1:]
+    found, cursor = [], None
+    while page := await workers.list(parent["id"], limit=2, cursor=cursor):
+        found.extend(row["work_id"] for row in page)
+        cursor = page[-1]["work_id"]
+    assert found == sorted(identities)
+    await repo.release(lease)
+
+
+@pytest.mark.asyncio
+async def test_two_children_claim_independent_leases(database, tmp_path):
+    repo, workers, lease, parent, first = await stack(database, tmp_path)
+    workers.max_concurrency = 2
+    second = await workers.start(
+        lease, parent["id"], "spawn:second", {"goal": "draw", "output_kind": "answer"}
+    )
+    claims = await asyncio.gather(workers.acquire(first), workers.acquire(second))
+    assert all(claim is not None for claim in claims)
+    assert claims[0].work_id != claims[1].work_id
+    for claim in claims:
+        await repo.release(claim)
+    await repo.release(lease)
+
+
+@pytest.mark.asyncio
+async def test_child_scheduler_runs_in_parallel_and_joins_shutdown(database, tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from qq_ai_bot.runtime.subagent_scheduler import SubagentScheduler
+
+    repo, workers, lease, parent, first = await stack(database, tmp_path)
+    second = await workers.start(
+        lease, parent["id"], "spawn:second", {"goal": "draw", "output_kind": "answer"}
+    )
+    entered, exited = set(), set()
+    both = asyncio.Event()
+
+    async def run(identity):
+        entered.add(identity)
+        if len(entered) == 2:
+            both.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            exited.add(identity)
+
+    executor = SimpleNamespace(
+        prepare=AsyncMock(), cancel_commands=AsyncMock(), run=run, definitions=()
+    )
+    scheduler = SubagentScheduler(
+        repo, workers, executor, admission_enabled=True, global_llm_concurrency=3, max_concurrency=2
+    )
+    await scheduler.start()
+    try:
+        await asyncio.wait_for(both.wait(), timeout=5)
+        assert entered == {first, second}
+        assert (await scheduler.health())["active_workers"] == 2
+    finally:
+        await scheduler.close()
+    assert exited == entered and not scheduler.running
+    await repo.release(lease)
 
 
 @pytest.mark.asyncio
@@ -345,7 +444,6 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
         config=app.runtime_config,
         runner=chat.runtime.runner,
         load_tools=chat.runtime.runner.main_contract.definitions,
-        context_token_limit=settings.subagent_context_token_limit,
         ledger=app.ledger,
         sandbox_tasks=app.sandbox_tasks,
         sandbox_client=chat._tools.sandbox_client,

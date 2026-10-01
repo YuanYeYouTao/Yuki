@@ -158,6 +158,13 @@ class ControlAuditRef:
 @dataclass(frozen=True, slots=True)
 class ContextRuntimeConfig:
     local_event_limit: int
+    window_tokens: int = 96000
+    work_window_tokens: int = 128000
+    compaction_trigger_ratio: float = 0.85
+    compaction_target_ratio: float = 0.50
+    compaction_output_tokens: int = 8192
+    rollup_output_tokens: int = 8192
+    rollup_summary_characters: int = 16384
 
 
 @dataclass(frozen=True, slots=True)

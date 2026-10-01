@@ -52,7 +52,6 @@ def make_child_executor(
     config,
     runner,
     load_tools,
-    context_token_limit,
     ledger=None,
     sandbox_tasks=None,
     sandbox_client=None,
@@ -74,6 +73,5 @@ def make_child_executor(
             open_self_memory=chat.open_self_memory_session,
             backend_factory=lambda runtime: MainAgentBackend(chat, runtime),
             web_capabilities=chat.web_capabilities,
-            context_token_limit=context_token_limit,
         ),
     )

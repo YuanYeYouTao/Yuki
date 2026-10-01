@@ -41,60 +41,58 @@ checkpoint 与 raw tail 不能重叠或留洞。当前触发事件只在 current
 不可信 input envelope。模型 timeout、空响应、超长或质量失败可以写 emergency overlay；overlay
 不能覆盖或伪装语义 checkpoint。
 
-## Prompt 字符与事件预算
+## 活动窗口与压缩容量
 
-3.8.1 明确区分三套不能互换的尺子：
+聊天活动窗口默认 96000 token，Work 活动窗口默认 128000 token；它们是可热配置的容量上界，
+不要求填满窗口。实际模型 Profile 的输入/上下文限制、输出预留、固定系统合同、工具 schema、
+当前动态内容及媒体负担共同约束完整请求。发送前还要检查完整请求的容量；不能只检查历史字符。
 
-- **前台历史尺子**：只计算 `event_kind=message` 的分组 `main_agent_history`；外部事件为零。
-- **持久水位尺子**：`uncovered_event_count` 仍统计所有未覆盖 keeper，
-  `uncovered_character_count` 只累加逐条 message 投影字符；它不依赖相邻分组。
-- **压缩来源尺子**：按真实 `rollup_source_projection` 序列化成本切分，外部事件在这里有成本，
-  不得因为前台为零而绕过 `batch_max_characters`。
+群聊窗口及压缩参数通过 RuntimeConfig 的 `context.window_tokens`、
+`context.compaction_trigger_ratio`、`context.compaction_target_ratio`、
+`context.rollup_output_tokens` 和 `context.rollup_summary_characters` 热更新。
+后台每次检测信号、锁定候选时从 canonical Conversation 的固定 primary alias 解析相应 scope，
+再读取热配置；候选携带不可变 policy，模型执行和结果校验使用同一快照，不共享会话可变 policy。
 
-触发、protected tail 和前台 fit 使用可见 message 投影；候选覆盖仍沿原始 keeper ID 连续推进。
-主 Agent 的消息首行显示内部事件时间的本地 `时:分:秒`；相同发送者等既有分组条件下，
-组内事件距首条最多五分钟，跨本地日期或事件时间倒退时另起组。历史仍按内部事件 ID 排序。
-这个时间包装只用于模型可见消息；持久水位继续使用不带时间的单条事件尺子，
-已冻结的旧模型输入不追溯改写。
-3.8.0 存量计数必须在停写副本和 live 数据库上执行
-`qq-ai-bot-cli conversation recount-uncovered` 后才能由 3.8.1 恢复写入。
+只保留一套容量策略：默认达到活动窗口 85% 时启动后台压缩，目标保留最近约 50% 的可见历史。
+删除事件数量寿命上限、覆盖前后两套 near/admit/target 分支。大量短消息可以超过 512 条继续保留；
+后台信号不能仅因未覆盖 keeper 总数或外部通知风暴启动模型。前台最终 fit 使用实际分组消息，
+连同摘要和当前消息计算 token。后台按逐条可见消息做保守容量估算，查询按内部事件 ID 分页，
+证明达到触发容量后即停止读取。最新巨大消息保持完整，不能以截头文本冒充完整原文。
 
-ASR/视觉派生文本先在显式只读快照中计算字符差额；只有差额导致负计数或晚 ASR 的来源已被
-覆盖时，才读取相应保留事件区间重算，并在计算中替换原内部事件的派生文本。短 writer 在首次
-事件更新前复核 generation、prompt source revision、起点、末尾、coverage、revision、计数和
-checkpoint 版本。竞争时重新准备快照，不能提交过期计数；generation 已失效的 ASR 不落账。
-晚 ASR 仍原子清除派生 Rollup、把 coverage 退回当前 generation 起点并提交完整重算计数，
-再按原规则发出 job 信号。重算不在写入或 flush 之后扫描历史，也不截断保留事件。
+`uncovered_event_count` 统计全部 keeper，`uncovered_character_count` 统计逐条可见消息字符，
+两者仍用于状态与漂移核验，不再决定 Prompt 窗口寿命。外部事件不进入普通历史，
+但作为连续候选来源时具有真实成本。候选有 `batch_max_events`/`batch_max_characters` 的
+物理资源边界；这些是读取和模型来源批次边界，不是会话寿命或语义覆盖上限。
 
-事件 floor 和字符预算共同决定 protected tail：
+原始历史读取是有界的整条消息后缀。若更早可见原文未读完，snapshot 标记 `raw_complete=False`；
+前台必须完成压缩/明确应急处理后再重新读取，不能把这个后缀直接当作连续完整历史交给模型。
+checkpoint 与实际使用的 raw tail 仍不重叠、不留洞。当前触发消息只出现一次。
 
-- 长消息先碰字符上限时，允许保留少于事件 floor 的尾部并压缩更早前缀。
-- 大量短消息受事件 floor 保护时，Prompt 可暂时超过字符 target。
-- target 是压缩目标，不是 fail-closed 上限；最终是否需要前台压缩使用 admit/trigger。
-- 不能因为 target 过小就反复 fallback，也不能为了压回 target 丢掉受保护尾部。
-- protected tail 取最近 N 条可见 message；夹在这些 message 之间或之后的 external keeper 随后缀
-  一起受保护。位于 eligible prefix 的外部风暴仍可触发压缩，但不能跨过受保护消息切 batch。
+Main Turn 的可重建投影缓存使用独立的物理资源上限：单视图默认 8 MiB、全局 16 MiB，
+最多 128 个视图。它不从启动时的聊天窗口推导容量，热配置上调不会被旧字符上限拦住；
+超出缓存物理资源时明确拒绝提交，不裁剪语义历史或伪装连续前缀。
 
-模型生成预算与摘要字符上限独立。`conversation_rollup_max_output_tokens` 默认 16384，包含推理
-和最终正文；`summary_max_characters` 继续限制落入历史前缀的摘要正文，不能靠增大正文换取
-推理预算。若 Profile 配置了 `max_output_tokens_limit`，共享执行器在发送前拒绝超限请求；
-未配置 Provider 上限时该上限未知，不推测一个硬编码模型限制。超长、无正文、纯 reasoning 和
-不完整响应不能写入语义 checkpoint，错误类别及 token/耗时日志不含正文或推理内容。
+压缩来源保留内部 event/person ID、说话人、direction、reply_to_event_id、事件时间、提及及
+派生视觉/语音内容。压缩提示词要求保留决定、否定约束、最新纠正、开放问题和可检索引用。
+超大单条来源按完整字符串分块，全部块成功后才能提交连续语义覆盖；任意块失败都不提交。
+不增加普通事件分片持久状态，也不截头后宣称覆盖整个事件。每块的输入包含前块所得摘要，
+以完成当前批次；摘要质量仍需针对真实长会话验收，完整读取不等于无损摘要。
 
-`conversation_rollup_model_timeout_seconds` 默认 90 秒，同时设置 Rollup 的 Provider 客户端超时
-和单次排队/模型执行的总等待上限；聊天及其他后台任务沿用各自 Profile 超时。
-达到触发水位后的 Rollup 使用 maintenance 优先级：全局最多一个保护中的维护模型调用，
-共用原全局容量，普通前台不取消它，剩余容量允许其他会话聊天。exclusive 操作可以取消维护请求。
-低于触发水位不启动后台语义请求。
+模型输出预算默认 8192 token，摘要正文默认最多 16384 字符；二者独立。
+超长、纯 reasoning、空正文、不完整 Provider 响应不能提交语义 checkpoint；正文不裁剪后落账。
+应急 tail overlay 单独显示“不完整应急视图”，提示模型按内部引用查询缺失事实，不能冒充完整语义摘要。
 
-前台超过 admit 时，所有批次共用一次有界等待期限。优先等待同 Conversation/generation
-的现有 claim 提交；没有活动 claim 才以 required 身份执行语义压缩，期间维持 heartbeat。
-失败、已有失败退避或等待超时后才使用应急 overlay。超时先取消本地请求，并最多再等 5 秒
-让原 worker 完成持久提交；无法确认释放时失败关闭，不与原提交竞争。未超过 admit 的会话
-不会全局停聊。普通聊天不再抢占语义 Rollup 的租约。
+Rollup 模型调用期间不持有 SQLite 事务；候选、计数差额和 protected suffix 在首次写入前准备，
+提交重验 generation、lease、fingerprint 和持久来源 hold。计数从已核验候选精确扣减，不在每次
+提交后扫描完整剩余历史。来源 hold（包括原 Work 的事件）仍可限制推进，不得绕过。
 
-前台压缩必须有界。达到 trigger 后压向 stop，重新读取一致 snapshot；来源缺口、计数漂移或
-压缩后仍超过 admit 时失败关闭，不拼接不连续摘要。
+前台超过容量时，所有批次共用一次有界等待期限。优先等待同 Conversation/generation 的现有
+claim；没有活动 claim 才执行 required 语义压缩并保持 heartbeat。失败、已有失败退避或超时
+才写应急 overlay。超时先取消本地请求，并最多等 5 秒确认原 worker 持久提交；无法确认释放
+时失败关闭。普通聊天不抢占语义 Rollup 租约；维护请求仍共享全局模型容量。
+原 Work 的持久准备条件保存本次完整请求剩余的历史 token 余额；后台候选读取同 Conversation/
+generation 的未过期条件，按最小有效余额保留尾部。不能重新用全聊天窗口保护一个实际请求
+无法接纳的尾部，也不能重设原准备期限。条件过期或 Work 终止后不继续使用其旧余额。
 
 ## Prompt 顺序与缓存
 

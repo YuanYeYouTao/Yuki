@@ -13,6 +13,7 @@ from qq_ai_bot.memory.embedding.models import (
     EmbeddingProviderProfile,
 )
 from qq_ai_bot.memory.embedding.provider import EmbeddingProvider
+from qq_ai_bot.model_runtime.capacity import ModelCapacity
 from qq_ai_bot.model_runtime.executor import ModelExecutor
 from qq_ai_bot.model_runtime.models import (
     ModelCapability,
@@ -98,6 +99,9 @@ class CountingModelExecutor:
 
     def model_name(self, task: ModelTask) -> str:
         return self._delegate.model_name(task)
+
+    def capacity(self, task: ModelTask) -> ModelCapacity:
+        return self._delegate.capacity(task)
 
     def structured_output_mode(self, task: ModelTask) -> StructuredOutputMode:
         return self._delegate.structured_output_mode(task)

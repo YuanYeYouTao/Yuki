@@ -406,6 +406,30 @@ async def test_derived_audio_updates_revision_and_survives_migration_rollback(
     # stamps it as an older revision to exercise the ASR migration path.
     async with database.engine.begin() as connection:
         await connection.execute(text("DROP TABLE canonical_generation_reset_batches"))
+        # This fixture was stamped as 0055; remove the current-only Work
+        # extensions before replaying their actual additive migrations.
+        for table in (
+            "runtime_protocol_refs",
+            "runtime_protocol_objects",
+            "runtime_protocol_usage",
+        ):
+            await connection.execute(text(f"DROP TABLE {table}"))
+        for name in (
+            "work_key",
+            "work_updated",
+            "work_state",
+            "work_pending",
+            "work_uncertain",
+            "work_run_id",
+        ):
+            await connection.execute(text(f"DROP INDEX ix_runtime_effects_{name}"))
+        await connection.execute(text("DROP INDEX ix_tool_artifacts_work_id"))
+        for column in ("deleting", "sha256", "effect_key", "work_id"):
+            await connection.execute(text(f"ALTER TABLE tool_artifacts DROP COLUMN {column}"))
+        for column in ("model_limit", "tool_limit"):
+            await connection.execute(
+                text(f"ALTER TABLE runtime_automation_budgets DROP COLUMN {column}")
+            )
         await connection.execute(text("DROP TABLE conversation_media_items"))
         await connection.execute(text("DROP INDEX ix_admin_operation_events_control_request_id"))
         await connection.execute(

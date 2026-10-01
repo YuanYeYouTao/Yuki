@@ -38,39 +38,29 @@ POLICY_PARK_DELAY = timedelta(days=30)
 
 @dataclass(frozen=True, slots=True)
 class RollupPolicyConfig:
-    raw_tail_events: int = 128
-    raw_tail_characters: int = 20_480
-    trigger_events: int = 384
-    trigger_characters: int = 81_920
-    stop_events: int = 0
-    stop_characters: int = 0
+    context_token_budget: int = 96_000
+    trigger_ratio: float = 0.85
+    target_ratio: float = 0.50
     batch_max_events: int = 256
     batch_max_characters: int = 32_768
-    summary_max_characters: int = 2400
+    summary_max_characters: int = 16384
+    max_output_tokens: int = 8192
     bot_display_name: str = "Yuki"
     timezone: str = "Asia/Shanghai"
     llm_origins: frozenset[str] = frozenset({"user_message"})
 
     def __post_init__(self) -> None:
         positive = (
-            self.raw_tail_events,
-            self.raw_tail_characters,
-            self.trigger_events,
-            self.trigger_characters,
+            self.context_token_budget,
             self.batch_max_events,
             self.batch_max_characters,
             self.summary_max_characters,
+            self.max_output_tokens,
         )
         if any(value < 1 for value in positive):
             raise ValueError("positive rollup settings must be at least one")
-        if self.trigger_events < 2:
-            raise ValueError("trigger_events must be at least two")
-        if self.stop_events < 0 or self.stop_characters < 0:
-            raise ValueError("rollup low watermarks must not be negative")
-        if self.trigger_events <= self.stop_events:
-            raise ValueError("trigger_events must be greater than stop_events")
-        if self.trigger_characters <= self.stop_characters:
-            raise ValueError("trigger_characters must be greater than stop_characters")
+        if not 0 < self.target_ratio < self.trigger_ratio < 1:
+            raise ValueError("rollup token ratios must satisfy 0 < target < trigger < 1")
         if not self.llm_origins:
             object.__setattr__(self, "llm_origins", frozenset({"user_message"}))
 
@@ -127,6 +117,7 @@ class RollupCandidate:
     projection_characters: int
     fingerprint: str
     conversation_id: str | None = None
+    policy: RollupPolicyConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +132,7 @@ class ConversationPromptSnapshot:
     conversation_id: str | None = None
     prompt_source_revision: int = 0
     rollup_stamp: tuple[int, int] = (0, 0)
+    raw_complete: bool = True
 
 
 @dataclass(frozen=True, slots=True)

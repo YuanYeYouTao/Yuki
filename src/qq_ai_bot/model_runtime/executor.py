@@ -26,6 +26,7 @@ from qq_ai_bot.domain.messages import (
 )
 from qq_ai_bot.execution_trace.recorder import TraceRecorder, record_trace, trace_span
 from qq_ai_bot.llm.base import LLMError, LLMUnsupportedFeatureError
+from qq_ai_bot.model_runtime.capacity import ModelCapacity, estimate_request_tokens
 from qq_ai_bot.model_runtime.dispatch_guard import check_model_dispatch
 from qq_ai_bot.model_runtime.models import (
     ModelCapability,
@@ -231,6 +232,8 @@ class ModelExecutor(Protocol):
 
     def capabilities(self, task: ModelTask) -> frozenset[ModelCapability]: ...
 
+    def capacity(self, task: ModelTask) -> ModelCapacity: ...
+
 
 class LegacyTaskModelExecutor:
     """Adapt an injected test provider without leaking it into business services."""
@@ -278,6 +281,10 @@ class LegacyTaskModelExecutor:
     def capabilities(self, task: ModelTask) -> frozenset[ModelCapability]:
         del task
         return frozenset(ModelCapability)
+
+    def capacity(self, task: ModelTask) -> ModelCapacity:
+        del task
+        return ModelCapacity()
 
 
 def require_model_executor(
@@ -518,6 +525,20 @@ class TaskModelExecutor:
             > profile.max_output_tokens_limit
         ):
             raise LLMUnsupportedFeatureError("request exceeds configured provider output limit")
+        if profile.max_input_tokens is not None or profile.context_window_tokens is not None:
+            capacity = ModelCapacity(
+                input_tokens=profile.max_input_tokens,
+                context_tokens=profile.context_window_tokens,
+                output_tokens=profile.default_max_output_tokens,
+            )
+            budget = capacity.input_budget(
+                profile.max_input_tokens or profile.context_window_tokens or 1,
+                output_tokens=request.max_output_tokens,
+            )
+            if estimate_request_tokens(request) > budget:
+                raise LLMUnsupportedFeatureError(
+                    "request exceeds configured provider input capacity"
+                )
         provider = (
             pool.get(profile, timeout_seconds=self._compaction_timeout_seconds)
             if task is ModelTask.CONVERSATION_COMPACTION
@@ -965,7 +986,9 @@ class TaskModelExecutor:
     def profile_revision(self, task: ModelTask) -> str:
         """Fingerprint routing/serialization settings without exposing configuration."""
         route, profile = self._runtime()[0].route(task)
-        excluded = set()
+        # Capacity policy is not serialized to the provider and must not split
+        # a previously submitted prefix when operators tune numeric limits.
+        excluded = {"max_input_tokens", "context_window_tokens"}
         if profile.max_output_tokens_limit is None:
             excluded.add("max_output_tokens_limit")
         if profile.wire_options is None:
@@ -998,6 +1021,14 @@ class TaskModelExecutor:
     def model_name(self, task: ModelTask) -> str:
         _route, profile = self._runtime()[0].route(task)
         return profile.model
+
+    def capacity(self, task: ModelTask) -> ModelCapacity:
+        _route, profile = self._runtime()[0].route(task)
+        return ModelCapacity(
+            input_tokens=profile.max_input_tokens,
+            context_tokens=profile.context_window_tokens,
+            output_tokens=profile.default_max_output_tokens,
+        )
 
     def structured_output_mode(self, task: ModelTask) -> StructuredOutputMode:
         _route, profile = self._runtime()[0].route(task)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC
 from typing import Any
@@ -53,6 +54,7 @@ from qq_ai_bot.memory.models import (
     MemoryRetrievalResult,
 )
 from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.model_runtime.capacity import estimate_text_tokens
 from qq_ai_bot.persistence.event_repository import ConversationReadVersion
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
@@ -159,6 +161,7 @@ class _HistoryPromptWindow:
     rollup_mode: str | None
     starts_after_event_id: int = 0
     read_version: ConversationReadVersion | None = None
+    raw_complete: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +174,7 @@ class _UncoveredPromptView:
     fallback_event_id: int | None
     current_characters: int
     rendered_characters: int
+    current_tokens: int
 
 
 class ContextAssembler:
@@ -187,6 +191,7 @@ class ContextAssembler:
         time_service: TimeContextService,
         rollup_repository: ConversationRollupRepository,
         rollup_service: ConversationRollupService,
+        history_budget: Callable[[RuntimeConfigSnapshot], int] | None = None,
     ) -> None:
         self._settings = settings
         self._ledger = ledger
@@ -196,6 +201,12 @@ class ContextAssembler:
         self._time = time_service
         self._rollups = rollup_repository
         self._rollup_service = rollup_service
+        self._history_budget = history_budget
+
+    def _history_token_budget(self, runtime: RuntimeConfigSnapshot) -> int:
+        if self._history_budget is not None:
+            return max(1, self._history_budget(runtime))
+        return runtime.context.window_tokens
 
     async def assemble_self_initiative(
         self,
@@ -207,10 +218,9 @@ class ContextAssembler:
     ) -> AssembledContext:
         """Project the real group history for SELF, without a synthetic human event."""
         identity = ConversationScope.group(trigger.bot_user_id, trigger.group_id)
-        await self._ensure_lightweight_backlog(
+        await self._ensure_turn_generation(
             identity,
             turn,
-            event_limit=runtime.context.local_event_limit,
         )
         snapshot = await self._load_history_snapshot(identity, turn=turn, before_event_id=None)
         # The provided result belongs to the retired automatic recall path.
@@ -239,7 +249,7 @@ class ContextAssembler:
             max(
                 1,
                 int(
-                    self._settings.max_context_characters
+                    self._history_token_budget(runtime)
                     * self._settings.context_metadata_budget_ratio
                 ),
             ),
@@ -259,7 +269,9 @@ class ContextAssembler:
             ),
         )
         remaining = max(
-            0, self._settings.max_context_characters - len(json.dumps(metadata, ensure_ascii=False))
+            0,
+            self._history_token_budget(runtime)
+            - estimate_text_tokens(json.dumps(metadata, ensure_ascii=False)),
         )
         snapshot, recent, rollup, shifted = await self._ensure_uncovered_fits_budget(
             snapshot=snapshot,
@@ -269,7 +281,6 @@ class ContextAssembler:
             yuki_account_ids=frozenset({trigger.bot_user_id}),
             current_message_override=current,
             remainder=remaining,
-            event_limit=runtime.context.local_event_limit,
             identity=identity,
             turn=turn,
         )
@@ -333,16 +344,23 @@ class ContextAssembler:
         current_time: TimeContext,
         read_history: bool,
         projection_scope: str,
+        runtime: RuntimeConfigSnapshot,
     ) -> AssembledContext:
         """Use the canonical Rollup/raw-tail projection within the plugin read grant."""
         scope = inbound.scope()
         version, _ = await self._ledger.read_scope_context(scope, limit=0)
         rows: tuple[EventRecord, ...] = ()
         rollup = ""
+        rollup_mode = None
+        coverage = 0
         if read_history:
             loaded = await self._rollups.load_prompt_snapshot(scope)
+            if not loaded.raw_complete:
+                raise ConversationCoverageError("plugin context requires explicit compaction")
             rows = tuple(row for row in loaded.raw_events if row.id != inbound.source_event_id)
             rollup = loaded.rollup.summary_text if loaded.rollup else ""
+            rollup_mode = loaded.rollup.summary_kind.value if loaded.rollup else None
+            coverage = loaded.effective_coverage
             version = ConversationReadVersion(
                 scope,
                 loaded.conversation_id,
@@ -361,10 +379,11 @@ class ContextAssembler:
         history = tuple(message for _, _, message in rendered)
         metadata_size = len(json.dumps(metadata, ensure_ascii=False))
         history_size = sum(len(message.content or "") for message in history)
-        if (
-            metadata_size + history_size + len(content) + len(rollup)
-            > self._settings.max_context_characters
-        ):
+        if sum(
+            estimate_text_tokens(message.content or "") for message in history
+        ) + estimate_text_tokens(json.dumps(metadata, ensure_ascii=False)) + estimate_text_tokens(
+            content
+        ) + estimate_text_tokens(rollup) > self._history_token_budget(runtime):
             raise ConversationCoverageError("plugin context requires explicit compaction")
         return AssembledContext(
             metadata_payload=metadata,
@@ -380,9 +399,12 @@ class ContextAssembler:
                 len(content),
                 False,
                 rollup_characters=len(rollup),
+                rollup_mode=rollup_mode,
+                covered_to=coverage or None,
             ),
             read_version=version,
             rollup_text=rollup,
+            prompt_effective_coverage=coverage,
             visible_event_ids=frozenset(row.id for row in rows),
             history_fragments=tuple((ids, message) for _, ids, message in rendered),
             history_event_fragments=tuple(
@@ -404,6 +426,7 @@ class ContextAssembler:
         instruction: str,
         profile: str,
         current_time: TimeContext,
+        token_budget: int,
     ) -> AssembledContext:
         """Apply the declared read scope, then use the normal event projection.
 
@@ -485,7 +508,12 @@ class ContextAssembler:
         }
         history_size = sum(len(message.content or "") for message in history)
         metadata_size = len(json.dumps(data, ensure_ascii=False))
-        if history_size + metadata_size + len(content) > settings.max_context_characters:
+        if (
+            sum(estimate_text_tokens(message.content or "") for message in history)
+            + estimate_text_tokens(json.dumps(data, ensure_ascii=False))
+            + estimate_text_tokens(content)
+            > token_budget
+        ):
             raise ConversationCoverageError("automation context requires explicit compaction")
         return AssembledContext(
             metadata_payload=data,
@@ -563,10 +591,9 @@ class ContextAssembler:
         if turn.trigger_event_id is None:
             raise ConversationCoverageError("message turn requires a real event anchor")
 
-        await self._ensure_lightweight_backlog(
+        await self._ensure_turn_generation(
             identity,
             turn,
-            event_limit=runtime.context.local_event_limit,
         )
         current_event = await self._ledger.get_event(turn.trigger_event_id)
         if (
@@ -712,7 +739,7 @@ class ContextAssembler:
             if referenced:
                 context["referenced_people"] = list(referenced.values())
 
-        total_budget = self._settings.max_context_characters
+        total_budget = self._history_token_budget(runtime)
         metadata_budget = max(
             1,
             int(total_budget * self._settings.context_metadata_budget_ratio),
@@ -741,7 +768,7 @@ class ContextAssembler:
             separators=(",", ":"),
             default=str,
         )
-        remainder = max(0, total_budget - len(metadata_json))
+        remainder = max(0, total_budget - estimate_text_tokens(metadata_json))
         snapshot, recent, rollup_text, shifted = await self._ensure_uncovered_fits_budget(
             snapshot=snapshot,
             recent=recent,
@@ -750,7 +777,6 @@ class ContextAssembler:
             yuki_account_ids=inbound.yuki_account_ids,
             current_message_override=None,
             remainder=remainder,
-            event_limit=runtime.context.local_event_limit,
             identity=identity,
             current_event=current_event,
             turn=turn,
@@ -779,13 +805,10 @@ class ContextAssembler:
             tuple(row for row in recent if row.id != current_event.id)
         )
         over_budget = int(
-            history_characters
-            > self._near_window_character_budget(
-                remainder=remainder,
-                rollup_text=rollup_text,
-                coverage_end=snapshot.coverage_end,
-            )
-            or uncovered_events > max(0, runtime.context.local_event_limit - 1)
+            sum(estimate_text_tokens(message.content or "") for message in history_messages)
+            + estimate_text_tokens(current_message.content or "")
+            + estimate_text_tokens(rollup_text)
+            > remainder
         )
         metrics = ContextMetrics(
             metadata_characters=len(metadata_json),
@@ -867,10 +890,9 @@ class ContextAssembler:
             raise ConversationCoverageError("external wakeup source does not match trigger")
         if identity.key != turn.transport_scope_key:
             raise ConversationCoverageError("external wakeup transport identity changed")
-        await self._ensure_lightweight_backlog(
+        await self._ensure_turn_generation(
             identity,
             turn,
-            event_limit=runtime.context.local_event_limit,
         )
         snapshot = await self._load_history_snapshot(
             identity,
@@ -962,13 +984,15 @@ class ContextAssembler:
             max(
                 1,
                 int(
-                    self._settings.max_context_characters
+                    self._history_token_budget(runtime)
                     * self._settings.context_metadata_budget_ratio
                 ),
             ),
         )
         metadata_json = json.dumps(metadata_payload, ensure_ascii=False, separators=(",", ":"))
-        remainder = max(0, self._settings.max_context_characters - len(metadata_json))
+        remainder = max(
+            0, self._history_token_budget(runtime) - estimate_text_tokens(metadata_json)
+        )
         snapshot, recent, rollup_text, shifted = await self._ensure_uncovered_fits_budget(
             snapshot=snapshot,
             recent=recent,
@@ -977,7 +1001,6 @@ class ContextAssembler:
             yuki_account_ids=frozenset({event.bot_user_id}),
             current_message_override=self._external_wakeup_message(event, trigger),
             remainder=remainder,
-            event_limit=runtime.context.local_event_limit,
             identity=identity,
             current_event=event,
             turn=turn,
@@ -1535,87 +1558,13 @@ class ContextAssembler:
             )
         return tuple(items)
 
-    def _near_window_character_budget(
-        self,
-        *,
-        remainder: int,
-        rollup_text: str,
-        coverage_end: int,
-    ) -> int:
-        return self._prompt_character_admit(
-            remainder=remainder,
-            rollup_text=rollup_text,
-            coverage_end=coverage_end,
-        )
-
-    def _near_window_event_limit(self, *, event_limit: int, coverage_end: int) -> int:
-        return self._prompt_event_admit(event_limit=event_limit, coverage_end=coverage_end)
-
-    def _prompt_event_admit(self, *, event_limit: int, coverage_end: int) -> int:
-        ceiling = max(0, event_limit - 1)
-        if coverage_end <= 0:
-            return ceiling
-        return min(
-            ceiling,
-            self._settings.conversation_rollup_raw_tail_events
-            + self._settings.conversation_rollup_trigger_events,
-        )
-
-    def _prompt_event_target(self, *, event_limit: int, coverage_end: int) -> int:
-        admit = self._prompt_event_admit(event_limit=event_limit, coverage_end=coverage_end)
-        if coverage_end <= 0:
-            return admit
-        return min(
-            admit,
-            self._settings.conversation_rollup_raw_tail_events
-            + self._settings.conversation_rollup_stop_events,
-        )
-
-    def _prompt_character_admit(
-        self,
-        *,
-        remainder: int,
-        rollup_text: str,
-        coverage_end: int,
-    ) -> int:
-        history_balance = max(0, remainder - len(rollup_text))
-        if coverage_end <= 0:
-            return history_balance
-        return min(
-            history_balance,
-            self._settings.conversation_rollup_raw_tail_characters
-            + self._settings.conversation_rollup_trigger_characters,
-        )
-
-    def _prompt_character_target(
-        self,
-        *,
-        remainder: int,
-        rollup_text: str,
-        coverage_end: int,
-    ) -> int:
-        admit = self._prompt_character_admit(
-            remainder=remainder,
-            rollup_text=rollup_text,
-            coverage_end=coverage_end,
-        )
-        if coverage_end <= 0:
-            return admit
-        return min(
-            admit,
-            self._settings.conversation_rollup_raw_tail_characters
-            + self._settings.conversation_rollup_stop_characters,
-        )
-
     @staticmethod
-    def _uncovered_fits_window(
-        view: _UncoveredPromptView,
-        *,
-        event_limit: int,
-        character_budget: int,
-    ) -> bool:
-        return prompt_visible_event_count(view.history_rows) <= event_limit and (
-            view.rendered_characters <= max(0, character_budget - view.current_characters)
+    def _uncovered_tokens(view: _UncoveredPromptView, rollup_text: str) -> int:
+        return (
+            sum(estimate_text_tokens(item.content or "") + 8 for _, _, item in view.rendered)
+            + view.current_tokens
+            + estimate_text_tokens(rollup_text)
+            + (128 if rollup_text else 0)
         )
 
     async def _validate_history_source(
@@ -1695,6 +1644,7 @@ class ContextAssembler:
                 if loaded.conversation_id is not None
                 else None
             ),
+            raw_complete=loaded.raw_complete,
         )
 
     def _uncovered_prompt_view(
@@ -1720,6 +1670,7 @@ class ContextAssembler:
         ):
             history_rows = recent
             current_characters = len(current_message_override.content or "")
+            current_tokens = estimate_text_tokens(current_message_override.content or "")
             record = None
             fallback = None
         elif current_event is not None:
@@ -1730,6 +1681,7 @@ class ContextAssembler:
                 current_content=content,
             )
             current_characters = len(current_message.content or "")
+            current_tokens = estimate_text_tokens(current_message.content or "")
             record = current_event
             fallback = current_event.id
         else:
@@ -1740,7 +1692,7 @@ class ContextAssembler:
             )
             if current_row is None:
                 return None
-            current_characters = len(
+            current_text = (
                 renderer.reference_message(
                     current_row,
                     current_event_id=current_event_id,
@@ -1748,6 +1700,8 @@ class ContextAssembler:
                 ).content
                 or ""
             )
+            current_characters = len(current_text)
+            current_tokens = estimate_text_tokens(current_text)
             record = current_row
             fallback = current_row.id
         rendered = renderer.main_agent_history(history_rows)
@@ -1758,6 +1712,7 @@ class ContextAssembler:
             fallback_event_id=fallback,
             current_characters=current_characters,
             rendered_characters=sum(len(item.content or "") for _, _, item in rendered),
+            current_tokens=current_tokens,
         )
 
     async def _ensure_uncovered_fits_budget(
@@ -1770,7 +1725,6 @@ class ContextAssembler:
         yuki_account_ids: frozenset[str],
         current_message_override: ChatMessage | None,
         remainder: int,
-        event_limit: int,
         identity: ConversationScope,
         current_event: EventRecord | None = None,
         turn: ConversationTurnSnapshot,
@@ -1786,7 +1740,6 @@ class ContextAssembler:
         rollup_text = snapshot.rollup_text
         if not self._settings.conversation_rollup_enabled:
             return snapshot, recent, rollup_text, False
-        compact_to_stop = False
         rollup_deadline = (
             asyncio.get_running_loop().time()
             + self._settings.conversation_rollup_model_timeout_seconds
@@ -1803,41 +1756,15 @@ class ContextAssembler:
             )
             if view is None:
                 break
-            event_cap = (
-                self._prompt_event_target(
-                    event_limit=event_limit,
-                    coverage_end=snapshot.coverage_end,
-                )
-                if compact_to_stop
-                else self._prompt_event_admit(
-                    event_limit=event_limit,
-                    coverage_end=snapshot.coverage_end,
-                )
-            )
-            character_cap = (
-                self._prompt_character_target(
-                    remainder=remainder,
-                    rollup_text=rollup_text,
-                    coverage_end=snapshot.coverage_end,
-                )
-                if compact_to_stop
-                else self._prompt_character_admit(
-                    remainder=remainder,
-                    rollup_text=rollup_text,
-                    coverage_end=snapshot.coverage_end,
-                )
-            )
-            if self._uncovered_fits_window(
-                view, event_limit=event_cap, character_budget=character_cap
-            ):
+            if snapshot.raw_complete and self._uncovered_tokens(view, rollup_text) <= remainder:
                 break
-            compact_to_stop = True
             deadline = rollup_deadline
             if preparation_mode is ContextPreparationMode.DURABLE and snapshot.read_version:
                 raise ContextRollupRequired(
                     snapshot.read_version,
                     snapshot.coverage_end,
                     self._settings.conversation_rollup_model_timeout_seconds,
+                    token_budget=remainder,
                 )
             if preparation_mode is ContextPreparationMode.FALLBACK:
                 # The original prerequisite deadline/error uses the established
@@ -1849,6 +1776,7 @@ class ContextAssembler:
                 lease_seconds=self._settings.conversation_rollup_lease_seconds,
                 max_batches=1,
                 deadline=deadline,
+                token_budget=remainder,
             )
             if not committed:
                 raise ConversationCoverageError(
@@ -1874,40 +1802,27 @@ class ContextAssembler:
             current_event=current_event,
         )
         if final_view is not None:
-            final_event_admit = self._prompt_event_admit(
-                event_limit=event_limit,
-                coverage_end=snapshot.coverage_end,
-            )
-            final_character_admit = self._prompt_character_admit(
-                remainder=remainder,
-                rollup_text=rollup_text,
-                coverage_end=snapshot.coverage_end,
-            )
-            if not self._uncovered_fits_window(
-                final_view,
-                event_limit=final_event_admit,
-                character_budget=final_character_admit,
+            if (
+                not snapshot.raw_complete
+                or self._uncovered_tokens(final_view, rollup_text) > remainder
             ):
                 raise ConversationCoverageError(
                     "foreground coverage limit exhausted before prompt became bounded"
                 )
         return snapshot, recent, rollup_text, snapshot.coverage_end > coverage_before
 
-    async def _ensure_lightweight_backlog(
+    async def _ensure_turn_generation(
         self,
         scope: ConversationScope,
         turn: ConversationTurnSnapshot,
-        *,
-        event_limit: int,
     ) -> None:
         """Check generation before loading bodies. Do not compact from stored count.
 
-        Stored durable uncovered characters are a <=admit diagnostic only.
+        Durable counts are diagnostics and do not decide active prompt capacity.
         Foreground compact/fail is decided by hydrated grouped visible history
         in ``_ensure_uncovered_fits_budget``.
         """
 
-        del event_limit
         if not self._settings.conversation_rollup_enabled:
             return
         state, _rollup, _job = await self._rollups.status(scope)

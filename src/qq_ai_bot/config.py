@@ -169,14 +169,13 @@ class Settings(BaseSettings):
     control_operators_file: Path | None = None
     processed_event_ttl_seconds: int = 86400
     processed_event_cleanup_seconds: int = 3600
-    # PromptCompiler uses the repository-wide characters / 4 token estimate.
-    # History must stay append-only long enough that DeepSeek can persist the
-    # prefix; a 12k pool forced extractive rewrites of input[0] every few dozen
-    # group messages. Keep actor metadata near 5k characters so expanding the
-    # pool does not inflate the unavoidable per-turn miss.
-    max_context_characters: int = 131_072
+    # Active request windows are token capacities, resolved again from hot config.
+    context_window_tokens: int = Field(default=96000, ge=8192)
+    work_context_window_tokens: int = Field(default=128000, ge=8192)
+    work_compaction_max_output_tokens: int = Field(default=8192, ge=1024)
+    conversation_rollup_trigger_ratio: float = Field(default=0.85, gt=0, lt=1)
+    conversation_rollup_target_ratio: float = Field(default=0.50, gt=0, lt=1)
     context_metadata_budget_ratio: float = Field(default=0.04, gt=0, lt=1)
-    history_window_low_watermark_ratio: float = Field(default=0.67, gt=0, lt=1)
 
     global_llm_concurrency: int = 4
     per_user_requests_per_minute: int = 10
@@ -381,7 +380,9 @@ class Settings(BaseSettings):
     semantic_participation_model_config_file: Path = Path("config/autonomous-model.json")
     runtime_work_enabled: bool = False
     subagents_enabled: bool = False
-    subagent_context_token_limit: int = Field(default=131072, ge=8192)
+    subagent_concurrency: int = Field(default=2, ge=1)
+    subagent_max_queued: int = Field(default=8, ge=1)
+    subagent_max_active_per_root: int = Field(default=8, ge=1)
     conversation_autonomous_debounce_seconds: float = 3.0
     conversation_autonomous_admission_threshold: int = 80
     conversation_autonomous_batch_limit: int = 8
@@ -392,17 +393,11 @@ class Settings(BaseSettings):
     conversation_rollup_poll_seconds: float = Field(default=1.0, gt=0)
     conversation_rollup_lease_seconds: int = Field(default=180, gt=0)
     conversation_rollup_model_timeout_seconds: float = Field(default=90.0, gt=0)
-    conversation_rollup_max_output_tokens: int = Field(default=16384, ge=16384)
-    conversation_rollup_raw_tail_events: int = Field(default=128, ge=1)
-    conversation_rollup_raw_tail_characters: int = Field(default=20_480, ge=1)
-    conversation_rollup_trigger_events: int = Field(default=384, ge=2)
-    conversation_rollup_trigger_characters: int = Field(default=81_920, ge=1)
-    conversation_rollup_stop_events: int = Field(default=0, ge=0)
-    conversation_rollup_stop_characters: int = Field(default=0, ge=0)
+    conversation_rollup_max_output_tokens: int = Field(default=8192, ge=1024)
     conversation_rollup_batch_max_events: int = Field(default=256, ge=1)
     conversation_rollup_batch_max_characters: int = Field(default=32_768, ge=1)
     conversation_rollup_worker_max_batches_per_claim: int = Field(default=5, ge=1)
-    conversation_rollup_summary_max_characters: int = Field(default=2400, ge=1)
+    conversation_rollup_summary_max_characters: int = Field(default=16384, ge=1)
     conversation_rollup_retry_max_seconds: int = Field(default=960, ge=1)
     conversation_rollup_lease_heartbeat_seconds: float = Field(default=60.0, gt=0)
     conversation_rollup_llm_origins: str = "user_message"
@@ -739,59 +734,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_conversation_rollup_settings(self) -> Self:
-        if self.conversation_rollup_trigger_events <= self.conversation_rollup_stop_events:
-            raise ValueError(
-                "CONVERSATION_ROLLUP_TRIGGER_EVENTS must exceed CONVERSATION_ROLLUP_STOP_EVENTS"
-            )
-        if self.conversation_rollup_trigger_characters <= self.conversation_rollup_stop_characters:
-            raise ValueError(
-                "CONVERSATION_ROLLUP_TRIGGER_CHARACTERS must exceed "
-                "CONVERSATION_ROLLUP_STOP_CHARACTERS"
-            )
-        if (
-            self.conversation_rollup_raw_tail_events + self.conversation_rollup_trigger_events
-            > self.local_context_event_limit
-        ):
-            raise ValueError(
-                "CONVERSATION_ROLLUP_RAW_TAIL_EVENTS + CONVERSATION_ROLLUP_TRIGGER_EVENTS "
-                "must not exceed LOCAL_CONTEXT_EVENT_LIMIT"
-            )
-        if (
-            self.conversation_rollup_foreground_max_batches
-            * self.conversation_rollup_batch_max_events
-            < self.conversation_rollup_trigger_events
-        ):
-            raise ValueError(
-                "CONVERSATION_ROLLUP_FOREGROUND_MAX_BATCHES must cover one "
-                "CONVERSATION_ROLLUP_TRIGGER_EVENTS window"
-            )
-        if (
-            self.conversation_rollup_worker_max_batches_per_claim
-            * self.conversation_rollup_batch_max_events
-            < self.conversation_rollup_trigger_events
-        ):
-            raise ValueError(
-                "CONVERSATION_ROLLUP_WORKER_MAX_BATCHES_PER_CLAIM must cover one "
-                "CONVERSATION_ROLLUP_TRIGGER_EVENTS window"
-            )
-        if (
-            self.conversation_rollup_foreground_max_batches
-            * self.conversation_rollup_batch_max_characters
-            < self.conversation_rollup_trigger_characters
-        ):
-            raise ValueError(
-                "CONVERSATION_ROLLUP_FOREGROUND_MAX_BATCHES must cover one "
-                "CONVERSATION_ROLLUP_TRIGGER_CHARACTERS window"
-            )
-        if (
-            self.conversation_rollup_worker_max_batches_per_claim
-            * self.conversation_rollup_batch_max_characters
-            < self.conversation_rollup_trigger_characters
-        ):
-            raise ValueError(
-                "CONVERSATION_ROLLUP_WORKER_MAX_BATCHES_PER_CLAIM must cover one "
-                "CONVERSATION_ROLLUP_TRIGGER_CHARACTERS window"
-            )
+        if self.conversation_rollup_target_ratio >= self.conversation_rollup_trigger_ratio:
+            raise ValueError("rollup target ratio must be below trigger ratio")
         if (
             self.conversation_rollup_lease_heartbeat_seconds
             > self.conversation_rollup_lease_seconds / 3

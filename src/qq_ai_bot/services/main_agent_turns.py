@@ -57,7 +57,6 @@ class MainAgentTurnService:
         self._projections = (
             PromptProjectionRepository(
                 database,
-                max_context_characters=composer._settings.max_context_characters,
                 reclaim=True,
             )
             if database is not None
@@ -148,8 +147,7 @@ class MainAgentTurnService:
                 contract_revision=contract_revision,
                 max_history_characters=max(
                     0,
-                    self._composer._settings.max_context_characters
-                    - len(composition.messages[-1].content or ""),
+                    runtime.context.window_tokens * 3 - len(composition.messages[-1].content or ""),
                 ),
             )
             composition = self._composer.compose(

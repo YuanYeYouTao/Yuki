@@ -115,7 +115,10 @@ def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFa
         return RuntimeFailure("database_failure", stage)
     if isinstance(exc, ContextBoundaryChanged):
         return RuntimeFailure("context_boundary_changed", "context", True)
-    from qq_ai_bot.runtime.work_repository import WorkConflict
+    from qq_ai_bot.runtime.work_repository import WorkCapacityError, WorkConflict
+
+    if isinstance(exc, WorkCapacityError):
+        return RuntimeFailure(str(exc), "capacity", diagnostics={"category": "capacity"})
 
     if isinstance(exc, WorkConflict):
         return RuntimeFailure(

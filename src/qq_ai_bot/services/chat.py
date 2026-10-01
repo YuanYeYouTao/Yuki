@@ -414,6 +414,7 @@ class ChatService:
                 time_service=self._time,
                 rollup_repository=rollup_repository,
                 rollup_service=rollup_service,
+                history_budget=self._history_input_budget,
             )
         self._prompt_composer = prompt_composer or PromptComposer(settings)
         from qq_ai_bot.runtime.activation_bindings import ActiveWorkBindings
@@ -465,6 +466,27 @@ class ChatService:
         if any(item.provider_id == provider.provider_id for item in self._external_tool_providers):
             raise ValueError(f"duplicate tool provider: {provider.provider_id}")
         self._external_tool_providers.append(provider)
+
+    def _history_input_budget(self, runtime: RuntimeConfigSnapshot) -> int:
+        from dataclasses import asdict
+
+        from qq_ai_bot.model_runtime.capacity import ModelCapacity, estimate_text_tokens
+        from qq_ai_bot.prompting import CORE_CONTRACT
+
+        getter = getattr(self._models, "capacity", None)
+        capacity = getter(ModelTask.CHAT_AGENT) if callable(getter) else ModelCapacity()
+        budget = capacity.input_budget(
+            runtime.context.window_tokens, output_tokens=runtime.llm.max_output_tokens
+        )
+        contract = getattr(self.runtime.runner, "main_contract", None)
+        tools = getattr(contract, "_tools", None)
+        tool_tokens = (
+            estimate_text_tokens(json.dumps([asdict(tool) for tool in tools], ensure_ascii=False))
+            if tools
+            else 32768
+        )
+        fixed = estimate_text_tokens(self._settings.system_prompt + CORE_CONTRACT) + tool_tokens
+        return max(1, int(budget * runtime.context.compaction_trigger_ratio) - fixed - 4096)
 
     def _responses_append_only(self) -> bool:
         protocol = getattr(self.runtime.runner._models, "protocol", None)
