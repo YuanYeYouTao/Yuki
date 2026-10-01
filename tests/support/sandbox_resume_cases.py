@@ -23,7 +23,9 @@ async def resume_cases(database, env, tasks, source):
         chat=chat,
     )
     before_calls = len(env.bot.calls)
-    worker = SandboxContinuationWorker(app)
+    from qq_ai_bot.runtime.work_repository import WorkRepository
+
+    worker = SandboxContinuationWorker(WorkRepository(app.database))
     for name in ("resume-a", "resume-b"):
         await tasks.prepare(name, {"code": "print(1)"}, source)
         run = str(uuid4())

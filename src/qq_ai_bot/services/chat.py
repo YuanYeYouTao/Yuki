@@ -8,6 +8,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractContextManager, AsyncExitStack, nullcontext
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import Any, Protocol, TypedDict, TypeVar, cast
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
@@ -79,6 +80,7 @@ from qq_ai_bot.persistence.repositories import (
 )
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.runtime.authority import TurnAuthority
+from qq_ai_bot.runtime.context_preparation import prepare_context
 from qq_ai_bot.runtime.contracts import DeliverySummary
 from qq_ai_bot.runtime.delivery import DeliveryStatus
 from qq_ai_bot.runtime.observability import identifier_hash
@@ -89,6 +91,7 @@ from qq_ai_bot.runtime.trigger import (
     SelfInitiativeTrigger,
     WorkResumeTrigger,
 )
+from qq_ai_bot.runtime.work_activation import current_work_control
 from qq_ai_bot.services.agent_runner import (
     AgentRunner,
     AgentRunResult,
@@ -376,7 +379,7 @@ class ChatService:
         self._tools = tools
         self._web_sources = web_sources
         self._runtime_config = runtime_config
-        self._agent_runner = AgentRunner(models, concurrency)
+        runner = AgentRunner(models, concurrency)
         self._admin_tools: AdminToolService | None = None
         self._automation_tools: AutomationToolProvider | None = None
         self._plugin_tools: PluginToolProvider | None = None
@@ -413,13 +416,23 @@ class ChatService:
                 rollup_service=rollup_service,
             )
         self._prompt_composer = prompt_composer or PromptComposer(settings)
-        self._main_turns = MainAgentTurnService(
-            self._prompt_composer, self._agent_runner, self._ledger._database
+        from qq_ai_bot.runtime.activation_bindings import ActiveWorkBindings
+        from qq_ai_bot.services.yuki_runtime import YukiRuntime
+
+        active_bindings = ActiveWorkBindings()
+        self.runtime = YukiRuntime(
+            MainAgentTurnService(
+                self._prompt_composer,
+                runner,
+                self._ledger._database,
+                executions=active_bindings.executions,
+            ),
+            runner,
+            active_bindings,
         )
         from qq_ai_bot.runtime.work_repository import WorkRepository
 
         self._work_repository = WorkRepository(self._ledger._database)
-        self._active_work: dict[str, Any] = {}
         from qq_ai_bot.services.rollup_wakeup import RollupWakeups
 
         self.rollup_wakeups = RollupWakeups(self._ledger._database)
@@ -454,7 +467,7 @@ class ChatService:
         self._external_tool_providers.append(provider)
 
     def _responses_append_only(self) -> bool:
-        protocol = getattr(self._agent_runner._models, "protocol", None)
+        protocol = getattr(self.runtime.runner._models, "protocol", None)
         if not callable(protocol):
             return False
         try:
@@ -713,7 +726,7 @@ class ChatService:
             await self._work_repository.discard_input(identity)
 
     def work_is_active(self, conversation_key: str) -> bool:
-        control = self._active_work.get(conversation_key)
+        control = self.runtime.bindings.get(conversation_key)
         return bool(control is not None and control.current is not None)
 
     async def stage_work_input(
@@ -732,7 +745,7 @@ class ChatService:
         )
         if matched is not None:
             return matched
-        control = self._active_work.get(conversation_key)
+        control = self.runtime.bindings.get(conversation_key)
         if (
             control is None
             or control.current is None
@@ -787,78 +800,89 @@ class ChatService:
         structured_memory_command: MemoryStructuredCommand = MemoryStructuredCommand.NONE,
     ) -> int:
         """Coalesce unowned chat retries; accepted work keeps its own recovery."""
-        from qq_ai_bot.runtime.activation_outcome import WorkActivationHandled, WorkRecoveryDeferred
-        from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
+        with self.runtime.executions.track():
+            from qq_ai_bot.runtime.activation_outcome import (
+                WorkActivationHandled,
+                WorkRecoveryDeferred,
+            )
+            from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
 
-        arguments: dict[str, Any] = dict(
-            autonomous=autonomous,
-            runtime_snapshot=runtime_snapshot,
-            visual_observation=visual_observation,
-            visual_input_present=visual_input_present,
-            native_images=native_images,
-            attachment_text=attachment_text,
-            visual_failure=visual_failure,
-            turn_token=turn_token,
-            turn_snapshot=turn_snapshot,
-            structured_memory_command=structured_memory_command,
-        )
-        ticket = self.rollup_wakeups.enter(inbound.conversation_id)
-        changed = None
-        original_event = None
-        try:
-            if turn_snapshot is not None and turn_snapshot.trigger_event_id is not None:
-                original_event = await self._ledger.get_event(turn_snapshot.trigger_event_id)
-            result = await self._respond(inbound, identity, profile, content, sender, **arguments)
-        except HistorySourceChangedError as exc:
-            if self._turn_coordinator.can_retry_uncommitted(turn_token):
-                changed = exc.version
-            else:
-                logger.info("rollup_chat_wakeup_skipped reason=effect_or_superseded")
-        except (WorkActivationHandled, WorkRecoveryDeferred):
-            self.rollup_wakeups.handled(ticket)
-            raise
-        else:
-            self.rollup_wakeups.handled(ticket)
-            return result
-        finally:
-            self.rollup_wakeups.leave(ticket, deferred=changed is not None)
-        if changed is None or turn_snapshot is None:
-            self.rollup_wakeups.discard(ticket)
-            return 0
-        if not await self.rollup_wakeups.wait(changed, ticket):
-            return 0
-        if original_event is None or (
-            await self._ledger.get_event(original_event.id) != original_event
-        ):
-            logger.info("rollup_chat_wakeup_skipped reason=trigger_changed")
-            return 0
-        # Original actor/event/generation remain authoritative. Never replay ingress.
-        token = await self._turn_coordinator.begin_background(turn_snapshot.scope_key)
-        if token is None:
-            return 0
-        arguments["turn_token"] = token
-        arguments["turn_snapshot"] = replace(turn_snapshot, coordinator_version=token.version)
-        arguments["runtime_snapshot"] = None
-        from qq_ai_bot.services.rollup_wakeup import rollup_wakeup_history, rollup_wakeup_watermark
-
-        history_token = rollup_wakeup_history.set(True)
-        watermark_token = rollup_wakeup_watermark.set(0)
-        ticket = self.rollup_wakeups.enter(inbound.conversation_id)
-        try:
-            result = await self._respond(inbound, identity, profile, content, sender, **arguments)
-            self.rollup_wakeups.handled(ticket)
-            if self.rollup_wakeups.on_consumed is not None and inbound.conversation_id:
-                self.rollup_wakeups.on_consumed(
-                    inbound.conversation_id, rollup_wakeup_watermark.get()
+            arguments: dict[str, Any] = dict(
+                autonomous=autonomous,
+                runtime_snapshot=runtime_snapshot,
+                visual_observation=visual_observation,
+                visual_input_present=visual_input_present,
+                native_images=native_images,
+                attachment_text=attachment_text,
+                visual_failure=visual_failure,
+                turn_token=turn_token,
+                turn_snapshot=turn_snapshot,
+                structured_memory_command=structured_memory_command,
+            )
+            ticket = self.rollup_wakeups.enter(inbound.conversation_id)
+            changed = None
+            original_event = None
+            try:
+                if turn_snapshot is not None and turn_snapshot.trigger_event_id is not None:
+                    original_event = await self._ledger.get_event(turn_snapshot.trigger_event_id)
+                result = await self._respond(
+                    inbound, identity, profile, content, sender, **arguments
                 )
-            return result
-        except HistorySourceChangedError:
-            logger.info("rollup_wakeup_deferred_again")
-            return 0
-        finally:
-            self.rollup_wakeups.leave(ticket)
-            rollup_wakeup_history.reset(history_token)
-            rollup_wakeup_watermark.reset(watermark_token)
+            except HistorySourceChangedError as exc:
+                if self._turn_coordinator.can_retry_uncommitted(turn_token):
+                    changed = exc.version
+                else:
+                    logger.info("rollup_chat_wakeup_skipped reason=effect_or_superseded")
+            except (WorkActivationHandled, WorkRecoveryDeferred):
+                self.rollup_wakeups.handled(ticket)
+                raise
+            else:
+                self.rollup_wakeups.handled(ticket)
+                return result
+            finally:
+                self.rollup_wakeups.leave(ticket, deferred=changed is not None)
+            if changed is None or turn_snapshot is None:
+                self.rollup_wakeups.discard(ticket)
+                return 0
+            if not await self.rollup_wakeups.wait(changed, ticket):
+                return 0
+            if original_event is None or (
+                await self._ledger.get_event(original_event.id) != original_event
+            ):
+                logger.info("rollup_chat_wakeup_skipped reason=trigger_changed")
+                return 0
+            # Original actor/event/generation remain authoritative. Never replay ingress.
+            token = await self._turn_coordinator.begin_background(turn_snapshot.scope_key)
+            if token is None:
+                return 0
+            arguments["turn_token"] = token
+            arguments["turn_snapshot"] = replace(turn_snapshot, coordinator_version=token.version)
+            arguments["runtime_snapshot"] = None
+            from qq_ai_bot.services.rollup_wakeup import (
+                rollup_wakeup_history,
+                rollup_wakeup_watermark,
+            )
+
+            history_token = rollup_wakeup_history.set(True)
+            watermark_token = rollup_wakeup_watermark.set(0)
+            ticket = self.rollup_wakeups.enter(inbound.conversation_id)
+            try:
+                result = await self._respond(
+                    inbound, identity, profile, content, sender, **arguments
+                )
+                self.rollup_wakeups.handled(ticket)
+                if self.rollup_wakeups.on_consumed is not None and inbound.conversation_id:
+                    self.rollup_wakeups.on_consumed(
+                        inbound.conversation_id, rollup_wakeup_watermark.get()
+                    )
+                return result
+            except HistorySourceChangedError:
+                logger.info("rollup_wakeup_deferred_again")
+                return 0
+            finally:
+                self.rollup_wakeups.leave(ticket)
+                rollup_wakeup_history.reset(history_token)
+                rollup_wakeup_watermark.reset(watermark_token)
 
     async def _respond(
         self,
@@ -881,252 +905,263 @@ class ChatService:
     ) -> int:
         """Run one ordered Agent turn and return the sent message count."""
 
-        if turn_snapshot is not None:
-            inbound = replace(inbound, source_event_id=turn_snapshot.trigger_event_id)
-        turn_origin = TurnOrigin.AUTONOMOUS_GROUP if autonomous else TurnOrigin.USER_MESSAGE
-        conversation_key = runtime_conversation_key(
-            identity=identity,
-            turn=turn_snapshot,
-            inbound=inbound,
-        )
-
-        async with (
-            self._turn_coordinator.hold(conversation_key),
-            self._concurrency.conversation(conversation_key),
-            AsyncExitStack() as memory_cleanup,
-        ):
-            # Capture the diagnostic privacy generation before assembling history
-            # and Memory, so an erasure during context building fences its copy too.
-            await memory_cleanup.enter_async_context(
-                trace_span(
-                    "chat_processing",
-                    {},
-                    recorder=getattr(self._models, "traces", None),
-                    conversation_id=inbound.conversation_id,
-                    source_event_id=inbound.source_event_id,
-                    origin=turn_origin.value,
-                )
-            )
-            work_control = None
-            start_work = None
-            if self._settings.runtime_work_enabled and inbound.conversation_id and turn_snapshot:
-                from qq_ai_bot.runtime.work_activation import activate_work, current_work_control
-                from qq_ai_bot.runtime.work_control import WorkControl
-
-                work_conversation_id = inbound.conversation_id
-
-                async def validate_work() -> None:
-                    if not await self._validate_turn_snapshot(turn_snapshot):
-                        raise TurnSupersededError("work authority changed")
-
-                async def resolve_child(run_id: str) -> dict[str, Any] | None:
-                    client = self._tools.sandbox_client
-                    if client is None or client.tasks is None:
-                        return None
-                    child = await client.tasks.by_run(run_id)
-                    control = current_work_control.get()
-                    if child is None or control is None or control.current is None:
-                        return None
-                    source = json.loads(child.source_json)
-                    if (
-                        child.source_conversation_id != inbound.conversation_id
-                        or source.get("work_id") != control.current["id"]
-                    ):
-                        return None
-                    return cast(
-                        dict[str, Any],
-                        await client.execute(
-                            "get_code_run", {"run_id": run_id}, request_id=f"work-check:{run_id}"
-                        ),
-                    )
-
-                work_scope = await memory_cleanup.enter_async_context(AsyncExitStack())
-
-                async def start_work() -> WorkControl:
-                    return await work_scope.enter_async_context(
-                        activate_work(
-                            self._work_repository,
-                            work_conversation_id,
-                            turn_snapshot.generation,
-                            f"event:{inbound.conversation_id}:{turn_snapshot.trigger_event_id}",
-                            {
-                                "actor_user_id": inbound.sender.user_id,
-                                "actor_person_id": inbound.person_id,
-                                "principal_kind": "person",
-                                "origin": turn_origin.value,
-                                "trigger_event_id": turn_snapshot.trigger_event_id,
-                                "bot_user_id": inbound.bot_user_id,
-                                "generation": turn_snapshot.generation,
-                                "conversation_id": inbound.conversation_id,
-                                "allow_admin_actions": inbound.sender.user_id
-                                in self._settings.superusers,
-                                "allow_automation": True,
-                                "actor_is_superuser": inbound.sender.user_id
-                                in self._settings.superusers,
-                                "presence_id": inbound.presence_id,
-                            },
-                            validate_work,
-                            resolve_child,
-                        )
-                    )
-
-                work_control = await start_work()
-                if work_control.current is None:
-                    # Ordinary chat has not admitted a Work yet. Release this
-                    # empty lease while preparing context, then activate the
-                    # same source only after its prerequisite is complete.
-                    await work_scope.aclose()
-                    work_control = None
-                else:
-                    self._active_work[conversation_key] = work_control
-
-                def release_work_registration() -> None:
-                    if self._active_work.get(conversation_key) is work_control:
-                        self._active_work.pop(conversation_key, None)
-
-                memory_cleanup.callback(release_work_registration)
-            runtime_config = runtime_snapshot or await self._runtime_config.snapshot(
-                user_id=inbound.sender.user_id,
-                group_id=inbound.group_id,
-            )
-            memory_session = self._open_memory_session(
-                inbound,
-                identity,
-                content,
-                runtime_config,
-                autonomous=autonomous,
-                visual_input_present=visual_input_present,
-                structured_command=structured_memory_command,
-            )
-            if memory_session is not None:
-                memory_cleanup.push_async_callback(memory_session.close)
-
-            if work_control is not None:
-                from qq_ai_bot.runtime.work_delivery import repair_receipt_ledger
-
-                await repair_receipt_ledger(work_control, self._ledger)
-
-            (
-                messages,
-                visible_event_ids,
-                memory_turn_id,
-                automatic_memory_exposures,
-                memory_intent,
-                prompt_diagnostics,
-                read_version,
-                commit_projection,
-            ) = await self._build_messages(
-                inbound,
-                identity,
-                profile,
-                content,
-                runtime_config,
-                visual_observation=visual_observation,
-                native_images=native_images,
-                attachment_text=attachment_text,
-                visual_failure=visual_failure,
-                turn_origin=turn_origin,
-                memory_session=memory_session,
-                turn_snapshot=turn_snapshot,
-            )
-            if start_work is not None and work_control is None:
-                work_control = await start_work()
-                self._active_work[conversation_key] = work_control
-            # Required rollup/model preparation must not hold reset/privacy's
-            # effect gate. Linearize only the completed snapshot and projection;
-            # dispatch retains this same source guard across subsequent requests.
-            validate_context = self._context_validator(
-                read_version, commit_projection=commit_projection
-            )
-            await self._run_effect(turn_snapshot, validate_context)
-            gateway = (
-                cast(OneBotToolGateway, sender)
-                if callable(getattr(sender, "call_api", None))
-                else None
-            )
-            if self._memory_context is not None and memory_session is not None:
-                self._memory_context.metrics.record_runtime_access(memory_session.contract)
-            voice_delivery_allowed = await self._voice_delivery_allowed(inbound.sender.user_id)
-            runtime = ToolRuntime(
+        with self.runtime.executions.track():
+            if turn_snapshot is not None:
+                inbound = replace(inbound, source_event_id=turn_snapshot.trigger_event_id)
+            turn_origin = TurnOrigin.AUTONOMOUS_GROUP if autonomous else TurnOrigin.USER_MESSAGE
+            conversation_key = runtime_conversation_key(
+                identity=identity,
+                turn=turn_snapshot,
                 inbound=inbound,
-                gateway=gateway,
-                allow_generic_onebot=(
-                    not visual_input_present and inbound.sender.user_id in self._settings.superusers
-                ),
-                allow_admin_actions=(
-                    not visual_input_present and inbound.sender.user_id in self._settings.superusers
-                ),
-                allow_automation=not visual_input_present,
-                conversation_key=conversation_key,
-                trigger_message_id=inbound.message_id,
-                actor_user_id=inbound.sender.user_id,
-                actor_is_superuser=inbound.sender.user_id in self._settings.superusers,
-                current_group_id=inbound.group_id,
-                mentioned_user_ids=inbound.mentioned_user_ids,
-                runtime_config=runtime_config,
-                origin=turn_origin,
-                read_only=False,
-                turn_token=turn_token,
-                turn_snapshot=turn_snapshot,
-                visible_event_ids=visible_event_ids,
-                voice_delivery_allowed=voice_delivery_allowed,
-                selection_query=content,
-                memory_turn_id=memory_turn_id,
-                memory_exposures=automatic_memory_exposures,
-                memory_intent=memory_intent,
-                memory_session=memory_session,
-                prompt_diagnostics=prompt_diagnostics,
-                before_model_request=validate_context,
             )
-            if turn_token is not None:
-                async with self._turn_coordinator.track(turn_token, "generation"):
+
+            async with (
+                self._turn_coordinator.hold(conversation_key),
+                self._concurrency.conversation(conversation_key),
+                AsyncExitStack() as memory_cleanup,
+            ):
+                # Capture the diagnostic privacy generation before assembling history
+                # and Memory, so an erasure during context building fences its copy too.
+                await memory_cleanup.enter_async_context(
+                    trace_span(
+                        "chat_processing",
+                        {},
+                        recorder=getattr(self._models, "traces", None),
+                        conversation_id=inbound.conversation_id,
+                        source_event_id=inbound.source_event_id,
+                        origin=turn_origin.value,
+                    )
+                )
+                work_control = None
+                start_work = None
+                if (
+                    self._settings.runtime_work_enabled
+                    and inbound.conversation_id
+                    and turn_snapshot
+                ):
+                    from qq_ai_bot.runtime.work_activation import (
+                        activate_work,
+                        current_work_control,
+                    )
+                    from qq_ai_bot.runtime.work_control import WorkControl
+
+                    work_conversation_id = inbound.conversation_id
+
+                    async def validate_work() -> None:
+                        if not await self.validate_turn_snapshot(turn_snapshot):
+                            raise TurnSupersededError("work authority changed")
+
+                    async def resolve_child(run_id: str) -> dict[str, Any] | None:
+                        client = self._tools.sandbox_client
+                        if client is None or client.tasks is None:
+                            return None
+                        child = await client.tasks.by_run(run_id)
+                        control = current_work_control.get()
+                        if child is None or control is None or control.current is None:
+                            return None
+                        source = json.loads(child.source_json)
+                        if (
+                            child.source_conversation_id != inbound.conversation_id
+                            or source.get("work_id") != control.current["id"]
+                        ):
+                            return None
+                        return cast(
+                            dict[str, Any],
+                            await client.execute(
+                                "get_code_run",
+                                {"run_id": run_id},
+                                request_id=f"work-check:{run_id}",
+                            ),
+                        )
+
+                    work_scope = await memory_cleanup.enter_async_context(AsyncExitStack())
+
+                    async def start_work() -> WorkControl:
+                        return await work_scope.enter_async_context(
+                            activate_work(
+                                self._work_repository,
+                                work_conversation_id,
+                                turn_snapshot.generation,
+                                f"event:{inbound.conversation_id}:{turn_snapshot.trigger_event_id}",
+                                {
+                                    "actor_user_id": inbound.sender.user_id,
+                                    "actor_person_id": inbound.person_id,
+                                    "principal_kind": "person",
+                                    "origin": turn_origin.value,
+                                    "trigger_event_id": turn_snapshot.trigger_event_id,
+                                    "bot_user_id": inbound.bot_user_id,
+                                    "generation": turn_snapshot.generation,
+                                    "conversation_id": inbound.conversation_id,
+                                    "allow_admin_actions": inbound.sender.user_id
+                                    in self._settings.superusers,
+                                    "allow_automation": True,
+                                    "actor_is_superuser": inbound.sender.user_id
+                                    in self._settings.superusers,
+                                    "presence_id": inbound.presence_id,
+                                },
+                                validate_work,
+                                resolve_child,
+                                bindings=self.runtime.bindings,
+                                scope_key=conversation_key,
+                            )
+                        )
+
+                    work_control = await start_work()
+                    if work_control.current is None:
+                        # Ordinary chat has not admitted a Work yet. Release this
+                        # empty lease while preparing context, then activate the
+                        # same source only after its prerequisite is complete.
+                        await work_scope.aclose()
+                        work_control = None
+                runtime_config = runtime_snapshot or await self._runtime_config.snapshot(
+                    user_id=inbound.sender.user_id,
+                    group_id=inbound.group_id,
+                )
+                memory_session = self.open_memory_session(
+                    inbound,
+                    identity,
+                    content,
+                    runtime_config,
+                    autonomous=autonomous,
+                    visual_input_present=visual_input_present,
+                    structured_command=structured_memory_command,
+                )
+                if memory_session is not None:
+                    memory_cleanup.push_async_callback(memory_session.close)
+
+                if work_control is not None:
+                    from qq_ai_bot.runtime.work_delivery import repair_receipt_ledger
+
+                    await repair_receipt_ledger(work_control, self._ledger)
+
+                (
+                    messages,
+                    visible_event_ids,
+                    memory_turn_id,
+                    automatic_memory_exposures,
+                    memory_intent,
+                    prompt_diagnostics,
+                    read_version,
+                    commit_projection,
+                ) = await self._build_messages(
+                    inbound,
+                    identity,
+                    profile,
+                    content,
+                    runtime_config,
+                    visual_observation=visual_observation,
+                    native_images=native_images,
+                    attachment_text=attachment_text,
+                    visual_failure=visual_failure,
+                    turn_origin=turn_origin,
+                    memory_session=memory_session,
+                    turn_snapshot=turn_snapshot,
+                )
+                if start_work is not None and work_control is None:
+                    work_control = await start_work()
+                # Required rollup/model preparation must not hold reset/privacy's
+                # effect gate. Linearize only the completed snapshot and projection;
+                # dispatch retains this same source guard across subsequent requests.
+                validate_context = self._context_validator(
+                    read_version, commit_projection=commit_projection
+                )
+                await self.run_effect(turn_snapshot, validate_context)
+                gateway = (
+                    cast(OneBotToolGateway, sender)
+                    if callable(getattr(sender, "call_api", None))
+                    else None
+                )
+                if self._memory_context is not None and memory_session is not None:
+                    self._memory_context.metrics.record_runtime_access(memory_session.contract)
+                voice_delivery_allowed = await self._voice_delivery_allowed(inbound.sender.user_id)
+                runtime = ToolRuntime(
+                    inbound=inbound,
+                    gateway=gateway,
+                    allow_generic_onebot=(
+                        not visual_input_present
+                        and inbound.sender.user_id in self._settings.superusers
+                    ),
+                    allow_admin_actions=(
+                        not visual_input_present
+                        and inbound.sender.user_id in self._settings.superusers
+                    ),
+                    allow_automation=not visual_input_present,
+                    conversation_key=conversation_key,
+                    trigger_message_id=inbound.message_id,
+                    actor_user_id=inbound.sender.user_id,
+                    actor_is_superuser=inbound.sender.user_id in self._settings.superusers,
+                    current_group_id=inbound.group_id,
+                    mentioned_user_ids=inbound.mentioned_user_ids,
+                    runtime_config=runtime_config,
+                    origin=turn_origin,
+                    read_only=False,
+                    turn_token=turn_token,
+                    turn_snapshot=turn_snapshot,
+                    visible_event_ids=visible_event_ids,
+                    voice_delivery_allowed=voice_delivery_allowed,
+                    selection_query=content,
+                    memory_turn_id=memory_turn_id,
+                    memory_exposures=automatic_memory_exposures,
+                    memory_intent=memory_intent,
+                    memory_session=memory_session,
+                    prompt_diagnostics=prompt_diagnostics,
+                    before_model_request=validate_context,
+                )
+                if turn_token is not None:
+                    async with self._turn_coordinator.track(turn_token, "generation"):
+                        completed_agent = await self._run_agent(conversation_key, messages, runtime)
+                else:
                     completed_agent = await self._run_agent(conversation_key, messages, runtime)
-            else:
-                completed_agent = await self._run_agent(conversation_key, messages, runtime)
-            if work_control is not None:
-                from qq_ai_bot.runtime.work_delivery import WorkDeliverySender
+                if work_control is not None:
+                    from qq_ai_bot.runtime.work_delivery import WorkDeliverySender
 
-                sender = WorkDeliverySender(sender, work_control)
-            agent_result = completed_agent.result
-            if agent_result.native_tool_events:
-                native_response = recover_native_web_response(
-                    events=agent_result.native_tool_events,
-                    citations=agent_result.citations,
-                    answer_text=agent_result.text,
-                )
-
-                async def save_native_response() -> None:
-                    await self._save_native_web_response(
-                        inbound=inbound,
-                        trigger_event_id=turn_snapshot.trigger_event_id if turn_snapshot else None,
-                        conversation_key=conversation_key,
-                        response=native_response,
-                        max_runs=runtime_config.web.source_max_runs_per_conversation,
+                    sender = WorkDeliverySender(sender, work_control)
+                agent_result = completed_agent.result
+                if agent_result.native_tool_events:
+                    native_response = recover_native_web_response(
+                        events=agent_result.native_tool_events,
+                        citations=agent_result.citations,
+                        answer_text=agent_result.text,
                     )
 
-                await self._run_effect(turn_snapshot, save_native_response)
-                if not native_response.sources:
-                    logger.warning(
-                        "native_web_source_parse_failed conversation_hash=%s action_count=%d",
-                        identifier_hash(conversation_key) or "missing",
-                        len(agent_result.native_tool_events),
+                    async def save_native_response() -> None:
+                        await self._save_native_web_response(
+                            inbound=inbound,
+                            trigger_event_id=turn_snapshot.trigger_event_id
+                            if turn_snapshot
+                            else None,
+                            conversation_key=conversation_key,
+                            response=native_response,
+                            max_runs=runtime_config.web.source_max_runs_per_conversation,
+                        )
+
+                    await self.run_effect(turn_snapshot, save_native_response)
+                    if not native_response.sources:
+                        logger.warning(
+                            "native_web_source_parse_failed conversation_hash=%s action_count=%d",
+                            identifier_hash(conversation_key) or "missing",
+                            len(agent_result.native_tool_events),
+                        )
+
+                async def finish_explicit_delivery() -> None:
+                    await self._finish_memory_turn(
+                        memory_session,
+                        run_id=inbound.source_key,
+                        delivered_text="\n".join(completed_agent.sent_current_texts),
+                        delivered=bool(completed_agent.sent_current_texts),
+                        cancelled=False,
                     )
 
-            async def finish_explicit_delivery() -> None:
-                await self._finish_memory_turn(
-                    memory_session,
-                    run_id=inbound.source_key,
-                    delivered_text="\n".join(completed_agent.sent_current_texts),
-                    delivered=bool(completed_agent.sent_current_texts),
-                    cancelled=False,
-                )
+                await self.run_effect(turn_snapshot, finish_explicit_delivery)
+                if (
+                    work_control is not None
+                    and work_control.final_delivery
+                    and work_control.session
+                ):
+                    await work_control.session.save("delivered")
+                return completed_agent.messages_sent
 
-            await self._run_effect(turn_snapshot, finish_explicit_delivery)
-            if work_control is not None and work_control.final_delivery and work_control.session:
-                await work_control.session.save("delivered")
-            return completed_agent.messages_sent
-
-    def _open_memory_session(
+    def open_memory_session(
         self,
         inbound: InboundMessage,
         identity: ConversationScope,
@@ -1311,19 +1346,23 @@ class ChatService:
         memory_intent: MemoryQueryIntent | None = None
         if turn_snapshot is None:
             raise ConversationCoverageError("chat turn requires a conversation snapshot")
-        context = await self._context_assembler.assemble(
-            inbound=inbound,
-            identity=identity,
-            profile=profile,
-            turn=turn_snapshot,
-            content=content,
-            runtime=runtime,
-            memory_mode=memory_mode,
-            self_recall=False,
-            memory_intent=memory_intent,
-            turn_origin=turn_origin.value,
-            memory_retrieval=retrieval,
-            persist_memory_exposure=persist_exposure,
+        context = await prepare_context(
+            partial(
+                self._context_assembler.assemble,
+                inbound=inbound,
+                identity=identity,
+                profile=profile,
+                turn=turn_snapshot,
+                content=content,
+                runtime=runtime,
+                memory_mode=memory_mode,
+                self_recall=False,
+                memory_intent=memory_intent,
+                turn_origin=turn_origin.value,
+                memory_retrieval=retrieval,
+                persist_memory_exposure=persist_exposure,
+            ),
+            current_work_control.get(),
         )
         if memory_session is not None:
             memory_session.stage_prompt_selection(
@@ -1362,7 +1401,7 @@ class ChatService:
                     + "\n[视频仅提供稀疏采样画面，没有音频；不得声称听到对白或看过所有瞬间。]",
                 )
             current = tail
-        composition = await self._main_turns.compose(
+        composition = await self.runtime.main_turns.compose(
             inbound=inbound,
             context=replace(context, current_message=current),
             runtime=runtime,
@@ -1425,7 +1464,7 @@ class ChatService:
         return validate
 
     @staticmethod
-    def _prefix_web_capabilities(config: RuntimeConfigSnapshot) -> frozenset[str]:
+    def web_capabilities(config: RuntimeConfigSnapshot) -> frozenset[str]:
         """Prefix native-web binding follows WEB_MODE, not origin or tools_closed."""
 
         mode = config.web.mode
@@ -1462,10 +1501,10 @@ class ChatService:
             if runtime.before_model_request is not None:
                 await runtime.before_model_request()
             snapshot = runtime.turn_snapshot
-            if snapshot is not None and not await self._validate_turn_snapshot(snapshot):
+            if snapshot is not None and not await self.validate_turn_snapshot(snapshot):
                 raise TurnSupersededError("turn generation changed before model invocation")
 
-        result = await self._main_turns.run(
+        result = await self.runtime.main_turns.run(
             initial_messages,
             AgentRuntime(
                 origin=runtime.origin,
@@ -1478,7 +1517,7 @@ class ChatService:
                 gateway=runtime.gateway,
                 runtime_config=config,
                 current_time=current_time,
-                allowed_capabilities=self._prefix_web_capabilities(config),
+                allowed_capabilities=self.web_capabilities(config),
                 max_tool_calls=min(config.agent.max_tool_calls, runtime.max_tool_calls_override)
                 if runtime.max_tool_calls_override is not None
                 else config.agent.max_tool_calls,
@@ -1505,7 +1544,7 @@ class ChatService:
             sent_current_texts=tuple(backend.sent_current_texts),
         )
 
-    async def _validate_turn_snapshot(self, snapshot: ConversationTurnSnapshot) -> bool:
+    async def validate_turn_snapshot(self, snapshot: ConversationTurnSnapshot) -> bool:
         return self._turn_coordinator.version_matches(
             snapshot.scope_key,
             snapshot.coordinator_version,
@@ -1515,7 +1554,7 @@ class ChatService:
             scope_key=snapshot.scope_key,
         )
 
-    async def _run_effect(
+    async def run_effect(
         self,
         snapshot: ConversationTurnSnapshot | None,
         effect: Callable[[], Awaitable[_EffectResult]],
@@ -1525,14 +1564,14 @@ class ChatService:
         try:
             async with self._effect_gate.permit(
                 snapshot,
-                validate=self._validate_turn_snapshot,
+                validate=self.validate_turn_snapshot,
                 timeout_seconds=self._settings.conversation_effect_gate_timeout_seconds,
             ):
                 return await effect()
         except (EffectGateTimeoutError, EffectPermitRejectedError) as exc:
             raise TurnSupersededError("turn effect permit was rejected") from exc
 
-    async def _open_self_memory_session(
+    async def open_self_memory_session(
         self,
         trigger: SelfInitiativeTrigger,
         runtime: RuntimeConfigSnapshot,
@@ -1569,99 +1608,106 @@ class ChatService:
         source_runtime: ToolRuntime,
     ) -> AgentRunResult:
         """Run accepted SELF work through the same composition, tools and durable loop."""
-        from qq_ai_bot.conversation.self_initiative import validate_self_initiative
-        from qq_ai_bot.runtime.work_activation import current_work_control
-        from qq_ai_bot.runtime.work_repository import WorkConflict
+        with self.runtime.executions.track():
+            from qq_ai_bot.conversation.self_initiative import validate_self_initiative
+            from qq_ai_bot.runtime.work_activation import current_work_control
+            from qq_ai_bot.runtime.work_repository import WorkConflict
 
-        control = current_work_control.get()
-        actor = source_runtime.require_actor()
-        if (
-            control is None
-            or control.current is None
-            or control.source.get("initiative_run_id") != trigger.run_id
-            or actor.initiative_run_id != trigger.run_id
-            or actor.conversation_id != trigger.conversation_id
-            or actor.presence_id != trigger.presence_id
-            or actor.bot_user_id != trigger.bot_user_id
-            or actor.group_id != trigger.group_id
-            or turn_snapshot.initiative_run_id != trigger.run_id
-            or turn_snapshot.generation != trigger.generation
-            or source_runtime.execution_id != control.current["id"]
-        ):
-            raise WorkConflict("self_initiative_execution_mismatch")
+            control = current_work_control.get()
+            actor = source_runtime.require_actor()
+            if (
+                control is None
+                or control.current is None
+                or control.source.get("initiative_run_id") != trigger.run_id
+                or actor.initiative_run_id != trigger.run_id
+                or actor.conversation_id != trigger.conversation_id
+                or actor.presence_id != trigger.presence_id
+                or actor.bot_user_id != trigger.bot_user_id
+                or actor.group_id != trigger.group_id
+                or turn_snapshot.initiative_run_id != trigger.run_id
+                or turn_snapshot.generation != trigger.generation
+                or source_runtime.execution_id != control.current["id"]
+            ):
+                raise WorkConflict("self_initiative_execution_mismatch")
 
-        async def validate() -> None:
-            await before_model_request()
-            await validate_self_initiative(
-                self._ledger._database,
-                trigger.run_id,
-                conversation_id=trigger.conversation_id,
-                space_id=trigger.space_id,
-                presence_id=trigger.presence_id,
-            )
+            async def validate() -> None:
+                await before_model_request()
+                await validate_self_initiative(
+                    self._ledger._database,
+                    trigger.run_id,
+                    conversation_id=trigger.conversation_id,
+                    space_id=trigger.space_id,
+                    presence_id=trigger.presence_id,
+                )
 
-        await validate()
-        memory = await self._open_self_memory_session(trigger, runtime, trigger.instruction)
-        async with AsyncExitStack() as cleanup:
-            if memory is not None:
-                cleanup.push_async_callback(memory.close)
-            context = await self._context_assembler.assemble_self_initiative(
-                trigger=trigger,
-                runtime=runtime,
-                turn=turn_snapshot,
-                memory_retrieval=empty_retrieval(),
-            )
-            if memory is not None and not control.current["model_requests"]:
-                # A resumed journal retains its old projected memory verbatim. Do
-                # not count newly fetched facts as exposed by that old request.
-                memory.stage_prompt_selection(context.injected_memory_ids, context.memory_exposures)
-            composition = await self._main_turns.compose(
-                inbound=None,
-                context=context,
-                runtime=runtime,
-                visual_observation=None,
-                visual_failure=False,
-                scope_type=ScopeType.GROUP,
-            )
-            tool_runtime = replace(
-                source_runtime,
-                runtime_config=runtime,
-                turn_token=turn_token,
-                turn_snapshot=turn_snapshot,
-                memory_session=memory,
-                visible_event_ids=context.visible_event_ids,
-                memory_exposures=(
-                    context.memory_exposures if not control.current["model_requests"] else ()
-                ),
-                memory_intent=memory.prefetch_intent if memory is not None else None,
-                selection_query=trigger.instruction,
-                prompt_diagnostics=PromptRequestDiagnostics(
-                    conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
-                    prompt_snapshot_fingerprint=composition.metrics.prompt_snapshot_fingerprint,
-                    static_prompt_revision=composition.metrics.stable_prefix_hash,
-                ),
-                before_model_request=self._context_validator(
-                    composition.read_version,
-                    validate,
-                    composition.commit_projection,
-                ),
-            )
-            completed = await self._run_agent(
-                source_runtime.conversation_key,
-                composition.messages,
-                tool_runtime,
-            )
-            # QQ effects are committed by send_message; final text is an internal decision.
-            await self._finish_memory_turn(
-                memory,
-                run_id=str(control.current["id"]),
-                delivered_text="\n".join(completed.sent_current_texts),
-                delivered=bool(completed.sent_current_texts),
-                cancelled=False,
-            )
-            if control.final_delivery and control.session is not None:
-                await control.session.save("delivered")
-            return completed.result
+            await validate()
+            memory = await self.open_self_memory_session(trigger, runtime, trigger.instruction)
+            async with AsyncExitStack() as cleanup:
+                if memory is not None:
+                    cleanup.push_async_callback(memory.close)
+                context = await prepare_context(
+                    partial(
+                        self._context_assembler.assemble_self_initiative,
+                        trigger=trigger,
+                        runtime=runtime,
+                        turn=turn_snapshot,
+                        memory_retrieval=empty_retrieval(),
+                    ),
+                    current_work_control.get(),
+                )
+                if memory is not None and not control.current["model_requests"]:
+                    # A resumed journal retains its old projected memory verbatim. Do
+                    # not count newly fetched facts as exposed by that old request.
+                    memory.stage_prompt_selection(
+                        context.injected_memory_ids, context.memory_exposures
+                    )
+                composition = await self.runtime.main_turns.compose(
+                    inbound=None,
+                    context=context,
+                    runtime=runtime,
+                    visual_observation=None,
+                    visual_failure=False,
+                    scope_type=ScopeType.GROUP,
+                )
+                tool_runtime = replace(
+                    source_runtime,
+                    runtime_config=runtime,
+                    turn_token=turn_token,
+                    turn_snapshot=turn_snapshot,
+                    memory_session=memory,
+                    visible_event_ids=context.visible_event_ids,
+                    memory_exposures=(
+                        context.memory_exposures if not control.current["model_requests"] else ()
+                    ),
+                    memory_intent=memory.prefetch_intent if memory is not None else None,
+                    selection_query=trigger.instruction,
+                    prompt_diagnostics=PromptRequestDiagnostics(
+                        conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
+                        prompt_snapshot_fingerprint=composition.metrics.prompt_snapshot_fingerprint,
+                        static_prompt_revision=composition.metrics.stable_prefix_hash,
+                    ),
+                    before_model_request=self._context_validator(
+                        composition.read_version,
+                        validate,
+                        composition.commit_projection,
+                    ),
+                )
+                completed = await self._run_agent(
+                    source_runtime.conversation_key,
+                    composition.messages,
+                    tool_runtime,
+                )
+                # QQ effects are committed by send_message; final text is an internal decision.
+                await self._finish_memory_turn(
+                    memory,
+                    run_id=str(control.current["id"]),
+                    delivered_text="\n".join(completed.sent_current_texts),
+                    delivered=bool(completed.sent_current_texts),
+                    cancelled=False,
+                )
+                if control.final_delivery and control.session is not None:
+                    await control.session.save("delivered")
+                return completed.result
 
     async def generate_main_agent_wakeup(
         self,
@@ -1682,92 +1728,97 @@ class ChatService:
     ) -> AgentRunResult:
         """Wake the normal Main Agent without inventing a message or Person actor."""
 
-        conversation_key = runtime_conversation_key(
-            identity=identity,
-            turn=turn_snapshot,
-        )
-        if not conversation_id or conversation_id != event.canonical_conversation_id:
-            raise TurnSupersededError("external turn snapshot scope mismatch")
-        context = await self._context_assembler.assemble(
-            inbound=None,
-            profile=None,
-            identity=identity,
-            turn=turn_snapshot,
-            content=event.content,
-            runtime=runtime,
-            external_event=event,
-            external_trigger=trigger,
-        )
-        composition = await self._main_turns.compose(
-            inbound=None,
-            context=context,
-            runtime=runtime,
-            visual_observation=None,
-            visual_failure=False,
-            scope_type=event.scope_type,
-        )
-        tool_runtime = ToolRuntime(
-            inbound=None,
-            gateway=(
-                cast(OneBotToolGateway, gateway)
-                if callable(getattr(gateway, "call_api", None))
-                else None
-            ),
-            allow_generic_onebot=False,
-            allow_admin_actions=False,
-            allow_automation=True,
-            conversation_key=conversation_key,
-            trigger_message_id=event.platform_message_id,
-            actor_user_id="",
-            actor_is_superuser=False,
-            current_group_id=event.group_id,
-            runtime_config=runtime,
-            origin=TurnOrigin.PLUGIN_BACKGROUND,
-            allow_work_environment=True,
-            tools_closed=False,
-            read_only=False,
-            turn_token=turn_token,
-            turn_snapshot=turn_snapshot,
-            visible_event_ids=context.visible_event_ids,
-            selection_query=f"{event.content}\n{trigger.agent_intent}".strip(),
-            prompt_diagnostics=PromptRequestDiagnostics(
-                conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
-                prompt_snapshot_fingerprint=(composition.metrics.prompt_snapshot_fingerprint),
-                static_prompt_revision=composition.metrics.stable_prefix_hash,
-            ),
-            before_model_request=self._context_validator(
-                composition.read_version, before_model_request, composition.commit_projection
-            ),
-            scope_type=event.scope_type,
-            bot_user_id=event.bot_user_id,
-            conversation_id=conversation_id,
-            presence_id=presence_id,
-            person_id=person_id,
-            space_id=space_id,
-            external_target_id=trigger.target_id,
-        )
-        if source_runtime is not None:
-            if not isinstance(trigger, (SandboxTaskTurnTrigger, WorkResumeTrigger)):
-                raise ValueError("source runtime requires a sandbox completion")
-            tool_runtime = replace(
-                source_runtime,
+        with self.runtime.executions.track():
+            conversation_key = runtime_conversation_key(
+                identity=identity,
+                turn=turn_snapshot,
+            )
+            if not conversation_id or conversation_id != event.canonical_conversation_id:
+                raise TurnSupersededError("external turn snapshot scope mismatch")
+            context = await prepare_context(
+                partial(
+                    self._context_assembler.assemble,
+                    inbound=None,
+                    profile=None,
+                    identity=identity,
+                    turn=turn_snapshot,
+                    content=event.content,
+                    runtime=runtime,
+                    external_event=event,
+                    external_trigger=trigger,
+                ),
+                current_work_control.get(),
+            )
+            composition = await self.runtime.main_turns.compose(
+                inbound=None,
+                context=context,
+                runtime=runtime,
+                visual_observation=None,
+                visual_failure=False,
+                scope_type=event.scope_type,
+            )
+            tool_runtime = ToolRuntime(
+                inbound=None,
+                gateway=(
+                    cast(OneBotToolGateway, gateway)
+                    if callable(getattr(gateway, "call_api", None))
+                    else None
+                ),
+                allow_generic_onebot=False,
+                allow_admin_actions=False,
+                allow_automation=True,
+                conversation_key=conversation_key,
+                trigger_message_id=event.platform_message_id,
+                actor_user_id="",
+                actor_is_superuser=False,
+                current_group_id=event.group_id,
                 runtime_config=runtime,
-                before_model_request=tool_runtime.before_model_request,
-                prompt_diagnostics=tool_runtime.prompt_diagnostics,
+                origin=TurnOrigin.PLUGIN_BACKGROUND,
+                allow_work_environment=True,
+                tools_closed=False,
+                read_only=False,
                 turn_token=turn_token,
                 turn_snapshot=turn_snapshot,
-                selection_query=tool_runtime.selection_query,
+                visible_event_ids=context.visible_event_ids,
+                selection_query=f"{event.content}\n{trigger.agent_intent}".strip(),
+                prompt_diagnostics=PromptRequestDiagnostics(
+                    conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
+                    prompt_snapshot_fingerprint=(composition.metrics.prompt_snapshot_fingerprint),
+                    static_prompt_revision=composition.metrics.stable_prefix_hash,
+                ),
+                before_model_request=self._context_validator(
+                    composition.read_version, before_model_request, composition.commit_projection
+                ),
+                scope_type=event.scope_type,
+                bot_user_id=event.bot_user_id,
+                conversation_id=conversation_id,
+                presence_id=presence_id,
+                person_id=person_id,
+                space_id=space_id,
+                external_target_id=trigger.target_id,
             )
-        completed = await self._run_agent(conversation_key, composition.messages, tool_runtime)
-        result = completed.result
-        try:
-            rendered = sanitize_model_output(
-                result.text,
-                max_characters=self._settings.max_output_characters,
-            )
-        except LLMEmptyResponseError:
-            rendered = ""
-        return replace(result, text=rendered)
+            if source_runtime is not None:
+                if not isinstance(trigger, (SandboxTaskTurnTrigger, WorkResumeTrigger)):
+                    raise ValueError("source runtime requires a sandbox completion")
+                tool_runtime = replace(
+                    source_runtime,
+                    runtime_config=runtime,
+                    before_model_request=tool_runtime.before_model_request,
+                    prompt_diagnostics=tool_runtime.prompt_diagnostics,
+                    turn_token=turn_token,
+                    turn_snapshot=turn_snapshot,
+                    selection_query=tool_runtime.selection_query,
+                )
+            completed = await self._run_agent(conversation_key, composition.messages, tool_runtime)
+            result = completed.result
+            try:
+                rendered = sanitize_model_output(
+                    result.text,
+                    max_characters=self._settings.max_output_characters,
+                )
+            except LLMEmptyResponseError:
+                rendered = ""
+            return replace(result, text=rendered)
 
     async def _prepare_tool_candidates(self, runtime: ToolRuntime) -> ToolRuntime:
         """Apply artifact retention; capability runtime owns discovery and exposure."""

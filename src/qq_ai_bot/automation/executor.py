@@ -12,7 +12,6 @@ from typing import Any, Literal
 
 from sqlalchemy import select
 
-from qq_ai_bot.automation.agent_delivery import inspect_agent_delivery
 from qq_ai_bot.automation.authority import (
     AuthorityContext,
     DelegatedAuthority,
@@ -56,6 +55,7 @@ from qq_ai_bot.identity.db_models import (
     SpaceBindingModel,
 )
 from qq_ai_bot.identity.routing import PresenceRouter, RouteSendError
+from qq_ai_bot.runtime.effect_queries import RuntimeEffectQueries
 from qq_ai_bot.runtime.principal import SELF, PrincipalRef
 from qq_ai_bot.time.service import TimeContextService
 
@@ -124,6 +124,7 @@ class AutomationExecutor:
         self._settings = settings
         self._registry = registry
         self._repository = repository
+        self._effect_queries = RuntimeEffectQueries(repository._database)
         self._time = time_service
         self._gateway_factory = gateway_factory
         self._router = router
@@ -721,8 +722,7 @@ class AutomationExecutor:
         )
         if conversation_id is None or target_id is None:
             return "none"
-        outcome = await inspect_agent_delivery(
-            self._repository._database,
+        outcome = await self._effect_queries.inspect_automation_delivery(
             conversation_id=conversation_id,
             run_id=run.id,
             step_id=step_id,

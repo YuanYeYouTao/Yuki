@@ -341,16 +341,84 @@ class ApplicationContainer:
             settings.social_gateway_transfer_directory,
         )
         self.chat = conversation.chat
-        from qq_ai_bot.sandbox.continuation_worker import SandboxContinuationWorker
+        self.runtime = self.chat.runtime
+        from qq_ai_bot.services.main_agent_contract import MainAgentContract
+        from qq_ai_bot.workspace.short_state import ShortState
 
-        self.sandbox_continuations = SandboxContinuationWorker(self)
-        from qq_ai_bot.runtime.work_scheduler import WorkScheduler
-
-        self.work_scheduler = WorkScheduler(self)
+        self.main_agent_contract = MainAgentContract(
+            self.chat, ShortState(self.workspace_service.store)
+        )
+        self.agent_tools.short_state = self.main_agent_contract.state
+        self.runtime.runner.main_contract = self.main_agent_contract
+        from qq_ai_bot.runtime.subagent_repository import SubagentRepository
         from qq_ai_bot.runtime.subagent_scheduler import SubagentScheduler
+        from qq_ai_bot.runtime.work_repository import WorkRepository
+        from qq_ai_bot.runtime.work_scheduler import WorkScheduler
+        from qq_ai_bot.sandbox.continuation_worker import SandboxContinuationWorker
+        from qq_ai_bot.services.main_agent_backend import MainAgentBackend
+        from qq_ai_bot.services.subagent_execution import (
+            SubagentExecution,
+            SubagentExecutionDependencies,
+        )
+        from qq_ai_bot.services.work_resume import WorkResumeDependencies, WorkResumer
 
+        works = WorkRepository(self.database)
+        self.sandbox_continuations = SandboxContinuationWorker(works)
+
+        async def resume_plugin(work: dict[str, object], source: dict[str, object]) -> None:
+            from qq_ai_bot.plugin_host.main_turn import resume_plugin_work
+
+            await resume_plugin_work(self._plugin_contexts.get, self.ledger, work, source)
+
+        self.work_resumer = WorkResumer(
+            works,
+            WorkResumeDependencies(
+                ledger=self.ledger,
+                conversation_scopes=self.conversation_scopes,
+                turn_coordinator=self.turn_coordinator,
+                presence_router=self.presence_router,
+                runtime_config=self.runtime_config,
+                sandbox_tasks=self.sandbox_tasks,
+                active_bindings=self.runtime.bindings,
+                generate_wakeup=self.chat.generate_main_agent_wakeup,
+                generate_self=self.chat.generate_self_initiative,
+                validate_snapshot=self.chat.validate_turn_snapshot,
+                run_effect=self.chat.run_effect,
+                resume_plugin=resume_plugin,
+            ),
+        )
+        self.work_scheduler = WorkScheduler(
+            works, self.work_resumer, chat_admission_enabled=self.settings.runtime_work_enabled
+        )
         self.database.subagents_enabled = self.settings.subagents_enabled
-        self.subagent_scheduler = SubagentScheduler(self)
+        children = SubagentRepository(works)
+        self.subagent_execution = SubagentExecution(
+            works,
+            children,
+            SubagentExecutionDependencies(
+                active_bindings=self.runtime.bindings,
+                ledger=self.ledger,
+                runtime_config=self.runtime_config,
+                sandbox_tasks=self.sandbox_tasks,
+                sandbox_client=self.sandbox_client,
+                runner=self.runtime.runner,
+                load_tools=self.main_agent_contract.definitions,
+                open_memory=self.chat.open_memory_session,
+                open_self_memory=self.chat.open_self_memory_session,
+                backend_factory=lambda runtime: MainAgentBackend(self.chat, runtime),
+                web_capabilities=self.chat.web_capabilities,
+                context_token_limit=self.settings.subagent_context_token_limit,
+            ),
+        )
+        self.subagent_scheduler = SubagentScheduler(
+            works,
+            children,
+            self.subagent_execution,
+            admission_enabled=self.settings.subagents_enabled,
+            global_llm_concurrency=self.settings.global_llm_concurrency,
+        )
+        self.runtime.register_worker("runtime_work", self.work_scheduler)
+        self.runtime.register_worker("subagents", self.subagent_scheduler)
         self.chat.register_tool_provider(self.mcp_tools)
         self.memory_mutations = conversation.memory_mutations
         self.memory_auditor = conversation.memory_auditor
@@ -408,8 +476,8 @@ class ApplicationContainer:
         self.automation_module = AutomationModule(
             settings=settings,
             database=self.database,
-            models=self.models,
-            concurrency=self.concurrency,
+            main_turns=self.runtime.main_turns,
+            main_contract=self.runtime.contract,
             runtime_config=self.runtime_config,
             time_service=self.time_context,
             ledger=self.ledger,
@@ -544,15 +612,6 @@ class ApplicationContainer:
         self.emoji_selector.set_plugin_signals(self.plugin_emoji_signals)
         self.chat.set_plugin_tools(self.plugin_tools)
         self.conversation_rollup_worker.on_finished = self.chat.rollup_wakeups.notify
-        from qq_ai_bot.services.main_agent_contract import MainAgentContract
-        from qq_ai_bot.workspace.short_state import ShortState
-
-        self.main_agent_contract = MainAgentContract(
-            self.chat, ShortState(self.workspace_service.store)
-        )
-        self.agent_tools.short_state = self.main_agent_contract.state
-        self.chat._agent_runner.main_contract = self.main_agent_contract
-        self._automation_handlers._agent_runner = self.chat._agent_runner
         from qq_ai_bot.services.semantic_participation import SemanticParticipationService
 
         self.semantic_participation = SemanticParticipationService(self, traces=self.models.traces)
@@ -758,7 +817,7 @@ class ApplicationContainer:
                 memory_admin=self.memory_admin,
                 relationship_admin=self.relationship_admin,
                 runtime_config=self.runtime_config,
-                agent_runner=self.chat._agent_runner,
+                agent_runner=self.runtime.runner,
                 agent_capabilities=frozenset(agent_capabilities),
                 web_provider=self.web_provider,
                 mcp_manager=self.mcp_manager,
@@ -945,16 +1004,10 @@ class ApplicationContainer:
             health=self.sandbox_continuations.health,
         )
         self.lifecycle.register(
-            "runtime_work",
-            start=self.work_scheduler.start,
-            close=self.work_scheduler.close,
-            health=self.work_scheduler.health,
-        )
-        self.lifecycle.register(
-            "subagents",
-            start=self.subagent_scheduler.start,
-            close=self.subagent_scheduler.close,
-            health=self.subagent_scheduler.health,
+            "yuki_runtime",
+            start=self.runtime.start,
+            close=self.runtime.close,
+            health=self.runtime.health,
         )
         self.lifecycle.register(
             "plugin_background_turns",

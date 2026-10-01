@@ -3,7 +3,6 @@
 import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime
-from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import event, func, select
@@ -45,7 +44,7 @@ def service_for(database, maximum=5, *, runtime_work=False):
     )
 
 
-async def test_failed_wait_poll_does_not_block_automation_claim(database, monkeypatch):
+async def test_automation_claim_does_not_drive_runtime_time_waits(database, monkeypatch):
     service = service_for(database)
     worker = AutomationWorker(
         settings=service._settings,
@@ -55,15 +54,17 @@ async def test_failed_wait_poll_does_not_block_automation_claim(database, monkey
     )
     claimed = []
 
-    async def broken_wait(now):
-        raise ValueError("invalid_wait_binding")
+    async def forbidden_wait(*args, **kwargs):
+        raise AssertionError("automation must not drive generic Work time waits")
 
     async def claim_due(**kwargs):
         claimed.append(kwargs)
         worker._stop.set()
         return ()
 
-    worker._waits = SimpleNamespace(deliver_due=broken_wait)
+    from qq_ai_bot.runtime.work_wait import WorkWaitRepository
+
+    monkeypatch.setattr(WorkWaitRepository, "deliver_due", forbidden_wait)
     monkeypatch.setattr(worker._repository, "claim_due", claim_due)
     await asyncio.wait_for(worker._loop(), timeout=1)
     assert len(claimed) == 1
@@ -282,3 +283,85 @@ async def test_self_creation_rechecks_prepared_scene_before_write(database, monk
         await service.create(raw, actor=actor, conversation_key="group:2001")
     async with database.sessions() as session:
         assert await session.scalar(select(func.count()).select_from(AutomationModel)) == 0
+
+
+@pytest.mark.parametrize("deliver_during_release", [False, True])
+async def test_signal_wait_keeps_original_work_and_wakes_a_racing_claim(
+    database, tmp_path, monkeypatch, deliver_during_release
+):
+    import time
+    from types import SimpleNamespace
+
+    from tests.support.social_identity_cases import social_env
+
+    from qq_ai_bot.automation.models import ExecutionResult, RunStatus
+    from qq_ai_bot.runtime.work_repository import WorkRepository
+    from qq_ai_bot.runtime.work_wait import WorkWaitRepository
+
+    service = service_for(database, runtime_work=True)
+    task = await service.create(
+        _script(), actor=ToolActor.from_inbound(_inbound()), conversation_key="private:10001"
+    )
+    service._time.clock.advance(2)
+    claimed = await service._repository.claim_due(
+        worker_id="original-claim", now=service._time.clock.now(), lease_seconds=30
+    )
+    assert len(claimed) == 1 and claimed[0].id == task.id
+
+    env = await social_env(database, tmp_path)
+    works = WorkRepository(database)
+    lease = await works.acquire(env.context.conversation_id, 1)
+    source = {
+        "principal_kind": "person",
+        "actor_person_id": env.person,
+        "owner": "automation",
+        "automation_id": task.id,
+    }
+    original = await works.accept(
+        lease, source_key="original-signal-work", source=source, goal="continue same task"
+    )
+    waits = WorkWaitRepository(works)
+    await waits.register(
+        lease,
+        work_id=original["id"],
+        source=source,
+        call_key="original-signal-call",
+        mode="any",
+        conditions=[{"kind": "time_due", "after_seconds": 1}],
+        deadline_at=None,
+    )
+    await works.transition(lease, original["id"], original["revision"], "waiting_external")
+
+    async def execute(_task, _run):
+        return ExecutionResult(
+            status=RunStatus.RUNNING, summary={"pending_work_id": original["id"]}
+        )
+
+    worker = AutomationWorker(
+        settings=service._settings,
+        repository=service._repository,
+        executor=SimpleNamespace(execute=execute),
+        time_service=service._time,
+    )
+    release = service._repository.release_claim
+
+    async def racing_release(*args, **kwargs):
+        if deliver_during_release:
+            # Runtime may finish the wait after the first read but before the
+            # sleeping claim commits. The second read must not lose its wakeup.
+            assert await waits.deliver_due(time.time() + 2) == 1
+        await release(*args, **kwargs)
+
+    monkeypatch.setattr(service._repository, "release_claim", racing_release)
+    await worker._process(claimed[0])
+    async with database.sessions() as session:
+        stored = await session.get(AutomationModel, task.id)
+        assert stored.claimed_by is None
+        if deliver_during_release:
+            assert stored.claimed_until is None
+        else:
+            assert stored.claimed_until > service._time.clock.now().replace(tzinfo=None)
+    current = await works.get(original["id"])
+    assert current["state"] == ("queued" if deliver_during_release else "waiting_external")
+    assert current["model_requests"] == current["tool_calls"] == 0
+    assert len(await service._repository.run_history(task.id)) == 1

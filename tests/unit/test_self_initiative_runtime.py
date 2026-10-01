@@ -27,7 +27,7 @@ from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import effects, inputs
 from qq_ai_bot.runtime.work_session import WorkSession
-from qq_ai_bot.sandbox.source_recovery import recover_execution_source, recover_self_source
+from qq_ai_bot.services.execution_sources import recover_execution_source, recover_self_source
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 
 
@@ -338,8 +338,6 @@ async def test_activate_self_work_rejects_other_initiative_source(database):
 async def test_scheduler_resumes_self_without_reading_a_person_event_or_sending_text(database):
     from contextlib import asynccontextmanager
 
-    from qq_ai_bot.runtime.work_scheduler import WorkScheduler
-
     source, _, _ = await self_source(database)
     repo = WorkRepository(database)
     lease = await repo.acquire(source["conversation_id"], 1)
@@ -373,7 +371,7 @@ async def test_scheduler_resumes_self_without_reading_a_person_event_or_sending_
 
     chat = SimpleNamespace(
         _active_work={},
-        _validate_turn_snapshot=AsyncMock(return_value=True),
+        validate_turn_snapshot=AsyncMock(return_value=True),
         generate_self_initiative=AsyncMock(side_effect=generate),
     )
     bot = SimpleNamespace(call_api=AsyncMock())
@@ -397,7 +395,23 @@ async def test_scheduler_resumes_self_without_reading_a_person_event_or_sending_
         runtime_config=SimpleNamespace(snapshot=AsyncMock(return_value=SimpleNamespace())),
         turn_coordinator=SimpleNamespace(background_turn=background),
     )
-    await WorkScheduler(app)._resume_self(item, source)
+    from tests.support.runtime_execution import make_work_resumer
+
+    from qq_ai_bot.persistence.event_repository import EventLedgerRepository
+
+    resumer = make_work_resumer(
+        repo,
+        ledger=EventLedgerRepository(database),
+        scopes=app.conversation_scopes,
+        turns=app.turn_coordinator,
+        router=app.presence_router,
+        config=app.runtime_config,
+        generate_self=chat.generate_self_initiative,
+        generate_wakeup=AsyncMock(side_effect=AssertionError("no message actor")),
+        validate_snapshot=chat.validate_turn_snapshot,
+        run_effect=AsyncMock(side_effect=AssertionError("no automatic delivery")),
+    )
+    await resumer.resume(item)
     chat.generate_self_initiative.assert_awaited_once()
     app.runtime_config.snapshot.assert_awaited_once_with(group_id="2001")
     bot.call_api.assert_not_awaited()
@@ -405,8 +419,8 @@ async def test_scheduler_resumes_self_without_reading_a_person_event_or_sending_
 
 
 async def test_self_worker_uses_existing_runner_without_synthetic_inbound(database):
-    from qq_ai_bot.runtime.subagent_scheduler import SubagentScheduler, WorkerBackend
     from qq_ai_bot.runtime.subagent_tools import WORKER_NAMES
+    from qq_ai_bot.services.subagent_execution import WorkerBackend
 
     source, _, _ = await self_source(database)
     repo = WorkRepository(database)
@@ -443,9 +457,9 @@ async def test_self_worker_uses_existing_runner_without_synthetic_inbound(databa
     runner = SimpleNamespace(run=AsyncMock(side_effect=run))
     chat = SimpleNamespace(
         _agent_runner=runner,
-        _open_self_memory_session=AsyncMock(return_value=memory),
-        _open_memory_session=AsyncMock(side_effect=AssertionError("no borrowed human")),
-        _prefix_web_capabilities=lambda _: frozenset(),
+        open_self_memory_session=AsyncMock(return_value=memory),
+        open_memory_session=AsyncMock(side_effect=AssertionError("no borrowed human")),
+        web_capabilities=lambda _: frozenset(),
     )
     app = SimpleNamespace(
         database=database,
@@ -453,12 +467,22 @@ async def test_self_worker_uses_existing_runner_without_synthetic_inbound(databa
         runtime_config=SimpleNamespace(snapshot=AsyncMock(return_value=SimpleNamespace())),
         settings=SimpleNamespace(subagent_context_token_limit=64000),
     )
-    scheduler = SubagentScheduler(app)
-    scheduler.definitions = tuple(SimpleNamespace(name=name) for name in sorted(WORKER_NAMES))
-    await scheduler.run(child_id)
-    assert scheduler.last_error is None
+    from tests.support.runtime_execution import make_child_executor
+
+    executor = make_child_executor(
+        repo,
+        chat=chat,
+        config=app.runtime_config,
+        runner=runner,
+        load_tools=AsyncMock(
+            return_value=tuple(SimpleNamespace(name=name) for name in sorted(WORKER_NAMES))
+        ),
+        context_token_limit=64000,
+    )
+    await executor.run(child_id)
+    assert executor.last_error is None
     runner.run.assert_awaited_once()
-    chat._open_memory_session.assert_not_called()
+    chat.open_memory_session.assert_not_called()
     memory.close.assert_awaited_once()
     assert (await repo.get(child_id))["state"] == "completed"
     assert (await repo.get(child_id))["model_requests"] == 1
@@ -478,12 +502,24 @@ async def test_worker_recovery_starts_when_new_chat_and_child_admission_are_off(
 
     assert not database.subagents_enabled
     contract = SimpleNamespace(definitions=AsyncMock(return_value=()))
+    repo = WorkRepository(database)
+
+    async def prepare(**_):
+        await contract.definitions()
+
+    executor = SimpleNamespace(
+        prepare=AsyncMock(side_effect=prepare),
+        cancel_commands=AsyncMock(),
+        run=AsyncMock(),
+        definitions=(),
+        last_error=None,
+    )
     scheduler = SubagentScheduler(
-        SimpleNamespace(
-            database=database,
-            main_agent_contract=contract,
-            settings=SimpleNamespace(runtime_work_enabled=False, global_llm_concurrency=2),
-        )
+        repo,
+        SubagentRepository(repo),
+        executor,
+        admission_enabled=False,
+        global_llm_concurrency=2,
     )
     try:
         await scheduler.start()

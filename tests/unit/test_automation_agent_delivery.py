@@ -10,7 +10,7 @@ from sqlalchemy import insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.automation.agent_delivery import inspect_agent_delivery
+from qq_ai_bot.runtime.effect_queries import RuntimeEffectQueries
 from qq_ai_bot.runtime.work_recovery_schema import deliveries
 from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import effects, journal, work
@@ -36,8 +36,7 @@ async def setup_case(database, tmp_path):
 
 
 async def inspect(case, **kwargs):
-    return await inspect_agent_delivery(
-        case.db,
+    return await RuntimeEffectQueries(case.db).inspect_automation_delivery(
         conversation_id=case.env.context.conversation_id,
         run_id=23,
         step_id="execute",
@@ -427,8 +426,7 @@ async def test_unrelated_run_and_wrong_target_do_not_prove_delivery(database, tm
     assert (await inspect(case)).state == "none"
     receipt = await social(case, "own")
     await aggregate(case, "own", receipt)
-    outcome = await inspect_agent_delivery(
-        database,
+    outcome = await RuntimeEffectQueries(database).inspect_automation_delivery(
         conversation_id=case.env.context.conversation_id,
         run_id=23,
         step_id="execute",

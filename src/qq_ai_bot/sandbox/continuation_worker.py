@@ -5,20 +5,17 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import suppress
-from typing import TYPE_CHECKING
 
+from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.sandbox.continuations import SandboxContinuationRepository
-
-if TYPE_CHECKING:
-    from qq_ai_bot.container import ApplicationContainer
 
 logger = logging.getLogger(__name__)
 
 
 class SandboxContinuationWorker:
-    def __init__(self, app: ApplicationContainer) -> None:
-        self.app = app
-        self.repository = SandboxContinuationRepository(app.database)
+    def __init__(self, works: WorkRepository) -> None:
+        self.works = works
+        self.repository = SandboxContinuationRepository(works.database)
         self._worker: asyncio.Task[None] | None = None
         self._last_error: str | None = None
 
@@ -63,6 +60,4 @@ class SandboxContinuationWorker:
                 await self.repository.rotate(request_id)
 
     async def _drain_request(self, request_id: str) -> None:
-        from qq_ai_bot.runtime.work_repository import WorkRepository
-
-        await WorkRepository(self.app.database).route_child_completion(request_id)
+        await self.works.route_child_completion(request_id)

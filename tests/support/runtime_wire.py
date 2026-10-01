@@ -109,6 +109,6 @@ def install_wire(chat, fake, protocol, *, native=False):
         ),
         pool=ModelClientPool(injected_profiles={profile.id: fake}),
     )
-    chat._agent_runner._models = models
+    chat.runtime.runner._models = models
     chat._models = models
     return client, captured

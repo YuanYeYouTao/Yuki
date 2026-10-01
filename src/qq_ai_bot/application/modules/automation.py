@@ -27,13 +27,13 @@ from qq_ai_bot.identity.routing import PresenceRouter
 from qq_ai_bot.mcp.automation import MCPAutomationBridge
 from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.model_runtime.executor import ModelExecutor
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     RelationshipRepository,
 )
-from qq_ai_bot.services.concurrency import ConcurrencyManager
+from qq_ai_bot.services.main_agent_contract import MainAgentContract
+from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
 from qq_ai_bot.speech.service import SpeechService
 from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.web.base import WebSearchProvider
@@ -57,8 +57,8 @@ class AutomationModule:
         *,
         settings: Settings,
         database: Database,
-        models: ModelExecutor,
-        concurrency: ConcurrencyManager,
+        main_turns: MainAgentTurnService,
+        main_contract: MainAgentContract,
         runtime_config: RuntimeConfigService,
         time_service: TimeContextService,
         ledger: EventLedgerRepository,
@@ -75,8 +75,8 @@ class AutomationModule:
     ) -> None:
         self._settings = settings
         self._database = database
-        self._models = models
-        self._concurrency = concurrency
+        self._main_turns = main_turns
+        self._main_contract = main_contract
         self._runtime_config = runtime_config
         self._time_service = time_service
         self._ledger = ledger
@@ -104,8 +104,8 @@ class AutomationModule:
 
         handlers = AutomationCapabilityHandlers(
             settings=self._settings,
-            model_executor=self._models,
-            concurrency=self._concurrency,
+            main_turns=self._main_turns,
+            main_contract=self._main_contract,
             runtime_config=self._runtime_config,
             time_service=self._time_service,
             ledger=self._ledger,

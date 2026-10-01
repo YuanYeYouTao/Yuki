@@ -23,6 +23,46 @@ class OneBotSendError(RuntimeError):
         self.dispatched = dispatched
 
 
+class OneBotRouteSender:
+    """Deliver a persisted message on one already verified Presence connection.
+
+    The application owns source checks, effect gates and durable receipts. This
+    adapter only translates the message; it never selects a replacement route.
+    """
+
+    def __init__(self, bot: object, *, group: bool, target_id: str) -> None:
+        self._route_bot = bot
+        self._group = group
+        self._target_id = target_id
+
+    async def send(self, message: OutboundMessage) -> OutboundSendReceipt:
+        call_api = getattr(self._route_bot, "call_api", None)
+        if not callable(call_api):
+            raise ValueError("work_gateway_unavailable")
+        payload: list[dict[str, Any]] = []
+        if message.reply_to_message_id:
+            payload.append({"type": "reply", "data": {"id": message.reply_to_message_id}})
+        if message.text:
+            payload.append({"type": "text", "data": {"text": message.text}})
+        for media in message.media:
+            if media.kind not in {AttachmentKind.AUDIO, AttachmentKind.IMAGE}:
+                raise ValueError("unsupported_persisted_delivery_media")
+            payload.append(
+                {
+                    "type": "record" if media.kind is AttachmentKind.AUDIO else "image",
+                    "data": {"file": "base64://" + base64.b64encode(media.content).decode("ascii")},
+                }
+            )
+        response = await call_api(
+            "send_group_msg" if self._group else "send_private_msg",
+            **{
+                "group_id" if self._group else "user_id": int(self._target_id),
+                "message": payload,
+            },
+        )
+        return parse_onebot_send_receipt(response)
+
+
 class OneBotSender:
     """Send plain text, optionally quoting one backend-validated message."""
 

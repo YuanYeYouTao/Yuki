@@ -30,9 +30,7 @@ async def run_compiled_state_cases(handlers, state, provider, runtime, context):
             {"slot": 1, "text": "next turn state", "expected_revision": slot["revision"]}
         )
         assert updated["ok"]
-        await handlers._main_turn_service().run(
-            composition.messages, runtime, ShortStateOnlyBackend(state)
-        )
+        await handlers.main_turns.run(composition.messages, runtime, ShortStateOnlyBackend(state))
         snapshot.assert_called_once_with()
     assert provider.requests[-1].messages == composition.messages
     assert "next turn state" not in composition.messages[-1].content
@@ -48,9 +46,7 @@ async def run_compiled_state_cases(handlers, state, provider, runtime, context):
     # An empty snapshot is still final for this turn, even if the store now has data.
     with patch.object(state, "snapshot", side_effect=[[]]) as snapshot:
         empty = await handlers._generation_composition(arguments, context)
-        await handlers._main_turn_service().run(
-            empty.messages, runtime, ShortStateOnlyBackend(state)
-        )
+        await handlers.main_turns.run(empty.messages, runtime, ShortStateOnlyBackend(state))
         snapshot.assert_called_once_with()
     assert "runtime.short_state" not in provider.requests[-1].messages[-1].content
     later = await handlers._generation_composition(arguments, context)

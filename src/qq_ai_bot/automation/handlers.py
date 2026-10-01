@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, date, datetime
+from functools import partial
 from typing import Any, cast
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
@@ -35,19 +36,16 @@ from qq_ai_bot.llm.base import (
     LLMUnsupportedFeatureError,
 )
 from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
-from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     RelationshipRepository,
 )
 from qq_ai_bot.runtime.activation_outcome import ContextBoundaryChanged
-from qq_ai_bot.services.agent_runner import (
-    AgentRunner,
-    AgentRuntime,
-)
-from qq_ai_bot.services.concurrency import ConcurrencyManager
+from qq_ai_bot.runtime.context_preparation import prepare_context
+from qq_ai_bot.runtime.work_activation import current_work_control
+from qq_ai_bot.services.agent_runner import AgentRuntime
 from qq_ai_bot.services.context_assembler import ContextAssembler
+from qq_ai_bot.services.main_agent_contract import MainAgentContract
 from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
 from qq_ai_bot.services.prompt_composer import PromptComposition
 from qq_ai_bot.time.service import TimeContextService
@@ -74,9 +72,8 @@ class AutomationCapabilityHandlers:
         self,
         *,
         settings: Settings,
-        provider: ModelCompleter | None = None,
-        model_executor: ModelExecutor | None = None,
-        concurrency: ConcurrencyManager,
+        main_turns: MainAgentTurnService,
+        main_contract: MainAgentContract,
         runtime_config: RuntimeConfigService,
         time_service: TimeContextService,
         ledger: EventLedgerRepository,
@@ -85,13 +82,11 @@ class AutomationCapabilityHandlers:
         web_provider: WebSearchProvider | None,
         gateway_factory: GatewayFactory,
     ) -> None:
+        if main_turns is None or main_contract is None:
+            raise AutomationExecutionError("main_agent_services_unavailable")
         self._settings = settings
-        self._models = require_model_executor(
-            model_executor,
-            provider=provider,
-            model=settings.llm_model or "fake",
-        )
-        self._concurrency = concurrency
+        self.main_turns = main_turns
+        self.main_contract = main_contract
         self._runtime_config = runtime_config
         self._time = time_service
         self._ledger = ledger
@@ -99,11 +94,6 @@ class AutomationCapabilityHandlers:
         self._relationships = relationships
         self._web = web_provider
         self._gateway_factory = gateway_factory
-        self._agent_runner = AgentRunner(
-            self._models,
-            concurrency,
-            task=ModelTask.AUTOMATION_AGENT,
-        )
 
     def mapping(self) -> dict[str, CapabilityHandler]:
         return {
@@ -212,9 +202,7 @@ class AutomationCapabilityHandlers:
         from qq_ai_bot.services.agent_tools import OneBotToolGateway, ToolRuntime
         from qq_ai_bot.services.main_agent_backend import MainAgentBackend
 
-        contract = self._agent_runner.main_contract
-        if contract is None:
-            raise AutomationExecutionError("main_agent_services_unavailable")
+        contract = self.main_contract
         tool_runtime = ToolRuntime(
             inbound=None,
             visible_event_ids=composition.visible_event_ids,
@@ -273,7 +261,7 @@ class AutomationCapabilityHandlers:
         )
         backend = MainAgentBackend(contract.chat, tool_runtime)
         try:
-            result = await self._main_turn_service().run(messages, runtime, backend)
+            result = await self.main_turns.run(messages, runtime, backend)
         except LLMError as exc:
             raise _automation_llm_error(
                 exc,
@@ -493,17 +481,21 @@ class AutomationCapabilityHandlers:
             user_id=context.creator_user_id or None,
             group_id=context.current_group_id,
         )
-        assembled = await ContextAssembler.assemble_automation(
-            settings=self._settings,
-            ledger=self._ledger,
-            memories=self._memories,
-            relationships=self._relationships,
-            context=context,
-            instruction=str(arguments["instruction"]),
-            profile=str(arguments.get("context_profile") or "none"),
-            current_time=self._time.at(context.actual_started_at, context.timezone),
+        assembled = await prepare_context(
+            partial(
+                ContextAssembler.assemble_automation,
+                settings=self._settings,
+                ledger=self._ledger,
+                memories=self._memories,
+                relationships=self._relationships,
+                context=context,
+                instruction=str(arguments["instruction"]),
+                profile=str(arguments.get("context_profile") or "none"),
+                current_time=self._time.at(context.actual_started_at, context.timezone),
+            ),
+            current_work_control.get(),
         )
-        composition = await self._main_turn_service().compose(
+        composition = await self.main_turns.compose(
             inbound=None,
             context=assembled,
             runtime=snapshot,
@@ -513,12 +505,6 @@ class AutomationCapabilityHandlers:
             include_plugin_context=False,
         )
         return composition
-
-    def _main_turn_service(self) -> MainAgentTurnService:
-        contract = self._agent_runner.main_contract
-        if contract is not None:
-            return cast(MainAgentTurnService, contract.chat._main_turns)
-        raise AutomationExecutionError("main_agent_services_unavailable")
 
 
 def _automation_llm_error(

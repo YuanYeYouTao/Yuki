@@ -7,6 +7,11 @@
 普通聊天、主动群聊、自动化、插件通知自主轮和 SDK 的 Yuki 生成使用
 `MainAgentTurnService`、`AgentRunner` 和 `MainAgentBackend`。自动化不再拥有第二套
 模型工具后端、名称映射或参数转换。独立 agent_sessions、子 Agent 合同和辅助模型不属于主合同。
+应用装配采用同一个 `YukiRuntime`，持有共享的主 TurnService、Runner、固定工具合同及
+Work/子任务调度器生命周期。Chat、SELF、自动化和插件主调用使用这个实例；自动化显式
+接收共享 TurnService 和合同，不再构造只用于取得 Chat 主服务的 Runner。
+Runtime 不持有单一当前 Conversation；每次调用仍显式传递其原来源、权限、场景和执行 ID。
+插件注册完成后冻结主工具清单，再启动 Runtime 的恢复调度器和插件后台主调用。
 legacy/semantic 自主机会均以正式 SELF 来源进入这条执行链；
 真实 QQ 小范围社交效果验收仍需单独记录。
 
@@ -87,6 +92,9 @@ canonical Conversation 时同样在模型调用前阻断。
 未知结果不能被另一次成功覆盖。内部最终正文始终不会被外层补发。
 核验在同一只读快照中读取工作与回执，不持 SQLite 写锁；原工作已归档、完整工具记录
 不可用时返回未知，不凭幸存的单条成功回执推断全部交付完成。
+这些事实由 `runtime/effect_queries.py` 的 `RuntimeEffectQueries` 读取并返回类型化
+交付结论；Automation 消费结论，不自行解释内部 Work journal 或 Social ORM 状态。
+查询不补写工具结果、解除未知效果围栏或改变 Social 执行语义。
 这证明传输事实，不证明内容在语义上已完成目标；不按措辞猜测进度或最终回答。
 
 历史脚本保留原 run/step、script_hash、工作 ID、预算与游标。旧模型正文尾发不再执行：
@@ -115,12 +123,27 @@ Person ID、外部账号 ID 和当前可用显示名；`automation_get` 使用�
 
 | 来源 | 恢复所有者 | 交付所有者 |
 | --- | --- | --- |
-| 用户消息 | WorkScheduler，原 work/generation | Agent 显式 `send_message` |
-| SELF 自主群聊（legacy/semantic） | Host 接纳记录 → WorkScheduler，原 initiative/work/generation | Agent 显式 `send_message`；允许 `NO_REPLY` |
+| 用户消息 | WorkScheduler 选择，WorkResumer 恢复原 work/generation | Agent 显式 `send_message` |
+| SELF 自主群聊（legacy/semantic） | Host 接纳记录 → WorkScheduler 选择、WorkResumer 恢复原 initiative/work/generation | Agent 显式 `send_message`；允许 `NO_REPLY` |
 | 自动化生成、Agent 步骤 | AutomationWorker，原 run/step 游标 | Agent 显式 `send_message`；旧模型尾发仅核对回执后退休 |
 | 插件通知自主轮 | PluginBackgroundTurnWorker，原 job/event | Agent 显式 `send_message`；插件自己的通知 outbox 独立 |
-| 有真实事件的 SDK 主调用 | Host 持有正在运行的协程，后续由 WorkScheduler 恢复 | 原调用方查询结果 |
-| 子 Agent | SubagentScheduler，原父子关系 | 父 Agent 验收后交付 |
+| 有真实事件的 SDK 主调用 | Host 持有正在运行的协程，后续由 WorkScheduler 选择并交回插件 Host 恢复 | 原调用方查询结果 |
+| 子 Agent | SubagentScheduler 选择，SubagentExecution 恢复原父子关系 | 父 Agent 验收后交付 |
+
+调度器负责有界选择、时钟维护和循环生命周期；来源重建、权限复核、工具后端与发送
+编排归应用服务。`WorkResumer` 通过显式依赖取得原来源和 Host 回调，不接收整个容器。
+WorkScheduler 的监督任务拥有候选恢复循环和独立时间维护循环；后者每 2 秒调用
+`deliver_due()`，是单进程唯一的 Work 时间驱动。候选恢复等待多段模型请求时，时间维护
+仍能按原 Work 登记到期信号并入队。扫描异常记录 `wait_error_category` 后重试；任一循环
+意外终止会记录错误并收拢另一循环，health 的 `running`、`wait_running` 显示停止状态。
+关停取消监督任务并等待两个所属循环结束；二次关闭取消不打断正在进行的收拢，再释放
+它们使用的依赖。
+Host 同步主调用的持久接纳由 `DurableInvocations` 管理，沿原 invocation boundary 查询和
+接纳 Work 后进入已准备的执行路径，不递归调用主入口，也不重置原身份、历史和预算。
+根 Work、自动化和子任务共用 `bind_work_activation` 的 ContextVar、续租、计量、恢复和
+释放边界；来源核验和所属执行的结算仍使用各自原有合同。
+`ActiveWorkBindings` 仅登记当前活跃的进程内控制器，供跨任务输入定位原 Work；
+退出时按同一控制器身份移除。它不是授权来源，持久租约、generation 与原来源仍是执行围栏。
 
 SDK 回调等待约 5 秒可返回 `work_id/state/pending`；等待不是模型正文。
 `agent.result(work_id)` 不依赖已经退出的 ContextVar，但核对插件所有权、批准版本、权限和 generation。
@@ -152,6 +175,9 @@ ready 输入不能越过未准备的首项。已准备或消费的输入重试�
 gate 内只复核 turn snapshot、read version 或原 Work source guard 并提交有界 projection；
 模型请求继续使用同一来源核验。reset/privacy 在准备等待期间可取得 gate，失效的旧链
 不能继续 dispatch 或发送。
+`ContextAssembler` 只组装上下文并报告所需 rollup；`runtime/context_preparation.py` 的
+`prepare_context` 负责依原 Work 停放、结算、恢复或采用现行 extractive fallback。
+没有已接纳 Work 的准备继续使用前台路径，不为准备另造 Work 或获取执行租约。
 
 尚无模型 journal 的原 Work 遇到 required rollup 时，在原 checkpoint 中记录准备水位与
 原期限，交给既有 canonical rollup job，随即按原 `waiting_external` 结算并释放 activation。
@@ -260,10 +286,13 @@ accepted/failed，部分复合交付不充当整个步骤已完成的证据。�
 `time_due`、当前 canonical Conversation 的新消息、获准插件发布的事件或所属 run。
 集合支持 `any` / `all` 和可选 `deadline_at`；没有隐式 90 秒有效期。绑定持久化在
 `runtime_work_waits`，带 Work ID、generation、主体、事件水位和唯一调用键。消息入口、
-插件发布事务与 AutomationWorker 的时钟分别交付信号；命中时同事务登记原 Work 输入并入队，
+插件发布事务与 WorkScheduler 的时钟分别交付信号；命中时同事务登记原 Work 输入并入队，
 不创建第二项 Agent 工作。局部满足的 `all` 条件留在绑定中；超时向原 Work 交付明确结果，
 不视作同意。插件必须显式设置 SDK 的 `resume_waiting_work`，否则维持原通知和新轮行为；
 命中原 Work 的事件不会同时启动独立的插件 Agent 轮。
+AutomationWorker 只管理自己的计划、claim 和原 run/step 游标；等待状态通过 Runtime 查询。
+释放自动化 claim 前后均核对原 Work 等待是否仍活跃，信号先到或后到都唤醒原计划，
+不因停放覆盖已经到达的唤醒，也不创建新 run。
 `task_control.wait_status` 查看原 Work 的绑定及未满足条件，`cancel_wait` 撤销它；
 `waiting_user` 只由原提问内部发送事件所收到的同一 Person 回复自动恢复，普通群消息仍按新输入处理。
 

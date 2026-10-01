@@ -69,7 +69,7 @@ async def test_send_message_bypasses_work_admission_without_reclassifying_mutati
 
     async def run_one(name):
         call = ToolCall(name, ToolFunction(name, "{}"))
-        return await chat._agent_runner._execute_tool_batch(
+        return await chat.runtime.runner._execute_tool_batch(
             (call,),
             backend,
             runtime,
@@ -90,7 +90,7 @@ async def test_send_message_bypasses_work_admission_without_reclassifying_mutati
 
     send_call = ToolCall("send-batched", ToolFunction("send_message", "{}"))
     write_call = ToolCall("write-batched", ToolFunction("workspace_write", "{}"))
-    batched = await chat._agent_runner._execute_tool_batch(
+    batched = await chat.runtime.runner._execute_tool_batch(
         (send_call, write_call),
         backend,
         runtime,
@@ -110,7 +110,7 @@ async def test_neutral_answer_is_delivered_without_registration_request(database
     env = await social_env(database, tmp_path)
     provider = FakeLLMProvider(lambda request: "Yuki 是用 Python 写的。")
     chat = build_harness(database, make_settings(database.url), provider).processor._chat
-    chat._agent_runner.main_contract = MainAgentContract(
+    chat.runtime.runner.main_contract = MainAgentContract(
         chat, ShortState(WorkspaceStore(tmp_path / "state"))
     )
     config = await chat._runtime_config.snapshot()
@@ -153,7 +153,7 @@ async def test_neutral_answer_is_delivered_without_registration_request(database
                 scope_type=ScopeType.PRIVATE,
             ),
         )
-        result = await chat._agent_runner.run(
+        result = await chat.runtime.runner.run(
             (ChatMessage(role="user", content="Yuki 是用 Python 写的吗？"),),
             runtime,
             backend,
@@ -172,7 +172,7 @@ async def test_neutral_answer_is_delivered_without_registration_request(database
 )
 async def test_host_granted_environment_reaches_shared_executor(database, tmp_path, origin):
     chat = build_harness(database, make_settings(database.url)).processor._chat
-    chat._agent_runner.main_contract = MainAgentContract(
+    chat.runtime.runner.main_contract = MainAgentContract(
         chat, ShortState(WorkspaceStore(tmp_path / "state"))
     )
     calls = []
@@ -263,7 +263,7 @@ async def test_owned_main_turn_resumes_original_journal_and_budget(
     chat = build_harness(
         database, make_settings(database.url, runtime_work_enabled=True), provider
     ).processor._chat
-    chat._agent_runner.main_contract = MainAgentContract(
+    chat.runtime.runner.main_contract = MainAgentContract(
         chat, ShortState(WorkspaceStore(tmp_path / "state"))
     )
 
@@ -310,7 +310,7 @@ async def test_owned_main_turn_resumes_original_journal_and_budget(
     )
 
     async def run(text):
-        return await chat._main_turns.run(
+        return await chat.runtime.main_turns.run(
             (ChatMessage(role="user", content=text),),
             runtime,
             MainAgentBackend(chat, tool_runtime, allowed_tools=frozenset({"workspace_write"})),
@@ -423,7 +423,7 @@ async def test_plugin_callback_pending_is_queryable_after_callback_returns(
     chat = build_harness(
         database, make_settings(database.url, runtime_work_enabled=True), provider
     ).processor._chat
-    chat._agent_runner.main_contract = MainAgentContract(
+    chat.runtime.runner.main_contract = MainAgentContract(
         chat, ShortState(WorkspaceStore(tmp_path / "state"))
     )
     host = HostPluginContext(
@@ -431,7 +431,7 @@ async def test_plugin_callback_pending_is_queryable_after_callback_returns(
         approved_permissions=[PluginPermission.AGENT_RUN],
         services=PluginFacadeServices(
             ledger=chat._ledger,
-            agent_runner=chat._agent_runner,
+            agent_runner=chat.runtime.runner,
             runtime_config=chat._runtime_config,
         ),
     )
@@ -503,7 +503,8 @@ async def test_plugin_callback_pending_is_queryable_after_callback_returns(
                 row = await WorkRepository(database).get(work_id)
             assert row["state"] == "queued", row
             await main_turn.resume_plugin_work(
-                SimpleNamespace(_plugin_contexts={host.plugin_id: host}, ledger=chat._ledger),
+                {host.plugin_id: host}.get,
+                chat._ledger,
                 row,
                 json.loads(row["source_json"]),
             )
@@ -607,7 +608,7 @@ async def test_scoped_background_reads_do_not_use_send_route_or_expand_scope(dat
     env = await social_env(database, tmp_path)
     chat = build_harness(database, make_settings(database.url)).processor._chat
     chat._tools.social_service = env.service
-    chat._agent_runner.main_contract = MainAgentContract(
+    chat.runtime.runner.main_contract = MainAgentContract(
         chat, ShortState(WorkspaceStore(tmp_path / "state"))
     )
     config = await chat._runtime_config.snapshot()

@@ -1775,10 +1775,13 @@ class ContextAssembler:
         current_event: EventRecord | None = None,
         turn: ConversationTurnSnapshot,
     ) -> tuple[_HistoryPromptWindow, tuple[EventRecord, ...], str, bool]:
-        from qq_ai_bot.runtime.work_activation import current_work_control
-        from qq_ai_bot.runtime.work_control import WorkInputsPreparing
+        from qq_ai_bot.runtime.context_preparation import (
+            ContextPreparationMode,
+            ContextRollupRequired,
+            context_preparation_mode,
+        )
 
-        control = current_work_control.get()
+        preparation_mode = context_preparation_mode.get()
         coverage_before = snapshot.coverage_end
         rollup_text = snapshot.rollup_text
         if not self._settings.conversation_rollup_enabled:
@@ -1830,20 +1833,13 @@ class ContextAssembler:
                 break
             compact_to_stop = True
             deadline = rollup_deadline
-            if control is not None and control.current is not None and snapshot.read_version:
-                if await control.repository.defer_context_rollup(
-                    control.lease,
-                    control.current["id"],
+            if preparation_mode is ContextPreparationMode.DURABLE and snapshot.read_version:
+                raise ContextRollupRequired(
                     snapshot.read_version,
                     snapshot.coverage_end,
                     self._settings.conversation_rollup_model_timeout_seconds,
-                ):
-                    control.ending = "waiting_external"
-                    await control.meter_active_time()
-                    await control.settle(
-                        delivered=False, pending_inputs=bool(await control.pending())
-                    )
-                    raise WorkInputsPreparing("work_context_preparing")
+                )
+            if preparation_mode is ContextPreparationMode.FALLBACK:
                 # The original prerequisite deadline/error uses the established
                 # timeout fallback, without another long foreground model wait.
                 deadline = asyncio.get_running_loop().time()
@@ -1895,9 +1891,6 @@ class ContextAssembler:
                 raise ConversationCoverageError(
                     "foreground coverage limit exhausted before prompt became bounded"
                 )
-        if control is not None and control.current is not None:
-            if json.loads(control.current["checkpoint_json"]).get("context_rollup"):
-                await control.repository.finish_context_rollup(control.lease, control.current["id"])
         return snapshot, recent, rollup_text, snapshot.coverage_end > coverage_before
 
     async def _ensure_lightweight_backlog(

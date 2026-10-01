@@ -69,7 +69,7 @@ async def run_short_state_cases(database, tmp_path, context):
     registry = AutomationCapabilityRegistry()
     register_social_automation(registry, {})
     contract = MainAgentContract(chat, state)
-    chat._agent_runner.main_contract = contract
+    chat.runtime.runner.main_contract = contract
     chat._tools.short_state = state
     declared = await contract.definitions()
     assert "request_tools" not in {tool.name for tool in declared}
@@ -117,7 +117,7 @@ async def run_short_state_cases(database, tmp_path, context):
                 read_only=True,
             ),
         )
-        await chat._main_turns.run(await state.inject(initial), scoped, backend)
+        await chat.runtime.main_turns.run(await state.inject(initial), scoped, backend)
         assert provider.requests[-1].tools == declared
         assert await contract.definitions() == declared
         # Global state has no person/group/origin ACL, including actorless and read-only turns.
@@ -156,14 +156,16 @@ async def run_short_state_cases(database, tmp_path, context):
     )
     from tests.support.state_backend import ShortStateOnlyBackend
 
-    await chat._main_turns.run(
+    await chat.runtime.main_turns.run(
         await state.inject(initial),
         replace(runtime, origin=TurnOrigin.SCHEDULED_AUTOMATION),
         automation,
     )
     assert provider.requests[-1].tools == declared
     assert "73" in provider.requests[-1].messages[-1].content
-    await chat._main_turns.run(await state.inject(initial), runtime, ShortStateOnlyBackend(state))
+    await chat.runtime.main_turns.run(
+        await state.inject(initial), runtime, ShortStateOnlyBackend(state)
+    )
     assert provider.requests[-1].tools == declared
 
     # Actual tool loop: group writes, private gets it; finalization retains the exact tool schemas.
@@ -196,7 +198,7 @@ async def run_short_state_cases(database, tmp_path, context):
 
     provider._responder = respond
     start = len(provider.requests)
-    await chat._main_turns.run(
+    await chat.runtime.main_turns.run(
         await state.inject(initial),
         replace(runtime, max_model_requests=2),
         ShortStateOnlyBackend(state),
@@ -206,7 +208,9 @@ async def run_short_state_cases(database, tmp_path, context):
     assert provider.requests[start].messages[-1] == provider.requests[start + 1].messages[2]
     assert provider.requests[start + 1].tool_choice == "auto"
     provider._responder = lambda request: "91"
-    await chat._main_turns.run(await state.inject(initial), runtime, ShortStateOnlyBackend(state))
+    await chat.runtime.main_turns.run(
+        await state.inject(initial), runtime, ShortStateOnlyBackend(state)
+    )
     assert "91" in provider.requests[-1].messages[-1].content
 
     # State observations must refresh across requests even without local writes.
@@ -257,7 +261,7 @@ async def run_short_state_cases(database, tmp_path, context):
         )
 
     provider._responder = observe
-    result = await chat._main_turns.run(
+    result = await chat.runtime.main_turns.run(
         await state.inject(initial),
         replace(runtime, max_tool_calls=5, max_model_requests=6),
         progress,
@@ -279,7 +283,8 @@ async def run_short_state_cases(database, tmp_path, context):
     handlers._memories = SimpleNamespace()
     handlers._relationships = harness.relationships
     handlers._time = chat._time
-    handlers._agent_runner = chat._agent_runner
+    handlers.main_turns = chat.runtime.main_turns
+    handlers.main_contract = chat.runtime.runner.main_contract
     handlers._registry = registry
     handlers._gateway_factory = lambda context: None
     provider._responder = lambda request: "scheduled answer"
@@ -366,8 +371,8 @@ async def run_short_state_cases(database, tmp_path, context):
             return await super().run_llm(conversation_key, dispatch, **kwargs)
 
     gate = ObservedConcurrency(1)
-    original_concurrency = chat._agent_runner._concurrency
-    chat._agent_runner._concurrency = gate
+    original_concurrency = chat.runtime.runner._concurrency
+    chat.runtime.runner._concurrency = gate
     version_matches = AsyncMock(return_value=True)
     handlers._ledger = SimpleNamespace(
         read_scope_context=real_ledger.read_scope_context,
@@ -398,7 +403,7 @@ async def run_short_state_cases(database, tmp_path, context):
         if not waiting.done():
             waiting.cancel()
         await asyncio.gather(waiting, return_exceptions=True)
-        chat._agent_runner._concurrency = original_concurrency
+        chat.runtime.runner._concurrency = original_concurrency
         handlers._ledger = real_ledger
 
     # Runtime registration cannot make a tool callable before the frozen manifest
@@ -432,5 +437,5 @@ async def run_short_state_cases(database, tmp_path, context):
         return "not available in this deployment"
 
     provider._responder = undeclared_response
-    await chat._main_turns.run(await state.inject(initial), runtime, late_backend)
+    await chat.runtime.main_turns.run(await state.inject(initial), runtime, late_backend)
     assert late_backend.attempts == 0
