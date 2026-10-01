@@ -960,7 +960,7 @@ async def test_chat_agent_sends_only_via_explicit_tool(
     finish_memory = AsyncMock(wraps=chat._finish_memory_turn)
     monkeypatch.setattr(chat, "_finish_memory_turn", finish_memory)
     chat._tools.social_service = env.service
-    chat._agent_runner.main_contract = MainAgentContract(chat, ShortState(env.store))
+    chat.runtime.runner.main_contract = MainAgentContract(chat, ShortState(env.store))
     sender = MemorySender()
     result = await harness.processor.handle(
         InboundMessage(
@@ -1041,7 +1041,7 @@ async def test_chat_agent_recovers_unsent_final_through_send_message(
     )
     chat = harness.processor._chat
     chat._tools.social_service = env.service
-    chat._agent_runner.main_contract = MainAgentContract(chat, ShortState(env.store))
+    chat.runtime.runner.main_contract = MainAgentContract(chat, ShortState(env.store))
     sender = MemorySender()
     result = await harness.processor.handle(
         InboundMessage(
@@ -1094,7 +1094,7 @@ async def test_chat_agent_can_choose_silent_final(database: Database, tmp_path: 
     )
     chat = harness.processor._chat
     chat._tools.social_service = env.service
-    chat._agent_runner.main_contract = MainAgentContract(chat, ShortState(env.store))
+    chat.runtime.runner.main_contract = MainAgentContract(chat, ShortState(env.store))
     sender = MemorySender()
     result = await harness.processor.handle(
         InboundMessage(
@@ -1146,7 +1146,7 @@ async def test_chat_agent_rejects_repeated_unsent_final(database: Database, tmp_
     )
     chat = harness.processor._chat
     chat._tools.social_service = env.service
-    chat._agent_runner.main_contract = MainAgentContract(chat, ShortState(env.store))
+    chat.runtime.runner.main_contract = MainAgentContract(chat, ShortState(env.store))
     sender = MemorySender()
     result = await harness.processor.handle(
         InboundMessage(

@@ -157,7 +157,7 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
             repo, env.context.conversation_id, 1, source_key, source, validate, work_id=old["id"]
         ) as control:
             assert control.current["id"] == old["id"]
-            result = await chat._agent_runner.run(
+            result = await chat.runtime.runner.run(
                 (ChatMessage(role="user", content="make exam"),),
                 replace(runtime, work_control=control),
                 backend,
@@ -173,7 +173,7 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
             repo, env.context.conversation_id, 1, source_key, source, validate
         ) as control:
             assert control.current["id"] == new_id
-            result = await chat._agent_runner.run(
+            result = await chat.runtime.runner.run(
                 (ChatMessage(role="user", content="make exam"),),
                 replace(runtime, work_control=control),
                 backend,
@@ -183,7 +183,7 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
             # Crash after the delivered checkpoint, before the lifecycle transition.
             recovered = WorkControl(repo, control.lease, source_key, source, validate)
             recovered.current = await repo.get(new_id)
-            again = await chat._agent_runner.run(
+            again = await chat.runtime.runner.run(
                 (ChatMessage(role="user", content="must not replace history"),),
                 replace(runtime, work_control=recovered),
                 backend,
@@ -244,7 +244,7 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
             validate,
         ) as control:
             assert control.current is None
-            resend = await chat._agent_runner.run(
+            resend = await chat.runtime.runner.run(
                 (ChatMessage(role="user", content="send it again"),),
                 replace(runtime, work_control=control),
                 backend,

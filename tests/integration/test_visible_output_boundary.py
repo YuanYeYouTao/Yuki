@@ -212,9 +212,9 @@ async def test_provider_text_requires_explicit_delivery(
             pool=ModelClientPool(injected_profiles={profile.id: provider}),
         )
         chat._models = models
-        chat._agent_runner._models = models
+        chat.runtime.runner._models = models
         chat._tools.social_service = env.service
-        chat._agent_runner.main_contract = MainAgentContract(chat, ShortState(env.store))
+        chat.runtime.runner.main_contract = MainAgentContract(chat, ShortState(env.store))
         sender = MemorySender()
         result = await harness.processor.handle(
             InboundMessage(
@@ -315,7 +315,7 @@ async def test_received_empty_response_preserves_reasoning_during_retry(database
         max_tool_calls=2,
         max_model_requests=2,
     )
-    result = await chat._agent_runner.run(
+    result = await chat.runtime.runner.run(
         (ChatMessage(role="user", content="report the result"),), runtime, None
     )
     assert result.text == "done" and result.model_requests == 2

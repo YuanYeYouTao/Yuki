@@ -12,9 +12,8 @@ from qq_ai_bot.automation.executor import AutomationExecutor
 from qq_ai_bot.automation.models import RunStatus
 from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.config import Settings
+from qq_ai_bot.runtime.effect_queries import RuntimeEffectQueries
 from qq_ai_bot.runtime.lease_heartbeat import supervise_lease
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_wait import WorkWaitRepository
 from qq_ai_bot.time.schedules import schedule_after_completion
 from qq_ai_bot.time.service import TimeContextService
 
@@ -36,7 +35,7 @@ class AutomationWorker:
         self._repository = repository
         self._executor = executor
         self._time = time_service
-        self._waits = WorkWaitRepository(WorkRepository(repository._database))
+        self._effect_queries = RuntimeEffectQueries(repository._database)
         self._worker_id = uuid.uuid4().hex
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -70,12 +69,6 @@ class AutomationWorker:
 
     async def _loop(self) -> None:
         while not self._stop.is_set():
-            try:
-                await self._waits.deliver_due(self._time.clock.now().timestamp())
-            except Exception as exc:
-                logger.error(
-                    "automation_wait_poll_failed category=%s", type(exc).__name__, exc_info=exc
-                )
             try:
                 if not self._settings.automation_enabled:
                     await asyncio.sleep(self._settings.automation_poll_seconds)
@@ -211,9 +204,9 @@ class AutomationWorker:
         result = await self._executor.execute(automation, run)
         if result.status is RunStatus.RUNNING:
             waiting_work = result.summary.get("pending_work_id")
-            signal_waiting = isinstance(waiting_work, str) and await self._waits.is_active(
-                waiting_work
-            )
+            signal_waiting = isinstance(
+                waiting_work, str
+            ) and await self._effect_queries.has_active_wait(waiting_work)
             await self._repository.release_claim(
                 automation.id,
                 worker_id=automation.claimed_by or self._worker_id,
@@ -225,7 +218,7 @@ class AutomationWorker:
             if (
                 isinstance(waiting_work, str)
                 and signal_waiting
-                and not await self._waits.is_active(waiting_work)
+                and not await self._effect_queries.has_active_wait(waiting_work)
             ):
                 await self._repository.wake_claim(automation.id)
             return

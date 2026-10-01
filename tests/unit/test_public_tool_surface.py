@@ -25,7 +25,7 @@ async def setup(database, tmp_path):
     chat = harness.processor._chat
     chat.set_automation_tools(AutomationToolService(SimpleNamespace(enabled=True)))
     contract = MainAgentContract(chat, ShortState(WorkspaceStore(tmp_path / "state")))
-    chat._agent_runner.main_contract = contract
+    chat.runtime.runner.main_contract = contract
     await contract.definitions()
     config = await chat._runtime_config.snapshot()
     actor = ToolActor(

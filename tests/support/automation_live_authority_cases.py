@@ -66,7 +66,7 @@ async def guarded_agent_calls(handlers, context, provider):
     assert caught.value.llm_calls == 0
     assert len(provider.requests) == before
     backend = MainAgentBackend(
-        handlers._agent_runner.main_contract.chat,
+        handlers.main_contract.chat,
         ToolRuntime(
             inbound=None, gateway=None, allow_generic_onebot=False, before_model_request=revoked
         ),

@@ -376,8 +376,8 @@ class MainAgentBackend(AgentToolBackend):
             return json.dumps(
                 {"ok": False, "error": "new_input_before_execution", "executed": False}
             )
-        if name == "update_short_state" and self._service._agent_runner.main_contract is not None:
-            return await self._service._agent_runner.main_contract.state.execute(arguments_json)
+        if name == "update_short_state" and self._service.runtime.runner.main_contract is not None:
+            return await self._service.runtime.runner.main_contract.state.execute(arguments_json)
         if self._runtime.tools_closed:
             return json.dumps(
                 {
@@ -412,7 +412,7 @@ class MainAgentBackend(AgentToolBackend):
                 )
         if (
             name not in self._callable_tool_names
-            and self._service._agent_runner.main_contract is None
+            and self._service.runtime.runner.main_contract is None
         ):
             return json.dumps(
                 {"ok": False, "error": "main_agent_contract_unavailable"},
@@ -421,7 +421,7 @@ class MainAgentBackend(AgentToolBackend):
         entry = self._catalog.by_model_name(name) if self._catalog is not None else None
         descriptor = entry.descriptor if entry is not None else None
         if descriptor is None or descriptor.binding is None:
-            contract = self._service._agent_runner.main_contract
+            contract = self._service.runtime.runner.main_contract
             if contract is not None and any(
                 tool.name == name for tool in await contract.definitions()
             ):
@@ -437,7 +437,7 @@ class MainAgentBackend(AgentToolBackend):
             and effective_descriptor.effect is CapabilityEffect.READ_STATE
         )
         is_memory_write_tool = effective_descriptor.namespace_id == "memory.state.write"
-        if is_memory_write_tool and self._service._agent_runner.main_contract is not None:
+        if is_memory_write_tool and self._service.runtime.runner.main_contract is not None:
             # Enter the already-authorized write phase on invocation, not on a
             # directory lookup. Batch effect isolation is enforced by AgentRunner.
             memory_session = self._memory()
@@ -540,7 +540,7 @@ class MainAgentBackend(AgentToolBackend):
                             ),
                         )
 
-                    outcome = await self._service._run_effect(
+                    outcome = await self._service.run_effect(
                         None if name == "send_message" else execution_runtime.turn_snapshot,
                         invoke_binding,
                     )

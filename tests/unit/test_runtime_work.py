@@ -325,7 +325,7 @@ async def test_agent_loop_speaks_then_executes_and_proposes_finish(
         max_model_requests=8,
         work_control=control,
     )
-    result = await chat._agent_runner.run(
+    result = await chat.runtime.runner.run(
         (ChatMessage(role="user", content="画图"),), runtime, Backend()
     )
     assert observed == ["render"]
@@ -531,7 +531,7 @@ async def test_real_chat_entry_progress_delivery_and_work_completion(
     )
     chat = harness.processor._chat
     state = ShortState(WorkspaceStore(tmp_path / "short-state"))
-    chat._agent_runner.main_contract = MainAgentContract(chat, state)
+    chat.runtime.runner.main_contract = MainAgentContract(chat, state)
     chat._tools.short_state = state
     async with database.sessions() as session, session.begin():
         person = await ensure_person(session, "1001")
@@ -770,7 +770,7 @@ async def test_child_completion_has_one_parent_consumer_and_scheduler(
     chat = harness.processor._chat
     state = ShortState(WorkspaceStore(tmp_path / "resume-state"))
     chat._tools.short_state = state
-    chat._agent_runner.main_contract = MainAgentContract(chat, state)
+    chat.runtime.runner.main_contract = MainAgentContract(chat, state)
     client, captured = None, []
     if protocol:
         from tests.support.runtime_wire import install_wire
@@ -787,12 +787,28 @@ async def test_child_completion_has_one_parent_consumer_and_scheduler(
         turn_coordinator=chat._turn_coordinator,
         chat=chat,
     )
-    old = SandboxContinuationWorker(app)
+    old = SandboxContinuationWorker(repository)
     await old._drain_request("child-request")
     await old._drain_request("child-request")
     assert (await old.repository.get("child-request")).state == "observed"
     assert not provider.requests
-    scheduler = WorkScheduler(app)
+    from tests.support.runtime_execution import make_work_resumer
+
+    resumer = make_work_resumer(
+        repository,
+        ledger=app.ledger,
+        scopes=app.conversation_scopes,
+        turns=app.turn_coordinator,
+        router=app.presence_router,
+        config=app.runtime_config,
+        generate_self=chat.generate_self_initiative,
+        generate_wakeup=chat.generate_main_agent_wakeup,
+        validate_snapshot=chat.validate_turn_snapshot,
+        run_effect=chat.run_effect,
+        bindings=chat.runtime.bindings,
+        sandbox_tasks=tasks,
+    )
+    scheduler = WorkScheduler(repository, resumer, chat_admission_enabled=True)
     await scheduler.drain_once()
     if updates > 24:
         assert len(provider.requests) == 24
@@ -996,7 +1012,7 @@ async def test_sync_main_entry_returns_result_without_acquiring_send_authority(
     chat = harness.processor._chat
     env = await social_env(database, tmp_path)
     state = ShortState(WorkspaceStore(tmp_path / "sync-state"))
-    chat._agent_runner.main_contract = MainAgentContract(chat, state)
+    chat.runtime.runner.main_contract = MainAgentContract(chat, state)
     runtime = AgentRuntime(
         origin=TurnOrigin(origin),
         actor_user_id="10001",
@@ -1015,11 +1031,15 @@ async def test_sync_main_entry_returns_result_without_acquiring_send_authority(
         execution_id="same-invocation",
     )
     backend = ShortStateOnlyBackend(state)
-    result = await chat._main_turns.run((ChatMessage("user", "write answer"),), runtime, backend)
+    result = await chat.runtime.main_turns.run(
+        (ChatMessage("user", "write answer"),), runtime, backend
+    )
     assert result.text == "computed answer" and result.work_state == "completed"
     assert not any("progress_delivery_not_authorized" in str(r.messages) for r in provider.requests)
     count = len(provider.requests)
-    repeated = await chat._main_turns.run((ChatMessage("user", "write answer"),), runtime, backend)
+    repeated = await chat.runtime.main_turns.run(
+        (ChatMessage("user", "write answer"),), runtime, backend
+    )
     assert repeated.text == "computed answer" and repeated.model_requests == 0
     assert len(provider.requests) == count
 

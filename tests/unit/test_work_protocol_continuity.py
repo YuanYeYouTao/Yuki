@@ -459,7 +459,7 @@ async def test_runner_resumes_gemini_work_on_deepseek_without_old_send_or_native
             FakeLLMProvider(),
         )
         chat = harness.processor._chat
-        chat._agent_runner._models = models
+        chat.runtime.runner._models = models
         resumed = WorkControl(
             control.repository, control.lease, control.source_key, control.source, control.validate
         )
@@ -506,7 +506,7 @@ async def test_runner_resumes_gemini_work_on_deepseek_without_old_send_or_native
             work_control=resumed,
             compaction_brief=task,
         )
-        result = await chat._agent_runner.run(
+        result = await chat.runtime.runner.run(
             (ChatMessage("system", "new DeepSeek contract"), ChatMessage("user", "wakeup")),
             runtime,
             Backend(),
@@ -987,7 +987,7 @@ async def test_no_progress_recovery_keeps_tools_settings_and_local_execution_fen
         fixed_tools=fixed,
     )
     try:
-        result = await chat._agent_runner.run(
+        result = await chat.runtime.runner.run(
             (ChatMessage("system", "fixed"), ChatMessage("user", "audit")), runtime, Backend()
         )
     finally:
@@ -1044,7 +1044,7 @@ async def test_compaction_is_local_fence_before_any_tool_execution(
     )
     monkeypatch.setattr(WorkSession, "needs_compaction", AsyncMock(return_value=True))
     # Run owns session creation; the legacy no-anchor case must fail before dispatch.
-    result = await chat._agent_runner.run((ChatMessage("system", "fixed"), task), runtime, backend)
+    result = await chat.runtime.runner.run((ChatMessage("system", "fixed"), task), runtime, backend)
     assert result.work_state == "suspended"
     assert result.outcome.failure.code == ("ValueError" if with_anchor else "JournalUnavailable")
     backend.execute.assert_not_awaited()

@@ -5,13 +5,17 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import replace
+from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 
 from qq_ai_bot.llm.base import LLMInvalidRequestError
 from qq_ai_bot.memory.enums import MemoryScopeType
+from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.runtime.activation_outcome import ContextBoundaryChanged
+from qq_ai_bot.runtime.context_preparation import prepare_context
 from qq_ai_bot.services.agent_runner import AgentRunResult, AgentRuntime, AgentToolBackend
 from qq_ai_bot.services.agent_tools import OneBotToolGateway, ToolRuntime
 from qq_ai_bot.services.main_agent_backend import MainAgentBackend
@@ -50,7 +54,7 @@ async def run_plugin_main_turn(
     """Bound the callback wait while the Host retains an accepted activation."""
     from qq_ai_bot.runtime.work_activation import current_work_control
     from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
-    from qq_ai_bot.services.main_agent_turns import invocation_boundary
+    from qq_ai_bot.services.durable_invocations import invocation_boundary
 
     if _ACTIVE.get() or current_work_control.get() is not None:
         raise PluginPermissionError("recursive Yuki Main Agent generation is not allowed")
@@ -176,198 +180,207 @@ async def _execute_plugin_main_turn(
     inbound = invocation.inbound
     if contract is None or ledger is None:
         raise PluginPermissionError("Yuki Main Agent services are unavailable")
-    if inbound is None or not invocation.conversation_id or not invocation.presence_id:
-        raise PluginPermissionError(
-            "Yuki generation requires a real Host-bound inbound Conversation and Presence; "
-            "background callers must use the target-bound Main Agent wakeup API"
-        )
-    can_read_history = PluginPermission.MESSAGE_HISTORY_READ in host._approved_permissions
-    version, _ = await ledger.read_scope_context(inbound.scope(), limit=0)
-    if invocation.source_event_id is None:
-        raise PluginPermissionError("Yuki generation requires a ledger event anchor")
-    event = await ledger.get_event(invocation.source_event_id)
-    if (
-        version.conversation_id != invocation.conversation_id
-        or event is None
-        or event.canonical_conversation_id != version.conversation_id
-        or event.direction != "inbound"
-        or event.event_kind != "message"
-        or event.sender_user_id != invocation.actor_user_id
-        or event.author_person_id != invocation.person_id
-        or event.ingress_presence_id != invocation.presence_id
-        or (invocation.source_event_id is not None and event.id != invocation.source_event_id)
-        or event.id <= version.starts_after_event_id
-    ):
-        raise PluginPermissionError(
-            "Yuki generation source does not match the current Conversation"
-        )
-
-    async def validate() -> None:
-        if host._require(permission) is not invocation:
-            raise LLMInvalidRequestError("plugin invocation changed before model request")
-        from qq_ai_bot.identity.canonical_repository import active_person_id_for
-        from qq_ai_bot.identity.db_models import CanonicalPersonModel, PresenceModel
-
-        async with ledger._database.sessions() as session:
-            person = await session.get(CanonicalPersonModel, invocation.person_id)
-            presence = await session.get(PresenceModel, invocation.presence_id)
-            active_person = await active_person_id_for(session, invocation.actor_user_id)
+    with contract.chat.runtime.executions.track():
+        if inbound is None or not invocation.conversation_id or not invocation.presence_id:
+            raise PluginPermissionError(
+                "Yuki generation requires a real Host-bound inbound Conversation and Presence; "
+                "background callers must use the target-bound Main Agent wakeup API"
+            )
+        can_read_history = PluginPermission.MESSAGE_HISTORY_READ in host._approved_permissions
+        version, _ = await ledger.read_scope_context(inbound.scope(), limit=0)
+        if invocation.source_event_id is None:
+            raise PluginPermissionError("Yuki generation requires a ledger event anchor")
+        event = await ledger.get_event(invocation.source_event_id)
         if (
-            person is None
-            or not person.enabled
-            or active_person != invocation.person_id
-            or presence is None
-            or not presence.enabled
-            or presence.external_account_id != invocation.bot_user_id
+            version.conversation_id != invocation.conversation_id
+            or event is None
+            or event.canonical_conversation_id != version.conversation_id
+            or event.direction != "inbound"
+            or event.event_kind != "message"
+            or event.sender_user_id != invocation.actor_user_id
+            or event.author_person_id != invocation.person_id
+            or event.ingress_presence_id != invocation.presence_id
+            or (invocation.source_event_id is not None and event.id != invocation.source_event_id)
+            or event.id <= version.starts_after_event_id
         ):
-            raise PluginPermissionError("plugin source identity is no longer active")
-        if not await ledger.read_version_matches(version):
-            raise ContextBoundaryChanged("plugin Conversation changed before model request")
-        if runtime.before_model_request is not None:
-            await runtime.before_model_request()
-
-    payload = {"plugin": {"id": host.plugin_id, "source_event_id": event.id}}
-    if context_data:
-        payload["plugin"]["requested_context"] = context_data
-    content = json.dumps(
-        {
-            "origin": "plugin_request",
-            "content_trust": "untrusted_plugin_input",
-            "instruction": instruction,
-        },
-        ensure_ascii=False,
-    )
-    context = await contract.chat._context_assembler.assemble_plugin(
-        inbound=inbound,
-        content=content,
-        metadata=payload,
-        current_time=runtime.current_time,
-        read_history=can_read_history,
-        projection_scope=json.dumps(
-            [
-                "plugin-sdk",
-                host.plugin_id,
-                invocation.actor_user_id,
-                permission.value,
-                context_profile,
-                sorted(runtime.allowed_capabilities),
-            ],
-            separators=(",", ":"),
-        ),
-    )
-    if context.read_version != version:
-        raise ContextBoundaryChanged("plugin source changed during context preparation")
-    main = cast(MainAgentTurnService, contract.chat._main_turns)
-    execution_id = (
-        f"plugin:{host.plugin_id}:{invocation.source_event_id}:"
-        + hashlib.sha256((permission.value + instruction + context_data).encode()).hexdigest()
-    )
-    tools = MainAgentBackend(
-        contract.chat,
-        ToolRuntime(
-            inbound=inbound,
-            gateway=cast(OneBotToolGateway | None, runtime.gateway),
-            allow_generic_onebot=False,
-            allow_admin_actions=False,
-            allow_automation=False,
-            conversation_key=invocation.conversation_key,
-            execution_id=execution_id,
-            allow_work_environment=True,
-            read_scope=inbound.scope(),
-            read_target_id=inbound.space_id or inbound.person_id,
-            trigger_event_id=invocation.source_event_id,
-            actor_user_id=runtime.actor_user_id,
-            actor_is_superuser=runtime.actor_is_superuser,
-            current_group_id=runtime.current_group_id,
-            runtime_config=runtime.runtime_config,
-            origin=runtime.origin,
-            memory_allowed_scopes=(
-                (
-                    (MemoryScopeType.PERSON, MemoryScopeType.PERSON_GROUP)
-                    if PluginPermission.MEMORY_PERSON_READ in host._approved_permissions
-                    else ()
-                )
-                + (
-                    (MemoryScopeType.GROUP,)
-                    if PluginPermission.MEMORY_GROUP_READ in host._approved_permissions
-                    else ()
-                )
-            ),
-            conversation_id=inbound.conversation_id,
-            presence_id=inbound.presence_id,
-            person_id=inbound.person_id,
-            space_id=inbound.space_id,
-            bot_user_id=inbound.bot_user_id,
-            scope_type=inbound.scope_type,
-            before_model_request=validate,
-        ),
-        allowed_tools=runtime.allowed_capabilities | {"update_short_state", "read_tool_artifact"},
-    )
-    marker = _ACTIVE.set(True)
-    try:
-        async with contract.chat._turn_coordinator.hold(invocation.conversation_key):
-            await validate()
-            composition = await main.compose(
-                inbound=None,
-                context=context,
-                runtime=runtime.runtime_config,
-                visual_observation=None,
-                visual_failure=False,
-                scope_type=inbound.scope_type,
-                include_plugin_context=False,
+            raise PluginPermissionError(
+                "Yuki generation source does not match the current Conversation"
             )
 
-            async def validate_and_commit() -> None:
-                await validate()
-                if composition.commit_projection is not None:
-                    await composition.commit_projection()
+        async def validate() -> None:
+            if host._require(permission) is not invocation:
+                raise LLMInvalidRequestError("plugin invocation changed before model request")
+            from qq_ai_bot.identity.canonical_repository import active_person_id_for
+            from qq_ai_bot.identity.db_models import CanonicalPersonModel, PresenceModel
 
-            result = await main.run(
-                composition.messages,
-                replace(
-                    runtime,
-                    conversation_key=invocation.conversation_key,
-                    execution_id=execution_id,
-                    invocation_goal=instruction,
-                    invocation_source={
-                        "owner": "plugin_invocation",
-                        "plugin_id": host.plugin_id,
-                        "approval_revision": host._services.approval_revision,
-                        "trigger_event_id": invocation.source_event_id,
-                        "instruction": instruction,
-                        "context_data": context_data,
-                        "context_profile": context_profile,
-                        "conversation_key": invocation.conversation_key,
-                        "permission": permission.value,
-                        "allowed_tools": sorted(runtime.allowed_capabilities),
-                        "max_model_requests": runtime.max_model_requests,
-                        "max_tool_calls": runtime.max_tool_calls,
-                        "person_id": inbound.person_id,
-                        "space_id": inbound.space_id,
-                        "presence_id": inbound.presence_id,
-                        "bot_user_id": inbound.bot_user_id,
-                        "actor_is_superuser": runtime.actor_is_superuser,
-                    },
-                    before_model_request=validate_and_commit,
+            async with ledger._database.sessions() as session:
+                person = await session.get(CanonicalPersonModel, invocation.person_id)
+                presence = await session.get(PresenceModel, invocation.presence_id)
+                active_person = await active_person_id_for(session, invocation.actor_user_id)
+            if (
+                person is None
+                or not person.enabled
+                or active_person != invocation.person_id
+                or presence is None
+                or not presence.enabled
+                or presence.external_account_id != invocation.bot_user_id
+            ):
+                raise PluginPermissionError("plugin source identity is no longer active")
+            if not await ledger.read_version_matches(version):
+                raise ContextBoundaryChanged("plugin Conversation changed before model request")
+            if runtime.before_model_request is not None:
+                await runtime.before_model_request()
+
+        payload = {"plugin": {"id": host.plugin_id, "source_event_id": event.id}}
+        if context_data:
+            payload["plugin"]["requested_context"] = context_data
+        content = json.dumps(
+            {
+                "origin": "plugin_request",
+                "content_trust": "untrusted_plugin_input",
+                "instruction": instruction,
+            },
+            ensure_ascii=False,
+        )
+        context = await prepare_context(
+            partial(
+                contract.chat._context_assembler.assemble_plugin,
+                inbound=inbound,
+                content=content,
+                metadata=payload,
+                current_time=runtime.current_time,
+                read_history=can_read_history,
+                projection_scope=json.dumps(
+                    [
+                        "plugin-sdk",
+                        host.plugin_id,
+                        invocation.actor_user_id,
+                        permission.value,
+                        context_profile,
+                        sorted(runtime.allowed_capabilities),
+                    ],
+                    separators=(",", ":"),
                 ),
-                tools,
-            )
-            return result
-    finally:
-        _ACTIVE.reset(marker)
+            ),
+            current_work_control.get(),
+        )
+        if context.read_version != version:
+            raise ContextBoundaryChanged("plugin source changed during context preparation")
+        main = cast(MainAgentTurnService, contract.chat.runtime.main_turns)
+        execution_id = (
+            f"plugin:{host.plugin_id}:{invocation.source_event_id}:"
+            + hashlib.sha256((permission.value + instruction + context_data).encode()).hexdigest()
+        )
+        tools = MainAgentBackend(
+            contract.chat,
+            ToolRuntime(
+                inbound=inbound,
+                gateway=cast(OneBotToolGateway | None, runtime.gateway),
+                allow_generic_onebot=False,
+                allow_admin_actions=False,
+                allow_automation=False,
+                conversation_key=invocation.conversation_key,
+                execution_id=execution_id,
+                allow_work_environment=True,
+                read_scope=inbound.scope(),
+                read_target_id=inbound.space_id or inbound.person_id,
+                trigger_event_id=invocation.source_event_id,
+                actor_user_id=runtime.actor_user_id,
+                actor_is_superuser=runtime.actor_is_superuser,
+                current_group_id=runtime.current_group_id,
+                runtime_config=runtime.runtime_config,
+                origin=runtime.origin,
+                memory_allowed_scopes=(
+                    (
+                        (MemoryScopeType.PERSON, MemoryScopeType.PERSON_GROUP)
+                        if PluginPermission.MEMORY_PERSON_READ in host._approved_permissions
+                        else ()
+                    )
+                    + (
+                        (MemoryScopeType.GROUP,)
+                        if PluginPermission.MEMORY_GROUP_READ in host._approved_permissions
+                        else ()
+                    )
+                ),
+                conversation_id=inbound.conversation_id,
+                presence_id=inbound.presence_id,
+                person_id=inbound.person_id,
+                space_id=inbound.space_id,
+                bot_user_id=inbound.bot_user_id,
+                scope_type=inbound.scope_type,
+                before_model_request=validate,
+            ),
+            allowed_tools=runtime.allowed_capabilities
+            | {"update_short_state", "read_tool_artifact"},
+        )
+        marker = _ACTIVE.set(True)
+        try:
+            async with contract.chat._turn_coordinator.hold(invocation.conversation_key):
+                await validate()
+                composition = await main.compose(
+                    inbound=None,
+                    context=context,
+                    runtime=runtime.runtime_config,
+                    visual_observation=None,
+                    visual_failure=False,
+                    scope_type=inbound.scope_type,
+                    include_plugin_context=False,
+                )
+
+                async def validate_and_commit() -> None:
+                    await validate()
+                    if composition.commit_projection is not None:
+                        await composition.commit_projection()
+
+                result = await main.run(
+                    composition.messages,
+                    replace(
+                        runtime,
+                        conversation_key=invocation.conversation_key,
+                        execution_id=execution_id,
+                        invocation_goal=instruction,
+                        invocation_source={
+                            "owner": "plugin_invocation",
+                            "plugin_id": host.plugin_id,
+                            "approval_revision": host._services.approval_revision,
+                            "trigger_event_id": invocation.source_event_id,
+                            "instruction": instruction,
+                            "context_data": context_data,
+                            "context_profile": context_profile,
+                            "conversation_key": invocation.conversation_key,
+                            "permission": permission.value,
+                            "allowed_tools": sorted(runtime.allowed_capabilities),
+                            "max_model_requests": runtime.max_model_requests,
+                            "max_tool_calls": runtime.max_tool_calls,
+                            "person_id": inbound.person_id,
+                            "space_id": inbound.space_id,
+                            "presence_id": inbound.presence_id,
+                            "bot_user_id": inbound.bot_user_id,
+                            "actor_is_superuser": runtime.actor_is_superuser,
+                        },
+                        before_model_request=validate_and_commit,
+                    ),
+                    tools,
+                )
+                return result
+        finally:
+            _ACTIVE.reset(marker)
 
 
-async def resume_plugin_work(app: object, work: dict[str, Any], source: dict[str, Any]) -> None:
+async def resume_plugin_work(
+    lookup_host: Callable[[str], HostPluginContext | None],
+    ledger: EventLedgerRepository,
+    work: dict[str, Any],
+    source: dict[str, Any],
+) -> None:
     """Host-owned continuation after the original SDK callback has returned."""
     from dataclasses import replace
-    from typing import Any
 
     from qq_ai_bot.automation.models import TurnOrigin
     from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
     from qq_ai_bot.plugin_host.facades import PluginInvocation, _agent_dependencies
 
-    container = cast(Any, app)
-    host = container._plugin_contexts.get(source.get("plugin_id"))
+    host = lookup_host(str(source.get("plugin_id", "")))
     if host is None:
         raise PluginPermissionError("plugin work owner is no longer enabled")
     if source.get("approval_revision") != host._services.approval_revision:
@@ -378,7 +391,7 @@ async def resume_plugin_work(app: object, work: dict[str, Any], source: dict[str
     allowed = frozenset(source["allowed_tools"])
     if not allowed <= host._services.agent_capabilities:
         raise PluginPermissionError("plugin work capabilities changed")
-    event = await container.ledger.get_event(source["trigger_event_id"])
+    event = await ledger.get_event(source["trigger_event_id"])
     if event is None or event.canonical_conversation_id != work["conversation_id"]:
         raise PluginPermissionError("plugin work source is unavailable")
     inbound = InboundMessage(

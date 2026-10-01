@@ -21,9 +21,7 @@ from qq_ai_bot.mcp.repository import MCPRepository, ToolArtifactRepository
 from qq_ai_bot.persistence.models import MemoryToolReceiptModel
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-from qq_ai_bot.runtime.subagent_scheduler import SubagentScheduler
 from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_scheduler import WorkScheduler
 from qq_ai_bot.runtime.work_schema_v1 import journal
 from qq_ai_bot.services.main_agent_contract import MainAgentContract
 from qq_ai_bot.workspace.short_state import ShortState
@@ -101,7 +99,7 @@ async def test_self_main_segment_resume_preserves_real_wire_prefix_and_silent_co
     state = ShortState(WorkspaceStore(tmp_path / "state"))
     chat._tools.short_state = state
     contract = MainAgentContract(chat, state)
-    chat._agent_runner.main_contract = contract
+    chat.runtime.runner.main_contract = contract
     client, captured = install_wire(chat, provider, protocol, native=native)
     registry = GatewayConnectionRegistry(providers=builtin_provider_catalog())
     bot = SimpleNamespace(self_id="8000")
@@ -127,14 +125,28 @@ async def test_self_main_segment_resume_preserves_real_wire_prefix_and_silent_co
         turn_coordinator=chat._turn_coordinator,
     )
     try:
-        scheduler = WorkScheduler(app)
-        await scheduler._resume_self(item, source)
+        from tests.support.runtime_execution import make_work_resumer
+
+        resumer = make_work_resumer(
+            repo,
+            ledger=chat._ledger,
+            scopes=app.conversation_scopes,
+            turns=app.turn_coordinator,
+            router=app.presence_router,
+            config=app.runtime_config,
+            generate_self=chat.generate_self_initiative,
+            generate_wakeup=chat.generate_main_agent_wakeup,
+            validate_snapshot=chat.validate_turn_snapshot,
+            run_effect=chat.run_effect,
+            bindings=chat.runtime.bindings,
+        )
+        await resumer.resume(item)
         first = await repo.get(item["id"])
         assert first["state"] == "queued", failures or first
         assert first["model_requests"] == 24
-        await scheduler._resume_self(first, source)
+        await resumer.resume(first)
         final = await repo.get(item["id"])
-        assert final["state"] == "completed", (final, scheduler._last_error)
+        assert final["state"] == "completed", (final, resumer.last_error)
         assert final["model_requests"] == 25
         assert len(captured) == 25
         field = "input" if protocol == "responses" else "messages"
@@ -224,7 +236,7 @@ async def test_self_worker_returns_internal_result_without_group_delivery(
     state = ShortState(WorkspaceStore(tmp_path / "state"))
     chat._tools.short_state = state
     contract = MainAgentContract(chat, state)
-    chat._agent_runner.main_contract = contract
+    chat.runtime.runner.main_contract = contract
     repo = WorkRepository(database)
     lease = await repo.acquire(source["conversation_id"], 1)
     parent = await repo.accept(
@@ -246,20 +258,22 @@ async def test_self_worker_returns_internal_result_without_group_delivery(
         },
     )
     await repo.release(lease)
-    scheduler = SubagentScheduler(
-        SimpleNamespace(
-            database=database,
-            chat=chat,
-            settings=harness.settings,
-            runtime_config=chat._runtime_config,
-        )
+    from tests.support.runtime_execution import make_child_executor
+
+    executor = make_child_executor(
+        repo,
+        chat=chat,
+        config=chat._runtime_config,
+        runner=chat.runtime.runner,
+        load_tools=contract.definitions,
+        context_token_limit=harness.settings.subagent_context_token_limit,
     )
     from qq_ai_bot.runtime.subagent_tools import WORKER_REQUIRED_NAMES
 
     assert WORKER_REQUIRED_NAMES <= {tool.name for tool in await contract.definitions()}
-    await scheduler.run(child_id)
+    await executor.run(child_id)
     child = await repo.get(child_id)
-    assert child["state"] == "completed", failures or (child, scheduler.last_error)
+    assert child["state"] == "completed", failures or (child, executor.last_error)
     assert len(provider.requests) == (3 if repeat_tool_ids else 1)
     result = await workers.related(parent["id"], child_id)
     assert "检查完成" in result["result_json"]

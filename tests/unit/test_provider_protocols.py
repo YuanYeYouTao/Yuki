@@ -585,7 +585,7 @@ async def test_truncated_tool_call_recovers_without_executing(database, kind, em
             max_model_requests=2,
             fixed_tools=tools,
         )
-        result = await chat._agent_runner.run(
+        result = await chat.runtime.runner.run(
             (ChatMessage("system", "fixed"), ChatMessage("user", "inspect")), runtime, backend
         )
         assert result.text == "done" and result.model_requests == 2

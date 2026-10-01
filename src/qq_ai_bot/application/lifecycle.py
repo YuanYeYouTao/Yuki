@@ -50,10 +50,16 @@ class LifecycleRegistry:
                 started.append(entry)
                 if entry.start is not None:
                     await entry.start()
-        except Exception as start_error:
+        except BaseException as start_error:
             close_errors = await self._close_entries(started)
             if close_errors:
-                raise ExceptionGroup(
+                if not isinstance(start_error, Exception):
+                    for close_error in close_errors:
+                        start_error.add_note(
+                            f"startup rollback failed: {type(close_error).__name__}"
+                        )
+                    raise
+                raise BaseExceptionGroup(
                     "application start and rollback failed",
                     [start_error, *close_errors],
                 ) from start_error
@@ -66,7 +72,15 @@ class LifecycleRegistry:
         close_errors = await self._close_entries(self._entries)
         self._started = False
         if close_errors:
-            raise ExceptionGroup("application shutdown failed", close_errors)
+            cancellation = next(
+                (error for error in close_errors if not isinstance(error, Exception)), None
+            )
+            if cancellation is not None:
+                for error in close_errors:
+                    if error is not cancellation:
+                        cancellation.add_note(f"shutdown failed: {type(error).__name__}")
+                raise cancellation
+            raise BaseExceptionGroup("application shutdown failed", close_errors)
 
     async def health(self) -> dict[str, Any]:
         results: dict[str, Any] = {}
@@ -82,14 +96,14 @@ class LifecycleRegistry:
         return results
 
     @staticmethod
-    async def _close_entries(entries: list[LifecycleEntry]) -> list[Exception]:
-        errors: list[Exception] = []
+    async def _close_entries(entries: list[LifecycleEntry]) -> list[BaseException]:
+        errors: list[BaseException] = []
         for entry in reversed(entries):
             if entry.close is None:
                 continue
             try:
                 await entry.close()
-            except Exception as exc:
+            except BaseException as exc:
                 errors.append(exc)
         return errors
 

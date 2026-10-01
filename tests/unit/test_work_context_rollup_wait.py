@@ -4,6 +4,8 @@ import asyncio
 import json
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from functools import partial
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import delete, event, select, update
@@ -14,11 +16,18 @@ from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationRollupJobModel,
     CanonicalConversationRollupModel,
 )
+from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.runtime.activation_outcome import WorkActivationHandled
+from qq_ai_bot.runtime.context_preparation import (
+    ContextPreparationMode,
+    ContextRollupRequired,
+    context_preparation_mode,
+    prepare_context,
+)
 from qq_ai_bot.runtime.work_activation import activate_work
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import work
@@ -193,17 +202,21 @@ async def test_over_budget_assembler_parks_before_rollup_model_and_releases_acti
                 identity, turn=turn, before_event_id=None
             )
             await asyncio.wait_for(
-                assembler._ensure_uncovered_fits_budget(
-                    snapshot=snapshot,
-                    recent=snapshot.recent,
-                    current_event_id=None,
-                    content="continue",
-                    yuki_account_ids=frozenset({"80001"}),
-                    current_message_override=ChatMessage("user", "continue"),
-                    remainder=1,
-                    event_limit=1,
-                    identity=identity,
-                    turn=turn,
+                prepare_context(
+                    partial(
+                        assembler._ensure_uncovered_fits_budget,
+                        snapshot=snapshot,
+                        recent=snapshot.recent,
+                        current_event_id=None,
+                        content="continue",
+                        yuki_account_ids=frozenset({"80001"}),
+                        current_message_override=ChatMessage("user", "continue"),
+                        remainder=1,
+                        event_limit=1,
+                        identity=identity,
+                        turn=turn,
+                    ),
+                    control,
                 ),
                 timeout=0.5,
             )
@@ -230,6 +243,84 @@ async def test_existing_model_history_is_not_recompressed_for_preparation(databa
         assert (
             await reader.scalar(select(CanonicalConversationRollupJobModel.conversation_id)) is None
         )
+
+
+@pytest.mark.asyncio
+async def test_expired_preparation_uses_immediate_fallback_without_fresh_model_wait(
+    database, tmp_path, monkeypatch
+):
+    control = await _control(database, tmp_path)
+    await control.repository.checkpoint(
+        control.lease,
+        control.current["id"],
+        {"context_rollup": {"coverage": 0, "starts_after": 0, "deadline": 1}},
+    )
+    control.current = await control.repository.get(control.current["id"])
+    harness = build_harness(database, make_settings(database.url))
+    assembler = harness.processor._chat._context_assembler
+    identity = ConversationScope.group("80001", "20001")
+    state = await harness.conversation_scopes.get(identity)
+    turn = ConversationTurnSnapshot(state.id, identity.key, 1, 1, 1)
+    snapshot = await assembler._load_history_snapshot(identity, turn=turn, before_event_id=None)
+    fallback = AsyncMock(return_value=False)
+    monkeypatch.setattr(assembler._rollup_service, "ensure_required_coverage", fallback)
+    with pytest.raises(ConversationCoverageError):
+        await prepare_context(
+            partial(
+                assembler._ensure_uncovered_fits_budget,
+                snapshot=snapshot,
+                recent=snapshot.recent,
+                current_event_id=None,
+                content="continue",
+                yuki_account_ids=frozenset({"80001"}),
+                current_message_override=ChatMessage("user", "continue"),
+                remainder=1,
+                event_limit=1,
+                identity=identity,
+                turn=turn,
+            ),
+            control,
+        )
+    fallback.assert_awaited_once()
+    assert fallback.await_args.kwargs["deadline"] <= asyncio.get_running_loop().time()
+    assert context_preparation_mode.get() is ContextPreparationMode.FOREGROUND
+    assert harness.provider.requests == []
+    assert (await control.repository.get(control.current["id"]))["model_requests"] == 0
+    await control.repository.release(control.lease)
+
+
+@pytest.mark.asyncio
+async def test_successful_fallback_clears_only_original_preparation_and_restores_mode(
+    database, tmp_path
+):
+    control = await _control(database, tmp_path)
+    identity = control.current["id"]
+    await control.repository.checkpoint(
+        control.lease,
+        identity,
+        {
+            "retain": "original-cursor",
+            "context_rollup": {"coverage": 0, "starts_after": 0, "deadline": 1},
+        },
+    )
+    control.current = await control.repository.get(identity)
+    source = await version(control)
+    modes = []
+
+    async def build():
+        mode = context_preparation_mode.get()
+        modes.append(mode)
+        if mode is ContextPreparationMode.DURABLE:
+            raise ContextRollupRequired(source, 0, 90)
+        return "bounded prepared context"
+
+    assert await prepare_context(build, control) == "bounded prepared context"
+    assert modes == [ContextPreparationMode.DURABLE, ContextPreparationMode.FALLBACK]
+    current = await control.repository.get(identity)
+    assert current["id"] == identity and current["model_requests"] == 0
+    assert json.loads(current["checkpoint_json"]) == {"retain": "original-cursor"}
+    assert context_preparation_mode.get() is ContextPreparationMode.FOREGROUND
+    await control.repository.release(control.lease)
 
 
 @pytest.mark.asyncio

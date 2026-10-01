@@ -12,8 +12,8 @@ from qq_ai_bot.event_prompt import ChatEventPromptRenderer
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.web_repository import WebSearchSourceRepository
-from qq_ai_bot.sandbox.source_recovery import recover_source
 from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
+from qq_ai_bot.services.execution_sources import recover_source
 from qq_ai_bot.web.base import WebSearchError
 from qq_ai_bot.web.models import WebSearchResponse, WebSearchSource
 

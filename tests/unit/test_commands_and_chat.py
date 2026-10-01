@@ -167,7 +167,7 @@ async def test_only_mutation_access_appends_the_write_receipt_contract(database)
         )
         variants = []
         for exclusive in (False, True):
-            composed = await chat._main_turns.compose(
+            composed = await chat.runtime.main_turns.compose(
                 inbound=None,
                 context=context,
                 runtime=runtime,

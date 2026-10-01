@@ -58,7 +58,7 @@ async def test_paused_provider_tool_replays_without_synthetic_recovery_message(d
         max_tool_calls=0,
         max_model_requests=2,
     )
-    result = await chat._agent_runner.run(
+    result = await chat.runtime.runner.run(
         (ChatMessage(role="user", content="搜索后回答"),), runtime, None
     )
     assert result.text == "完成"
@@ -153,7 +153,7 @@ async def test_receipt_continues_original_wire_chain(database, protocol, recover
         max_model_requests=8,
     )
     try:
-        result = await chat._agent_runner.run(
+        result = await chat.runtime.runner.run(
             (ChatMessage(role="user", content="处理后继续核对"),), runtime, Backend()
         )
     finally:
@@ -236,7 +236,7 @@ async def test_real_memory_receipt_returns_to_model_without_reusing_write_author
 
     chat = harness.processor._chat
     chat._tools._memory_mutations = service
-    chat._agent_runner.main_contract = MainAgentContract(
+    chat.runtime.runner.main_contract = MainAgentContract(
         chat, ShortState(WorkspaceStore(tmp_path / "state"))
     )
     sender = MemorySender()

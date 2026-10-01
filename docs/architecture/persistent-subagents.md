@@ -37,6 +37,12 @@ SQLite BUSY/LOCKED 触发有界原链重排，保留执行回执、检查点和�
 
 ## 生命周期
 
+`YukiRuntime` 与所有会话共用主 Runner，拥有 `SubagentScheduler` 的启停。
+调度器负责有界候选与容量；`SubagentExecution` 显式取得工作者需要的能力，
+负责来源恢复、Memory session、工作者合同与原结果回传。它不访问整个应用定位器。
+child 使用自己的 lease，在取得执行权后复用 root 的激活监督、续租、恢复和释放骨架；
+关闭 runtime 收拢执行时仍保留原 child/root ID、预算、回执与未知效果。
+
 0057 增加子任务身份、父子关系、独立租约、根预算和内容寻址媒体表。
 父子通信复用持久输入日志：消息 ID、关联问题、消费状态一起保存，重复通知不重复消费。
 工作者提问后进入 `waiting_parent`（存储状态为 `waiting_user`），等待命令时进入

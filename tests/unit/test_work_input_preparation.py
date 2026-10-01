@@ -83,7 +83,7 @@ async def test_runner_unready_input_releases_activation_without_provider_request
             work_control=control,
         )
         result = await asyncio.wait_for(
-            chat._agent_runner.run(
+            chat.runtime.runner.run(
                 (ChatMessage("user", "original task"),),
                 runtime,
                 SimpleNamespace(definitions=lambda *_args, **_kwargs: work_control_tools()),

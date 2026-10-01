@@ -65,7 +65,7 @@ async def setup_run(
     chat._tools.social_service = env.service
     env.service.runtime_config = chat._runtime_config
     contract = MainAgentContract(chat, ShortState(env.store))
-    chat._agent_runner.main_contract = contract
+    chat.runtime.runner.main_contract = contract
     repository = AutomationRepository(database)
 
     def gateway(context):
@@ -76,15 +76,18 @@ async def setup_run(
             router=env.router,
         )
 
-    handlers = object.__new__(AutomationCapabilityHandlers)
-    handlers._settings = settings
-    handlers._runtime_config = chat._runtime_config
-    handlers._ledger = harness.ledger
-    handlers._memories = chat._memories
-    handlers._relationships = harness.relationships
-    handlers._time = chat._time
-    handlers._agent_runner = chat._agent_runner
-    handlers._gateway_factory = gateway
+    handlers = AutomationCapabilityHandlers(
+        settings=settings,
+        main_turns=chat.runtime.main_turns,
+        main_contract=chat.runtime.runner.main_contract,
+        runtime_config=chat._runtime_config,
+        time_service=chat._time,
+        ledger=harness.ledger,
+        memories=chat._memories,
+        relationships=harness.relationships,
+        web_provider=None,
+        gateway_factory=gateway,
+    )
     registry = build_capability_registry(
         {**handlers.mapping(), **SocialAutomationAdapter(env.service, None, None).mapping()}
     )

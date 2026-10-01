@@ -187,7 +187,7 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             ),
             pool=ModelClientPool(injected_profiles={"wire": provider}),
         )
-        chat._agent_runner._models = models
+        chat.runtime.runner._models = models
         chat._models = models
         handlers = object.__new__(AutomationCapabilityHandlers)
         handlers._settings = harness.settings
@@ -196,7 +196,7 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
         handlers._memories = chat._memories
         handlers._relationships = harness.relationships
         handlers._time = chat._time
-        handlers._agent_runner = chat._agent_runner
+        handlers.main_turns = chat.runtime.main_turns
         forbidden_send = AsyncMock(
             side_effect=AssertionError("pure generation reached send handler")
         )
@@ -205,7 +205,8 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
         )
         handlers._gateway_factory = lambda context: None
         contract = MainAgentContract(chat, state)
-        chat._agent_runner.main_contract = contract
+        chat.runtime.runner.main_contract = contract
+        handlers.main_contract = contract
         chat._tools.short_state = state
         manifest = await contract.definitions()
         python_tool = next(t for t in manifest if t.name == "run_python")
@@ -235,9 +236,10 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
 
                 # Reopen the projection service to prove reuse comes from SQLite,
                 # including the old dynamic envelope, rather than in-memory state.
-                chat._main_turns = MainAgentTurnService(
-                    chat._prompt_composer, chat._agent_runner, database
+                chat.runtime.main_turns = MainAgentTurnService(
+                    chat._prompt_composer, chat.runtime.runner, database
                 )
+                handlers.main_turns = chat.runtime.main_turns
                 from qq_ai_bot.domain.messages import (
                     AttachmentKind,
                     OutboundMedia,
@@ -294,7 +296,7 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             services=PluginFacadeServices(
                 ledger=harness.ledger,
                 people=chat._people,
-                agent_runner=chat._agent_runner,
+                agent_runner=chat.runtime.runner,
                 agent_capabilities=frozenset({"get_person_memories"}),
                 runtime_config=chat._runtime_config,
             ),
@@ -384,7 +386,7 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             async def recurse(*args, **kwargs):
                 return await plugin.llm.generate("nested")
 
-            with patch.object(chat._main_turns, "run", recurse):
+            with patch.object(chat.runtime.main_turns, "run", recurse):
                 with pytest.raises(PluginPermissionError, match="recursive"):
                     await plugin.agent.run("outer")
         assert sum(map(len, captured.values())) == before

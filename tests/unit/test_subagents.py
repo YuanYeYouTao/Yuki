@@ -162,12 +162,19 @@ async def test_worker_independent_lease_messages_and_dormant_resume(database, tm
     from qq_ai_bot.runtime.subagent_scheduler import SubagentScheduler
 
     database.subagents_enabled = False
+    executor = SimpleNamespace(
+        prepare=AsyncMock(),
+        cancel_commands=AsyncMock(),
+        run=AsyncMock(),
+        definitions=(),
+        last_error=None,
+    )
     scheduler = SubagentScheduler(
-        SimpleNamespace(
-            database=database,
-            settings=SimpleNamespace(runtime_work_enabled=True, global_llm_concurrency=4),
-            main_agent_contract=SimpleNamespace(definitions=AsyncMock(return_value=())),
-        )
+        repo,
+        workers,
+        executor,
+        admission_enabled=False,
+        global_llm_concurrency=4,
     )
     await scheduler.start()
     assert (await scheduler.health())["running"]
@@ -211,7 +218,6 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
     from qq_ai_bot.identity.db_models import CanonicalSpaceModel
     from qq_ai_bot.llm.fake import FakeLLMProvider
     from qq_ai_bot.persistence.models import ChatEventModel
-    from qq_ai_bot.runtime.subagent_scheduler import SubagentScheduler
     from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
     from qq_ai_bot.services.main_agent_contract import MainAgentContract
     from qq_ai_bot.workspace.short_state import ShortState
@@ -320,7 +326,7 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
     native = protocol == "responses_native"
     protocol = "responses" if native else protocol
     client, wire = install_wire(chat, provider, protocol, native=native)
-    chat._agent_runner.main_contract = MainAgentContract(
+    chat.runtime.runner.main_contract = MainAgentContract(
         chat, ShortState(WorkspaceStore(tmp_path / "state"))
     )
     app = SimpleNamespace(
@@ -331,25 +337,37 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
         runtime_config=chat._runtime_config,
         sandbox_tasks=SandboxTaskRepository(database),
     )
-    scheduler = SubagentScheduler(app)
-    await scheduler.run(identity)
+    from tests.support.runtime_execution import make_child_executor
+
+    executor = make_child_executor(
+        repo,
+        chat=chat,
+        config=app.runtime_config,
+        runner=chat.runtime.runner,
+        load_tools=chat.runtime.runner.main_contract.definitions,
+        context_token_limit=settings.subagent_context_token_limit,
+        ledger=app.ledger,
+        sandbox_tasks=app.sandbox_tasks,
+        sandbox_client=chat._tools.sandbox_client,
+    )
+    await executor.run(identity)
     if scenario == "segment":
         assert (await repo.get(identity))["state"] == "queued"
         assert (await repo.get(identity))["model_requests"] == 24
-        await scheduler.run(identity)
+        await executor.run(identity)
     elif scenario == "business":
         assert (await repo.get(identity))["state"] == "queued"
         assert (await repo.get(identity))["tool_calls"] == 32
         assert len(sandbox_calls) == 32
         assert all(call[2]["source"]["work_id"] == identity for call in sandbox_calls)
         assert all(call[2]["source"]["parent_work_id"] == parent["id"] for call in sandbox_calls)
-        await scheduler.run(identity)
+        await executor.run(identity)
     elif scenario == "question":
         assert (await repo.get(identity))["state"] == "waiting_user"
         await workers.message(
             lease, parent["id"], identity, "answer-color", "Blue", reply_to="question"
         )
-        await scheduler.run(identity)
+        await executor.run(identity)
     assert (await repo.get(identity))["state"] == "completed"
     first_tools = provider.requests[0].tools
     names = {t.name for t in first_tools}
@@ -359,7 +377,7 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
     assert "subagent_message" in names and "search_memory" in names
     assert not names & {"send_group_message", "memory_change", "subagent_start", "report_progress"}
     await workers.message(lease, parent["id"], identity, "continue", "Check again")
-    await scheduler.run(identity)
+    await executor.run(identity)
     assert (await repo.get(identity))["state"] == "completed"
     assert len(provider.requests) == 4 + len(leading)
     assert all(r.tools == first_tools for r in provider.requests)

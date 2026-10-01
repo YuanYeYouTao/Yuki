@@ -216,14 +216,15 @@ async def test_generation_keeps_dynamic_automation_data_out_of_system_messages(
     handlers._memories = SimpleNamespace()
     handlers._relationships = harness.relationships
     handlers._time = chat._time
-    handlers._agent_runner = chat._agent_runner
+    handlers.main_turns = chat.runtime.main_turns
     from qq_ai_bot.services.main_agent_contract import MainAgentContract
     from qq_ai_bot.workspace.short_state import ShortState
     from qq_ai_bot.workspace.store import WorkspaceStore
 
-    handlers._agent_runner.main_contract = MainAgentContract(
+    chat.runtime.runner.main_contract = MainAgentContract(
         chat, ShortState(WorkspaceStore(tmp_path / "state"))
     )
+    handlers.main_contract = chat.runtime.runner.main_contract
     context = CapabilityExecutionContext(
         authority=AuthorityContext(
             origin=TurnOrigin.SCHEDULED_AUTOMATION,
@@ -1503,3 +1504,23 @@ async def test_disabled_binding_fails_while_space_target_remains_canonical(datab
     )
     assert row.canonical_target_space_id == space
     assert row.canonical_target_person_id is None
+
+
+@pytest.mark.parametrize("missing", ["main_turns", "main_contract"])
+def test_automation_requires_explicit_shared_main_services(missing):
+    from qq_ai_bot.automation.executor import AutomationExecutionError
+
+    services = {"main_turns": object(), "main_contract": object()}
+    services[missing] = None
+    with pytest.raises(AutomationExecutionError, match="main_agent_services_unavailable"):
+        AutomationCapabilityHandlers(
+            settings=None,
+            **services,
+            runtime_config=None,
+            time_service=None,
+            ledger=None,
+            memories=None,
+            relationships=None,
+            web_provider=None,
+            gateway_factory=None,
+        )
