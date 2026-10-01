@@ -132,6 +132,12 @@ Person ID、外部账号 ID 和当前可用显示名；`automation_get` 使用�
 
 调度器负责有界选择、时钟维护和循环生命周期；来源重建、权限复核、工具后端与发送
 编排归应用服务。`WorkResumer` 通过显式依赖取得原来源和 Host 回调，不接收整个容器。
+WorkScheduler 的监督任务拥有候选恢复循环和独立时间维护循环；后者每 2 秒调用
+`deliver_due()`，是单进程唯一的 Work 时间驱动。候选恢复等待多段模型请求时，时间维护
+仍能按原 Work 登记到期信号并入队。扫描异常记录 `wait_error_category` 后重试；任一循环
+意外终止会记录错误并收拢另一循环，health 的 `running`、`wait_running` 显示停止状态。
+关停取消监督任务并等待两个所属循环结束；二次关闭取消不打断正在进行的收拢，再释放
+它们使用的依赖。
 Host 同步主调用的持久接纳由 `DurableInvocations` 管理，沿原 invocation boundary 查询和
 接纳 Work 后进入已准备的执行路径，不递归调用主入口，也不重置原身份、历史和预算。
 根 Work、自动化和子任务共用 `bind_work_activation` 的 ContextVar、续租、计量、恢复和

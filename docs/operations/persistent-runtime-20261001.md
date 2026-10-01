@@ -35,7 +35,7 @@ actor、gateway、Memory session、transcript 与 WorkControl 随各自调用隔
 | root/child 重复 ContextVar、心跳、恢复、结算与 lease 释放 | 共用 bind_work_activation，root/child 进入与 finish 差异保留 |
 | MainAgentTurnService 再次调用自身初始化持久 invocation | 删除；DurableInvocations 调用已准备执行路径 |
 | ContextAssembler 登记准备等待、计时与结算 Work | 删除；prepare_context 在调用边界停放原 Work |
-| 通用时间等待依附 AutomationWorker | 移交 WorkScheduler；原 claim 前后防丢唤醒保留；wait 错误单独可见且不阻塞其他 Work |
+| 通用时间等待依附 AutomationWorker | 移交 WorkScheduler 的独立时间维护循环；候选恢复循环不重复轮询；原 claim 前后防丢唤醒保留 |
 | 沙箱 continuation worker 持有整个应用 | 删除；只依赖 WorkRepository |
 
 原 Work 状态、journal、输入、effect、Automation cursor、lease fence、invocation key/hash
@@ -48,6 +48,13 @@ fallback 或过渡 setter。旧 notice、legacy delivery、沙箱完成通知和
 关停先停止新执行，停止 workers，再取消和收拢现有执行；原恢复、预算计量及释放先于
 数据库关闭。启动失败和退出取消均继续清理已启动资源。acquire 期间关停会释放已取得的
 lease；关闭后新入口在准备或申请 lease 前拒绝。
+
+WorkScheduler 的监督任务拥有候选恢复和时间维护两个循环。时间循环每 2 秒调用
+`deliver_due()`，源码检索确认这是唯一生产调用；root 恢复等待多段模型请求时，其他
+Work 的到期信号仍能登记原输入并入队。扫描异常保留独立 `wait_error_category` 并重试；
+任一循环意外终止时记录错误、取消和收拢另一循环，health 的 `running`、`wait_running`
+显示停止状态。关停等待监督任务及两个所属循环全部结束，二次关闭取消不打断正在进行
+的收拢，再关闭数据库。
 
 ## 行为验证对应
 
@@ -72,6 +79,17 @@ lease；关闭后新入口在准备或申请 lease 前拒绝。
 私有备份未提供及 Windows 无法验证的 POSIX 文件合同。全仓 Ruff、671 个源文件的 Linux
 目标 Mypy、3.9.0 发布基线检查通过。其后独立审查修正关停期间嵌套入口的取消语义并定向验证；
 最终源代码仍须通过最新 PR 的官方 Linux 全量 CI，不能把之前的本地数字冒充最终 head 门禁。
+
+PR #214 初版提交 `4d4c187` 的官方 Linux CI 为 2061 passed、1 skipped。该 head 先于
+独立时间维护循环的追加修正，不能作为追加修正后最新 head 的门禁或上线证据。
+
+终局时钟核查使用固定时钟、Event 阻塞恢复器和真实 SQLite，先确认长 root 恢复会阻塞
+另一 Work 的 timer；移交独立维护循环后，`test_runtime_scheduler_boundary.py` 单独重跑
+8 项通过（2.50 秒）。其中 3 项新增回归验证阻塞期间到期信号与零预算、循环意外退出的
+health 及所属任务收拢、二次关闭取消不打断收拢，其余 5 项是已有开关、幂等、扫描错误隔离
+与媒体交付场景，不与
+此前 83 个 case 重复相加。两份改动文件的 Ruff 检查/格式与 scheduler 的 Linux Mypy
+通过；这些是本地追加修正证据，PR #214 最新 head CI 和生产部署状态仍须另行确认。
 
 ## 兼容与性能证据边界
 
