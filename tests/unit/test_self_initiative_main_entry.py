@@ -168,6 +168,9 @@ async def test_self_main_segment_resume_preserves_real_wire_prefix_and_silent_co
                     select(journal.c.payload_json).where(journal.c.work_id == item["id"])
                 )
             )
+        from qq_ai_bot.runtime.work_journal import WorkJournal
+
+        payload = await WorkJournal(repo).objects.hydrate(payload)
         reports = payload["metadata"]["progress"]["self_reports"]
         assert len(reports) == 1 and reports[0]["sequence"] == 25
         assert reports[0]["run_ref"] == source["initiative_run_id"]
@@ -266,7 +269,6 @@ async def test_self_worker_returns_internal_result_without_group_delivery(
         config=chat._runtime_config,
         runner=chat.runtime.runner,
         load_tools=contract.definitions,
-        context_token_limit=harness.settings.subagent_context_token_limit,
     )
     from qq_ai_bot.runtime.subagent_tools import WORKER_REQUIRED_NAMES
 
@@ -324,5 +326,5 @@ async def test_actorless_budget_counts_full_visible_history_and_current_instruct
     assert view.history_rows == (event,) and view.record is None
     assert view.current_characters == len(current.content)
     assert view.rendered_characters >= len(event.content)
-    assert not assembler._uncovered_fits_window(view, event_limit=4, character_budget=32)
-    assert assembler._uncovered_fits_window(view, event_limit=4, character_budget=4000)
+    assert assembler._uncovered_tokens(view, "") > 32
+    assert assembler._uncovered_tokens(view, "") <= 4000

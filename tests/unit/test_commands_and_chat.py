@@ -265,7 +265,23 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     )
     admin_text = admin_sender.messages[0].text
     assert "当前权限：超级管理员" in admin_text
-    assert "可修改运行时配置参数：229 项" in admin_text
+    assert "可修改运行时配置参数：241 项" in admin_text
+    for key in (
+        "context.window_tokens",
+        "context.work_window_tokens",
+        "context.compaction_output_tokens",
+        "context.rollup_output_tokens",
+        "context.rollup_summary_characters",
+        "context.compaction_trigger_ratio",
+        "context.compaction_target_ratio",
+        "context.work_compaction_trigger_ratio",
+        "context.work_compaction_target_ratio",
+        "storage.protocol_total_max_bytes",
+        "storage.protocol_object_max_bytes",
+        "storage.protocol_disk_reserve_bytes",
+    ):
+        assert key in admin_text
+        assert key not in user_text
     assert "管理员业务接口：44 项，其中修改型 33 项" in admin_text
     assert "conversation.autonomous_batch_limit" in admin_text
     assert "relationship.set_affection" in admin_text

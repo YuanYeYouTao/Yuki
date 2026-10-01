@@ -31,7 +31,7 @@ class EmojiReplacementService:
         *,
         model_executor: ModelExecutor | None = None,
         model: str,
-        max_prompt_characters: int,
+        max_prompt_characters: int = 131_072,
     ) -> None:
         if not model:
             raise ValueError("replacement model must not be empty")
@@ -44,6 +44,7 @@ class EmojiReplacementService:
         )
         self._structured = StructuredTaskRunner(self._models)
         self._model = model
+        # Candidate metadata resource limit, independent of conversation windows.
         self._max_prompt_characters = max_prompt_characters
 
     async def choose(

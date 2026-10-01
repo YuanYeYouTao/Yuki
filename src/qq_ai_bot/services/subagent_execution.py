@@ -51,7 +51,6 @@ class SubagentExecutionDependencies:
     open_self_memory: Callable[..., Awaitable[Any]]
     backend_factory: Callable[[ToolRuntime], AgentToolBackend]
     web_capabilities: Callable[[RuntimeConfigSnapshot], frozenset[str]]
-    context_token_limit: int
 
 
 class WorkerBackend:
@@ -85,7 +84,6 @@ class SubagentExecution:
         self.repository = repository
         self.children = children
         self.services = services
-        self.last_error: str | None = None
         self.definitions: tuple[ChatTool, ...] | None = None
 
     async def prepare(self, *, admission_enabled: bool) -> None:
@@ -124,11 +122,11 @@ class SubagentExecution:
                 "cancel_code_run", {"run_id": run_id}, request_id=f"worker-cancel:{run_id}"
             )
 
-    async def run(self, identity: str) -> None:
+    async def run(self, identity: str) -> str | None:
         with self.services.active_bindings.executions.track():
             lease = await self.children.acquire(identity)
             if lease is None:
-                return
+                return None
             memory = None
 
             async def validate_lease() -> None:
@@ -138,6 +136,7 @@ class SubagentExecution:
             control = WorkControl(self.repository, lease, "recovery", {}, validate_lease)
             bindings = ExitStack()
             result_text = ""
+            error_category: str | None = None
 
             async def finish(owned: WorkControl) -> None:
                 if not owned.settled:
@@ -353,12 +352,11 @@ class SubagentExecution:
                             execution_id=identity,
                             fixed_tools=self.definitions,
                             compaction_brief=brief_message,
-                            context_token_limit=self.services.context_token_limit,
                         ),
                         backend,
                     )
                     result_text = result.text
-                    self.last_error = (
+                    error_category = (
                         control.outcome.failure.code
                         if control.outcome and control.outcome.failure
                         else None
@@ -366,7 +364,7 @@ class SubagentExecution:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self.last_error = type(exc).__name__
+                error_category = type(exc).__name__
                 logger.warning("subagent_run_failed category=%s", type(exc).__name__)
             finally:
                 if memory:
@@ -378,3 +376,4 @@ class SubagentExecution:
                             type(cleanup).__name__,
                         )
                 bindings.close()
+            return error_category

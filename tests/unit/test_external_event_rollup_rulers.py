@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
@@ -14,7 +13,7 @@ from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationRollupJobModel,
 )
 from qq_ai_bot.conversation.offline_recount import recount_all_canonical_uncovered
-from qq_ai_bot.conversation.rollup.models import RollupCandidate, RollupKind, RollupPolicyConfig
+from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
 from qq_ai_bot.conversation.rollup.prompt_accounting import (
     durable_uncovered_characters,
     durable_uncovered_event_characters,
@@ -25,30 +24,28 @@ from qq_ai_bot.conversation.rollup.prompt_accounting import (
     source_accounting_characters,
 )
 from qq_ai_bot.conversation.rollup.renderer import (
-    bound_compaction_source_events,
-    projection_hash,
     rollup_source_projection,
     serialize_compaction_source_events,
 )
 from qq_ai_bot.conversation.rollup.repository import (
     ConversationRollupRepository,
-    eligible_prefix,
-    protected_tail_start,
     recount_canonical_uncovered,
     take_batch,
 )
 from qq_ai_bot.conversation.rollup.service import ConversationRollupService
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.domain.messages import ChatResponse, InboundMessage, SenderIdentity
+from qq_ai_bot.domain.messages import ChatRequest, InboundMessage, SenderIdentity
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
+from qq_ai_bot.event_prompt import ChatEventPromptRenderer
 from qq_ai_bot.memory.enums import MemoryRetrievalMode
 from qq_ai_bot.memory.models import MemoryRetrievalResult
+from qq_ai_bot.model_runtime.capacity import estimate_request_tokens, estimate_text_tokens
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
-from qq_ai_bot.services.context_assembler import ContextAssembler, _UncoveredPromptView
+from qq_ai_bot.services.context_assembler import ContextAssembler
 from qq_ai_bot.time.models import TimeContext
 
 _NOW = datetime(2026, 8, 26, tzinfo=UTC)
@@ -56,12 +53,7 @@ _NOW = datetime(2026, 8, 26, tzinfo=UTC)
 
 def _policy(**overrides: object) -> RollupPolicyConfig:
     values: dict[str, object] = {
-        "raw_tail_events": 2,
-        "raw_tail_characters": 100_000,
-        "trigger_events": 4,
-        "trigger_characters": 100_000,
-        "stop_events": 0,
-        "stop_characters": 0,
+        "context_token_budget": 100,
         "batch_max_events": 8,
         "batch_max_characters": 100_000,
         "summary_max_characters": 2_000,
@@ -75,6 +67,27 @@ def _durable_kwargs(policy: RollupPolicyConfig) -> dict[str, str]:
         "bot_display_name": policy.bot_display_name,
         "timezone": policy.timezone,
     }
+
+
+def _assert_prefix_exceeds_request_budget(
+    first: EventRecord, recent: EventRecord, policy: RollupPolicyConfig
+) -> None:
+    def request(events: tuple[EventRecord, ...]) -> ChatRequest:
+        renderer = ChatEventPromptRenderer(
+            events, bot_display_name=policy.bot_display_name, timezone=policy.timezone
+        )
+        return ChatRequest(
+            messages=tuple(item for _, _, item in renderer.main_agent_history(events))
+        )
+
+    # The recent complete message fits the current target; the original full
+    # history really exceeds the trigger under the common request token ruler.
+    assert estimate_request_tokens(request((recent,))) < (
+        policy.context_token_budget * policy.target_ratio
+    )
+    assert estimate_request_tokens(request((first, recent))) > (
+        policy.context_token_budget * policy.trigger_ratio
+    )
 
 
 def _message(event_id: int, content: str = "hello") -> EventRecord:
@@ -141,73 +154,20 @@ def test_prompt_visible_helper_excludes_external_from_count_and_characters() -> 
     assert "raw" not in rollup_source_projection(_external(2, "notice"))
 
 
-def test_protected_tail_counts_visible_messages_and_rides_interleaved_externals() -> None:
-    policy = _policy(raw_tail_events=2, raw_tail_characters=100_000)
-    events = (
-        _external(1, "storm-1"),
-        _external(2, "storm-2"),
-        _external(3, "storm-3"),
-        _message(4, "keep-a"),
-        _external(5, "between"),
-        _message(6, "keep-b"),
-        _external(7, "after"),
-    )
-    start = protected_tail_start(events, policy)
-    assert events[start].id == 4
-    protected = events[start:]
-    assert tuple(event.id for event in protected) == (4, 5, 6, 7)
-    eligible = eligible_prefix(events, policy)
-    assert tuple(event.id for event in eligible) == (1, 2, 3)
-    assert prompt_visible_event_count(protected) == 2
-    assert all(event.event_kind == "external_event" for event in eligible)
-
-
-def test_long_messages_with_interleaved_externals_keep_n_visible_protected() -> None:
-    policy = _policy(raw_tail_events=3, raw_tail_characters=50)
-    events = (
-        _message(1, "z" * 500),
-        _external(2, "storm-old"),
-        _message(3, "z" * 500),
-        _external(4, "between-a"),
-        _message(5, "z" * 500),
-        _external(6, "between-b"),
-        _message(7, "z" * 500),
-        _external(8, "after"),
-    )
-    start = protected_tail_start(events, policy)
-    protected = events[start:]
-    visible = tuple(event for event in protected if event.event_kind == "message")
-    assert prompt_visible_event_count(protected) == policy.raw_tail_events
-    assert tuple(event.id for event in visible) == (3, 5, 7)
-    assert tuple(event.id for event in protected) == (3, 4, 5, 6, 7, 8)
-    assert 1 not in {event.id for event in protected}
-    eligible = eligible_prefix(events, policy)
-    assert tuple(event.id for event in eligible) == (1, 2)
-
-
-def test_external_only_prefix_is_fully_eligible() -> None:
-    policy = _policy(raw_tail_events=2)
-    events = tuple(_external(index) for index in range(1, 6))
-    assert protected_tail_start(events, policy) == len(events)
-    assert eligible_prefix(events, policy) == events
-
-
 def test_take_batch_serialized_source_respects_cap_and_separators() -> None:
     policy = _policy(batch_max_events=8, batch_max_characters=400)
     events = tuple(_external(index, "z" * 40) for index in range(1, 6))
     batch = take_batch(events, policy)
     assert batch
-    serialized = bound_compaction_source_events(
+    serialized = serialize_compaction_source_events(
         batch,
         timezone=policy.timezone,
-        max_characters=policy.batch_max_characters,
     )
     unbounded = serialize_compaction_source_events(batch, timezone=policy.timezone)
     assert serialized == unbounded
     assert len(serialized) == source_accounting_characters(
         batch,
         timezone=policy.timezone,
-        max_characters=policy.batch_max_characters,
     )
     assert len(serialized) <= policy.batch_max_characters
     parts = [rollup_source_projection(event, timezone=policy.timezone) for event in batch]
@@ -216,91 +176,21 @@ def test_take_batch_serialized_source_respects_cap_and_separators() -> None:
     assert len(batch) < len(events) or len(unbounded) <= policy.batch_max_characters
 
 
-def test_oversized_singleton_makes_progress_with_bounded_deterministic_source() -> None:
-    policy = _policy(batch_max_events=3, batch_max_characters=80)
-    huge = _external(1, "n" * 400)
-    batch = take_batch((huge, _external(2, "tail")), policy)
-    assert tuple(event.id for event in batch) == (1,)
-    unbounded = serialize_compaction_source_events(batch, timezone=policy.timezone)
-    serialized = bound_compaction_source_events(
-        batch,
-        timezone=policy.timezone,
-        max_characters=policy.batch_max_characters,
-    )
-    assert len(unbounded) > policy.batch_max_characters
-    assert len(serialized) == source_accounting_characters(
-        batch,
-        timezone=policy.timezone,
-        max_characters=policy.batch_max_characters,
-    )
-    assert len(serialized) <= policy.batch_max_characters
-    assert serialized != unbounded
-    assert serialized != rollup_source_projection(huge, timezone=policy.timezone)
-    full_projection = rollup_source_projection(huge, timezone=policy.timezone)
-    assert projection_hash(huge) == hashlib.sha256(full_projection.encode("utf-8")).hexdigest()
-    assert projection_hash(huge) != hashlib.sha256(serialized.encode("utf-8")).hexdigest()
-    assert "raw" not in serialized
-    mixed = take_batch(
-        (huge, _external(2, "n" * 400), _message(3, "human"), _external(4, "tail")),
-        policy,
-    )
-    mixed_source = bound_compaction_source_events(
-        mixed,
-        timezone=policy.timezone,
-        max_characters=policy.batch_max_characters,
-    )
-    assert len(mixed) == 1
-    assert len(mixed_source) <= policy.batch_max_characters
-
-
-def test_foreground_fit_uses_visible_message_count_not_raw_keepers() -> None:
-    history = (
-        _external(1, "storm"),
-        _external(2, "storm"),
-        _external(3, "storm"),
-        _message(4, "visible"),
-    )
-    current = _message(5, "now")
-    renderer_history = prompt_accounting_characters(history)
-    view = _UncoveredPromptView(
-        history_rows=history,
-        rendered=(),
-        record=current,
-        fallback_event_id=current.id,
-        current_characters=10,
-        rendered_characters=renderer_history,
-    )
-    assert prompt_visible_event_count(view.history_rows) == 1
-    assert ContextAssembler._uncovered_fits_window(view, event_limit=1, character_budget=10_000)
-    assert not ContextAssembler._uncovered_fits_window(
-        _UncoveredPromptView(
-            history_rows=(_message(1), _message(2), _message(3)),
-            rendered=(),
-            record=current,
-            fallback_event_id=current.id,
-            current_characters=10,
-            rendered_characters=4_000,
-        ),
-        event_limit=1,
-        character_budget=10_000,
-    )
-
-
 async def test_mixed_coverage_is_contiguous_across_external_ids(database: Database) -> None:
-    policy = _policy(raw_tail_events=1, trigger_events=2, batch_max_events=8)
+    policy = _policy(context_token_budget=1_024, batch_max_events=8)
     uow = ScopedEventLedgerUnitOfWork(database, config=policy)
     repository = ConversationRollupRepository(database, policy)
     service = ConversationRollupService(models=None, config=policy, timeout_seconds=0.1)
     scope = await _prepare_private(database)
-    await uow.append(
+    first = await uow.append(
         scope=scope,
         platform_message_id="human-1",
         sender_user_id="1001",
         direction="inbound",
-        content="hello",
+        content="hello " * 800,
         occurred_at=_NOW,
     )
-    await uow.append_external(
+    external = await uow.append_external(
         scope=scope,
         platform_message_id="ext-1",
         source_plugin_id="github-monitor",
@@ -312,7 +202,7 @@ async def test_mixed_coverage_is_contiguous_across_external_ids(database: Databa
         content="push one",
         occurred_at=_NOW + timedelta(seconds=1),
     )
-    await uow.append(
+    recent = await uow.append(
         scope=scope,
         platform_message_id="human-2",
         sender_user_id="1001",
@@ -332,6 +222,7 @@ async def test_mixed_coverage_is_contiguous_across_external_ids(database: Databa
         content="push two",
         occurred_at=_NOW + timedelta(seconds=3),
     )
+    _assert_prefix_exceeds_request_budget(first.event, recent.event, policy)
     committed = await service.ensure_extractive_coverage(
         repository=repository,
         scope=scope,
@@ -340,6 +231,8 @@ async def test_mixed_coverage_is_contiguous_across_external_ids(database: Databa
     )
     assert committed >= 1
     snapshot = await repository.load_prompt_snapshot(scope)
+    assert snapshot.effective_coverage == external.event.id
+    assert snapshot.raw_events[0].id == recent.event.id
     keeper_ids = tuple(event.id for event in snapshot.raw_events)
     assert keeper_ids
     assert keeper_ids == tuple(range(keeper_ids[0], keeper_ids[-1] + 1))
@@ -350,8 +243,6 @@ async def test_mixed_coverage_is_contiguous_across_external_ids(database: Databa
 
 async def test_storm_triggers_without_eating_protected_message_suffix(database: Database) -> None:
     policy = _policy(
-        raw_tail_events=2,
-        trigger_events=4,
         batch_max_events=8,
         batch_max_characters=100_000,
     )
@@ -400,21 +291,22 @@ async def test_storm_triggers_without_eating_protected_message_suffix(database: 
         occurred_at=_NOW + timedelta(seconds=12),
     )
     snapshot = await repository.load_prompt_snapshot(scope)
-    start = protected_tail_start(snapshot.raw_events, policy)
-    protected = snapshot.raw_events[start:]
+    protected = snapshot.raw_events
     assert prompt_visible_event_count(protected) == 2
     assert {event.content for event in protected if event.event_kind == "message"} == {
         "keep-a",
         "keep-b",
     }
-    claim = await repository.claim_next_job(lease_owner="storm", lease_seconds=30)
+    assert await repository.claim_next_job(lease_owner="storm", lease_seconds=30) is None
+    claim = await repository.claim_scope_for_foreground(
+        scope, lease_owner="storm", lease_seconds=30
+    )
     assert claim is not None
     candidate = await repository.candidate_for_claim(claim)
     assert candidate is not None
     assert candidate.projection_characters == source_accounting_characters(
         candidate.events,
         timezone=policy.timezone,
-        max_characters=policy.batch_max_characters,
     )
     assert all(event.content not in {"keep-a", "keep-b"} for event in candidate.events)
     serialized = serialize_compaction_source_events(candidate.events, timezone=policy.timezone)
@@ -430,7 +322,7 @@ async def test_storm_triggers_without_eating_protected_message_suffix(database: 
 async def test_external_append_is_zero_prompt_chars_and_does_not_force_wake(
     database: Database,
 ) -> None:
-    policy = _policy(raw_tail_events=1, trigger_events=2, batch_max_events=8)
+    policy = _policy(context_token_budget=60, batch_max_events=8)
     uow = ScopedEventLedgerUnitOfWork(database, config=policy)
     repository = ConversationRollupRepository(database, policy)
     scope = await _prepare_private(database, peer="1003")
@@ -519,7 +411,7 @@ async def test_append_matches_recount_on_message_ruler(database: Database) -> No
         occurred_at=_NOW + timedelta(seconds=1),
     )
     snapshot = await ConversationRollupRepository(database, policy).load_prompt_snapshot(scope)
-    expected_events = len(snapshot.raw_events)
+    expected_events = len(snapshot.raw_events) + 1  # External keeper has no main-agent history.
     expected_characters = durable_uncovered_characters(
         snapshot.raw_events,
         **_durable_kwargs(policy),
@@ -552,7 +444,7 @@ async def test_append_matches_recount_on_message_ruler(database: Database) -> No
 async def test_durable_uncovered_characters_stay_equal_across_live_paths(
     database: Database,
 ) -> None:
-    policy = _policy()
+    policy = _policy(context_token_budget=100_000)
     kwargs = _durable_kwargs(policy)
     uow = ScopedEventLedgerUnitOfWork(database, config=policy)
     repository = ConversationRollupRepository(database, policy)
@@ -621,7 +513,7 @@ async def test_durable_uncovered_characters_stay_equal_across_live_paths(
         )
         assert conversation is not None
         recounted = await recount_canonical_uncovered(session, conversation, policy)
-    assert recounted == (len(snapshot.raw_events), visual_total)
+    assert recounted == (len(snapshot.raw_events) + 1, visual_total)
     state, _rollup, _job = await repository.status(scope)
     assert state is not None
     assert state.uncovered_character_count == visual_total
@@ -643,81 +535,27 @@ async def test_durable_uncovered_characters_stay_equal_across_live_paths(
         )
         assert conversation is not None
         recounted_again = await recount_canonical_uncovered(session, conversation, policy)
-    assert recounted_again == (len(after.raw_events), after_total)
-
-
-async def test_compaction_service_sends_bounded_serialized_source() -> None:
-    policy = _policy(batch_max_characters=80, summary_max_characters=2_000)
-    huge = _message(1, "n" * 400)
-    serialized = bound_compaction_source_events(
-        (huge,),
-        timezone=policy.timezone,
-        max_characters=policy.batch_max_characters,
-    )
-    candidate_characters = source_accounting_characters(
-        (huge,),
-        timezone=policy.timezone,
-        max_characters=policy.batch_max_characters,
-    )
-
-    class _Recorder:
-        def __init__(self) -> None:
-            self.request = None
-
-        async def execute(self, task, request, **_kwargs):  # type: ignore[no-untyped-def]
-            del task
-            self.request = request
-            return ChatResponse(content="compacted summary", latency_seconds=0)
-
-    recorder = _Recorder()
-    service = ConversationRollupService(
-        models=recorder,  # type: ignore[arg-type]
-        config=policy,
-        timeout_seconds=1,
-    )
-    candidate = RollupCandidate(
-        scope_id=1,
-        generation=1,
-        source_coverage=0,
-        source_rollup_revision=0,
-        previous_summary="",
-        events=(huge,),
-        event_count=1,
-        projection_characters=candidate_characters,
-        fingerprint="test",
-    )
-    _summary, kind = await service.summarize_candidate(candidate)
-    assert kind is RollupKind.MODEL
-    assert recorder.request is not None
-    content = recorder.request.messages[1].content or ""
-    marker = "New source events:\n"
-    start = content.index(marker) + len(marker)
-    end = content.index("\n\nCharacter limit:", start)
-    sent = content[start:end]
-    assert sent == serialized
-    assert len(sent) == candidate.projection_characters
-    assert len(sent) <= policy.batch_max_characters
+    assert recounted_again == (len(after.raw_events) + 1, after_total)
 
 
 async def test_candidate_projection_characters_equal_source_cost(database: Database) -> None:
     policy = _policy(
-        raw_tail_events=1,
-        trigger_events=2,
+        context_token_budget=1_024,
         batch_max_events=4,
         batch_max_characters=10_000,
     )
     uow = ScopedEventLedgerUnitOfWork(database, config=policy)
     repository = ConversationRollupRepository(database, policy)
     scope = await _prepare_private(database, peer="1005")
-    await uow.append(
+    first = await uow.append(
         scope=scope,
         platform_message_id="src-human",
         sender_user_id="1005",
         direction="inbound",
-        content="human",
+        content="human " * 800,
         occurred_at=_NOW,
     )
-    await uow.append_external(
+    external = await uow.append_external(
         scope=scope,
         platform_message_id="src-ext",
         source_plugin_id="github-monitor",
@@ -729,7 +567,7 @@ async def test_candidate_projection_characters_equal_source_cost(database: Datab
         content="external summary",
         occurred_at=_NOW + timedelta(seconds=1),
     )
-    await uow.append(
+    recent = await uow.append(
         scope=scope,
         platform_message_id="src-human-2",
         sender_user_id="1005",
@@ -737,19 +575,21 @@ async def test_candidate_projection_characters_equal_source_cost(database: Datab
         content="later",
         occurred_at=_NOW + timedelta(seconds=2),
     )
-    claim = await repository.claim_next_job(lease_owner="source", lease_seconds=30)
+    _assert_prefix_exceeds_request_budget(first.event, recent.event, policy)
+    claim = await repository.claim_scope_for_foreground(
+        scope, lease_owner="source", lease_seconds=30
+    )
     assert claim is not None
     candidate = await repository.candidate_for_claim(claim)
     assert candidate is not None
+    assert tuple(event.id for event in candidate.events) == (first.event.id, external.event.id)
     assert candidate.projection_characters == source_accounting_characters(
         candidate.events,
         timezone=policy.timezone,
-        max_characters=policy.batch_max_characters,
     )
-    serialized = bound_compaction_source_events(
+    serialized = serialize_compaction_source_events(
         candidate.events,
         timezone=policy.timezone,
-        max_characters=policy.batch_max_characters,
     )
     assert candidate.projection_characters == len(serialized)
     assert candidate.projection_characters <= policy.batch_max_characters
@@ -758,51 +598,6 @@ async def test_candidate_projection_characters_equal_source_cost(database: Datab
         bot_display_name=policy.bot_display_name,
         timezone=policy.timezone,
     ) or all(event.event_kind == "message" for event in candidate.events)
-
-
-def test_lightweight_backlog_ignores_stored_raw_event_count() -> None:
-    settings = make_settings(
-        "sqlite+aiosqlite:///:memory:",
-        conversation_rollup_raw_tail_characters=100,
-        conversation_rollup_trigger_characters=100,
-        conversation_rollup_stop_characters=0,
-    )
-    assembler = ContextAssembler(
-        settings=settings,
-        ledger=MagicMock(),  # type: ignore[arg-type]
-        people=MagicMock(),
-        memory_context=MagicMock(),
-        relationships=MagicMock(),
-        time_service=MagicMock(),
-        rollup_repository=MagicMock(),
-        rollup_service=MagicMock(),
-    )
-    assert assembler._prompt_event_admit(event_limit=16, coverage_end=1) == 15
-    inbound = InboundMessage(
-        message_id="now",
-        event_type="message",
-        scope_type=ScopeType.PRIVATE,
-        sender=SenderIdentity(user_id="1001"),
-        text="now",
-        bot_user_id="8000",
-    )
-    current = _message(99, "now")
-    storm = (*tuple(_external(index) for index in range(1, 20)), _message(20))
-    view = assembler._uncovered_prompt_view(
-        storm,
-        current_event_id=current.id,
-        content="now",
-        yuki_account_ids=inbound.yuki_account_ids,
-        current_message_override=None,
-        current_event=current,
-    )
-    assert view is not None
-    assert prompt_visible_event_count(view.history_rows) == 1
-    assert assembler._uncovered_fits_window(
-        view,
-        event_limit=assembler._prompt_event_admit(event_limit=16, coverage_end=1),
-        character_budget=10_000,
-    )
 
 
 def _outbound(
@@ -861,27 +656,6 @@ def test_empty_and_silent_rows_are_not_prompt_visible() -> None:
     assert is_prompt_visible_message(_external(6)) is False
 
 
-def test_protected_tail_keeps_last_n_actually_rendered_messages() -> None:
-    policy = _policy(raw_tail_events=2)
-    events = (
-        _message(1, "eligible-human"),
-        _message(2, ""),
-        _outbound(3, ""),
-        _outbound(4, "", segments=({"type": "image", "data": {"file": "x.jpg"}},)),
-        _mention_only(5),
-        _external(6, "between"),
-        _message(7, "last-visible"),
-    )
-    start = protected_tail_start(events, policy)
-    protected = events[start:]
-    assert tuple(event.id for event in protected) == (5, 6, 7)
-    assert prompt_visible_event_count(protected) == 2
-    assert is_prompt_visible_message(events[4]) is True
-    assert is_prompt_visible_message(events[6]) is True
-    eligible = eligible_prefix(events, policy)
-    assert tuple(event.id for event in eligible) == (1, 2, 3, 4)
-
-
 class _CountingRollupService(ConversationRollupService):
     def __init__(self, *args: object, **kwargs: object) -> None:
         super().__init__(*args, **kwargs)  # type: ignore[arg-type]
@@ -931,6 +705,7 @@ async def _assemble_private_turn(
     )
     runtime = MagicMock()
     runtime.context.local_event_limit = settings.local_context_event_limit
+    runtime.context.window_tokens = settings.context_window_tokens
     inbound = InboundMessage(
         message_id=current.platform_message_id,
         event_type="message",
@@ -970,23 +745,11 @@ async def test_assemble_ignores_durable_watermark_when_grouped_fits(
     settings = make_settings(
         database.url,
         relationship_enabled=False,
-        conversation_rollup_raw_tail_events=128,
-        conversation_rollup_trigger_events=384,
-        conversation_rollup_stop_events=0,
-        conversation_rollup_raw_tail_characters=20_480,
-        conversation_rollup_trigger_characters=81_920,
-        conversation_rollup_stop_characters=0,
         conversation_rollup_foreground_max_batches=4,
         local_context_event_limit=2_048,
-        max_context_characters=131_072,
     )
     policy = RollupPolicyConfig(
-        raw_tail_events=settings.conversation_rollup_raw_tail_events,
-        raw_tail_characters=settings.conversation_rollup_raw_tail_characters,
-        trigger_events=settings.conversation_rollup_trigger_events,
-        trigger_characters=settings.conversation_rollup_trigger_characters,
-        stop_events=settings.conversation_rollup_stop_events,
-        stop_characters=settings.conversation_rollup_stop_characters,
+        context_token_budget=settings.context_window_tokens,
         bot_display_name=settings.bot_display_name,
         timezone=settings.default_timezone,
     )
@@ -1007,10 +770,7 @@ async def test_assemble_ignores_durable_watermark_when_grouped_fits(
         )
     assert last is not None
     snapshot = await repository.load_prompt_snapshot(scope, before_event_id=last.event.id)
-    admit = (
-        settings.conversation_rollup_raw_tail_characters
-        + settings.conversation_rollup_trigger_characters
-    )
+    admit = 102_400
     durable = durable_uncovered_characters(
         snapshot.raw_events,
         bot_display_name=policy.bot_display_name,
@@ -1023,7 +783,7 @@ async def test_assemble_ignores_durable_watermark_when_grouped_fits(
     )
     assert durable > admit
     assert grouped <= admit
-    assert eligible_prefix(snapshot.raw_events, policy) == ()
+    assert snapshot.raw_complete
     before_state, before_rollup, _job = await repository.status(scope)
     assert before_state is not None
     assembled = await _assemble_private_turn(
@@ -1056,23 +816,11 @@ async def test_assemble_mixed_sender_window_does_not_fail_in_preflight(
     settings = make_settings(
         database.url,
         relationship_enabled=False,
-        conversation_rollup_raw_tail_events=128,
-        conversation_rollup_trigger_events=384,
-        conversation_rollup_stop_events=0,
-        conversation_rollup_raw_tail_characters=20_480,
-        conversation_rollup_trigger_characters=81_920,
-        conversation_rollup_stop_characters=0,
         conversation_rollup_foreground_max_batches=4,
         local_context_event_limit=2_048,
-        max_context_characters=131_072,
     )
     policy = RollupPolicyConfig(
-        raw_tail_events=settings.conversation_rollup_raw_tail_events,
-        raw_tail_characters=settings.conversation_rollup_raw_tail_characters,
-        trigger_events=settings.conversation_rollup_trigger_events,
-        trigger_characters=settings.conversation_rollup_trigger_characters,
-        stop_events=settings.conversation_rollup_stop_events,
-        stop_characters=settings.conversation_rollup_stop_characters,
+        context_token_budget=settings.context_window_tokens,
         bot_display_name=settings.bot_display_name,
         timezone=settings.default_timezone,
     )
@@ -1098,17 +846,18 @@ async def test_assemble_mixed_sender_window_does_not_fail_in_preflight(
         )
     assert last is not None
     snapshot = await repository.load_prompt_snapshot(scope, before_event_id=last.event.id)
-    admit = (
-        settings.conversation_rollup_raw_tail_characters
-        + settings.conversation_rollup_trigger_characters
-    )
+    admit = 102_400
     grouped = prompt_accounting_characters(
         snapshot.raw_events,
         bot_display_name=policy.bot_display_name,
         timezone=policy.timezone,
     )
     assert grouped > admit
-    assert grouped <= settings.max_context_characters
+    rendered = ChatEventPromptRenderer(snapshot.raw_events).main_agent_history(snapshot.raw_events)
+    assert (
+        sum(estimate_text_tokens(item.content or "") + 8 for _, _, item in rendered)
+        < settings.context_window_tokens
+    )
     assembled = await _assemble_private_turn(
         database=database,
         settings=settings,

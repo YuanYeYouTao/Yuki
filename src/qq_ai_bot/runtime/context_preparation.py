@@ -28,12 +28,18 @@ class ContextRollupRequired(RuntimeError):
     """A bounded context requires coverage before it can be prepared."""
 
     def __init__(
-        self, version: ConversationReadVersion, coverage: int, timeout_seconds: float
+        self,
+        version: ConversationReadVersion,
+        coverage: int,
+        timeout_seconds: float,
+        *,
+        token_budget: int | None = None,
     ) -> None:
         super().__init__("context_rollup_required")
         self.version = version
         self.coverage = coverage
         self.timeout_seconds = timeout_seconds
+        self.token_budget = token_budget
 
 
 async def prepare_context[T](builder: Callable[[], Awaitable[T]], control: WorkControl | None) -> T:
@@ -59,6 +65,7 @@ async def prepare_context[T](builder: Callable[[], Awaitable[T]], control: WorkC
                 requirement.version,
                 requirement.coverage,
                 requirement.timeout_seconds,
+                token_budget=requirement.token_budget,
             ):
                 from qq_ai_bot.runtime.work_control import WorkInputsPreparing
 

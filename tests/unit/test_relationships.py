@@ -818,6 +818,9 @@ async def test_relationship_context_contains_only_current_speaker_relationship(
     )
     assert '"stage":"friendly"' in context
     assert '"stage":"distant"' not in context
+    assert '"relationship":' not in context
+    assert '"affection_score"' not in context
+    assert context.count('"id":"context.relationship"') == 1
     assert not sender.messages
 
 

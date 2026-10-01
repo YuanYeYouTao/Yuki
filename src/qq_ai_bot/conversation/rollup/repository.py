@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import cast
@@ -22,6 +24,7 @@ from qq_ai_bot.conversation.canonical_db_models import (
 )
 from qq_ai_bot.conversation.hydrate import (
     hydrate_scope_state_from_canonical,
+    require_primary_alias_for_conversation,
     synthetic_scope_id,
 )
 from qq_ai_bot.conversation.rollup.coverage import (
@@ -53,7 +56,6 @@ from qq_ai_bot.conversation.rollup.models import (
 )
 from qq_ai_bot.conversation.rollup.prompt_accounting import (
     durable_uncovered_characters,
-    is_prompt_visible_message,
     prompt_accounting_characters,
     prompt_visible_event_count,
     source_accounting_characters,
@@ -62,7 +64,9 @@ from qq_ai_bot.conversation.rollup.renderer import (
     serialize_compaction_source_events,
     source_fingerprint,
 )
+from qq_ai_bot.conversation.rollup.summary import parse_summary, summary_references
 from qq_ai_bot.domain.conversations import ConversationScope
+from qq_ai_bot.model_runtime.capacity import estimate_text_tokens
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.repository_helpers import _event_record, keeper_event_clause
@@ -325,6 +329,59 @@ async def _load_prompt_tail_events(
     )
 
 
+async def _load_bounded_prompt_tail(
+    session: AsyncSession,
+    *,
+    coverage: int,
+    last_event_id: int,
+    conversation_id: str,
+    before_event_id: int | None,
+    config: RollupPolicyConfig,
+) -> tuple[tuple[EventRecord, ...], bool]:
+    """Read a whole-event suffix in pages; report any omitted visible prefix."""
+    from qq_ai_bot.event_prompt import ChatEventPromptRenderer
+
+    cursor = min(last_event_id + 1, before_event_id or last_event_id + 1)
+    selected: list[EventRecord] = []
+    tokens = 0
+    while True:
+        rows = tuple(
+            (
+                await session.scalars(
+                    select(ChatEventModel)
+                    .where(
+                        ChatEventModel.canonical_conversation_id == conversation_id,
+                        ChatEventModel.id > coverage,
+                        ChatEventModel.id < cursor,
+                        ChatEventModel.event_kind == "message",
+                        keeper_event_clause(),
+                    )
+                    .order_by(ChatEventModel.id.desc())
+                    .limit(config.batch_max_events)
+                )
+            ).all()
+        )
+        if not rows:
+            return await _with_proactive_cause_metadata(session, tuple(reversed(selected))), True
+        for row in rows:
+            event = _event_record(row)
+            messages = ChatEventPromptRenderer(
+                (event,), bot_display_name=config.bot_display_name, timezone=config.timezone
+            ).main_agent_history((event,))
+            if not messages:
+                continue
+            cost = sum(
+                estimate_text_tokens(message.content or "") + 8 for _, _, message in messages
+            )
+            if selected and tokens + cost > config.context_token_budget:
+                return await _with_proactive_cause_metadata(
+                    session, tuple(reversed(selected))
+                ), False
+            selected.append(event)
+            tokens += cost
+        cursor = rows[-1].id
+
+
 async def _with_proactive_cause_metadata(
     session: AsyncSession,
     events: tuple[EventRecord, ...],
@@ -424,57 +481,23 @@ async def _compose_detailed_status(
     )
 
 
-def protected_tail_start(events: tuple[EventRecord, ...], config: RollupPolicyConfig) -> int:
-    """Return the start of the raw suffix that holds the last N visible messages.
-
-    N is ``raw_tail_events``. Interleaved external rows ride with that
-    contiguous suffix and do not occupy a visible-message slot.
-    ``raw_tail_characters`` is not part of this boundary.
-    """
-
-    if not events:
-        return 0
-    remaining_visible = config.raw_tail_events
-    start = len(events)
-    for index in range(len(events) - 1, -1, -1):
-        if is_prompt_visible_message(events[index], **_prompt_kwargs(config)):
-            start = index
-            remaining_visible -= 1
-            if remaining_visible == 0:
-                break
-    return start
-
-
-def eligible_prefix(
-    events: tuple[EventRecord, ...], config: RollupPolicyConfig
-) -> tuple[EventRecord, ...]:
-    return events[: protected_tail_start(events, config)]
-
-
-def exceeds_high_watermark(events: tuple[EventRecord, ...], config: RollupPolicyConfig) -> bool:
-    characters = prompt_accounting_characters(events, **_prompt_kwargs(config))
-    return len(events) >= config.trigger_events or characters >= config.trigger_characters
-
-
-def exceeds_low_watermark(events: tuple[EventRecord, ...], config: RollupPolicyConfig) -> bool:
-    if not events:
-        return False
-    characters = prompt_accounting_characters(events, **_prompt_kwargs(config))
-    return len(events) > config.stop_events or characters > config.stop_characters
-
-
 def take_batch(
     events: tuple[EventRecord, ...], config: RollupPolicyConfig
 ) -> tuple[EventRecord, ...]:
     selected: list[EventRecord] = []
     timezone = config.timezone
     cap = config.batch_max_characters
+    characters = 0
     for event in events:
-        trial = (*selected, event)
-        unbounded = len(serialize_compaction_source_events(trial, timezone=timezone))
+        unbounded = (
+            characters
+            + len(serialize_compaction_source_events((event,), timezone=timezone))
+            + bool(selected)
+        )
         if selected and (len(selected) >= config.batch_max_events or unbounded > cap):
             break
         selected.append(event)
+        characters = unbounded
         if len(selected) >= config.batch_max_events or unbounded > cap:
             break
     return tuple(selected)
@@ -527,11 +550,60 @@ class ConversationRollupRepository:
         config: RollupPolicyConfig,
         metrics: ConversationRollupMetrics | None = None,
         coverage_holds: RollupCoverageHoldQuery | None = None,
+        policy_for_scope: Callable[[ConversationScope], Awaitable[RollupPolicyConfig]]
+        | None = None,
     ) -> None:
         self._database = database
-        self.config = config
+        self._config = config
+        self._policy_for_scope = policy_for_scope
+        self._active_policy: ContextVar[RollupPolicyConfig] = ContextVar(
+            "conversation_rollup_policy", default=config
+        )
         self.metrics = metrics or ConversationRollupMetrics()
         self._coverage_holds = coverage_holds or PersistentRollupCoverageHoldQuery()
+
+    @property
+    def config(self) -> RollupPolicyConfig:
+        return self._active_policy.get()
+
+    async def _scope_policy(self, scope: ConversationScope) -> RollupPolicyConfig:
+        return await self._policy_for_scope(scope) if self._policy_for_scope else self._config
+
+    async def _claim_policy(self, claim: RollupJobClaim) -> RollupPolicyConfig:
+        if claim.conversation_id is None:
+            raise RollupLeaseLostError("canonical rollup claim has no conversation")
+        from qq_ai_bot.runtime.work_schema_v1 import work
+
+        policy = self._config
+        async with self._database.sessions() as session:
+            alias = (
+                await require_primary_alias_for_conversation(session, claim.conversation_id)
+                if self._policy_for_scope
+                else None
+            )
+            required_budget = await session.scalar(
+                select(
+                    func.min(
+                        func.json_extract(work.c.checkpoint_json, "$.context_rollup.token_budget")
+                    )
+                ).where(
+                    work.c.conversation_id == claim.conversation_id,
+                    work.c.generation == claim.generation,
+                    work.c.state.in_(("running", "waiting_external", "queued")),
+                    func.json_type(work.c.checkpoint_json, "$.context_rollup.token_budget")
+                    == "integer",
+                    func.json_extract(work.c.checkpoint_json, "$.context_rollup.token_budget") > 0,
+                    func.json_extract(work.c.checkpoint_json, "$.context_rollup.deadline")
+                    > _utcnow().timestamp(),
+                )
+            )
+        if alias is not None:
+            policy = await self._scope_policy(ConversationScope.parse(alias))
+        if required_budget is not None:
+            policy = replace(
+                policy, context_token_budget=min(policy.context_token_budget, int(required_budget))
+            )
+        return policy
 
     async def health_snapshot(self) -> dict[str, object]:
         """Return content-free, low-cardinality process health for all scopes."""
@@ -562,20 +634,25 @@ class ConversationRollupRepository:
     ) -> ConversationPromptSnapshot:
         """Load scope, checkpoint, and the exact continuous raw suffix in one transaction."""
 
-        async with self._database.sessions() as session, session.begin():
-            # sqlite3's legacy mode does not BEGIN on SELECT. Establish a real
-            # read transaction before loading the version, checkpoint and tail.
-            await session.execute(text("BEGIN"))
-            return await self._load_prompt_snapshot_canonical(
-                session, scope, before_event_id=before_event_id
-            )
+        token = self._active_policy.set(await self._scope_policy(scope))
+        try:
+            async with self._database.sessions() as session, session.begin():
+                # sqlite3 legacy mode does not BEGIN on SELECT.
+                await session.execute(text("BEGIN"))
+                return await self._load_prompt_snapshot_canonical(
+                    session, scope, before_event_id=before_event_id
+                )
+        finally:
+            self._active_policy.reset(token)
 
     async def claim_next_job(
         self, *, lease_owner: str, lease_seconds: int
     ) -> RollupJobClaim | None:
         from qq_ai_bot.conversation.canonical_rollup import drain_rollup_signals
 
-        await drain_rollup_signals(self._database, self.config)
+        await drain_rollup_signals(
+            self._database, self._config, policy_for_scope=self._policy_for_scope
+        )
         now = _utcnow()
         lease_until = now + timedelta(seconds=lease_seconds)
         token = uuid.uuid4().hex
@@ -655,13 +732,23 @@ class ConversationRollupRepository:
         )
 
     async def candidate_for_claim(
-        self, claim: RollupJobClaim, *, emergency: bool = False
+        self, claim: RollupJobClaim, *, emergency: bool = False, token_budget: int | None = None
     ) -> RollupCandidate | None:
         now = _utcnow()
         if not claim.conversation_id:
             raise RollupLeaseLostError("canonical rollup claim has no conversation")
-        async with self._database.sessions() as session, session.begin():
-            return await self._candidate_for_canonical(session, claim, now=now, emergency=emergency)
+        policy = await self._claim_policy(claim)
+        if token_budget is not None:
+            policy = replace(policy, context_token_budget=max(1, token_budget))
+        token = self._active_policy.set(policy)
+        try:
+            async with self._database.sessions() as session, session.begin():
+                candidate = await self._candidate_for_canonical(
+                    session, claim, now=now, emergency=emergency
+                )
+                return replace(candidate, policy=policy) if candidate else None
+        finally:
+            self._active_policy.reset(token)
 
     async def finish_without_candidate(self, claim: RollupJobClaim) -> bool:
         """Delete only an unchanged job; otherwise restore it to pending."""
@@ -727,8 +814,18 @@ class ConversationRollupRepository:
         if summary_kind is RollupKind.EMERGENCY:
             raise ValueError("emergency summaries cannot write the semantic rollup checkpoint")
         normalized = summary_text.strip()
-        if not normalized or len(normalized) > self.config.summary_max_characters:
+        if (
+            not normalized
+            or len(normalized) > (candidate.policy or self.config).summary_max_characters
+        ):
             raise ValueError("summary violates configured output bounds")
+        # Historical migration/extractive checkpoints remain readable. All new
+        # model checkpoints use the single structured write contract.
+        references = (
+            summary_references(parse_summary(normalized))
+            if summary_kind is RollupKind.MODEL
+            else set()
+        )
         now = _utcnow()
         if not claim.conversation_id:
             raise RollupLeaseLostError("canonical rollup claim has no conversation")
@@ -741,6 +838,7 @@ class ConversationRollupRepository:
                 summary_kind=summary_kind,
                 retain_lease=retain_lease,
                 now=now,
+                summary_references=references,
             )
 
     async def commit_emergency_overlay(
@@ -757,7 +855,10 @@ class ConversationRollupRepository:
         """Upsert a prompt overlay only. Never mutates semantic rollup coverage."""
 
         normalized = summary_text.strip()
-        if not normalized or len(normalized) > self.config.summary_max_characters:
+        if (
+            not normalized
+            or len(normalized) > (candidate.policy or self.config).summary_max_characters
+        ):
             raise ValueError("summary violates configured output bounds")
         now = _utcnow()
         if not claim.conversation_id:
@@ -1024,13 +1125,13 @@ class ConversationRollupRepository:
             overlay=overlay_row,
             semantic=rollup_row,
         )
-        events = await _load_prompt_tail_events(
+        events, raw_complete = await _load_bounded_prompt_tail(
             session,
-            scope=scope,
             coverage=coverage,
             last_event_id=conversation.last_event_id,
             conversation_id=conversation.id,
             before_event_id=before_event_id,
+            config=self.config,
         )
         tail_end = events[-1].id if events else coverage
         effective = (
@@ -1048,6 +1149,7 @@ class ConversationRollupRepository:
             rewrite_pending=overlay_state is not None,
             conversation_id=conversation.id,
             prompt_source_revision=conversation.prompt_source_revision,
+            raw_complete=raw_complete,
             rollup_stamp=(
                 rollup_row.revision if rollup_row is not None else 0,
                 overlay_row.revision if overlay_row is not None else 0,
@@ -1147,6 +1249,21 @@ class ConversationRollupRepository:
             starts_after=conversation.starts_after_event_id,
             last_event_id=conversation.last_event_id,
         )
+        protected_start = await self._protected_suffix_start(
+            session,
+            conversation_id=conversation.id,
+            coverage=coverage,
+            last_event_id=conversation.last_event_id,
+        )
+        coverage_hold = await self._coverage_holds.earliest_source_event_id(
+            session,
+            canonical_conversation_id=conversation.id,
+        )
+        eligible_end = conversation.last_event_id
+        if protected_start is not None:
+            eligible_end = min(eligible_end, protected_start - 1)
+        if coverage_hold is not None:
+            eligible_end = min(eligible_end, coverage_hold - 1)
         rows = tuple(
             (
                 await session.scalars(
@@ -1154,10 +1271,11 @@ class ConversationRollupRepository:
                     .where(
                         ChatEventModel.canonical_conversation_id == conversation.id,
                         ChatEventModel.id > coverage,
-                        ChatEventModel.id <= conversation.last_event_id,
+                        ChatEventModel.id <= eligible_end,
                         keeper_event_clause(),
                     )
                     .order_by(ChatEventModel.id.asc())
+                    .limit(self.config.batch_max_events)
                 )
             ).all()
         )
@@ -1165,20 +1283,12 @@ class ConversationRollupRepository:
             session,
             tuple(_event_record(row) for row in rows),
         )
-        eligible = eligible_prefix(all_events, self.config)
-        coverage_hold = await self._coverage_holds.earliest_source_event_id(
-            session,
-            canonical_conversation_id=conversation.id,
-        )
-        if coverage_hold is not None:
-            eligible = tuple(event for event in eligible if event.id < coverage_hold)
-        batch = take_batch(eligible, self.config)
+        batch = take_batch(all_events, self.config)
         if not batch:
             return None
         characters = source_accounting_characters(
             batch,
             timezone=self.config.timezone,
-            max_characters=self.config.batch_max_characters,
         )
         fingerprint = source_fingerprint(
             scope_id=claim.scope_id,
@@ -1201,6 +1311,56 @@ class ConversationRollupRepository:
             conversation_id=claim.conversation_id,
         )
 
+    async def _protected_suffix_start(
+        self,
+        session: AsyncSession,
+        *,
+        conversation_id: str,
+        coverage: int,
+        last_event_id: int,
+        policy: RollupPolicyConfig | None = None,
+    ) -> int | None:
+        """Read the recent visible suffix in indexed pages, never the old prefix."""
+        from qq_ai_bot.event_prompt import ChatEventPromptRenderer
+
+        config = policy or self.config
+        budget = int(config.context_token_budget * config.target_ratio)
+        cursor = last_event_id + 1
+        first: int | None = None
+        while cursor > coverage:
+            page = tuple(
+                await session.scalars(
+                    select(ChatEventModel)
+                    .where(
+                        ChatEventModel.canonical_conversation_id == conversation_id,
+                        ChatEventModel.id > coverage,
+                        ChatEventModel.id < cursor,
+                        ChatEventModel.event_kind == "message",
+                        keeper_event_clause(),
+                    )
+                    .order_by(ChatEventModel.id.desc())
+                    .limit(config.batch_max_events)
+                )
+            )
+            if not page:
+                break
+            for row in page:
+                event = _event_record(row)
+                rendered = ChatEventPromptRenderer(
+                    (event,), bot_display_name=config.bot_display_name, timezone=config.timezone
+                ).render_reference_event(event)
+                if not rendered:
+                    continue
+                cost = estimate_text_tokens(rendered) + 8
+                if first is not None and cost > budget:
+                    return first
+                first = event.id
+                budget -= cost
+                if budget <= 0:
+                    return first
+            cursor = page[-1].id
+        return first
+
     async def _commit_canonical_candidate(
         self,
         session: AsyncSession,
@@ -1211,6 +1371,7 @@ class ConversationRollupRepository:
         summary_kind: RollupKind,
         retain_lease: bool,
         now: datetime,
+        summary_references: set[int],
     ) -> RollupCommitResult:
         if summary_kind is RollupKind.EMERGENCY:
             raise ValueError("emergency summaries cannot write the semantic rollup checkpoint")
@@ -1220,6 +1381,23 @@ class ConversationRollupRepository:
         conversation = await session.get(CanonicalConversationModel, claim.conversation_id)
         if conversation is None or conversation.generation != candidate.generation:
             raise RollupSourceChangedError("scope generation changed")
+        if summary_references:
+            # Bounded primary-key lookup in the same pre-DML snapshot as the
+            # coverage/fingerprint checks. A known ID from another conversation,
+            # reset generation or suppressed event is not a valid citation.
+            existing = set(
+                await session.scalars(
+                    select(ChatEventModel.id).where(
+                        ChatEventModel.id.in_(summary_references),
+                        ChatEventModel.canonical_conversation_id == conversation.id,
+                        ChatEventModel.id > conversation.starts_after_event_id,
+                        ChatEventModel.id <= candidate.events[-1].id,
+                        keeper_event_clause(),
+                    )
+                )
+            )
+            if existing != summary_references:
+                raise RollupSourceChangedError("rollup_summary_reference_missing_or_out_of_scope")
         current_rollup = await session.get(CanonicalConversationRollupModel, claim.conversation_id)
         current_overlay = await session.get(
             CanonicalConversationRollupEmergencyOverlayModel, claim.conversation_id
@@ -1250,6 +1428,7 @@ class ConversationRollupRepository:
                         keeper_event_clause(),
                     )
                     .order_by(ChatEventModel.id.asc())
+                    .limit(len(candidate.events) + 1)
                 )
             ).all()
         )
@@ -1271,23 +1450,33 @@ class ConversationRollupRepository:
         ):
             raise RollupSourceChangedError("rollup source projection changed")
         covered_through = candidate.events[-1].id
-        remaining_rows = tuple(
-            (
-                await session.scalars(
-                    select(ChatEventModel)
-                    .where(
-                        ChatEventModel.canonical_conversation_id == conversation.id,
-                        ChatEventModel.id > covered_through,
-                        ChatEventModel.id <= conversation.last_event_id,
-                        keeper_event_clause(),
-                    )
-                    .order_by(ChatEventModel.id.asc())
-                )
-            ).all()
+        remaining_count = conversation.uncovered_event_count - len(events)
+        remaining_characters = (
+            conversation.uncovered_character_count
+            - durable_uncovered_characters(events, **_prompt_kwargs(self.config))
         )
-        remaining = await _with_proactive_cause_metadata(
+        if min(remaining_count, remaining_characters) < 0:
+            raise ConversationCoverageError("rollup uncovered counters changed or drifted")
+        protected_start = await self._protected_suffix_start(
             session,
-            tuple(_event_record(row) for row in remaining_rows),
+            conversation_id=conversation.id,
+            coverage=covered_through,
+            last_event_id=conversation.last_event_id,
+            policy=candidate.policy,
+        )
+        continue_work = bool(
+            await session.scalar(
+                select(ChatEventModel.id)
+                .where(
+                    ChatEventModel.canonical_conversation_id == conversation.id,
+                    ChatEventModel.id > covered_through,
+                    ChatEventModel.id < protected_start
+                    if protected_start is not None
+                    else ChatEventModel.id <= conversation.last_event_id,
+                    keeper_event_clause(),
+                )
+                .limit(1)
+            )
         )
         statement = insert(CanonicalConversationRollupModel).values(
             conversation_id=claim.conversation_id,
@@ -1322,10 +1511,8 @@ class ConversationRollupRepository:
             current_rollup.source_fingerprint = candidate.fingerprint
             current_rollup.revision = revision + 1
             current_rollup.updated_at = now
-        conversation.uncovered_event_count = len(remaining)
-        conversation.uncovered_character_count = durable_uncovered_characters(
-            remaining, **_prompt_kwargs(self.config)
-        )
+        conversation.uncovered_event_count = remaining_count
+        conversation.uncovered_character_count = remaining_characters
         conversation.covered_through_event_id = covered_through
         conversation.updated_at = now
         overlay_ahead = await _reconcile_overlay_with_semantic(
@@ -1337,10 +1524,7 @@ class ConversationRollupRepository:
         )
         job.failure_count = 0
         job.last_error_category = None
-        continue_work = (
-            exceeds_low_watermark(eligible_prefix(remaining, self.config), self.config)
-            or overlay_ahead
-        )
+        continue_work = continue_work or overlay_ahead
         signal_changed = job.signal_revision != claim.claimed_signal_revision
         retained = bool(retain_lease and (continue_work or signal_changed))
         if retained:
@@ -1413,6 +1597,7 @@ class ConversationRollupRepository:
                         keeper_event_clause(),
                     )
                     .order_by(ChatEventModel.id.asc())
+                    .limit(len(candidate.events) + 1)
                 )
             ).all()
         )

@@ -735,6 +735,14 @@ async def test_creation_replay_and_run_budget_are_atomic(database, tmp_path):
     run = await repository.create_run(
         first.id, scheduled_for=first.next_run_at, actual_started_at=clock.now()
     )
+    from sqlalchemy.dialects.sqlite import insert
+
+    from qq_ai_bot.runtime.work_budget_schema import automation_budgets
+
+    async with database.immediate_session() as session:
+        await session.execute(
+            insert(automation_budgets).values(run_id=run.id, model_limit=120, tool_limit=None)
+        )
     env = await social_env(database, tmp_path)
     work_repository = WorkRepository(database)
 

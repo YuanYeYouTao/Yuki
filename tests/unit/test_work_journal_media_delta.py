@@ -51,7 +51,7 @@ async def test_repeated_recovery_phases_do_not_reinsert_existing_media_or_refs(d
                 )
     finally:
         event.remove(database.engine.sync_engine, "before_cursor_execute", sql)
-    assert media_writes == [("insert", True), ("insert", True)]
+    assert media_writes == []  # Immutable media publication now happens outside SQLite.
     assert len(journal_writes) == 3
     restored = await WorkSession(control, "fixed").restore(TurnTranscript(()))
     assert restored.request() == transcript.request()
@@ -100,11 +100,14 @@ async def test_journal_delta_retains_unpaired_input_and_other_work_media(
             other["id"],
         }
         assert await reader.scalar(select(media.c.content)) == content
-    # Once paired/consumed, a transcript without that image may release this
-    # work's ref. A different work's immutable blob must remain recoverable.
+    # Active Work retains input ownership across paired saves. Concurrent new
+    # input preparation cannot be released from an earlier reader snapshot.
     async with database.immediate_session() as writer:
         await writer.execute(update(inputs).where(inputs.c.id == input_id).values(state="consumed"))
     await session.save("paired")
     async with database.sessions() as reader:
-        assert tuple(await reader.scalars(select(media_refs.c.work_id))) == (other["id"],)
+        assert set(await reader.scalars(select(media_refs.c.work_id))) == {
+            control.current["id"],
+            other["id"],
+        }
         assert await reader.scalar(select(media.c.content)) == content

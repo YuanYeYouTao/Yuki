@@ -273,6 +273,7 @@ async def test_generation_keeps_dynamic_automation_data_out_of_system_messages(
         automation_context=AutomationContext(scene="creator_private", history_limit=3),
     )
     await ContextAssembler.assemble_automation(
+        token_budget=96_000,
         settings=handlers._settings,
         ledger=ledger,
         memories=SimpleNamespace(),
@@ -295,6 +296,7 @@ async def test_generation_keeps_dynamic_automation_data_out_of_system_messages(
         automation_context=AutomationContext(scene="current_group", history_limit=2),
     )
     await ContextAssembler.assemble_automation(
+        token_budget=96_000,
         settings=handlers._settings,
         ledger=ledger,
         memories=SimpleNamespace(),
@@ -312,6 +314,7 @@ async def test_generation_keeps_dynamic_automation_data_out_of_system_messages(
     ledger.list_canonical_recent.assert_not_awaited()
     with pytest.raises(ConversationCoverageError, match="exceeds declaration"):
         await ContextAssembler.assemble_automation(
+            token_budget=96_000,
             settings=handlers._settings,
             ledger=ledger,
             memories=SimpleNamespace(),
@@ -967,15 +970,21 @@ async def test_unavailable_canonical_route_blocks_due_task(database) -> None:
         time_service=time_service,
     )
     await worker.start()
-    await asyncio.sleep(0.05)
-    await worker.close()
-
-    retained = await repository.get(row.id)
-    assert retained is not None
-    assert retained.status is AutomationStatus.BLOCKED
-    history = await repository.run_history(row.id)
-    assert len(history) == 1
-    assert history[0].error_category == "no_connection"
+    try:
+        async with asyncio.timeout(2):
+            while True:
+                retained = await repository.get(row.id)
+                history = await repository.run_history(row.id)
+                if (
+                    retained is not None
+                    and retained.status is AutomationStatus.BLOCKED
+                    and len(history) == 1
+                    and history[0].error_category == "no_connection"
+                ):
+                    break
+                await asyncio.sleep(0.01)
+    finally:
+        await worker.close()
 
 
 @pytest.mark.asyncio

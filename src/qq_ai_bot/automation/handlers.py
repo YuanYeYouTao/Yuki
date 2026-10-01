@@ -492,6 +492,7 @@ class AutomationCapabilityHandlers:
                 instruction=str(arguments["instruction"]),
                 profile=str(arguments.get("context_profile") or "none"),
                 current_time=self._time.at(context.actual_started_at, context.timezone),
+                token_budget=self.main_contract.chat._history_input_budget(snapshot),
             ),
             current_work_control.get(),
         )

@@ -200,21 +200,23 @@ def test_example_system_prompt_contains_persona_and_work_mode() -> None:
     assert all(fragment in prompt for fragment in required_fragments)
 
 
-def test_rollup_event_and_batch_watermarks_are_consistent() -> None:
-    with pytest.raises(ValidationError, match="must not exceed LOCAL_CONTEXT_EVENT_LIMIT"):
+def test_rollup_token_watermarks_are_ordered() -> None:
+    with pytest.raises(ValidationError, match="target ratio must be below"):
         Settings(
             _env_file=None,
-            local_context_event_limit=1024,
-            conversation_rollup_raw_tail_events=768,
-            conversation_rollup_trigger_events=512,
+            conversation_rollup_target_ratio=0.85,
+            conversation_rollup_trigger_ratio=0.85,
         )
-    with pytest.raises(ValidationError, match="must cover one CONVERSATION_ROLLUP_TRIGGER_EVENTS"):
+    settings = Settings(_env_file=None)
+    assert settings.context_window_tokens == 96000
+    assert settings.work_context_window_tokens == 128000
+    assert settings.conversation_rollup_trigger_ratio == 0.90
+    assert settings.conversation_rollup_target_ratio == 0.60
+    assert settings.work_compaction_trigger_ratio == 0.90
+    assert settings.work_compaction_target_ratio == 0.50
+    with pytest.raises(ValidationError, match="work compaction target ratio must be below"):
         Settings(
-            _env_file=None,
-            conversation_rollup_trigger_events=1024,
-            conversation_rollup_batch_max_events=256,
-            conversation_rollup_foreground_max_batches=3,
-            conversation_rollup_worker_max_batches_per_claim=5,
+            _env_file=None, work_compaction_target_ratio=0.90, work_compaction_trigger_ratio=0.90
         )
 
 
@@ -279,23 +281,16 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
     assert settings.conversation_autonomous_admission_threshold == 80
     assert settings.conversation_autonomous_batch_limit == 8
     assert settings.reply_hard_max_messages == 10
-    assert settings.max_context_characters == 131_072
+    assert settings.context_window_tokens == 96_000
     assert settings.local_context_event_limit == 2_048
-    assert settings.history_window_low_watermark_ratio == 0.67
     assert settings.context_metadata_budget_ratio == 0.04
     assert settings.memory_context_limit_per_entity == 4
     assert settings.memory_automatic_recall_continuation_limit == 4
-    assert settings.conversation_rollup_raw_tail_events == 128
-    assert settings.conversation_rollup_raw_tail_characters == 20_480
-    assert settings.conversation_rollup_trigger_events == 384
-    assert settings.conversation_rollup_trigger_characters == 81_920
-    assert settings.conversation_rollup_stop_events == 0
-    assert settings.conversation_rollup_stop_characters == 0
     assert settings.conversation_rollup_batch_max_events == 256
     assert settings.conversation_rollup_batch_max_characters == 32_768
     assert settings.conversation_rollup_worker_max_batches_per_claim == 5
     assert settings.conversation_rollup_foreground_max_batches == 5
-    assert settings.conversation_rollup_summary_max_characters == 2400
+    assert settings.conversation_rollup_summary_max_characters == 16384
     assert settings.conversation_rollup_retry_max_seconds == 960
     assert settings.conversation_rollup_lease_heartbeat_seconds == 60
     assert settings.agent_max_tool_calls == 32

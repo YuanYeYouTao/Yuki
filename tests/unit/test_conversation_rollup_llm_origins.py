@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import cast
 
 import pytest
+from tests.unit.rollup_test_helpers import model_summary
 
 from qq_ai_bot.conversation.rollup.models import (
     RollupCandidate,
@@ -42,7 +43,7 @@ class RecordingExecutor:
         del task, priority
         self.calls += 1
         self.requests.append(request)
-        return ChatResponse(content="model summary", latency_seconds=0)
+        return ChatResponse(content=model_summary(request, "model summary"), latency_seconds=0)
 
 
 def _event(event_id: int, *, origin: str) -> EventRecord:
@@ -79,12 +80,7 @@ def _candidate(events: tuple[EventRecord, ...]) -> RollupCandidate:
 
 def _policy(*origins: str) -> RollupPolicyConfig:
     return RollupPolicyConfig(
-        raw_tail_events=2,
-        raw_tail_characters=100_000,
-        trigger_events=2,
-        trigger_characters=100_000,
-        stop_events=0,
-        stop_characters=0,
+        context_token_budget=100,
         batch_max_events=10,
         batch_max_characters=100_000,
         summary_max_characters=2_000,
@@ -191,9 +187,9 @@ def test_empty_llm_origins_config_defaults_to_user_message() -> None:
 
 
 def test_rollup_max_output_tokens_is_not_a_smaller_provider_cap() -> None:
-    assert rollup_max_output_tokens(2400) == 16384
-    assert rollup_max_output_tokens(1) == 16384
-    assert rollup_max_output_tokens(8000) == 16384
+    assert rollup_max_output_tokens(2400) == 8192
+    assert rollup_max_output_tokens(1) == 8192
+    assert rollup_max_output_tokens(8000) == 8192
     assert rollup_max_output_tokens(2400) >= 2400
 
 

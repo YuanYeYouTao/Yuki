@@ -32,10 +32,7 @@ logger = logging.getLogger(__name__)
 async def _has_recorded_effects(control: WorkControl) -> bool:
     """A changed source cannot automatically replay work with an effect receipt."""
     assert control.current is not None
-    if control.current["sent_messages"] or any(
-        item.get("side_effecting") or item.get("pending") or item.get("uncertain")
-        for item in control.known_effects
-    ):
+    if control.current["sent_messages"]:
         return True
     async with control.repository.database.sessions() as session:
         return bool(
@@ -93,11 +90,12 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
                 retryable=False,
                 diagnostics={**failure.diagnostics, "effect_receipt_recorded": True},
             )
+    await control.refresh_effects()
     assert control.current is not None
     verified = (
         control.ending == "completed"
         and (control.final_delivery or control.current["output_kind"] != "answer")
-        and not any(e.get("pending") or e.get("uncertain") for e in control.known_effects)
+        and not await control.has_unresolved_effects()
         and not await control.pending()
         and await control.background_state() is None
     )
@@ -234,12 +232,13 @@ def _cancelled(control: WorkControl, current: dict[str, Any]) -> ActivationOutco
 async def settle(control: WorkControl, *, delivered: bool, pending_inputs: bool) -> None:
     if control.settled or control.current is None:
         return
+    await control.refresh_effects()
     if control.handoff_work_id is not None:
         state = "queued" if pending_inputs else await control.background_state()
         if state is None:
             state = (
                 "waiting_external"
-                if any(e.get("pending") for e in control.known_effects)
+                if await control.has_unresolved_effects(uncertain=False)
                 else "suspended"
             )
         reason = ExitReason.INPUT
@@ -276,6 +275,8 @@ async def settle(control: WorkControl, *, delivered: bool, pending_inputs: bool)
     )
     if control.current["state"] == "queued" and state != "queued":
         reason = ExitReason.INPUT
+    elif control.current["state"] == "waiting_external" and state != "waiting_external":
+        reason = ExitReason.EXTERNAL
     control.outcome = ActivationOutcome(
         reason, control.current["id"], **activation_details(control)
     )

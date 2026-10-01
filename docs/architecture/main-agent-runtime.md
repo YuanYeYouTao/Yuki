@@ -17,16 +17,28 @@ legacy/semantic 自主机会均以正式 SELF 来源进入这条执行链；
 
 模型侧每项业务只有一个公开名称和参数合同。冻结清单只来自主工具注册表，不追加 DSL、MCP
 或插件的自动化别名；目录查询不会加载工具、改变声明或提升权限。合同版本 6 为信号等待参数建立
-明确的新链边界，版本 8 为 Work 的只读 `get` / `list` 参数与状态证据合同建立新链边界。
+明确的新链边界，版本 8 为 Work 的只读目录，版本 9 为子任务真实分页建立新链边界。
 续跑仍保留执行记录、预算和已提交回执，不改写旧 Provider 请求或重跑已有操作。
 
 运行状态用 `state_scope=current_activation` 区分本轮激活与持久 Work 生命周期。
 `no_active_work` 只表示本轮没有激活的 Work，不表示过去未接纳工作或工具失败。
 没有当前 Work 时，`recent_work` 追加最近一项获准 Work 的有界简表，包括终态、真实 ID、
-目标、revision 和创建/更新时间；有当前 Work 时不混入另一项工作的状态。
+目标摘录、三项执行计数和创建者显示名；有当前 Work 时不混入另一项工作的状态。
+`available_work` 至多 16 项，只提供内部 ID、状态、目标摘录、创建者显示名和 `has_wait`。
+两种目录投影的目标摘录最多 160 字符、显示名最多 64 字符；`goal_complete=false` 明确表示
+摘录不完整，不能代替原目标。读取使用有界 SQL 最小投影，不逐项预载完整等待 JSON。
+续接目标或等待内容不清楚时先用 `get` 读取完整 goal 与 wait，活动 Work 原目标不截断。
+目录中的 revision、owner/Conversation/generation、来源与审计时间等详情不常驻 Prompt，
+需要核实再调用既有 `task_control(action=get/list)`；get 同时提供存在的完整等待登记。
+后端身份、权限和恢复事实仍保持完整。
 自动注入按原 actor、Conversation、generation 及执行来源核验可见范围，
 不因为查询工具能读全局目录就自动注入其他会话的工作。
 不注入完整 journal、工具正文或其他主体的任务。既有请求链只追加当前视图，不重写历史状态。
+
+人物与场景块保留当前说话人、群及可信引用；关系仅在 `context.relationship` 提供当前阶段、
+风格和未验证陈述规则，不在人物块重复注入好感/信任等数值详情，详情使用 `get_relationship`。
+短期记录继续保留 CAS revision，权限、时间、当前 Work、最近投递、当前媒体和固定工具合同
+不因显示精简而改变。文件、终端、完整自动化目录和长期记忆均使用已有工具按需查询。
 
 主 Agent 的 `task_control(action=get, work_id=...)` 按原内部 Work ID 只读查询全局安全目录，
 与 Automation 目录读取一致，不按创建者、当前会话或 generation 过滤；
@@ -234,10 +246,24 @@ Work 冲突在恢复记录和运维日志中保留受控的具体原因码，不
 变化时则暂停并保留检查点，不猜测原任务，也不为这次压缩额外消耗模型请求。
 
 协议检查点保留 opaque Responses item 的字段顺序；媒体外置及恢复不改变实际序列化
-请求。普通 no-progress 恢复和显式压缩均保留完整工具声明及固定请求设置，禁止依赖
-DeepSeek 的 tool_choice 控制执行。no-progress 的最后一次恢复响应不会执行本地函数工具；
-压缩响应若仍包含本地函数调用则拒绝压缩，原执行证据继续保留。本地围栏不撤销支持
-native tools 的 Provider 已自行执行的原生工具；不为收尾阶段隐式变更其声明或配置。
+请求。主执行的新链继续使用完整固定工具声明与设置，禁止依赖 DeepSeek 的 tool_choice
+控制执行。no-progress 的最后一次恢复响应不会执行本地函数工具。容量摘要使用同一连接的
+独立无工具请求，不携带 native tools 或原 opaque continuation，不覆盖主链的 dispatched/
+paired 检查点。失败、无缩减或候选完整请求不能装入窗口时，暂停原 Work 并保留事实。
+成功候选保留原 brief、原 inputs 的完整追加要求与来源、近期公开 call/result 对、所有未决
+效果及最近成功回执；旧协议通过不可变对象引用保留，私有签名不会当普通文本交给摘要器。
+
+数据库 journal 保存小清单，协议对象与媒体在数据库同目录的 `work-protocol` 中按内容 hash
+保存；新增引用与 journal 在原租约的短事务一起提交。活动 Work 保留引用，归档与隐私清理
+释放拥有者；GC 先取得无拥有者删除围栏，再在 writer 外删文件。对象资源配额和请求 token
+容量分开；存储压力不能触发模型摘要。备份必须包含 DB 和协议/工具证据目录并核验引用。
+
+热配置 `context.window_tokens` / `context.work_window_tokens` 初始为 96000 / 128000；
+聊天/群史触发与目标初始 0.90 / 0.60，Work 使用独立热配置
+`context.work_compaction_trigger_ratio` / `context.work_compaction_target_ratio`，初始 0.90 / 0.50。
+两种摘要输出上限初始 8192。这些是成本模拟后的可调政策，
+不是模型硬上限或必须填满的长度。连接 Profile 的 `max_input_tokens`、
+`context_window_tokens` 与输出限额独立核验，联合窗口才扣输出预留。
 
 SELF 接纳记录构成持久待派发事实，以 `initiative:<run_id>` 唯一关联原 Work；同一标记
 也写入 journal，避免恢复时把新 brief 或记忆重新追加成原触发。沙箱完成先唤醒原 Work/
@@ -258,9 +284,9 @@ SubagentScheduler 同样启动以恢复原子任务；新子任务接纳关闭�
 与强制管理审计共用事务，审计失败一同回滚，before 使用写时实际版本；resume/run_now
 保留原准入 policy。读取目录不授予修改权限，修改按当前 canonical owner 或 superuser 核验。
 
-每段默认 24 次模型请求、32 次业务工具调用，单段用尽排队续跑。主任务与工作者仍共用
-120/160 总额及工作者收尾预留。一次自动化 run 内的多个主生成工作额外共用 120/160，
-同一事务预留，不能换步骤、重启或取结果获得新额度。纯 DSL 保留原声明限制。
+每段默认 24 次模型请求、32 次业务工具调用，单段用尽仅让出并排队续跑。新主任务、子任务
+及自动化 run 没有默认累计次数上限；root/run 持久计数不清零，显式有限限额仍同事务预留。
+旧已登记的有限预算保留原值，不因升级、换步骤、重启或取结果获得新额度。纯 DSL 保留原声明限制。
 旧含 Yuki 生成步骤的脚本采用 runtime 预算，不因旧外层 1 次模型 / 2 次工具限制拒绝已完成工作。
 自动化的旧累计激活时间限制不再作为主 Agent 总寿命；Provider 请求超时和总预算仍有效。
 

@@ -88,6 +88,7 @@ class ToolResultBudgeter:
         item_limit: int | None = None,
         artifacts: ToolArtifactWriter | None = None,
         artifact_retention_seconds: int | None = None,
+        max_receipt_bytes: int = 49152,
     ) -> None:
         if max_characters is not None and max_characters <= 0:
             raise ValueError("tool result budget must be positive or null")
@@ -99,15 +100,30 @@ class ToolResultBudgeter:
         self._item_limit = item_limit
         self._artifacts = artifacts
         self._artifact_retention_seconds = artifact_retention_seconds
+        self._max_receipt_bytes = max_receipt_bytes
 
     async def render(self, result: ToolExecutionResult) -> BudgetedToolResult:
+        from qq_ai_bot.runtime.effect_outcomes import current_result_capture
+
+        capture = current_result_capture.get()
+        if capture is not None:
+            capture.outcome = result
+            if self._artifacts is None:
+                from qq_ai_bot.runtime.work_activation import current_work_control
+
+                control = current_work_control.get()
+                if control is not None:
+                    self._artifacts = control.repository.database.work_result_store
         payload = result.model_payload()
         text = json.dumps(payload, ensure_ascii=False, default=str)
         item_overflow = (
             self._item_limit is not None and _largest_collection(payload) > self._item_limit
         )
         character_overflow = self._max_characters is not None and len(text) > self._max_characters
-        if not item_overflow and not character_overflow:
+        byte_overflow = len(json.dumps({"result": text}, ensure_ascii=False).encode()) > (
+            self._max_receipt_bytes
+        )
+        if not item_overflow and not character_overflow and not byte_overflow:
             return BudgetedToolResult(text=text)
         # The summary/artifact is not the original evidence payload. Never
         # advertise references to content which the following request cannot see.
@@ -124,6 +140,8 @@ class ToolResultBudgeter:
                 media_type="application/json",
                 retention_seconds=self._artifact_retention_seconds,
             )
+            if capture is not None:
+                capture.artifact_handle = artifact_id
         important: dict[str, object] = {}
         if artifact_id:
             summary = _artifact_manifest(
@@ -140,16 +158,19 @@ class ToolResultBudgeter:
             summary["truncated"] = True
             summary["original_characters"] = len(text)
         progress = _workspace_progress(result)
+        summary.update(_execution_envelope(result))
         if progress:
             summary["progress"] = progress
         rendered = json.dumps(summary, ensure_ascii=False, default=str)
-        if self._max_characters is not None and len(rendered) > self._max_characters:
+        if (self._max_characters is not None and len(rendered) > self._max_characters) or len(
+            json.dumps({"result": rendered}, ensure_ascii=False).encode()
+        ) > self._max_receipt_bytes:
             minimal = {
                 "ok": result.ok,
                 "truncated": True,
                 "original_characters": len(text),
                 "artifact_handle": artifact_id,
-                "public_message": result.public_message,
+                "public_message": result.public_message[:1000] if result.public_message else None,
                 "retryable": result.retryable,
                 "mutation_committed": result.mutation_committed,
                 "finalize_after_commit": result.finalize_after_commit,
@@ -158,6 +179,7 @@ class ToolResultBudgeter:
                 "available_operations": summary.get("available_operations"),
                 "important_fields": (important or None) if not artifact_id else None,
                 "progress": progress or None,
+                **_execution_envelope(result),
             }
             rendered = json.dumps(
                 {key: value for key, value in minimal.items() if value is not None},
@@ -210,6 +232,25 @@ def _workspace_progress(result: ToolExecutionResult) -> dict[str, Any]:
         progress["output_preview"] = output[:1000]
         progress["preview_truncated"] = len(output) > 1000
     return progress
+
+
+def _execution_envelope(result: ToolExecutionResult) -> dict[str, Any]:
+    """Execution state survives every model projection, including minimal output."""
+    body = result.data if isinstance(result.data, dict) else {}
+    envelope: dict[str, Any] = {
+        "ok": result.ok,
+        "uncertain": result.uncertain or bool(body.get("uncertain")),
+        "retryable": result.retryable,
+    }
+    for key, value in (
+        ("error_code", result.error_code),
+        ("mutation_committed", result.mutation_committed),
+        ("finalize_after_commit", result.finalize_after_commit),
+        *((key, body.get(key)) for key in ("status", "run_id", "pending", "executed")),
+    ):
+        if value is not None:
+            envelope[key] = value
+    return envelope
 
 
 def normalize_legacy_result(

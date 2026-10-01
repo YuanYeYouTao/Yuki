@@ -5,6 +5,7 @@ import json
 
 import httpx
 import pytest
+from tests.unit.rollup_test_helpers import model_summary
 from tests.unit.test_conversation_rollup_370 import _append, _policy
 from tests.unit.test_conversation_rollup_llm_origins import _candidate, _event
 
@@ -240,6 +241,15 @@ async def test_queued_cancellation_and_invalid_source_never_dispatch_or_leak_cap
 @pytest.mark.parametrize("protocol", ["responses", "chat_completions"])
 async def test_rollup_wire_budget_and_transport_timeout_are_independent(protocol):
     seen = []
+    summary_output = json.dumps(
+        {
+            "schema": "conversation_rollup_v1",
+            "continuity": "summary",
+            "source_event_ids": [1],
+            "open_issues": [],
+            "corrections": [],
+        }
+    )
 
     def transport(request):
         seen.append((json.loads(request.content), request.extensions["timeout"]))
@@ -253,7 +263,7 @@ async def test_rollup_wire_budget_and_transport_timeout_are_independent(protocol
                     {
                         "type": "message",
                         "role": "assistant",
-                        "content": [{"type": "output_text", "text": "summary"}],
+                        "content": [{"type": "output_text", "text": summary_output}],
                     }
                 ],
             }
@@ -274,7 +284,7 @@ async def test_rollup_wire_budget_and_transport_timeout_are_independent(protocol
                     {
                         "message": {
                             "role": "assistant",
-                            "content": "" if reasoning_only else "summary",
+                            "content": "" if reasoning_only else summary_output,
                             "reasoning_content": "private reasoning",
                         },
                         "finish_reason": "length" if truncated else "stop",
@@ -296,13 +306,19 @@ async def test_rollup_wire_budget_and_transport_timeout_are_independent(protocol
             ModelTask.CHAT_AGENT, ChatRequest(messages=(ChatMessage(role="user", content="hello"),))
         )
         body, timeout = seen[0]
-        assert body.get("max_output_tokens", body.get("max_tokens")) == 16384
+        assert body.get("max_output_tokens", body.get("max_tokens")) == 8192
         assert timeout["read"] == 90
         assert seen[1][1]["read"] == 30
         if protocol == "responses":
             assert body["reasoning"]["effort"] == "low"
+            assert body["text"]["format"]["type"] == "json_schema"
+            assert body["text"]["format"]["name"] == "conversation_rollup"
+            assert body["text"]["format"]["strict"] is True
         else:
             assert "enabled" in json.dumps(body) and "low" in json.dumps(body)
+            assert body["response_format"]["type"] == "json_schema"
+            assert body["response_format"]["json_schema"]["name"] == "conversation_rollup"
+        assert not body.get("tools")
         assert pool.connection_pool_count == 1
         from qq_ai_bot.conversation.rollup.errors import model_failure_error_category
         from qq_ai_bot.llm.base import LLMEmptyResponseError, LLMIncompleteResponseError
@@ -388,7 +404,7 @@ async def test_required_rollup_joins_existing_claim_and_has_bounded_fallback(
             self.calls += 1
             started.set()
             await finish.wait()
-            return ChatResponse(content="semantic", latency_seconds=0)
+            return ChatResponse(content=model_summary(args[1], "semantic"), latency_seconds=0)
 
     models = Models()
     service = ConversationRollupService(models=models, config=config, timeout_seconds=1)
@@ -468,7 +484,7 @@ async def test_rollup_rejects_invalid_output_without_committing_reasoning(case):
     provider = Provider()
     models = executor(
         ModelClientPool(injected_profiles={"rollup-test": provider}),
-        max_output_tokens_limit=8192 if case == "cap" else 32768,
+        max_output_tokens_limit=4096 if case == "cap" else 32768,
     )
     service = ConversationRollupService(models=models, config=_policy(), timeout_seconds=90)
     try:
@@ -506,7 +522,9 @@ async def test_required_can_start_semantic_work_without_blocking_database_writes
             assert kwargs["priority"] is Priority.REQUIRED
             async with database.immediate_session() as session:
                 await session.execute(text("SELECT 1"))
-            return ChatResponse(content="required semantic", latency_seconds=0)
+            return ChatResponse(
+                content=model_summary(request, "required semantic"), latency_seconds=0
+            )
 
     service = ConversationRollupService(models=Models(), config=config, timeout_seconds=1)
     assert (

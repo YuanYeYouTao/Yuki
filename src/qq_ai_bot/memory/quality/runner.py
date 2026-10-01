@@ -52,6 +52,7 @@ from qq_ai_bot.memory.enums import (
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
 from qq_ai_bot.memory.models import MemoryEntityTarget, MemoryFact, MemoryFactCreate
 from qq_ai_bot.memory.quality.database import migrate_sqlite_database
+from qq_ai_bot.memory.quality.diagnostics import benchmark_diagnostics, diagnostic_case
 from qq_ai_bot.memory.quality.evaluator import (
     MemoryQualityEvaluator,
     evidence_key,
@@ -138,6 +139,7 @@ class MemoryQualityRunner:
             else None
         )
 
+    @benchmark_diagnostics
     async def run(
         self,
         *,
@@ -211,16 +213,17 @@ class MemoryQualityRunner:
     async def _run_case(self, case: MemoryQualityCase, path: Path) -> QualityObservation:
         database = Database(f"sqlite+aiosqlite:///{path.as_posix()}")
         started = time.perf_counter()
-        try:
-            return await self._execute_case(case, database, started)
-        except Exception as exc:
-            return QualityObservation(
-                case_id=case.case_id,
-                error_code=type(exc).__name__,
-                extraction_latency_ms=(time.perf_counter() - started) * 1000,
-            )
-        finally:
-            await database.close()
+        with diagnostic_case(case.case_id):
+            try:
+                return await self._execute_case(case, database, started)
+            except Exception as exc:
+                return QualityObservation(
+                    case_id=case.case_id,
+                    error_code=type(exc).__name__,
+                    extraction_latency_ms=(time.perf_counter() - started) * 1000,
+                )
+            finally:
+                await database.close()
 
     async def _execute_case(
         self,

@@ -2205,6 +2205,12 @@ class ToolArtifactModel(Base):
     byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    work_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    effect_key: Mapped[str | None] = mapped_column(String(256))
+    sha256: Mapped[str | None] = mapped_column(String(64))
+    deleting: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
 
 
 class ToolInvocationModel(Base):

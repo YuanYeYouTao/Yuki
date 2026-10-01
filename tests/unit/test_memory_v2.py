@@ -1301,7 +1301,6 @@ async def test_context_does_not_automatically_inject_facts(database: Database) -
         database,
         make_settings(
             database.url,
-            max_context_characters=20_000,
             context_metadata_budget_ratio=0.4,
             memory_automatic_recall_background_limit=10,
             memory_automatic_recall_per_target_limit=10,
@@ -1364,7 +1363,6 @@ async def test_context_keeps_mentioned_person_facts_for_on_demand_search(
         database,
         make_settings(
             database.url,
-            max_context_characters=20_000,
             context_metadata_budget_ratio=0.25,
         ),
     )

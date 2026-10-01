@@ -66,6 +66,16 @@ async def test_recent_is_local_but_directory_is_owner_independent(database, tmp_
     queries = WorkQueries(repository)
     other_source = {**json.loads(item["source_json"]), field: "other-owner"}
     assert await queries.recent(lease, other_source) is None
+    active = await repository.accept(
+        lease,
+        source_key="available-scope",
+        source=json.loads(item["source_json"]),
+        goal="Keep this original authorized goal",
+    )
+    assert await queries.available(lease, other_source) == []
+    assert [
+        row["work_id"] for row in await queries.available(lease, json.loads(item["source_json"]))
+    ] == [active["id"]]
     assert (await queries.get(lease, other_source, item["id"]))["work_id"] == item["id"]
     assert (await queries.list(lease, other_source, status="terminal"))["works"][0][
         "work_id"

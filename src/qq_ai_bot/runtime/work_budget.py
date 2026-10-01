@@ -2,11 +2,12 @@
 
 import json
 
-from sqlalchemy import select, true, update
+from sqlalchemy import or_, select, true, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from qq_ai_bot.runtime.subagent_schema import budgets, children
+from qq_ai_bot.runtime.subagent_schema import children
+from qq_ai_bot.runtime.work_budget_schema import automation_budgets, budgets
 from qq_ai_bot.runtime.work_schema_v1 import work
 
 
@@ -29,9 +30,16 @@ async def charge(session: AsyncSession, identity: str, *, models: int, tools: in
             )
         )
     ).one()
+    source = json.loads(current.source_json)
     await session.execute(
         insert(budgets)
-        .values(root_id=root, models=current.model_requests, tools=current.tool_calls)
+        .values(
+            root_id=root,
+            models=current.model_requests,
+            tools=current.tool_calls,
+            model_limit=None,
+            tool_limit=None,
+        )
         .on_conflict_do_nothing(index_elements=[budgets.c.root_id])
     )
     accepted = (
@@ -39,10 +47,18 @@ async def charge(session: AsyncSession, identity: str, *, models: int, tools: in
             update(budgets)
             .where(
                 budgets.c.root_id == root,
-                (budgets.c.models + models <= budgets.c.model_limit - reserve)
+                or_(
+                    budgets.c.model_limit.is_(None),
+                    budgets.c.models + models <= budgets.c.model_limit - reserve,
+                )
                 if models
                 else true(),
-                (budgets.c.tools + tools <= budgets.c.tool_limit - reserve) if tools else true(),
+                or_(
+                    budgets.c.tool_limit.is_(None),
+                    budgets.c.tools + tools <= budgets.c.tool_limit - reserve,
+                )
+                if tools
+                else true(),
             )
             .values(models=budgets.c.models + models, tools=budgets.c.tools + tools)
             .returning(budgets.c.root_id)
@@ -50,7 +66,6 @@ async def charge(session: AsyncSession, identity: str, *, models: int, tools: in
     ).first()
     if accepted is None:
         raise WorkBudgetExceeded("work_total_budget_exhausted")
-    source = json.loads(current.source_json)
     if source.get("owner") == "automation" and isinstance(source.get("automation_run_id"), int):
         await charge_automation_run(
             session, source["automation_run_id"], models=models, tools=tools
@@ -60,15 +75,28 @@ async def charge(session: AsyncSession, identity: str, *, models: int, tools: in
 async def charge_automation_run(
     session: AsyncSession, run_id: int, *, models: int, tools: int
 ) -> None:
-    from qq_ai_bot.runtime.automation_budget_schema import budgets as run_budgets
-
-    await session.execute(insert(run_budgets).values(run_id=run_id).on_conflict_do_nothing())
+    run_budgets = automation_budgets
+    if models < 0 or tools < 0:
+        raise ValueError("invalid_work_budget_charge")
+    if not models and not tools:
+        return
+    await session.execute(
+        insert(run_budgets)
+        .values(run_id=run_id, model_limit=None, tool_limit=None)
+        .on_conflict_do_nothing()
+    )
     accepted = await session.scalar(
         update(run_budgets)
         .where(
             run_budgets.c.run_id == run_id,
-            run_budgets.c.models + models <= 120,
-            run_budgets.c.tools + tools <= 160,
+            or_(
+                run_budgets.c.model_limit.is_(None),
+                run_budgets.c.models + models <= run_budgets.c.model_limit,
+            ),
+            or_(
+                run_budgets.c.tool_limit.is_(None),
+                run_budgets.c.tools + tools <= run_budgets.c.tool_limit,
+            ),
         )
         .values(models=run_budgets.c.models + models, tools=run_budgets.c.tools + tools)
         .returning(run_budgets.c.run_id)

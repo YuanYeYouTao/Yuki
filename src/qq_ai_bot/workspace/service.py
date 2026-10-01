@@ -135,7 +135,11 @@ class WorkspaceService:
                 limit=int(args.get("limit", 20)),
             )
         if name == "workspace_read":
-            return await asyncio.to_thread(self.store.read, str(args["artifact_id"]))
+            return await asyncio.to_thread(
+                self.store.read,
+                str(args["artifact_id"]),
+                offset=int(args.get("offset", 0)),
+            )
         if name == "workspace_write":
             previous = (
                 await asyncio.to_thread(self.store.read, args["artifact_id"])

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import json
 import time
 from typing import Any
@@ -27,6 +28,9 @@ class SubagentRepository:
     def __init__(self, repository: WorkRepository) -> None:
         self.repository = repository
         self.database = repository.database
+        self.max_concurrency = int(getattr(self.database, "subagent_concurrency", 1))
+        self.max_queued = int(getattr(self.database, "subagent_max_queued", 8))
+        self.max_active_per_root = int(getattr(self.database, "subagent_max_active_per_root", 8))
 
     async def reopen_parent(
         self, lease: WorkLease, identity: str, *, models: int
@@ -101,12 +105,26 @@ class SubagentRepository:
         if brief.get("output_kind") not in {"answer", "artifact", "state_change"}:
             raise ValueError("invalid_subagent_output_kind")
         encoded = bounded_json(brief)
+        async with self.database.sessions() as reader:
+            snapshot = (
+                (await reader.execute(select(work).where(work.c.id == root_id))).mappings().one()
+            )
+        identity, now = str(uuid4()), time.time()
+        source = json.loads(snapshot["source_json"])
+        source.update(work_id=identity, parent_work_id=root_id, worker=True)
+        encoded_source = bounded_json(source)
         async with self.database.immediate_session() as session:
             await self.repository._assert_lease(session, lease)
             root = (
                 (await session.execute(select(work).where(work.c.id == root_id))).mappings().one()
             )
-            if root["conversation_id"] != lease.conversation_id or root["state"] in TERMINAL:
+            if (
+                root["conversation_id"] != lease.conversation_id
+                or root["generation"] != lease.generation
+                or root["state"] in TERMINAL
+                or root["revision"] != snapshot["revision"]
+                or root["source_json"] != snapshot["source_json"]
+            ):
                 raise WorkConflict("subagent_parent_unavailable")
             previous = (
                 (await session.execute(select(children).where(children.c.source_key == key)))
@@ -118,25 +136,28 @@ class SubagentRepository:
                     raise WorkConflict("subagent_start_conflict")
                 return str(previous["work_id"])
             count = await session.scalar(
-                select(func.count()).select_from(children).where(children.c.root_id == root_id)
+                select(func.count())
+                .select_from(children.join(work, children.c.work_id == work.c.id))
+                .where(
+                    children.c.root_id == root_id,
+                    work.c.state.not_in(TERMINAL),
+                    children.c.archived_at.is_(None),
+                )
             )
             queued = await session.scalar(
                 select(func.count())
                 .select_from(children.join(work, children.c.work_id == work.c.id))
-                .where(work.c.state == "queued")
+                .where(work.c.state == "queued", children.c.archived_at.is_(None))
             )
-            if int(count or 0) >= 4 or int(queued or 0) >= 8:
+            if int(count or 0) >= self.max_active_per_root or int(queued or 0) >= self.max_queued:
                 raise ValueError("subagent_capacity")
-            identity, now = str(uuid4()), time.time()
-            source = json.loads(root["source_json"])
-            source.update(work_id=identity, parent_work_id=root_id, worker=True)
             await session.execute(
                 insert(work).values(
                     id=identity,
                     conversation_id=root["conversation_id"],
                     generation=root["generation"],
                     source_key=f"worker:{identity}",
-                    source_json=bounded_json(source),
+                    source_json=encoded_source,
                     goal=goal,
                     output_kind=brief.get("output_kind", "answer"),
                     deliver_artifacts=False,
@@ -185,7 +206,7 @@ class SubagentRepository:
             active = await session.scalar(
                 select(func.count()).select_from(children).where(children.c.lease_until > now)
             )
-            if active:
+            if int(active or 0) >= self.max_concurrency:
                 return None
             claimed = (
                 (
@@ -302,6 +323,11 @@ class SubagentRepository:
                 )
             )
             archived_work_ids = [*expired, *expired_roots]
+            from qq_ai_bot.runtime.protocol_schema import refs as protocol_refs
+
+            await session.execute(
+                delete(protocol_refs).where(protocol_refs.c.work_id.in_(archived_work_ids))
+            )
             media_hashes = list(
                 await session.scalars(
                     select(media_refs.c.sha256)
@@ -342,14 +368,50 @@ class SubagentRepository:
                 raise ValueError("subagent_not_owned")
             return dict(row)
 
-    async def list(self, root_id: str) -> list[dict[str, Any]]:
+    async def list(
+        self, root_id: str, *, limit: int | None = None, cursor: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Internal consumers read all owned children; model directory is explicitly paged."""
+        result: list[dict[str, Any]] = []
         async with self.database.sessions() as session:
-            ids = list(
-                await session.scalars(
-                    select(children.c.work_id).where(children.c.root_id == root_id).limit(4)
+            while True:
+                size = limit if limit is not None else 50
+                query = (
+                    select(
+                        children,
+                        work.c.state,
+                        work.c.goal,
+                        work.c.model_requests,
+                        work.c.tool_calls,
+                    )
+                    .join(work, children.c.work_id == work.c.id)
+                    .where(children.c.root_id == root_id)
                 )
-            )
-        return [await self.related(root_id, identity) for identity in ids]
+                if cursor is not None:
+                    query = query.where(children.c.work_id > cursor)
+                page = list(
+                    (
+                        await session.execute(query.order_by(children.c.work_id).limit(size))
+                    ).mappings()
+                )
+                result.extend(dict(row) for row in page)
+                if limit is not None or len(page) < size:
+                    return result
+                cursor = str(page[-1]["work_id"])
+
+    async def unfinished(self, root_id: str) -> builtins.list[dict[str, Any]]:
+        """Exact nonterminal set; unlike directory pagination this is a completion fence."""
+        async with self.database.sessions() as session:
+            return [
+                dict(row)
+                for row in (
+                    await session.execute(
+                        select(children, work.c.state)
+                        .join(work, work.c.id == children.c.work_id)
+                        .where(children.c.root_id == root_id, work.c.state.not_in(TERMINAL))
+                    )
+                ).mappings()
+            ]
 
     async def message(
         self,

@@ -642,7 +642,14 @@ def test_responses_revision_ignores_empty_new_defaults_and_canonicalizes_sets():
         "route": routes[ModelTask.CHAT_AGENT].model_dump(mode="json"),
         "profile": profile.model_dump(
             mode="json",
-            exclude={"wire_options", "headers", "max_output_tokens_limit", "search_mode"},
+            exclude={
+                "wire_options",
+                "headers",
+                "max_output_tokens_limit",
+                "search_mode",
+                "max_input_tokens",
+                "context_window_tokens",
+            },
         ),
     }
     legacy["profile"]["capabilities"] = sorted(legacy["profile"]["capabilities"])
@@ -653,6 +660,14 @@ def test_responses_revision_ignores_empty_new_defaults_and_canonicalizes_sets():
         ).encode()
     ).hexdigest()
     assert executor.profile_revision(ModelTask.CHAT_AGENT) == expected
+    capacity_only = profile.model_copy(
+        update={"max_input_tokens": 131072, "context_window_tokens": 262144}
+    )
+    capacity_executor = TaskModelExecutor(
+        router=ModelRouter(ModelProfileCatalog(profiles={"main": capacity_only}, routes=routes)),
+        pool=ModelClientPool(),
+    )
+    assert capacity_executor.profile_revision(ModelTask.CHAT_AGENT) == expected
     changed = profile.model_copy(update={"headers": {"x-custom-feature": "enabled"}})
     alternate = TaskModelExecutor(
         router=ModelRouter(ModelProfileCatalog(profiles={"main": changed}, routes=routes)),

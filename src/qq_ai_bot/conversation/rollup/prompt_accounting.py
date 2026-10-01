@@ -1,9 +1,9 @@
 """Prompt-visible, durable-watermark, and compression-source character accounting.
 
-Foreground fit and protected-tail Prompt characters use grouped main-agent
-history. Stored ``uncovered_character_count`` uses an additive per-message
-durable ruler that does not group senders or look up neighbors. Compression
-batches cut on the exact serialized New source events string.
+Grouped main-agent history characters remain useful for diagnostics. Stored
+``uncovered_character_count`` uses an additive per-message durable ruler that
+does not group senders or look up neighbors. Active windows use token capacity;
+source batches use the complete serialized New source events string.
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from qq_ai_bot.conversation.rollup.renderer import (
-    bound_compaction_source_events,
     rollup_source_projection,
     serialize_compaction_source_events,
 )
@@ -90,11 +89,11 @@ def prompt_accounting_characters(
     bot_display_name: str = DEFAULT_BOT_DISPLAY_NAME,
     timezone: str = DEFAULT_TIMEZONE,
 ) -> int:
-    """Return grouped main-agent history characters for foreground fit.
+    """Return grouped main-agent history characters for diagnostics.
 
     External source rows contribute zero. Adjacent same-sender messages may
-    share an envelope. This is the actual Prompt window ruler, not the stored
-    durable watermark.
+    share an envelope. This differs from the stored durable watermark; the
+    active Prompt window is measured in tokens, not these characters.
     """
 
     rows = tuple(events)
@@ -187,21 +186,6 @@ def source_accounting_characters(
     events: Iterable[EventRecord],
     *,
     timezone: str = DEFAULT_TIMEZONE,
-    max_characters: int | None = None,
 ) -> int:
-    """Return serialized compaction-source characters for one batch.
-
-    When ``max_characters`` is set, the cost matches the bounded New source
-    events string sent to the model, including separators.
-    """
-
-    rows = tuple(events)
-    if max_characters is None:
-        return len(serialize_compaction_source_events(rows, timezone=timezone))
-    return len(
-        bound_compaction_source_events(
-            rows,
-            timezone=timezone,
-            max_characters=max_characters,
-        )
-    )
+    """Account every serialized source character, including oversized events."""
+    return len(serialize_compaction_source_events(tuple(events), timezone=timezone))

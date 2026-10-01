@@ -39,7 +39,7 @@ TERMINAL = frozenset({"completed", "failed", "cancelled"})
 
 
 class WorkCapacityError(ValueError):
-    """A bounded private checkpoint cannot grow without a new context boundary."""
+    """A model window or physical evidence resource cannot admit this operation."""
 
 
 class WorkConflict(RuntimeError):
@@ -407,19 +407,27 @@ class WorkRepository:
         async with self.database.sessions() as session, session.begin():
             await self._assert_lease(session, lease)
             if state in {"completed", "waiting_user", "waiting_external"}:
-                mailbox_ready = await session.scalar(
-                    select(inputs.c.ready)
-                    .where(
-                        inputs.c.work_id == identity,
-                        inputs.c.state.in_(("pending", "staged")),
+                mailbox = (
+                    await session.execute(
+                        select(inputs.c.ready)
+                        .where(
+                            inputs.c.work_id == identity,
+                            inputs.c.state.in_(("pending", "staged")),
+                        )
+                        .order_by(inputs.c.id)
+                        .limit(1)
                     )
-                    .order_by(inputs.c.id)
-                    .limit(1)
-                )
-                if mailbox_ready:
-                    values.update(state="queued", reason="work_input_arrived")
+                ).first()
+                if mailbox is not None:
+                    # Attachment preparation can finish after this activation.
+                    # Its admitted input must retain a live owner until then.
+                    ready = bool(mailbox[0])
+                    values.update(
+                        state="queued" if ready else "waiting_external",
+                        reason="work_input_arrived" if ready else "work_input_preparing",
+                    )
                     if exit_reason is not None:
-                        exit_reason = "waiting_input"
+                        exit_reason = "waiting_input" if ready else "waiting_external"
             row = (
                 (
                     await session.execute(
@@ -461,7 +469,7 @@ class WorkRepository:
                     .values(**detail)
                     .on_conflict_do_update(index_elements=[recovery.c.work_id], set_=detail)
                 )
-            if state in TERMINAL:
+            if row["state"] in TERMINAL:
                 await session.execute(
                     update(waits)
                     .where(waits.c.work_id == identity, waits.c.status == "active")
@@ -734,6 +742,8 @@ class WorkRepository:
         version: ConversationReadVersion,
         coverage: int,
         timeout_seconds: float,
+        *,
+        token_budget: int | None = None,
     ) -> bool:
         """Park only pre-history work; the existing rollup job owns preparation."""
         async with self.database.immediate_session() as session:
@@ -816,6 +826,7 @@ class WorkRepository:
                 "coverage": coverage,
                 "deadline": deadline,
                 "starts_after": source.starts_after_event_id,
+                "token_budget": token_budget,
             }
             await session.execute(
                 update(work)
@@ -1025,7 +1036,17 @@ class WorkRepository:
         Affected group work can contain the deleted person's quoted content too,
         so discard its snapshots instead of trying to redact model projections.
         """
+        from qq_ai_bot.runtime.protocol_schema import refs as protocol_refs
+
         identities = select(work.c.id).where(work.c.conversation_id == conversation_id)
+        await session.execute(delete(protocol_refs).where(protocol_refs.c.work_id.in_(identities)))
+        from qq_ai_bot.persistence.models import ToolArtifactModel
+
+        await session.execute(
+            update(ToolArtifactModel)
+            .where(ToolArtifactModel.work_id.in_(identities))
+            .values(deleting=True)
+        )
         await session.execute(delete(journal).where(journal.c.work_id.in_(identities)))
         await session.execute(delete(waits).where(waits.c.work_id.in_(identities)))
         await session.execute(delete(effects).where(effects.c.work_id.in_(identities)))
@@ -1110,7 +1131,12 @@ class WorkRepository:
         if not run_ids:
             return []
         async with self.database.sessions() as session:
-            if await session.scalar(select(scope.c.fence).where(self._fence(lease))) is None:
+            if (
+                await session.scalar(
+                    select(self._lease_table(lease).c.fence).where(self._fence(lease))
+                )
+                is None
+            ):
                 raise WorkConflict("work_activation_obsolete")
             rows = await session.scalars(
                 select(SandboxTaskRunModel).where(
@@ -1269,6 +1295,11 @@ class WorkRepository:
             selected = list(await session.scalars(terminal_query()))
             if not selected:
                 return
+            from qq_ai_bot.runtime.protocol_schema import refs as protocol_refs
+
+            await session.execute(
+                delete(protocol_refs).where(protocol_refs.c.work_id.in_(selected))
+            )
             await session.execute(delete(journal).where(journal.c.work_id.in_(selected)))
             await session.execute(delete(waits).where(waits.c.work_id.in_(selected)))
             await session.execute(delete(inputs).where(inputs.c.work_id.in_(selected)))
@@ -1308,9 +1339,18 @@ class WorkRepository:
                 .values(state="cancelled", payload_json="{}")
             )
 
-    async def prepare_effect(self, lease: WorkLease, identity: str, key: str, kind: str) -> bool:
+    async def prepare_effect(
+        self,
+        lease: WorkLease,
+        identity: str,
+        key: str,
+        kind: str,
+        *,
+        outcome: dict[str, Any] | None = None,
+    ) -> bool:
         """False means an intent already exists, not that it is safe to send again."""
         now = time.time()
+        receipt = bounded_json({"outcome": outcome} if outcome is not None else {})
         async with self.database.sessions() as session, session.begin():
             await self._assert_lease(session, lease)
             row = (
@@ -1333,6 +1373,7 @@ class WorkRepository:
                         work_id=identity,
                         kind=kind,
                         state="prepared",
+                        receipt_json=receipt,
                         created=now,
                         updated=now,
                     )
@@ -1342,11 +1383,212 @@ class WorkRepository:
             ).first()
             return inserted is not None
 
+    @staticmethod
+    def _effect_scope(identity: str) -> Any:
+        return or_(
+            effects.c.work_id == identity,
+            effects.c.work_id.in_(select(children.c.work_id).where(children.c.root_id == identity)),
+        )
+
+    @staticmethod
+    def _unresolved_clause(*, pending: bool = True, uncertain: bool = True) -> Any:
+        clauses = []
+        if pending:
+            clauses.append(func.json_extract(effects.c.receipt_json, "$.outcome.pending") == 1)
+        if uncertain:
+            clauses.extend(
+                (
+                    func.json_extract(effects.c.receipt_json, "$.outcome.uncertain") == 1,
+                    and_(
+                        effects.c.state.in_(("prepared", "unknown")),
+                        func.coalesce(
+                            func.json_extract(effects.c.receipt_json, "$.outcome.side_effecting"), 1
+                        )
+                        == 1,
+                    ),
+                )
+            )
+        return or_(*clauses) if clauses else False
+
+    async def effect_evidence(
+        self,
+        lease: WorkLease,
+        identity: str,
+        *,
+        only_unresolved: bool = False,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Exact durable facts; callers must not use a presentation page as completeness."""
+        result: list[dict[str, Any]] = []
+        cursor = ""
+        async with self.database.sessions() as session:
+            if not await session.scalar(
+                select(self._lease_table(lease).c.fence).where(self._fence(lease))
+            ):
+                raise WorkConflict("work_activation_obsolete")
+            while True:
+                query = select(
+                    effects.c.effect_key,
+                    effects.c.work_id,
+                    effects.c.state,
+                    func.json_extract(effects.c.receipt_json, "$.outcome").label("outcome"),
+                ).where(self._effect_scope(identity))
+                if only_unresolved:
+                    query = query.where(self._unresolved_clause())
+                if limit is not None:
+                    query = query.order_by(
+                        effects.c.updated.desc(), effects.c.effect_key.desc()
+                    ).limit(limit)
+                else:
+                    query = (
+                        query.where(effects.c.effect_key > cursor)
+                        .order_by(effects.c.effect_key)
+                        .limit(128)
+                    )
+                rows = (await session.execute(query)).mappings().all()
+                if not rows:
+                    break
+                for row in rows:
+                    outcome = json.loads(row["outcome"] or "{}")
+                    if not outcome:
+                        from qq_ai_bot.capabilities.results import normalize_legacy_result
+                        from qq_ai_bot.runtime.effect_outcomes import execution_evidence
+
+                        raw = await session.scalar(
+                            select(effects.c.receipt_json).where(
+                                effects.c.effect_key == row["effect_key"]
+                            )
+                        )
+                        legacy = normalize_legacy_result(
+                            json.loads(raw or "{}").get("result", {}),
+                            provider_id="legacy",
+                            tool_name="legacy_tool",
+                        )
+                        outcome = execution_evidence(
+                            legacy, tool="legacy_tool", side_effecting=True
+                        )
+                    if row["state"] in {"prepared", "unknown"}:
+                        outcome["uncertain"] = outcome.get("side_effecting", True)
+                    outcome.update(effect_key=row["effect_key"], work_id=row["work_id"])
+                    result.append(outcome)
+                cursor = rows[-1]["effect_key"]
+                if limit is not None:
+                    break
+        return result
+
+    async def has_unresolved_effects(
+        self,
+        lease: WorkLease,
+        identity: str,
+        *,
+        pending: bool = True,
+        uncertain: bool = True,
+    ) -> bool:
+        if not pending and not uncertain:
+            return False
+        async with self.database.sessions() as session:
+            if not await session.scalar(
+                select(self._lease_table(lease).c.fence).where(self._fence(lease))
+            ):
+                raise WorkConflict("work_activation_obsolete")
+            return bool(
+                await session.scalar(
+                    select(effects.c.effect_key)
+                    .where(
+                        self._effect_scope(identity),
+                        self._unresolved_clause(pending=pending, uncertain=uncertain),
+                    )
+                    .limit(1)
+                )
+            )
+
+    async def resolve_run_effects(
+        self,
+        lease: WorkLease,
+        identity: str,
+        run_id: str,
+        outcome: dict[str, Any],
+    ) -> None:
+        """Use an owned run receipt; preserve every original invocation and its mutating role."""
+        async with self.database.sessions() as reader:
+            rows = (
+                (
+                    await reader.execute(
+                        select(effects).where(
+                            effects.c.work_id == identity,
+                            func.json_extract(effects.c.receipt_json, "$.outcome.run_id") == run_id,
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        prepared = []
+        for row in rows:
+            receipt = json.loads(row["receipt_json"])
+            previous = receipt.get("outcome", {})
+            merged = {**previous, **outcome}
+            merged["side_effecting"] = previous.get("side_effecting", False) or outcome.get(
+                "side_effecting", False
+            )
+            merged["tool"] = previous.get("tool", outcome.get("tool"))
+            receipt["outcome"] = merged
+            prepared.append((row["effect_key"], row["receipt_json"], bounded_json(receipt)))
+        async with self.database.immediate_session() as writer:
+            await self._assert_lease(writer, lease)
+            for key, previous_json, next_json in prepared:
+                await writer.execute(
+                    update(effects)
+                    .where(
+                        effects.c.effect_key == key,
+                        effects.c.receipt_json == previous_json,
+                    )
+                    .values(receipt_json=next_json, updated=time.time())
+                )
+
     async def record_effect(self, key: str, state: str, receipt: dict[str, Any]) -> None:
         # A late receipt must survive cancellation. It records an already-issued
         # effect, never authorizes another one, so no current lease is required.
         if state not in {"accepted", "failed", "unknown"}:
             raise ValueError("invalid_work_effect_state")
+        # Invocation state is never inferred from its model-facing projection.
+        if "outcome" not in receipt:
+            async with self.database.sessions() as reader:
+                prior = await reader.scalar(
+                    select(effects.c.receipt_json).where(effects.c.effect_key == key)
+                )
+            existing_outcome = json.loads(prior or "{}").get("outcome", {})
+            if "result" in receipt:
+                from qq_ai_bot.capabilities.results import normalize_legacy_result
+                from qq_ai_bot.runtime.effect_outcomes import execution_evidence
+
+                original = normalize_legacy_result(
+                    receipt["result"],
+                    provider_id="legacy",
+                    tool_name=existing_outcome.get("tool", "legacy_tool"),
+                )
+                receipt = {
+                    **receipt,
+                    "outcome": execution_evidence(
+                        original,
+                        tool=original.tool_name,
+                        side_effecting=existing_outcome.get(
+                            "side_effecting", original.mutation_committed is not False
+                        ),
+                    ),
+                }
+            if existing_outcome:
+                receipt = {
+                    **receipt,
+                    "outcome": {
+                        **existing_outcome,
+                        **receipt.get("outcome", {}),
+                        "uncertain": (
+                            state == "unknown" and existing_outcome.get("side_effecting", True)
+                        )
+                        or receipt.get("outcome", {}).get("uncertain", False),
+                    },
+                }
         serialized = bounded_json(receipt)
         async with self.database.sessions() as session, session.begin():
             row = (

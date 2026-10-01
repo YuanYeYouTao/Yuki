@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import asyncio
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import event, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -18,6 +19,9 @@ from sqlalchemy.ext.asyncio import (
 
 from qq_ai_bot.persistence.metadata import Base
 
+if TYPE_CHECKING:
+    from qq_ai_bot.admin.models import WorkStorageRuntimeConfig
+
 _SQLITE_BUSY_TIMEOUT_MS = 5_000
 
 
@@ -27,6 +31,16 @@ class Database:
     def __init__(self, url: str) -> None:
         self.url = url
         self.subagents_enabled = False
+        self.work_result_store: Any = None
+        self.protocol_storage_policy: Callable[[], Awaitable[WorkStorageRuntimeConfig]] | None = (
+            None
+        )
+        self.subagent_concurrency = 2
+        self.subagent_max_queued = 8
+        self.subagent_max_active_per_root = 8
+        self._protocol_store_path: Path | None = None
+        self._protocol_storage_lock: asyncio.Lock | None = None
+        self._protocol_gc_iterator: Iterator[Path] | None = None
         self._ensure_sqlite_parent(url)
         self.engine: AsyncEngine = create_async_engine(url, pool_pre_ping=True)
         if url.startswith("sqlite+aiosqlite:///"):
@@ -78,8 +92,26 @@ class Database:
             )
 
         async with self.engine.begin() as connection:
-            await connection.run_sync(Base.metadata.create_all)
+            await connection.run_sync(
+                lambda sync: Base.metadata.create_all(
+                    sync,
+                    tables=[
+                        table
+                        for table in Base.metadata.sorted_tables
+                        if table.name not in {"runtime_work_budgets", "runtime_automation_budgets"}
+                    ],
+                )
+            )
+            from qq_ai_bot.runtime.work_budget_schema import create_current_budget_tables
+
+            await connection.run_sync(create_current_budget_tables)
+            from qq_ai_bot.runtime.effect_schema import install_indexes
+
+            await connection.run_sync(install_indexes)
             await connection.run_sync(_recovery.install_quota)
+            from qq_ai_bot.runtime.protocol_schema import install_quota as install_protocol_quota
+
+            await connection.run_sync(install_protocol_quota)
             await self._create_fts_schema(connection)
 
     @staticmethod

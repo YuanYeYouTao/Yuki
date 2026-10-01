@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
+from qq_ai_bot.admin.models import WorkStorageRuntimeConfig
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.rollup.metrics import ConversationRollupMetrics
@@ -14,6 +15,7 @@ from qq_ai_bot.conversation.rollup.repository import (
     ConversationRollupRepository,
     ConversationScopeRepository,
 )
+from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.emoji.repository import EmojiRepository
 from qq_ai_bot.identity.write_settings import configure_identity_write_settings
 from qq_ai_bot.memory.activation import MemoryActivationRepository, MemoryIntentRanker
@@ -106,6 +108,12 @@ class PersistenceModule:
             settings=settings,
             database=database,
         )
+
+        async def protocol_storage_policy() -> WorkStorageRuntimeConfig:
+            # Physical capacity has one owner: the deployment, never a chat scope.
+            return (await runtime_config.snapshot()).work_storage
+
+        database.protocol_storage_policy = protocol_storage_policy
         initial = {
             "initial_affection": settings.relationship_initial_affection,
             "initial_trust": settings.relationship_initial_trust,
@@ -156,20 +164,33 @@ class PersistenceModule:
             metrics=memory_metrics,
         )
         rollup_config = RollupPolicyConfig(
-            raw_tail_events=settings.conversation_rollup_raw_tail_events,
-            raw_tail_characters=settings.conversation_rollup_raw_tail_characters,
-            trigger_events=settings.conversation_rollup_trigger_events,
-            trigger_characters=settings.conversation_rollup_trigger_characters,
-            stop_events=settings.conversation_rollup_stop_events,
-            stop_characters=settings.conversation_rollup_stop_characters,
+            context_token_budget=settings.context_window_tokens,
+            trigger_ratio=settings.conversation_rollup_trigger_ratio,
+            target_ratio=settings.conversation_rollup_target_ratio,
             batch_max_events=settings.conversation_rollup_batch_max_events,
             batch_max_characters=settings.conversation_rollup_batch_max_characters,
             summary_max_characters=settings.conversation_rollup_summary_max_characters,
+            max_output_tokens=settings.conversation_rollup_max_output_tokens,
             bot_display_name=settings.bot_display_name,
             timezone=settings.default_timezone,
             llm_origins=parse_rollup_llm_origins(settings.conversation_rollup_llm_origins),
         )
         rollup_metrics = ConversationRollupMetrics()
+
+        async def policy_for_scope(scope: ConversationScope) -> RollupPolicyConfig:
+            snapshot = await runtime_config.snapshot(
+                group_id=scope.group_id,
+                user_id=scope.private_peer_user_id if scope.group_id is None else None,
+            )
+            return replace(
+                rollup_config,
+                context_token_budget=snapshot.context.window_tokens,
+                trigger_ratio=snapshot.context.compaction_trigger_ratio,
+                target_ratio=snapshot.context.compaction_target_ratio,
+                summary_max_characters=snapshot.context.rollup_summary_characters,
+                max_output_tokens=snapshot.context.rollup_output_tokens,
+            )
+
         scoped_events = ScopedEventLedgerUnitOfWork(
             database,
             config=rollup_config,
@@ -191,6 +212,7 @@ class PersistenceModule:
                 database,
                 rollup_config,
                 metrics=rollup_metrics,
+                policy_for_scope=policy_for_scope,
             ),
             conversation_rollup_metrics=rollup_metrics,
             memories=memories,

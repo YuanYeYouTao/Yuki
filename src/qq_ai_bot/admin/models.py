@@ -158,6 +158,15 @@ class ControlAuditRef:
 @dataclass(frozen=True, slots=True)
 class ContextRuntimeConfig:
     local_event_limit: int
+    window_tokens: int = 96000
+    work_window_tokens: int = 128000
+    compaction_trigger_ratio: float = 0.90
+    compaction_target_ratio: float = 0.60
+    work_compaction_trigger_ratio: float = 0.90
+    work_compaction_target_ratio: float = 0.50
+    compaction_output_tokens: int = 8192
+    rollup_output_tokens: int = 8192
+    rollup_summary_characters: int = 16384
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,6 +283,21 @@ class AgentRuntimeConfig:
     max_tool_calls: int
     max_model_requests: int
     tool_result_max_characters: int
+
+
+@dataclass(frozen=True, slots=True)
+class WorkStorageRuntimeConfig:
+    """Deployment-wide physical storage admission, independent of model windows."""
+
+    total_max_bytes: int = 2 * 1024**3
+    object_max_bytes: int = 64 * 1024**2
+    disk_reserve_bytes: int = 64 * 1024**2
+
+    def __post_init__(self) -> None:
+        if min(self.total_max_bytes, self.object_max_bytes, self.disk_reserve_bytes) <= 0:
+            raise ValueError("work protocol storage limits must be positive")
+        if self.object_max_bytes > self.total_max_bytes:
+            raise ValueError("work protocol object limit must not exceed total capacity")
 
 
 @dataclass(frozen=True, slots=True)
@@ -408,6 +432,7 @@ class RuntimeConfigSnapshot:
     conversation: ConversationRuntimeConfig
     tooling: ToolingRuntimeConfig | None = None
     mcp: MCPRuntimeConfig | None = None
+    work_storage: WorkStorageRuntimeConfig = WorkStorageRuntimeConfig()
 
     def conversation_policy(self) -> ConversationRuntimeConfig:
         """Return the autonomous-conversation policy for this snapshot."""

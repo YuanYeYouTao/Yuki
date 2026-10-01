@@ -19,6 +19,11 @@ from qq_ai_bot.runtime.work_query_schema import (
 )
 from qq_ai_bot.runtime.work_repository import WorkLease, WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import work
+from qq_ai_bot.runtime.work_wait_schema import waits
+
+PROMPT_GOAL_CHARACTERS = 160
+PROMPT_CREATOR_CHARACTERS = 64
+PROMPT_AVAILABLE_LIMIT = 16
 
 
 class WorkQueries:
@@ -102,7 +107,46 @@ class WorkQueries:
                 .mappings()
                 .first()
             )
-            return dict(row) if row else None
+            result = dict(row) if row else None
+        if result is not None:
+            from qq_ai_bot.runtime.work_wait import WorkWaitRepository
+
+            waiting = await WorkWaitRepository(self.repository).describe(work_id)
+            if waiting is not None:
+                result["wait"] = waiting
+        return result
+
+    def _prompt_query(self, lease: WorkLease, source: dict[str, Any]) -> Select[Any]:
+        """Read a bounded directory excerpt, never a replacement for the goal."""
+        query = self._query(lease, source, local=True)
+        return query.with_only_columns(
+            work.c.id.label("work_id"),
+            func.substr(work.c.goal, 1, PROMPT_GOAL_CHARACTERS).label("goal_excerpt"),
+            (func.length(work.c.goal) <= PROMPT_GOAL_CHARACTERS).label("goal_complete"),
+            work.c.state,
+            func.substr(
+                query.selected_columns.creator_display_name, 1, PROMPT_CREATOR_CHARACTERS
+            ).label("creator_display_name"),
+        )
+
+    async def available(self, lease: WorkLease, source: dict[str, Any]) -> list[dict[str, Any]]:
+        """Only current scoped resumable work facts belong in the per-turn view."""
+        if lease.work_id:
+            return []
+        query = (
+            self._prompt_query(lease, source)
+            .add_columns(
+                select(waits.c.id)
+                .where(waits.c.work_id == work.c.id, waits.c.status == "active")
+                .exists()
+                .label("has_wait")
+            )
+            .where(work.c.state.not_in(("completed", "failed", "cancelled")))
+            .order_by(work.c.created, work.c.id)
+            .limit(PROMPT_AVAILABLE_LIMIT)
+        )
+        async with self.repository.database.sessions() as session:
+            return [dict(row) for row in (await session.execute(query)).mappings().all()]
 
     async def recent(self, lease: WorkLease, source: dict[str, Any]) -> dict[str, Any] | None:
         """Only this actor/source and current conversation generation enter prompts."""
@@ -110,7 +154,8 @@ class WorkQueries:
             row = (
                 (
                     await session.execute(
-                        self._query(lease, source, local=True)
+                        self._prompt_query(lease, source)
+                        .add_columns(work.c.model_requests, work.c.tool_calls, work.c.sent_messages)
                         .order_by(work.c.updated.desc(), work.c.id.desc())
                         .limit(1)
                     )

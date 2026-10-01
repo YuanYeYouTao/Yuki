@@ -14,6 +14,7 @@ from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.subagent_repository import SubagentRepository
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
+from qq_ai_bot.runtime.work_wait import WorkWaitRepository
 from qq_ai_bot.services.agent_runner import AgentRunResult, AgentRuntime
 from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
 from qq_ai_bot.services.subagent_execution import WorkerBackend
@@ -125,11 +126,105 @@ async def test_status_question_request_contains_terminal_work_and_preserves_pref
     assert state["state_scope"] == "current_activation"
     assert state["work_id"] is None
     assert state["recent_work"]["work_id"] == row["id"]
+    assert set(state["recent_work"]) == {
+        "work_id",
+        "goal_excerpt",
+        "goal_complete",
+        "state",
+        "model_requests",
+        "tool_calls",
+        "sent_messages",
+        "creator_display_name",
+    }
+    detailed = json.loads(
+        await control.execute("task_control", {"action": "get", "work_id": row["id"]}, "details")
+    )["work"]
+    assert detailed["conversation_id"] == row["conversation_id"]
+    assert detailed["generation"] == row["generation"]
+    assert "created_at" in detailed and "updated_at" in detailed
     assert state["recent_work"]["state"] == "completed"
     assert state["available_work"] == []
     assert submitted_runtime.dynamic_context_prepared
     assert control.current_message is original[-1]
     assert control.current is None
+
+
+@pytest.mark.asyncio
+async def test_idle_work_directory_is_bounded_and_full_goal_wait_are_queryable(database, tmp_path):
+    env = await social_env(database, tmp_path)
+    repository = WorkRepository(database)
+    lease = await repository.acquire(env.context.conversation_id, 1)
+    assert lease is not None
+    source = {
+        "origin": "user_message",
+        "principal_kind": "person",
+        "actor_user_id": "10001",
+        "actor_person_id": env.person,
+    }
+    goal = "完整约束" * 2046 + "最终禁止重复执行"
+    rows = [
+        await repository.accept(lease, source_key=f"large-{index}", source=source, goal=goal)
+        for index in range(16)
+    ]
+    target = rows[-1]
+    waiting = WorkWaitRepository(repository)
+    await waiting.register(
+        lease,
+        work_id=target["id"],
+        source=source,
+        call_key="large-wait",
+        mode="all",
+        conditions=[{"kind": "time_due", "after_seconds": 3600}, {"kind": "conversation"}],
+        deadline_at=None,
+    )
+    await repository.transition(lease, target["id"], target["revision"], "waiting_external")
+    control = WorkControl(repository, lease, "directory-question", source, AsyncMock())
+    statements = []
+
+    def record_statement(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement.lower())
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", record_statement)
+    try:
+        state = await control.runtime_state()
+    finally:
+        event.remove(database.engine.sync_engine, "before_cursor_execute", record_statement)
+    assert len(state["available_work"]) == 16
+    assert len(json.dumps(state, ensure_ascii=False)) < 9000
+    assert all("conditions_json" not in statement for statement in statements)
+    for item in (*state["available_work"], state["recent_work"]):
+        assert "goal" not in item and "wait" not in item
+        assert item["goal_excerpt"] == goal[:160] and not item["goal_complete"]
+    assert next(item for item in state["available_work"] if item["work_id"] == target["id"])[
+        "has_wait"
+    ]
+    detail = json.loads(
+        await control.execute("task_control", {"action": "get", "work_id": target["id"]}, "full")
+    )["work"]
+    assert detail["goal"] == goal
+    assert detail["wait"] == await waiting.describe(target["id"])
+    assert detail["wait"]["status"] == "active"
+    assert (await repository.get(target["id"]))["state"] == "waiting_external"
+    assert control.current is None and control.handoff_work_id is None
+    listed = json.loads(
+        await control.execute("task_control", {"action": "list", "limit": 16}, "full-list")
+    )
+    assert all(item["goal"] == goal for item in listed["works"])
+
+
+@pytest.mark.asyncio
+async def test_current_work_prompt_preserves_full_goal_and_does_not_load_recent(database, tmp_path):
+    control, _, _ = await completed_work(database, tmp_path)
+    goal = "保持原目标和最后的限制" * 500
+    current = await control.repository.accept(
+        control.lease, source_key="continued-work", source=control.source, goal=goal
+    )
+    control.current = current
+    state = await control.runtime_state()
+    assert state["work_id"] == current["id"]
+    assert state["goal"] == goal
+    assert state["state"] == current["state"]
+    assert state["recent_work"] is None and state["available_work"] == []
 
 
 @pytest.mark.asyncio

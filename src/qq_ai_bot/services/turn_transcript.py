@@ -60,6 +60,12 @@ class TurnTranscript:
     def append(self, message: ChatMessage) -> None:
         self._entries.append(message)
 
+    def portable_entries(self) -> tuple[ChatMessage | FunctionCallOutput, ...]:
+        """Public input/output records; opaque provider state is never summary text."""
+        return tuple(
+            item for item in self._entries if isinstance(item, (ChatMessage, FunctionCallOutput))
+        )
+
     def accept(self, continuation: ProviderContinuation) -> None:
         previous = self.continuation
         if previous is not None and (previous.provider, previous.protocol, previous.profile_id) != (

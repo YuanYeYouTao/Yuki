@@ -463,14 +463,17 @@ class WorkspaceStore:
         finally:
             self._unlink([path])
 
-    def read(self, artifact_id: str) -> dict[str, Any]:
+    def read(self, artifact_id: str, *, offset: int = 0) -> dict[str, Any]:
+        if type(offset) is not int or offset < 0:
+            raise WorkspaceError("invalid_offset")
         metadata, data = self.read_bytes(artifact_id)
+        page = data[offset : offset + 32768]
         try:
             import codecs
 
-            value = codecs.getincrementaldecoder("utf-8")().decode(
-                data[:32768], final=len(data) <= 32768
-            )
+            decoder = codecs.getincrementaldecoder("utf-8")()
+            value = decoder.decode(page, final=offset + len(page) >= len(data))
+            consumed = len(page) - len(decoder.getstate()[0])
         except UnicodeDecodeError:
             return {**metadata, "binary": True}
         if "\x00" in value:
@@ -478,7 +481,9 @@ class WorkspaceStore:
         return {
             **metadata,
             "text": value,
-            "truncated": len(data) > 32768,
+            "offset": offset,
+            "next_offset": offset + consumed,
+            "truncated": offset + consumed < len(data),
             "external_untrusted": True,
         }
 

@@ -250,6 +250,7 @@ async def _execute_plugin_main_turn(
                 metadata=payload,
                 current_time=runtime.current_time,
                 read_history=can_read_history,
+                runtime=runtime.runtime_config,
                 projection_scope=json.dumps(
                     [
                         "plugin-sdk",

@@ -372,12 +372,7 @@ async def test_active_wakeup_holds_rollup_until_a_silent_terminal_finish(
     rollups = ConversationRollupRepository(
         database,
         RollupPolicyConfig(
-            raw_tail_events=1,
-            raw_tail_characters=1_000,
-            trigger_events=2,
-            trigger_characters=1_000,
-            stop_events=0,
-            stop_characters=0,
+            context_token_budget=40,
             batch_max_events=20,
             batch_max_characters=10_000,
             summary_max_characters=1_000,
@@ -471,12 +466,7 @@ async def test_rollup_commit_rechecks_a_hold_created_after_candidate_read(
     rollups = ConversationRollupRepository(
         database,
         RollupPolicyConfig(
-            raw_tail_events=1,
-            raw_tail_characters=1_000,
-            trigger_events=2,
-            trigger_characters=1_000,
-            stop_events=0,
-            stop_characters=0,
+            context_token_budget=40,
             batch_max_events=20,
             batch_max_characters=10_000,
             summary_max_characters=1_000,

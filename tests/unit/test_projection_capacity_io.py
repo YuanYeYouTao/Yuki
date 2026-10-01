@@ -22,7 +22,7 @@ async def _projection(database, tmp_path):
             context_key="b" * 64,
             contract_revision="c" * 64,
         )
-    repository = PromptProjectionRepository(database, max_context_characters=128)
+    repository = PromptProjectionRepository(database, max_view_bytes=512)
     saved = await repository.commit(**arguments, items=[{"a": 1}], rebuild_reason="bootstrap")
     arguments.update(expected_epoch=saved.epoch_id, expected_revision=saved.revision)
     return repository, arguments
@@ -84,3 +84,16 @@ async def test_projection_capacity_reads_metadata_only(database, tmp_path):
     others = [sql for sql in statements if "prompt_projections.view_key !=" in sql]
     assert others
     assert all("prompt_projections.payload_json" not in sql for sql in others)
+
+
+async def test_projection_resource_bytes_and_items_do_not_freeze_a_semantic_window(
+    database, tmp_path
+):
+    _small_repository, arguments = await _projection(database, tmp_path)
+    repository = PromptProjectionRepository(database)
+    # Larger hot windows may exceed the former startup-derived view bytes and
+    # 2048-item lifetime cap while remaining within the independent resource pool.
+    items = [{"i": index, "content": "x" * 256} for index in range(2050)]
+    saved = await repository.commit(**arguments, items=items, rebuild_reason="capacity")
+    assert len(saved.items()) == 2050
+    assert repository.view_bytes == 8 * 1024 * 1024

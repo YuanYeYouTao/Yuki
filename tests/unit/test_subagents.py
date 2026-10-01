@@ -123,7 +123,7 @@ async def test_worker_independent_lease_messages_and_dormant_resume(database, tm
     assert child_lease and await repo.valid(parent_lease)
     with pytest.raises(ValueError, match="recursive"):
         await workers.start(child_lease, identity, "recursive", {"goal": "nested"})
-    for index in range(3):
+    for index in range(workers.max_active_per_root - 1):
         await workers.start(
             parent_lease,
             parent["id"],
@@ -185,6 +185,13 @@ async def test_worker_independent_lease_messages_and_dormant_resume(database, tm
 async def test_shared_budget_reserves_parent_capacity_atomically(database, tmp_path):
     repo, workers, parent_lease, parent, identity = await stack(database, tmp_path)
     child_lease = await workers.acquire(identity)
+    # Explicit finite budgets retain the parent reserve; new roots default to unlimited.
+    async with database.sessions() as session, session.begin():
+        await session.execute(
+            insert(budgets).values(
+                root_id=parent["id"], models=0, tools=0, model_limit=120, tool_limit=160
+            )
+        )
     await repo.checkpoint(parent_lease, parent["id"], None, models=110, tools=151)
     outcomes = await asyncio.gather(
         *(repo.checkpoint(child_lease, identity, None, models=1, tools=1) for _ in range(3)),
@@ -202,6 +209,98 @@ async def test_shared_budget_reserves_parent_capacity_atomically(database, tmp_p
         assert row["models"] == 120 and row["tools"] == 160
     await repo.release(child_lease)
     await repo.release(parent_lease)
+
+
+@pytest.mark.asyncio
+async def test_default_budget_continues_past_old_root_and_run_limits(database, tmp_path):
+    from qq_ai_bot.runtime.work_budget_schema import budgets as current_budgets
+
+    repo, workers, parent_lease, parent, identity = await stack(database, tmp_path)
+    child_lease = await workers.acquire(identity)
+    await repo.checkpoint(parent_lease, parent["id"], None, models=200, tools=200)
+    await repo.checkpoint(child_lease, identity, None, models=200, tools=200)
+    async with database.sessions() as session:
+        row = (await session.execute(select(current_budgets))).mappings().one()
+        assert row["model_limit"] is None and row["tool_limit"] is None
+        assert row["models"] == 400 and row["tools"] == 400
+    await repo.release(child_lease)
+    await repo.release(parent_lease)
+
+
+@pytest.mark.asyncio
+async def test_child_capacity_counts_active_and_pages_all_history(database, tmp_path):
+    repo, workers, lease, parent, identity = await stack(database, tmp_path)
+    identities = [identity]
+    for number in range(6):
+        await workers.cancel(lease, parent["id"], identities[-1])
+        identities.append(
+            await workers.start(
+                lease, parent["id"], f"spawn:{number}", {"goal": "draw", "output_kind": "answer"}
+            )
+        )
+    assert {row["work_id"] for row in await workers.list(parent["id"])} == set(identities)
+    assert [row["work_id"] for row in await workers.unfinished(parent["id"])] == identities[-1:]
+    found, cursor = [], None
+    while page := await workers.list(parent["id"], limit=2, cursor=cursor):
+        found.extend(row["work_id"] for row in page)
+        cursor = page[-1]["work_id"]
+    assert found == sorted(identities)
+    await repo.release(lease)
+
+
+@pytest.mark.asyncio
+async def test_two_children_claim_independent_leases(database, tmp_path):
+    repo, workers, lease, parent, first = await stack(database, tmp_path)
+    workers.max_concurrency = 2
+    second = await workers.start(
+        lease, parent["id"], "spawn:second", {"goal": "draw", "output_kind": "answer"}
+    )
+    claims = await asyncio.gather(workers.acquire(first), workers.acquire(second))
+    assert all(claim is not None for claim in claims)
+    assert claims[0].work_id != claims[1].work_id
+    for claim in claims:
+        await repo.release(claim)
+    await repo.release(lease)
+
+
+@pytest.mark.asyncio
+async def test_child_scheduler_runs_in_parallel_and_joins_shutdown(database, tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from qq_ai_bot.runtime.subagent_scheduler import SubagentScheduler
+
+    repo, workers, lease, parent, first = await stack(database, tmp_path)
+    second = await workers.start(
+        lease, parent["id"], "spawn:second", {"goal": "draw", "output_kind": "answer"}
+    )
+    entered, exited = set(), set()
+    both = asyncio.Event()
+
+    async def run(identity):
+        entered.add(identity)
+        if len(entered) == 2:
+            both.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            exited.add(identity)
+
+    executor = SimpleNamespace(
+        prepare=AsyncMock(), cancel_commands=AsyncMock(), run=run, definitions=()
+    )
+    scheduler = SubagentScheduler(
+        repo, workers, executor, admission_enabled=True, global_llm_concurrency=3, max_concurrency=2
+    )
+    await scheduler.start()
+    try:
+        await asyncio.wait_for(both.wait(), timeout=5)
+        assert entered == {first, second}
+        assert (await scheduler.health())["active_workers"] == 2
+    finally:
+        await scheduler.close()
+    assert exited == entered and not scheduler.running
+    await repo.release(lease)
 
 
 @pytest.mark.asyncio
@@ -253,13 +352,24 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
     elif scenario == "question":
         leading = [("subagent_message", {"text": "Which color?", "ask": True})]
     elif scenario == "compaction":
-        from unittest.mock import AsyncMock
-
+        from qq_ai_bot.domain.messages import ChatMessage
         from qq_ai_bot.runtime.work_session import WorkSession
 
-        monkeypatch.setattr(
-            WorkSession, "needs_compaction", AsyncMock(side_effect=[True] + [False] * 8)
-        )
+        original_restore = WorkSession.restore
+        grown = False
+
+        async def restore_with_history(session, *args, **kwargs):
+            nonlocal grown
+            transcript = await original_restore(session, *args, **kwargs)
+            if session.control.current["id"] == identity and not grown:
+                grown = True
+                for _ in range(20):
+                    transcript.append(ChatMessage("assistant", "Prior evidence. " * 1100))
+                for _ in range(16):
+                    transcript.append(ChatMessage("assistant", "Recent completed check."))
+            return transcript
+
+        monkeypatch.setattr(WorkSession, "restore", restore_with_history)
         leading = [(None, None)]
     elif scenario == "business":
         leading = [("batch", None)]
@@ -267,6 +377,10 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
 
     def respond(request):
         name, args = next(steps)
+        if scenario == "compaction" and not provider.requests[:-1]:
+            from tests.support.work_compaction import summary_json
+
+            return ChatResponse(summary_json(request.messages[-1].content), 0)
         if name == "batch":
             return ChatResponse(
                 "",
@@ -345,7 +459,6 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
         config=app.runtime_config,
         runner=chat.runtime.runner,
         load_tools=chat.runtime.runner.main_contract.definitions,
-        context_token_limit=settings.subagent_context_token_limit,
         ledger=app.ledger,
         sandbox_tasks=app.sandbox_tasks,
         sandbox_client=chat._tools.sandbox_client,
@@ -369,7 +482,9 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
         )
         await executor.run(identity)
     assert (await repo.get(identity))["state"] == "completed"
-    first_tools = provider.requests[0].tools
+    main_requests = provider.requests[1:] if scenario == "compaction" else provider.requests
+    main_wire = wire[1:] if scenario == "compaction" else wire
+    first_tools = main_requests[0].tools
     names = {t.name for t in first_tools}
     from qq_ai_bot.runtime.subagent_tools import WORKER_REQUIRED_NAMES
 
@@ -380,23 +495,24 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
     await executor.run(identity)
     assert (await repo.get(identity))["state"] == "completed"
     assert len(provider.requests) == 4 + len(leading)
-    assert all(r.tools == first_tools for r in provider.requests)
+    assert all(r.tools == first_tools for r in main_requests)
     before, after = provider.requests[1], provider.requests[2]
     assert after.messages[: len(before.messages)] == before.messages
     field = "input" if protocol == "responses" else "messages"
     assert len(wire) == 4 + len(leading)
-    assert all(payload["tools"] == wire[0]["tools"] for payload in wire)
+    assert all(payload["tools"] == main_wire[0]["tools"] for payload in main_wire)
     if native:
-        assert any(t["type"] == "web_search" for t in wire[0]["tools"])
+        assert any(t["type"] == "web_search" for t in main_wire[0]["tools"])
     compared = wire[1:] if scenario == "compaction" else wire
     for previous, following in pairwise(compared):
         assert following[field][: len(previous[field])] == previous[field]
     assert (await repo.get(identity))["model_requests"] == len(wire)
     if scenario == "compaction":
         assert provider.requests[0].request_chain_id != provider.requests[1].request_chain_id
-        assert wire[0]["tools"] == wire[1]["tools"]
+        assert not provider.requests[0].tools and not provider.requests[0].native_tools
+        assert not wire[0].get("tools")
         assert "explicit_context_compaction" in json.dumps(wire[1])
-        assert provider.requests[0].messages[:2] == provider.requests[1].messages[:2]
+        assert "你是原工作的上下文摘要器" in provider.requests[0].messages[0].content
     await client.aclose()
     await repo.release(lease)
 
@@ -438,18 +554,32 @@ async def test_cancel_fences_media_recovery_and_privacy_cleanup(database, tmp_pa
         payload = await db.scalar(
             select(journal.c.payload_json).where(journal.c.work_id == identity)
         )
-        assert "data:image" not in payload and "$work_media" in payload
-        assert len((await db.execute(select(media))).all()) == 1
+        assert "data:image" not in payload
+        assert len(json.loads(payload)["file_media"]) == 1
+        assert "$work_media" in json.dumps(
+            await session.journal.objects.hydrate(json.loads(payload))
+        )
+        assert not (await db.execute(select(media))).all()
     recovered = WorkSession(control, "fixed")
     restored = await recovered.restore(
         TurnTranscript((ChatMessage("user", "changed dynamic data"),))
     )
     assert restored.request() == transcript.request()
+    from qq_ai_bot.admin.models import WorkStorageRuntimeConfig
     from qq_ai_bot.runtime.work_repository import WorkCapacityError
 
-    restored.append(ChatMessage("user", "x" * (4 * 1024 * 1024)))
-    with pytest.raises(WorkCapacityError):
+    async def storage_policy():
+        return WorkStorageRuntimeConfig(object_max_bytes=16 * 1024)
+
+    database.protocol_storage_policy = storage_policy
+    restored.append(ChatMessage("user", "x" * (32 * 1024)))
+    with pytest.raises(WorkCapacityError, match="work_protocol_object_capacity"):
         await recovered.save("paired")
+    async with database.sessions() as db:
+        assert (
+            await db.scalar(select(journal.c.payload_json).where(journal.c.work_id == identity))
+            == payload
+        )
     intact = await WorkSession(control, "fixed").restore(TurnTranscript(()))
     assert intact.request() == transcript.request()
     async with database.immediate_session() as db:
