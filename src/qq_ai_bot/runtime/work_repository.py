@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy import and_, case, delete, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -216,12 +216,23 @@ class WorkRepository:
         output_kind: str = "state_change",
         deliver_artifacts: bool = True,
         handoff_from: str | None = None,
+        reporting: str | None = None,
     ) -> dict[str, Any]:
         if not 1 <= len(goal) <= 8192 or not 1 <= len(source_key) <= 256:
             raise ValueError("invalid_work_goal")
         if output_kind not in {"answer", "artifact", "state_change"}:
             raise ValueError("invalid_work_output_kind")
+        if reporting is not None and reporting not in {"interactive", "quiet"}:
+            raise ValueError("work_reporting_invalid")
         source_json, now = bounded_json(source), time.time()
+        initial_checkpoint = bounded_json(
+            {
+                "communication": {
+                    "input_feedback_through_id": 0,
+                    **({"reporting": reporting} if reporting is not None else {}),
+                }
+            }
+        )
         async with self.database.sessions() as session, session.begin():
             await self._assert_lease(session, lease)
             if source.get("origin") == "self_initiative" or source.get("principal_kind") == "self":
@@ -300,6 +311,7 @@ class WorkRepository:
                     goal=goal,
                     output_kind=output_kind,
                     deliver_artifacts=deliver_artifacts,
+                    checkpoint_json=initial_checkpoint,
                     state="queued" if handoff_from else "running",
                     created=now,
                     updated=now,
@@ -508,7 +520,18 @@ class WorkRepository:
                         work.c.state.not_in(TERMINAL),
                     )
                     .values(
-                        checkpoint_json=serialized
+                        checkpoint_json=case(
+                            (
+                                func.json_type(work.c.checkpoint_json, "$.communication")
+                                == "object",
+                                func.json_set(
+                                    serialized,
+                                    "$.communication",
+                                    func.json_extract(work.c.checkpoint_json, "$.communication"),
+                                ),
+                            ),
+                            else_=serialized,
+                        )
                         if serialized is not None
                         else (
                             func.json_set(
@@ -530,6 +553,221 @@ class WorkRepository:
             ).first()
             if row is None:
                 raise WorkConflict("work_checkpoint_obsolete")
+
+    @staticmethod
+    def encode_communication_updates(updates: dict[str, Any]) -> str:
+        """Prepare a small host patch before any writer admission."""
+        allowed = {
+            "reporting",
+            "start_feedback_given",
+            "final_feedback_given",
+            "input_feedback_through_id",
+            "stage_feedback_batch",
+        }
+        if not updates or set(updates) - allowed:
+            raise ValueError("work_communication_field_invalid")
+        for key, value in updates.items():
+            if value is None:
+                continue
+            if key == "reporting":
+                if not isinstance(value, str) or value not in {"interactive", "quiet"}:
+                    raise ValueError("work_reporting_invalid")
+            elif key.endswith("_given"):
+                if not isinstance(value, bool):
+                    raise ValueError("work_communication_marker_invalid")
+            elif key == "input_feedback_through_id":
+                if type(value) is not int or value < 0:
+                    raise ValueError("work_communication_marker_invalid")
+            elif not isinstance(value, str) or len(value) > 64:
+                raise ValueError("work_communication_marker_invalid")
+        return bounded_json({"communication": updates}, 2048)
+
+    async def patch_communication(
+        self, lease: WorkLease, identity: str, updates: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Patch bounded host-owned communication facts without changing lifecycle."""
+        serialized = self.encode_communication_updates(updates)
+        async with self.database.sessions() as session, session.begin():
+            await self._assert_lease(session, lease)
+            row = (
+                (
+                    await session.execute(
+                        update(work)
+                        .where(
+                            work.c.id == identity,
+                            work.c.conversation_id == lease.conversation_id,
+                            work.c.generation == lease.generation,
+                            work.c.state.not_in(TERMINAL),
+                        )
+                        .values(
+                            checkpoint_json=func.json_patch(work.c.checkpoint_json, serialized),
+                            updated=time.time(),
+                        )
+                        .returning(work)
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise WorkConflict("work_checkpoint_obsolete")
+            return dict(row)
+
+    async def communication_inputs(
+        self, lease: WorkLease, identity: str, *, after_id: int = 0, limit: int = 8
+    ) -> list[dict[str, int]]:
+        """Original displayed human inputs, independent of the recent journal window."""
+        from qq_ai_bot.persistence.models import ChatEventModel
+
+        if type(after_id) is not int or after_id < 0 or not 1 <= limit <= 128:
+            raise ValueError("work_communication_page_invalid")
+        async with self.database.sessions() as session:
+            if not await session.scalar(
+                select(self._lease_table(lease).c.fence).where(self._fence(lease))
+            ):
+                raise WorkConflict("work_activation_obsolete")
+            rows = (
+                (
+                    await session.execute(
+                        select(inputs.c.id, inputs.c.event_id)
+                        .join(ChatEventModel, ChatEventModel.id == inputs.c.event_id)
+                        .where(
+                            inputs.c.work_id == identity,
+                            inputs.c.conversation_id == lease.conversation_id,
+                            inputs.c.generation == lease.generation,
+                            inputs.c.id > after_id,
+                            inputs.c.state.in_(("staged", "consumed")),
+                            inputs.c.kind == "message",
+                            func.coalesce(func.json_extract(inputs.c.payload_json, "$.signal"), 0)
+                            == 0,
+                            ChatEventModel.direction == "inbound",
+                        )
+                        .order_by(inputs.c.id)
+                        .limit(limit)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            return [{"id": row["id"], "event_id": row["event_id"]} for row in rows]
+
+    async def communication_reports(
+        self,
+        lease: WorkLease,
+        identity: str,
+        target: dict[str, Any],
+        *,
+        kind: str | None = None,
+        event_ids: tuple[int, ...] = (),
+        delivered_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Query original sends; child effects and unrelated targets never qualify."""
+        if kind is not None and kind not in {"start", "progress", "reply", "final"}:
+            raise ValueError("work_report_kind_invalid")
+        if len(event_ids) > 128:
+            raise ValueError("work_communication_page_invalid")
+        async with self.database.sessions() as session:
+            if not await session.scalar(
+                select(self._lease_table(lease).c.fence).where(self._fence(lease))
+            ):
+                raise WorkConflict("work_activation_obsolete")
+            clauses = [
+                effects.c.work_id == identity,
+                func.json_extract(effects.c.receipt_json, "$.outcome.tool") == "send_message",
+                func.json_type(effects.c.receipt_json, "$.outcome.work_report") == "object",
+            ]
+            if kind is not None:
+                clauses.append(
+                    func.json_extract(effects.c.receipt_json, "$.outcome.work_report.kind") == kind
+                )
+            if event_ids:
+                links = func.json_each(
+                    effects.c.receipt_json, "$.outcome.work_report.reply_to_event_ids"
+                ).table_valued("value")
+                clauses.append(select(links.c.value).where(links.c.value.in_(event_ids)).exists())
+            for field, value in target.items():
+                clauses.append(
+                    func.coalesce(
+                        func.json_extract(
+                            effects.c.receipt_json, f"$.outcome.report_target.{field}"
+                        ),
+                        func.json_extract(
+                            effects.c.receipt_json, f"$.outcome.delivery_target.{field}"
+                        ),
+                    )
+                    == value
+                )
+            if delivered_only:
+                clauses.extend(
+                    (
+                        effects.c.state == "accepted",
+                        func.json_extract(effects.c.receipt_json, "$.outcome.delivered_message")
+                        == 1,
+                    )
+                )
+            query = (
+                select(effects.c.effect_key, effects.c.state, effects.c.receipt_json)
+                .where(*clauses)
+                .order_by(effects.c.effect_key)
+            )
+            if event_ids:
+                # Each queried input gets its own existence witness. A display
+                # page dominated by another input cannot hide a later reply.
+                witnessed = {}
+                for event_id in dict.fromkeys(event_ids):
+                    item = (
+                        (
+                            await session.execute(
+                                query.where(
+                                    select(links.c.value).where(links.c.value == event_id).exists()
+                                ).limit(1)
+                            )
+                        )
+                        .mappings()
+                        .first()
+                    )
+                    if item is not None:
+                        witnessed[item["effect_key"]] = item
+                rows = list(witnessed.values())
+            else:
+                rows = list((await session.execute(query.limit(256))).mappings().all())
+            result = []
+            for row in rows:
+                evidence = json.loads(row["receipt_json"]).get("outcome", {})
+                if (evidence.get("report_target") or evidence.get("delivery_target")) != target:
+                    continue
+                if row["state"] in {"prepared", "unknown"}:
+                    evidence["uncertain"] = True
+                if delivered_only and not (
+                    row["state"] == "accepted"
+                    and evidence.get("delivered_message")
+                    and evidence.get("delivery_target") == target
+                ):
+                    continue
+                result.append({**evidence, "effect_key": row["effect_key"], "state": row["state"]})
+            return result
+
+    async def communication_consumed_watermark(self, lease: WorkLease, identity: str) -> int:
+        """Legacy baseline, never evidence that an input has received a reply."""
+        async with self.database.sessions() as session:
+            if not await session.scalar(
+                select(self._lease_table(lease).c.fence).where(self._fence(lease))
+            ):
+                raise WorkConflict("work_activation_obsolete")
+            return int(
+                await session.scalar(
+                    select(inputs.c.id)
+                    .where(
+                        inputs.c.work_id == identity,
+                        inputs.c.conversation_id == lease.conversation_id,
+                        inputs.c.generation == lease.generation,
+                        inputs.c.state == "consumed",
+                    )
+                    .order_by(inputs.c.id.desc())
+                    .limit(1)
+                )
+                or 0
+            )
 
     async def enqueue(
         self,

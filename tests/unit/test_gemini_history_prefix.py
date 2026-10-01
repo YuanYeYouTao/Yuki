@@ -8,9 +8,11 @@ import pytest
 from sqlalchemy import select
 from tests.conftest import MemorySender, build_harness, make_settings
 
+from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
 from qq_ai_bot.conversation.projection_models import PromptProjectionModel
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
+from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence, ensure_space
 from qq_ai_bot.llm.gemini import GeminiProvider
 from qq_ai_bot.model_runtime.executor import TaskModelExecutor
 from qq_ai_bot.model_runtime.models import (
@@ -23,6 +25,7 @@ from qq_ai_bot.model_runtime.models import (
 from qq_ai_bot.model_runtime.pool import ModelClientPool
 from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
 from qq_ai_bot.model_runtime.routes import ModelRouter
+from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.services.main_agent_contract import MainAgentContract
 from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
 from qq_ai_bot.workspace.short_state import ShortState
@@ -30,11 +33,32 @@ from qq_ai_bot.workspace.store import WorkspaceStore
 
 
 @pytest.mark.asyncio
-async def test_native_checkpoint_preserves_public_prefix_across_ordinary_turns(database, tmp_path):
+@pytest.mark.parametrize("runtime_enabled", [False, True])
+@pytest.mark.parametrize("http_retry", [False, True])
+async def test_native_checkpoint_preserves_public_prefix_across_ordinary_turns(
+    database, tmp_path, monkeypatch, runtime_enabled, http_retry
+):
     wire = []
+    attempts = []
+    runtime_observation = {"text": "original-runtime-state"}
+    original_runtime_state = WorkControl.runtime_state
+
+    async def runtime_state(control):
+        return {
+            **await original_runtime_state(control),
+            "test_scoped_observation": runtime_observation["text"],
+        }
+
+    monkeypatch.setattr(WorkControl, "runtime_state", runtime_state)
 
     def transport(request):
-        wire.append(json.loads(request.content))
+        payload = json.loads(request.content)
+        attempts.append(payload)
+        if http_retry and len(attempts) == 1:
+            return httpx.Response(
+                503, json={"error": {"message": "transient pre-response failure"}}
+            )
+        wire.append(payload)
         index = len(wire)
         if index == 1:
             parts = [
@@ -75,10 +99,14 @@ async def test_native_checkpoint_preserves_public_prefix_across_ordinary_turns(d
             base_url="https://gemini.invalid",
             api_key="synthetic",
             timeout_seconds=1,
-            max_retries=0,
+            max_retries=int(http_retry),
             client=client,
         )
-        harness = build_harness(database, make_settings(database.url), provider)
+        harness = build_harness(
+            database,
+            make_settings(database.url, runtime_work_enabled=runtime_enabled),
+            provider,
+        )
         chat = harness.processor._chat
         profile = ModelProfile(
             id="gemini",
@@ -88,7 +116,7 @@ async def test_native_checkpoint_preserves_public_prefix_across_ordinary_turns(d
             api_key_env="UNUSED",
             model="gemini-3.8-flash",
             timeout_seconds=1,
-            max_retries=0,
+            max_retries=int(http_retry),
             default_temperature=0.5,
             default_max_output_tokens=8192,
             capabilities=frozenset({ModelCapability.TOOLS, ModelCapability.REASONING}),
@@ -108,6 +136,14 @@ async def test_native_checkpoint_preserves_public_prefix_across_ordinary_turns(d
         state.update({"slot": 1, "text": "original-private-state", "expected_revision": 0})
         chat.runtime.runner.main_contract = MainAgentContract(chat, state)
         chat._tools.short_state = state
+        async with database.sessions() as session, session.begin():
+            person = await ensure_person(session, "1001")
+            other_person = await ensure_person(session, "1002")
+            presence = await ensure_presence(session, "9999")
+            space = await ensure_space(session, "2002")
+            conversation = await ensure_canonical_conversation(
+                session, kind="space", primary_scope_key="bot:9999:group:2002", space_id=space
+            )
         message = InboundMessage(
             message_id="gemini-prefix-1",
             event_type="message:test",
@@ -117,10 +153,18 @@ async def test_native_checkpoint_preserves_public_prefix_across_ordinary_turns(d
             bot_user_id="9999",
             group_id="2002",
             mentions_bot=True,
+            conversation_id=conversation.conversation_id,
+            legacy_conversation_key="bot:9999:group:2002",
+            person_id=person,
+            presence_id=presence,
+            space_id=space,
         )
         sender = MemorySender()
         result = await harness.processor.handle(message, sender)
         assert result.reason == "chat" and len(wire) == 3
+        assert ("original-runtime-state" in json.dumps(wire[0])) is runtime_enabled
+        if http_retry:
+            assert attempts[0] == attempts[1]
         assert wire[1]["contents"][-2]["parts"][0]["thoughtSignature"] == "original-signature"
         receipt = wire[1]["contents"][-1]["parts"][0]["functionResponse"]
         assert receipt["id"] == "read-1" and receipt["name"] == "get_my_capabilities"
@@ -128,13 +172,17 @@ async def test_native_checkpoint_preserves_public_prefix_across_ordinary_turns(d
             saved = (await session.scalars(select(PromptProjectionModel))).one()
             epoch, frozen = saved.epoch_id, saved.payload_json
             assert saved.invalidated_reason is None
+            assert saved.revision == 1
             assert "original-signature" not in frozen and "functionResponse" not in frozen
+            assert ("original-runtime-state" in frozen) is runtime_enabled
 
         # Reopen the service and change dynamic data before the next user turn.
+        await database.close()
         chat.runtime.main_turns = MainAgentTurnService(
             chat._prompt_composer, chat.runtime.runner, database
         )
         state.update({"slot": 1, "text": "current-state", "expected_revision": 1})
+        runtime_observation["text"] = "current-runtime-state"
         result = await harness.processor.handle(
             replace(
                 message,
@@ -155,6 +203,8 @@ async def test_native_checkpoint_preserves_public_prefix_across_ordinary_turns(d
         serialized = json.dumps(wire[3], ensure_ascii=False)
         assert "original-private-state" in serialized and "current-state" in serialized
         assert "original-signature" not in serialized
+        if runtime_enabled:
+            assert "original-runtime-state" in serialized and "current-runtime-state" in serialized
         async with database.sessions() as session:
             saved = (await session.scalars(select(PromptProjectionModel))).one()
             assert saved.epoch_id == epoch and saved.rebuild_reason == "bootstrap"
@@ -167,8 +217,10 @@ async def test_native_checkpoint_preserves_public_prefix_across_ordinary_turns(d
                 message_id="gemini-prefix-3",
                 text="也向我介绍一下",
                 sender=SenderIdentity("1002", nickname="another-actor"),
+                person_id=other_person,
             ),
             sender,
         )
         assert result.reason == "chat" and len(wire) == 7
         assert "original-private-state" not in json.dumps(wire[5], ensure_ascii=False)
+        assert "original-runtime-state" not in json.dumps(wire[5], ensure_ascii=False)

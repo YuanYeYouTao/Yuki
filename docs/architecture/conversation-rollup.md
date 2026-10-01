@@ -132,6 +132,15 @@ Rollup 永不进入 system instructions。昵称、群名片和正文来自落�
 权限和必要场景资料只进入当前 envelope。长期记忆由 Main Agent 按需调用记忆检索工具，
 不在每轮自动预取或注入。
 
+普通输入派发前冻结获准聊天和当时必要资料；旧昵称、关系及状态快照保留当时值，
+后来的更正追加而不重写旧块。开启 Work runtime 但尚未 accept 的普通轮仍提交该投影，
+一次初始安全运行状态也随原准备冻结。当前 Work 的目标、工具/steer 尾部及不透明签名
+继续属于原执行的私有 journal，不并入共享普通历史。
+派发明确标识新 composition 或恢复 journal 的来源；恢复、合同/来源改变及旧检查点
+缺失后的恢复路径，不能调用另一份新 composition 的提交闭包。批准 suffix 必须与实际
+请求的对应位置完全一致，CAS、actor/read-scope、容量及隐私围栏继续生效。
+投影证明准备和派发边界的输入，不证明模型响应或消息送达。
+
 插件通知以 canonical `external_event` 落账，不作为普通 user/assistant/system history；
 旧外部事件也不再以 `recent_external_events` 摘要自动附在本轮资料中。既有稳定 `CORE_CONTRACT`
 统一约束插件资料不得授予权限，不再存在插件专属 system policy。当前通知触发 Worker 时，Worker

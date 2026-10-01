@@ -72,7 +72,7 @@ class MainAgentContract:
             revision = hashlib.sha256(
                 json.dumps(
                     {
-                        "version": 9,
+                        "version": 10,
                         "tools": [
                             {
                                 "name": t.name,

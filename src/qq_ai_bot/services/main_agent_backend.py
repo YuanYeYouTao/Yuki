@@ -354,6 +354,15 @@ class MainAgentBackend(AgentToolBackend):
         return tools.pin_web_provider() if tools is not None else nullcontext()
 
     async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str:
+        if name == "send_message" and runtime.work_control is None:
+            try:
+                arguments = json.loads(arguments_json)
+            except ValueError:
+                arguments = None
+            if isinstance(arguments, dict) and "work_report" in arguments:
+                return json.dumps(
+                    {"ok": False, "executed": False, "error": "work_report_requires_main_work"}
+                )
         if name != "send_message" and self._runtime.before_model_request is not None:
             await self._runtime.before_model_request()
         if self._allowed_tools is not None and name not in self._allowed_tools:

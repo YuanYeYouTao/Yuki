@@ -75,6 +75,17 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                         ],
                     },
                     "goal": {"type": "string", "maxLength": 8192},
+                    "reporting": {
+                        "type": "string",
+                        "enum": ["interactive", "quiet"],
+                        "description": (
+                            "较长交互式任务在 accept 时用 interactive："
+                            "先发送 start 说明再执行，"
+                            "阶段按需要汇报，明确 complete/wait/need_input/fail 收尾。"
+                            "quiet 仅用于用户要求安静执行；新真人追问仍需处理。"
+                            "update 可只修改此字段，不改变目标或等待。"
+                        ),
+                    },
                     "work_id": {
                         "type": "string",
                         "maxLength": 36,
@@ -144,6 +155,146 @@ class WorkControl:
     staged_attempt: str | None = None
 
     metered_at: float = field(default_factory=time.monotonic)
+
+    @property
+    def communication(self) -> dict[str, Any]:
+        if self.current is None:
+            return {}
+        return dict(json.loads(self.current["checkpoint_json"]).get("communication", {}))
+
+    @property
+    def reporting(self) -> str | None:
+        return self.communication.get("reporting")
+
+    async def patch_communication(self, **updates: Any) -> None:
+        if self.current is None:
+            raise ValueError("no_active_work")
+        self.current = await self.repository.patch_communication(
+            self.lease, self.current["id"], updates
+        )
+
+    async def communication_inputs(
+        self, *, after_id: int = 0, limit: int = 8
+    ) -> list[dict[str, int]]:
+        if self.current is None:
+            return []
+        return await self.repository.communication_inputs(
+            self.lease, self.current["id"], after_id=after_id, limit=limit
+        )
+
+    async def communication_target(self) -> dict[str, str]:
+        from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+
+        async with self.repository.database.sessions() as session:
+            conversation = await session.get(CanonicalConversationModel, self.lease.conversation_id)
+        if conversation is None:
+            raise ValueError("work_delivery_conversation_missing")
+        target_id = conversation.space_id or conversation.person_id
+        if not target_id:
+            raise ValueError("work_delivery_target_missing")
+        return {
+            "kind": "space" if conversation.space_id else "person",
+            "id": target_id,
+        }
+
+    async def communication_consumed_watermark(self) -> int:
+        if self.current is None:
+            return 0
+        return await self.repository.communication_consumed_watermark(
+            self.lease, self.current["id"]
+        )
+
+    async def communication_reports(
+        self,
+        *,
+        kind: str | None = None,
+        event_ids: tuple[int, ...] = (),
+        delivered_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        if self.current is None:
+            return []
+        return await self.repository.communication_reports(
+            self.lease,
+            self.current["id"],
+            await self.communication_target(),
+            kind=kind,
+            event_ids=tuple(event_ids),
+            delivered_only=delivered_only,
+        )
+
+    def _validate_reporting(self, value: Any) -> None:
+        if not isinstance(value, str) or value not in {"interactive", "quiet"}:
+            raise ValueError("work_reporting_invalid")
+        if value == "interactive" and (
+            self.lease.work_id
+            or self.source.get("parent_work_id")
+            or self.source.get("principal_kind") == "self"
+            or self.source.get("delivery_contract") in {"return_to_caller", "none"}
+        ):
+            raise ValueError("work_reporting_delivery_not_interactive")
+
+    async def validate_work_report(self, arguments: dict[str, Any]) -> dict[str, Any] | None:
+        """Validate host-owned association before any social side effect."""
+        if "work_report" not in arguments:
+            return None
+        report = arguments["work_report"]
+        if self.current is None or self.lease.work_id or self.source.get("parent_work_id"):
+            raise ValueError("work_report_requires_main_work")
+        if (
+            not isinstance(report, dict)
+            or set(report) - {"kind", "reply_to_event_ids"}
+            or not isinstance(report.get("kind"), str)
+            or report.get("kind") not in {"start", "progress", "reply", "final"}
+        ):
+            raise ValueError("work_report_invalid")
+        event_ids = report.get("reply_to_event_ids", [])
+        if (
+            not isinstance(event_ids, list)
+            or len(event_ids) > 8
+            or any(type(identity) is not int or identity < 1 for identity in event_ids)
+            or len(set(event_ids)) != len(event_ids)
+        ):
+            raise ValueError("work_report_event_ids_invalid")
+        from sqlalchemy import select
+
+        from qq_ai_bot.persistence.models import ChatEventModel
+        from qq_ai_bot.runtime.work_schema_v1 import inputs
+
+        async with self.repository.database.sessions() as session:
+            admitted = set(
+                await session.scalars(
+                    select(inputs.c.event_id).where(
+                        inputs.c.work_id == self.current["id"],
+                        inputs.c.conversation_id == self.lease.conversation_id,
+                        inputs.c.generation == self.lease.generation,
+                        inputs.c.state.in_(("staged", "consumed")),
+                        inputs.c.event_id.in_(event_ids),
+                    )
+                )
+            )
+            trigger = json.loads(self.current["source_json"]).get("trigger_event_id")
+            if trigger in event_ids:
+                original = await session.get(ChatEventModel, trigger)
+                if original and original.canonical_conversation_id == self.lease.conversation_id:
+                    admitted.add(trigger)
+        if not set(event_ids) <= admitted:
+            raise ValueError("work_report_event_not_admitted")
+        target = await self.communication_target()
+        selected = arguments.get("target")
+        if selected is not None and (
+            not isinstance(selected, dict)
+            or selected.get("kind") != target["kind"]
+            or selected.get("target_id") != target["id"]
+            or set(selected) - {"kind", "target_id"}
+        ):
+            raise ValueError("work_report_target_not_current")
+        if report["kind"] == "start":
+            previous = await self.communication_reports(kind="start")
+            if previous:
+                if await self.communication_reports(kind="start", delivered_only=True):
+                    raise ValueError("work_start_already_delivered")
+                raise ValueError("work_start_delivery_unconfirmed")
+        return {"kind": report["kind"], "reply_to_event_ids": list(event_ids)}
 
     async def meter_active_time(self) -> None:
         now = time.monotonic()
@@ -397,6 +548,10 @@ class WorkControl:
         action = args.get("action")
         if not isinstance(action, str):
             raise ValueError("work_action_required")
+        if "reporting" in args:
+            if action not in {"accept", "update"}:
+                raise ValueError("work_reporting_action_invalid")
+            self._validate_reporting(args["reporting"])
         if action in {"get", "list"}:
             from qq_ai_bot.runtime.work_queries import WorkQueries
 
@@ -484,6 +639,7 @@ class WorkControl:
                 goal=goal,
                 output_kind=output_kind,
                 deliver_artifacts=args.get("deliver_artifacts") is not False,
+                reporting=args.get("reporting"),
             )
             if self.requests_started and self.current["model_requests"] == 0:
                 await self.repository.checkpoint(
@@ -513,16 +669,27 @@ class WorkControl:
             return {"work_id": self.current["id"], "wait_cancelled": cancelled}
         elif action == "update":
             goal = args.get("goal")
-            if not isinstance(goal, str) or not goal.strip():
-                raise ValueError("work_goal_required")
-            self.current = await self.repository.transition(
-                self.lease,
-                self.current["id"],
-                self.current["revision"],
-                "running",
-                goal=goal,
-            )
-            self.ending = None
+            if args.get("reporting") == "quiet" and self.reporting == "interactive":
+                if await self.communication_reports(kind="start") and not (
+                    await self.communication_reports(kind="start", delivered_only=True)
+                ):
+                    raise ValueError("work_start_delivery_unconfirmed")
+                raise ValueError("work_reporting_cannot_quiet_interactive")
+            if goal is None and "reporting" in args:
+                await self.patch_communication(reporting=args["reporting"])
+            else:
+                if not isinstance(goal, str) or not goal.strip():
+                    raise ValueError("work_goal_required")
+                self.current = await self.repository.transition(
+                    self.lease,
+                    self.current["id"],
+                    self.current["revision"],
+                    "running",
+                    goal=goal,
+                )
+                self.ending = None
+                if "reporting" in args:
+                    await self.patch_communication(reporting=args["reporting"])
         elif action == "wait":
             if args.get("conditions") is not None:
                 if args.get("run_id") is not None or self.lease.work_id:
@@ -681,6 +848,12 @@ class WorkControl:
                     effect.get("delivered_message") and effect.get("delivery_target") == target
                     for effect in facts
                 )
+                if self.reporting == "interactive":
+                    self.completion_delivered = bool(
+                        await self.communication_reports(kind="final", delivered_only=True)
+                    )
+                    if not self.completion_delivered:
+                        raise ValueError("work_completion_requires_final_delivery_receipt")
                 # Explicit completion may be silent. The model's final text is
                 # internal state; it never becomes a fallback outbound message.
                 self.final_delivery = True
@@ -690,7 +863,10 @@ class WorkControl:
                 # remain separately backed by their original tool receipts.
                 self.final_delivery = True
             elif kind == "state_change" and not any(
-                effect.get("ok") and effect.get("side_effecting", True) for effect in facts
+                effect.get("ok")
+                and effect.get("side_effecting", True)
+                and not effect.get("work_report")
+                for effect in facts
             ):
                 raise ValueError("work_completion_requires_execution_evidence")
             self.ending = "completed"
@@ -751,6 +927,7 @@ class WorkControl:
             output_kind=kind,
             deliver_artifacts=args.get("deliver_artifacts") is not False,
             handoff_from=self.current["id"],
+            reporting=args.get("reporting"),
         )
         self.handoff_work_id = queued["id"]
         return {
@@ -776,6 +953,7 @@ class WorkControl:
             "goal": active["goal"] if active else None,
             "state": active["state"] if active else "no_active_work",
             "state_scope": "current_activation",
+            "reporting": self.reporting,
             "available_work": await self.available_work() if active is None else [],
             "recent_work": recent,
         }

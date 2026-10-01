@@ -75,6 +75,7 @@ class WorkSession:
         self.compaction_anchor: TurnTranscript | None = None
         self.handoff_work_id: str | None = None
         self._compaction_source: dict[str, Any] | None = None
+        self.uses_recovery_transcript = False
 
     def record_search_sources(self, sources: list[tuple[str, str] | tuple[str, str, str]]) -> None:
         """Keep bounded public search observations across a provider chain change."""
@@ -110,6 +111,20 @@ class WorkSession:
             await self.journal.load(control.lease, control.current["id"], self.contract)
             if control.current
             else None
+        )
+        self.uses_recovery_transcript = bool(
+            (loaded and loaded.reason != "fresh")
+            or (
+                control.current
+                and any(
+                    control.current[field]
+                    for field in (
+                        "model_requests",
+                        "tool_calls",
+                        "sent_messages",
+                    )
+                )
+            )
         )
         row = loaded.record if loaded else None
         if loaded and loaded.reason in {"contract_changed", "source_changed"}:
@@ -180,7 +195,7 @@ class WorkSession:
                         ),
                     )
                 )
-        if not row and control.current and control.current["model_requests"]:
+        if not row and control.current and self.uses_recovery_transcript:
             await control.refresh_effects()
             evidence = control.known_effects
             initial.append(
@@ -782,6 +797,7 @@ class WorkSession:
         calls: tuple[ToolCall, ...] = (),
         *,
         compaction_versions: tuple[int, int] | None = None,
+        communication_updates: dict[str, Any] | None = None,
     ) -> None:
         if self.control.current is None:
             return
@@ -792,7 +808,7 @@ class WorkSession:
             for call in calls
         ]
         try:
-            await self.journal.save(
+            updated_work = await self.journal.save(
                 self.control.lease,
                 self.control.current["id"],
                 self.contract,
@@ -801,6 +817,7 @@ class WorkSession:
                 pending=self.pending,
                 source_revision=self.source_revision,
                 compaction_versions=compaction_versions,
+                communication_updates=communication_updates,
                 metadata={
                     "sequence": self.sequence,
                     "event_ids": list(dict.fromkeys(self.event_ids[:1] + self.event_ids[-255:])),
@@ -816,6 +833,8 @@ class WorkSession:
                     else None,
                 },
             )
+            if updated_work is not None:
+                self.control.current = updated_work
         except IntegrityError as exc:
             if "ck_runtime_checkpoint_bytes" in str(exc.orig):
                 raise WorkCapacityError("work_checkpoint_capacity") from exc
@@ -840,6 +859,23 @@ class WorkSession:
         allow_pending: bool = False,
     ) -> str:
         control = self.control
+        report = None
+        report_target = None
+        if call.function.name == "send_message":
+            if control.current is not None:
+                key = self.call_key(call.id)
+                if await self.journal.effect_state(key) is not None:
+                    if not await control.repository.valid(control.lease):
+                        raise WorkConflict("work_activation_obsolete")
+                    return await self.journal.effect_result(key)
+            try:
+                arguments = json.loads(call.function.arguments)
+                if isinstance(arguments, dict):
+                    report = await control.validate_work_report(arguments)
+                    if report is not None:
+                        report_target = await control.communication_target()
+            except ValueError as exc:
+                return json.dumps({"ok": False, "executed": False, "error": str(exc)})
         if control.current is None:
             return await invoke()
         if not allow_pending and await control.pending():
@@ -875,6 +911,7 @@ class WorkSession:
                 "pending": False,
                 "uncertain": False,
                 "executed": False,
+                **({"work_report": report, "report_target": report_target} if report else {}),
             },
         ):
             return await self.journal.effect_result(key)
@@ -923,7 +960,22 @@ class WorkSession:
             try:
                 if capture.outcome is None:
                     await control.repository.record_effect(
-                        key, "unknown", {"error": "execution_interrupted"}
+                        key,
+                        "unknown",
+                        {
+                            "error": "execution_interrupted",
+                            "outcome": {
+                                "tool": call.function.name,
+                                "side_effecting": side_effecting,
+                                "uncertain": True,
+                                "delivered_message": False,
+                                **(
+                                    {"work_report": report, "report_target": report_target}
+                                    if report
+                                    else {}
+                                ),
+                            },
+                        },
                     )
                 else:
                     # The backend returned a typed outcome before presentation
@@ -934,6 +986,10 @@ class WorkSession:
                         side_effecting=side_effecting,
                         arguments=call.function.arguments,
                     )
+                    if report:
+                        evidence.update(work_report=report)
+                        if evidence.get("report_target") is None:
+                            evidence["report_target"] = report_target
                     fallback = json.dumps(
                         {
                             **evidence,
@@ -972,6 +1028,10 @@ class WorkSession:
             side_effecting=side_effecting,
             arguments=call.function.arguments,
         )
+        if report:
+            evidence.update(work_report=report)
+            if evidence.get("report_target") is None:
+                evidence["report_target"] = report_target
         await control.repository.record_effect(
             key,
             "accepted",

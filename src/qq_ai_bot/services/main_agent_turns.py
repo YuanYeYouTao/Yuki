@@ -33,7 +33,11 @@ from qq_ai_bot.services.context_assembler import AssembledContext
 from qq_ai_bot.services.durable_invocations import DurableInvocations
 from qq_ai_bot.services.history_projection import prepare_history
 from qq_ai_bot.services.prompt_composer import PromptComposer, PromptComposition
-from qq_ai_bot.services.turn_transcript import dispatch_request
+from qq_ai_bot.services.turn_transcript import (
+    DispatchOrigin,
+    dispatch_request,
+    validating_request,
+)
 from qq_ai_bot.vision.models import VisualObservation
 
 
@@ -169,17 +173,27 @@ class MainAgentTurnService:
             async def commit_projection() -> None:
                 nonlocal projection_closed
                 sequence = dispatch_request()
-                if sequence is None or projection_closed:
+                if (
+                    sequence is None
+                    or sequence.origin is DispatchOrigin.WORK_RECOVERY
+                    or projection_closed
+                ):
                     return
-                if sequence.messages[: len(composition.messages)] != composition.messages:
+                approved_initial = (
+                    *composition.messages,
+                    *(sequence.public_initial_suffix or ()),
+                )
+                if sequence.messages[: len(approved_initial)] != approved_initial:
                     await prepared.repository.invalidate_view(view_key, reason="protocol_changed")
                     projection_closed = True
                     return
                 try:
                     submitted = fragments.append_protocol(
-                        sequence.messages[len(composition.messages) :]
+                        sequence.public_initial_suffix
+                        if sequence.public_initial_suffix is not None
+                        else sequence.messages[len(composition.messages) :]
                     )
-                    if sequence.continuation is not None:
+                    if sequence.public_initial_suffix is None and sequence.continuation is not None:
                         if sequence.continuation.protocol != "responses":
                             # Signed native reasoning stays in the private Work journal.
                             # Stop extending this public projection at that boundary,
@@ -214,6 +228,11 @@ class MainAgentTurnService:
                     return
                 try:
                     await prepared.commit(submitted)
+                    if sequence.public_initial_suffix is not None:
+                        # The Work journal owns every subsequent tool/steer delta.
+                        # Do not inspect or invalidate this ordinary input view on
+                        # later requests, even when the Work accepts mid-turn.
+                        projection_closed = True
                 except ProjectionCapacityError:
                     await prepared.repository.invalidate_view(view_key, reason="capacity")
                     projection_closed = True
@@ -254,20 +273,35 @@ class MainAgentTurnService:
         control = runtime.work_control
         if control is not None:
             control.current_message = messages[-1] if messages else None
-            messages = (
-                *messages,
-                ChatMessage(
-                    role="user",
-                    content=(
-                        "[运行状态资料，不增加任何权限] "
-                        + json.dumps(
-                            await control.runtime_state(),
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                        )
-                    ),
+            state_message = ChatMessage(
+                role="user",
+                content=(
+                    "[运行状态资料，不增加任何权限] "
+                    + json.dumps(
+                        await control.runtime_state(),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
                 ),
             )
+            messages = (*messages, state_message)
+            public_suffix = (state_message,) if control.current is None else ()
+            validate = runtime.before_model_request
+
+            async def validate_prepared() -> None:
+                if validate is None:
+                    return
+                sequence = dispatch_request()
+                if sequence is None:
+                    await validate()
+                    return
+                # Capture the initial safe state once, before a model can accept
+                # a Work. Restored transcripts retain their own original state;
+                # their origin prevents this new composition from being frozen.
+                with validating_request(replace(sequence, public_initial_suffix=public_suffix)):
+                    await validate()
+
+            runtime = replace(runtime, before_model_request=validate_prepared)
         return await self._runner.run(
             messages,
             replace(
