@@ -80,6 +80,13 @@ def failure_status_text(failure: RuntimeFailure) -> str:
         return "数据存储出现异常，本次处理未完成，请联系管理员。"
     if failure.code == "context_boundary_changed":
         return "会话上下文已变化，本次处理已停止。"
+    if failure.stage == "capacity":
+        if failure.code in {"model_request_capacity", "prompt_dynamic_capacity"}:
+            return (
+                "本轮上下文超过容量限制，后续处理已停止；已有结果会保留，"
+                "本次请求未完整完成。请缩小请求范围后再继续。"
+            )
+        return "本次处理达到容量限制，已停止继续执行；已有结果会保留，请联系管理员。"
     if failure.diagnostics.get("category") == "work_conflict":
         if failure.code == "work_journal_source_changed":
             return "会话资料在处理期间变化，已保留已有结果；请先核对任务状态。"
@@ -115,7 +122,13 @@ def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFa
         return RuntimeFailure("database_failure", stage)
     if isinstance(exc, ContextBoundaryChanged):
         return RuntimeFailure("context_boundary_changed", "context", True)
+    from qq_ai_bot.prompting.compiler import PromptCapacityError
     from qq_ai_bot.runtime.work_repository import WorkCapacityError, WorkConflict
+
+    if isinstance(exc, PromptCapacityError):
+        return RuntimeFailure(
+            "prompt_dynamic_capacity", "capacity", diagnostics={"category": "capacity"}
+        )
 
     if isinstance(exc, WorkCapacityError):
         return RuntimeFailure(str(exc), "capacity", diagnostics={"category": "capacity"})

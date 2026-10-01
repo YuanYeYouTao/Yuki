@@ -240,7 +240,10 @@ async def test_wait_all_partial_then_message_resumes_original_work_once(database
     resumed = await original.get(item["id"])
     assert resumed["state"] == "queued"
     assert resumed["model_requests"] == 2
-    assert json.loads(resumed["checkpoint_json"]) == {"brief": "do not reset"}
+    assert json.loads(resumed["checkpoint_json"]) == {
+        "brief": "do not reset",
+        "communication": {"input_feedback_through_id": 0},
+    }
     async with database.sessions() as session:
         assert (
             await session.scalar(

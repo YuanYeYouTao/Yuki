@@ -744,7 +744,9 @@ class AgentRunner:
                     and callable(getattr(tools, "has_visible_effects", None))
                     and tools.has_visible_effects()  # type: ignore[attr-defined]
                 )
-                if has_visible_effects and (control is None or control.ending == "completed"):
+                if has_visible_effects and (
+                    control is None or control.current is None or control.ending == "completed"
+                ):
                     return AgentRunResult(
                         text="",
                         tool_calls_used=calls_used,

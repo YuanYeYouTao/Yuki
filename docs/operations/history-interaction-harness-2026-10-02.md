@@ -50,7 +50,7 @@ actor/read-scope 匹配样本，不能把它当作所有跨轮必须完全相同
 
 ## 实施、验证与部署
 
-本地实现及合同已完成，尚未提交/合并或部署。主 Agent 在最终收束代码上独立运行
+首批实现已提交为 `dac7619c`，PR #218 已创建，尚未合并或部署。主 Agent 在首批收束代码上独立运行
 15 个相关套件：233 passed（226.97s）；覆盖新历史/沟通/游标/实际 wire 及原 Work、
 交付、输入准备、来源守卫、压缩、子并行、主入口和固定工具面。
 全仓 Ruff、format（1056 文件）、Linux 平台 mypy（683 源文件）、release_validate v3.9.0
@@ -73,3 +73,55 @@ actor/read-scope 匹配样本，不能把它当作所有跨轮必须完全相同
 | T13 | Chat、DeepSeek/OpenAI Responses、Claude 实际发送：reply 后原 ID/budget 继续业务和显式退出；完整 Gemini 前缀 | Claude 仅已知 cache_control 标记移动单列；其余内容/工具/系统严格比较 |
 | T14 | 9 项/跨 Work/未 staged/平台字符串/错误目标在副作用前拒绝、>256 回执、原子失败与重开、typed 保存失败 | 新元数据复用原 privacy 清理，非独立第三账本；无真实群测试 |
 真人 QQ 交互、阶段汇报质量和长任务语义效果由用户验收。
+
+## 04:40–04:41 普通轮报错核查
+
+2026-10-02（Asia/Taipei）用户提交的两轮，生产仍是 `ops-ea446d6`。
+只读按内部 turn/event ID 查询原 invocation 和 trace：
+
+| 原 turn | 来源 event | 真实送达 | 后续失败 |
+| --- | --- | --- | --- |
+| `c9f0fa84f68e455e81a9378d6773f8fb` | 79535 | 79536–79539，4 条 | 已送达后的空响应被多重试一次，下一请求本地容量预检失败 |
+| `1137de34f90c4f7dbef47e29269d6cfa` | 79542 | 79543–79545，3 条 | 首次引用不可用，纠正发送成功后，下一请求本地容量预检失败 |
+
+两轮 trace 的 `work_id` 均为 NULL，没有已接纳的持久 Work。
+异常是 `WorkCapacityError("model_request_capacity")`，出自完整请求估算超过输入预算的派发前检查，
+不是模型 HTTP 返回的超窗错误，也没有特殊 token 解析或网关抽风的证据。
+模型对原因的聊天猜测不作诊断依据；成功发送回执不会因后续异常被否定。
+
+补修中性 WorkControl 的普通轮空响应边界，已接纳 interactive Work 仍须明确退出；
+普通轮容量不足复用现有 capacity 分类并给准确状态，保留已有结果，不自动重发或伪称完成。
+任务书 T11 同步纳入该回归。部署前重新跑最新 head CI，旧 head 的结果不能替代。
+
+另核查到初始投影容量原用 `window_tokens * 3` 字符数，未扣完整 system/tools/资料。
+旧生产投影尚未接通，因此不能把旧冻结快照增量说成上述两轮原因；但接通后的新路径
+必须修正此风险。改为准备阶段按完整 composition 与固定函数工具使用同一请求估算器，
+保留原压缩比例和 4096 token 余量，旧快照超限时记录 `capacity` 并开启新 epoch。
+这不是扩大窗口或改写已派发续接；Runner 仍核验实际全部内容，真实链尾容量不足可以停止。
+准备阶段复用已编译的 system/rollup/current 插槽，不先重新编译超大的旧历史。
+当前 fresh 成本本已超过保守准备预算、但真实上限仍可容纳时，按真实上限判断旧投影；
+没有可回收材料或 fresh 已无法容纳时，不空耗新链。该边界单独验证，避免因准备余量
+不可实现而每轮换链，真实上限和最终预检保持。
+fresh 本身超真实上限、旧投影又超过编译字符预算的交叉情况，保留原投影、不给恢复
+journal 提前加估算门禁；只有编译器真实的 required-dynamic 容量错误采用 typed
+`PromptCapacityError` 并按 capacity 反馈。负预算、重复贡献等编程错误仍按原错误处理，
+不泛化捕获 ValueError，也不靠异常字符串判断容量。
+
+上述补修的统一相关验证为 13 套件、111 passed（96.00s），含 4 项初始容量、2 项
+发送后空响应和 6 项容量状态/精确分类，以及历史、原恢复、发送、输入与主入口回归。
+新代码全仓 Ruff/format（1059 文件）、Linux mypy（683 源文件）、v3.9.0 release baseline
+及 diff 检查通过。最后 fresh-hard/编译器交叉新例由主 Agent 独立验证 1 passed；
+子 Agent 的该文件完整 5 passed。使用隔离的模拟连接容量和 HTTP/网关回执，证明无新增
+HTTP/Work/重发、原 epoch/revision/payload 和已发送事件保持；不冒充线上数值预算。
+最新 head 全量 CI 仍待重跑。
+
+05:25:10（Asia/Taipei）部署前再次只读复核，Bot 仍为 `ops-ea446d6`，健康且零重启，
+34 个 Compose 标签文件存在，SnowLuma 原 ID/运行状态保持。原 6 Work（5 suspended、
+1 waiting_external）以及 60 effects、20 inputs、6 journals/budgets/recoveries 原 ID 和
+基线哈希均保持。最新修改不涉及迁移/schema guard/表结构；停写一致性备份与原回执对账
+流程可复用，尚未执行镜像替换。
+
+首批全量 CI 为 2261 passed、7 failed、1 skipped：7 项失败均为新 accept 初始化
+`communication.input_feedback_through_id=0` 后，旧测试的 checkpoint 精确期望缺该字段。
+独立复现确认原 checkpoint 其余内容、预算、journal 和 unknown effect 保留；仅更新精确期望，
+不删除或忽略字段，相关三套重跑 31 passed。最新 head 的全量结果另补。

@@ -20,6 +20,7 @@ from qq_ai_bot.llm.openai_responses import (
     OpenAICompatibleResponsesProvider,
     OpenAIResponsesProvider,
 )
+from qq_ai_bot.model_runtime.capacity import ModelCapacity, estimate_request_tokens
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.runtime.activation_tasks import ActivationTasks
 from qq_ai_bot.runtime.work_activation import current_work_control
@@ -101,7 +102,7 @@ class MainAgentTurnService:
                 or context.read_version.conversation_id is None
             ):
                 return composition
-            await contract.definitions()
+            definitions = await contract.definitions()
             version = context.read_version
             # Separate per-actor selected memory views. Actorless wakeups cannot inherit
             # the private dynamic context assembled for a preceding human turn.
@@ -143,16 +144,65 @@ class MainAgentTurnService:
                     asdict(runtime.web),
                 ]
             )
+            capacity_getter = getattr(self._runner._models, "capacity", None)
+            capacity = (
+                capacity_getter(self._runner._task)
+                if callable(capacity_getter)
+                else ModelCapacity()
+            )
+            input_budget = capacity.input_budget(
+                runtime.context.window_tokens, output_tokens=runtime.llm.max_output_tokens
+            )
+            # Plan before dispatch, using the same complete-request estimator.
+            # Keep the existing rollup margin and 4096-token reserve for native
+            # declarations/public runtime state and subsequent response pairing.
+            # Runner still checks its actual request, including those additions.
+            planning_budget = max(
+                1, int(input_budget * runtime.context.compaction_trigger_ratio) - 4096
+            )
+            # PromptCompiler emits system, optional rollup, raw history, current.
+            # Verify the actual history slot before substituting frozen entries.
+            history_end = len(composition.messages) - 1
+            history_start = history_end - len(context.history_messages)
+            if composition.messages[history_start:history_end] != context.history_messages:
+                raise ValueError("compiled history slot does not match assembled history")
+            compiled_prefix = composition.messages[:history_start]
+            compiled_current = composition.messages[-1:]
+            prepared_request = ChatRequest(
+                messages=composition.messages,
+                model=runtime.llm.model or "fake",
+                temperature=runtime.llm.temperature,
+                max_output_tokens=runtime.llm.max_output_tokens,
+                thinking_enabled=runtime.llm.thinking_enabled,
+                tools=definitions,
+                tool_choice="auto" if definitions else None,
+            )
+            fresh_tokens = estimate_request_tokens(prepared_request)
+            # A soft reserve below the fresh request's fixed cost cannot be met
+            # by dropping old snapshots. Use the hard bound in that case; if
+            # even fresh cannot fit, leave the epoch for Runner to stop honestly.
+            recovery_budget = planning_budget if fresh_tokens <= planning_budget else input_budget
+
+            def history_fits(history: tuple[ChatMessage, ...]) -> bool:
+                # Reuse the already compiled system/rollup and current envelope.
+                # Trying to compile an oversized old epoch first can hit the
+                # compiler's character limit before the capacity rebase occurs.
+                request = replace(
+                    prepared_request,
+                    messages=(*compiled_prefix, *history, *compiled_current),
+                )
+                return (
+                    fresh_tokens > input_budget
+                    or estimate_request_tokens(request) <= recovery_budget
+                )
+
             prepared = await prepare_history(
                 self._projections,
                 context,
                 view_key=view_key,
                 context_key=_hash([version.generation, context.rollup_text]),
                 contract_revision=contract_revision,
-                max_history_characters=max(
-                    0,
-                    runtime.context.window_tokens * 3 - len(composition.messages[-1].content or ""),
-                ),
+                history_fits=history_fits,
             )
             composition = self._composer.compose(
                 inbound=inbound,
