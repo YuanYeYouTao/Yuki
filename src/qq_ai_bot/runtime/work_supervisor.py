@@ -275,6 +275,8 @@ async def settle(control: WorkControl, *, delivered: bool, pending_inputs: bool)
     )
     if control.current["state"] == "queued" and state != "queued":
         reason = ExitReason.INPUT
+    elif control.current["state"] == "waiting_external" and state != "waiting_external":
+        reason = ExitReason.EXTERNAL
     control.outcome = ActivationOutcome(
         reason, control.current["id"], **activation_details(control)
     )

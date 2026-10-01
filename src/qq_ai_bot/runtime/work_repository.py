@@ -407,19 +407,27 @@ class WorkRepository:
         async with self.database.sessions() as session, session.begin():
             await self._assert_lease(session, lease)
             if state in {"completed", "waiting_user", "waiting_external"}:
-                mailbox_ready = await session.scalar(
-                    select(inputs.c.ready)
-                    .where(
-                        inputs.c.work_id == identity,
-                        inputs.c.state.in_(("pending", "staged")),
+                mailbox = (
+                    await session.execute(
+                        select(inputs.c.ready)
+                        .where(
+                            inputs.c.work_id == identity,
+                            inputs.c.state.in_(("pending", "staged")),
+                        )
+                        .order_by(inputs.c.id)
+                        .limit(1)
                     )
-                    .order_by(inputs.c.id)
-                    .limit(1)
-                )
-                if mailbox_ready:
-                    values.update(state="queued", reason="work_input_arrived")
+                ).first()
+                if mailbox is not None:
+                    # Attachment preparation can finish after this activation.
+                    # Its admitted input must retain a live owner until then.
+                    ready = bool(mailbox[0])
+                    values.update(
+                        state="queued" if ready else "waiting_external",
+                        reason="work_input_arrived" if ready else "work_input_preparing",
+                    )
                     if exit_reason is not None:
-                        exit_reason = "waiting_input"
+                        exit_reason = "waiting_input" if ready else "waiting_external"
             row = (
                 (
                     await session.execute(
@@ -461,7 +469,7 @@ class WorkRepository:
                     .values(**detail)
                     .on_conflict_do_update(index_elements=[recovery.c.work_id], set_=detail)
                 )
-            if state in TERMINAL:
+            if row["state"] in TERMINAL:
                 await session.execute(
                     update(waits)
                     .where(waits.c.work_id == identity, waits.c.status == "active")

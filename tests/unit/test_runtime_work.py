@@ -36,6 +36,98 @@ async def _persisted_tool_receipt(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("ready_before_commit", [False, True])
+async def test_completion_cas_retains_input_arriving_after_empty_mailbox_read(
+    database, tmp_path, ready_before_commit
+):
+    from qq_ai_bot.runtime.activation_outcome import ExitReason
+    from qq_ai_bot.runtime.work_recovery_schema import recovery
+    from qq_ai_bot.runtime.work_wait import WorkWaitRepository
+
+    env = await social_env(database, tmp_path)
+    repository = WorkRepository(database)
+    lease = await repository.acquire(env.context.conversation_id, 1)
+    assert lease
+    source = {"actor_person_id": env.person}
+
+    async def validate():
+        assert await repository.valid(lease)
+
+    control = WorkControl(repository, lease, "completion-race", source, validate)
+    control.current = await repository.accept(
+        lease, source_key="completion-race", source=source, goal="keep the original goal"
+    )
+    identity = control.current["id"]
+    await repository.checkpoint(lease, identity, None, models=3, tools=2)
+    control.current = await repository.get(identity)
+    waiting = WorkWaitRepository(repository)
+    await waiting.register(
+        lease,
+        work_id=identity,
+        source=source,
+        call_key="original-condition",
+        mode="any",
+        conditions=[{"kind": "time_due", "after_seconds": 3600}],
+        deadline_at=None,
+    )
+    original_wait = await waiting.describe(identity)
+    # This is the real pre-settlement read. Ingress commits its input between
+    # that snapshot and the completion writer, before attachment preparation.
+    pending_at_read = bool(await control.pending())
+    assert not pending_at_read
+    input_id = await repository.enqueue(
+        lease.conversation_id,
+        lease.generation,
+        "late-media-steer",
+        kind="message",
+        work_id=identity,
+        ready=False,
+    )
+    if ready_before_commit:
+        assert await repository.prepare_input(input_id, {"text": "keep a transparent background"})
+    control.ending = "completed"
+    await control.settle(delivered=True, pending_inputs=pending_at_read)
+    saved = await repository.get(identity)
+    expected = "queued" if ready_before_commit else "waiting_external"
+    assert saved["state"] == expected
+    assert saved["reason"] == (
+        "work_input_arrived" if ready_before_commit else "work_input_preparing"
+    )
+    assert control.outcome.reason == (
+        ExitReason.INPUT if ready_before_commit else ExitReason.EXTERNAL
+    )
+    assert await waiting.describe(identity) == original_wait
+    async with database.sessions() as reader:
+        assert await reader.scalar(
+            select(recovery.c.exit_reason).where(recovery.c.work_id == identity)
+        ) == ("waiting_input" if ready_before_commit else "waiting_external")
+    await repository.release(lease)
+
+    # A new owner can finish preparation and recover the same input and task;
+    # neither the input ID nor the accumulated work counters are replaced.
+    restarted = WorkRepository(database)
+    if not ready_before_commit:
+        assert await restarted.prepare_input(input_id, {"text": "keep a transparent background"})
+    restored = await restarted.get(identity)
+    assert restored["state"] == "queued" and restored["goal"] == "keep the original goal"
+    assert (restored["model_requests"], restored["tool_calls"]) == (3, 2)
+    resumed = await restarted.acquire(lease.conversation_id, lease.generation)
+    assert resumed
+    mailbox = await restarted.pending(resumed, work_id=identity)
+    assert [item["id"] for item in mailbox] == [input_id]
+    assert json.loads(mailbox[0]["payload_json"])["text"] == "keep a transparent background"
+    await restarted.stage(resumed, [input_id], "resumed-input")
+    await restarted.consume(resumed, "resumed-input")
+    completed = await restarted.transition(
+        resumed, identity, restored["revision"], "completed", exit_reason="completed"
+    )
+    assert completed["state"] == "completed"
+    assert not await restarted.pending(resumed, work_id=identity)
+    assert not await WorkWaitRepository(restarted).is_active(identity)
+    await restarted.release(resumed)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["renew", "transition"])
 async def test_lease_expiring_during_writer_wait_is_not_revived(database, tmp_path, operation):
     env = await social_env(database, tmp_path)
