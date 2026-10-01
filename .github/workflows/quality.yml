@@ -84,6 +84,8 @@ jobs:
       - name: Validate versioned synthetic dataset
         run: uv run qq-ai-bot-cli memory quality validate-dataset
       - name: Run deterministic Memory V2 benchmark
+        env:
+          YUKI_MEMORY_QUALITY_DIAGNOSTICS: "1"
         run: uv run qq-ai-bot-cli memory quality run --suite full
       - name: Compare frozen baseline
         run: uv run qq-ai-bot-cli memory quality compare
