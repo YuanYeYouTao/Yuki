@@ -66,3 +66,6 @@ V6 迁移链为 `0065`（关系历史索引）→ `0066`（autonomy 接纳）→
 仓库迁移头不等于生产数据库版本；合成 Jev 与控制器回放也不等于真实 QQ 社交验收。
 
 本轮技术验证、PR/部署与缓存观测：[交付记录](../operations/history-interaction-harness-2026-10-02.md)。
+
+普通搜索续接的容量计量修正与等长缓存窗口核查：
+[2026-10-02 核查记录](../operations/compact-capacity-accounting-2026-10-02.md)。
