@@ -47,6 +47,10 @@ checkpoint 与 raw tail 不能重叠或留洞。当前触发事件只在 current
 不要求填满窗口。实际模型 Profile 的输入/上下文限制、输出预留、固定系统合同、工具 schema、
 当前动态内容及媒体负担共同约束完整请求。发送前还要检查完整请求的容量；不能只检查历史字符。
 
+容量估算按模型输入视图计量：保留完整工具参数 schema、媒体负担、协议签名和工具回执，
+排除仅供 Host 使用的工具目录元数据、请求诊断字段及不会发送的空默认字段。
+此视图不修改实际提交的请求或前缀，也不是 Provider 的精确 token 计量；缓存命中的输入仍占上下文。
+
 群聊窗口及压缩参数通过 RuntimeConfig 的 `context.window_tokens`、
 `context.compaction_trigger_ratio`、`context.compaction_target_ratio`、
 `context.rollup_output_tokens` 和 `context.rollup_summary_characters` 热更新。
