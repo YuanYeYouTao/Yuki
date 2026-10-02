@@ -31,6 +31,7 @@ from qq_ai_bot.model_runtime.dispatch_guard import check_model_dispatch
 from qq_ai_bot.model_runtime.models import (
     ModelCapability,
     ModelExecutionPriority,
+    ModelProfile,
     ModelProtocol,
     ModelSearchMode,
     ModelTask,
@@ -46,6 +47,26 @@ from qq_ai_bot.model_runtime.request_accounting import (
 from qq_ai_bot.model_runtime.routes import ModelRouter
 
 logger = logging.getLogger(__name__)
+
+
+def _profile_request(request: ChatRequest, profile: ModelProfile) -> ChatRequest:
+    """Apply the same provider fields to capacity planning and actual dispatch."""
+    return replace(
+        request,
+        model=profile.model,
+        temperature=profile.default_temperature
+        if request.temperature is None
+        else request.temperature,
+        max_output_tokens=(
+            profile.default_max_output_tokens
+            if request.max_output_tokens is None
+            else request.max_output_tokens
+        ),
+        thinking_enabled=True,
+        reasoning_effort=minimum_reasoning_effort(
+            request.reasoning_effort, profile.reasoning_effort
+        ),
+    )
 
 
 @dataclass(slots=True, weakref_slot=True)
@@ -234,6 +255,8 @@ class ModelExecutor(Protocol):
 
     def capacity(self, task: ModelTask) -> ModelCapacity: ...
 
+    def capacity_request(self, task: ModelTask, request: ChatRequest) -> ChatRequest: ...
+
 
 class LegacyTaskModelExecutor:
     """Adapt an injected test provider without leaking it into business services."""
@@ -269,6 +292,14 @@ class LegacyTaskModelExecutor:
     def model_name(self, task: ModelTask) -> str:
         del task
         return self._model
+
+    def capacity_request(self, task: ModelTask, request: ChatRequest) -> ChatRequest:
+        del task
+        return replace(
+            request,
+            thinking_enabled=True,
+            reasoning_effort=minimum_reasoning_effort(request.reasoning_effort),
+        )
 
     def structured_output_mode(self, task: ModelTask) -> StructuredOutputMode:
         del task
@@ -535,7 +566,7 @@ class TaskModelExecutor:
                 profile.max_input_tokens or profile.context_window_tokens or 1,
                 output_tokens=request.max_output_tokens,
             )
-            if estimate_request_tokens(request) > budget:
+            if estimate_request_tokens(_profile_request(request, profile)) > budget:
                 raise LLMUnsupportedFeatureError(
                     "request exceeds configured provider input capacity"
                 )
@@ -546,32 +577,8 @@ class TaskModelExecutor:
             if task is ModelTask.MEMORY_SELF_REFLECTION
             else pool.get(profile)
         )
-        normalized = ChatRequest(
-            messages=request.messages,
-            model=profile.model,
-            temperature=(
-                profile.default_temperature if request.temperature is None else request.temperature
-            ),
-            max_output_tokens=(
-                profile.default_max_output_tokens
-                if request.max_output_tokens is None
-                else request.max_output_tokens
-            ),
-            thinking_enabled=True,
-            reasoning_effort=minimum_reasoning_effort(
-                request.reasoning_effort, profile.reasoning_effort
-            ),
-            tools=request.tools,
-            tool_choice=request.tool_choice,
-            response_format=request.response_format,
-            structured_output=request.structured_output,
-            native_tools=request.native_tools,
-            continuation=request.continuation,
-            function_outputs=request.function_outputs,
-            continuation_messages=request.continuation_messages,
-            continuation_items=request.continuation_items,
-            request_chain_id=request.request_chain_id,
-            conversation_prefix_hash=request.conversation_prefix_hash,
+        normalized = replace(
+            _profile_request(request, profile),
             request_shape_hash=request_shape_hash(
                 request,
                 provider=profile.provider,
@@ -579,8 +586,6 @@ class TaskModelExecutor:
                 profile_id=profile.id,
                 protocol=profile.protocol.value,
             ),
-            prompt_snapshot_fingerprint=request.prompt_snapshot_fingerprint,
-            static_prompt_revision=request.static_prompt_revision,
         )
         provider_cache_shape = provider_cache_shape_diagnostics(
             normalized,
@@ -1029,6 +1034,10 @@ class TaskModelExecutor:
             context_tokens=profile.context_window_tokens,
             output_tokens=profile.default_max_output_tokens,
         )
+
+    def capacity_request(self, task: ModelTask, request: ChatRequest) -> ChatRequest:
+        _route, profile = self._runtime()[0].route(task)
+        return _profile_request(request, profile)
 
     def structured_output_mode(self, task: ModelTask) -> StructuredOutputMode:
         _route, profile = self._runtime()[0].route(task)
