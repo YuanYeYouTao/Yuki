@@ -737,6 +737,10 @@ class WorkSession:
                     "derived_observations": structured,
                     "paging": {**paging, "cursor": cursor},
                 }
+                # The preceding response has been paid and validated. Retain its
+                # derived facts and next cursor even if preparing that page fails;
+                # the caller can publish this progress under the paired journal.
+                self._compaction_source = next_source
                 self._compaction_source = await self._source_page(next_source, fits)
                 return json.dumps(self._compaction_source, ensure_ascii=False)
         if material["covered_input_id"] >= source["snapshot_input_id"]:

@@ -6,10 +6,12 @@ from dataclasses import replace
 import pytest
 from sqlalchemy import select
 from tests.support.work_compaction import summary_json
-from tests.unit.test_work_compaction_capacity import _session, _snapshot
+from tests.unit.test_work_compaction_capacity import _runtime, _session, _snapshot
 
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest
-from qq_ai_bot.model_runtime.capacity import estimate_request_tokens
+from qq_ai_bot.llm.fake import FakeLLMProvider
+from qq_ai_bot.model_runtime.capacity import ModelCapacity, estimate_request_tokens
+from qq_ai_bot.model_runtime.models import ModelExecutionPriority
 from qq_ai_bot.runtime.protocol_schema import refs
 from qq_ai_bot.runtime.work_repository import WorkCapacityError
 from qq_ai_bot.runtime.work_session import WorkSession
@@ -150,3 +152,56 @@ async def test_unfit_mandatory_source_preserves_last_paired_journal(database, tm
         await session.summary_source(fits=lambda _source: False)
     assert await _snapshot(database, control.current["id"]) == original
     assert control.current["model_requests"] == control.current["tool_calls"] == 0
+
+
+@pytest.mark.asyncio
+async def test_paid_page_is_saved_before_next_page_base_capacity_failure(database, tmp_path):
+    control, session, initial = await _session(database, tmp_path)
+    session.transcript.append(ChatMessage("assistant", "Original complete evidence. " * 9000))
+    await session.save("paired")
+    original = session.transcript.request()
+    original_chain = session.transcript.chain_id
+    paid_fact = "Retain this verified observation from the paid page. " * 1500
+    requests = []
+    sources = []
+
+    def summarize(request):
+        requests.append(request)
+        source = json.loads(request.messages[-1].content)
+        sources.append(source)
+        return summary_json(source, paid_fact if len(requests) == 1 else "Continue the task.")
+
+    runner, runtime = await _runtime(database, control, initial, FakeLLMProvider(summarize))
+    runner._models.capacity = lambda _: ModelCapacity(input_tokens=6500)
+    main = ChatRequest(messages=original.messages, max_output_tokens=8192)
+    with pytest.raises(WorkCapacityError, match="work_compaction_source_capacity"):
+        await runner._compact_work(runtime, ModelExecutionPriority.FOREGROUND, 200000, main)
+    assert len(requests) == 1
+    assert estimate_request_tokens(requests[0]) <= 6500
+    staging = session.progress["compaction_staging"]["source"]
+    assert staging["paging"]["cursor"] == sources[0]["paging"]["next_cursor"]
+    assert staging["paging"]["cursor"] != sources[0]["paging"]["cursor"]
+    assert staging["derived_observations"]["pending"][0]["text"] == paid_fact
+    assert session.transcript.request() == original
+    saved = await _snapshot(database, control.current["id"])
+    assert saved["phase"] == "paired" and saved["chain_id"] == original_chain
+    assert control.current["model_requests"] == 1
+
+    resumed = WorkSession(control, session.contract)
+    control.session = resumed
+    await resumed.restore(TurnTranscript(initial), compaction_brief=initial[-1])
+    assert resumed.progress["compaction_staging"]["source"] == staging
+    with pytest.raises(WorkCapacityError, match="work_compaction_source_capacity"):
+        await runner._compact_work(runtime, ModelExecutionPriority.FOREGROUND, 200000, main)
+    assert len(requests) == control.current["model_requests"] == 1
+    assert resumed.transcript.request() == original
+
+    # More actual auxiliary capacity allows the already-validated next cursor
+    # to proceed; it never asks for the preceding paid page again.
+    runner._models.capacity = lambda _: ModelCapacity(input_tokens=100000)
+    candidate = await runner._compact_work(runtime, ModelExecutionPriority.FOREGROUND, 200000, main)
+    assert sources[1]["paging"]["cursor"] == staging["paging"]["cursor"]
+    assert len({tuple(source["paging"]["cursor"]) for source in sources}) == len(sources)
+    assert candidate.chain_id != original_chain
+    assert candidate.request().messages[:2] == initial
+    assert control.current["model_requests"] == len(requests)

@@ -276,7 +276,16 @@ class AgentRunner:
             response = await self._concurrency.run_llm(runtime.conversation_key, execute)
             if response.tool_calls or response.status != ModelResponseStatus.COMPLETED:
                 raise WorkCapacityError("work_compaction_incomplete")
-            next_source = await session.next_summary_source(response.content, fits=source_fits)
+            try:
+                next_source = await session.next_summary_source(response.content, fits=source_fits)
+            except WorkCapacityError as exc:
+                if str(exc) == "work_compaction_source_capacity":
+                    # Validation has advanced the original source cursor before
+                    # preparing its next page. Preserve this paid page even if
+                    # the next page cannot currently fit; publication still
+                    # checks the same source/privacy guard.
+                    await session.stage_compaction(None)
+                raise
             await session.stage_compaction(response.content if next_source is None else None)
             if next_source is None:
                 ready_summary = response.content
