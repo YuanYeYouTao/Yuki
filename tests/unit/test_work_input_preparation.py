@@ -38,10 +38,23 @@ async def enqueue(control, key="attachment", *, ready=False):
 async def test_unready_input_yields_without_polling(database, tmp_path):
     control = await _control(database, tmp_path)
     await enqueue(control)
-    control.repository.pending = AsyncMock(wraps=control.repository.pending)
-    with pytest.raises(WorkInputsPreparing):
-        await asyncio.wait_for(control.take_inputs("preparing"), timeout=0.2)
-    assert control.repository.pending.await_count == 1
+    # Connection acquisition/pre-ping is not application polling. Read the real
+    # mailbox first, then prove the unready branch completes without another
+    # read or suspension once that result is available, independent of CI load.
+    pending = await control.pending()
+    assert pending and not pending[0]["ready"]
+    control.repository.pending = AsyncMock(
+        side_effect=[pending, AssertionError("unready input must not be polled")]
+    )
+    operation = control.take_inputs("preparing")
+    try:
+        with pytest.raises(WorkInputsPreparing):
+            operation.send(None)
+    finally:
+        operation.close()
+    control.repository.pending.assert_awaited_once_with(
+        control.lease, work_id=control.current["id"]
+    )
     assert control.staged_attempt is None
 
 
