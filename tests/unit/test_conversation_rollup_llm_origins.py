@@ -187,9 +187,9 @@ def test_empty_llm_origins_config_defaults_to_user_message() -> None:
 
 
 def test_rollup_max_output_tokens_is_not_a_smaller_provider_cap() -> None:
-    assert rollup_max_output_tokens(2400) == 8192
-    assert rollup_max_output_tokens(1) == 8192
-    assert rollup_max_output_tokens(8000) == 8192
+    assert rollup_max_output_tokens(2400) == 32768
+    assert rollup_max_output_tokens(1) == 32768
+    assert rollup_max_output_tokens(8000) == 32768
     assert rollup_max_output_tokens(2400) >= 2400
 
 

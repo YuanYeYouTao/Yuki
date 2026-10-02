@@ -181,6 +181,7 @@ async def test_gemini_search_bridge_main_turn_with_trusted_receipt(database: Dat
             model="gemini-3.8-flash",
             base_url="https://example.invalid/v1beta/",
             default_max_output_tokens=2048,
+            max_output_tokens_limit=None,
             thinking_enabled=True,
             reasoning_effort=ReasoningEffort.LOW,
             wire_options=None,
