@@ -77,7 +77,7 @@ class ModelRuntimeSettings(DomainSettings):
         default=16 * 1024 * 1024, ge=1024, le=64 * 1024 * 1024
     )
     memory_self_reflection_timeout_seconds: float = Field(default=180.0, gt=0)
-    conversation_rollup_model_timeout_seconds: float = Field(gt=0)
+    conversation_rollup_model_timeout_seconds: float = Field(default=600.0, gt=0)
     llm_provider: str
     llm_base_url: str
     llm_api_key: str
@@ -100,7 +100,7 @@ class ModelRuntimeSettings(DomainSettings):
 class ConversationSettings(DomainSettings):
     context_window_tokens: int = Field(default=96000, ge=8192)
     work_context_window_tokens: int = Field(default=128000, ge=8192)
-    work_compaction_max_output_tokens: int = Field(default=8192, ge=1024)
+    work_compaction_max_output_tokens: int = Field(default=32768, ge=1024)
     work_compaction_trigger_ratio: float = Field(default=0.90, gt=0, lt=1)
     work_compaction_target_ratio: float = Field(default=0.50, gt=0, lt=1)
     conversation_rollup_trigger_ratio: float = Field(default=0.90, gt=0, lt=1)
@@ -132,8 +132,8 @@ class ConversationSettings(DomainSettings):
     conversation_rollup_worker_concurrency: int = Field(ge=1, le=2)
     conversation_rollup_poll_seconds: float = Field(gt=0)
     conversation_rollup_lease_seconds: int = Field(gt=0)
-    conversation_rollup_model_timeout_seconds: float = Field(gt=0)
-    conversation_rollup_max_output_tokens: int = Field(ge=1024)
+    conversation_rollup_model_timeout_seconds: float = Field(default=600.0, gt=0)
+    conversation_rollup_max_output_tokens: int = Field(default=32768, ge=1024)
     conversation_rollup_batch_max_events: int = Field(ge=1)
     conversation_rollup_batch_max_characters: int = Field(ge=1)
     conversation_rollup_worker_max_batches_per_claim: int = Field(ge=1)
@@ -402,7 +402,7 @@ class WebSettings(DomainSettings):
     web_search_depth: str
     web_search_max_results: int = Field(gt=0)
     web_extract_max_results: int = Field(gt=0)
-    web_timeout_seconds: float = Field(gt=0)
+    web_timeout_seconds: float = Field(default=180.0, gt=0)
     web_max_retries: int = Field(ge=0)
     web_global_concurrency: int = Field(gt=0)
     web_max_calls_per_turn: int = Field(gt=0)

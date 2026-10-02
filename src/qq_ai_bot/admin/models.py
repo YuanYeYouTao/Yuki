@@ -164,8 +164,8 @@ class ContextRuntimeConfig:
     compaction_target_ratio: float = 0.60
     work_compaction_trigger_ratio: float = 0.90
     work_compaction_target_ratio: float = 0.50
-    compaction_output_tokens: int = 8192
-    rollup_output_tokens: int = 8192
+    compaction_output_tokens: int = 32768
+    rollup_output_tokens: int = 32768
     rollup_summary_characters: int = 16384
 
 

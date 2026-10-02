@@ -104,6 +104,32 @@ async def test_context_windows_are_hot_and_watermarks_validate_inherited_scopes(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("key", "field"),
+    [
+        ("context.compaction_output_tokens", "compaction_output_tokens"),
+        ("context.rollup_output_tokens", "rollup_output_tokens"),
+    ],
+)
+async def test_summary_output_budget_above_old_ui_ceiling_is_saved_and_reloaded(
+    database: Database, key, field
+):
+    runtime, person, space = await setup(database)
+    original = await runtime.snapshot(user_id=person.text, group_id=space.text)
+    changed = await set_value(runtime, key, 65536)
+    assert changed.success and changed.change_id is not None
+    actual = await runtime.snapshot(user_id=person.text, group_id=space.text)
+    assert getattr(actual.context, field) == 65536
+    assert getattr(original.context, field) != 65536
+
+    reloaded = RuntimeConfigService(settings=make_settings(database.url), database=database)
+    await reloaded.initialize()
+    effective = await reloaded.get_effective(key, user_id=person.text, group_id=space.text)
+    assert effective.value == 65536 and effective.source == "runtime:global"
+    assert getattr((await reloaded.snapshot()).context, field) == 65536
+
+
+@pytest.mark.asyncio
 async def test_work_watermarks_are_hot_independent_and_validate_inherited_scopes(database):
     runtime, person, space = await setup(database)
     original = await runtime.snapshot(user_id=person.text, group_id=space.text)

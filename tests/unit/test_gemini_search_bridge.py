@@ -39,7 +39,13 @@ SOURCE = WebSearchSource("fallback", "Fallback", URL, "example.com", "", "")
 FALLBACK = WebSearchResponse("query", (SOURCE,), None, 0)
 
 
-def profile(mode=ModelSearchMode.BRIDGE, *, id="gemini-connection"):
+def profile(
+    mode=ModelSearchMode.BRIDGE,
+    *,
+    id="gemini-connection",
+    max_output_tokens=2048,
+    timeout_seconds=20,
+):
     return SimpleNamespace(
         id=id,
         provider="gemini",
@@ -47,10 +53,11 @@ def profile(mode=ModelSearchMode.BRIDGE, *, id="gemini-connection"):
         search_mode=mode,
         model="gemini-3.8-flash",
         base_url="https://example.com/v1beta/",
-        default_max_output_tokens=2048,
+        default_max_output_tokens=max_output_tokens,
+        max_output_tokens_limit=None,
         thinking_enabled=True,
         reasoning_effort=ReasoningEffort.LOW,
-        timeout_seconds=20,
+        timeout_seconds=timeout_seconds,
         wire_options=None,
         headers={},
     )
@@ -107,11 +114,56 @@ def grounded_response(*, with_source=True):
 
 
 @pytest.mark.asyncio
+async def test_bridge_rejects_explicit_provider_output_ceiling_before_http(tmp_path):
+    selected = ModelProfile(
+        id="gemini-capped",
+        provider="gemini",
+        protocol=ModelProtocol.GEMINI,
+        search_mode=ModelSearchMode.BRIDGE,
+        base_url="https://example.com/v1beta/",
+        api_key_env="TEST_KEY",
+        model="gemini-3.8-flash",
+        timeout_seconds=240,
+        max_retries=0,
+        default_temperature=0.7,
+        default_max_output_tokens=16384,
+        max_output_tokens_limit=8192,
+        capabilities=frozenset({ModelCapability.TOOLS, ModelCapability.REASONING}),
+    )
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        return httpx.Response(200, json=grounded_response())
+
+    async with httpx.AsyncClient(
+        base_url=selected.base_url, transport=httpx.MockTransport(respond)
+    ) as client:
+        provider = GeminiProvider(
+            base_url=selected.base_url,
+            api_key="test",
+            timeout_seconds=selected.timeout_seconds,
+            max_retries=0,
+            client=client,
+        )
+        with pytest.raises(ValueError, match="configured provider output limit"):
+            GeminiSearchBridge(
+                profile=selected,
+                credential="test",
+                provider=provider,
+                state=BridgeState(tmp_path / "cache.db"),
+            )
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_bridge_request_is_search_only_and_accepts_only_grounding(tmp_path):
     wires = []
+    timeouts = []
 
     def respond(request):
         wires.append(json.loads(request.content))
+        timeouts.append(request.extensions["timeout"])
         return httpx.Response(200, json=grounded_response())
 
     client = httpx.AsyncClient(
@@ -120,7 +172,7 @@ async def test_bridge_request_is_search_only_and_accepts_only_grounding(tmp_path
     gemini = GeminiProvider(
         base_url="https://example.com/v1beta/",
         api_key="secret",
-        timeout_seconds=20,
+        timeout_seconds=240,
         max_retries=0,
         client=client,
     )
@@ -130,7 +182,7 @@ async def test_bridge_request_is_search_only_and_accepts_only_grounding(tmp_path
     )
     invocations = SimpleNamespace(record=AsyncMock())
     bridge = GeminiSearchBridge(
-        profile=profile(),
+        profile=profile(max_output_tokens=16384, timeout_seconds=240),
         credential="secret",
         provider=gemini,
         state=BridgeState(tmp_path / "cache.db"),
@@ -156,6 +208,8 @@ async def test_bridge_request_is_search_only_and_accepts_only_grounding(tmp_path
         40,
     )
     assert len(wires) == 1
+    assert wires[0]["generationConfig"]["maxOutputTokens"] == 16384
+    assert timeouts == [{"connect": 240, "read": 240, "write": 240, "pool": 240}]
     assert wires[0]["tools"] == [{"googleSearch": {}}]
     assert "functionDeclarations" not in json.dumps(wires[0])
     assert wires[0]["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
@@ -350,9 +404,10 @@ async def test_bridge_hot_switch_follows_chat_connection_without_native_main_too
         _env_file=None,
         web_mode="tavily",
         tavily_api_key="test",
+        web_timeout_seconds=25,
         web_search_bridge_state_path=tmp_path / "cache.db",
     )
-    selected = profile()
+    selected = profile(max_output_tokens=16384, timeout_seconds=240)
     automation = profile(id="automation-connection")
     catalog = SimpleNamespace(
         profiles={"gemini-connection": selected, "automation-connection": automation},
@@ -372,6 +427,7 @@ async def test_bridge_hot_switch_follows_chat_connection_without_native_main_too
     with web_model_task(ModelTask.CHAT_AGENT):
         assert isinstance(provider._active._selected(), GeminiSearchBridge)
         assert provider._active._selected().profile.id == "gemini-connection"
+        assert provider._active._selected().provider._timeout.read == 240
     with web_model_task(ModelTask.AUTOMATION_AGENT):
         assert provider._active._selected().profile.id == "automation-connection"
     assert (

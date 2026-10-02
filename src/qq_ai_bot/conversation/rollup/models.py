@@ -44,7 +44,7 @@ class RollupPolicyConfig:
     batch_max_events: int = 256
     batch_max_characters: int = 32_768
     summary_max_characters: int = 16384
-    max_output_tokens: int = 8192
+    max_output_tokens: int = 32768
     bot_display_name: str = "Yuki"
     timezone: str = "Asia/Shanghai"
     llm_origins: frozenset[str] = frozenset({"user_message"})

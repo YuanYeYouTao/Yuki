@@ -219,6 +219,11 @@ class WebModule:
             for profile in bridge_profiles.values():
                 if profile.protocol is not ModelProtocol.GEMINI:
                     raise ValueError("the separate native search bridge requires Gemini protocol")
+                if (
+                    profile.max_output_tokens_limit is not None
+                    and profile.default_max_output_tokens > profile.max_output_tokens_limit
+                ):
+                    raise ValueError("search default exceeds configured provider output limit")
                 if not settings.tavily_api_key:
                     raise ValueError("Gemini bridge requires Tavily for page reading and fallback")
                 if not clients.api_key_for(profile):
@@ -252,7 +257,7 @@ class WebModule:
             provider=GeminiProvider(
                 base_url=profile.base_url,
                 api_key=key,
-                timeout_seconds=min(profile.timeout_seconds, settings.web_timeout_seconds),
+                timeout_seconds=profile.timeout_seconds,
                 max_retries=0,
                 options=profile.wire_options,
                 headers=profile.headers,
@@ -293,12 +298,18 @@ class WebModule:
         api_key = clients.api_key_for(profile)
         if not api_key:
             raise ValueError("Selected DeepSeek search connection has no API key")
+        if (
+            profile.max_output_tokens_limit is not None
+            and profile.default_max_output_tokens > profile.max_output_tokens_limit
+        ):
+            raise ValueError("search default exceeds configured provider output limit")
         fallback = self._tavily() if settings.tavily_api_key else None
         return DeepSeekSearchBridge(
             api_key=api_key,
             state_path=settings.web_search_bridge_state_path,
             fallback=fallback,
-            timeout_seconds=settings.web_timeout_seconds,
+            timeout_seconds=profile.timeout_seconds,
+            max_output_tokens=profile.default_max_output_tokens,
             extract_max_results=settings.web_extract_max_results,
         )
 

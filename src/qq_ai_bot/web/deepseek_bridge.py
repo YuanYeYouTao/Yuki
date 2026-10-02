@@ -52,14 +52,20 @@ class DeepSeekSearchBridge:
         api_key: str,
         state_path: Path,
         fallback: WebSearchProvider | None = None,
-        timeout_seconds: float = 20,
+        timeout_seconds: float = 180,
+        max_output_tokens: int = 8192,
         extract_max_results: int = 3,
         client: httpx.AsyncClient | None = None,
         media: MediaResolver | None = None,
     ) -> None:
         if not api_key:
             raise ValueError("DeepSeek search credentials are required")
-        self._cache_namespace = hashlib.sha256(api_key.encode()).digest()
+        if max_output_tokens < 1:
+            raise ValueError("DeepSeek search output budget must be positive")
+        self.max_output_tokens = max_output_tokens
+        self._cache_namespace = hashlib.sha256(
+            json.dumps([api_key, max_output_tokens], separators=(",", ":")).encode()
+        ).digest()
         self.client = client or httpx.AsyncClient(timeout=timeout_seconds)
         self.headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
         self.media = media or MediaResolver(
@@ -103,7 +109,7 @@ class DeepSeekSearchBridge:
         constraints = {k: v for k, v in asdict(request).items() if v is not None}
         payload = {
             "model": "deepseek-flash",
-            "max_tokens": 4096,
+            "max_tokens": self.max_output_tokens,
             "system": (
                 "你是检索服务。只搜索提供的问题，优先查找符合日期和主题要求的来源。"
                 "无法核实来源日期时不要宣称已满足日期限制。"

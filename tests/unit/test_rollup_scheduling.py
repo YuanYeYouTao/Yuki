@@ -299,15 +299,15 @@ async def test_rollup_wire_budget_and_transport_timeout_are_independent(protocol
     )
     pool._connection_pools[("deepseek", "https://rollup.example", "TEST_KEY")] = client
     models = executor(pool, protocol)
-    service = ConversationRollupService(models=models, config=_policy(), timeout_seconds=90)
+    service = ConversationRollupService(models=models, config=_policy(), timeout_seconds=600)
     try:
         await service.summarize_candidate(_candidate((_event(1, origin="user_message"),)))
         await models.execute(
             ModelTask.CHAT_AGENT, ChatRequest(messages=(ChatMessage(role="user", content="hello"),))
         )
         body, timeout = seen[0]
-        assert body.get("max_output_tokens", body.get("max_tokens")) == 8192
-        assert timeout["read"] == 90
+        assert body.get("max_output_tokens", body.get("max_tokens")) == 32768
+        assert timeout["read"] == 600
         assert seen[1][1]["read"] == 30
         if protocol == "responses":
             assert body["reasoning"]["effort"] == "low"

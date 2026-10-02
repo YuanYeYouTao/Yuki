@@ -16,7 +16,14 @@ from tests.fakes import FakeWebSearchProvider
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
 from qq_ai_bot.application.modules.web import HotWebSearchProvider, WebModule
 from qq_ai_bot.config import Settings
-from qq_ai_bot.model_runtime.models import ModelTask
+from qq_ai_bot.model_runtime.models import (
+    ModelCapability,
+    ModelProfile,
+    ModelProtocol,
+    ModelRoute,
+    ModelTask,
+)
+from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
 from qq_ai_bot.runtime.work_activation import current_work_control
 from qq_ai_bot.services.media_resolver import MediaResolver
 from qq_ai_bot.web.base import WebSearchError
@@ -50,9 +57,11 @@ def evidence():
 
 async def test_bridge_real_evidence_restart_cache_and_request_budget(tmp_path):
     requests = []
+    timeouts = []
 
     def respond(request):
         requests.append(json.loads(request.content))
+        timeouts.append(request.extensions["timeout"])
         return httpx.Response(200, json=evidence())
 
     control = SimpleNamespace(validate=AsyncMock(), reserve_request=AsyncMock())
@@ -75,7 +84,9 @@ async def test_bridge_real_evidence_restart_cache_and_request_budget(tmp_path):
             bridge = DeepSeekSearchBridge(
                 api_key="test",
                 state_path=tmp_path / "cache.db",
-                client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+                timeout_seconds=240,
+                max_output_tokens=16384,
+                client=httpx.AsyncClient(transport=httpx.MockTransport(respond), timeout=240),
             )
             try:
                 result = await bridge.search(request)
@@ -85,6 +96,8 @@ async def test_bridge_real_evidence_restart_cache_and_request_budget(tmp_path):
                 await bridge.close()
         assert len(requests) == 1
         assert requests[0]["model"] == "deepseek-flash"
+        assert requests[0]["max_tokens"] == 16384
+        assert timeouts == [{"connect": 240, "read": 240, "write": 240, "pool": 240}]
         assert len(requests[0]["messages"]) == 1
         assert json.loads(requests[0]["messages"][0]["content"])["query"] == request.query
         constraints = json.loads(requests[0]["messages"][0]["content"])
@@ -213,12 +226,16 @@ async def test_bridge_timeout_no_retry_or_fabricated_success(tmp_path):
     bridge = DeepSeekSearchBridge(
         api_key="test",
         state_path=tmp_path / "cache.db",
-        client=httpx.AsyncClient(transport=httpx.MockTransport(timeout)),
+        timeout_seconds=240,
+        max_output_tokens=16384,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(timeout), timeout=240),
     )
     try:
         with pytest.raises(WebSearchError, match="DeepSeek 搜索请求失败"):
             await bridge.search(WebSearchRequest("docs"))
         assert len(calls) == 1
+        assert json.loads(calls[0].content)["max_tokens"] == 16384
+        assert calls[0].extensions["timeout"]["read"] == 240
     finally:
         await bridge.close()
 
@@ -244,6 +261,7 @@ async def test_bridge_module_opt_in_profile_validation_and_tavily_compatibility(
         tavily_api_key="",
         web_search_backend="deepseek_anthropic",
         web_search_bridge_state_path=tmp_path / "cache.db",
+        web_timeout_seconds=25,
     )
     assert settings.web_configured
     for profile in (
@@ -262,7 +280,13 @@ async def test_bridge_module_opt_in_profile_validation_and_tavily_compatibility(
                 catalog=catalog,
                 clients=SimpleNamespace(api_key_for=lambda _profile: "test"),
             ).build()
-    profile = SimpleNamespace(provider="deepseek", base_url="https://api.deepseek.com")
+    profile = SimpleNamespace(
+        provider="deepseek",
+        base_url="https://api.deepseek.com",
+        timeout_seconds=240,
+        default_max_output_tokens=16384,
+        max_output_tokens_limit=None,
+    )
     catalog = SimpleNamespace(
         search_connection="search",
         profiles={"search": profile},
@@ -277,6 +301,8 @@ async def test_bridge_module_opt_in_profile_validation_and_tavily_compatibility(
     ).build()
     assert isinstance(bundle.provider._active, DeepSeekSearchBridge)
     assert bundle.provider._active.fallback is None
+    assert bundle.provider._active.client.timeout.read == 240
+    assert bundle.provider._active.max_output_tokens == 16384
     await lifecycle.start()
     await lifecycle.close()
     legacy = Settings(_env_file=None, web_mode="tavily", tavily_api_key="test")
@@ -294,7 +320,13 @@ async def test_bridge_search_connection_survives_chat_switch_and_hot_key_change(
         web_search_backend="deepseek_anthropic",
         web_search_bridge_state_path=tmp_path / "cache.db",
     )
-    search = SimpleNamespace(provider="deepseek", base_url="https://api.deepseek.com")
+    search = SimpleNamespace(
+        provider="deepseek",
+        base_url="https://api.deepseek.com",
+        timeout_seconds=240,
+        default_max_output_tokens=16384,
+        max_output_tokens_limit=None,
+    )
     gemini = SimpleNamespace(
         provider="gemini", base_url="https://generativelanguage.googleapis.com/v1beta"
     )
@@ -336,6 +368,55 @@ async def test_bridge_search_connection_survives_chat_switch_and_hot_key_change(
         module.activate(None)
     await lifecycle.start()
     await lifecycle.close()
+
+
+@pytest.mark.parametrize("entry", ["startup", "hot_prepare"])
+async def test_module_rejects_explicit_search_output_ceiling_before_http(
+    tmp_path, monkeypatch, entry
+):
+    selected = ModelProfile(
+        id="search-capped",
+        provider="deepseek",
+        protocol=ModelProtocol.RESPONSES,
+        base_url="https://api.deepseek.com",
+        api_key_env="TEST_KEY",
+        model="deepseek-flash",
+        timeout_seconds=240,
+        max_retries=0,
+        default_temperature=0.7,
+        default_max_output_tokens=16384,
+        max_output_tokens_limit=8192,
+        capabilities=frozenset({ModelCapability.REASONING, ModelCapability.TOOLS}),
+    )
+    catalog = ModelProfileCatalog(
+        profiles={selected.id: selected},
+        routes={task: ModelRoute(task=task, profile_id=selected.id) for task in ModelTask},
+        search_connection=selected.id,
+    )
+    settings = Settings(
+        _env_file=None,
+        web_mode="tavily",
+        web_search_backend="deepseek_anthropic",
+        web_search_bridge_state_path=tmp_path / "cache.db",
+    )
+    calls = []
+
+    def create_bridge(**arguments):
+        calls.append(arguments)
+        pytest.fail("an invalid search budget must not create an HTTP client")
+
+    monkeypatch.setattr("qq_ai_bot.application.modules.web.DeepSeekSearchBridge", create_bridge)
+    clients = SimpleNamespace(api_key_for=lambda _: "test")
+    module = WebModule(
+        settings.web, lifecycle=LifecycleRegistry(), catalog=catalog, clients=clients
+    )
+    with pytest.raises(ValueError, match="configured provider output limit"):
+        if entry == "startup":
+            module.build()
+        else:
+            module.prepare(catalog, clients, require_explicit=True)
+    assert calls == []
+    assert not (tmp_path / "cache.db").exists()
 
 
 async def test_hot_web_search_retires_only_after_inflight_calls_finish():

@@ -28,7 +28,7 @@ class TavilyWebSearchProvider:
         api_key: str,
         search_depth: str = "advanced",
         extract_max_results: int = 3,
-        timeout_seconds: float = 20,
+        timeout_seconds: float = 180,
         max_retries: int = 1,
         global_concurrency: int = 4,
         client: httpx.AsyncClient | None = None,
