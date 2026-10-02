@@ -352,6 +352,7 @@ class PromptRequestDiagnostics:
     conversation_prefix_hash: str
     prompt_snapshot_fingerprint: str
     static_prompt_revision: str
+    preparation_model_requests: int = 0
 
 
 @dataclass(frozen=True, slots=True)

@@ -85,7 +85,11 @@ effort_levels = ["low", "high", "max"] # 可选，按具体型号声明支持的
 可用 reasoning 方言：`effort`、`thinking`、`enable_thinking`、`openrouter`、`builtin`；
 Claude 使用 `effort`（adaptive）或 `budget`，Gemini 使用 `gemini`（thinkingLevel）或 `budget`。
 Responses 不使用此配置表；Claude 只接受 reasoning/budget/effort_levels，Gemini 另接受
-send_temperature。填入另一协议的字段在配置加载时拒绝，不会悄悄忽略。
+send_temperature，以及 `gemini_schema_format`。后者默认 `response_json_schema`；显式
+`response_schema` 将结构化输出投影为 Gemini Schema 方言，仅 Gemini 允许。投影保留可表示的
+结构和引用展开，额外属性、长度和数值限制继续由本地原 schema 与来源校验执行；不支持的
+组合或递归引用在提交前拒绝。此字段不改变主 Agent 工具参数、Provider 或任务路由，
+显式修改进入恢复合同 hash。填入另一协议的字段在配置加载时拒绝，不会悄悄忽略。
 `thinking` 可用 `send_reasoning_effort=true` 表明该型号同时支持 effort。
 `builtin` 只适用于已经验证、始终思考且不接受思考控制参数的模型，不能用来接入无思考模型。
 没有 effort 控制的 `thinking` / `builtin` 方言拒绝高于 low 的请求，不静默降低要求。

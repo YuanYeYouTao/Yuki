@@ -2207,6 +2207,7 @@ class ToolArtifactModel(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     work_id: Mapped[str | None] = mapped_column(String(36), index=True)
     effect_key: Mapped[str | None] = mapped_column(String(256))
+    access_json: Mapped[str | None] = mapped_column(Text)
     sha256: Mapped[str | None] = mapped_column(String(64))
     deleting: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="0"

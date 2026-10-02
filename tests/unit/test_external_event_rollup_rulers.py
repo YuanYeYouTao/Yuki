@@ -706,6 +706,7 @@ async def _assemble_private_turn(
     runtime = MagicMock()
     runtime.context.local_event_limit = settings.local_context_event_limit
     runtime.context.window_tokens = settings.context_window_tokens
+    runtime.context.compaction_window_tokens = settings.context_compaction_window_tokens
     inbound = InboundMessage(
         message_id=current.platform_message_id,
         event_type="message",

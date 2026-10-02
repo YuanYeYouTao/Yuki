@@ -148,10 +148,11 @@ class ModelProfile(_FrozenModel):
                     "thinking_budget_tokens",
                     "effort_levels",
                     "send_temperature",
+                    "gemini_schema_format",
                 }
                 modes = {"gemini", "budget"}
             else:
-                fields = set(ChatWireOptions.model_fields)
+                fields = set(ChatWireOptions.model_fields) - {"gemini_schema_format"}
                 modes = {"effort", "thinking", "enable_thinking", "openrouter", "builtin"}
             if options.model_fields_set - fields:
                 raise ValueError("wire option is not supported by the selected protocol")

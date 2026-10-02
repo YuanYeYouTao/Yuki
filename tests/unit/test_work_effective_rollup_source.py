@@ -1,6 +1,7 @@
 """Background semantic publication retains the Work's still-effective overlay."""
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
@@ -23,13 +24,13 @@ from qq_ai_bot.llm.gemini import GeminiProvider
 from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from qq_ai_bot.runtime.work_journal import decode_transcript
-from qq_ai_bot.runtime.work_repository import WorkConflict
 from qq_ai_bot.runtime.work_schema_v1 import effects
 from qq_ai_bot.runtime.work_session import WorkSession
+from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 
 
-async def _candidate_with_overlay(database, *, catches_up=False):
+async def _candidate_with_overlay(database, *, catches_up=False, frozen_summary=False):
     policy = _policy(batch_max_events=2)
     uow = ScopedEventLedgerUnitOfWork(database, config=policy)
     scope = ConversationScope.group("8000", "2001")
@@ -65,6 +66,15 @@ async def _candidate_with_overlay(database, *, catches_up=False):
         ChatMessage("user", "original task"),
     )
     control, session, _selected, _unselected = await _session(database, initial)
+    if frozen_summary:
+        session.source_guard = WorkSourceGuard(
+            replace(
+                session.source_guard.version,
+                selected_summary_text="frozen effective overlay",
+            )
+        )
+        assert await session.source_guard.check(control)
+        await session.save("paired")
     return repository, scope, claim, candidate, control, session
 
 
@@ -102,7 +112,9 @@ async def _receipt(database, control):
 async def test_real_semantic_commit_keeps_effective_overlay_and_exact_request(
     database, adapter_type
 ):
-    repository, scope, claim, candidate, control, session = await _candidate_with_overlay(database)
+    repository, scope, claim, candidate, control, session = await _candidate_with_overlay(
+        database, frozen_summary=True
+    )
     before = await repository.load_prompt_snapshot(scope)
     old_revision = session.source_revision
     adapter = adapter_type(
@@ -136,10 +148,11 @@ async def test_real_semantic_commit_keeps_effective_overlay_and_exact_request(
             CanonicalConversationRollupEmergencyOverlayModel, control.lease.conversation_id
         )
         assert overlay.base_semantic_revision == 1
-    # Real publication advances the global revision, but neither actual prompt
-    # summary nor the paired, already-executed request is replaced.
-    await session.save("paired")
-    assert session.source_revision > old_revision
+    # Same-owner derived publication no longer invalidates frozen selection.
+    # An actually dispatched request still restores its exact private protocol.
+    assert await session.source_guard.check(control)
+    await session.save("dispatched")
+    assert session.source_revision == old_revision
     loaded = await session.journal.load(control.lease, control.current["id"], session.contract)
     assert loaded.reason == "resume"
     restored = decode_transcript(json.loads(loaded.record["payload_json"])["transcript"])
@@ -157,9 +170,9 @@ async def test_real_semantic_commit_keeps_effective_overlay_and_exact_request(
     await adapter.close()
 
 
-async def test_semantic_catchup_switches_effective_summary_and_still_rejects(database):
+async def test_semantic_catchup_keeps_already_selected_summary_until_explicit_new_input(database):
     repository, scope, claim, candidate, control, session = await _candidate_with_overlay(
-        database, catches_up=True
+        database, catches_up=True, frozen_summary=True
     )
     saved = await _saved(database, control)
     await repository.commit_candidate(
@@ -170,9 +183,12 @@ async def test_semantic_catchup_switches_effective_summary_and_still_rejects(dat
     )
     after = await repository.load_prompt_snapshot(scope)
     assert after.overlay is None and after.rollup.summary_kind is RollupKind.MODEL
-    with pytest.raises(WorkConflict, match="work_journal_source_changed"):
-        await session.save("response")
-    assert await _saved(database, control) == saved
+    assert await session.source_guard.check(control)
+    await session.save("response")
+    current = await _saved(database, control)
+    assert current["source_revision"] == saved["source_revision"]
+    assert current["chain_id"] == saved["chain_id"]
+    assert session.source_guard.version.selected_summary_text == "frozen effective overlay"
 
 
 async def test_privacy_generation_rejects_even_with_unchanged_effective_summary(database):

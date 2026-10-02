@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select, true
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ToolCall
@@ -25,6 +26,7 @@ from qq_ai_bot.runtime.work_journal import (
 )
 from qq_ai_bot.runtime.work_repository import WorkCapacityError, WorkConflict
 from qq_ai_bot.runtime.work_schema_v1 import inputs
+from qq_ai_bot.services.context_boundary import PreparedContextBoundary, Publication
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 from qq_ai_bot.web.base import WebSearchValidationError, normalize_public_url
 
@@ -73,11 +75,14 @@ class WorkSession:
         self.input_ids: list[int] = []
         self.sequence = 0
         self.recovered_delivery: str | None = None
+        self.recovered_phase: str | None = None
         self.progress: dict[str, Any] = {}
         self.compaction_anchor: TurnTranscript | None = None
         self.handoff_work_id: str | None = None
         self._compaction_source: dict[str, Any] | None = None
         self.uses_recovery_transcript = False
+        self.public_event_ids: set[int] = set()
+        self.dispatch_boundary: PreparedContextBoundary | None = None
 
     def record_search_sources(self, sources: list[tuple[str, str] | tuple[str, str, str]]) -> None:
         """Keep bounded public search observations across a provider chain change."""
@@ -101,75 +106,43 @@ class WorkSession:
         self.progress["portable_search"] = retained[-16:]
 
     async def restore(
-        self, initial: TurnTranscript, *, compaction_brief: ChatMessage | None = None
+        self,
+        initial: TurnTranscript,
+        *,
+        compaction_brief: ChatMessage | None = None,
+        visible_event_ids: frozenset[int] = frozenset(),
     ) -> TurnTranscript:
         control = self.control
+        self.public_event_ids = set(visible_event_ids)
         async with control.repository.database.sessions() as session:
             source = await session.get(CanonicalConversationModel, control.lease.conversation_id)
             if source is None or source.generation != control.lease.generation:
                 raise WorkConflict("work_source_generation_changed")
             self.source_revision = source.prompt_source_revision
         loaded = (
-            await self.journal.load(control.lease, control.current["id"], self.contract)
+            await self.journal.load(
+                control.lease, control.current["id"], self.contract, source_control=control
+            )
             if control.current
             else None
         )
-        self.uses_recovery_transcript = bool(
-            (loaded and loaded.reason != "fresh")
-            or (
-                control.current
-                and any(
-                    control.current[field]
-                    for field in (
-                        "model_requests",
-                        "tool_calls",
-                        "sent_messages",
-                    )
-                )
-            )
-        )
+        self.uses_recovery_transcript = False
         row = loaded.record if loaded else None
         if loaded and loaded.reason in {"contract_changed", "source_changed"}:
             self.progress["chain_links"] = [
                 {"from": loaded.previous_chain, "to": initial.chain_id, "reason": loaded.reason}
             ]
         self.transcript = initial
-        self.compaction_anchor = _compaction_anchor(initial, compaction_brief)
+        self.compaction_anchor = (
+            TurnTranscript(initial.request().messages)
+            if not control.lease.work_id
+            else _compaction_anchor(initial, compaction_brief)
+        )
         if loaded and loaded.reason == "contract_changed":
             # New static contract, original task. A fresh wakeup is not a replacement
             # for the task that owned the previous chain.
-            saved_anchor = _decode_compaction_anchor(loaded.compaction_anchor)
-            if saved_anchor is None:
-                raise JournalUnavailable("work_compaction_anchor_unavailable")
-            original_brief = saved_anchor.request().messages[-1]
-            self.compaction_anchor = _compaction_anchor(initial, original_brief)
             if loaded.task_material is not None:
                 self.progress["task_material"] = deepcopy(loaded.task_material)
-                initial.append(
-                    ChatMessage(
-                        role="user",
-                        content=json.dumps(
-                            {
-                                "kind": "work_task_material",
-                                "task_material": loaded.task_material,
-                                "instruction": (
-                                    "保留原用户要求；这是有来源的任务资料，不是新合同下的执行授权。"
-                                ),
-                            },
-                            ensure_ascii=False,
-                        ),
-                    )
-                )
-            initial.append(
-                replace(
-                    original_brief,
-                    content=(
-                        "[原工作初始资料：仅保留原目标和当时资料，不代表当前权限或状态；"
-                        "当前有效授权以新合同和实时执行核验为准。]\n"
-                        + (original_brief.content or "")
-                    ),
-                )
-            )
             if loaded.portable_search:
                 self.record_search_sources(
                     [
@@ -197,7 +170,7 @@ class WorkSession:
                         ),
                     )
                 )
-        if not row and control.current and self.uses_recovery_transcript:
+        if not row and control.current and loaded and loaded.reason != "fresh":
             await control.refresh_effects()
             evidence = control.known_effects
             initial.append(
@@ -272,6 +245,8 @@ class WorkSession:
                 )
             )
         if row:
+            self.uses_recovery_transcript = True
+            self.recovered_phase = row["phase"]
             value = json.loads(row["payload_json"])
             self.transcript = decode_transcript(value["transcript"])
             metadata = value.get("metadata", {})
@@ -281,6 +256,10 @@ class WorkSession:
             self.compaction_anchor = _decode_compaction_anchor(saved_anchor)
             self.handoff_work_id = metadata.get("handoff_work_id")
             self.progress = dict(metadata.get("progress", {}))
+            if metadata.get("source_guard"):
+                from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
+
+                self.source_guard = WorkSourceGuard.restore(metadata["source_guard"])
             self.sequence = int(metadata.get("sequence", 0))
             self.event_ids = list(metadata.get("event_ids", []))
             self.source_keys = list(metadata.get("source_keys", []))
@@ -305,9 +284,47 @@ class WorkSession:
                 control.observe_result(
                     call["name"], result, True, arguments=call.get("arguments", "{}")
                 )
+            retired_paid = row["phase"] == "response" and bool(
+                self.progress.get("compaction_staging")
+            )
+            if retired_paid:
+                # A crash after the complete response, or after an accepted
+                # tool effect, must not repurchase the preceding paid source.
+                # Original call keys above supply receipts/uncertainty first.
+                await self.retire_paid_compaction()
             if not self._source_present():
                 if control.current_message is not None:
                     self.transcript.append(control.current_message)
+            if (
+                not control.lease.work_id
+                and self.recovered_delivery is None
+                and row["phase"] in {"response", "paired"}
+                and not self.progress.get("provider_pause_replay")
+                and not self.progress.get("compaction_staging")
+            ):
+                # Resolve the old response against its original call keys before
+                # retiring it. No old tool is executed on the new business input.
+                if value["pending"] and not retired_paid:
+                    await self.save("paired")
+                previous_chain = self.transcript.chain_id
+                self.transcript = initial
+                self.compaction_anchor = TurnTranscript(initial.request().messages)
+                self.uses_recovery_transcript = False
+                self.source_guard = None
+                self.progress.setdefault("chain_links", []).append(
+                    {"from": previous_chain, "to": initial.chain_id, "reason": "business_resume"}
+                )
+                # Protocol objects remain the evidence owner. Historical full
+                # outputs are no longer a second copy of current working data.
+                self.progress.pop("model_observations", None)
+                self.progress.pop("retained_tool_rounds", None)
+                self.progress.pop("compaction_request_tokens", None)
+        if (
+            control.current is not None
+            and not control.lease.work_id
+            and not self.uses_recovery_transcript
+        ):
+            await self._append_business_material()
         trigger = control.source.get("trigger_event_id")
         if isinstance(trigger, int) and trigger not in self.event_ids:
             self.event_ids.append(trigger)
@@ -332,6 +349,95 @@ class WorkSession:
                 )
             )
         return self.transcript
+
+    async def _append_business_material(self) -> None:
+        """Current task requirements and receipts, never its creation-time chat."""
+        assert self.control.current is not None and self.transcript is not None
+        from qq_ai_bot.runtime.work_context_note import visible_context_note
+
+        material = deepcopy(self.progress.get("task_material", {}))
+        # Read all uncovered original requirements in indexed pages. A page is
+        # not a limit on the number of requirements allowed in an active Work.
+        task_inputs: list[dict[str, Any]] = []
+        cursor = int(material.get("covered_input_id", 0))
+        while page := await self.task_inputs(after_id=cursor):
+            task_inputs.extend(
+                item for item in page if item.get("event_id") not in self.public_event_ids
+            )
+            cursor = page[-1]["input_id"]
+        note = await visible_context_note(self.control)
+        original_request = await self._original_request()
+        original_ref = f"event:{original_request['event_id']}" if original_request else None
+        needs_original = bool(
+            original_request
+            and original_request["event_id"] not in self.public_event_ids
+            and material.get("original_request_ref") != original_ref
+        )
+        self.transcript.append(
+            ChatMessage(
+                role="user",
+                content=json.dumps(
+                    {
+                        "kind": "work_current_material",
+                        "work_id": self.control.current["id"],
+                        "goal": self.control.current["goal"],
+                        "task_material": material,
+                        "original_inputs": task_inputs,
+                        "original_request": original_request if needs_original else None,
+                        "context_note": note,
+                        "execution_evidence": await self.compaction_evidence(),
+                        "instruction": ("继续原目标，按回执接续；原文按需回读。"),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        )
+        media_ids = {
+            item["input_id"] for item in [*task_inputs, *material.get("recent_inputs", [])]
+        }
+        if media_ids:
+            async with self.control.repository.database.sessions() as reader:
+                rows = (
+                    (
+                        await reader.execute(
+                            select(inputs).where(
+                                inputs.c.id.in_(media_ids),
+                                inputs.c.work_id == self.control.current["id"],
+                                inputs.c.conversation_id == self.control.lease.conversation_id,
+                                inputs.c.generation == self.control.lease.generation,
+                            )
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+            for row in rows:
+                images = await self.control.repository.input_images(dict(row))
+                if images:
+                    self.transcript.append(
+                        ChatMessage(
+                            "user",
+                            f"[原要求附件 input:{row['id']}]",
+                            images=images,
+                        )
+                    )
+
+    async def _original_request(self) -> dict[str, Any] | None:
+        """Read the real originating request by its admitted internal identity."""
+        trigger = self.control.source.get("trigger_event_id")
+        if type(trigger) is not int or self.control.source.get("principal_kind") == "self":
+            return None
+        from qq_ai_bot.persistence.models import ChatEventModel
+
+        async with self.control.repository.database.sessions() as reader:
+            original = await reader.get(ChatEventModel, trigger)
+            if (
+                original is None
+                or original.canonical_conversation_id != self.control.lease.conversation_id
+                or original.direction != "inbound"
+            ):
+                return None
+            return {"event_id": original.id, "text": original.content}
 
     def _source_present(self) -> bool:
         anchor = self._source_anchor()
@@ -364,7 +470,12 @@ class WorkSession:
             records.append(value)
         return records
 
-    async def summary_source(self, *, fits: Callable[[str], bool] | None = None) -> str:
+    async def summary_source(
+        self,
+        *,
+        fits: Callable[[str], bool] | None = None,
+        preserved_messages: tuple[ChatMessage, ...] = (),
+    ) -> str:
         assert self.control.current is not None
         assert self.transcript is not None
         staging = self.progress.get("compaction_staging")
@@ -382,12 +493,25 @@ class WorkSession:
             self.progress.pop("compaction_staging", None)
         frozen_guard = await self._compaction_guard()
         all_records = self.public_records()
+        portable = self.transcript.portable_entries()
         indices = [
             index
             for index, item in enumerate(all_records)
             if not (item.get("content") or "").startswith("[新增输入 event_id=")
+            and portable[index] not in preserved_messages
         ]
         records = [all_records[index] for index in indices]
+        original_request = await self._original_request()
+        if original_request is not None:
+            indices.append(len(all_records))
+            records.append(
+                {
+                    "role": "user",
+                    "content": original_request["text"],
+                    "original_request_event_id": original_request["event_id"],
+                    "source_ref": f"event:{original_request['event_id']}",
+                }
+            )
         outputs = {
             (
                 item.get("call_id") or item.get("tool_call_id"),
@@ -448,6 +572,9 @@ class WorkSession:
             *(f"effect:{item['effect_key']}" for item in evidence),
             *(f"input:{item['input_id']}" for item in [*new_inputs, *recent_inputs]),
         }
+        original_ref = f"event:{original_request['event_id']}" if original_request else None
+        if original_ref is not None:
+            refs.add(original_ref)
         for item in [*material.get("directives", []), *material.get("corrections", [])]:
             refs.update(item.get("refs", []))
             refs.update(item.get("previous", {}).get("refs", []))
@@ -461,6 +588,7 @@ class WorkSession:
             "snapshot_input_id": ceiling,
             "frozen_guard": frozen_guard,
             "task_material": material,
+            "original_request_ref": original_ref,
             "task_inputs": new_inputs,
             "recent_task_inputs": recent_inputs,
             "source_refs": sorted(refs),
@@ -514,6 +642,8 @@ class WorkSession:
         }
         page.update(records=[], record_source_indices=[], model_observations=[], effects=[])
         refs = {"goal"}
+        if page.get("original_request_ref"):
+            refs.add(page["original_request_ref"])
         for section in ("completed", "pending", "failures", "artifacts", "next_steps"):
             for fact in page.get("derived_observations", {}).get(section, []):
                 refs.update(fact["refs"])
@@ -674,13 +804,27 @@ class WorkSession:
             "source_scope": {key: self.control.source.get(key) for key in SOURCE_SCOPE_FIELDS},
         }
 
-    async def stage_compaction(self, final_summary: str | None) -> None:
+    async def stage_compaction(
+        self,
+        final_summary: str | None,
+        *,
+        retained_public: tuple[ChatMessage, ...] = (),
+    ) -> None:
         """Save paid auxiliary progress under the original paired protocol, not as authority."""
         assert self._compaction_source is not None
         if self.pending:
             raise WorkCapacityError("work_compaction_source_changed")
         await self.validate_compaction_source()
         old_progress = deepcopy(self.progress)
+        old_anchor = self.compaction_anchor
+        if retained_public and old_anchor is not None:
+            anchor = old_anchor.request().messages
+            self.compaction_anchor = TurnTranscript(
+                (
+                    *anchor,
+                    *(message for message in retained_public if message not in anchor),
+                )
+            )
         self.progress["compaction_staging"] = {
             "guard": self._compaction_source["frozen_guard"],
             "source": deepcopy(
@@ -707,6 +851,7 @@ class WorkSession:
             )
         except BaseException:
             self.progress = old_progress
+            self.compaction_anchor = old_anchor
             raise
 
     async def validate_compaction_source(self) -> None:
@@ -771,6 +916,7 @@ class WorkSession:
                     "sequence",
                     "snapshot_input_id",
                     "frozen_guard",
+                    "original_request_ref",
                 )
             },
             "task_material": material,
@@ -852,11 +998,16 @@ class WorkSession:
         target_tokens: int = 64000,
         ceiling_tokens: int | None = None,
         request_template: ChatRequest | None = None,
+        retained_public: tuple[ChatMessage, ...] = (),
     ) -> TurnTranscript:
         assert self.transcript is not None
         self.require_compaction_anchor()
         assert self.compaction_anchor is not None
         anchor_messages = self.compaction_anchor.request().messages
+        anchor_messages = (
+            *anchor_messages,
+            *(message for message in retained_public if message not in anchor_messages),
+        )
         from qq_ai_bot.runtime.work_compaction import validate_summary
 
         if self._compaction_source is None:
@@ -879,74 +1030,19 @@ class WorkSession:
         if task_material["covered_input_id"] < source["snapshot_input_id"]:
             raise WorkCapacityError("work_compaction_unprocessed_inputs")
         previous = self.transcript.chain_id
-        # Explicit task anchor is immutable across resumes and independent of
-        # conversation-history layout or this activation's newly composed state.
+        # A paid or unresolved protocol keeps its saved anchor. A paired root
+        # business resume selects current chat; new public deltas stay raw here.
         original = self.transcript
         previous_manifest = await self.journal.objects.manifest(
-            {"transcript": encode_transcript(original), "pending": self.pending, "metadata": {}}
+            {
+                "transcript": encode_transcript(original),
+                "pending": self.pending,
+                "metadata": {
+                    "model_observations": self.progress.get("model_observations", []),
+                },
+            }
         )
         previous_ref = await self.journal.objects.put(previous_manifest)
-        tail = []
-        anchor_records = []
-        for message in anchor_messages:
-            value = asdict(message)
-            value.pop("response_item", None)
-            value.pop("reasoning_content", None)
-            images = value.pop("images", ())
-            if images:
-                value["images_retained_in_protocol_record"] = len(images)
-            anchor_records.append(value)
-        for record in self.public_records():
-            if record in anchor_records:
-                continue
-            try:
-                capsule = json.loads(record.get("content") or "null")
-            except (ValueError, TypeError):
-                capsule = None
-            if isinstance(capsule, dict) and capsule.get("kind") in {
-                "explicit_context_compaction",
-                "work_task_material",
-            }:
-                continue  # Never recursively embed a previous compaction capsule.
-            if (record.get("content") or "").startswith("[新增输入 event_id=") and not record.get(
-                "images_retained_in_protocol_record"
-            ):
-                # The validated material and latest complete originals own steer
-                # retention; a recent-record suffix must not recopy older steer.
-                continue
-            tail.append(record)
-        groups: list[list[dict[str, Any]]] = []
-        used: set[int] = set()
-        for index, record in enumerate(tail):
-            if index in used:
-                continue
-            calls = record.get("tool_calls", [])
-            if calls:
-                paired: list[int] = []
-                for call in calls:
-                    match = next(
-                        (
-                            position
-                            for position in range(index + 1, len(tail))
-                            if (tail[position].get("call_id") or tail[position].get("tool_call_id"))
-                            == call["id"]
-                        ),
-                        None,
-                    )
-                    if match is None:
-                        paired = []
-                        break
-                    paired.append(match)
-                if len(paired) == len(calls):
-                    groups.append([record, *(tail[position] for position in paired)])
-                    used.update(paired)
-            elif not (record.get("call_id") or record.get("tool_call_id")):
-                groups.append([record])
-        groups = groups[-16:]
-        rounds = [
-            *self.progress.get("retained_tool_rounds", []),
-            *self.progress.get("model_observations", []),
-        ][-8:]
         evidence = await self.compaction_evidence()
         capsule = {
             "kind": "explicit_context_compaction",
@@ -962,7 +1058,7 @@ class WorkSession:
             "previous_protocol_ref": previous_ref,
             "recent_raw_records": [],
             "recent_tool_rounds": [],
-            "instruction": "继续原目标；先核对原执行 ID，不能因压缩重跑或重复发布。",
+            "instruction": "继续原目标，按回执接续。",
         }
 
         def candidate_and_size() -> tuple[TurnTranscript, int]:
@@ -993,50 +1089,6 @@ class WorkSession:
                 json.dumps(encode_transcript(original), ensure_ascii=False)
             )
         candidate, size = candidate_and_size()
-        ceiling = min(
-            ceiling_tokens if ceiling_tokens is not None else original_size - 1,
-            original_size - 1,
-        )
-        limit = ceiling if size > target_tokens else min(target_tokens, ceiling)
-        selected: list[list[dict[str, Any]]] = []
-        for group in reversed(groups):
-            capsule["recent_raw_records"] = [
-                record for group in [group, *selected] for record in group
-            ]
-            proposed, proposed_size = candidate_and_size()
-            if proposed_size <= limit:
-                selected.insert(0, group)
-                candidate, size = proposed, proposed_size
-            else:
-                capsule["recent_raw_records"] = [record for group in selected for record in group]
-        retained_rounds: list[dict[str, Any]] = []
-        raw = capsule["recent_raw_records"]
-        for round_value in reversed(rounds):
-            value = deepcopy(round_value)
-            if any(
-                item.get("role") == "assistant"
-                and item.get("content") == value.get("content")
-                and item.get("tool_calls", []) == value.get("tool_calls", [])
-                for item in raw
-            ):
-                value.pop("content", None)
-                value.pop("tool_calls", None)
-            value["results"] = [
-                result
-                for result in value.get("results", [])
-                if not any(
-                    (item.get("call_id") or item.get("tool_call_id")) == result.get("call_id")
-                    and item.get("output", item.get("content")) == result.get("output")
-                    for item in raw
-                )
-            ]
-            capsule["recent_tool_rounds"] = [value, *retained_rounds]
-            proposed, proposed_size = candidate_and_size()
-            if proposed_size <= limit:
-                retained_rounds.insert(0, value)
-                candidate, size = proposed, proposed_size
-            else:
-                capsule["recent_tool_rounds"] = retained_rounds
         if (ceiling_tokens is not None and size > ceiling_tokens) or size >= original_size:
             raise WorkCapacityError("work_compaction_no_capacity_improvement")
         old_progress = deepcopy(self.progress)
@@ -1055,7 +1107,7 @@ class WorkSession:
             },
         ][-64:]
         self.progress.pop("model_observations", None)
-        self.progress["retained_tool_rounds"] = retained_rounds
+        self.progress.pop("retained_tool_rounds", None)
         try:
             guard = source["frozen_guard"]
             await self.save(
@@ -1073,6 +1125,63 @@ class WorkSession:
         if self.compaction_anchor is None:
             raise JournalUnavailable("work_compaction_anchor_unavailable")
 
+    async def retire_paid_compaction(
+        self, *, communication_updates: dict[str, Any] | None = None
+    ) -> None:
+        """Retain validated paid material after a complete new paired response.
+
+        A soft candidate failure permits the unchanged full request to run. Its
+        subsequent real response establishes the retirement boundary; queued
+        inputs alone must never make this paid source stale.
+        """
+        staging = self.progress.get("compaction_staging")
+        if staging is None:
+            return
+        source = staging["source"]
+        current_guard = await self._compaction_guard()
+        frozen_guard = staging["guard"]
+        for key in (
+            "conversation_id",
+            "generation",
+            "source_revision",
+            "privacy_generation",
+            "source_scope",
+            "contract",
+        ):
+            if current_guard[key] != frozen_guard[key]:
+                raise WorkConflict("work_compaction_source_changed")
+        material = deepcopy(source["task_material"])
+        structured = source.get("derived_observations")
+        if staging.get("final_summary") is not None:
+            from qq_ai_bot.runtime.work_compaction import validate_summary
+
+            try:
+                structured, material = validate_summary(staging["final_summary"], source)
+            except WorkCapacityError:
+                # An invalid final cannot replace previously validated pages.
+                pass
+        if structured is not None:
+            material["paid_observations"] = deepcopy(structured)
+        if source.get("paging"):
+            material["paid_source_ref"] = source["paging"]["snapshot_ref"]
+            material["paid_source_cursor"] = source["paging"]["cursor"]
+        original = deepcopy(self.progress)
+        self.progress["task_material"] = material
+        self.progress.pop("compaction_staging", None)
+        try:
+            await self.save(
+                "paired",
+                compaction_versions=(
+                    current_guard["source_revision"],
+                    current_guard["privacy_generation"],
+                ),
+                communication_updates=communication_updates,
+            )
+        except BaseException:
+            self.progress = original
+            raise
+        self._compaction_source = None
+
     def call_key(self, call_id: str) -> str:
         assert self.transcript is not None
         return f"{self.transcript.chain_id}:{self.sequence}:{call_id}"
@@ -1084,6 +1193,43 @@ class WorkSession:
         *,
         compaction_versions: tuple[int, int] | None = None,
         communication_updates: dict[str, Any] | None = None,
+        publication: Publication | None = None,
+    ) -> None:
+        candidate = self.dispatch_boundary if phase == "dispatched" else None
+        if candidate is not None:
+            candidate.stage()
+
+        async def publish(writer: AsyncSession) -> None:
+            if candidate is not None:
+                await candidate.publication(writer)
+            if publication is not None:
+                await publication(writer)
+
+        try:
+            await self._save(
+                phase,
+                calls,
+                compaction_versions=compaction_versions,
+                communication_updates=communication_updates,
+                publication=publish if candidate is not None else publication,
+            )
+        except BaseException:
+            if candidate is not None:
+                candidate.rollback()
+                self.dispatch_boundary = None
+            raise
+        if candidate is not None:
+            candidate.finalize()
+            self.dispatch_boundary = None
+
+    async def _save(
+        self,
+        phase: str,
+        calls: tuple[ToolCall, ...] = (),
+        *,
+        compaction_versions: tuple[int, int] | None = None,
+        communication_updates: dict[str, Any] | None = None,
+        publication: Publication | None = None,
     ) -> None:
         if self.control.current is None:
             return
@@ -1106,6 +1252,7 @@ class WorkSession:
                         source_revision=self.source_revision,
                         compaction_versions=compaction_versions,
                         communication_updates=communication_updates,
+                        publication=publication,
                         metadata={
                             "sequence": self.sequence,
                             "event_ids": list(
@@ -1120,6 +1267,9 @@ class WorkSession:
                             "handoff_work_id": self.handoff_work_id,
                             "compaction_anchor": encode_transcript(self.compaction_anchor)
                             if self.compaction_anchor is not None
+                            else None,
+                            "source_guard": self.source_guard.snapshot()
+                            if self.source_guard is not None
                             else None,
                         },
                     )
@@ -1395,7 +1545,8 @@ def _decode_compaction_anchor(value: object) -> TurnTranscript | None:
         anchor = decode_transcript(value)
         messages = anchor.request().messages
         if messages[-1].role != "user" or any(
-            message.role not in {"system", "developer"} for message in messages[:-1]
+            message.role not in {"system", "developer", "user", "assistant"}
+            for message in messages[:-1]
         ):
             raise ValueError("invalid anchor roles")
         if any(

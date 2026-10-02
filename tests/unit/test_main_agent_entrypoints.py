@@ -2,6 +2,7 @@
 
 import json
 from dataclasses import replace
+from itertools import pairwise
 from types import SimpleNamespace
 
 import pytest
@@ -316,13 +317,16 @@ async def test_owned_main_turn_resumes_original_journal_and_budget(
             MainAgentBackend(chat, tool_runtime, allowed_tools=frozenset({"workspace_write"})),
         )
 
-    first = await run("写三个文件")
+    activations = [(0, "写三个文件")]
+    first = await run(activations[0][1])
     assert first.work_state == "queued", first
     assert first.work_id
-    second = await run("this new assembly must not replace the saved request prefix")
+    activations.append((len(provider.requests), "latest public chat for the second activation"))
+    second = await run(activations[-1][1])
     if segment_limit == 12:
         assert second.work_state == "queued", second
-        second = await run("third segment also keeps the same chain")
+        activations.append((len(provider.requests), "latest public chat for the third activation"))
+        second = await run(activations[-1][1])
     assert second.work_state == "completed", second
     assert second.work_id == first.work_id
     assert second.text == "三个文件已经写好。"
@@ -333,9 +337,22 @@ async def test_owned_main_turn_resumes_original_journal_and_budget(
         if message.role == "tool"
     ]
     assert len(provider.requests) == 27
-    for previous, following in zip(provider.requests, provider.requests[1:], strict=False):
-        assert following.messages[: len(previous.messages)] == previous.messages
-        assert following.tools == previous.tools
+    for index, (start, current_chat) in enumerate(activations):
+        end = activations[index + 1][0] if index + 1 < len(activations) else len(provider.requests)
+        requests = provider.requests[start:end]
+        assert requests[0].messages[0].content == current_chat
+        if start:
+            assert requests[0].request_chain_id != provider.requests[start - 1].request_chain_id
+            material = next(
+                json.loads(message.content)
+                for message in requests[0].messages
+                if message.content and '"kind": "work_current_material"' in message.content
+            )
+            assert material["goal"] == "写三个文件"
+            assert material["execution_evidence"]
+        for previous, following in pairwise(requests):
+            assert following.messages[: len(previous.messages)] == previous.messages
+    assert all(request.tools == provider.requests[0].tools for request in provider.requests)
     record = await WorkRepository(database).get(first.work_id)
     assert record["model_requests"] == 27
     assert record["tool_calls"] == 26
@@ -511,10 +528,26 @@ async def test_plugin_callback_pending_is_queryable_after_callback_returns(
             tasks = tuple(main_turn._RUNNING.values())
             if tasks:
                 await asyncio.wait_for(asyncio.gather(*tasks), 10)
-            assert (
-                provider.requests[1].messages[: len(provider.requests[0].messages)]
-                == provider.requests[0].messages
+            # Settled private tails exit across activations. Shared public facts
+            # and the fixed declaration survive; original effects are read back.
+            assert provider.requests[1].messages[:2] == provider.requests[0].messages[:2]
+            assert provider.requests[1].request_chain_id != provider.requests[0].request_chain_id
+            material = next(
+                json.loads(message.content)
+                for message in provider.requests[1].messages
+                if message.content and '"kind": "work_current_material"' in message.content
             )
+            assert material["goal"] == "计算"
+            if segment_resume == "question":
+                assert (
+                    sum(
+                        "蓝色" in (message.content or "")
+                        for message in provider.requests[1].messages
+                    )
+                    == 1
+                )
+            else:
+                assert material["execution_evidence"]
             assert provider.requests[1].tools == provider.requests[0].tools
         else:
             tasks = tuple(main_turn._RUNNING.values())

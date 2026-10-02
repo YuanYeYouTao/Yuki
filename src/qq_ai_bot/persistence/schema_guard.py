@@ -10,7 +10,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-from qq_ai_bot.conversation.projection_revision_schema import PROJECTION_TRIGGERS_CURRENT
+from qq_ai_bot.conversation.observation_schema import (
+    PROJECTION_TRIGGERS_0089 as PROJECTION_TRIGGERS_CURRENT,
+)
 
 
 def canonical_schema_revision(root: Path | None = None) -> str:
@@ -22,13 +24,45 @@ def canonical_schema_revision(root: Path | None = None) -> str:
 
 
 _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
+    "model_context_observations": frozenset(
+        {
+            "id",
+            "conversation_id",
+            "generation",
+            "actor_id",
+            "read_scope",
+            "source_key",
+            "version",
+            "payload_json",
+            "parent_sources_json",
+            "summary_view_key",
+            "privacy_generation",
+        }
+    ),
+    "model_context_selections": frozenset(
+        {
+            "id",
+            "view_key",
+            "conversation_id",
+            "generation",
+            "actor_id",
+            "read_scope",
+            "source_key",
+            "event_ids_json",
+            "observation_sources_json",
+            "payload_json",
+        }
+    ),
+    "tool_artifact_refs": frozenset({"owner_kind", "owner_id", "handle_id"}),
     "runtime_protocol_objects": frozenset({"sha256", "byte_size", "prepared_at", "deleting"}),
     "runtime_protocol_refs": frozenset({"work_id", "sha256"}),
     "runtime_protocol_usage": frozenset({"id", "byte_size"}),
     "runtime_automation_budgets": frozenset(
         {"run_id", "models", "tools", "model_limit", "tool_limit"}
     ),
-    "tool_artifacts": frozenset({"handle_id", "work_id", "effect_key", "deleting", "sha256"}),
+    "tool_artifacts": frozenset(
+        {"handle_id", "work_id", "effect_key", "deleting", "sha256", "access_json"}
+    ),
     "runtime_work_recovery": frozenset(
         {"work_id", "activation_id", "exit_reason", "failure_json", "attempts", "not_before"}
     ),
@@ -113,6 +147,8 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "payload_json",
             "byte_size",
             "updated_at",
+            "selected_summary_text",
+            "selected_summary_coverage",
         }
     ),
     "social_operation_receipts": frozenset(

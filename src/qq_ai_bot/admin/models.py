@@ -167,6 +167,7 @@ class ContextRuntimeConfig:
     compaction_output_tokens: int = 32768
     rollup_output_tokens: int = 32768
     rollup_summary_characters: int = 16384
+    compaction_window_tokens: int = 90000
 
 
 @dataclass(frozen=True, slots=True)

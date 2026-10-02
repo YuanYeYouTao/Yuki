@@ -219,6 +219,22 @@ class MainAgentBackend(AgentToolBackend):
         self._log_tool_exposure(definitions, reason="ready")
         return definitions
 
+    def refresh_catalog(self, runtime: AgentRuntime, *, web_was_used: bool) -> None:
+        """Refresh execution policy without constructing discarded declarations."""
+        del runtime
+        self._web_was_used = self._web_was_used or web_was_used
+        if self._runtime.tools_closed:
+            self._callable_tool_names = set()
+            return
+        capability_runtime = self._ensure_capability_runtime()
+        session = self._memory()
+        if session is not None:
+            capability_runtime.sync_memory_view(session.capability_view())
+        self._callable_tool_names = set(capability_runtime.callable_capability_ids())
+        if not self._tool_turn_recorded and self._callable_tool_names:
+            self._service._tool_metrics.record_tool_enabled_turn()
+            self._tool_turn_recorded = True
+
     def _ensure_capability_runtime(self) -> TurnCapabilityRuntime:
         if self._capability_runtime is not None:
             self._catalog = self._capability_runtime.authorized_catalog
@@ -667,11 +683,22 @@ class MainAgentBackend(AgentToolBackend):
                         tooling.result_artifact_retention_seconds if tooling is not None else None
                     )
                 )
+                from qq_ai_bot.mcp.artifact_access import access_from_runtime
+                from qq_ai_bot.runtime.work_activation import current_work_control
+
+                active = current_work_control.get()
+
                 budgeted = await ToolResultBudgeter(
                     max_characters=result_budget,
                     item_limit=item_limit,
                     artifacts=artifact_store,
                     artifact_retention_seconds=retention_seconds,
+                    artifact_access=access_from_runtime(
+                        execution_runtime,
+                        generation=active.lease.generation if active is not None else None,
+                    )
+                    if artifact_store is not None
+                    else None,
                 ).render(outcome)
                 result = budgeted.text
                 self._service._tool_metrics.record_invocation(

@@ -403,7 +403,9 @@ def test_chat_history_tool_budget_uses_same_frozen_model_declaration_view():
         runtime=SimpleNamespace(runner=SimpleNamespace(main_contract=contract)),
     )
     runtime = SimpleNamespace(
-        context=SimpleNamespace(window_tokens=96000, compaction_trigger_ratio=0.9),
+        context=SimpleNamespace(
+            window_tokens=96000, compaction_window_tokens=90000, compaction_trigger_ratio=0.9
+        ),
         llm=SimpleNamespace(max_output_tokens=8192),
     )
     before = ChatService._history_input_budget(service, runtime)

@@ -33,6 +33,7 @@ from qq_ai_bot.identity.db_models import (
     PresenceModel,
     SpaceBindingModel,
 )
+from qq_ai_bot.mcp.artifact_access import ArtifactAccess
 from qq_ai_bot.mcp.models import MCPServerConfig, MCPToolMetadata
 from qq_ai_bot.mcp.redaction import redact_sensitive_data, redact_sensitive_text
 from qq_ai_bot.persistence.database import Database
@@ -633,6 +634,7 @@ class ToolArtifactRepository:
 
     @staticmethod
     def _protected() -> Any:
+        from qq_ai_bot.mcp.artifact_schema import artifact_refs
         from qq_ai_bot.runtime.subagent_schema import children
         from qq_ai_bot.runtime.work_schema_v1 import work
 
@@ -647,7 +649,114 @@ class ToolArtifactRepository:
             .where(children.c.work_id == ToolArtifactModel.work_id, retained)
             .exists()
         )
-        return or_(own, parent)
+        references = (
+            select(artifact_refs.c.handle_id)
+            .where(
+                artifact_refs.c.handle_id == ToolArtifactModel.handle_id,
+                or_(
+                    artifact_refs.c.owner_kind != "work_note",
+                    select(work.c.id)
+                    .where(work.c.id == artifact_refs.c.owner_id, retained)
+                    .exists(),
+                ),
+            )
+            .exists()
+        )
+        return or_(own, parent, references)
+
+    @staticmethod
+    async def add_refs(
+        session: AsyncSession, owner_kind: str, owner_id: str, handles: tuple[str, ...]
+    ) -> None:
+        """Publish prepared references in their owner's existing short transaction."""
+        from sqlalchemy.dialects.sqlite import insert
+
+        from qq_ai_bot.mcp.artifact_schema import artifact_refs
+
+        if owner_kind not in {"work_note", "observation", "summary"} or not owner_id:
+            raise ValueError("artifact_reference_owner_invalid")
+        for handle in dict.fromkeys(handles):
+            if not await session.scalar(
+                select(ToolArtifactModel.handle_id).where(
+                    ToolArtifactModel.handle_id == handle,
+                    ToolArtifactModel.deleting.is_(False),
+                    or_(
+                        ToolArtifactModel.expires_at > datetime.now(UTC),
+                        ToolArtifactRepository._protected(),
+                    ),
+                )
+            ):
+                raise ValueError("artifact_reference_unavailable")
+            await session.execute(
+                insert(artifact_refs)
+                .values(owner_kind=owner_kind, owner_id=owner_id, handle_id=handle)
+                .on_conflict_do_nothing()
+            )
+
+    @staticmethod
+    async def release_refs(session: AsyncSession, owner_kind: str, owner_id: str) -> None:
+        from qq_ai_bot.mcp.artifact_schema import artifact_refs
+
+        await session.execute(
+            delete(artifact_refs).where(
+                artifact_refs.c.owner_kind == owner_kind, artifact_refs.c.owner_id == owner_id
+            )
+        )
+
+    @staticmethod
+    async def _authorized(
+        session: AsyncSession, row: ToolArtifactModel, access: ArtifactAccess
+    ) -> bool:
+        conversation = await session.get(CanonicalConversationModel, access.conversation_id)
+        if conversation is None or conversation.generation != access.generation:
+            return False
+        if row.access_json:
+            source = json.loads(row.access_json)
+            privacy = int(
+                await session.scalar(
+                    select(ExecutionTraceStateModel.privacy_generation).where(
+                        ExecutionTraceStateModel.id == 1
+                    )
+                )
+                or 0
+            )
+            if source.get("privacy_generation") != privacy:
+                return False
+            return all(
+                source.get(key) == value
+                for key, value in (
+                    ("conversation_id", access.conversation_id),
+                    ("generation", access.generation),
+                    ("actor_person_id", access.actor_person_id),
+                    ("principal_kind", access.principal_kind),
+                    ("read_scope", access.read_scope),
+                )
+            )
+        # A legacy handle is not a public bearer capability. Its original Work
+        # remains the trusted source; unowned old results cannot grant access.
+        if row.work_id is None:
+            return False
+        from qq_ai_bot.runtime.work_schema_v1 import work
+
+        original = (
+            await session.execute(
+                select(work.c.source_json, work.c.conversation_id, work.c.generation).where(
+                    work.c.id == row.work_id
+                )
+            )
+        ).first()
+        if (
+            original is None
+            or original.conversation_id != access.conversation_id
+            or (original.generation != access.generation)
+        ):
+            return False
+        source = json.loads(original.source_json)
+        return bool(
+            source.get("actor_person_id") == access.actor_person_id
+            and source.get("principal_kind", "person") == access.principal_kind
+            and source.get("read_scope", "") == access.read_scope
+        )
 
     def configure_retention(self, retention_seconds: int) -> None:
         if retention_seconds <= 0:
@@ -664,6 +773,7 @@ class ToolArtifactRepository:
         retention_seconds: int | None = None,
         work_id: str | None = None,
         effect_key: str | None = None,
+        access: ArtifactAccess | None = None,
     ) -> str:
         from qq_ai_bot.runtime.effect_outcomes import current_result_capture
 
@@ -680,6 +790,16 @@ class ToolArtifactRepository:
         retention = retention_seconds if retention_seconds is not None else self._retention
         if retention <= 0:
             raise ValueError("artifact retention must be positive")
+        async with self._database.sessions() as reader:
+            privacy = int(
+                await reader.scalar(
+                    select(ExecutionTraceStateModel.privacy_generation).where(
+                        ExecutionTraceStateModel.id == 1
+                    )
+                )
+                or 0
+            )
+        access_json = access.encode(privacy) if access is not None else None
         await asyncio.to_thread(self._root.mkdir, parents=True, exist_ok=True)
         async with self._storage_lock:
             async with self._database.sessions() as reader:
@@ -692,6 +812,25 @@ class ToolArtifactRepository:
             now = datetime.now(UTC)
             try:
                 async with self._database.immediate_session() as session:
+                    if access is not None:
+                        if (
+                            not await session.scalar(
+                                select(CanonicalConversationModel.id).where(
+                                    CanonicalConversationModel.id == access.conversation_id,
+                                    CanonicalConversationModel.generation == access.generation,
+                                )
+                            )
+                            or int(
+                                await session.scalar(
+                                    select(ExecutionTraceStateModel.privacy_generation).where(
+                                        ExecutionTraceStateModel.id == 1
+                                    )
+                                )
+                                or 0
+                            )
+                            != privacy
+                        ):
+                            raise ValueError("artifact_source_changed")
                     if work_id is not None:
                         from qq_ai_bot.runtime.work_schema_v1 import work
 
@@ -709,6 +848,7 @@ class ToolArtifactRepository:
                             expires_at=now + timedelta(seconds=retention),
                             work_id=work_id,
                             effect_key=effect_key,
+                            access_json=access_json,
                             sha256=digest,
                             deleting=False,
                         )
@@ -741,6 +881,7 @@ class ToolArtifactRepository:
         limit: int = 8000,
         query: str = "",
         max_characters: int = 8000,
+        access: ArtifactAccess | None = None,
     ) -> dict[str, object] | None:
         if offset < 0 or limit <= 0 or max_characters <= 0:
             raise ValueError("artifact offset must be non-negative and limit must be positive")
@@ -754,6 +895,8 @@ class ToolArtifactRepository:
             row = await session.get(ToolArtifactModel, handle_id)
             if row is None or row.deleting:
                 return None
+            if access is not None and not await self._authorized(session, row, access):
+                return _artifact_error("artifact_not_authorized", "Artifact 不属于当前获准读取范围")
             if _as_utc(row.expires_at) <= datetime.now(UTC) and not await session.scalar(
                 select(ToolArtifactModel.handle_id).where(
                     ToolArtifactModel.handle_id == handle_id, self._protected()

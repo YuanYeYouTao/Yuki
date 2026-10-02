@@ -51,7 +51,7 @@ Yuki 正在逐层解耦：永久主体、内部事件和工作身份由核心持
 现行执行与恢复规则仍以主 Agent 合同和共同架构约束为准；任务书中的阶段验收不能替代实际 CI 与部署证据。
 实际入口与职责删除见[实现记录](../operations/persistent-runtime-20261001.md)。
 
-后续实施任务书：[长任务 Harness 与上下文压缩重构](long-task-harness-compaction-taskbook.md)。
+历史实施任务书：[长任务 Harness 与上下文压缩重构](long-task-harness-compaction-taskbook.md)。
 包含工具证据保留、Work 压缩、Conversation Rollup、累计预算和子任务并行的代码审计与实施范围；
 本轮实现及逐项验证见[交付记录](../operations/long-task-harness-2026-10-01.md)。合并与上线状态以该记录的实际证据为准。
 
@@ -74,3 +74,8 @@ V6 迁移链为 `0065`（关系历史索引）→ `0066`（autonomy 接纳）→
 
 搜索桥使用连接预算、摘要等待及输出预算的放宽设计见
 [2026-10-02 策略调整](../operations/search-compaction-limits-2026-10-02.md)。
+
+后续实施设计：[Work 上下文与普通聊天续接修复任务书](work-context-and-chat-continuation-taskbook.md)。
+以当前获准聊天和必要观察线索继续工作，原始研究资料外存并按需读取；纳入经源码确认的
+普通同轮容量整理缺口，删除恢复整份旧群史的冲突设计。本地实现与定向验证已完成；最新全量、合并与部署状态见
+[实施交付记录](../operations/work-context-delivery-2026-10-03.md)。

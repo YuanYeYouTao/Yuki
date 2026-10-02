@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+from collections.abc import Awaitable, Callable
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
@@ -48,10 +52,21 @@ class ProjectionSnapshot:
     payload_json: str
     rebuild_reason: str
     source_revision: int
+    selected_summary_text: str | None = None
+    selected_summary_coverage: int = 0
 
     def items(self) -> list[dict[str, Any]]:
         # Each consumer gets a copy; changing it cannot mutate the committed view.
         return list(json.loads(self.payload_json))
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectionPublication:
+    publish: Callable[[AsyncSession], Awaitable[ProjectionSnapshot]]
+    observation_sources: tuple[tuple[str, int], ...]
+
+    async def __call__(self, session: AsyncSession) -> ProjectionSnapshot:
+        return await self.publish(session)
 
 
 class PromptProjectionRepository:
@@ -113,7 +128,59 @@ class PromptProjectionRepository:
         expected_epoch: str | None = None,
         expected_revision: int = 0,
         rebuild_reason: str | None = None,
+        actor_id: str = "",
+        read_scope: str = "",
+        selected_summary_text: str | None = None,
+        selected_summary_coverage: int = 0,
+        current_snapshot: dict[str, Any] | None = None,
+        snapshot_event_id: int | None = None,
+        snapshot_fragment_index: int | None = None,
     ) -> ProjectionSnapshot:
+        publication = await self.prepare_commit(
+            view_key=view_key,
+            conversation_id=conversation_id,
+            generation=generation,
+            expected_source_revision=expected_source_revision,
+            starts_after_event_id=starts_after_event_id,
+            context_key=context_key,
+            contract_revision=contract_revision,
+            items=items,
+            expected_epoch=expected_epoch,
+            expected_revision=expected_revision,
+            rebuild_reason=rebuild_reason,
+            actor_id=actor_id,
+            read_scope=read_scope,
+            selected_summary_text=selected_summary_text,
+            selected_summary_coverage=selected_summary_coverage,
+            current_snapshot=current_snapshot,
+            snapshot_event_id=snapshot_event_id,
+            snapshot_fragment_index=snapshot_fragment_index,
+        )
+        async with self.database.immediate_session() as session:
+            return await publication(session)
+
+    async def prepare_commit(
+        self,
+        *,
+        view_key: str,
+        conversation_id: str,
+        generation: int,
+        expected_source_revision: int,
+        starts_after_event_id: int,
+        context_key: str,
+        contract_revision: str,
+        items: list[dict[str, Any]],
+        expected_epoch: str | None = None,
+        expected_revision: int = 0,
+        rebuild_reason: str | None = None,
+        actor_id: str = "",
+        read_scope: str = "",
+        selected_summary_text: str | None = None,
+        selected_summary_coverage: int = 0,
+        current_snapshot: dict[str, Any] | None = None,
+        snapshot_event_id: int | None = None,
+        snapshot_fragment_index: int | None = None,
+    ) -> ProjectionPublication:
         """Append exact items, or explicitly replace an epoch under a compare-and-swap.
 
         Caller supplies its read-policy view key; this method grants no history
@@ -124,6 +191,54 @@ class PromptProjectionRepository:
                 raise ValueError("projection keys must be SHA-256 fingerprints")
         if rebuild_reason is not None and rebuild_reason not in REBUILD_REASONS:
             raise ValueError("invalid projection rebuild reason")
+        items = deepcopy(items)
+        prepared_snapshot: dict[str, Any] | None = None
+        if current_snapshot and actor_id and read_scope:
+            from qq_ai_bot.conversation.observations import encode
+
+            snapshot_payload = encode(current_snapshot)
+            snapshot_key = (
+                "snapshot:"
+                + hashlib.sha256(
+                    encode(
+                        [
+                            view_key,
+                            conversation_id,
+                            generation,
+                            actor_id,
+                            read_scope,
+                            snapshot_event_id,
+                            snapshot_payload,
+                        ]
+                    ).encode()
+                ).hexdigest()
+            )
+            snapshot_id = str(uuid5(NAMESPACE_URL, snapshot_key))
+            prepared_snapshot = dict(
+                id=snapshot_id,
+                conversation_id=conversation_id,
+                generation=generation,
+                actor_id=actor_id,
+                read_scope=read_scope,
+                source_key=snapshot_key,
+                source_event_id=snapshot_event_id,
+                version=1,
+                payload_json=snapshot_payload,
+                parent_sources_json="[]",
+                summary_view_key=view_key,
+                created_at=datetime.now(UTC),
+            )
+            for item in reversed(items):
+                if snapshot_event_id is not None and snapshot_event_id in item["event_ids"]:
+                    item["observation_id"], item["observation_version"] = snapshot_id, 1
+                    break
+            if snapshot_event_id is None and snapshot_fragment_index is not None:
+                if not 0 <= snapshot_fragment_index < len(items):
+                    raise ProjectionConflict("snapshot fragment is missing")
+                item = items[snapshot_fragment_index]
+                if item["event_ids"] or "observation_id" in item:
+                    raise ProjectionConflict("snapshot fragment is not a fresh envelope")
+                item["observation_id"], item["observation_version"] = snapshot_id, 1
         if len(items) > 262_144 or not all(isinstance(item, dict) for item in items):
             raise ProjectionCapacityError("projection item limit exceeded")
         payload = json.dumps(items, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
@@ -133,10 +248,120 @@ class PromptProjectionRepository:
         prepared_prefix = (
             await self._prepare_prefix(view_key, payload) if rebuild_reason is None else None
         )
-        async with self.database.sessions() as session:
-            # SQLite is the supported deployment store. Reserve its writer before
-            # checking global limits and CAS, including across repository instances.
-            await session.execute(text("BEGIN IMMEDIATE"))
+        # Freeze and encode selected-source rows before taking the writer. Their
+        # order is the already prepared model order, never source timestamps.
+        from qq_ai_bot.conversation.frozen_fragments import FrozenFragments
+        from qq_ai_bot.conversation.observation_models import (
+            ContextObservationModel,
+            ContextSelectionModel,
+        )
+        from qq_ai_bot.conversation.observations import privacy_generation, validate_observations
+
+        async with self.database.sessions() as prepared_session:
+            prepared_privacy = await privacy_generation(prepared_session)
+        if prepared_snapshot is not None:
+            prepared_snapshot["privacy_generation"] = prepared_privacy
+
+        fragments = FrozenFragments.load(items) if actor_id and read_scope else None
+        prepared_sources = []
+        summary_parents: dict[str, tuple[str, ...]] = {}
+        if fragments is not None and fragments.observation_sources:
+            from qq_ai_bot.conversation.observation_models import ContextObservationModel
+
+            async with self.database.sessions() as prepared_session:
+                summaries = (
+                    await prepared_session.execute(
+                        select(
+                            ContextObservationModel.id,
+                            ContextObservationModel.parent_sources_json,
+                            ContextObservationModel.summary_view_key,
+                        ).where(
+                            ContextObservationModel.id.in_(
+                                [identity for identity, _ in fragments.observation_sources]
+                            )
+                        )
+                    )
+                ).all()
+            for identity, parent_json, summary_view in summaries:
+                if summary_view is not None:
+                    if summary_view != view_key:
+                        raise ProjectionConflict("observation summary view changed")
+                    summary_parents[identity] = tuple(
+                        parent_id for parent_id, _ in json.loads(parent_json)
+                    )
+        if actor_id and read_scope:
+            for item in items:
+                encoded = json.dumps(
+                    item, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+                )
+                # Event identity, not prose, deduplicates an observed chat. Data-
+                # only fragments are distinct frozen envelopes/observations.
+                key = json.dumps(item["event_ids"]) if item["event_ids"] else encoded
+                prepared_sources.append(
+                    dict(
+                        view_key=view_key,
+                        conversation_id=conversation_id,
+                        generation=generation,
+                        actor_id=actor_id,
+                        read_scope=read_scope,
+                        source_key=hashlib.sha256(key.encode("utf-8")).hexdigest(),
+                        event_ids_json=json.dumps(item["event_ids"]),
+                        observation_sources_json=json.dumps(
+                            [[item["observation_id"], item["observation_version"]]]
+                            if "observation_id" in item
+                            else []
+                        ),
+                        payload_json=encoded,
+                        created_at=datetime.now(UTC),
+                    )
+                )
+
+        if prepared_snapshot is not None:
+            # Source publication is not observation. Only the dispatch CAS below
+            # adds selection/coverage, and readers exclude unselected snapshots.
+            async with self.database.immediate_session() as source_writer:
+                owner = await source_writer.get(CanonicalConversationModel, conversation_id)
+                if (
+                    owner is None
+                    or (owner.generation, owner.starts_after_event_id, owner.prompt_source_revision)
+                    != (generation, starts_after_event_id, expected_source_revision)
+                    or await privacy_generation(source_writer) != prepared_privacy
+                ):
+                    raise ProjectionConflict("snapshot source changed before publication")
+                if snapshot_event_id is not None:
+                    from qq_ai_bot.persistence.models import ChatEventModel
+
+                    anchor = await source_writer.get(ChatEventModel, snapshot_event_id)
+                    if anchor is None or anchor.canonical_conversation_id != conversation_id:
+                        raise ProjectionConflict("snapshot event source changed")
+                stored = await source_writer.get(ContextObservationModel, prepared_snapshot["id"])
+                if stored is None:
+                    source_writer.add(ContextObservationModel(**prepared_snapshot))
+                elif stored.payload_json != prepared_snapshot["payload_json"]:
+                    raise ProjectionConflict("snapshot source changed")
+
+        # Traverse parent references in a read snapshot, never in the journal
+        # writer. Every mutation/deletion advances the canonical source revision
+        # checked by publish, and privacy has its own scalar fence.
+        async with self.database.sessions() as source_reader:
+            from sqlalchemy import text
+
+            await source_reader.execute(text("BEGIN"))
+            if not await validate_observations(
+                source_reader,
+                conversation_id,
+                generation,
+                actor_id,
+                read_scope,
+                fragments.observation_sources if fragments is not None else (),
+            ):
+                raise ProjectionConflict("projection observation source changed")
+            owner = await source_reader.get(CanonicalConversationModel, conversation_id)
+            if owner is None or owner.prompt_source_revision != expected_source_revision:
+                raise ProjectionConflict("projection source revision changed")
+
+        async def publish(session: AsyncSession) -> ProjectionSnapshot:
+            # The caller owns a short writer; preparation above does all payload IO.
             source = await session.get(CanonicalConversationModel, conversation_id)
             if source is None or (source.generation, source.starts_after_event_id) != (
                 generation,
@@ -145,6 +370,8 @@ class PromptProjectionRepository:
                 raise ProjectionConflict("projection source generation changed")
             if source.prompt_source_revision != expected_source_revision:
                 raise ProjectionConflict("projection source revision changed")
+            if await privacy_generation(session) != prepared_privacy:
+                raise ProjectionConflict("projection privacy changed")
             old = await session.get(
                 PromptProjectionModel, view_key, options=[defer(PromptProjectionModel.payload_json)]
             )
@@ -278,10 +505,30 @@ class PromptProjectionRepository:
             row.rebuild_reason = rebuild_reason or row.rebuild_reason
             row.invalidated_reason = None
             row.payload_json, row.byte_size = payload, size
+            row.selected_summary_text = selected_summary_text
+            row.selected_summary_coverage = selected_summary_coverage
             row.updated_at = datetime.now(UTC)
             session.add(row)
-            await session.commit()
+            if prepared_sources:
+                from sqlalchemy.dialects.sqlite import insert
+
+                await session.execute(
+                    insert(ContextSelectionModel)
+                    .values(prepared_sources)
+                    .on_conflict_do_nothing(index_elements=["view_key", "source_key"])
+                )
+            if summary_parents:
+                from qq_ai_bot.mcp.repository import ToolArtifactRepository
+
+                for parents in summary_parents.values():
+                    for parent in parents:
+                        await ToolArtifactRepository.release_refs(session, "observation", parent)
+            await session.flush()
             return _snapshot(row)
+
+        return ProjectionPublication(
+            publish, fragments.observation_sources if fragments is not None else ()
+        )
 
     async def _prepare_prefix(
         self, view_key: str, payload: str
@@ -356,4 +603,6 @@ def _snapshot(row: PromptProjectionModel) -> ProjectionSnapshot:
         row.payload_json,
         row.rebuild_reason,
         row.source_revision,
+        row.selected_summary_text,
+        row.selected_summary_coverage,
     )

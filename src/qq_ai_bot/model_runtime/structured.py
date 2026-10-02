@@ -19,7 +19,9 @@ from qq_ai_bot.domain.messages import (
 from qq_ai_bot.llm.base import LLMInvalidRequestError, LLMUnsupportedFeatureError
 from qq_ai_bot.model_runtime.executor import ModelExecutor
 from qq_ai_bot.model_runtime.models import (
+    ModelCapability,
     ModelExecutionPriority,
+    ModelProtocol,
     ModelTask,
     StructuredOutputMode,
 )
@@ -28,6 +30,32 @@ OutputT = TypeVar("OutputT", bound=BaseModel)
 logger = logging.getLogger(__name__)
 
 _MAX_REPAIR_RESULT_CHARACTERS = 8000
+
+
+def tool_free_structured_output_mode(
+    models: ModelExecutor, task: ModelTask
+) -> StructuredOutputMode:
+    """Select a supported object format for auxiliary requests without tools."""
+    mode = models.structured_output_mode(task)
+    if (
+        mode is StructuredOutputMode.FUNCTION_TOOL
+        and models.protocol(task) is ModelProtocol.GEMINI
+        and ModelCapability.STRUCTURED_OUTPUT in models.capabilities(task)
+    ):
+        return StructuredOutputMode.JSON_SCHEMA
+    return mode
+
+
+def tool_free_json_format(
+    mode: StructuredOutputMode, *, name: str, schema: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Render the selected native schema format; validate text JSON locally otherwise."""
+    if mode is not StructuredOutputMode.JSON_SCHEMA:
+        return None
+    return {
+        "type": "json_schema",
+        "json_schema": {"name": name, "strict": True, "schema": schema},
+    }
 
 
 class StructuredTaskError(RuntimeError):

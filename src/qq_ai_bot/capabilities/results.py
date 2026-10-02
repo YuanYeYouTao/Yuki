@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
 from qq_ai_bot.capabilities.models import CapabilityDescriptor, CapabilityEffect
+from qq_ai_bot.mcp.artifact_access import ArtifactAccess
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +57,7 @@ class ToolArtifactWriter(Protocol):
         content: str,
         media_type: str,
         retention_seconds: int | None = None,
+        access: ArtifactAccess | None = None,
     ) -> str: ...
 
     async def read(
@@ -68,6 +70,7 @@ class ToolArtifactWriter(Protocol):
         limit: int = 8000,
         query: str = "",
         max_characters: int = 8000,
+        access: ArtifactAccess | None = None,
     ) -> dict[str, Any] | None: ...
 
 
@@ -89,6 +92,7 @@ class ToolResultBudgeter:
         artifacts: ToolArtifactWriter | None = None,
         artifact_retention_seconds: int | None = None,
         max_receipt_bytes: int = 49152,
+        artifact_access: ArtifactAccess | None = None,
     ) -> None:
         if max_characters is not None and max_characters <= 0:
             raise ValueError("tool result budget must be positive or null")
@@ -101,6 +105,7 @@ class ToolResultBudgeter:
         self._artifacts = artifacts
         self._artifact_retention_seconds = artifact_retention_seconds
         self._max_receipt_bytes = max_receipt_bytes
+        self._artifact_access = artifact_access
 
     async def render(self, result: ToolExecutionResult) -> BudgetedToolResult:
         from qq_ai_bot.runtime.effect_outcomes import current_result_capture
@@ -123,7 +128,21 @@ class ToolResultBudgeter:
         byte_overflow = len(json.dumps({"result": text}, ensure_ascii=False).encode()) > (
             self._max_receipt_bytes
         )
-        if not item_overflow and not character_overflow and not byte_overflow:
+        # External research is an immutable source, not permanent prompt
+        # residency. Readers themselves remain paged model input and must not
+        # recursively archive each page into another result.
+        external_research = (
+            self._artifact_access is not None
+            and self._artifacts is not None
+            and result.tool_name in {"web_search", "read_webpage"}
+            and result.data not in (None, {}, "")
+        )
+        if (
+            not item_overflow
+            and not character_overflow
+            and not byte_overflow
+            and not external_research
+        ):
             return BudgetedToolResult(text=text)
         # The summary/artifact is not the original evidence payload. Never
         # advertise references to content which the following request cannot see.
@@ -139,6 +158,7 @@ class ToolResultBudgeter:
                 content=text,
                 media_type="application/json",
                 retention_seconds=self._artifact_retention_seconds,
+                access=self._artifact_access,
             )
             if capture is not None:
                 capture.artifact_handle = artifact_id

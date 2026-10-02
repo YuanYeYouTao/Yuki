@@ -4,17 +4,43 @@ import json
 from dataclasses import replace
 from types import SimpleNamespace
 
+from sqlalchemy import select
+
 from qq_ai_bot.automation.models import TurnOrigin
+from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import ToolCall, ToolFunction
+from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity, ToolCall, ToolFunction
 from qq_ai_bot.mcp.repository import ToolArtifactRepository
+from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.services.agent_runner import AgentRuntime
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.main_agent_backend import MainAgentBackend
 from tests.conftest import build_harness, make_settings
+from tests.support.social_identity_cases import social_env
 
 
 async def check_terminal_result_recovery(database, tmp_path):
+    env = await social_env(database, tmp_path)
+    async with database.sessions() as reader:
+        event = await reader.scalar(
+            select(ChatEventModel).where(
+                ChatEventModel.canonical_conversation_id == env.context.conversation_id
+            )
+        )
+    inbound = InboundMessage(
+        "inbound",
+        "message",
+        ScopeType.GROUP,
+        SenderIdentity("10001"),
+        "terminal result test",
+        bot_user_id="80001",
+        group_id="20001",
+        person_id=env.person,
+        space_id=env.space,
+        conversation_id=env.context.conversation_id,
+        presence_id=env.presence,
+        source_event_id=event.id,
+    )
     output = ('中文\\"quoted"\n' * 3000) + "END"
     source = dict(
         run_id="receipt-123",
@@ -37,6 +63,8 @@ async def check_terminal_result_recovery(database, tmp_path):
     for enabled in (True, False):
         harness = build_harness(database, make_settings(database.url))
         chat = harness.processor._chat
+        state = await harness.conversation_scopes.get(inbound.scope())
+        token = await chat._turn_coordinator.notify_message(state.runtime_scope_key)
         artifacts = ToolArtifactRepository(
             database, tmp_path / "terminal-artifacts", retention_seconds=60
         )
@@ -48,23 +76,24 @@ async def check_terminal_result_recovery(database, tmp_path):
         )
         tool_runtime = ToolRuntime(
             execution_id="terminal-result-test",
-            inbound=None,
+            inbound=inbound,
             gateway=None,
             allow_generic_onebot=False,
             runtime_config=snapshot,
             actor_user_id="10001",
-            scope_type=ScopeType.PRIVATE,
-            bot_user_id="7777",
-            external_target_id="10001",
+            current_group_id="20001",
+            turn_snapshot=ConversationTurnSnapshot(
+                state.id, state.runtime_scope_key, state.generation, event.id, token.version
+            ),
         )
         runtime = AgentRuntime(
             origin=TurnOrigin.USER_MESSAGE,
             actor_user_id="10001",
             actor_is_superuser=False,
             delegated_authority=None,
-            conversation_key="private:7777:10001",
-            current_group_id=None,
-            bot_user_id="7777",
+            conversation_key=inbound.scope().key,
+            current_group_id="20001",
+            bot_user_id="80001",
             gateway=None,
             runtime_config=snapshot,
             current_time=chat._time.current_default(),
@@ -138,5 +167,7 @@ async def check_terminal_result_recovery(database, tmp_path):
             if not index:
                 assert payload["error"] == "tool_input_validation_failed", payload
 
-        assert backend.response_feedback("定时任务已经创建", runtime) is None
+        # The fixture now has an authenticated inbound sender, so the normal
+        # explicit-send reminder applies; it must not alter the internal result.
+        assert backend.response_feedback("定时任务已经创建", runtime) is not None
         assert backend.finalize("定时任务已经创建", runtime) == "定时任务已经创建"

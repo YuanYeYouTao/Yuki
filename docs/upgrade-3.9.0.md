@@ -1,6 +1,6 @@
 # Yuki 3.9.0 配置与升级草案（未发布）
 
-<!-- release-baseline: version=3.9.0 schema=0088 -->
+<!-- release-baseline: version=3.9.0 schema=0089 -->
 
 本文为开发基线的未来发布准备。**目前没有 3.9.0 Release、部署包或正式镜像；不要将源码版本号当作可拉取的镜像标签。** 当前正式下载仍使用 [3.8.4 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.4)。开发部署使用经过验证的提交镜像，核对实际迁移 head。
 

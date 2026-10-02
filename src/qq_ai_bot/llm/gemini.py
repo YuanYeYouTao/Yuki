@@ -31,6 +31,7 @@ from qq_ai_bot.llm.base import (
     LLMInvalidResponseError,
     LLMUnsupportedFeatureError,
 )
+from qq_ai_bot.llm.gemini_schema import response_schema
 from qq_ai_bot.llm.json_http import JSONHTTPProvider
 from qq_ai_bot.llm.protocol_state import checkpoint_items, integer, ordered_delta
 from qq_ai_bot.llm.vendor_policy import ChatWireOptions, effort_value, thinking_budget, wire_options
@@ -195,7 +196,10 @@ class GeminiProvider(JSONHTTPProvider):
             schema_spec = spec.get("json_schema")
             config["responseMimeType"] = "application/json"
             if spec.get("type") == "json_schema" and isinstance(schema_spec, dict):
-                config["responseJsonSchema"] = schema_spec["schema"]
+                if self.options.gemini_schema_format == "response_schema":
+                    config["responseSchema"] = response_schema(schema_spec["schema"])
+                else:
+                    config["responseJsonSchema"] = schema_spec["schema"]
             elif spec.get("type") != "json_object":
                 raise LLMUnsupportedFeatureError("unsupported Gemini structured format")
         payload: dict[str, Any] = {

@@ -43,6 +43,15 @@ class CompactionSummary(BaseModel):
     next_steps: list[SourcedFact]
 
 
+def summary_json_text(raw: str) -> str:
+    """Accept one complete JSON envelope, preserving strict content validation."""
+    text = raw.strip()
+    lines = text.splitlines()
+    if len(lines) >= 3 and lines[0].strip() in {"```", "```json"} and lines[-1].strip() == "```":
+        return "\n".join(lines[1:-1])
+    return text
+
+
 def directive_id(fact: dict[str, Any]) -> str:
     return hashlib.sha256(
         json.dumps({"text": fact["text"], "refs": fact["refs"]}, sort_keys=True).encode()
@@ -52,7 +61,7 @@ def directive_id(fact: dict[str, Any]) -> str:
 def validate_summary(raw: str, source: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     """References prove supplied provenance, never execution or semantic completeness."""
     try:
-        summary = CompactionSummary.model_validate_json(raw).model_dump()
+        summary = CompactionSummary.model_validate_json(summary_json_text(raw)).model_dump()
     except (ValueError, ValidationError) as exc:
         raise WorkCapacityError("work_compaction_invalid_structure") from exc
     allowed = set(source["source_refs"])
@@ -77,7 +86,10 @@ def validate_summary(raw: str, source: dict[str, Any]) -> tuple[dict[str, Any], 
     if len(retained) != len(directives):
         raise WorkCapacityError("work_compaction_invalid_structure")
     directive_refs = {ref for fact in directives for ref in fact["refs"]}
-    if any(ref != "goal" and not ref.startswith("input:") for ref in directive_refs):
+    if any(
+        ref != "goal" and ref != source.get("original_request_ref") and not ref.startswith("input:")
+        for ref in directive_refs
+    ):
         raise WorkCapacityError("work_compaction_invalid_directive_source")
     superseded = {}
     for fact in summary["superseded_directives"]:
@@ -122,6 +134,8 @@ def validate_summary(raw: str, source: dict[str, Any]) -> tuple[dict[str, Any], 
         "corrections": corrections,
         "recent_inputs": source["recent_task_inputs"],
         "raw_inputs_retained": "runtime_work_inputs; original input/event IDs",
+        "original_request_ref": source.get("original_request_ref")
+        or source["task_material"].get("original_request_ref"),
     }
     # Task requirements appear once, in the locally built material, not again
     # in the derived execution observations.

@@ -356,8 +356,13 @@ async def test_missing_journal_with_previous_tools_is_recovery_source(database, 
     await control.repository.checkpoint(control.lease, control.current["id"], None, tools=1)
     control.current = await control.repository.get(control.current["id"])
     session = control.session = WorkSession(control, "contract")
-    await session.restore(TurnTranscript((ChatMessage("user", "new wakeup"),)))
-    assert session.uses_recovery_transcript
+    restored = await session.restore(TurnTranscript((ChatMessage("user", "new wakeup"),)))
+    assert not session.uses_recovery_transcript
+    assert restored.request().messages[0] == ChatMessage("user", "new wakeup")
+    material = json.loads(restored.request().messages[-1].content)
+    assert material["kind"] == "work_current_material"
+    assert material["work_id"] == control.current["id"]
+    assert control.current["tool_calls"] == 1
 
 
 @pytest.mark.asyncio
@@ -613,8 +618,12 @@ async def test_checkpoint_feedback_survives_contract_new_chain(database, tmp_pat
     await session.save("paired")
     control.current = await control.repository.get(control.current["id"])
     changed = control.session = WorkSession(control, "new")
-    await changed.restore(TurnTranscript((ChatMessage("user", "new wakeup"),)))
-    assert changed.uses_recovery_transcript
+    restored = await changed.restore(TurnTranscript((ChatMessage("user", "new wakeup"),)))
+    assert not changed.uses_recovery_transcript
+    assert restored.request().messages[0] == ChatMessage("user", "new wakeup")
+    assert changed.progress["chain_links"][-1]["reason"] == "contract_changed"
+    material = json.loads(restored.request().messages[-1].content)
+    assert material["work_id"] == control.current["id"]
     assert control.reporting == "interactive"
     assert control.communication["start_feedback_given"]
     assert control.communication["final_feedback_given"]

@@ -12,6 +12,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 
 from qq_ai_bot.llm.base import LLMInvalidRequestError
+from qq_ai_bot.mcp.artifact_access import access_from_runtime
 from qq_ai_bot.memory.enums import MemoryScopeType
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.runtime.activation_outcome import ContextBoundaryChanged
@@ -242,6 +243,7 @@ async def _execute_plugin_main_turn(
             },
             ensure_ascii=False,
         )
+        main = cast(MainAgentTurnService, contract.chat.runtime.main_turns)
         context = await prepare_context(
             partial(
                 contract.chat._context_assembler.assemble_plugin,
@@ -264,53 +266,61 @@ async def _execute_plugin_main_turn(
                 ),
             ),
             current_work_control.get(),
+            recovery_contract=await main.recovery_contract(runtime.runtime_config),
         )
         if context.read_version != version:
             raise ContextBoundaryChanged("plugin source changed during context preparation")
-        main = cast(MainAgentTurnService, contract.chat.runtime.main_turns)
         execution_id = (
             f"plugin:{host.plugin_id}:{invocation.source_event_id}:"
             + hashlib.sha256((permission.value + instruction + context_data).encode()).hexdigest()
         )
+        tool_runtime = ToolRuntime(
+            inbound=inbound,
+            gateway=cast(OneBotToolGateway | None, runtime.gateway),
+            allow_generic_onebot=False,
+            allow_admin_actions=False,
+            allow_automation=False,
+            conversation_key=invocation.conversation_key,
+            execution_id=execution_id,
+            allow_work_environment=True,
+            read_scope=inbound.scope(),
+            read_target_id=inbound.space_id or inbound.person_id,
+            trigger_event_id=invocation.source_event_id,
+            actor_user_id=runtime.actor_user_id,
+            actor_is_superuser=runtime.actor_is_superuser,
+            current_group_id=runtime.current_group_id,
+            runtime_config=runtime.runtime_config,
+            origin=runtime.origin,
+            memory_allowed_scopes=(
+                (
+                    (MemoryScopeType.PERSON, MemoryScopeType.PERSON_GROUP)
+                    if PluginPermission.MEMORY_PERSON_READ in host._approved_permissions
+                    else ()
+                )
+                + (
+                    (MemoryScopeType.GROUP,)
+                    if PluginPermission.MEMORY_GROUP_READ in host._approved_permissions
+                    else ()
+                )
+            ),
+            context_plugin_id=host.plugin_id,
+            context_read_contract=hashlib.sha256(
+                json.dumps(
+                    [permission.value, context_profile, sorted(runtime.allowed_capabilities)],
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest(),
+            conversation_id=inbound.conversation_id,
+            presence_id=inbound.presence_id,
+            person_id=inbound.person_id,
+            space_id=inbound.space_id,
+            bot_user_id=inbound.bot_user_id,
+            scope_type=inbound.scope_type,
+            before_model_request=validate,
+        )
         tools = MainAgentBackend(
             contract.chat,
-            ToolRuntime(
-                inbound=inbound,
-                gateway=cast(OneBotToolGateway | None, runtime.gateway),
-                allow_generic_onebot=False,
-                allow_admin_actions=False,
-                allow_automation=False,
-                conversation_key=invocation.conversation_key,
-                execution_id=execution_id,
-                allow_work_environment=True,
-                read_scope=inbound.scope(),
-                read_target_id=inbound.space_id or inbound.person_id,
-                trigger_event_id=invocation.source_event_id,
-                actor_user_id=runtime.actor_user_id,
-                actor_is_superuser=runtime.actor_is_superuser,
-                current_group_id=runtime.current_group_id,
-                runtime_config=runtime.runtime_config,
-                origin=runtime.origin,
-                memory_allowed_scopes=(
-                    (
-                        (MemoryScopeType.PERSON, MemoryScopeType.PERSON_GROUP)
-                        if PluginPermission.MEMORY_PERSON_READ in host._approved_permissions
-                        else ()
-                    )
-                    + (
-                        (MemoryScopeType.GROUP,)
-                        if PluginPermission.MEMORY_GROUP_READ in host._approved_permissions
-                        else ()
-                    )
-                ),
-                conversation_id=inbound.conversation_id,
-                presence_id=inbound.presence_id,
-                person_id=inbound.person_id,
-                space_id=inbound.space_id,
-                bot_user_id=inbound.bot_user_id,
-                scope_type=inbound.scope_type,
-                before_model_request=validate,
-            ),
+            tool_runtime,
             allowed_tools=runtime.allowed_capabilities
             | {"update_short_state", "read_tool_artifact"},
         )
@@ -319,13 +329,17 @@ async def _execute_plugin_main_turn(
             async with contract.chat._turn_coordinator.hold(invocation.conversation_key):
                 await validate()
                 composition = await main.compose(
-                    inbound=None,
+                    inbound=inbound,
                     context=context,
                     runtime=runtime.runtime_config,
                     visual_observation=None,
                     visual_failure=False,
                     scope_type=inbound.scope_type,
                     include_plugin_context=False,
+                    read_scope=access_from_runtime(
+                        tool_runtime, generation=version.generation
+                    ).read_scope,
+                    before_preparation=validate,
                 )
 
                 async def validate_and_commit() -> None:

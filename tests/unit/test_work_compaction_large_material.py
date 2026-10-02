@@ -185,7 +185,11 @@ async def test_actual_near_window_compaction_keeps_anchor_receipts_and_bounded_r
     restored = WorkSession(control, session.contract)
     control.session = restored
     replay = await restored.restore(TurnTranscript((ChatMessage("user", "unused new wakeup"),)))
-    assert replay.request() == candidate.request()
+    assert replay.request().messages[0].content == "unused new wakeup"
+    assert not restored.uses_recovery_transcript
+    material = json.loads(replay.request().messages[-1].content)
+    assert material["goal"] == original_work["goal"]
+    assert await _receipts(database, control) == original_receipts
     original_key = next(
         receipt["effect_key"]
         for receipt in original_receipts
@@ -405,7 +409,10 @@ async def test_forty_real_directives_and_large_valid_summary_survive_paginated_c
     control.session = restarted
     await restarted.restore(TurnTranscript((ChatMessage("user", "restart"),)))
     assert restarted.progress["task_material"] == material
-    assert restarted.transcript.request() == candidate.request()
+    assert restarted.transcript.request().messages[0].content == "restart"
+    assert not restarted.uses_recovery_transcript
+    restored_material = json.loads(restarted.transcript.request().messages[-1].content)
+    assert restored_material["task_material"] == material
     invalid = json.loads(responses[-1])
     invalid["pending"][0]["refs"] = ["record:not-in-the-source"]
     with pytest.raises(WorkCapacityError, match="work_compaction_invalid_reference"):
@@ -470,7 +477,9 @@ async def test_paid_final_page_keeps_exact_validation_scope_when_new_aux_window_
 async def test_runner_soft_compaction_failure_preserves_legal_request_but_stops_over_capacity(
     database, tmp_path, monkeypatch, within_budget, code
 ):
-    control, session, initial = await _session(database, tmp_path)
+    # This case tests an existing private continuation. A normal root business
+    # activation instead selects current public history before the main loop.
+    control, session, initial = await _session(database, tmp_path, worker=True)
     _grow(session.transcript)
     provider = FakeLLMProvider(lambda _: "The original review is complete.")
     runner, runtime = await _runtime(database, control, initial, provider)

@@ -174,7 +174,7 @@ async def test_native_checkpoint_preserves_public_prefix_across_ordinary_turns(
             assert saved.invalidated_reason is None
             assert saved.revision == 1
             assert "original-signature" not in frozen and "functionResponse" not in frozen
-            assert ("original-runtime-state" in frozen) is runtime_enabled
+            assert "original-runtime-state" not in frozen
 
         # Reopen the service and change dynamic data before the next user turn.
         await database.close()
@@ -194,6 +194,11 @@ async def test_native_checkpoint_preserves_public_prefix_across_ordinary_turns(
         )
         assert result.reason == "chat" and len(wire) == 5
         first_parts = wire[0]["contents"][0]["parts"]
+        if runtime_enabled:
+            # Runtime/Work status is an execution-local tail, never part of the
+            # frozen public chat. Its same-activation position stays untouched.
+            assert "original-runtime-state" in json.dumps(first_parts[-1])
+            first_parts = first_parts[:-1]
         assert wire[3]["contents"][0]["parts"][: len(first_parts)] == first_parts
         assert len(wire[3]["contents"][0]["parts"]) > len(first_parts)
         assert wire[3]["systemInstruction"] == wire[0]["systemInstruction"]
@@ -204,7 +209,8 @@ async def test_native_checkpoint_preserves_public_prefix_across_ordinary_turns(
         assert "original-private-state" in serialized and "current-state" in serialized
         assert "original-signature" not in serialized
         if runtime_enabled:
-            assert "original-runtime-state" in serialized and "current-runtime-state" in serialized
+            assert "original-runtime-state" not in serialized
+            assert "current-runtime-state" in serialized
         async with database.sessions() as session:
             saved = (await session.scalars(select(PromptProjectionModel))).one()
             assert saved.epoch_id == epoch and saved.rebuild_reason == "bootstrap"

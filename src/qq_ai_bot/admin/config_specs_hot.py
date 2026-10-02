@@ -14,6 +14,18 @@ from qq_ai_bot.admin.models import ConfigSpec
 
 def hot_config_specs() -> tuple[ConfigSpec, ...]:
     return (
+        _spec(
+            "context.compaction_window_tokens",
+            "上下文软整理窗口",
+            "本地估算的整理基准，乘既有触发/目标比例；普通历史、Rollup 与 Work 共用。"
+            "不增加模型输入上限，未达到整理目标不拒绝能装入真实容量的请求。",
+            value_type="integer",
+            minimum=1,
+            scopes=_GGU,
+            getter=_field("context_compaction_window_tokens"),
+            settings_fields=("context_compaction_window_tokens",),
+            category="context",
+        ),
         *tuple(
             _spec(
                 key,
@@ -95,7 +107,8 @@ def hot_config_specs() -> tuple[ConfigSpec, ...]:
             _spec(
                 key,
                 title,
-                "按有效输入窗口的比例计算；目标水位必须低于触发水位。",
+                "按输入容量与独立整理窗口中的较小值计算；目标水位必须低于触发水位，"
+                "均为软整理政策。",
                 value_type="number",
                 minimum=0.10,
                 maximum=0.95,

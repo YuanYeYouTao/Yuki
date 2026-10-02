@@ -504,6 +504,19 @@ class WorkRepository:
         if min(models, tools, messages, active_seconds) < 0:
             raise ValueError("invalid_work_usage")
         serialized = bounded_json(payload, 1024 * 1024) if payload is not None else None
+        replacement: Any = serialized
+        if serialized is not None:
+            for retained in ("communication", "context_note"):
+                path = f"$.{retained}"
+                replacement = case(
+                    (
+                        func.json_type(work.c.checkpoint_json, path) == "object",
+                        func.json_set(
+                            replacement, path, func.json_extract(work.c.checkpoint_json, path)
+                        ),
+                    ),
+                    else_=replacement,
+                )
         async with self.database.sessions() as session, session.begin():
             await self._assert_lease(session, lease)
             if models or tools:
@@ -520,18 +533,7 @@ class WorkRepository:
                         work.c.state.not_in(TERMINAL),
                     )
                     .values(
-                        checkpoint_json=case(
-                            (
-                                func.json_type(work.c.checkpoint_json, "$.communication")
-                                == "object",
-                                func.json_set(
-                                    serialized,
-                                    "$.communication",
-                                    func.json_extract(work.c.checkpoint_json, "$.communication"),
-                                ),
-                            ),
-                            else_=serialized,
-                        )
+                        checkpoint_json=replacement
                         if serialized is not None
                         else (
                             func.json_set(
@@ -581,6 +583,78 @@ class WorkRepository:
             elif not isinstance(value, str) or len(value) > 64:
                 raise ValueError("work_communication_marker_invalid")
         return bounded_json({"communication": updates}, 2048)
+
+    async def patch_context_note(
+        self, lease: WorkLease, identity: str, expected_revision: int, note: dict[str, Any]
+    ) -> dict[str, Any]:
+        """CAS an optional note without altering task state, waiting or budget."""
+        from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
+        from qq_ai_bot.mcp.repository import ToolArtifactRepository
+
+        encoded = bounded_json(note, 1024 * 1024)
+        handles = tuple(note["artifact_handles"])
+        async with self.database.immediate_session() as session:
+            await self._assert_lease(session, lease)
+            privacy = int(
+                await session.scalar(
+                    select(ExecutionTraceStateModel.privacy_generation).where(
+                        ExecutionTraceStateModel.id == 1
+                    )
+                )
+                or 0
+            )
+            if privacy != note["privacy_generation"]:
+                raise WorkConflict("work_context_note_source_changed")
+            if not await session.scalar(
+                select(CanonicalConversationModel.id).where(
+                    CanonicalConversationModel.id == lease.conversation_id,
+                    CanonicalConversationModel.generation == lease.generation,
+                    CanonicalConversationModel.prompt_source_revision == note["source_revision"],
+                )
+            ):
+                raise WorkConflict("work_context_note_source_changed")
+            row = (
+                (
+                    await session.execute(
+                        update(work)
+                        .where(
+                            work.c.id == identity,
+                            work.c.conversation_id == lease.conversation_id,
+                            work.c.generation == lease.generation,
+                            work.c.state.not_in(TERMINAL),
+                            func.coalesce(
+                                func.json_extract(
+                                    work.c.checkpoint_json, "$.context_note.revision"
+                                ),
+                                0,
+                            )
+                            == expected_revision,
+                        )
+                        .values(
+                            checkpoint_json=func.json_set(
+                                work.c.checkpoint_json, "$.context_note", func.json(encoded)
+                            ),
+                            updated=time.time(),
+                        )
+                        .returning(work)
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise WorkConflict("work_context_note_obsolete")
+            await ToolArtifactRepository.add_refs(session, "work_note", identity, handles)
+            from qq_ai_bot.mcp.artifact_schema import artifact_refs
+
+            await session.execute(
+                delete(artifact_refs).where(
+                    artifact_refs.c.owner_kind == "work_note",
+                    artifact_refs.c.owner_id == identity,
+                    artifact_refs.c.handle_id.not_in(handles),
+                )
+            )
+            return dict(row)
 
     async def patch_communication(
         self, lease: WorkLease, identity: str, updates: dict[str, Any]
@@ -1274,9 +1348,39 @@ class WorkRepository:
         Affected group work can contain the deleted person's quoted content too,
         so discard its snapshots instead of trying to redact model projections.
         """
+        from qq_ai_bot.conversation.observation_models import (
+            ContextObservationModel,
+            ContextSelectionModel,
+        )
+        from qq_ai_bot.mcp.artifact_schema import artifact_refs
         from qq_ai_bot.runtime.protocol_schema import refs as protocol_refs
 
         identities = select(work.c.id).where(work.c.conversation_id == conversation_id)
+        observation_ids = select(ContextObservationModel.id).where(
+            ContextObservationModel.conversation_id == conversation_id
+        )
+        await session.execute(
+            delete(artifact_refs).where(
+                (
+                    artifact_refs.c.owner_kind.in_(("observation", "summary"))
+                    & artifact_refs.c.owner_id.in_(observation_ids)
+                )
+                | (
+                    (artifact_refs.c.owner_kind == "work_note")
+                    & artifact_refs.c.owner_id.in_(identities)
+                )
+            )
+        )
+        await session.execute(
+            delete(ContextObservationModel).where(
+                ContextObservationModel.conversation_id == conversation_id
+            )
+        )
+        await session.execute(
+            delete(ContextSelectionModel).where(
+                ContextSelectionModel.conversation_id == conversation_id
+            )
+        )
         await session.execute(delete(protocol_refs).where(protocol_refs.c.work_id.in_(identities)))
         from qq_ai_bot.persistence.models import ToolArtifactModel
 

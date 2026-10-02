@@ -501,6 +501,13 @@ async def test_consumed_input_reply_opportunity_survives_resume_once(database, t
     test_case.runtime = replace(test_case.runtime, max_model_requests=1)
     first = await run(test_case)
     assert first.work_state == "queued"
+    assert (
+        sum(
+            "原 Work 新输入的答复机会" in (message.content or "")
+            for message in test_case.provider.requests[0].messages
+        )
+        == 1
+    )
     recovered = WorkControl(
         test_case.repository,
         test_case.control.lease,
@@ -518,8 +525,12 @@ async def test_consumed_input_reply_opportunity_survives_resume_once(database, t
             "原 Work 新输入的答复机会" in (message.content or "")
             for message in test_case.provider.requests[-1].messages
         )
-        == 1
+        == 0
     )
+    assert "现在怎样了？" in "\n".join(
+        message.content or "" for message in test_case.provider.requests[-1].messages
+    )
+    assert recovered.communication["input_feedback_through_id"] == identity
     assert await recovered.communication_reports(event_ids=(event_id,)) == []
 
 

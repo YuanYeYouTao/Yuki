@@ -110,6 +110,7 @@ async def test_legacy_cursor_cannot_skip_an_unpaired_older_input(
         states = dict((await reader.execute(select(inputs.c.id, inputs.c.state))).all())
         assert states[old_id] == "consumed"
         assert states[older_id] == "consumed"
-    assert "new wakeup" not in json.dumps(
-        [message.content for message in restored.request().messages]
-    )
+    rendered = json.dumps([message.content for message in restored.request().messages])
+    # An uncommitted old paired tail exits on normal business recovery; a
+    # dispatched, staged input first resumes its exact original protocol.
+    assert ("new wakeup" in rendered) is (not saved_before_crash)

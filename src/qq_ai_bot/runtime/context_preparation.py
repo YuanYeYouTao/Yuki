@@ -5,12 +5,15 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
+from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from qq_ai_bot.persistence.event_repository import ConversationReadVersion
     from qq_ai_bot.runtime.work_control import WorkControl
+    from qq_ai_bot.runtime.work_journal import JournalSnapshot
+    from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
 
 
 class ContextPreparationMode(Enum):
@@ -22,6 +25,53 @@ class ContextPreparationMode(Enum):
 context_preparation_mode: ContextVar[ContextPreparationMode] = ContextVar(
     "context_preparation_mode", default=ContextPreparationMode.FOREGROUND
 )
+
+
+@dataclass(frozen=True, slots=True)
+class ProtocolRecoveryPreparation:
+    snapshot: JournalSnapshot
+    guard: WorkSourceGuard
+
+
+protocol_recovery_preparation: ContextVar[ProtocolRecoveryPreparation | None] = ContextVar(
+    "protocol_recovery_preparation", default=None
+)
+
+
+async def select_protocol_recovery(
+    control: WorkControl | None,
+    contract: str | None,
+) -> ProtocolRecoveryPreparation | None:
+    """Choose exact private recovery before any fresh chat/material selection."""
+    if control is None or control.current is None or contract is None:
+        return None
+    from qq_ai_bot.runtime.work_journal import WorkJournal
+    from qq_ai_bot.runtime.work_repository import WorkConflict
+    from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
+
+    snapshot = await WorkJournal(control.repository).load(
+        control.lease, control.current["id"], contract, source_control=control
+    )
+    if snapshot.reason != "resume" or snapshot.record is None:
+        return None
+    payload = json.loads(snapshot.record["payload_json"])
+    metadata = payload.get("metadata", {})
+    progress = metadata.get("progress", {})
+    exact = (
+        bool(control.lease.work_id)
+        or snapshot.record["phase"] in {"dispatched", "delivery", "delivered"}
+        or bool(progress.get("provider_pause_replay"))
+        or (bool(progress.get("compaction_staging")) and snapshot.record["phase"] != "response")
+    )
+    saved_guard = metadata.get("source_guard")
+    if not exact or not saved_guard:
+        # Old records without the persisted actual read set retain the existing
+        # conservative preparation path; fresh reads never certify an old guard.
+        return None
+    guard = WorkSourceGuard.restore(saved_guard)
+    if not await guard.check(control):
+        raise WorkConflict("work_source_changed")
+    return ProtocolRecoveryPreparation(snapshot, guard)
 
 
 class ContextRollupRequired(RuntimeError):
@@ -42,7 +92,12 @@ class ContextRollupRequired(RuntimeError):
         self.token_budget = token_budget
 
 
-async def prepare_context[T](builder: Callable[[], Awaitable[T]], control: WorkControl | None) -> T:
+async def prepare_context[T](
+    builder: Callable[[], Awaitable[T]],
+    control: WorkControl | None,
+    *,
+    recovery_contract: str | None = None,
+) -> T:
     """Build once, or park the original pre-history Work without holding a slot.
 
     The existing repository validates the original source, rejects frozen model
@@ -51,7 +106,9 @@ async def prepare_context[T](builder: Callable[[], Awaitable[T]], control: WorkC
     """
     owned = control is not None and control.current is not None
     mode = ContextPreparationMode.DURABLE if owned else ContextPreparationMode.FOREGROUND
+    recovery = await select_protocol_recovery(control, recovery_contract)
     token = context_preparation_mode.set(mode)
+    recovery_token = protocol_recovery_preparation.set(recovery)
     try:
         try:
             prepared = await builder()
@@ -80,4 +137,5 @@ async def prepare_context[T](builder: Callable[[], Awaitable[T]], control: WorkC
                 await control.repository.finish_context_rollup(control.lease, control.current["id"])
         return prepared
     finally:
+        protocol_recovery_preparation.reset(recovery_token)
         context_preparation_mode.reset(token)

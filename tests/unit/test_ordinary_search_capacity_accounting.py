@@ -1,4 +1,4 @@
-"""Ordinary Gemini search counts model payload, while retaining its original facts."""
+"""Ordinary Gemini search archives its full source before returning a manifest."""
 
 import json
 from dataclasses import asdict, replace
@@ -17,12 +17,13 @@ from tests.unit.test_work_reporting_runner_gemini_wire import content_parts, gem
 
 from qq_ai_bot.conversation.projection_models import PromptProjectionModel
 from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ChatResponse
+from qq_ai_bot.domain.messages import ChatResponse
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.llm.gemini import GeminiProvider
+from qq_ai_bot.mcp.artifact_access import ArtifactAccess
+from qq_ai_bot.mcp.repository import ToolArtifactRepository
 from qq_ai_bot.model_runtime.capacity import estimate_request_tokens, estimate_text_tokens
 from qq_ai_bot.persistence.models import ChatEventModel, WebSearchRunModel, WebSearchSourceModel
-from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_schema_v1 import work
 from qq_ai_bot.web.models import WebSearchResponse, WebSearchSource
 
@@ -33,12 +34,12 @@ def legacy_estimate(request):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("genuine_overflow", [False, True])
-async def test_ordinary_search_continues_with_payload_accounting_but_keeps_real_hard_stop(
-    database, tmp_path, monkeypatch, genuine_overflow
+@pytest.mark.parametrize("large_result", [False, True])
+async def test_ordinary_search_keeps_large_sources_external_without_capacity_stop(
+    database, tmp_path, large_result
 ):
     env = await social_env(database, tmp_path)
-    body = "搜" * 10915 if genuine_overflow else "搜" * 2500 + "a" * 8415
+    body = "搜" * 10915 if large_result else "搜" * 2500 + "a" * 8415
     source = WebSearchSource(
         "eta-source",
         "eta evidence",
@@ -74,6 +75,9 @@ async def test_ordinary_search_continues_with_payload_accounting_but_keeps_real_
     bind_main_contract(harness, tmp_path)
     chat = harness.processor._chat
     chat._tools.social_service = env.service
+    chat._tool_artifacts = ToolArtifactRepository(
+        database, tmp_path / "research", retention_seconds=60
+    )
     test_case = SimpleNamespace(provider=fake, runner=chat.runtime.runner)
     client, captured = gemini_wire(test_case)
     chat._models = chat.runtime.runner._models
@@ -89,45 +93,7 @@ async def test_ordinary_search_continues_with_payload_accounting_but_keeps_real_
             content=f"small message {index}",
         )
 
-    prepared = []
-    original_run = chat.runtime.main_turns._run_prepared
-    original_state = WorkControl.runtime_state
-
-    async def run_prepared(messages, runtime, backend):
-        prepared.append((messages, runtime))
-        return await original_run(messages, runtime, backend)
-
-    async def runtime_state(control):
-        state = {**await original_state(control), "test_current_material": ""}
-        messages, runtime = prepared[-1]
-        content = "[运行状态资料，不增加任何权限] " + json.dumps(
-            state, ensure_ascii=False, separators=(",", ":")
-        )
-        request = ChatRequest(
-            messages=(*messages, ChatMessage("user", content)),
-            model=runtime.runtime_config.llm.model or "fake",
-            temperature=runtime.runtime_config.llm.temperature,
-            max_output_tokens=runtime.runtime_config.llm.max_output_tokens,
-            thinking_enabled=runtime.runtime_config.llm.thinking_enabled,
-            tools=await chat.runtime.runner.main_contract.definitions(),
-            tool_choice="auto",
-        )
-        # Calibrate only fixture material, not the window, guard or estimator:
-        # reproduce an admitted old ~88.7k request at the same 96k ceiling.
-        baseline = legacy_estimate(request)
-        assert baseline < 88700
-        state["test_current_material"] = "x" * ((88700 - baseline) * 3)
-        return state
-
-    monkeypatch.setattr(chat.runtime.main_turns, "_run_prepared", run_prepared)
-    monkeypatch.setattr(WorkControl, "runtime_state", runtime_state)
-    observed = []
-
-    def measure(request):
-        observed.append(request)
-        return estimate_request_tokens(request)
-
-    monkeypatch.setattr("qq_ai_bot.services.agent_runner.estimate_request_tokens", measure)
+    observed = fake.requests  # Actual normalized physical provider requests.
     message = replace(
         inbound(
             "搜索一下 eta",
@@ -150,8 +116,7 @@ async def test_ordinary_search_continues_with_payload_accounting_but_keeps_real_
         await client.aclose()
 
     assert len(web.search_requests) == 1 and not web.extract_requests
-    assert 88600 <= legacy_estimate(observed[0]) <= 88900
-    assert legacy_estimate(observed[1]) > 96000
+    assert legacy_estimate(observed[1]) > estimate_request_tokens(observed[1])
     assert estimate_request_tokens(observed[0]) < 96000
     assert len(observed[0].messages) >= 200
     assert legacy_estimate(observed[0]) - estimate_request_tokens(observed[0]) > 10000
@@ -164,7 +129,7 @@ async def test_ordinary_search_continues_with_payload_accounting_but_keeps_real_
         max_retries=0,
         client=client,
     )
-    # This is pure serialization of the rejected candidate, without another HTTP.
+    # Pure serialization of the actual second request, without another HTTP.
     candidate_payload = serializer._build_payload(observed[1])
     candidate_wire_tokens = estimate_text_tokens(json.dumps(candidate_payload, ensure_ascii=False))
     candidate_parts = content_parts(candidate_payload)
@@ -176,8 +141,26 @@ async def test_ordinary_search_continues_with_payload_accounting_but_keeps_real_
     assert candidate_receipt["id"] == "search" and candidate_receipt["name"] == "web_search"
     candidate_outcome = json.loads(candidate_receipt["response"]["output"])
     assert candidate_outcome["ok"] is True
-    assert candidate_outcome["data"]["sources"][0]["url"] == source.url
-    assert candidate_outcome["data"]["sources"][0]["relevant_content"] == body
+    assert candidate_outcome["artifact_handle"]
+    assert candidate_outcome["available_operations"] == ["inspect", "get", "search"]
+    assert "data" not in candidate_outcome
+    access = ArtifactAccess(
+        env.context.conversation_id,
+        1,
+        env.person,
+        read_scope=json.dumps(
+            {"memory": [], "plugin_id": None, "delegation_id": None}, sort_keys=True
+        ),
+    )
+    original = await chat._tool_artifacts.read(
+        candidate_outcome["artifact_handle"],
+        limit=100000,
+        access=access,
+    )
+    assert original is not None and original["next_offset"] is None
+    archived = json.loads(original["content"])
+    assert archived["data"]["sources"][0]["url"] == source.url
+    assert archived["data"]["sources"][0]["relevant_content"] == body
     for earlier, later in pairwise(captured):
         for field in ("systemInstruction", "tools", "toolConfig", "generationConfig"):
             assert later[field] == earlier[field]
@@ -193,36 +176,25 @@ async def test_ordinary_search_continues_with_payload_accounting_but_keeps_real_
         assert trigger.content == "搜索一下 eta"
         assert search_run.canonical_conversation_id == env.context.conversation_id
         assert saved_source.url == source.url and saved_source.run_id == search_run.id
-        assert projection.revision == 1 and projection.invalidated_reason is None
-        assert "test_current_material" in projection.payload_json
+        assert projection.revision >= 1 and projection.invalidated_reason is None
+        assert "test_current_material" not in projection.payload_json
         assert "signature-search" not in projection.payload_json
 
-    if genuine_overflow:
-        assert result.reason == "capacity_failure"
-        assert estimate_request_tokens(observed[1]) > 96000
-        assert candidate_wire_tokens > 96000
-        assert len(captured) == 1 and len(observed) == 2
-        assert not any(action == "send_group_msg" for action, _ in env.bot.calls)
-        assert len(sender.messages) == 1 and "未完整完成" in sender.messages[0].text
-    else:
-        assert result.reason == "chat" and len(captured) == len(observed) == 3
-        assert candidate_wire_tokens < 96000
-        assert candidate_payload == captured[1]
-        assert all(estimate_request_tokens(request) <= 96000 for request in observed)
-        assert all(
-            estimate_text_tokens(json.dumps(payload, ensure_ascii=False)) < 96000
-            for payload in captured
-        )
-        assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
-        parts = content_parts(captured[1])
-        call = next(part for _, part in parts if "functionCall" in part)
-        assert (
-            call["functionCall"]["id"] == "search"
-            and call["thoughtSignature"] == "signature-search"
-        )
-        receipt = next(part["functionResponse"] for _, part in parts if "functionResponse" in part)
-        assert receipt["id"] == "search" and receipt["name"] == "web_search"
-        outcome = json.loads(receipt["response"]["output"])
-        assert outcome["ok"] is True
-        assert outcome["data"]["sources"][0]["url"] == source.url
-        assert outcome["data"]["sources"][0]["relevant_content"] == body
+    # Both source sizes are legitimate research data. The new early archive
+    # removes their prompt residency before a continuation can exceed capacity;
+    # true hard-overflow stopping remains covered by no_work_capacity_status.
+    assert result.reason == "chat" and len(captured) == len(observed) == 3
+    assert candidate_wire_tokens < 96000
+    assert candidate_payload == captured[1]
+    assert all(estimate_request_tokens(request) <= 96000 for request in observed)
+    assert all(
+        estimate_text_tokens(json.dumps(payload, ensure_ascii=False)) < 96000
+        for payload in captured
+    )
+    assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
+    parts = content_parts(captured[1])
+    call = next(part for _, part in parts if "functionCall" in part)
+    assert call["functionCall"]["id"] == "search" and call["thoughtSignature"] == "signature-search"
+    receipt = next(part["functionResponse"] for _, part in parts if "functionResponse" in part)
+    assert receipt["id"] == "search" and receipt["name"] == "web_search"
+    assert json.loads(receipt["response"]["output"]) == candidate_outcome

@@ -26,7 +26,7 @@
 | [PR #213](https://github.com/YuanYeYouTao/Yuki/pull/213)，`b1382cf` | SQLite 写前准备、诊断异步化、输入准备让出、既有效果保留 | 继续遵守短事务、来源复核及前台容量；不重做延迟改造 |
 | [PR #214](https://github.com/YuanYeYouTao/Yuki/pull/214)，`fcc02e8` | 共享 `YukiRuntime`、主入口、root/child 激活骨架、关闭与恢复所有权 | 复用同一执行循环，不增设汇报 Agent 或另一套长任务 runtime |
 | [PR #215](https://github.com/YuanYeYouTao/Yuki/pull/215)，`ffca08a` | 最近 Work 视图、`task_control.get/list`、终态可查询 | 追问按原 Work 查询，不把进度询问接纳成新任务 |
-| [PR #216](https://github.com/YuanYeYouTao/Yuki/pull/216)，`ea446d6` | 原结果与未决效果保留、持久分页压缩、完整请求容量、无限累计默认值、真实子任务并行、排队间隙 steer、Gemini 普通前缀保留 | 补实际漏接及交互反馈，不恢复旧步数上限或通用阶段完成门禁 |
+| [PR #216](https://github.com/YuanYeYouTao/Yuki/pull/216)，`ea446d6` | 原结果与未决效果保留、持久分页压缩、完整请求容量、无限累计默认值、真实子任务并行、Gemini 普通前缀保留 | 补实际漏接及交互反馈，不恢复旧步数上限或通用阶段完成门禁；一般 queued 间隙补齐不能据此认定已交付 |
 | [PR #217](https://github.com/YuanYeYouTao/Yuki/pull/217)，`513a263` | schema `0088` 与 `ops-ea446d6` 部署、原 Work 对账和未决投递记录 | 属于历史部署证据，不代表本轮修复已经上线 |
 
 前序任务书：[共享持久 Runtime 主干重构](persistent-runtime-refactor-taskbook.md)、[长任务 Harness 与上下文压缩重构](long-task-harness-compaction-taskbook.md)。对应[Runtime 实现记录](../operations/persistent-runtime-20261001.md)与[Harness 交付记录](../operations/long-task-harness-2026-10-01.md)明确区分离线回归、部署健康与真实 QQ 验收。
@@ -47,7 +47,7 @@
 
 H1/H3 是当前静态代码可确认的漏接。C2/C3 是当前保证的缺口，C4 是必须验证的收尾风险；本轮没有新增线上复现，不把这些全部写成已发生的用户事故。
 
-**steer 不是本轮待新建功能。** #214 已统一活动绑定和原 Work 恢复，#216 已补同来源唯一 queued Work 在分段间隙接收追加输入，并覆盖来源权限、多候选、等待、压缩和重启。本轮不重写路由、收件箱、调度、媒体准备、staged/consumed 或完成 CAS；只在这些既有边界上核查答复证据与回答后的原任务续行。
+**steer 不是本轮待新建功能。** #214 已统一活动绑定和原 Work 恢复，真实匹配输入的来源、媒体准备、staged/consumed 和完成 CAS 继续复用。后续源码核查未确认任意 queued 间隙聊天可自动绑定；不能把该历史设计或定向测试当作一般群聊补齐已交付。本轮交互修复在真实接入边界上核查答复证据与回答后的原任务续行。
 
 ### 2.3 最后全量核查：复用、强化与局部重构
 
@@ -55,8 +55,8 @@ H1/H3 是当前静态代码可确认的漏接。C2/C3 是当前保证的缺口�
 
 | 分类 | 现有机制 | 本轮实际切口 |
 | --- | --- | --- |
-| 直接复用 | PreparedHistory、FrozenFragments、epoch/revision CAS、actor/read-scope 与隐私隔离 | 使用原不可变准备及短事务提交，不另建历史表或全量提示词档案 |
-| 局部重构 | TranscriptRequest/validating_request、WorkSession.restore | 给实际采用的请求标记 composed_initial/work_recovery；旧 journal、合同/来源变化和旧任务缺 journal 均不能触发另一份新 composition 提交 |
+| 直接复用 | PreparedHistory、FrozenFragments、epoch/revision CAS、actor/read-scope 与隐私隔离 | 使用原不可变准备及短事务提交；聊天账本不复制，持久线索来源由新上下文任务书定义 |
+| 局部重构 | TranscriptRequest/validating_request、WorkSession.restore | 标识实际提交来源；未决协议核原 journal，正常业务续跑提交当前合法视图，不能混接旧 opaque 或错误 composition 闭包 |
 | 强化 | 运行状态组装与普通历史提交闭包 | 冻结 fresh 普通轮获准的初始运行状态；活动 Work 的目标/工具/steer/签名继续私有，不把所有可序列化尾部共享 |
 | 直接复用 | WorkSession.execute、prepared/accepted effect、Social 分条回执及 uncertain 围栏 | send 参数中的本地 report 复用原记录；网关消息字段已有筛选，不扩展平台协议 |
 | 强化 | 原 effect outcome 与索引查询 | 派发前保存合法用途，实际回执后补传输事实；start/final 查询不依赖最近 64 条展示缓存 |
@@ -117,7 +117,7 @@ H1/H3 是当前静态代码可确认的漏接。C2/C3 是当前保证的缺口�
 实现先明确区分两种已有来源，而非新增聊天/工作分类器：
 
 1. **新组装的普通输入**：携带不可变的准备结果和原投影提交动作。开启 Work runtime、拥有控制对象、在此轮随后 accept 都不取消应有的初始提交。
-2. **原 Work journal 的恢复请求**：继续原请求链和预算；不把旧 composition 的回调套到另一条恢复 transcript，不重复 append 当前事件，不重建已提交输入。
+2. **原 Work 的恢复请求**：保持原执行身份和预算，先核对未决协议；正常业务续跑采用当前获准聊天及必要任务材料。不把旧 composition 回调套到另一份输入，也不把旧 opaque 拼到新的编排；当前事件只呈现一次。具体实施以 [Work 上下文任务书](work-context-and-chat-continuation-taskbook.md) 为准。
 
 将准备结果的生命周期随原调用传到 `AgentRunner.prepare_dispatch`；源码实现可用小型类型/字段表达来源，不能根据 `control.current` 某个时刻的真假猜测整条请求的来源。不要仅删掉 `and control is None` 而缺少恢复隔离测试。
 
@@ -133,6 +133,14 @@ H1/H3 是当前静态代码可确认的漏接。C2/C3 是当前保证的缺口�
 - 压缩、权限收窄、来源编辑/删除、Profile/合同变化、媒体表示或容量变化记录明确的新链原因。稳定前缀不得绕过当前授权。
 - 没有保存的旧快照不能由当前资料或摘要回填成“当时原文”。必要时明确 bootstrap/缺失范围；诊断日志不是持久恢复权威。
 - 本任务不把投影缓存升级为永久全量提示词档案。容量淘汰后只能保证账本事实可回查，不能承诺旧动态快照无限保存；需检查压缩/重建是否仍保留目标、关键更正和必要来源。若提出永久保留全部快照，应另列存储与隐私设计。
+
+### 4.4 后续上下文修复
+
+后续业务续跑、正文退出、普通同轮整理和观察覆盖统一由
+[Work 上下文与普通聊天续接任务书](work-context-and-chat-continuation-taskbook.md) 定义。
+删除保留 H0 再补聊天的旧实施方案，不同时维护两套要求。
+软硬水位分离是已有未提交准备，仍需核查整合；它没有实现上述上下文能力。
+历史政策值和技术证据不代表当前部署状态，实施、上线和真实验收分别报告。
 
 ## 5. 长任务沟通的最小 Harness 设计
 
@@ -225,7 +233,7 @@ H1/H3 是当前静态代码可确认的漏接。C2/C3 是当前保证的缺口�
 
 输入在收尾检查后、状态提交前到达的竞态必须进入现有 CAS/未消费输入检查；不能把 consumed 或提醒水位记为已答证据。完成 CAS 保住尚未接入的迟到输入；对已经展示的输入，答复是否必要、是否到位仍由模型判断并列入行为验收，不增加逐输入结清门禁。新输入与完成并发时，不丢事件、不复活已结束工作、不重复 accept；终态问题可以在普通轮查询并答复。
 
-同来源唯一 queued Work 接续、waiting_external 原条件和多候选消歧只列为已有回归边界，不重写。无执行中的 activation 时，不启动第二个持有同 Work 租约的汇报线程。可由原前台轮读取获准安全状态回答，但修改原目标仍走正式接入与授权。
+waiting_external 原条件和多候选消歧继续复用；任意 queued 间隙聊天自动绑定不是已确认能力，一般聊天补齐由新上下文任务书处理。无执行中的 activation 时，不启动第二个持有同 Work 租约的汇报线程。可由原前台轮读取获准安全状态回答，但修改原目标仍走正式接入与授权。
 
 ### 5.6 汇报不是完成
 
@@ -237,7 +245,7 @@ kind=final 只声明交付意图，不能单凭它认定完成；kind=start/prog
 
 子任务在重要环节用 `subagent_message` 向父任务报告，父任务决定对外整合。子任务没有 QQ 发送权限；一次并行委派可由父任务统一说明，不让每个子任务单独刷群消息。
 
-普通聊天的 WorkControl 存在但尚未 accept 时，仍按无已接纳 Work 处理：真实发送成功后遇到空响应可按原普通轮规则收束，不再因中性 control 多做空响应重试；此判断不能套用到已接纳 interactive Work。续接输入超过容量时，保留已有发送结果，明确处理尚未完整完成，不重发、不扩大模型窗口、不通过自动 accept 绕过限制，也不把部分发送当作任务完成。
+普通聊天的 WorkControl 存在但尚未 accept 时，仍按无已接纳 Work 处理：真实发送成功后遇到空响应可按原普通轮规则收束，不再因中性 control 多做空响应重试；此判断不能套用到已接纳 interactive Work。续接输入超过实际可用容量时，保留已有发送结果，明确处理尚未完整完成，不重发、不绕过模型真实限制、不通过自动 accept 绕过限制，也不把部分发送当作任务完成。经授权可调整本地窗口政策，但不把它当作已经实现普通同轮压缩。
 
 ### 5.7 正常路径与所需保证
 
@@ -282,7 +290,7 @@ A 与 B/C 已按明确文件所有权并行实施；A 的独立验证与 B/C 的
 | --- | --- | --- |
 | T01 | Work runtime 开/关；开启但未 accept 的普通聊天 | 开启组合也真实提交投影；下一同 actor 请求包含原快照与新快照，当前事件只出现一次 |
 | T02 | 首请求、accept 后、同链读工具/发送、重启与 HTTP 重试 | 原输入不重渲染；投影 revision 正确；模型/工具预算不重复；原 Gemini 签名留原链 |
-| T03 | 恢复已接纳 Work；来源变化与投影 CAS 竞争 | 不用新 composition 覆盖旧 journal；冲突阻止旧请求；新旧目标、输入及回执保留 |
+| T03 | 恢复已接纳 Work；来源变化与投影 CAS 竞争 | 原未决协议先核对；安全业务续跑采用当前聊天，不混接旧 opaque 或旧提交闭包；真实来源冲突阻止失效请求，原目标、输入及回执保留 |
 | T04 | 换 actor、权限收窄、删除、generation/Profile/合同变化、图片与容量边界 | 不泄露旧私密快照；必要新链原因真实；不伪造缺失的旧快照 |
 | T05 | interactive 长任务；start 在业务调用前/后、没有 start、同批多业务与并行 READ | start 前业务不执行；屏障不被并行穿越；不重排调用；原协议配对完整；整批只计一次纠正并跨重启保留；原生工具限制单列 |
 | T06 | 开始发送确定失败、拒绝、部分失败和 unknown；崩溃在成功回执后 | 失败/未知不满足成功屏障；安全准备不越白名单；模式变化不解除用户要求/unknown；不盲重发、不换通道、不重跑已执行业务 |

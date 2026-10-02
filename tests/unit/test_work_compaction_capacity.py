@@ -1,7 +1,8 @@
 """Capacity replacement preserves original input and paired execution facts."""
 
+import hashlib
 import json
-from dataclasses import replace
+from dataclasses import asdict, replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -11,6 +12,7 @@ from tests.conftest import build_harness, make_settings
 from tests.support.social_identity_cases import social_env
 from tests.support.work_compaction import session_summary, summary_json
 
+from qq_ai_bot.capabilities.results import ToolExecutionResult, ToolResultBudgeter
 from qq_ai_bot.domain.messages import (
     ChatMessage,
     ChatRequest,
@@ -26,18 +28,21 @@ from qq_ai_bot.domain.messages import (
 )
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.model_runtime.capacity import ModelCapacity, estimate_request_tokens
-from qq_ai_bot.model_runtime.models import ModelExecutionPriority
+from qq_ai_bot.model_runtime.models import ModelExecutionPriority, StructuredOutputMode
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkCapacityError, WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import inputs, journal
+from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, journal
 from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.services.agent_runner import AgentRunner, AgentRuntime
 from qq_ai_bot.services.concurrency import ConcurrencyManager
+from qq_ai_bot.services.main_agent_contract import MainAgentContract
 from qq_ai_bot.services.turn_transcript import TurnTranscript
+from qq_ai_bot.workspace.short_state import ShortState
+from qq_ai_bot.workspace.store import WorkspaceStore
 
 
-async def _session(database, tmp_path):
+async def _session(database, tmp_path, *, worker=False):
     env = await social_env(database, tmp_path)
     repository = WorkRepository(database)
     lease = await repository.acquire(env.context.conversation_id, 1)
@@ -47,8 +52,34 @@ async def _session(database, tmp_path):
 
     control = WorkControl(repository, lease, "capacity-test", {"trigger_event_id": 1}, validate)
     control.current = await repository.accept(
-        lease, source_key="capacity-test", source={}, goal="prepare an artifact"
+        lease, source_key="capacity-test", source=control.source, goal="prepare an artifact"
     )
+    if worker:
+        from qq_ai_bot.runtime.subagent_repository import SubagentRepository
+
+        children = SubagentRepository(repository)
+        identity = await children.start(
+            lease,
+            control.current["id"],
+            "capacity-child",
+            {"goal": "prepare an artifact", "output_kind": "artifact"},
+        )
+        await repository.release(lease)
+        child_lease = await children.acquire(identity)
+        assert child_lease is not None
+
+        async def validate_child():
+            assert await repository.valid(child_lease)
+
+        current = await repository.get(identity)
+        control = WorkControl(
+            repository,
+            child_lease,
+            current["source_key"],
+            json.loads(current["source_json"]),
+            validate_child,
+        )
+        control.current = current
     task = ChatMessage("user", "Prepare the artifact and preserve the original instructions.")
     initial = (ChatMessage("system", "fixed contract"), task)
     session = WorkSession(control, "capacity-contract")
@@ -74,9 +105,13 @@ def _grow(transcript):
         transcript.append(ChatMessage("assistant", "Recent completed check."))
 
 
-async def _runtime(database, control, initial, provider, **settings):
+async def _runtime(database, control, initial, provider, *, contract_workspace=None, **settings):
     harness = build_harness(database, make_settings(database.url, **settings), provider)
     chat = harness.processor._chat
+    if contract_workspace is not None:
+        chat.runtime.runner.main_contract = MainAgentContract(
+            chat, ShortState(WorkspaceStore(contract_workspace))
+        )
     runtime = AgentRuntime(
         origin=TurnOrigin.USER_MESSAGE,
         actor_user_id="10001",
@@ -95,6 +130,40 @@ async def _runtime(database, control, initial, provider, **settings):
         compaction_brief=initial[-1],
     )
     return chat.runtime.runner, runtime
+
+
+async def _seed_runner_contract(runner, runtime, session, initial):
+    definitions = await runner.main_contract.definitions()
+    runtime = replace(runtime, fixed_tools=definitions)
+    revision = getattr(runner._models, "profile_revision", None)
+    session.contract = hashlib.sha256(
+        json.dumps(
+            [
+                repr(definitions),
+                asdict(runtime.runtime_config.llm),
+                asdict(runtime.runtime_config.web),
+                revision(runner._task) if callable(revision) else "legacy",
+                [(item.role, item.content) for item in initial if item.role == "system"],
+            ],
+            sort_keys=True,
+            default=str,
+        ).encode()
+    ).hexdigest()
+    await session.save("paired")
+    sequence = session.transcript.request()
+    request = ChatRequest(
+        messages=sequence.messages,
+        continuation=sequence.continuation,
+        continuation_items=sequence.items,
+        request_chain_id=session.transcript.chain_id,
+        model=runtime.runtime_config.llm.model or "fake",
+        temperature=runtime.runtime_config.llm.temperature,
+        max_output_tokens=runtime.runtime_config.llm.max_output_tokens,
+        thinking_enabled=runtime.runtime_config.llm.thinking_enabled,
+        tools=definitions,
+        tool_choice="auto",
+    )
+    return runtime, request
 
 
 @pytest.mark.asyncio
@@ -139,7 +208,11 @@ async def test_old_negative_steer_survives_three_compactions_and_two_restarts(da
             session = WorkSession(control, "capacity-contract")
             control.session = session
             restored = await session.restore(TurnTranscript(initial), compaction_brief=initial[-1])
-            assert restored.request() == candidate.request()
+            assert restored.request().messages[:2] == initial
+            assert (
+                json.loads(restored.request().messages[-1].content)["task_material"]
+                == capsule["task_material"]
+            )
             assert constraint in await session.summary_source()
     await control.repository.release(control.lease)
 
@@ -181,12 +254,17 @@ async def test_native_public_call_and_result_are_paired_after_compaction_and_res
     await runner.run(initial, runtime, backend)
     backend.execute.assert_awaited_once()
     session = control.session
+    effect_key = session.call_key(call.id)
     _grow(session.transcript)
     candidate = await session.compact(
         await session_summary(session, "Continue from the successful read.")
     )
     capsule = json.loads(candidate.request().messages[-1].content)
-    round_record = capsule["recent_tool_rounds"][0]
+    assert capsule["recent_tool_rounds"] == [] and capsule["recent_raw_records"] == []
+    archived = await session.journal.objects.hydrate(
+        await session.journal.objects.get(capsule["previous_protocol_ref"])
+    )
+    round_record = archived["metadata"]["model_observations"][0]
     assert round_record["tool_calls"][0]["id"] == call.id
     assert round_record["results"] == [
         {
@@ -203,8 +281,11 @@ async def test_native_public_call_and_result_are_paired_after_compaction_and_res
     assert "private reasoning must stay private" not in candidate.request().messages[-1].content
     restored = WorkSession(control, session.contract)
     await restored.restore(TurnTranscript(initial), compaction_brief=initial[-1])
-    assert restored.transcript.request() == candidate.request()
-    assert restored.progress["retained_tool_rounds"] == capsule["recent_tool_rounds"]
+    assert restored.transcript.request().messages[:2] == initial
+    assert "retained_tool_rounds" not in restored.progress
+    material = json.loads(restored.transcript.request().messages[-1].content)
+    assert material["execution_evidence"][0]["effect_key"] == effect_key
+    assert await restored.journal.effect_result(effect_key) == output
     backend.execute.assert_awaited_once()
     await control.repository.release(control.lease)
 
@@ -236,7 +317,8 @@ async def test_rejected_candidate_keeps_original_paired_checkpoint(database, tmp
     assert await _snapshot(database, control.current["id"]) == snapshot
     restored = WorkSession(control, session.contract)
     await restored.restore(TurnTranscript((ChatMessage("user", "fresh wakeup"),)))
-    assert restored.transcript.request() == original
+    assert restored.transcript.request().messages[0].content == "fresh wakeup"
+    assert await _snapshot(database, control.current["id"]) == snapshot
     await control.repository.release(control.lease)
 
 
@@ -257,7 +339,11 @@ async def test_auxiliary_output_reservation_rejects_source_before_dispatch(datab
     # The main request fits, but this model cannot reserve the configured
     # auxiliary output even with an empty source. Paging cannot fix that.
     capacity = ModelCapacity(context_tokens=20000, output_tokens=4096)
-    executor = SimpleNamespace(capacity=lambda _: capacity, execute=AsyncMock())
+    executor = SimpleNamespace(
+        capacity=lambda _: capacity,
+        execute=AsyncMock(),
+        structured_output_mode=lambda _: StructuredOutputMode.TEXT_JSON,
+    )
     runner = AgentRunner(executor, ConcurrencyManager(1))
     main_request = ChatRequest(
         messages=session.transcript.request().messages, max_output_tokens=4096
@@ -307,12 +393,15 @@ async def test_tool_dense_source_compacts_without_duplicate_outputs(database, tm
         return ChatResponse(summary_json(request.messages[-1].content), 0)
 
     auxiliary = AsyncMock(side_effect=summarize)
-    runner._models = SimpleNamespace(capacity=lambda _: ModelCapacity(), execute=auxiliary)
+    runner._models = SimpleNamespace(
+        capacity=lambda _: ModelCapacity(),
+        execute=auxiliary,
+        structured_output_mode=lambda _: StructuredOutputMode.TEXT_JSON,
+    )
     candidate = await runner._compact_work(runtime, ModelExecutionPriority.FOREGROUND, 128000, main)
     request = auxiliary.call_args.args[1]
     assert request.structured_output is True
-    assert request.response_format["type"] == "json_schema"
-    assert request.response_format["json_schema"]["name"] == "work_context_compaction"
+    assert request.response_format is None
     assert estimate_request_tokens(request) < 128000
     assert request.messages[-1].content.count("evidence-0:") == 1
     assert candidate.chain_id != main.request_chain_id
@@ -371,7 +460,8 @@ async def test_long_steer_material_stays_bounded_across_twenty_compactions_and_r
             session = WorkSession(control, "capacity-contract")
             control.session = session
             await session.restore(TurnTranscript(initial), compaction_brief=initial[-1])
-            assert session.transcript.request() == candidate.request()
+            assert session.transcript.request().messages[:2] == initial
+            assert session.progress["task_material"] == material
     # Each auxiliary request contains only one new original, two recent originals,
     # and bounded task material; it cannot grow by twenty full raw originals.
     assert source_sizes[-1] < source_sizes[2] + 25000
@@ -420,7 +510,8 @@ async def test_structured_summary_rejection_preserves_material_and_checkpoint(
     assert await _snapshot(database, control.current["id"]) == snapshot
     restored = WorkSession(control, session.contract)
     await restored.restore(TurnTranscript((ChatMessage("user", "fresh wakeup"),)))
-    assert restored.transcript.request() == previous
+    assert restored.transcript.request().messages[0].content == "fresh wakeup"
+    assert await _snapshot(database, control.current["id"]) == snapshot
     assert restored.progress["task_material"] == previous_material
     await control.repository.release(control.lease)
 
@@ -429,7 +520,7 @@ async def test_structured_summary_rejection_preserves_material_and_checkpoint(
 async def test_explicit_steer_correction_survives_profile_boundary_and_compaction(
     database, tmp_path
 ):
-    control, session, initial = await _session(database, tmp_path)
+    control, session, _ = await _session(database, tmp_path)
     await _steer(control, session, 0, "Use CSV as the required output format.")
     _grow(session.transcript)
     await session.compact(await session_summary(session))
@@ -455,13 +546,14 @@ async def test_explicit_steer_correction_survives_profile_boundary_and_compactio
         compaction_brief=ChatMessage("user", "fresh wakeup"),
     )
     assert changed.progress["task_material"] == material
-    assert (
+    restored_material = json.loads(changed.transcript.request().messages[-1].content)
+    assert restored_material["task_material"] == material
+    assert restored_material["task_material"]["directives"][0]["text"] == (
         "Correction: output JSON instead of CSV."
-        in changed.transcript.request().messages[2].content
     )
     _grow(changed.transcript)
     candidate = await changed.compact(await session_summary(changed))
-    assert candidate.request().messages[1] == initial[-1]
+    assert candidate.request().messages[1].content == "fresh wakeup"
     assert changed.progress["task_material"] == material
     await control.repository.release(control.lease)
 
@@ -820,3 +912,258 @@ async def test_compaction_publication_rechecks_frozen_versions_after_file_prepar
         assert "compaction_staging" not in restarted.progress  # Old derived candidates are stale.
     await control.repository.release(lease)
     await control.repository.release(parent.lease)
+
+
+@pytest.mark.parametrize("large_anchor", [False, True])
+async def test_paid_compaction_uses_soft_window_and_restored_candidate_does_not_repeat(
+    database, tmp_path, monkeypatch, large_anchor
+):
+    control, session, initial = await _session(database, tmp_path, worker=True)
+    work_id = control.current["id"]
+    if large_anchor:
+        task = ChatMessage("user", "Immutable original instructions. " * 10000)
+        initial = (initial[0], task)
+        await session.restore(TurnTranscript(initial), compaction_brief=task)
+    _grow(session.transcript)
+    provider = FakeLLMProvider(
+        lambda request: (
+            summary_json(request.messages[-1].content)
+            if request.structured_output
+            else "The original review is complete."
+        )
+    )
+    runner, runtime = await _runtime(
+        database,
+        control,
+        initial,
+        provider,
+        contract_workspace=tmp_path / "main-contract",
+        work_context_window_tokens=524288,
+        context_compaction_window_tokens=90000,
+    )
+    runtime, main = await _seed_runner_contract(runner, runtime, session, initial)
+    call = ToolCall("original-read", ToolFunction("read_file", '{"path":"source"}'))
+
+    async def render_receipt():
+        return (
+            await ToolResultBudgeter(max_characters=None).render(
+                ToolExecutionResult(
+                    ok=True,
+                    data={"output": "Original evidence, already read once."},
+                    provider_id="core",
+                    tool_name="read_file",
+                    mutation_committed=False,
+                )
+            )
+        ).text
+
+    invoke = AsyncMock(side_effect=render_receipt)
+    session.transcript.append(ChatMessage("assistant", "Read evidence", tool_calls=(call,)))
+    receipt = await session.execute(call, invoke, side_effecting=False)
+    session.transcript.append_result(call.id, receipt)
+    await session.save("paired")
+    main = replace(main, messages=session.transcript.request().messages)
+    effect_key = session.call_key(call.id)
+    async with database.sessions() as reader:
+        original_effect = dict(
+            (await reader.execute(select(effects).where(effects.c.effect_key == effect_key)))
+            .mappings()
+            .one()
+        )
+    assert original_effect["state"] == "accepted"
+    # Allow one paid summary and one main continuation. The artifact goal is
+    # intentionally unfinished, so ordinary receipt validation keeps it open.
+    runtime = replace(runtime, max_model_requests=2)
+    runner._models.capacity = lambda _: ModelCapacity(input_tokens=524288)
+    original = session.transcript.request()
+    assert 90000 < estimate_request_tokens(runner._capacity_request(main)) < 524288
+    compact = AsyncMock(wraps=runner._compact_work)
+    monkeypatch.setattr(runner, "_compact_work", compact)
+    result = await runner.run(initial, runtime, None)
+    compact.assert_awaited_once()
+    paid_requests = [request for request in provider.requests if request.structured_output]
+    assert paid_requests and not provider.requests[-1].structured_output
+    first_activation_requests = len(paid_requests) + 1
+    assert len(provider.requests) == first_activation_requests
+    assert result.model_requests == first_activation_requests
+    current = await control.repository.get(work_id)
+    assert current["model_requests"] == first_activation_requests and current["tool_calls"] == 1
+    candidate = control.session.transcript.request()
+    candidate_chain = control.session.transcript.chain_id
+    assert candidate_chain != main.request_chain_id
+    assert provider.requests[-1].messages[:2] == initial
+    assert provider.requests[-1].tools == main.tools
+    capsule = json.loads(provider.requests[-1].messages[-1].content)
+    assert capsule["recent_raw_records"] == []
+    archived = await session.journal.objects.hydrate(
+        await session.journal.objects.get(capsule["previous_protocol_ref"])
+    )
+    from qq_ai_bot.runtime.work_journal import decode_transcript
+
+    records = [
+        {
+            "role": message.role,
+            "content": message.content,
+            "tool_call_id": message.tool_call_id,
+            "tool_calls": [{"id": call.id} for call in message.tool_calls],
+        }
+        for message in decode_transcript(archived["transcript"]).request().messages
+    ]
+    assert any(
+        retained["id"] == call.id for record in records for retained in record.get("tool_calls", [])
+    )
+    assert any(
+        record.get("tool_call_id") == call.id and record["content"] == receipt for record in records
+    )
+    candidate_size = control.session.progress["compaction_request_tokens"]
+    if large_anchor:
+        assert candidate_size > 90000
+    else:
+        assert candidate_size < 90000 * runtime.runtime_config.context.work_compaction_trigger_ratio
+    # The first submitted chain remains an immutable snapshot of the old history.
+    assert main.messages == original.messages and main.messages[:2] == initial
+
+    await control.repository.release(control.lease)
+    from qq_ai_bot.runtime.subagent_repository import SubagentRepository
+
+    lease = await SubagentRepository(control.repository).acquire(work_id)
+    assert lease is not None, current["state"]
+
+    async def validate():
+        assert await control.repository.valid(lease)
+
+    resumed_control = WorkControl(
+        control.repository, lease, control.source_key, control.source, validate
+    )
+    resumed_control.current = await control.repository.get(work_id)
+    # Constructing a fresh activation and Runner session exercises persisted
+    # compaction progress rather than an in-memory, once-per-run flag.
+    compact.reset_mock()
+    result = await runner.run(
+        initial, replace(runtime, work_control=resumed_control, max_model_requests=1), None
+    )
+    compact.assert_not_awaited()
+    assert len(provider.requests) == first_activation_requests + 1
+    assert not provider.requests[-1].structured_output
+    assert provider.requests[-1].request_chain_id == candidate_chain
+    assert provider.requests[-1].messages[: len(candidate.messages)] == candidate.messages
+    assert provider.requests[-1].tools == main.tools
+    current = await control.repository.get(work_id)
+    assert current["model_requests"] == first_activation_requests + 1 and current["tool_calls"] == 1
+    assert result.model_requests == 1 and resumed_control.current["id"] == work_id
+    assert await resumed_control.session.journal.effect_result(effect_key) == receipt
+    async with database.sessions() as reader:
+        restored_effect = dict(
+            (await reader.execute(select(effects).where(effects.c.effect_key == effect_key)))
+            .mappings()
+            .one()
+        )
+    assert restored_effect == original_effect
+    invoke.assert_awaited_once()
+    await control.repository.release(lease)
+
+
+@pytest.mark.parametrize("within_hard_budget", [True, False])
+@pytest.mark.parametrize(
+    "code", ["work_compaction_source_capacity", "work_compaction_no_capacity_improvement"]
+)
+async def test_soft_window_compaction_failure_keeps_hard_fitting_original_request(
+    database, tmp_path, monkeypatch, within_hard_budget, code
+):
+    control, session, initial = await _session(database, tmp_path, worker=True)
+    _grow(session.transcript)
+    provider = FakeLLMProvider(lambda _: "The original review is complete.")
+    runner, runtime = await _runtime(
+        database,
+        control,
+        initial,
+        provider,
+        contract_workspace=tmp_path / "main-contract",
+        work_context_window_tokens=524288,
+        context_compaction_window_tokens=90000,
+    )
+    runtime, main = await _seed_runner_contract(runner, runtime, session, initial)
+    original = session.transcript.request()
+    size = estimate_request_tokens(runner._capacity_request(main))
+    assert 90000 < size < 524288
+    hard_limit = 524288 if within_hard_budget else size - 1
+    runner._models.capacity = lambda _: ModelCapacity(input_tokens=hard_limit)
+    compact = AsyncMock(side_effect=WorkCapacityError(code))
+    monkeypatch.setattr(runner, "_compact_work", compact)
+    result = await runner.run(initial, runtime, None)
+    compact.assert_awaited_once()
+    current = await control.repository.get(control.current["id"])
+    assert current["tool_calls"] == 0
+    if within_hard_budget:
+        assert len(provider.requests) == 1
+        assert provider.requests[0].messages == original.messages
+        assert provider.requests[0].request_chain_id == main.request_chain_id
+        assert provider.requests[0].tools == main.tools
+        assert current["state"] != "suspended" and current["model_requests"] == 1
+        assert result.model_requests == 1
+    else:
+        assert provider.requests == [] and current["model_requests"] == 0
+        assert current["state"] == "suspended" and current["reason"] == code
+        assert control.session.transcript.request() == original and result.suppress_delivery
+    await control.repository.release(control.lease)
+
+
+@pytest.mark.parametrize("within_hard_budget", [True, False])
+async def test_paid_invalid_summary_keeps_original_receipt_and_real_budget(
+    database, tmp_path, within_hard_budget
+):
+    control, session, initial = await _session(database, tmp_path, worker=True)
+    call = ToolCall("original-operation", ToolFunction("workspace_read", "{}"))
+    invoke = AsyncMock(
+        return_value='{"ok":true,"data":{"run_id":"original-run","status":"succeeded"}}'
+    )
+    receipt = await session.execute(call, invoke, side_effecting=False)
+    effect_key = session.call_key(call.id)
+    session.transcript.append(ChatMessage("assistant", "", tool_calls=(call,)))
+    session.transcript.append_result(call.id, receipt)
+    _grow(session.transcript)
+    provider = FakeLLMProvider(
+        lambda request: (
+            '{"unexpected":true}'
+            if request.structured_output
+            else "The original review is complete."
+        )
+    )
+    runner, runtime = await _runtime(
+        database,
+        control,
+        initial,
+        provider,
+        contract_workspace=tmp_path / "main-contract",
+        work_context_window_tokens=524288,
+        context_compaction_window_tokens=90000,
+    )
+    runtime, main = await _seed_runner_contract(runner, runtime, session, initial)
+    original = session.transcript.request()
+    original_effect = await session.journal.effect_result(effect_key)
+    size = estimate_request_tokens(runner._capacity_request(main))
+    assert 90000 < size < 524288
+    runner._models.capacity = lambda _: ModelCapacity(
+        input_tokens=524288 if within_hard_budget else size - 1
+    )
+    result = await runner.run(initial, runtime, None)
+    current = await control.repository.get(control.current["id"])
+    summary_requests = [request for request in provider.requests if request.structured_output]
+    main_requests = [request for request in provider.requests if not request.structured_output]
+    assert len(summary_requests) == 1
+    assert current["model_requests"] == result.model_requests == len(provider.requests)
+    assert current["tool_calls"] == 1
+    assert await control.session.journal.effect_result(effect_key) == original_effect == receipt
+    invoke.assert_awaited_once()
+    if within_hard_budget:
+        assert len(main_requests) == 1
+        assert main_requests[0].messages == original.messages
+        assert main_requests[0].request_chain_id == main.request_chain_id
+        assert main_requests[0].tools == main.tools
+        assert current["state"] != "suspended"
+    else:
+        assert main_requests == []
+        assert current["state"] == "suspended"
+        assert current["reason"] == "work_compaction_invalid_structure"
+        assert result.suppress_delivery
+    await control.repository.release(control.lease)

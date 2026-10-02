@@ -291,7 +291,9 @@ async def test_plugin_capacity_reads_hot_snapshot_and_shared_fixed_contract_rese
         rollup_service=MagicMock(),
         history_budget=lambda runtime: runtime.context.window_tokens - 2048,
     )
-    runtime = SimpleNamespace(context=SimpleNamespace(window_tokens=8192))
+    runtime = SimpleNamespace(
+        context=SimpleNamespace(window_tokens=8192, compaction_window_tokens=90000)
+    )
     arguments = dict(
         inbound=InboundMessage(
             "one", "message", ScopeType.PRIVATE, SenderIdentity("1001"), "", bot_user_id="8000"
