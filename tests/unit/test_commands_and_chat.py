@@ -187,8 +187,8 @@ async def test_only_mutation_access_appends_the_write_receipt_contract(database)
         assert all(text == instructions[0] for text in instructions)
         assert CORE_CONTRACT in instructions[0]
         assert all(messages[1:-1] == history for messages in variants)
-        assert "真实工具回执" in CORE_CONTRACT
-        assert "管理员能力" in CORE_CONTRACT
+        assert "真实回执" in CORE_CONTRACT
+        assert "使用已声明工具" in CORE_CONTRACT
 
 
 def test_visual_failures_have_distinct_user_messages() -> None:
@@ -265,7 +265,7 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     )
     admin_text = admin_sender.messages[0].text
     assert "当前权限：超级管理员" in admin_text
-    assert "可修改运行时配置参数：241 项" in admin_text
+    assert "可修改运行时配置参数：242 项" in admin_text
     for key in (
         "context.window_tokens",
         "context.work_window_tokens",

@@ -26,6 +26,9 @@ class ChatWireOptions(BaseModel):
     effort_levels: tuple[ReasoningEffort, ...] | None = None
     include_reasoning: bool | None = None
     reasoning_format: Literal["parsed", "hidden"] | None = None
+    gemini_schema_format: Literal["response_json_schema", "response_schema"] = (
+        "response_json_schema"
+    )
 
     @field_validator("effort_levels")
     @classmethod

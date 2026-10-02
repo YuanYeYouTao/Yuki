@@ -53,6 +53,9 @@ async def test_repeated_recovery_phases_do_not_reinsert_existing_media_or_refs(d
         event.remove(database.engine.sync_engine, "before_cursor_execute", sql)
     assert media_writes == []  # Immutable media publication now happens outside SQLite.
     assert len(journal_writes) == 3
+    # Paired root business resumes may retire old working media. A request
+    # already marked dispatched must still restore its exact image protocol.
+    await session.save("dispatched")
     restored = await WorkSession(control, "fixed").restore(TurnTranscript(()))
     assert restored.request() == transcript.request()
 

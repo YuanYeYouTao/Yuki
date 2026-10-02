@@ -99,6 +99,7 @@ class ModelRuntimeSettings(DomainSettings):
 
 class ConversationSettings(DomainSettings):
     context_window_tokens: int = Field(default=96000, ge=8192)
+    context_compaction_window_tokens: int = Field(default=90000, ge=1)
     work_context_window_tokens: int = Field(default=128000, ge=8192)
     work_compaction_max_output_tokens: int = Field(default=32768, ge=1024)
     work_compaction_trigger_ratio: float = Field(default=0.90, gt=0, lt=1)

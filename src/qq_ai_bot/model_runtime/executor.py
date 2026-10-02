@@ -1013,9 +1013,13 @@ class TaskModelExecutor:
 
             # Chat's changed vendor dialect deliberately establishes a new chain;
             # unchanged Responses defaults retain the previous persisted revision.
-            serialized["wire_options"] = wire_options(
-                profile.provider.casefold(), profile.wire_options
-            ).model_dump(mode="json")
+            effective_wire_options = wire_options(profile.provider.casefold(), profile.wire_options)
+            serialized["wire_options"] = effective_wire_options.model_dump(
+                mode="json",
+                exclude={"gemini_schema_format"}
+                if effective_wire_options.gemini_schema_format == "response_json_schema"
+                else set(),
+            )
         return _json_hash(
             {
                 "route": serialized_route,

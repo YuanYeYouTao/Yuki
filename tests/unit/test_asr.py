@@ -391,6 +391,11 @@ async def test_derived_audio_updates_revision_and_survives_migration_rollback(
         assert conversation.uncovered_character_count > count
     monkeypatch.setenv("DATABASE_URL", database.url)
     config = Config("alembic.ini")
+    # Current ORM metadata includes 0089 observation tables and replacement
+    # Rollup triggers. Apply its real empty-owner downgrade first, rather than
+    # declaring those newer structures to be part of the 0055 fixture.
+    await asyncio.to_thread(command.stamp, config, "head")
+    await asyncio.to_thread(command.downgrade, config, "0088")
     # create_schema uses current triggers. Reconstruct the stamped 0055
     # fixture before exercising its downgrade/upgrade, rather than leaving
     # 0082 triggers installed on a database declared to predate them.

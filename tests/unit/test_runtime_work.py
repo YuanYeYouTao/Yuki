@@ -343,6 +343,61 @@ async def test_work_control_has_no_progress_tool_and_preserves_checkpoint(databa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("uncertain", [False, True])
+async def test_root_business_restore_reads_original_effect_without_replaying(
+    database, tmp_path, uncertain
+):
+    from unittest.mock import AsyncMock
+
+    from tests.unit.test_work_effect_results import owned_session
+
+    from qq_ai_bot.domain.messages import ChatMessage, ToolCall, ToolFunction
+    from qq_ai_bot.runtime.work_session import WorkSession
+    from qq_ai_bot.services.turn_transcript import TurnTranscript
+
+    control, first, _store = await owned_session(database, tmp_path)
+    control.session = first
+    call = ToolCall("original-write", ToolFunction("workspace_write", '{"path":"result"}'))
+    first.transcript.append(ChatMessage("assistant", tool_calls=(call,)))
+    await first.save("response", (call,))
+    original_key = first.call_key(call.id)
+    result = json.dumps(
+        {
+            "ok": not uncertain,
+            "uncertain": uncertain,
+            "data": {"status": "unknown" if uncertain else "succeeded"},
+        }
+    )
+    invoke = AsyncMock(return_value=result)
+    original_result = await first.execute(call, invoke)
+    # The receipt landed before the model/tool pair was saved. Recovery must
+    # pair that original key, then retire the settled provider tail for root H.
+    await control.repository.checkpoint(
+        control.lease, control.current["id"], None, models=2, tools=1
+    )
+    control.current = await control.repository.get(control.current["id"])
+    original_budget = (control.current["model_requests"], control.current["tool_calls"])
+    resumed = WorkSession(control, first.contract)
+    control.session = resumed
+    latest = (ChatMessage("system", "fixed"), ChatMessage("user", "current public chat"))
+    restored = await resumed.restore(TurnTranscript(latest))
+    invoke.assert_awaited_once()
+    assert restored.request().messages[:2] == latest
+    assert not resumed.uses_recovery_transcript
+    assert not any(
+        message.tool_calls or message.tool_call_id for message in restored.request().messages
+    )
+    assert await resumed.journal.effect_result(original_key) == original_result
+    assert (control.current["model_requests"], control.current["tool_calls"]) == original_budget
+    if uncertain:
+        assert await control.has_unresolved_effects(pending=False)
+        blocked = AsyncMock(side_effect=AssertionError("unknown effect must fence new writes"))
+        output = await resumed.execute(ToolCall("new-write", call.function), blocked)
+        assert json.loads(output)["ok"] is False
+        blocked.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("steer", [False, True])
 @pytest.mark.parametrize("wire_protocol", [None, "responses", "chat_completions"])
 async def test_agent_loop_speaks_then_executes_and_proposes_finish(
@@ -555,6 +610,26 @@ async def test_work_recovery_pairs_calls_without_reexecution(
     control.current = await repository.accept(
         lease, source_key="event", source=control.source, goal="draw"
     )
+    # Pending private protocol recovery remains exact for a real child owner.
+    # Normal paired root business recovery is tested with current public H in
+    # the entrypoint and W1/W2/W1 integration fixtures.
+    from qq_ai_bot.runtime.subagent_repository import SubagentRepository
+
+    children = SubagentRepository(repository)
+    child_id = await children.start(
+        lease,
+        control.current["id"],
+        "pending-private-child",
+        {"goal": "draw", "output_kind": "artifact"},
+    )
+    await repository.release(lease)
+    lease = await children.acquire(child_id)
+    assert lease is not None
+    child = await repository.get(child_id)
+    control = WorkControl(
+        repository, lease, child["source_key"], json.loads(child["source_json"]), validate
+    )
+    control.current = child
     session = WorkSession(control, "same-contract")
     transcript = await session.restore(TurnTranscript((ChatMessage(role="user", content="draw"),)))
     call = ToolCall("render-1", ToolFunction("terminal_exec", '{"command":"render"}'))
@@ -587,7 +662,7 @@ async def test_work_recovery_pairs_calls_without_reexecution(
             key, "accepted", {"result": '{"ok":true,"run_id":"original-run","pending":true}'}
         )
     await repository.release(lease)
-    new_lease = await repository.acquire(env.context.conversation_id, 1)
+    new_lease = await children.acquire(child_id)
     assert new_lease
     recovered = WorkControl(repository, new_lease, "event", control.source, validate)
     recovered.current = await repository.get(control.current["id"])
@@ -596,6 +671,7 @@ async def test_work_recovery_pairs_calls_without_reexecution(
         TurnTranscript((ChatMessage(role="user", content="must not replace prefix"),))
     )
     assert rebuilt.chain_id == transcript.chain_id
+    assert resumed.uses_recovery_transcript
     request = rebuilt.request()
     assert request.messages[0].content == "draw"
     output = request.items[-1].output if protocol == "responses" else request.messages[-1].content
@@ -616,6 +692,7 @@ async def test_work_recovery_pairs_calls_without_reexecution(
     second = WorkSession(recovered, "same-contract")
     again = await second.restore(TurnTranscript(()))
     assert again.request() == rebuilt.request()
+    assert await second.journal.effect_result(key) == output
 
 
 @pytest.mark.asyncio
@@ -967,9 +1044,17 @@ async def test_child_completion_has_one_parent_consumer_and_scheduler(
     if client:
         await client.aclose()
         field = "input" if protocol == "responses" else "messages"
-        for previous, current in pairwise(captured):
+        for index, (previous, current) in enumerate(pairwise(captured), start=1):
             assert current["tools"] == previous["tools"]
-            assert current[field][: len(previous[field])] == previous[field]
+            if (
+                provider.requests[index].request_chain_id
+                == provider.requests[index - 1].request_chain_id
+            ):
+                assert current[field][: len(previous[field])] == previous[field]
+            else:
+                # Settled root segments reselect the current public context;
+                # their private tool transcript is not the shared prefix.
+                assert current[field][0] == previous[field][0]
     async with database.sessions() as session:
         assert len((await session.execute(select(inputs))).all()) == 1
 
@@ -1098,7 +1183,9 @@ async def test_new_epoch_retains_execution_evidence_and_budget(database, tmp_pat
     assert control.current["model_requests"] == 3 and control.current["tool_calls"] == 2
     assert control.known_effects[0]["run_id"] == "original"
     assert "original" in restored.request().messages[-1].content
-    assert "恢复" in restored.request().messages[-1].content
+    material = json.loads(restored.request().messages[-1].content)
+    assert material["goal"] == "draw"
+    assert material["execution_evidence"]
     # A steering message arriving at final delivery must resume, not repeatedly
     # restore the suppressed-delivery marker and leave its input pending forever.
     control.ending = "completed"
@@ -1273,6 +1360,7 @@ async def test_independent_work_queues_without_overwriting_waiting_parent(databa
 async def test_completed_receipts_reconcile_pending_evidence_without_model_poll(database, tmp_path):
     from uuid import uuid4
 
+    from qq_ai_bot.domain.messages import ChatMessage
     from qq_ai_bot.runtime.work_session import WorkSession
     from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
     from qq_ai_bot.services.turn_transcript import TurnTranscript
@@ -1348,12 +1436,18 @@ async def test_completed_receipts_reconcile_pending_evidence_without_model_poll(
     await control.confirm_inputs()
     # Restore a stale private checkpoint whose completion input was already consumed.
     evidence[runs[0]]["pending"] = True
+    # Business recovery uses a compiled public input, even when this test needs
+    # no model call; an empty transcript is not a valid compaction anchor.
+    current = (
+        ChatMessage("system", "Fixed recovery contract"),
+        ChatMessage("user", "Reconcile the original terminal receipts."),
+    )
     session = WorkSession(control, "receipt-contract")
-    await session.restore(TurnTranscript(()))
+    await session.restore(TurnTranscript(current))
     control.known_effects[0]["pending"] = True
     await session.save("paired")
     control.known_effects = []
-    await WorkSession(control, "receipt-contract").restore(TurnTranscript(()))
+    await WorkSession(control, "receipt-contract").restore(TurnTranscript(current))
     assert all(not row["pending"] for row in control.known_effects)
     assert json.loads(await control.execute("task_control", {"action": "complete"}, "finish"))["ok"]
     # Query before completion also heals stale evidence without an input to consume.

@@ -23,6 +23,18 @@ class FrozenFragments:
     def event_ids(self) -> frozenset[int]:
         return frozenset(event_id for item in self.items for event_id in item["event_ids"])
 
+    @property
+    def observation_sources(self) -> tuple[tuple[str, int], ...]:
+        # Multiple prepared envelopes can refer to one immutable source. Keep
+        # its first selection once; conflicting versions still fail validation.
+        return tuple(
+            dict.fromkeys(
+                (item["observation_id"], item["observation_version"])
+                for item in self.items
+                if "observation_id" in item
+            )
+        )
+
     def messages(self) -> tuple[ChatMessage, ...]:
         return tuple(_message(item["message"]) for item in self.items)
 
@@ -30,8 +42,24 @@ class FrozenFragments:
     def load(cls, items: list[dict[str, Any]]) -> FrozenFragments:
         seen: set[int] = set()
         for item in items:
-            if set(item) != {"kind", "event_ids", "message"}:
+            if not {"kind", "event_ids", "message"} <= set(item) or not set(item) <= {
+                "kind",
+                "event_ids",
+                "message",
+                "observation_id",
+                "observation_version",
+            }:
                 raise ProjectionConflict("unsupported frozen fragment schema")
+            if ("observation_id" in item) != ("observation_version" in item) or (
+                "observation_id" in item
+                and (
+                    not isinstance(item["observation_id"], str)
+                    or not item["observation_id"]
+                    or type(item["observation_version"]) is not int
+                    or item["observation_version"] < 1
+                )
+            ):
+                raise ProjectionConflict("invalid observation source")
             if item["kind"] != "model_input":
                 raise ProjectionConflict("fragment is not a model input")
             ids = item["event_ids"]
@@ -96,6 +124,15 @@ class FrozenFragments:
                 _input((event_id,) if event_id is not None else (), message),
             ]
         )
+
+    def append_observation(
+        self, identity: str, version: int, message: ChatMessage
+    ) -> FrozenFragments:
+        if identity in {key for key, _ in self.observation_sources}:
+            return self
+        item = _input((), message)
+        item.update(observation_id=identity, observation_version=version)
+        return self.load([*deepcopy(self.items), item])
 
     def append_protocol(self, messages: tuple[ChatMessage, ...]) -> FrozenFragments:
         return self.load([*deepcopy(self.items), *(_input((), m) for m in messages)])

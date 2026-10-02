@@ -68,6 +68,7 @@ from qq_ai_bot.persistence.repositories import (
     WebSearchSourceRepository,
 )
 from qq_ai_bot.sandbox.environment_tools import EXECUTION_TOOLS, READ_TOOLS, SANDBOX_TOOLS
+from qq_ai_bot.services.context_boundary import ContextBoundaryReader
 from qq_ai_bot.services.evidence_state import evidence_state
 from qq_ai_bot.services.turn_coordinator import TurnToken
 from qq_ai_bot.speech.models import VoicePreferenceMode
@@ -196,6 +197,7 @@ class ToolRuntime:
     memory_allowed_scopes: tuple[MemoryScopeType, ...] | None = None
     prompt_diagnostics: PromptRequestDiagnostics | None = None
     before_model_request: Callable[[], Awaitable[None]] | None = None
+    observation_boundary: ContextBoundaryReader | None = None
     scope_type: ScopeType | None = None
     bot_user_id: str | None = None
     conversation_id: str | None = None
@@ -204,6 +206,8 @@ class ToolRuntime:
     space_id: str | None = None
     external_target_id: str | None = None
     memory_read_cache: dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
+    context_plugin_id: str | None = None
+    context_read_contract: str | None = None
 
     @property
     def effective_trigger_event_id(self) -> int | None:

@@ -126,15 +126,14 @@ async def projection_invalidation_cases(database, repository, args):
         async with database.sessions() as session, session.begin():
             assert await session.get(model, args["conversation_id"]) is None
             session.add(model(**values))
-        assert await repository.invalidation_reason(args["view_key"]) == "rollup"
-        await seed("rollup")
+        before = await repository.read(args["view_key"])
+        assert before is not None
+        assert await repository.invalidation_reason(args["view_key"]) is None
         async with database.sessions() as session, session.begin():
             row = await session.get(model, args["conversation_id"])
             row.revision += 1
-        assert await repository.read(args["view_key"]) is None
-        await seed("rollup")
+        assert await repository.read(args["view_key"]) == before
         async with database.sessions() as session, session.begin():
             await session.delete(await session.get(model, args["conversation_id"]))
-        assert await repository.invalidation_reason(args["view_key"]) == "rollup"
-        await seed("rollup")
+        assert await repository.read(args["view_key"]) == before
     await repository.invalidate(args["conversation_id"])

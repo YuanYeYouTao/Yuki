@@ -155,7 +155,8 @@ async def test_prepared_input_resumes_same_work_and_media_after_activation_relea
     resumed = WorkControl(fresh_repo, lease, "anchor-test", control.source, control.validate)
     resumed.current = current
     resumed.session = WorkSession(resumed, "fixed")
-    restored = await resumed.session.restore(TurnTranscript(()))
+    current = (ChatMessage("user", "Current chat; continue the original task"),)
+    restored = await resumed.session.restore(TurnTranscript(current))
     # A journal save before staging must retain the pending input's refs.
     await resumed.session.save("paired")
     additions = await resumed.take_inputs("resumed")
@@ -168,7 +169,7 @@ async def test_prepared_input_resumes_same_work_and_media_after_activation_relea
         row = (await reader.execute(select(inputs))).mappings().one()
         assert row["id"] == input_id and row["work_id"] == identity
         assert row["state"] == "consumed"
-    again = await WorkSession(resumed, "fixed").restore(TurnTranscript(()))
+    again = await WorkSession(resumed, "fixed").restore(TurnTranscript(current))
     assert again.request().messages[-1].images == (image,)
     assert await fresh_repo.prepare_input(input_id, {"text": "retry must not replace"})
 

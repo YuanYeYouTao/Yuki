@@ -219,7 +219,8 @@ async def test_self_work_restart_retains_id_budget_prefix_pending_receipt_and_de
     resumed.current_message = ChatMessage("user", "MUST NOT replace or append original brief")
     second = WorkSession(resumed, "fixed-contract")
     restored = await second.restore(TurnTranscript((resumed.current_message,)))
-    assert restored.request().messages[:2] == transcript.request().messages
+    assert second.uses_recovery_transcript
+    assert restored.request().messages == transcript.request().messages
     assert restored.request().items[-1].call_id == call.id
     assert restored.request().continuation == transcript.request().continuation
     assert resumed.current["model_requests"] == 24 and resumed.current["tool_calls"] == 3

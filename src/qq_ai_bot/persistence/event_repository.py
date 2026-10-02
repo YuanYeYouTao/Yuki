@@ -74,6 +74,10 @@ class ConversationReadVersion:
     prompt_source_revision: int = 0
     visible_event_ids: tuple[int, ...] = field(default=(), compare=False)
     rollup_stamp: tuple[int, int] = field(default=(0, 0), compare=False)
+    selected_summary_text: str | None = field(default=None, compare=False)
+    observation_sources: tuple[tuple[str, int], ...] = field(default=(), compare=False)
+    observation_actor_id: str = field(default="", compare=False)
+    observation_read_scope: str = field(default="", compare=False)
 
 
 async def _read_version(session: AsyncSession, scope: ConversationScope) -> ConversationReadVersion:
@@ -383,7 +387,44 @@ class EventLedgerRepository:
 
     async def read_version_matches(self, version: ConversationReadVersion) -> bool:
         async with self._database.sessions() as session:
-            return await _read_version(session, version.scope) == version
+            if await _read_version(session, version.scope) != version:
+                return False
+            if version.observation_sources:
+                from qq_ai_bot.conversation.observations import validate_observations
+
+                return await validate_observations(
+                    session,
+                    version.conversation_id or "",
+                    version.generation,
+                    version.observation_actor_id,
+                    version.observation_read_scope,
+                    version.observation_sources,
+                )
+            return True
+
+    async def read_scope_delta(
+        self, scope: ConversationScope, *, after_event_id: int, limit: int = 128
+    ) -> tuple[ConversationReadVersion, tuple[EventRecord, ...]]:
+        """Earliest new chat events and their generation from one read snapshot."""
+        async with self._database.sessions() as session:
+            await session.execute(text("BEGIN"))
+            version = await _read_version(session, scope)
+            if version.conversation_id is None:
+                return version, ()
+            rows = (
+                await session.scalars(
+                    select(ChatEventModel)
+                    .where(
+                        ChatEventModel.canonical_conversation_id == version.conversation_id,
+                        keeper_event_clause(),
+                        ChatEventModel.event_kind == "message",
+                        ChatEventModel.id > max(after_event_id, version.starts_after_event_id),
+                    )
+                    .order_by(ChatEventModel.id)
+                    .limit(max(1, limit))
+                )
+            ).all()
+            return version, tuple(_event_record(row) for row in rows)
 
     async def list_scope_recent(
         self,

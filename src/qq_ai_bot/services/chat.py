@@ -100,6 +100,7 @@ from qq_ai_bot.services.agent_runner import (
 from qq_ai_bot.services.agent_tools import AgentToolService, OneBotToolGateway, ToolRuntime
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.context_assembler import ContextAssembler
+from qq_ai_bot.services.context_boundary import ContextBoundaryReader
 from qq_ai_bot.services.effect_gate import (
     ConversationEffectGate,
     EffectGateTimeoutError,
@@ -415,6 +416,7 @@ class ChatService:
                 rollup_repository=rollup_repository,
                 rollup_service=rollup_service,
                 history_budget=self._history_input_budget,
+                history_capacity=partial(self._history_input_budget, maintenance=False),
             )
         self._prompt_composer = prompt_composer or PromptComposer(settings)
         from qq_ai_bot.runtime.activation_bindings import ActiveWorkBindings
@@ -467,7 +469,9 @@ class ChatService:
             raise ValueError(f"duplicate tool provider: {provider.provider_id}")
         self._external_tool_providers.append(provider)
 
-    def _history_input_budget(self, runtime: RuntimeConfigSnapshot) -> int:
+    def _history_input_budget(
+        self, runtime: RuntimeConfigSnapshot, *, maintenance: bool = True
+    ) -> int:
         from qq_ai_bot.model_runtime.capacity import (
             ModelCapacity,
             estimate_text_tokens,
@@ -480,11 +484,17 @@ class ChatService:
         budget = capacity.input_budget(
             runtime.context.window_tokens, output_tokens=runtime.llm.max_output_tokens
         )
+        # History preparation follows the maintenance policy, not the larger
+        # request reserve. This also bounds fresh history after a restart.
+        if maintenance:
+            budget = min(budget, runtime.context.compaction_window_tokens)
         contract = getattr(self.runtime.runner, "main_contract", None)
         tools = getattr(contract, "_tools", None)
         tool_tokens = estimate_tools_tokens(tools) if tools else 32768
         fixed = estimate_text_tokens(self._settings.system_prompt + CORE_CONTRACT) + tool_tokens
-        return max(1, int(budget * runtime.context.compaction_trigger_ratio) - fixed - 4096)
+        if maintenance:
+            budget = int(budget * runtime.context.compaction_trigger_ratio)
+        return max(1, budget - fixed - 4096)
 
     def _responses_append_only(self) -> bool:
         protocol = getattr(self.runtime.runner._models, "protocol", None)
@@ -550,6 +560,8 @@ class ChatService:
                 limit = int(decoded.get("limit", 8000))
                 query = str(decoded.get("query", ""))
                 max_characters = _core_result_character_budget(context.runtime_config)
+                from qq_ai_bot.mcp.artifact_access import access_from_runtime
+
                 result = await artifacts.read(
                     handle,
                     operation=operation,
@@ -558,6 +570,12 @@ class ChatService:
                     limit=limit,
                     query=query,
                     max_characters=max_characters,
+                    access=access_from_runtime(
+                        context,
+                        generation=control.lease.generation
+                        if (control := current_work_control.get()) is not None
+                        else None,
+                    ),
                 )
                 if result is None:
                     return ToolExecutionResult(
@@ -1063,6 +1081,7 @@ class ChatService:
                     prompt_diagnostics,
                     read_version,
                     commit_projection,
+                    observation_boundary,
                 ) = await self._build_messages(
                     inbound,
                     identity,
@@ -1126,6 +1145,7 @@ class ChatService:
                     memory_session=memory_session,
                     prompt_diagnostics=prompt_diagnostics,
                     before_model_request=validate_context,
+                    observation_boundary=observation_boundary,
                 )
                 if turn_token is not None:
                     async with self._turn_coordinator.track(turn_token, "generation"):
@@ -1359,6 +1379,7 @@ class ChatService:
         PromptRequestDiagnostics,
         ConversationReadVersion | None,
         Callable[[], Awaitable[None]] | None,
+        ContextBoundaryReader | None,
     ]:
         retrieval = empty_retrieval()
         persist_exposure = True
@@ -1383,6 +1404,7 @@ class ChatService:
                 persist_memory_exposure=persist_exposure,
             ),
             current_work_control.get(),
+            recovery_contract=await self.runtime.main_turns.recovery_contract(runtime),
         )
         if memory_session is not None:
             memory_session.stage_prompt_selection(
@@ -1421,6 +1443,11 @@ class ChatService:
                     + "\n[视频仅提供稀疏采样画面，没有音频；不得声称听到对白或看过所有瞬间。]",
                 )
             current = tail
+
+        async def validate_preparation() -> None:
+            if not await self.validate_turn_snapshot(turn_snapshot):
+                raise TurnSupersededError("turn changed during context preparation")
+
         composition = await self.runtime.main_turns.compose(
             inbound=inbound,
             context=replace(context, current_message=current),
@@ -1428,11 +1455,12 @@ class ChatService:
             visual_observation=visual_observation,
             visual_failure=visual_failure,
             memory_exclusive_write=bool(memory_session and memory_session.exclusive_write),
+            before_preparation=validate_preparation,
         )
         messages = composition.messages
         return (
             messages,
-            context.visible_event_ids,
+            composition.visible_event_ids,
             context.memory_turn_id,
             context.memory_exposures,
             context.memory_intent,
@@ -1440,9 +1468,11 @@ class ChatService:
                 conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
                 prompt_snapshot_fingerprint=(composition.metrics.prompt_snapshot_fingerprint),
                 static_prompt_revision=composition.metrics.stable_prefix_hash,
+                preparation_model_requests=composition.preparation_model_requests,
             ),
             composition.read_version,
             composition.commit_projection,
+            composition.observation_boundary,
         )
 
     def _context_validator(
@@ -1470,9 +1500,28 @@ class ChatService:
                 await upstream()
             control = current_work_control.get()
             if control is not None and source_guard is not None:
+                selected_guard: WorkSourceGuard | None = source_guard
                 if control.session is not None:
-                    control.session.source_guard = source_guard
-                valid = await source_guard.check(control)
+                    if control.session.uses_recovery_transcript:
+                        selected_guard = control.session.source_guard
+                        if selected_guard is None:
+                            # Legacy checkpoints did not persist their read set.
+                            # Use the old journal's strict source revision, rather
+                            # than blessing H0 with newly assembled H1 events.
+                            assert version is not None
+                            selected_guard = WorkSourceGuard(
+                                replace(
+                                    version,
+                                    visible_event_ids=(),
+                                    prompt_source_revision=control.session.source_revision,
+                                    observation_sources=(),
+                                    selected_summary_text=None,
+                                )
+                            )
+                            control.session.source_guard = selected_guard
+                    else:
+                        control.session.source_guard = source_guard
+                valid = selected_guard is not None and await selected_guard.check(control)
             else:
                 valid = version is None or await self._ledger.read_version_matches(version)
             if not valid:
@@ -1524,6 +1573,16 @@ class ChatService:
             else self._time.current_default()
         )
         backend = MainAgentBackend(self, runtime)
+        active_control = current_work_control.get()
+        if active_control is not None and (
+            active_control.source.get("actor_person_id")
+            or active_control.source.get("principal_kind") == "self"
+        ):
+            from qq_ai_bot.mcp.artifact_access import access_from_runtime
+
+            active_control.bind_context_access(
+                access_from_runtime(runtime, generation=active_control.lease.generation)
+            )
 
         async def before_model_request() -> None:
             if runtime.before_model_request is not None:
@@ -1559,9 +1618,14 @@ class ChatService:
                 ),
                 prompt_diagnostics=runtime.prompt_diagnostics,
                 before_model_request=before_model_request,
+                observation_boundary=runtime.observation_boundary,
                 canonical_conversation_id=runtime.effective_conversation_id,
                 execution_id=runtime.effective_execution_id,
                 source_event_id=runtime.effective_trigger_event_id,
+                visible_event_ids=runtime.visible_event_ids,
+                preparation_model_requests=runtime.prompt_diagnostics.preparation_model_requests
+                if runtime.prompt_diagnostics is not None
+                else 0,
             ),
             backend,
         )
@@ -1682,6 +1746,7 @@ class ChatService:
                         memory_retrieval=empty_retrieval(),
                     ),
                     current_work_control.get(),
+                    recovery_contract=await self.runtime.main_turns.recovery_contract(runtime),
                 )
                 if memory is not None and not control.current["model_requests"]:
                     # A resumed journal retains its old projected memory verbatim. Do
@@ -1696,6 +1761,7 @@ class ChatService:
                     visual_observation=None,
                     visual_failure=False,
                     scope_type=ScopeType.GROUP,
+                    before_preparation=validate,
                 )
                 tool_runtime = replace(
                     source_runtime,
@@ -1703,7 +1769,8 @@ class ChatService:
                     turn_token=turn_token,
                     turn_snapshot=turn_snapshot,
                     memory_session=memory,
-                    visible_event_ids=context.visible_event_ids,
+                    visible_event_ids=composition.visible_event_ids,
+                    observation_boundary=composition.observation_boundary,
                     memory_exposures=(
                         context.memory_exposures if not control.current["model_requests"] else ()
                     ),
@@ -1713,6 +1780,7 @@ class ChatService:
                         conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
                         prompt_snapshot_fingerprint=composition.metrics.prompt_snapshot_fingerprint,
                         static_prompt_revision=composition.metrics.stable_prefix_hash,
+                        preparation_model_requests=composition.preparation_model_requests,
                     ),
                     before_model_request=self._context_validator(
                         composition.read_version,
@@ -1776,6 +1844,7 @@ class ChatService:
                     external_trigger=trigger,
                 ),
                 current_work_control.get(),
+                recovery_contract=await self.runtime.main_turns.recovery_contract(runtime),
             )
             composition = await self.runtime.main_turns.compose(
                 inbound=None,
@@ -1784,6 +1853,7 @@ class ChatService:
                 visual_observation=None,
                 visual_failure=False,
                 scope_type=event.scope_type,
+                before_preparation=before_model_request,
             )
             tool_runtime = ToolRuntime(
                 inbound=None,
@@ -1807,12 +1877,14 @@ class ChatService:
                 read_only=False,
                 turn_token=turn_token,
                 turn_snapshot=turn_snapshot,
-                visible_event_ids=context.visible_event_ids,
+                visible_event_ids=composition.visible_event_ids,
+                observation_boundary=composition.observation_boundary,
                 selection_query=f"{event.content}\n{trigger.agent_intent}".strip(),
                 prompt_diagnostics=PromptRequestDiagnostics(
                     conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
                     prompt_snapshot_fingerprint=(composition.metrics.prompt_snapshot_fingerprint),
                     static_prompt_revision=composition.metrics.stable_prefix_hash,
+                    preparation_model_requests=composition.preparation_model_requests,
                 ),
                 before_model_request=self._context_validator(
                     composition.read_version, before_model_request, composition.commit_projection
@@ -1833,6 +1905,8 @@ class ChatService:
                     runtime_config=runtime,
                     before_model_request=tool_runtime.before_model_request,
                     prompt_diagnostics=tool_runtime.prompt_diagnostics,
+                    visible_event_ids=tool_runtime.visible_event_ids,
+                    observation_boundary=tool_runtime.observation_boundary,
                     turn_token=turn_token,
                     turn_snapshot=turn_snapshot,
                     selection_query=tool_runtime.selection_query,

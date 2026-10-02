@@ -471,6 +471,7 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     runtime = MagicMock()
     runtime.context.local_event_limit = 2_048
     runtime.context.window_tokens = 96_000
+    runtime.context.compaction_window_tokens = 90_000
     empty_retrieval = MagicMock(blocks=(), hits=())
 
     ordinary_event = replace(
@@ -616,6 +617,7 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
     )
     runtime = MagicMock()
     runtime.context.window_tokens = 96_000
+    runtime.context.compaction_window_tokens = 90_000
     runtime.plugins.max_total_prompt_characters = 8_000
     composed = composer.compose(
         inbound=None,
@@ -1157,6 +1159,7 @@ def _covered_external_turn(
     runtime = MagicMock()
     runtime.context.local_event_limit = 2_048
     runtime.context.window_tokens = 96_000
+    runtime.context.compaction_window_tokens = 90_000
     return assembler, event, turn, runtime
 
 

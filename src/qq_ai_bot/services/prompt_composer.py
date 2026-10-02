@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -26,7 +27,9 @@ from qq_ai_bot.prompting import (
 )
 from qq_ai_bot.prompting.contributors import static_text
 from qq_ai_bot.prompting.models import CompiledPrompt, PromptMetrics
+from qq_ai_bot.prompting.serializer import serialized_messages_hash
 from qq_ai_bot.services.context_assembler import AssembledContext
+from qq_ai_bot.services.context_boundary import ContextBoundaryReader
 from qq_ai_bot.services.prompt_registry import PromptRegistry, PromptTarget
 from qq_ai_bot.vision.models import VisualObservation
 
@@ -38,6 +41,9 @@ class PromptComposition:
     visible_event_ids: frozenset[int] = frozenset()
     read_version: ConversationReadVersion | None = None
     commit_projection: Callable[[], Awaitable[None]] | None = None
+    preparation_model_requests: int = 0
+    current_snapshot: dict[str, Any] | None = None
+    observation_boundary: ContextBoundaryReader | None = None
 
 
 class PromptComposer:
@@ -63,20 +69,8 @@ class PromptComposer:
             max_total_plugin_characters=runtime.plugins.max_total_prompt_characters,
         )
 
-    def compose(
-        self,
-        *,
-        inbound: InboundMessage | None,
-        context: AssembledContext,
-        runtime: RuntimeConfigSnapshot,
-        visual_observation: VisualObservation | None,
-        visual_failure: bool,
-        scope_type: ScopeType | None = None,
-        include_plugin_context: bool = True,
-        short_state: list[dict[str, Any]] | None = None,
-        memory_exclusive_write: bool = False,
-    ) -> PromptComposition:
-        contributions: list[PromptContribution] = [
+    def _static_contributions(self) -> tuple[PromptContribution, ...]:
+        return (
             static_text(
                 "core.persona",
                 self._settings.system_prompt,
@@ -101,6 +95,28 @@ class PromptComposer:
                 channel=PromptChannel.INVARIANT,
                 priority=96,
             ),
+        )
+
+    def static_messages(self) -> tuple[ChatMessage, ...]:
+        return self._compiler.compile(
+            PromptProgram(contributions=self._static_contributions())
+        ).messages
+
+    def compose(
+        self,
+        *,
+        inbound: InboundMessage | None,
+        context: AssembledContext,
+        runtime: RuntimeConfigSnapshot,
+        visual_observation: VisualObservation | None,
+        visual_failure: bool,
+        scope_type: ScopeType | None = None,
+        include_plugin_context: bool = True,
+        short_state: list[dict[str, Any]] | None = None,
+        memory_exclusive_write: bool = False,
+    ) -> PromptComposition:
+        contributions: list[PromptContribution] = [
+            *self._static_contributions(),
             PromptContribution(
                 id="runtime.time",
                 channel=PromptChannel.RUNTIME,
@@ -260,7 +276,21 @@ class PromptComposer:
             current_message=context.current_message,
             dynamic_character_budget=max(0, remaining),
         )
-        return self._finalize(context, compiled)
+        composition = self._finalize(context, compiled)
+        snapshot = {
+            item.id: item.model_dump(mode="json", include={"payload", "content", "trust", "source"})
+            for item in compiled.selected
+            if item.channel in {PromptChannel.CONTEXT, PromptChannel.PLUGIN, PromptChannel.MODALITY}
+            or item.id == "runtime.short_state"
+        }
+        from dataclasses import replace
+
+        return replace(
+            composition,
+            current_snapshot={"kind": "dynamic_snapshot", "contributions": snapshot}
+            if snapshot
+            else None,
+        )
 
     @staticmethod
     def _conversation_history(context: AssembledContext) -> tuple[ChatMessage, ...]:
@@ -273,6 +303,45 @@ class PromptComposer:
                 covered_through_event_id=context.prompt_effective_coverage,
             ),
             *context.history_messages,
+        )
+
+    def with_history(
+        self,
+        composition: PromptComposition,
+        original: AssembledContext,
+        selected: AssembledContext,
+    ) -> PromptComposition:
+        """Replace selected history without rendering dynamic contributions twice."""
+        history = self._conversation_history(original)
+        end = len(composition.messages) - 1
+        start = end - len(history)
+        if composition.messages[start:end] != history:
+            raise ValueError("compiled history slot does not match assembled history")
+        selected_history = self._conversation_history(selected)
+        messages = (
+            *composition.messages[:start],
+            *selected_history,
+            composition.messages[-1],
+        )
+        total = sum(len(message.content or "") for message in messages)
+        metrics = composition.metrics.model_copy(
+            update={
+                "history_characters": sum(
+                    len(message.content or "") for message in selected_history
+                ),
+                "total_characters": total,
+                "estimated_tokens": math.ceil(total / 4),
+                "message_count": len(messages),
+                "conversation_prefix_hash": serialized_messages_hash(messages[:-1]),
+            }
+        )
+        from dataclasses import replace
+
+        return replace(
+            self._finalize(
+                selected, CompiledPrompt(messages=messages, selected=(), metrics=metrics)
+            ),
+            current_snapshot=composition.current_snapshot,
         )
 
     def _finalize(

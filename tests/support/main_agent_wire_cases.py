@@ -277,9 +277,17 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
                 assert result.reason == "chat"
                 following = captured.pop("private-followup")
                 sequence_key = "input" if protocol is ModelProtocol.RESPONSES else "messages"
-                old_input = captured["private"][-1][sequence_key]
+                # Shared H retains the first dispatched public input. The
+                # previous activation's tool calls/results are a private tail.
+                old_input = captured["private"][0][sequence_key]
                 assert following[0][sequence_key][: len(old_input)] == old_input
                 assert following[0]["tools"] == captured["private"][0]["tools"]
+                assert 'state-private"' not in json.dumps(following[0][sequence_key])
+                for previous, current in pairwise(following):
+                    assert (
+                        current[sequence_key][: len(previous[sequence_key])]
+                        == previous[sequence_key]
+                    )
                 serialized = json.dumps(following[0], ensure_ascii=False)
                 assert all(
                     label in serialized
@@ -349,8 +357,14 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             assert await plugin.llm.generate("继续记录") == "已完成"
         repeated = captured.pop("sdk-followup")
         sequence_key = "input" if protocol is ModelProtocol.RESPONSES else "messages"
-        old_input = captured["sdk-generate"][-1][sequence_key]
+        # Across SDK activations preserve public H, retire the old private tail.
+        # Inside the original activation keep each actual call/result prefix.
+        old_input = captured["sdk-generate"][0][sequence_key]
         assert repeated[0][sequence_key][: len(old_input)] == old_input
+        assert repeated[0]["tools"] == captured["sdk-generate"][0]["tools"]
+        assert 'state-sdk-generate"' not in json.dumps(repeated[0][sequence_key])
+        for previous, current in pairwise(captured["sdk-generate"]):
+            assert current[sequence_key][: len(previous[sequence_key])] == previous[sequence_key]
         # Narrowing the same SDK method's context profile must not retain the
         # prior current_user material, despite sharing the canonical Conversation.
         current_entry = "sdk-narrow"

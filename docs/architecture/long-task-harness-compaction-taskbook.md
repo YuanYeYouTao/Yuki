@@ -50,7 +50,7 @@ Conversation Rollup 与 Work compaction 共用必要的来源、容量和提交�
 最终只保留三类职责，复用现有 owner，不增加压缩总管或长任务 loop：
 
 1. **执行事实与结果存储**：effect/run 回执持有唯一执行状态及原正文引用，输入日志持有用户要求；文件 store 提供证据内容与留存。checkpoint、摘要和模型视图不再双写整份效果事实。
-2. **请求窗口与恢复视图**：按所选 Profile 规划实际请求容量；Work 与 Conversation 分别构造自己的上下文。保留可用恢复点，显式替换链，历史证据按需读取。共享真正相同的容量/来源 helper，不建立万能 ContextManager。
+2. **请求窗口与恢复视图**：按所选 Profile 规划实际请求容量，原执行恢复点保留，证据按需读取。后续主 Agent 使用当前获准聊天及必要 Work 材料，不轮流恢复各 Work 的旧群史，实施统一见 [新上下文任务书](work-context-and-chat-continuation-taskbook.md)。共享真正相同的容量/来源 helper，不建立万能 ContextManager。
 3. **激活调度**：现有 Runtime/Runner/child scheduler 管理公平分段、并行、输入交付与关闭；次数计量与可选预算在原所有者上持续。
 
 原 Work、内部事件、权限、租约、真实回执和已接受效果是保留对象；旧的巨型恢复 JSON、重复安全状态、字符窗口分支和串行调度实现可以替换。新接口必须删除已有重复职责，不能只在旧类旁再加一层。
@@ -133,7 +133,7 @@ generation、来源等审计详情仍在后端和既有 get/list 目录中，不
 目标最多 160 字符、显示名最多 64 字符，`goal_complete=false` 标识不完整摘录；摘录不是目标
 覆盖或新的恢复授权。不预载完整等待条件，既有 get 按需读取完整 goal 和 wait，list 保留原
 目录详情。查询使用有界 SQL 列投影和活动等待 EXISTS，避免先全读16项大目标和等待JSON再裁。
-原活动 Work 的完整目标与恢复 anchor 不受这个显示预算影响。
+原活动 Work 的完整目标和执行证据不受这个显示预算影响；原编译 anchor 是该基线的恢复事实，不作为后续每轮注入全部旧资料的要求。
 
 检查所有当前动态块后，删除人物块里与可信 `context.relationship` 重复的关系数值；保留阶段和
 风格，详情通过 `get_relationship`。时间、权限、投递、当前媒体、事件绑定引用和短期状态保留；
@@ -217,7 +217,9 @@ Claude API 的服务端 compaction 与按规则清理工具/思考块是两类�
 
 任务资料包含当前目标、用户明确追加限制/交付要求及来源 input/event ID。输入日志是原要求的来源；小型资料为其可追溯投影，不再独立复制每项事实。必要的版本更新复用原 Work checkpoint 子路径/CAS，避免与 journal/等待字段整份覆盖；不增加 Goal 表、通用 stages 状态机或每步思考持久化。模型计划与下一步建议是可更新、可重建的上下文，不是完成门禁。自由摘要不得覆盖用户要求、生命周期或原回执；结构化资料也不能自动证明语义完备。
 
-本轮实现：`WorkSession` 在原 journal progress 保存 `task_material/covered_input_id`，摘要源只读取水位后的已 staged/consumed 真人输入；原 `runtime_work_inputs` 全部正文不改写，普通续跑仍追加原输入。当前资料保存原始 immutable goal/anchor、有效约束及 input 引用、明确更正记录和最新两份完整原文。辅助输出使用现有 `json_schema` 格式与严格本地 schema：派生事实、未决问题、失败/未知、产物和下一步均有快照内来源引用，逐项说明新输入属于约束、更正或普通上下文；已有有效约束须保留原 text/refs，更正须引用新增 input 且保留改前资料。普通进度/继续输入不自动变成累计永久约束。候选只带一份本地任务资料；执行状态仍从真实 effect/run/回执读取，摘要不能解除未决围栏。结构/引用/遗漏或最终存储失败保留原 paired checkpoint 与 progress，Profile/合同变化在来源未变时保留原资料，来源变化不迁移旧资料；旧自由文本 checkpoint 的恢复仍兼容，新辅助输出不接受自由文本兜底。
+历史实现记录：`WorkSession` 在原 journal progress 保存 `task_material/covered_input_id`，摘要源读取水位后的已 staged/consumed 真人输入，原 `runtime_work_inputs` 正文不改写；当时的资料包含 immutable goal/anchor、有效约束、input 引用、更正记录和最新两份原文。辅助输出按本地 schema 校验来源引用，候选失败保留原 paired checkpoint、progress 和已发生计量。这些是已有能力，不是继续把完整旧 anchor 或固定两份原文注入每次请求的要求。
+
+后续以 [Work 上下文与普通聊天续接修复任务书](work-context-and-chat-continuation-taskbook.md) 为准：原目标、输入、约束、更正及回执继续保存；正常续跑使用当前获准聊天、必要任务资料与可选语义备注，研究原文按需回读。资料是否沿用逐项核验实际来源、读取范围及隐私代次，不能因泛化的 source revision 变化一律丢弃，也不能在真实撤权后照搬。旧 checkpoint 保留兼容读取；摘要不能解除未决效果围栏。
 
 资料整理按规范化后的完整请求 token 容量分页。SQL 每次读取最多 16 条新增输入只是有界读，未读输入留给后页，完整原文不受另一层小字节常量拒绝。records、observations 和 effects 的公开来源按不可变快照顺序分页；超大单条以原引用编号的连续片段呈现。各页带原 goal、来源编号、任务资料及上一页派生观察，全部来源与输入处理完才一次启用新 paired/progress。每页验证后，在原 paired journal 的非权威 `progress.compaction_staging` 保存原快照引用、下一页游标/资料、水位、冻结 input 上界及原 chain/sequence、transcript 指纹、contract/Profile、source revision/generation、privacy generation 与 source scope。下一页容量不足也先保存刚验证的付费进度。partial 不进入主模型的生效业务上下文；让出或重启后仅在同源标记匹配时续下一页，不重复支付已验证页面。末页的校验引用范围也保持，最终提交失败可继续原候选；成功换链时一次启用完整资料并清除 staging。真实边界变化丢弃 partial，原事实仍按原 ID 恢复；非法页面不覆盖主 transcript/生效资料，已发生模型计量保留。最新原文、有效约束及派生观察由实际请求/输出与协议存储资源核验，不再用固定摘要条数、短字符或 64 KiB 冗余门槛拒绝合法内容。schema/引用只能验证所供来源与结构，不能证明提取约束或更正的语义完整性。回归覆盖多次长 steer/压缩与重启、仅上下文追加、40 条有效要求、来源连续分片重组、部分/最终付费页恢复、原负约束、更正与 Profile 边界，以及坏引用、漏约束和保存失败保留原 paired 事实。
 
@@ -266,7 +268,7 @@ staging 与最终候选在事务外完成 manifest/文件准备后，原短 writ
 
 在取得实质阶段成果、发现阻塞或目标变化时，主动用 `send_message` 报告已完成、证据、余项与下一步；报告回执与任务事实分开。独立且值得并行的子问题优先派出，父任务继续整合。无需每 N 步或每几分钟发言；安静任务和普通聊天仍合法，不复活 `report_progress` 旁路。
 
-保留执行中的真实追加输入链。在已接纳 Work 的分段排队间隙，可对同来源、同 Conversation/generation 且唯一可续接候选追加输入；来源匹配 canonical actor Person、principal、委托及插件来源合同，不要求新旧 source_key 相同，输入沿真实新 event/input ID 幂等追加。多个候选必须显式定位，不能选“最近一个”。queued 也不能抹掉此前等待匹配的条件；`waiting_external` 仍按原等待匹配或显式恢复，不能因任意群消息提前唤醒；暂停、unknown 与权限围栏不自动解除。发送及外部调用已开始的效果不能靠 steer 撤回。
+保留真实追加输入、等待匹配、显式恢复和多候选定位，沿原 event/input ID 幂等消费。任意 queued 间隙聊天自动绑定未获当前源码确认，删除将其当作既有保证的要求。一般群聊补齐在下一次合法模型请求中进行，不因闲聊自动唤醒任务；暂停、unknown 与权限围栏不解除。发送及外部调用已开始的效果不能靠 steer 撤回。
 
 ## 6. 迁移、删除与数据库规则
 

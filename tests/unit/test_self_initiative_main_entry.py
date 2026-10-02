@@ -150,10 +150,29 @@ async def test_self_main_segment_resume_preserves_real_wire_prefix_and_silent_co
         assert final["model_requests"] == 25
         assert len(captured) == 25
         field = "input" if protocol == "responses" else "messages"
-        for previous, following in pairwise(captured):
+        for previous, following in pairwise(captured[:24]):
             assert following[field][: len(previous[field])] == previous[field]
             assert following["tools"] == previous["tools"]
-        assert provider.requests[0].request_chain_id == provider.requests[-1].request_chain_id
+        assert captured[-1]["tools"] == captured[0]["tools"]
+        if protocol == "responses":
+            assert captured[-1]["instructions"] == captured[0]["instructions"]
+        assert [entry for entry in captured[-1][field] if entry.get("role") == "system"] == [
+            entry for entry in captured[0][field] if entry.get("role") == "system"
+        ]
+        assert provider.requests[0].request_chain_id == provider.requests[23].request_chain_id
+        assert provider.requests[-1].request_chain_id != provider.requests[23].request_chain_id
+        resumed_wire = json.dumps(captured[-1][field], ensure_ascii=False)
+        assert '"step-23"' in resumed_wire.replace('\\"', '"')
+        assert not any(
+            entry.get("type") in {"function_call", "function_call_output"}
+            or entry.get("tool_calls")
+            or entry.get("role") == "tool"
+            for entry in captured[-1][field]
+        )
+        # Original call keys survive as receipt evidence, without replaying the
+        # old provider's protocol tail on the current business input.
+        assert "call-0" in resumed_wire and "call-23" in resumed_wire
+        assert final["tool_calls"] == 24
         assert {tool.name for tool in await contract.definitions()} == {
             tool["name"] if protocol == "responses" else tool["function"]["name"]
             for tool in captured[0]["tools"]
@@ -172,6 +191,7 @@ async def test_self_main_segment_resume_preserves_real_wire_prefix_and_silent_co
 
         payload = await WorkJournal(repo).objects.hydrate(payload)
         reports = payload["metadata"]["progress"]["self_reports"]
+        assert payload["metadata"]["progress"]["chain_links"][-1]["reason"] == "business_resume"
         assert len(reports) == 1 and reports[0]["sequence"] == 25
         assert reports[0]["run_ref"] == source["initiative_run_id"]
     finally:

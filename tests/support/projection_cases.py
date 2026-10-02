@@ -129,15 +129,20 @@ async def projection_storage_cases(database, conversation_id):
     async with database.sessions() as session, session.begin():
         source = await session.get(CanonicalConversationModel, conversation_id)
         source.generation += 1
+    async with database.sessions() as session:
+        source = await session.get(CanonicalConversationModel, conversation_id)
+        reset_revision = source.prompt_source_revision
     try:
         assert await repository.read(args["view_key"]) is None
         with pytest.raises(ProjectionConflict, match="source generation"):
-            await repository.commit(**args, **cas, items=[])
+            await repository.commit(
+                **{**args, "expected_source_revision": reset_revision}, **cas, items=[]
+            )
         reset = await repository.commit(
             **{
                 **args,
                 "generation": generation + 1,
-                "expected_source_revision": source_revision + 1,
+                "expected_source_revision": reset_revision,
             },
             items=[],
             rebuild_reason="reset",
@@ -148,7 +153,9 @@ async def projection_storage_cases(database, conversation_id):
             source = await session.get(CanonicalConversationModel, conversation_id)
             source.generation = generation
         await repository.invalidate(conversation_id)
-        args["expected_source_revision"] = source_revision + 2
+        async with database.sessions() as session:
+            source = await session.get(CanonicalConversationModel, conversation_id)
+            args["expected_source_revision"] = source.prompt_source_revision
     async with database.sessions() as session:
         existing_bytes = await session.scalar(
             select(func.coalesce(func.sum(PromptProjectionModel.byte_size), 0))

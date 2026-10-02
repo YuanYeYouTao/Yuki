@@ -104,7 +104,7 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(d
         assert saved.invalidated_reason is None
         assert "original-snapshot" in saved.payload_json
         assert "private-work-result" not in saved.payload_json
-        assert "no_active_work" in saved.payload_json
+        assert "no_active_work" not in saved.payload_json
     from qq_ai_bot.runtime.work_schema_v1 import work
 
     async with database.sessions() as session:
@@ -114,8 +114,8 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(d
     assert state.snapshot()[0]["text"] == "private-work-result"
     state.update({"slot": 1, "text": "new-unsubmitted-state", "expected_revision": 2})
 
-    # Close physical connections and construct a new turn service. Its freshly
-    # assembled wakeup must not overwrite the original saved Work transcript.
+    # A safe paired root resumes current history and task material, retaining
+    # original execution facts while retiring the previous private tool tail.
     await database.close()
     chat.runtime.main_turns = MainAgentTurnService(
         chat._prompt_composer, chat.runtime.runner, database
@@ -136,15 +136,16 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(d
     await resumer.resume(item)
     assert resumer.last_error is None
     assert len(provider.requests) == 3
-    assert provider.requests[2].messages[: len(provider.requests[0].messages)] == (
-        provider.requests[0].messages
-    )
     serialized = json.dumps([m.content for m in provider.requests[2].messages], ensure_ascii=False)
-    assert "original-snapshot" in serialized and "private-work-result" in serialized
-    assert "new-unsubmitted-state" not in serialized
+    assert "保存工作结果" in serialized and "work_current_material" in serialized
+    assert "new-unsubmitted-state" in serialized
+    assert not any(message.tool_calls for message in provider.requests[2].messages)
     async with database.sessions() as session:
         saved = (await session.scalars(select(PromptProjectionModel))).one()
-        assert (saved.epoch_id, saved.revision, saved.payload_json) == original
+        assert (saved.epoch_id, saved.payload_json) == (original[0], original[2])
+        assert "work_resume" not in saved.payload_json
+        assert "work_current_material" not in saved.payload_json
+        assert "private-work-result" not in saved.payload_json
         assert saved.invalidated_reason is None
     completed = await repository.get(identity)
     assert completed["state"] == "completed" and completed["model_requests"] == 3
@@ -287,6 +288,7 @@ async def test_same_actor_new_turn_honors_snapshot_boundaries(
                     history_event_fragments=(),
                     visible_event_ids=frozenset({context.current_event_id}),
                 )
+                kwargs["read_scope"] = "restricted-current-event"
             return await compose(**kwargs)
 
         monkeypatch.setattr(chat.runtime.main_turns, "compose", restricted_compose)
@@ -298,14 +300,20 @@ async def test_same_actor_new_turn_honors_snapshot_boundaries(
         [m.content for m in provider.requests[2].messages], ensure_ascii=False
     )
     assert "current-safe-snapshot" in current_input
-    assert "original-snapshot" not in current_input
+    if boundary in {"profile", "contract"}:
+        assert "original-snapshot" in current_input
+    else:
+        assert "original-snapshot" not in current_input
     async with database.sessions() as reader:
         rows = (await reader.scalars(select(PromptProjectionModel))).all()
         active = [row for row in rows if row.invalidated_reason is None]
         current = next(row for row in active if "current-safe-snapshot" in row.payload_json)
         assert current.epoch_id != original_epoch and current.revision == 1
-        assert "original-snapshot" not in current.payload_json
-        if boundary == "plugin_permission":
+        if boundary in {"profile", "contract"}:
+            assert "original-snapshot" in current.payload_json
+        else:
+            assert "original-snapshot" not in current.payload_json
+        if boundary in {"plugin_permission", "selected_scope"}:
             assert current.view_key != original_key
         else:
             assert current.view_key == original_key

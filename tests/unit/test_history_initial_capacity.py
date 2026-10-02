@@ -19,7 +19,6 @@ from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ChatResponse
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.model_runtime.capacity import ModelCapacity, estimate_request_tokens
 from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_schema_v1 import work
 from qq_ai_bot.services import main_agent_turns
 
@@ -39,17 +38,35 @@ async def capacity_wire():
 
 
 @pytest.mark.parametrize(
-    "smaller_window,fresh_unfit", [(False, False), (True, False), (True, True)]
+    "smaller_window,fresh_unfit,soft_only",
+    [(False, False, False), (True, False, False), (True, True, False), (False, False, True)],
 )
 async def test_two_chinese_turns_rebase_large_frozen_snapshot_before_dispatch(
-    database, tmp_path, monkeypatch, smaller_window, fresh_unfit, caplog, capacity_wire
+    database, tmp_path, monkeypatch, smaller_window, fresh_unfit, soft_only, caplog, capacity_wire
 ):
     provider = FakeLLMProvider()
-    provider._responder = lambda request: (
-        _tool("send_message", {"text": "收到。"}, f"send-{len(provider.requests)}")
-        if len(provider.requests) % 2
-        else ChatResponse("已发送。", 0)
-    )
+
+    def respond(request):
+        if request.structured_output:
+            source = json.loads(request.messages[-1].content)
+            return ChatResponse(
+                json.dumps(
+                    {
+                        "facts": [{"text": "保留历史观察摘要", "refs": source["source_refs"]}],
+                        "pending": [],
+                        "next_steps": [],
+                    }
+                ),
+                0,
+            )
+        count = sum(not item.structured_output for item in provider.requests)
+        return (
+            _tool("send_message", {"text": "收到。"}, f"send-{count}")
+            if count % 2
+            else ChatResponse("已发送。", 0)
+        )
+
+    provider._responder = respond
     env, harness, chat, state, message = await _scene(database, tmp_path, provider)
     http_requests = capacity_wire(chat, provider) if fresh_unfit else None
     if fresh_unfit:
@@ -63,21 +80,30 @@ async def test_two_chinese_turns_rebase_large_frozen_snapshot_before_dispatch(
         )
     message = replace(message, text="中文提问" * 75)
     old_snapshot = "old-public-material-" * 7500 if smaller_window else "旧资料" * 3000
+    if soft_only:
+        old_snapshot = "旧公开运行资料" * 9000
     current_snapshot = {"text": old_snapshot}
-    read_state = WorkControl.runtime_state
+    read_state = state.snapshot
 
-    async def runtime_state(control):
-        return {
-            **await read_state(control),
-            "test_scoped_observation": current_snapshot["text"],
-        }
+    def runtime_state():
+        return [
+            *read_state(),
+            {"slot": 2, "text": current_snapshot["text"], "revision": 1},
+        ]
 
-    monkeypatch.setattr(WorkControl, "runtime_state", runtime_state)
+    monkeypatch.setattr(state, "snapshot", runtime_state)
     window = {"value": None}
     snapshot = chat._runtime_config.snapshot
 
     async def configured_snapshot(*args, **kwargs):
         runtime = await snapshot(*args, **kwargs)
+        if soft_only:
+            return replace(
+                runtime,
+                context=replace(
+                    runtime.context, window_tokens=524288, compaction_window_tokens=90000
+                ),
+            )
         return (
             replace(runtime, context=replace(runtime.context, window_tokens=window["value"]))
             if window["value"] is not None
@@ -96,7 +122,10 @@ async def test_two_chinese_turns_rebase_large_frozen_snapshot_before_dispatch(
             # Reproduce the planner's compiled fresh input before it substitutes
             # the oversized old epoch. The low connection ceiling is an isolated
             # test boundary; no real profile or model window is changed.
-            fresh = chat._prompt_composer.compose(**kwargs, short_state=state.snapshot())
+            fresh = chat._prompt_composer.compose(
+                **{key: value for key, value in kwargs.items() if key != "before_preparation"},
+                short_state=state.snapshot(),
+            )
             runtime = kwargs["runtime"]
             fresh_estimates.append(
                 estimate_request_tokens(
@@ -129,7 +158,11 @@ async def test_two_chinese_turns_rebase_large_frozen_snapshot_before_dispatch(
             )
             base = estimate_request_tokens(request)
             margin = 55000 if smaller_window else 15000
-            budget = math.ceil((base + margin + 4096) / runtime.context.compaction_trigger_ratio)
+            budget = (
+                524288
+                if soft_only
+                else math.ceil((base + margin + 4096) / runtime.context.compaction_trigger_ratio)
+            )
             capacity["value"] = ModelCapacity(input_tokens=budget)
             assert base <= int(budget * runtime.context.compaction_trigger_ratio) - 4096
         return composition
@@ -141,10 +174,18 @@ async def test_two_chinese_turns_rebase_large_frozen_snapshot_before_dispatch(
     original_input = tuple(first_request.messages)
     async with database.sessions() as reader:
         saved = (await reader.scalars(select(PromptProjectionModel))).one()
-        original_epoch, original_payload = saved.epoch_id, saved.payload_json
+        original_epoch, original_revision, original_payload = (
+            saved.epoch_id,
+            saved.revision,
+            saved.payload_json,
+        )
         assert old_snapshot in original_payload
     budget = capacity["value"].input_tokens
     assert all(estimate_request_tokens(request) <= budget for request in provider.requests)
+    if soft_only:
+        # The persisted public snapshot is legal under the enlarged hard limit.
+        # Reopening must still rebase it at the independent maintenance window.
+        assert 90000 < estimate_request_tokens(first_request) < budget
     state.update({"slot": 1, "text": "current-safe-snapshot", "expected_revision": 1})
     current_snapshot["text"] = "current-safe-runtime"
     if smaller_window:
@@ -169,17 +210,17 @@ async def test_two_chinese_turns_rebase_large_frozen_snapshot_before_dispatch(
         assert fresh_estimates and fresh_estimates[-1] > 1
         assert result.reason == "capacity_failure"
         assert len(sender.messages) == 1
-        assert "上下文超过容量限制" in sender.messages[0].text
-        assert "本次请求未完整完成" in sender.messages[0].text
+        assert "容量限制" in sender.messages[0].text
+        assert "已有结果会保留" in sender.messages[0].text
         assert "内部错误" not in sender.messages[0].text
-        assert "exception_category=PromptCapacityError" in caplog.text
+        assert "exception_category=WorkCapacityError" in caplog.text
         assert len(provider.requests) == 2 and len(http_requests) == 2
         assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
         async with database.sessions() as reader:
             saved = (await reader.scalars(select(PromptProjectionModel))).one()
             assert (saved.epoch_id, saved.revision, saved.payload_json) == (
                 original_epoch,
-                1,
+                original_revision,
                 original_payload,
             )
             assert saved.invalidated_reason is None
@@ -196,21 +237,31 @@ async def test_two_chinese_turns_rebase_large_frozen_snapshot_before_dispatch(
             assert (await reader.execute(select(work))).first() is None
         assert first_request.messages == original_input and old_snapshot in original_payload
         return
-    assert result.reason == "chat" and len(provider.requests) == 4
-    assert provider.requests[2].tools == first_request.tools
-    assert tuple(item for item in provider.requests[2].messages if item.role == "system") == (
+    main_requests = [item for item in provider.requests if not item.structured_output]
+    assert result.reason == "chat" and len(main_requests) == 4
+    assert main_requests[2].tools == first_request.tools
+    assert tuple(item for item in main_requests[2].messages if item.role == "system") == (
         tuple(item for item in first_request.messages if item.role == "system")
     )
     assert capacity["value"].input_tokens == budget
     assert all(estimate_request_tokens(request) <= budget for request in provider.requests)
     if smaller_window:
         assert all(
-            estimate_request_tokens(request) <= window["value"] for request in provider.requests[2:]
+            estimate_request_tokens(request) <= window["value"] for request in main_requests[2:]
         )
     next_input = json.dumps(
-        [item.content for item in provider.requests[2].messages], ensure_ascii=False
+        [item.content for item in main_requests[2].messages], ensure_ascii=False
     )
     assert "current-safe-runtime" in next_input and "current-safe-snapshot" in next_input
+    if not smaller_window and not soft_only:
+        # This small old snapshot still fits the unchanged maintenance window.
+        # Its bytes remain frozen while the fresh state is appended at the end.
+        assert old_snapshot in next_input
+        async with database.sessions() as reader:
+            saved = (await reader.scalars(select(PromptProjectionModel))).one()
+            assert saved.epoch_id == original_epoch
+        assert first_request.messages == original_input
+        return
     assert old_snapshot not in next_input and "original-snapshot" not in next_input
     async with database.sessions() as reader:
         saved = (await reader.scalars(select(PromptProjectionModel))).one()
@@ -262,7 +313,8 @@ async def test_unreachable_soft_reserve_does_not_rebuild_a_hard_fitting_epoch(
     kwargs = {**kwargs, "context": context}
     runtime = kwargs["runtime"]
     fresh = chat._prompt_composer.compose(
-        **kwargs, short_state=chat.runtime.runner.main_contract.state.snapshot()
+        **{key: value for key, value in kwargs.items() if key != "before_preparation"},
+        short_state=chat.runtime.runner.main_contract.state.snapshot(),
     )
     request = ChatRequest(
         messages=fresh.messages,
@@ -275,7 +327,14 @@ async def test_unreachable_soft_reserve_does_not_rebuild_a_hard_fitting_epoch(
     )
     fresh_tokens = estimate_request_tokens(request)
     budget = fresh_tokens + 5000
-    assert int(budget * runtime.context.compaction_trigger_ratio) - 4096 < fresh_tokens < budget
+    soft_window = max(1, fresh_tokens - 1)
+    kwargs = {
+        **kwargs,
+        "runtime": replace(
+            runtime, context=replace(runtime.context, compaction_window_tokens=soft_window)
+        ),
+    }
+    assert soft_window < fresh_tokens < budget
     monkeypatch.setattr(
         chat.runtime.runner._models, "capacity", lambda task: ModelCapacity(input_tokens=budget)
     )
@@ -308,12 +367,14 @@ async def test_unreachable_soft_reserve_does_not_rebuild_a_hard_fitting_epoch(
         return result
 
     monkeypatch.setattr(main_agent_turns, "prepare_history", record)
-    composition = await compose(**kwargs)
-    assert preparations[0].reason is None
-    assert preparations[0].previous is not None
-    actual = replace(request, messages=composition.messages)
-    assert estimate_request_tokens(actual) <= budget
-    if not raw_only:
-        assert "original-snapshot" in json.dumps([item.content for item in actual.messages])
-        assert "no_active_work" in json.dumps([item.content for item in actual.messages])
+    for _ in range(2):
+        composition = await compose(**kwargs)
+        assert preparations[-1].reason is None
+        assert preparations[-1].previous is not None
+        actual = replace(request, messages=composition.messages)
+        assert estimate_request_tokens(actual) <= budget
+        if not raw_only:
+            assert "original-snapshot" in json.dumps([item.content for item in actual.messages])
+            assert "no_active_work" in json.dumps([item.content for item in actual.messages])
+    assert len(preparations) == 2
     assert len(provider.requests) == 2

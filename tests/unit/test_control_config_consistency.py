@@ -9,6 +9,7 @@ from tests.conftest import make_settings
 from tests.unit.test_control_plane_foundation import context
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
+from qq_ai_bot.admin.models import ConfigApplyMode
 from qq_ai_bot.control_plane import (
     ControlCommand,
     ControlCommandError,
@@ -101,6 +102,56 @@ async def test_context_windows_are_hot_and_watermarks_validate_inherited_scopes(
         0.7,
     )
     assert original.context.window_tokens == 96000
+
+
+@pytest.mark.asyncio
+async def test_soft_compaction_window_is_hot_scoped_and_survives_service_reload(database):
+    runtime, person, space = await setup(database)
+    key = "context.compaction_window_tokens"
+    original = await runtime.snapshot(user_id=person.text, group_id=space.text)
+    assert original.context.compaction_window_tokens == 90000
+    spec = runtime.registry.get(key)
+    assert spec.apply_mode is ConfigApplyMode.HOT
+    assert spec.minimum == 1 and spec.maximum is None
+
+    assert (await set_value(runtime, "context.window_tokens", 524288)).success
+    assert (await set_value(runtime, "context.work_window_tokens", 524288)).success
+    global_change = await set_value(runtime, key, 88000)
+    assert global_change.success and not global_change.pending_restart
+    assert global_change.change_id is not None and global_change.version == 1
+    assert (await runtime.snapshot()).context.compaction_window_tokens == 88000
+    assert (await set_value(runtime, key, 82000, "group", space.text)).success
+    assert (await set_value(runtime, key, 78000, "user", person.text)).success
+    scoped = await runtime.snapshot(user_id=person.text, group_id=space.text)
+    assert scoped.context.compaction_window_tokens == 78000
+    assert (scoped.context.window_tokens, scoped.context.work_window_tokens) == (524288, 524288)
+    assert scoped.context.compaction_trigger_ratio == 0.90
+    assert scoped.context.work_compaction_trigger_ratio == 0.90
+    assert (await runtime.snapshot(group_id=space.text)).context.compaction_window_tokens == 82000
+    assert original.context.compaction_window_tokens == 90000
+    assert original.context.window_tokens == 96000
+
+    reloaded = RuntimeConfigService(settings=make_settings(database.url), database=database)
+    await reloaded.initialize()
+    effective = await reloaded.get_effective(key, user_id=person.text, group_id=space.text)
+    assert effective.value == 78000 and effective.source == "runtime:user"
+    assert (await reloaded.snapshot()).context.compaction_window_tokens == 88000
+    assert (
+        await reloaded.snapshot(user_id=person.text, group_id=space.text)
+    ).context.compaction_window_tokens == 78000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("soft_window", [1, 3000000])
+async def test_soft_compaction_policy_has_no_artificial_capacity_ceiling(database, soft_window):
+    runtime, _, _ = await setup(database)
+    assert (await set_value(runtime, "context.compaction_window_tokens", soft_window)).success
+    actual = await runtime.snapshot()
+    assert actual.context.compaction_window_tokens == soft_window
+    assert (actual.context.window_tokens, actual.context.work_window_tokens) == (96000, 128000)
+    invalid = await set_value(runtime, "context.compaction_window_tokens", 0)
+    assert not invalid.success and invalid.error_category == "validation_error"
+    assert (await runtime.snapshot()).context.compaction_window_tokens == soft_window
 
 
 @pytest.mark.asyncio

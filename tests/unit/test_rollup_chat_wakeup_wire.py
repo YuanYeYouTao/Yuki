@@ -5,7 +5,9 @@ import pytest
 
 @pytest.mark.parametrize("protocol", ["responses", "chat_completions"])
 @pytest.mark.asyncio
-async def test_rollup_interrupt_reenters_main_contract(database, tmp_path, monkeypatch, protocol):
+async def test_rollup_update_keeps_main_chain_and_observes_new_input(
+    database, tmp_path, monkeypatch, protocol
+):
     from dataclasses import replace
 
     from tests.conftest import MemorySender, build_harness, make_settings
@@ -117,7 +119,10 @@ async def test_rollup_interrupt_reenters_main_contract(database, tmp_path, monke
     assert not sender.messages
 
     assert len(provider.requests) == 4
-    assert any("等待期间的新补充" in (m.content or "") for m in provider.requests[1].messages)
+    assert [
+        json.dumps(body, ensure_ascii=False).count("等待期间的新补充") for body in captured
+    ] == [0, 1, 1, 1]
+    assert len({request.request_chain_id for request in provider.requests}) == 1
     assert all(request.tools == provider.requests[0].tools for request in provider.requests[1:])
     assert all(
         request.native_tools == provider.requests[1].native_tools
@@ -128,14 +133,21 @@ async def test_rollup_interrupt_reenters_main_contract(database, tmp_path, monke
     assert '"name":"send_message"' in json.dumps(captured, separators=(",", ":"))
     history_key = "input" if protocol == "responses" else "messages"
     assert captured[3][history_key][: len(captured[1][history_key])] == captured[1][history_key]
-    assert len(consumed) == 1 and consumed[0][1] > 0
+    # No rollup interruption/wakeup: the original loop observes the event at its
+    # next paired boundary, so there is no separate wakeup consumer.
+    assert consumed == []
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", ["source_only", "mixed_failure", "owned_work"])
-async def test_parallel_source_change_preserves_retry_owner_and_other_failures(monkeypatch, case):
+async def test_parallel_source_change_preserves_retry_owner_and_other_failures(
+    database, tmp_path, monkeypatch, case
+):
+    from dataclasses import replace
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
+
+    from tests.unit.test_work_reporting_runner import case as runner_case
 
     from qq_ai_bot.domain.conversations import ConversationScope
     from qq_ai_bot.persistence.event_repository import ConversationReadVersion
@@ -173,7 +185,8 @@ async def test_parallel_source_change_preserves_retry_owner_and_other_failures(m
         if case == "owned_work"
         else None
     )
-    runtime = SimpleNamespace(work_control=control, max_model_requests=4)
+    fixture = await runner_case(database, tmp_path, [], reporting="quiet")
+    runtime = replace(fixture.runtime, work_control=control, max_model_requests=4)
     if control is not None:
         result = await runner._run_with_receipts((), runtime, None)
         assert result.suppress_delivery

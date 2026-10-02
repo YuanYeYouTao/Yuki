@@ -209,6 +209,8 @@ def test_rollup_token_watermarks_are_ordered() -> None:
         )
     settings = Settings(_env_file=None)
     assert settings.context_window_tokens == 96000
+    assert settings.context_compaction_window_tokens == 90000
+    assert settings.conversation.context_compaction_window_tokens == 90000
     assert settings.work_context_window_tokens == 128000
     assert settings.conversation_rollup_trigger_ratio == 0.90
     assert settings.conversation_rollup_target_ratio == 0.60
@@ -218,6 +220,26 @@ def test_rollup_token_watermarks_are_ordered() -> None:
         Settings(
             _env_file=None, work_compaction_target_ratio=0.90, work_compaction_trigger_ratio=0.90
         )
+
+
+@pytest.mark.parametrize("soft_window", [1, 90000, 3000000])
+def test_compaction_window_environment_is_independent_of_hard_capacity(
+    monkeypatch: pytest.MonkeyPatch, soft_window: int
+) -> None:
+    monkeypatch.setenv("CONTEXT_COMPACTION_WINDOW_TOKENS", str(soft_window))
+    settings = Settings(
+        _env_file=None, context_window_tokens=524288, work_context_window_tokens=524288
+    )
+    assert settings.context_compaction_window_tokens == soft_window
+    assert settings.conversation.context_compaction_window_tokens == soft_window
+    assert (settings.context_window_tokens, settings.work_context_window_tokens) == (524288, 524288)
+    assert settings.conversation_rollup_trigger_ratio == 0.90
+    assert settings.work_compaction_trigger_ratio == 0.90
+
+
+def test_compaction_window_requires_positive_policy_value() -> None:
+    with pytest.raises(ValidationError, match="context_compaction_window_tokens"):
+        Settings(_env_file=None, context_compaction_window_tokens=0)
 
 
 def test_daily_chat_delay_range_must_be_ordered() -> None:

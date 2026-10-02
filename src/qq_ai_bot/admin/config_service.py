@@ -1467,6 +1467,7 @@ class RuntimeConfigService:
                 rollup_summary_characters=int(
                     cast(int, value("context.rollup_summary_characters"))
                 ),
+                compaction_window_tokens=int(cast(int, value("context.compaction_window_tokens"))),
             ),
             memory=MemoryRetrievalRuntimeConfig(
                 retrieval_enabled=bool(value("memory.retrieval_enabled")),

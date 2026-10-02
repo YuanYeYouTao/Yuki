@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert
@@ -28,7 +28,11 @@ from qq_ai_bot.runtime.subagent_schema import media, media_refs
 from qq_ai_bot.runtime.work_media import externalize, hydrate, references
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkLease, WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, journal, work
+from qq_ai_bot.services.context_boundary import Publication
 from qq_ai_bot.services.turn_transcript import TurnTranscript
+
+if TYPE_CHECKING:
+    from qq_ai_bot.runtime.work_control import WorkControl
 
 
 def _continuation(value: dict[str, Any]) -> ProviderContinuation:
@@ -111,7 +115,50 @@ class WorkJournal:
         self.repository = repository
         self.objects = ProtocolStore(repository.database)
 
-    async def load(self, lease: WorkLease, work_id: str, contract: str) -> JournalSnapshot:
+    async def load(
+        self,
+        lease: WorkLease,
+        work_id: str,
+        contract: str,
+        *,
+        source_control: WorkControl | None = None,
+    ) -> JournalSnapshot:
+        if source_control is not None and (
+            source_control.lease != lease
+            or source_control.current is None
+            or source_control.current["id"] != work_id
+        ):
+            raise WorkConflict("work_journal_source_control_mismatch")
+        loaded = await self._load(
+            lease, work_id, contract, retain_source=source_control is not None
+        )
+        if loaded.reason != "source_changed" or loaded.record is None or source_control is None:
+            return loaded
+        # The read/file-hydration session above is closed before the guard takes
+        # its own short writer. Never substitute newly assembled chat evidence.
+        from dataclasses import replace
+
+        from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
+
+        payload = json.loads(loaded.record["payload_json"])
+        try:
+            guard = WorkSourceGuard.restore(payload["metadata"]["source_guard"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise JournalUnavailable("work_journal_corrupt") from exc
+        if not await guard.check(source_control):
+            return replace(loaded, record=None, compaction_anchor=None)
+        if loaded.record["contract"] != contract:
+            return replace(
+                loaded,
+                reason="contract_changed",
+                record=None,
+                compaction_anchor=payload["metadata"].get("compaction_anchor"),
+            )
+        return JournalSnapshot("resume", loaded.record, loaded.previous_chain)
+
+    async def _load(
+        self, lease: WorkLease, work_id: str, contract: str, *, retain_source: bool
+    ) -> JournalSnapshot:
         async with self.repository.database.sessions() as session:
             source = await session.get(CanonicalConversationModel, lease.conversation_id)
             row = (
@@ -185,7 +232,10 @@ class WorkJournal:
                 and isinstance(item.get("title", ""), str)
                 and isinstance(item.get("snippet", ""), str)
             )
-            if contract_changed or source_changed:
+            retain_original = (
+                source_changed and retain_source and bool(payload["metadata"].get("source_guard"))
+            )
+            if (contract_changed or source_changed) and not retain_original:
                 payload = (
                     payload.get("metadata", {}).get("compaction_anchor")
                     if not source_changed
@@ -217,9 +267,17 @@ class WorkJournal:
             if source_changed:
                 return JournalSnapshot(
                     "source_changed",
+                    record=result if retain_original else None,
                     previous_chain=row["chain_id"],
                     pending_calls=pending_calls,
                     pending_sequence=pending_sequence,
+                    portable_search=portable_search,
+                    portable_search_truncated=bool(progress.get("portable_search_truncated", False))
+                    if isinstance(progress, dict)
+                    else False,
+                    task_material=progress.get("task_material")
+                    if isinstance(progress, dict)
+                    else None,
                 )
             if contract_changed:
                 return JournalSnapshot(
@@ -251,6 +309,7 @@ class WorkJournal:
         metadata: dict[str, Any],
         compaction_versions: tuple[int, int] | None = None,
         communication_updates: dict[str, Any] | None = None,
+        publication: Publication | None = None,
     ) -> dict[str, Any] | None:
         communication_patch = (
             self.repository.encode_communication_updates(communication_updates)
@@ -319,6 +378,8 @@ class WorkJournal:
                         or privacy != frozen_privacy
                     ):
                         raise WorkConflict("work_compaction_source_changed")
+                if publication is not None:
+                    await publication(session)
                 if phase == "response":
                     from qq_ai_bot.runtime.work_recovery_schema import recovery
 

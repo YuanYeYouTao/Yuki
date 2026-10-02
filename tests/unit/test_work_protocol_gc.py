@@ -27,7 +27,7 @@ async def test_active_shared_protocol_refs_survive_gc_and_privacy_releases_last_
     control.current = other
     second = WorkSession(control, "same")
     await second.restore(TurnTranscript((ChatMessage("user", "private same bytes"),)))
-    await second.save("paired")
+    await second.save("dispatched")
     async with database.sessions() as reader:
         first_refs = set(await reader.scalars(select(refs.c.sha256).where(refs.c.work_id == owner)))
         other_refs = set(
@@ -36,8 +36,14 @@ async def test_active_shared_protocol_refs_survive_gc_and_privacy_releases_last_
     assert first_refs & other_refs
     assert await first.journal.objects.cleanup(grace_seconds=0) == 0
     await first.journal.invalidate(control.lease, owner)
-    assert await first.journal.objects.cleanup(grace_seconds=0) == 0
-    for digest in first_refs & other_refs:
+    # Work-specific manifests retire with their last owner; shared original
+    # material remains protected by the second live protocol, including an
+    # unresolved dispatched checkpoint rather than old paired business input.
+    retired = first_refs - other_refs
+    assert await first.journal.objects.cleanup(grace_seconds=0) == len(retired)
+    for digest in retired:
+        assert not first.journal.objects._path(digest).exists()
+    for digest in other_refs:
         assert await second.journal.objects.get_bytes(digest)
     async with database.immediate_session() as writer:
         await control.repository.purge_scope(writer, control.lease.conversation_id)

@@ -43,7 +43,10 @@ async def test_fragmented_original_record_recovers_partial_page_without_changing
     session.transcript.append(ChatMessage("assistant", text))
     await session.save("paired")
     original_chain = session.transcript.chain_id
-    expected_record = json.dumps(session.public_records()[2], ensure_ascii=False)
+    record_index = next(
+        index for index, record in enumerate(session.public_records()) if record["content"] == text
+    )
+    expected_record = json.dumps(session.public_records()[record_index], ensure_ascii=False)
     fits = _fits(4200)
     source = await session.summary_source(fits=fits)
     pieces = []
@@ -53,7 +56,7 @@ async def test_fragmented_original_record_recovers_partial_page_without_changing
         assert fits(source)
         payload = json.loads(source)
         for fragment in payload.get("source_fragments", []):
-            if fragment["ref"] == "record:2":
+            if fragment["ref"] == f"record:{record_index}":
                 pieces.append(fragment)
         raw = summary_json(source)
         following = await session.next_summary_source(raw, fits=fits)

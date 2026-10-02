@@ -84,7 +84,9 @@ def rollup_policy_from_settings(settings: Settings) -> RollupPolicyConfig:
     """Build the production rollup policy used by recount and live append."""
 
     return RollupPolicyConfig(
-        context_token_budget=settings.context_window_tokens,
+        context_token_budget=min(
+            settings.context_window_tokens, settings.context_compaction_window_tokens
+        ),
         trigger_ratio=settings.conversation_rollup_trigger_ratio,
         target_ratio=settings.conversation_rollup_target_ratio,
         batch_max_events=settings.conversation_rollup_batch_max_events,

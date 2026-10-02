@@ -781,7 +781,7 @@ async def test_bonded_non_superuser_keeps_normal_tools_without_admin_tool(
     assert "bonded" in relationship_prompt
     assert "成人亲密角色聊天" in relationship_prompt
     assert any(
-        "后端按当前执行主体的权限核验调用" in (message.content or "")
+        "使用已声明工具，按真实回执接续" in (message.content or "")
         for message in provider.request.messages
     )
 

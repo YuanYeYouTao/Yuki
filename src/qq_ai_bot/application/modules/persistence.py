@@ -164,7 +164,9 @@ class PersistenceModule:
             metrics=memory_metrics,
         )
         rollup_config = RollupPolicyConfig(
-            context_token_budget=settings.context_window_tokens,
+            context_token_budget=min(
+                settings.context_window_tokens, settings.context_compaction_window_tokens
+            ),
             trigger_ratio=settings.conversation_rollup_trigger_ratio,
             target_ratio=settings.conversation_rollup_target_ratio,
             batch_max_events=settings.conversation_rollup_batch_max_events,
@@ -184,7 +186,9 @@ class PersistenceModule:
             )
             return replace(
                 rollup_config,
-                context_token_budget=snapshot.context.window_tokens,
+                context_token_budget=min(
+                    snapshot.context.window_tokens, snapshot.context.compaction_window_tokens
+                ),
                 trigger_ratio=snapshot.context.compaction_trigger_ratio,
                 target_ratio=snapshot.context.compaction_target_ratio,
                 summary_max_characters=snapshot.context.rollup_summary_characters,
