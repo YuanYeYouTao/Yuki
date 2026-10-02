@@ -12,6 +12,11 @@ from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationRollupEmergencyOverlayModel,
     CanonicalConversationRollupModel,
 )
+from qq_ai_bot.conversation.rollup.coverage import (
+    valid_same_generation_overlay,
+    valid_same_generation_semantic,
+)
+from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
 from qq_ai_bot.persistence.event_repository import ConversationReadVersion
 from qq_ai_bot.persistence.models import ChatEventModel
 
@@ -87,20 +92,67 @@ class WorkSourceGuard:
                         return False
                     additional[row.id] = digest
             identity = (source.kind, source.person_id, source.space_id)
-            values: list[object] = [identity, rows]
-            for model in (
-                CanonicalConversationRollupModel,
-                CanonicalConversationRollupEmergencyOverlayModel,
+            semantic = await session.get(CanonicalConversationRollupModel, version.conversation_id)
+            overlay = await session.get(
+                CanonicalConversationRollupEmergencyOverlayModel, version.conversation_id
+            )
+            # Match prompt snapshot selection. A background semantic checkpoint
+            # below the still-effective overlay is not a new input to this Work.
+            if semantic is not None and semantic.generation != source.generation:
+                return False
+            effective: (
+                CanonicalConversationRollupEmergencyOverlayModel
+                | CanonicalConversationRollupModel
+                | None
+            )
+            if valid_same_generation_overlay(
+                overlay,
+                generation=source.generation,
+                starts_after=source.starts_after_event_id,
+                last_event_id=source.last_event_id,
+                semantic_revision=semantic.revision if semantic is not None else 0,
             ):
-                values.append(
-                    (
-                        await session.execute(
-                            select(model.__table__).where(
-                                model.conversation_id == version.conversation_id,
-                            )
-                        )
-                    ).all()
+                effective = overlay
+                kind = "emergency"
+            elif valid_same_generation_semantic(
+                semantic,
+                generation=source.generation,
+                starts_after=source.starts_after_event_id,
+                last_event_id=source.last_event_id,
+            ):
+                effective = semantic
+                assert semantic is not None
+                kind = semantic.summary_kind
+            else:
+                if semantic is not None:
+                    # Snapshot fallback still carries an existing semantic
+                    # summary. An invalid coverage must not turn it into an
+                    # apparently empty read set and omit its payload fence.
+                    return False
+                effective = None
+                kind = None
+            summary = (
+                (
+                    effective.conversation_id,
+                    effective.generation,
+                    effective.covered_through_event_id,
+                    effective.summary_text,
+                    kind,
+                    effective.source_fingerprint,
+                    effective.revision,
                 )
+                if effective is not None
+                else None
+            )
+            privacy = (
+                await session.scalar(
+                    select(ExecutionTraceStateModel.privacy_generation).where(
+                        ExecutionTraceStateModel.id == 1
+                    )
+                )
+                or 0
+            )
+            values: list[object] = [identity, rows, summary, privacy]
             fingerprint = hashlib.sha256(repr(values).encode()).hexdigest()
             if self.fingerprint is not None and self.fingerprint != fingerprint:
                 return False
@@ -111,18 +163,31 @@ class WorkSourceGuard:
         async with control.repository.database.sessions() as session, session.begin():
             await control.repository._assert_lease(session, control.lease)
             current = await session.get(CanonicalConversationModel, version.conversation_id)
-            if current is None or (
-                current.generation,
-                current.starts_after_event_id,
-                current.prompt_source_revision,
-                current.kind,
-                current.person_id,
-                current.space_id,
-            ) != (
-                version.generation,
-                version.starts_after_event_id,
-                revision,
-                *identity,
+            current_privacy = (
+                await session.scalar(
+                    select(ExecutionTraceStateModel.privacy_generation).where(
+                        ExecutionTraceStateModel.id == 1
+                    )
+                )
+                or 0
+            )
+            if (
+                current is None
+                or (
+                    current.generation,
+                    current.starts_after_event_id,
+                    current.prompt_source_revision,
+                    current.kind,
+                    current.person_id,
+                    current.space_id,
+                )
+                != (
+                    version.generation,
+                    version.starts_after_event_id,
+                    revision,
+                    *identity,
+                )
+                or current_privacy != privacy
             ):
                 return False
         self.fingerprint = fingerprint

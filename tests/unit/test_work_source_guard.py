@@ -15,6 +15,7 @@ from qq_ai_bot.conversation.canonical_db_models import (
 )
 from qq_ai_bot.conversation.projection_revision_schema import EVENT_METADATA_COLUMNS_0082
 from qq_ai_bot.domain.conversations import ConversationScope
+from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
 from qq_ai_bot.identity.canonical_repository import ensure_space
 from qq_ai_bot.persistence.event_repository import ConversationReadVersion, EventLedgerRepository
 from qq_ai_bot.persistence.models import ChatEventModel
@@ -81,7 +82,9 @@ async def test_source_scans_finish_before_writer_and_new_enrichment_remains_allo
     assert guard.additional_events == prior
 
 
-@pytest.mark.parametrize("change", ["metadata", "privacy", "cancel", "reset", "owner"])
+@pytest.mark.parametrize(
+    "change", ["metadata", "privacy", "privacy_counter", "cancel", "reset", "owner"]
+)
 async def test_writer_recheck_rejects_changes_after_read_snapshot(database, monkeypatch, change):
     source = await _event_and_route(database, EventLedgerRepository(database))
     guard, control = await _guard(database, source)
@@ -102,6 +105,12 @@ async def test_writer_recheck_rejects_changes_after_read_snapshot(database, monk
                     await other.execute(
                         delete(ChatEventModel).where(ChatEventModel.id == source.id)
                     )
+                elif change == "privacy_counter":
+                    state = await other.get(ExecutionTraceStateModel, 1)
+                    if state is None:
+                        other.add(ExecutionTraceStateModel(id=1, privacy_generation=1))
+                    else:
+                        state.privacy_generation += 1
                 elif change == "owner":
                     space = await ensure_space(other, "2990", name="other owner")
                     await other.execute(
@@ -236,3 +245,25 @@ async def test_metadata_trigger_closure_and_noop_preserve_revision(database):
             )
         )
     assert before == after
+
+
+async def test_invalid_semantic_coverage_is_not_an_empty_summary_read_set(database):
+    source = await _event_and_route(database, EventLedgerRepository(database))
+    now = datetime.now(UTC)
+    async with database.sessions() as writer, writer.begin():
+        writer.add(
+            CanonicalConversationRollupModel(
+                conversation_id=source.canonical_conversation_id,
+                generation=1,
+                covered_through_event_id=source.id + 100,
+                summary_text="invalid coverage but nonempty compiler summary",
+                summary_kind="model",
+                source_fingerprint="a" * 64,
+                revision=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    guard, control = await _guard(database, source)
+    assert not await guard.check(control)
+    assert guard.fingerprint is None
