@@ -69,3 +69,5 @@ V6 迁移链为 `0065`（关系历史索引）→ `0066`（autonomy 接纳）→
 
 普通搜索续接的容量计量修正与等长缓存窗口核查：
 [2026-10-02 核查记录](../operations/compact-capacity-accounting-2026-10-02.md)。
+实际 Gemini 前缀、AGM 计量与网关方言建议见
+[协议与缓存核查](../operations/gemini-agm-cache-audit-2026-10-02.md)。
