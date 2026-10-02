@@ -103,6 +103,9 @@ class CountingModelExecutor:
     def capacity(self, task: ModelTask) -> ModelCapacity:
         return self._delegate.capacity(task)
 
+    def capacity_request(self, task: ModelTask, request: ChatRequest) -> ChatRequest:
+        return self._delegate.capacity_request(task, request)
+
     def structured_output_mode(self, task: ModelTask) -> StructuredOutputMode:
         return self._delegate.structured_output_mode(task)
 

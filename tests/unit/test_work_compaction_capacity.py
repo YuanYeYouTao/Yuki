@@ -229,6 +229,7 @@ async def test_rejected_candidate_keeps_original_paired_checkpoint(database, tmp
         await session.compact(
             " " if failure == "invalid_summary" else await session_summary(session),
             target_tokens=20000,
+            ceiling_tokens=20000,
             request_template=template,
         )
     assert session.transcript.request() == original
@@ -242,7 +243,7 @@ async def test_rejected_candidate_keeps_original_paired_checkpoint(database, tmp
 @pytest.mark.asyncio
 async def test_auxiliary_output_reservation_rejects_source_before_dispatch(database, tmp_path):
     control, session, initial = await _session(database, tmp_path)
-    session.transcript.append(ChatMessage("assistant", "x" * 120000))
+    session.transcript.append(ChatMessage("assistant", "x" * 12000))
     await session.save("paired")
     snapshot = await _snapshot(database, control.current["id"])
     _, runtime = await _runtime(
@@ -253,7 +254,9 @@ async def test_auxiliary_output_reservation_rejects_source_before_dispatch(datab
         work_compaction_max_output_tokens=32768,
         work_context_window_tokens=65536,
     )
-    capacity = ModelCapacity(context_tokens=65536, output_tokens=4096)
+    # The main request fits, but this model cannot reserve the configured
+    # auxiliary output even with an empty source. Paging cannot fix that.
+    capacity = ModelCapacity(context_tokens=20000, output_tokens=4096)
     executor = SimpleNamespace(capacity=lambda _: capacity, execute=AsyncMock())
     runner = AgentRunner(executor, ConcurrencyManager(1))
     main_request = ChatRequest(
@@ -554,14 +557,15 @@ async def test_one_compaction_pages_all_short_steer_and_keeps_paired_on_page_fai
         ] == identities
         assert session.progress["task_material"]["directives"] == []
     if not failed_requests:
-        assert "records" in sources[0] and "effects" in sources[0]
+        assert sources[0].get("records")
+        assert any(ref.startswith("record:") for ref in sources[0]["source_refs"])
     else:
-        assert "records" not in sources[0] and "effects" not in sources[0]
+        assert not sources[0].get("records") and not sources[0].get("effects")
         assert [
             row["input_id"] for source in sources for row in source["task_inputs"]
         ] == identities[16:]
         assert len(sources) == 2  # The already paid first page is reused after restart.
-    assert all("records" not in source and "effects" not in source for source in sources[1:])
+    assert all(not source.get("records") and not source.get("effects") for source in sources[1:])
     assert all("derived_observations" in source for source in sources[1:])
     row = await control.repository.get(control.current["id"])
     assert row["model_requests"] == failed_requests + len(sources)

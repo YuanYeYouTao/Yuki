@@ -364,13 +364,19 @@ class WorkSession:
             records.append(value)
         return records
 
-    async def summary_source(self) -> str:
+    async def summary_source(self, *, fits: Callable[[str], bool] | None = None) -> str:
         assert self.control.current is not None
         assert self.transcript is not None
         staging = self.progress.get("compaction_staging")
         if staging is not None:
             if staging.get("guard") == await self._compaction_guard():
                 self._compaction_source = deepcopy(staging["source"])
+                if (
+                    fits is not None
+                    and self._compaction_source.get("paging")
+                    and staging.get("final_summary") is None
+                ):
+                    self._compaction_source = await self._source_page(self._compaction_source, fits)
                 return json.dumps(self._compaction_source, ensure_ascii=False)
             # Derived partial work cannot cross a genuine source/contract boundary.
             self.progress.pop("compaction_staging", None)
@@ -463,7 +469,167 @@ class WorkSession:
             "model_observations": observations,
             "effects": evidence,
         }
+        if fits is not None:
+            units = [
+                {"kind": "records", "ref": f"record:{index}", "index": index, "value": value}
+                for index, value in zip(indices, records, strict=True)
+            ]
+            units.extend(
+                {"kind": "model_observations", "ref": f"observation:{index}", "value": value}
+                for index, value in enumerate(observations)
+            )
+            units.extend(
+                {"kind": "effects", "ref": f"effect:{value['effect_key']}", "value": value}
+                for value in evidence
+            )
+            snapshot_ref = await self.journal.objects.put({"units": units})
+            self._compaction_source["paging"] = {
+                "snapshot_ref": snapshot_ref,
+                "cursor": [0, 0],
+                "total_units": len(units),
+            }
+            self._compaction_source = await self._source_page(self._compaction_source, fits)
         return json.dumps(self._compaction_source, ensure_ascii=False)
+
+    async def _source_page(
+        self, source: dict[str, Any], fits: Callable[[str], bool]
+    ) -> dict[str, Any]:
+        """Prepare one complete-budget page from the original immutable source snapshot."""
+        paging = dict(source["paging"])
+        units = (await self.journal.objects.get(paging["snapshot_ref"]))["units"]
+        index, offset = paging["cursor"]
+        page = {
+            key: deepcopy(value)
+            for key, value in source.items()
+            if key
+            not in {
+                "records",
+                "record_source_indices",
+                "model_observations",
+                "effects",
+                "source_fragments",
+                "source_refs",
+                "paging",
+            }
+        }
+        page.update(records=[], record_source_indices=[], model_observations=[], effects=[])
+        refs = {"goal"}
+        for section in ("completed", "pending", "failures", "artifacts", "next_steps"):
+            for fact in page.get("derived_observations", {}).get(section, []):
+                refs.update(fact["refs"])
+        for fact in [
+            *page["task_material"].get("directives", []),
+            *page["task_material"].get("corrections", []),
+        ]:
+            refs.update(fact.get("refs", []))
+            refs.update(fact.get("previous", {}).get("refs", []))
+        inherited_refs = set(refs)
+        if page["task_inputs"]:
+            page["recent_task_inputs"] = page["task_inputs"][-2:]
+
+        def input_refs() -> None:
+            refs.clear()
+            refs.update(inherited_refs)
+            refs.update(
+                f"input:{item['input_id']}"
+                for item in [
+                    *page["task_inputs"],
+                    *page["recent_task_inputs"],
+                ]
+            )
+
+        input_refs()
+
+        def encoded(candidate: dict[str, Any], cursor: list[int], extra: str | None = None) -> str:
+            candidate["source_refs"] = sorted(refs | ({extra} if extra else set()))
+            candidate["paging"] = {**paging, "next_cursor": cursor}
+            return json.dumps(without_empty_records(candidate), ensure_ascii=False)
+
+        def without_empty_records(candidate: dict[str, Any]) -> dict[str, Any]:
+            return {
+                key: value
+                for key, value in candidate.items()
+                if key
+                not in {
+                    "records",
+                    "record_source_indices",
+                    "model_observations",
+                    "effects",
+                    "source_fragments",
+                }
+                or value
+            }
+
+        while not fits(encoded(page, [index, offset])):
+            if len(page["task_inputs"]) > 1:
+                page["task_inputs"].pop()
+                page["recent_task_inputs"] = page["task_inputs"][-2:]
+            elif page["recent_task_inputs"]:
+                page["recent_task_inputs"].pop(0)
+            else:
+                raise WorkCapacityError("work_compaction_source_capacity")
+            input_refs()
+        while index < len(units):
+            unit = units[index]
+            candidate = deepcopy(page)
+            if not offset:
+                candidate[unit["kind"]].append(unit["value"])
+                if unit["kind"] == "records":
+                    candidate["record_source_indices"].append(unit["index"])
+                if fits(encoded(candidate, [index + 1, 0], unit["ref"])):
+                    page = candidate
+                    refs.add(unit["ref"])
+                    index += 1
+                    continue
+            # A large public record remains intact in the private source snapshot;
+            # its JSON text is presented in ordered fragments under the original ref.
+            text = json.dumps(unit["value"], ensure_ascii=False)
+            low, high = 0, len(text) - offset
+            while low < high:
+                count = (low + high + 1) // 2
+                candidate = deepcopy(page)
+                candidate.setdefault("source_fragments", []).append(
+                    {
+                        "ref": unit["ref"],
+                        "kind": unit["kind"],
+                        "encoding": "json",
+                        "offset": offset,
+                        "total_characters": len(text),
+                        "text": text[offset : offset + count],
+                    }
+                )
+                cursor = [index + 1, 0] if offset + count == len(text) else [index, offset + count]
+                if fits(encoded(candidate, cursor, unit["ref"])):
+                    low = count
+                else:
+                    high = count - 1
+            if not low:
+                if (
+                    page["records"]
+                    or page["model_observations"]
+                    or page["effects"]
+                    or page.get("source_fragments")
+                ):
+                    break
+                raise WorkCapacityError("work_compaction_source_capacity")
+            page.setdefault("source_fragments", []).append(
+                {
+                    "ref": unit["ref"],
+                    "kind": unit["kind"],
+                    "encoding": "json",
+                    "offset": offset,
+                    "total_characters": len(text),
+                    "text": text[offset : offset + low],
+                }
+            )
+            refs.add(unit["ref"])
+            offset += low
+            if offset == len(text):
+                index += 1
+                offset = 0
+            break
+        encoded(page, [index, offset])
+        return without_empty_records(page)
 
     @property
     def compaction_ready_summary(self) -> str | None:
@@ -522,7 +688,13 @@ class WorkSession:
                     key: value
                     for key, value in self._compaction_source.items()
                     if key
-                    not in {"records", "record_source_indices", "model_observations", "effects"}
+                    not in {
+                        "records",
+                        "record_source_indices",
+                        "model_observations",
+                        "effects",
+                        "source_fragments",
+                    }
                 }
             ),
             "final_summary": final_summary,
@@ -543,13 +715,30 @@ class WorkSession:
         if self._compaction_source["frozen_guard"] != await self._compaction_guard():
             raise WorkConflict("work_compaction_source_changed")
 
-    async def next_summary_source(self, raw: str) -> str | None:
+    async def next_summary_source(
+        self, raw: str, *, fits: Callable[[str], bool] | None = None
+    ) -> str | None:
         """Accumulate one validated page in memory; the main journal stays paired."""
         from qq_ai_bot.runtime.work_compaction import validate_summary
 
         source = self._compaction_source
         assert source is not None
         structured, material = validate_summary(raw, source)
+        paging = source.get("paging")
+        if paging is not None:
+            if fits is None:
+                raise WorkCapacityError("work_compaction_source_capacity")
+            cursor = paging["next_cursor"]
+            if cursor[0] < paging["total_units"]:
+                next_source = {
+                    **source,
+                    "task_material": material,
+                    "task_inputs": [],
+                    "derived_observations": structured,
+                    "paging": {**paging, "cursor": cursor},
+                }
+                self._compaction_source = await self._source_page(next_source, fits)
+                return json.dumps(self._compaction_source, ensure_ascii=False)
         if material["covered_input_id"] >= source["snapshot_input_id"]:
             return None
         batch = await self.task_inputs(
@@ -586,6 +775,11 @@ class WorkSession:
             "source_refs": sorted(refs),
             "derived_observations": structured,
         }
+        if paging is not None and fits is not None:
+            self._compaction_source["paging"] = {**paging, "cursor": paging["next_cursor"]}
+            self._compaction_source = await self._source_page(self._compaction_source, fits)
+        elif fits is not None and not fits(json.dumps(self._compaction_source, ensure_ascii=False)):
+            raise WorkCapacityError("work_compaction_source_capacity")
         return json.dumps(self._compaction_source, ensure_ascii=False)
 
     async def task_inputs(
@@ -633,10 +827,6 @@ class WorkSession:
                 "source_key": row["source_key"],
                 "text": payload.get("text", ""),
             }
-            if len(json.dumps([*result, item], ensure_ascii=False).encode()) > 65536:
-                if not result or recent:
-                    raise WorkCapacityError("work_task_input_source_capacity")
-                break  # The next complete input starts the next auxiliary page.
             result.append(item)
         return result
 
@@ -656,11 +846,13 @@ class WorkSession:
         summary: str,
         *,
         target_tokens: int = 64000,
+        ceiling_tokens: int | None = None,
         request_template: ChatRequest | None = None,
     ) -> TurnTranscript:
         assert self.transcript is not None
         self.require_compaction_anchor()
         assert self.compaction_anchor is not None
+        anchor_messages = self.compaction_anchor.request().messages
         from qq_ai_bot.runtime.work_compaction import validate_summary
 
         if self._compaction_source is None:
@@ -675,6 +867,11 @@ class WorkSession:
         ):
             raise WorkCapacityError("work_compaction_source_changed")
         structured, task_material = validate_summary(summary, source)
+        if (
+            source.get("paging")
+            and source["paging"]["next_cursor"][0] < source["paging"]["total_units"]
+        ):
+            raise WorkCapacityError("work_compaction_unprocessed_source")
         if task_material["covered_input_id"] < source["snapshot_input_id"]:
             raise WorkCapacityError("work_compaction_unprocessed_inputs")
         previous = self.transcript.chain_id
@@ -686,7 +883,18 @@ class WorkSession:
         )
         previous_ref = await self.journal.objects.put(previous_manifest)
         tail = []
+        anchor_records = []
+        for message in anchor_messages:
+            value = asdict(message)
+            value.pop("response_item", None)
+            value.pop("reasoning_content", None)
+            images = value.pop("images", ())
+            if images:
+                value["images_retained_in_protocol_record"] = len(images)
+            anchor_records.append(value)
         for record in self.public_records():
+            if record in anchor_records:
+                continue
             try:
                 capsule = json.loads(record.get("content") or "null")
             except (ValueError, TypeError):
@@ -703,58 +911,129 @@ class WorkSession:
                 # retention; a recent-record suffix must not recopy older steer.
                 continue
             tail.append(record)
-        tail = tail[-16:]
+        groups: list[list[dict[str, Any]]] = []
+        used: set[int] = set()
+        for index, record in enumerate(tail):
+            if index in used:
+                continue
+            calls = record.get("tool_calls", [])
+            if calls:
+                paired: list[int] = []
+                for call in calls:
+                    match = next(
+                        (
+                            position
+                            for position in range(index + 1, len(tail))
+                            if (tail[position].get("call_id") or tail[position].get("tool_call_id"))
+                            == call["id"]
+                        ),
+                        None,
+                    )
+                    if match is None:
+                        paired = []
+                        break
+                    paired.append(match)
+                if len(paired) == len(calls):
+                    groups.append([record, *(tail[position] for position in paired)])
+                    used.update(paired)
+            elif not (record.get("call_id") or record.get("tool_call_id")):
+                groups.append([record])
+        groups = groups[-16:]
         rounds = [
             *self.progress.get("retained_tool_rounds", []),
             *self.progress.get("model_observations", []),
         ][-8:]
         evidence = await self.compaction_evidence()
-        candidate = TurnTranscript(self.compaction_anchor.request().messages)
-        candidate.append(
-            ChatMessage(
-                role="user",
-                content=json.dumps(
-                    {
-                        "kind": "explicit_context_compaction",
-                        "previous_chain_id": previous,
-                        "summary": structured,
-                        "task_material": task_material,
-                        "source_range": {
-                            "chain_id": previous,
-                            "record_count": source["record_count"],
-                            "covered_input_id": task_material["covered_input_id"],
-                        },
-                        "execution_evidence": evidence,
-                        "previous_protocol_ref": previous_ref,
-                        "recent_raw_records": tail,
-                        "recent_tool_rounds": rounds,
-                        "instruction": "继续原目标；先核对原执行 ID，不能因压缩重跑或重复发布。",
-                    },
-                    ensure_ascii=False,
-                ),
-            )
-        )
-        if request_template is not None:
-            size = estimate_request_tokens(
-                replace(
-                    request_template,
-                    messages=candidate.request().messages,
-                    request_chain_id=candidate.chain_id,
-                    continuation=None,
-                    continuation_items=(),
-                    continuation_messages=(),
-                    function_outputs=(),
+        capsule = {
+            "kind": "explicit_context_compaction",
+            "previous_chain_id": previous,
+            "summary": structured,
+            "task_material": task_material,
+            "source_range": {
+                "chain_id": previous,
+                "record_count": source["record_count"],
+                "covered_input_id": task_material["covered_input_id"],
+            },
+            "execution_evidence": evidence,
+            "previous_protocol_ref": previous_ref,
+            "recent_raw_records": [],
+            "recent_tool_rounds": [],
+            "instruction": "继续原目标；先核对原执行 ID，不能因压缩重跑或重复发布。",
+        }
+
+        def candidate_and_size() -> tuple[TurnTranscript, int]:
+            result = TurnTranscript(anchor_messages)
+            result.append(ChatMessage(role="user", content=json.dumps(capsule, ensure_ascii=False)))
+            if request_template is not None:
+                measured = estimate_request_tokens(
+                    replace(
+                        request_template,
+                        messages=result.request().messages,
+                        request_chain_id=result.chain_id,
+                        continuation=None,
+                        continuation_items=(),
+                        continuation_messages=(),
+                        function_outputs=(),
+                    )
                 )
-            )
+            else:
+                measured = estimate_text_tokens(
+                    json.dumps(encode_transcript(result), ensure_ascii=False)
+                )
+            return result, measured
+
+        if request_template is not None:
             original_size = estimate_request_tokens(request_template)
         else:
-            size = estimate_text_tokens(
-                json.dumps(encode_transcript(candidate), ensure_ascii=False)
-            )
             original_size = estimate_text_tokens(
                 json.dumps(encode_transcript(original), ensure_ascii=False)
             )
-        if size > target_tokens or size >= original_size * 0.90:
+        candidate, size = candidate_and_size()
+        ceiling = min(
+            ceiling_tokens if ceiling_tokens is not None else original_size - 1,
+            original_size - 1,
+        )
+        limit = ceiling if size > target_tokens else min(target_tokens, ceiling)
+        selected: list[list[dict[str, Any]]] = []
+        for group in reversed(groups):
+            capsule["recent_raw_records"] = [
+                record for group in [group, *selected] for record in group
+            ]
+            proposed, proposed_size = candidate_and_size()
+            if proposed_size <= limit:
+                selected.insert(0, group)
+                candidate, size = proposed, proposed_size
+            else:
+                capsule["recent_raw_records"] = [record for group in selected for record in group]
+        retained_rounds: list[dict[str, Any]] = []
+        raw = capsule["recent_raw_records"]
+        for round_value in reversed(rounds):
+            value = deepcopy(round_value)
+            if any(
+                item.get("role") == "assistant"
+                and item.get("content") == value.get("content")
+                and item.get("tool_calls", []) == value.get("tool_calls", [])
+                for item in raw
+            ):
+                value.pop("content", None)
+                value.pop("tool_calls", None)
+            value["results"] = [
+                result
+                for result in value.get("results", [])
+                if not any(
+                    (item.get("call_id") or item.get("tool_call_id")) == result.get("call_id")
+                    and item.get("output", item.get("content")) == result.get("output")
+                    for item in raw
+                )
+            ]
+            capsule["recent_tool_rounds"] = [value, *retained_rounds]
+            proposed, proposed_size = candidate_and_size()
+            if proposed_size <= limit:
+                retained_rounds.insert(0, value)
+                candidate, size = proposed, proposed_size
+            else:
+                capsule["recent_tool_rounds"] = retained_rounds
+        if (ceiling_tokens is not None and size > ceiling_tokens) or size >= original_size:
             raise WorkCapacityError("work_compaction_no_capacity_improvement")
         old_progress = deepcopy(self.progress)
         self.transcript = candidate
@@ -762,6 +1041,7 @@ class WorkSession:
         self.progress["task_material"] = task_material
         self.progress["compacting"] = False
         self.progress["context_tokens"] = 0
+        self.progress["compaction_request_tokens"] = size
         self.progress["chain_links"] = [
             *self.progress.get("chain_links", []),
             {
@@ -771,7 +1051,7 @@ class WorkSession:
             },
         ][-64:]
         self.progress.pop("model_observations", None)
-        self.progress["retained_tool_rounds"] = rounds
+        self.progress["retained_tool_rounds"] = retained_rounds
         try:
             guard = source["frozen_guard"]
             await self.save(

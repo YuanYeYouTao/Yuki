@@ -182,7 +182,6 @@ class AgentRunner:
         assert control is not None and control.session is not None
         session = control.session
         session.require_compaction_anchor()
-        source = await session.summary_source()
         from qq_ai_bot.runtime.work_compaction import CompactionSummary
 
         request = ChatRequest(
@@ -208,7 +207,7 @@ class AgentRunner:
                         + json.dumps(CompactionSummary.model_json_schema(), ensure_ascii=False)
                     ),
                 ),
-                ChatMessage(role="user", content=source),
+                ChatMessage(role="user", content=""),
             ),
             request_chain_id=uuid4().hex,
             max_output_tokens=runtime.runtime_config.context.compaction_output_tokens,
@@ -230,9 +229,30 @@ class AgentRunner:
             runtime.runtime_config.context.work_window_tokens,
             output_tokens=request.max_output_tokens,
         )
+
+        def source_fits(source: str) -> bool:
+            return (
+                estimate_request_tokens(
+                    self._capacity_request(
+                        replace(
+                            request,
+                            messages=(
+                                request.messages[0],
+                                ChatMessage(role="user", content=source),
+                            ),
+                        )
+                    )
+                )
+                <= summary_budget
+            )
+
+        source = await session.summary_source(fits=source_fits)
+        request = replace(
+            request, messages=(request.messages[0], ChatMessage(role="user", content=source))
+        )
         ready_summary = session.compaction_ready_summary
         while ready_summary is None:
-            if estimate_request_tokens(request) > summary_budget:
+            if estimate_request_tokens(self._capacity_request(request)) > summary_budget:
                 raise WorkCapacityError("work_compaction_source_capacity")
             prepared = False
 
@@ -256,7 +276,7 @@ class AgentRunner:
             response = await self._concurrency.run_llm(runtime.conversation_key, execute)
             if response.tool_calls or response.status != ModelResponseStatus.COMPLETED:
                 raise WorkCapacityError("work_compaction_incomplete")
-            next_source = await session.next_summary_source(response.content)
+            next_source = await session.next_summary_source(response.content, fits=source_fits)
             await session.stage_compaction(response.content if next_source is None else None)
             if next_source is None:
                 ready_summary = response.content
@@ -273,8 +293,13 @@ class AgentRunner:
         return await session.compact(
             ready_summary,
             target_tokens=int(input_budget * target),
-            request_template=main_request,
+            ceiling_tokens=input_budget,
+            request_template=self._capacity_request(main_request),
         )
+
+    def _capacity_request(self, request: ChatRequest) -> ChatRequest:
+        prepare = getattr(self._models, "capacity_request", None)
+        return prepare(self._task, request) if callable(prepare) else request
 
     def provider_excluded_function_names(self, runtime: AgentRuntime) -> frozenset[str]:
         web_config = getattr(runtime.runtime_config, "web", None)
@@ -621,18 +646,51 @@ class AgentRunner:
                     else context.window_tokens,
                     output_tokens=request.max_output_tokens,
                 )
-                predicted_tokens = estimate_request_tokens(request)
+                predicted_tokens = estimate_request_tokens(self._capacity_request(request))
+                compaction_threshold = input_budget * context.work_compaction_trigger_ratio
+                if control is not None and control.session is not None:
+                    compacted_tokens = control.session.progress.get("compaction_request_tokens", 0)
+                    if isinstance(compacted_tokens, int) and compacted_tokens > 0:
+                        # A compacted request may legitimately sit above the soft
+                        # target. Wait for growth into its remaining headroom,
+                        # rather than summarizing the same checkpoint again.
+                        compaction_threshold = max(
+                            compaction_threshold,
+                            compacted_tokens
+                            + max(
+                                1,
+                                (input_budget - compacted_tokens)
+                                * context.work_compaction_trigger_ratio,
+                            ),
+                        )
                 if (
                     control is not None
                     and control.session is not None
                     and control.current is not None
                     and control.ending is None
-                    and predicted_tokens >= input_budget * context.work_compaction_trigger_ratio
+                    and (
+                        predicted_tokens >= compaction_threshold or predicted_tokens > input_budget
+                    )
                 ):
-                    transcript = await self._compact_work(runtime, priority, input_budget, request)
-                    continuation_tools = ()
-                    continuation_native_tools = ()
-                    continue
+                    try:
+                        transcript = await self._compact_work(
+                            runtime, priority, input_budget, request
+                        )
+                    except WorkCapacityError as exc:
+                        if predicted_tokens > input_budget or str(exc) not in {
+                            "work_compaction_source_capacity",
+                            "work_compaction_no_capacity_improvement",
+                        }:
+                            raise
+                        # A soft maintenance target cannot prohibit a complete
+                        # request that still fits. The failed candidate preserves
+                        # the original transcript and paired receipts.
+                        control.session.progress["compaction_request_tokens"] = predicted_tokens
+                        logger.info("work_compaction_deferred reason=%s", str(exc))
+                    else:
+                        continuation_tools = ()
+                        continuation_native_tools = ()
+                        continue
                 if predicted_tokens > input_budget:
                     raise WorkCapacityError("model_request_capacity")
                 execute = (

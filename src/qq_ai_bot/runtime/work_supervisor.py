@@ -29,6 +29,26 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _capacity_pause_text(code: str) -> str:
+    if code == "work_compaction_no_capacity_improvement":
+        detail = "上下文压缩未释放足够空间"
+    elif code == "work_compaction_source_capacity":
+        detail = "用于压缩的资料超过单次模型输入窗口"
+    elif code in {"model_request_capacity", "work_task_input_source_capacity"}:
+        detail = "本轮上下文超过可用模型输入窗口"
+    elif code == "work_protocol_storage_capacity":
+        detail = "工作资料存储空间不足"
+    elif code in {
+        "work_record_too_large",
+        "work_checkpoint_capacity",
+        "work_protocol_object_capacity",
+    }:
+        detail = "工作记录超出存储容量限制"
+    else:
+        detail = "上下文整理未能完成"
+    return f"{detail}，已暂停并保留已有结果。"
+
+
 async def _has_recorded_effects(control: WorkControl) -> bool:
     """A changed source cannot automatically replay work with an effect receipt."""
     assert control.current is not None
@@ -178,7 +198,7 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
         ):
             descriptions = {
                 ExitReason.BUDGET: "这项工作的总执行额度已用完，已暂停并保留结果。",
-                ExitReason.CAPACITY: "工作记录容量不足，已暂停并保留已有结果。",
+                ExitReason.CAPACITY: _capacity_pause_text(failure.code),
                 ExitReason.NO_PROGRESS: "连续执行没有取得进展，已暂停并保留已有结果。",
             }
             if failure.diagnostics.get("category") == "work_conflict":

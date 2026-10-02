@@ -13,34 +13,34 @@ from qq_ai_bot.runtime.work_repository import WorkCapacityError
 
 class SourcedFact(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    text: str = Field(min_length=1, max_length=1024)
-    refs: list[str] = Field(min_length=1, max_length=8)
+    text: str = Field(min_length=1)
+    refs: list[str] = Field(min_length=1)
 
 
 class SupersededDirective(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     directive_id: str
-    refs: list[str] = Field(min_length=1, max_length=8)
+    refs: list[str] = Field(min_length=1)
 
 
 class InputDisposition(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     input_ref: str
     kind: Literal["directive", "correction", "context"]
-    reason: str = Field(min_length=1, max_length=512)
+    reason: str = Field(min_length=1)
 
 
 class CompactionSummary(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     version: int = Field(ge=1, le=1)
-    task_directives: list[SourcedFact] = Field(max_length=32)
-    superseded_directives: list[SupersededDirective] = Field(max_length=32)
-    input_dispositions: list[InputDisposition] = Field(max_length=16)
-    completed: list[SourcedFact] = Field(max_length=32)
-    pending: list[SourcedFact] = Field(max_length=32)
-    failures: list[SourcedFact] = Field(max_length=32)
-    artifacts: list[SourcedFact] = Field(max_length=32)
-    next_steps: list[SourcedFact] = Field(max_length=16)
+    task_directives: list[SourcedFact]
+    superseded_directives: list[SupersededDirective]
+    input_dispositions: list[InputDisposition]
+    completed: list[SourcedFact]
+    pending: list[SourcedFact]
+    failures: list[SourcedFact]
+    artifacts: list[SourcedFact]
+    next_steps: list[SourcedFact]
 
 
 def directive_id(fact: dict[str, Any]) -> str:
@@ -52,8 +52,6 @@ def directive_id(fact: dict[str, Any]) -> str:
 def validate_summary(raw: str, source: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     """References prove supplied provenance, never execution or semantic completeness."""
     try:
-        if len(raw.encode()) > 65536:
-            raise ValueError("oversized summary")
         summary = CompactionSummary.model_validate_json(raw).model_dump()
     except (ValueError, ValidationError) as exc:
         raise WorkCapacityError("work_compaction_invalid_structure") from exc
@@ -125,8 +123,6 @@ def validate_summary(raw: str, source: dict[str, Any]) -> tuple[dict[str, Any], 
         "recent_inputs": source["recent_task_inputs"],
         "raw_inputs_retained": "runtime_work_inputs; original input/event IDs",
     }
-    if len(json.dumps(material, ensure_ascii=False).encode()) > 65536:
-        raise WorkCapacityError("work_task_material_capacity")
     # Task requirements appear once, in the locally built material, not again
     # in the derived execution observations.
     summary.pop("task_directives")
