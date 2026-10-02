@@ -7,6 +7,11 @@
 明确指向一条官方 DeepSeek 模型连接。它与“主对话”任务路由独立：主对话可热切至
 Gemini 或其他供应商，而搜索仍使用这条 DeepSeek 连接的密钥。
 
+桥请求使用所选搜索 Profile 的 `timeout_seconds` 和 `default_max_output_tokens`，
+不额外将等待压至 Web 超时或将输出压至 4096 token。显式 Profile 输出限额仍需核验。
+Tavily 与网页读取的 `WEB_TIMEOUT_SECONDS` 默认 180 秒；现有 `.env` 中的显式值继续生效，
+升级不会自动覆盖。真实模型容量和来源校验仍按原合同执行。
+
 适配器仅接受服务端 `web_search_tool_result` 中关联真实调用的来源，
 不把模型自行生成的网址或回答当成搜索结果。网页正文沿用公共地址校验、DNS 固定
 和重定向检查的下载器读取；读取失败可由原 Tavily 提取兜底。

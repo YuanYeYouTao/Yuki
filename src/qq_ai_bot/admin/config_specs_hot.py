@@ -73,14 +73,14 @@ def hot_config_specs() -> tuple[ConfigSpec, ...]:
                     "Work 摘要输出预算",
                     "work_compaction_max_output_tokens",
                     1024,
-                    32768,
+                    None,
                 ),
                 (
                     "context.rollup_output_tokens",
                     "群史摘要输出预算",
                     "conversation_rollup_max_output_tokens",
                     1024,
-                    32768,
+                    None,
                 ),
                 (
                     "context.rollup_summary_characters",

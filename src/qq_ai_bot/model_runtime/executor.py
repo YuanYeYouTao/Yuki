@@ -313,7 +313,7 @@ class TaskModelExecutor:
         invocations: ModelInvocationRepository | None = None,
         traces: TraceRecorder | None = None,
         max_concurrency: int | None = None,
-        compaction_timeout_seconds: float = 90.0,
+        compaction_timeout_seconds: float = 600.0,
         self_reflection_timeout_seconds: float = 180.0,
     ) -> None:
         if max_concurrency is not None and max_concurrency <= 0:

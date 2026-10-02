@@ -59,7 +59,7 @@ def _allowed_source_ids(candidate: RollupCandidate) -> set[int]:
     return allowed
 
 
-def rollup_max_output_tokens(summary_max_characters: int, generation_budget: int = 8192) -> int:
+def rollup_max_output_tokens(summary_max_characters: int, generation_budget: int = 32768) -> int:
     """Validate independent limits; characters never enlarge generation allowance."""
     if generation_budget < 1 or summary_max_characters < 1:
         raise ValueError("invalid_rollup_output_budget")

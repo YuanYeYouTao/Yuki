@@ -36,6 +36,10 @@ Gemini 的 Google Search 与函数工具同请求在当前 Cloud Code 代理路�
 回退结果不进桥缓存。此模式要求部署的 WebMode 为 tavily/both 且 Tavily 凭据可用，
 以便读网页与降级；模型配置保存时按发起工具调用的任务连接热切换桥。
 已开始的 Runner 将搜索后端与模型连接一起固定至该轮结束；热保存只影响后续 Runner。
+Gemini 搜索桥使用原连接的 `timeout_seconds` 和 `default_max_output_tokens`，不额外
+施加 Web 超时或 2048 token 输出上限；DeepSeek 桥同样沿所选搜索 Profile 配置，
+保留显式输出限额核验。Tavily/网页请求的 `WEB_TIMEOUT_SECONDS` 默认 180 秒；
+部署中显式配置的旧值需单独调整。
 每个模型连接的 `search_mode` 可选 `external`、`bridge`（Gemini）、`native` 或在协议允许时选 `both`；
 旧文件未填写时沿用部署搜索模式。直接 `native/both` 须声明 `native_web_search` 能力；
 `bridge` 在独立请求中使用 Google Search，不向主请求声明该能力或内联原生工具。
@@ -119,6 +123,12 @@ Gemini 3.8 Flash 的官方模型 ID 是 `gemini-3.8-flash`。WebUI 的 Google Ge
 读取 `.env`，其默认 LLM/LLM_FLASH 字段可用，额外变量须先导出，不会偷偷扫描其他密钥文件。
 
 ## 私有状态与恢复
+
+群史 Rollup 默认使用 600 秒专用请求/整批等待期限，独立于主任务 Profile 超时；
+Work compaction 继续使用原任务 Profile 的超时。两类摘要的生成预算默认 32768 token，
+包含思考与最终结构输出；群史摘要正文默认上限仍为 16384 字符。输出预算热配置没有
+额外的 32768 界面上限，但执行器继续拒绝超过 Profile `max_output_tokens_limit` 或真实
+输入/联合窗口的请求，不静默减量或更换模型。已有显式配置不会因默认值调整自动改变。
 
 - 每次响应的工具 ID、签名思考和原生块按原顺序保存在私有 ProviderContinuation；
   工具回执和用户改向按到达顺序追加，不重建已有调用，不重发已确认效果。

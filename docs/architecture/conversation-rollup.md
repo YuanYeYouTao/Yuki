@@ -104,13 +104,22 @@ Responses/Chat/Claude 使用各自既有 schema 格式。有效 Profile 必须�
 不增加普通事件分片持久状态，也不截头后宣称覆盖整个事件。每块的输入包含前块所得摘要，
 以完成当前批次；摘要质量仍需针对真实长会话验收，完整读取不等于无损摘要。
 
-模型输出预算默认 8192 token，摘要正文默认最多 16384 字符；二者独立。
+模型输出预算默认 32768 token，包含思考与最终 JSON；摘要正文默认最多 16384 字符。
+增加生成预算不增加落账摘要的默认字符上限，二者独立。WebUI 的群史/Work 摘要输出预算
+不另设 32768 的界面上限，最小值仍为 1024；有效 Profile 的输出上限与实际输入/联合窗口
+仍由执行器核验。显式保存的热配置和部署环境变量继续覆盖默认值，不自动改写。
 超长、纯 reasoning、空正文、不完整 Provider 响应不能提交语义 checkpoint；正文不裁剪后落账。
 应急 tail overlay 单独显示“不完整应急视图”，提示模型按内部引用查询缺失事实，不能冒充完整语义摘要。
 
 Rollup 模型调用期间不持有 SQLite 事务；候选、计数差额和 protected suffix 在首次写入前准备，
 提交重验 generation、lease、fingerprint 和持久来源 hold。计数从已核验候选精确扣减，不在每次
 提交后扫描完整剩余历史。来源 hold（包括原 Work 的事件）仍可限制推进，不得绕过。
+
+`CONVERSATION_ROLLUP_MODEL_TIMEOUT_SECONDS` 默认 600 秒，同时用于专用 Provider 请求、
+整批候选（包括多块来源）及前台压缩等待；所有前台批次共用一次期限，不按块重置。
+租约仍通过 heartbeat 续期，不将 180 秒租期当作模型完成期限；批次、窗口和来源保护不变。
+Work compaction 使用原任务 Profile 的超时，没有独立 Rollup 超时覆盖；需在该 Profile
+明确配置足够的时间，不另建摘要路由。更大的输出预算仍会占用联合窗口中的预留输出容量。
 
 前台超过容量时，所有批次共用一次有界等待期限。优先等待同 Conversation/generation 的现有
 claim；没有活动 claim 才执行 required 语义压缩并保持 heartbeat。失败、已有失败退避或超时

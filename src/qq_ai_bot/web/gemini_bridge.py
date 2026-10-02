@@ -50,6 +50,11 @@ class GeminiSearchBridge:
         fallback: WebSearchProvider | None = None,
         invocations: ModelInvocationRepository | None = None,
     ) -> None:
+        if (
+            profile.max_output_tokens_limit is not None
+            and profile.default_max_output_tokens > profile.max_output_tokens_limit
+        ):
+            raise ValueError("search default exceeds configured provider output limit")
         self.profile = profile
         self.provider = provider
         self.state = state
@@ -59,7 +64,7 @@ class GeminiSearchBridge:
         self._namespace = hashlib.sha256(
             json.dumps(
                 {
-                    "version": 1,
+                    "version": 2,
                     "profile": profile.id,
                     "model": profile.model,
                     "base_url": profile.base_url,
@@ -119,7 +124,7 @@ class GeminiSearchBridge:
         model_request = ChatRequest(
             messages=(ChatMessage(role="user", content=prompt),),
             model=self.profile.model,
-            max_output_tokens=min(self.profile.default_max_output_tokens, 2048),
+            max_output_tokens=self.profile.default_max_output_tokens,
             thinking_enabled=self.profile.thinking_enabled,
             reasoning_effort=self.profile.reasoning_effort,
             tools=(),
