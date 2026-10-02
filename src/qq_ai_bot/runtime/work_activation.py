@@ -37,6 +37,7 @@ async def activate_work(
     work_id: str | None = None,
     bindings: ActiveWorkBindings | None = None,
     scope_key: str | None = None,
+    resume_execution: bool = True,
 ) -> AsyncIterator[WorkControl]:
     with ExitStack() as admission:
         if bindings is not None:
@@ -45,7 +46,9 @@ async def activate_work(
         if lease is None:
             raise WorkConflict("conversation_activation_busy")
         control = WorkControl(repository, lease, source_key, source, validate, resolve_child)
-        async with bind_work_activation(control, bindings=bindings, scope_key=scope_key):
+        async with bind_work_activation(
+            control, bindings=bindings, scope_key=scope_key, meter_active_time=resume_execution
+        ):
             # Authority is reconstructed by the caller, not copied out of a prior work.
             # A different actor cannot silently take over the original actor's goal.
             candidates = await repository.active(conversation_id, generation)
@@ -76,7 +79,21 @@ async def activate_work(
                 ):
                     control.current = candidate
                     break
-            if control.current is not None and control.current["state"] != "running":
+            if not resume_execution:
+                # A stale scheduler candidate must not recover a newer queued
+                # execution as though the notice itself were business work.
+                if control.current is not None:
+                    control.settled = True
+                if (
+                    work_id is None
+                    or control.current is None
+                    or control.current["state"] != "suspended"
+                ):
+                    raise WorkConflict("work_notice_target_changed")
+                # A persisted pause notice is maintenance, not a new execution.
+                # Pending input must not let its cleanup resume the paused Work.
+                control.ending = "suspended"
+            elif control.current is not None and control.current["state"] != "running":
                 control.current = await repository.transition(
                     lease,
                     control.current["id"],
@@ -94,6 +111,7 @@ async def bind_work_activation(
     release: Callable[[], Awaitable[None]] | None = None,
     bindings: ActiveWorkBindings | None = None,
     scope_key: str | None = None,
+    meter_active_time: bool = True,
 ) -> AsyncIterator[WorkControl]:
     """Own one already-acquired root or child lease until activation exit.
 
@@ -125,7 +143,7 @@ async def bind_work_activation(
             async with supervise_lease(
                 lambda: repository.renew(lease),
                 lambda: repository.lease_expiry(lease),
-                meter=control.meter_active_time,
+                meter=control.meter_active_time if meter_active_time else None,
             ):
                 yield control
         except BaseException as exc:

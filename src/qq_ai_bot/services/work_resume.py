@@ -23,8 +23,10 @@ from qq_ai_bot.runtime.activation_bindings import ActiveWorkBindings
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.trigger import WorkResumeTrigger
 from qq_ai_bot.runtime.work_activation import activate_work
+from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_recovery_schema import deliveries
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
+from qq_ai_bot.runtime.work_schema_v1 import effects
 from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.execution_sources import (
@@ -79,7 +81,13 @@ class WorkResumer:
                     await self._resume_self(item, source)
             elif source.get("origin") in {"user_message", "autonomous_group"}:
                 await self._resume(item, source)
-        except WorkConflict:
+        except WorkConflict as exc:
+            if item["state"] == "suspended":
+                try:
+                    await self._recover_preparation_failure(item, source, exc)
+                except BaseException as cleanup:
+                    exc.add_note(f"notice reconciliation deferred: {type(cleanup).__name__}")
+                    raise exc from exc.__cause__
             return
         except Exception as exc:
             from qq_ai_bot.runtime.activation_outcome import (
@@ -90,7 +98,11 @@ class WorkResumer:
             self.last_error = type(exc).__name__
             if isinstance(exc, (WorkActivationHandled, WorkRecoveryDeferred)):
                 return
-            await self._recover_preparation_failure(item, source, exc)
+            try:
+                await self._recover_preparation_failure(item, source, exc)
+            except BaseException as cleanup:
+                exc.add_note(f"work preparation recovery deferred: {type(cleanup).__name__}")
+                raise exc from exc.__cause__
 
     async def _recover_preparation_failure(
         self, item: dict[str, Any], source: dict[str, Any], exc: Exception
@@ -107,11 +119,65 @@ class WorkResumer:
                 raise WorkConflict("work_recovery_lease_lost")
 
         control = WorkControl(self.repository, lease, item["source_key"], source, validate)
-        async with bind_work_activation(control):
+        async with bind_work_activation(control, meter_active_time=item["state"] != "suspended"):
             current = await self.repository.get(item["id"])
-            if current and current["state"] in {"queued", "running"}:
+            if (
+                item["state"] != "suspended"
+                and current
+                and current["state"] in {"queued", "running"}
+            ):
                 control.current = current
                 await control.recover_failure(exc)
+            elif current and current["state"] == "suspended":
+                control.current = current
+                control.ending = "suspended"
+                control.settled = True
+                # Preparation never dispatched a new effect. Close its existing
+                # notice instead of repeatedly selecting a broken pause scene.
+                async with self.repository.database.sessions() as session:
+                    key = await session.scalar(
+                        select(deliveries.c.id)
+                        .where(
+                            deliveries.c.work_id == item["id"],
+                            deliveries.c.kind == "notice",
+                            deliveries.c.state.in_(("planned", "blocked")),
+                        )
+                        .order_by(deliveries.c.created)
+                        .limit(1)
+                    )
+                if key is not None:
+                    await self._record_notice_failure(control, key, exc)
+
+    async def _record_notice_failure(
+        self, control: WorkControl, key: str, exc: BaseException
+    ) -> None:
+        """Keep the original effect receipt; a failed notice is never a new pause."""
+        from qq_ai_bot.runtime.delivery_intents import record
+
+        assert control.current is not None
+        async with self.repository.database.sessions() as session:
+            effect = (
+                (
+                    await session.execute(
+                        select(effects).where(
+                            effects.c.effect_key == key,
+                            effects.c.work_id == control.current["id"],
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        receipt = json.loads(effect["receipt_json"]) if effect else {}
+        if effect and effect["state"] == "accepted" and receipt.get("transport_accepted"):
+            await record(control, key, "accepted", receipt)
+        else:
+            await record(
+                control,
+                key,
+                "unknown" if effect and effect["state"] != "failed" else "failed",
+                {"error_category": type(exc).__name__},
+            )
 
     @asynccontextmanager
     async def _scene(
@@ -309,6 +375,7 @@ class WorkResumer:
                 work_id=item["id"],
                 bindings=self.services.active_bindings,
                 scope_key=key,
+                resume_execution=item["state"] != "suspended",
             ) as control:
                 if control.current is None or control.current["id"] != item["id"]:
                     raise WorkConflict("work_schedule_target_changed")
@@ -335,19 +402,26 @@ class WorkResumer:
                     control.ending = "suspended"
                     for notice in notices:
                         payload = json.loads(notice["payload_json"])
-                        await reserve(control, notice["id"], "notice", payload)
-                        if not await self.repository.prepare_effect(
-                            control.lease, item["id"], notice["id"], "progress"
-                        ):
-                            await record(control, notice["id"], "unknown", {})
-                            continue
-                        await record(control, notice["id"], "dispatching", {})
                         try:
+                            await reserve(control, notice["id"], "notice", payload)
+                            if not await self.repository.prepare_effect(
+                                control.lease, item["id"], notice["id"], "progress"
+                            ):
+                                await self._record_notice_failure(
+                                    control, notice["id"], WorkConflict("notice_effect_exists")
+                                )
+                                continue
+                            await record(control, notice["id"], "dispatching", {})
                             outcome = await deliver(payload["text"], notice["id"])
-                        except BaseException:
-                            await record(control, notice["id"], "unknown", {})
+                            await record(control, notice["id"], "accepted", outcome)
+                        except BaseException as exc:
+                            try:
+                                await self._record_notice_failure(control, notice["id"], exc)
+                            except BaseException as cleanup:
+                                exc.add_note(
+                                    f"notice reconciliation deferred: {type(cleanup).__name__}"
+                                )
                             raise
-                        await record(control, notice["id"], "accepted", outcome)
                     return
                 from qq_ai_bot.runtime.work_delivery import repair_receipt_ledger
 

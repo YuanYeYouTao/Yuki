@@ -1470,6 +1470,8 @@ class ChatService:
                 await upstream()
             control = current_work_control.get()
             if control is not None and source_guard is not None:
+                if control.session is not None:
+                    control.session.source_guard = source_guard
                 valid = await source_guard.check(control)
             else:
                 valid = version is None or await self._ledger.read_version_matches(version)

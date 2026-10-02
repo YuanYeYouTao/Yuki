@@ -132,7 +132,11 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
             state, reason, not_before = "completed", ExitReason.COMPLETED, 0
         values = dict(
             work_id=identity,
-            activation_id=control.lease.owner,
+            # Re-observing a suspended episode is not a new pause. Its original
+            # delivery key and receipts remain authoritative across activations.
+            activation_id=prior["activation_id"]
+            if current is not None and current["state"] == "suspended" and prior
+            else control.lease.owner,
             exit_reason=reason.value,
             stage=failure.stage,
             failure_json=bounded_json(asdict(failure)),
@@ -192,7 +196,7 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
             await session.execute(
                 insert(deliveries)
                 .values(
-                    id=f"notice:{identity}:{control.lease.owner}",
+                    id=f"notice:{identity}:{values['activation_id']}",
                     work_id=identity,
                     kind="notice",
                     target_key=control.lease.conversation_id,

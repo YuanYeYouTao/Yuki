@@ -30,6 +30,7 @@ from qq_ai_bot.web.base import WebSearchValidationError, normalize_public_url
 
 if TYPE_CHECKING:
     from qq_ai_bot.runtime.work_control import WorkControl
+    from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
 
 logger = logging.getLogger(__name__)
 _TOOL_AUDITS: ContextVar[
@@ -65,6 +66,7 @@ class WorkSession:
         self.contract = contract
         self.transcript: TurnTranscript | None = None
         self.source_revision = 0
+        self.source_guard: WorkSourceGuard | None = None
         self.pending: list[dict[str, Any]] = []
         self.event_ids: list[int] = []
         self.source_keys: list[str] = []
@@ -808,31 +810,51 @@ class WorkSession:
             for call in calls
         ]
         try:
-            updated_work = await self.journal.save(
-                self.control.lease,
-                self.control.current["id"],
-                self.contract,
-                self.transcript,
-                phase=phase,
-                pending=self.pending,
-                source_revision=self.source_revision,
-                compaction_versions=compaction_versions,
-                communication_updates=communication_updates,
-                metadata={
-                    "sequence": self.sequence,
-                    "event_ids": list(dict.fromkeys(self.event_ids[:1] + self.event_ids[-255:])),
-                    "source_keys": list(
-                        dict.fromkeys(self.source_keys[:1] + self.source_keys[-255:])
-                    ),
-                    "input_ids": self.input_ids[-256:],
-                    "ending": self.control.ending,
-                    "progress": self.progress,
-                    "handoff_work_id": self.handoff_work_id,
-                    "compaction_anchor": encode_transcript(self.compaction_anchor)
-                    if self.compaction_anchor is not None
-                    else None,
-                },
-            )
+            for attempt in range(2):
+                try:
+                    updated_work = await self.journal.save(
+                        self.control.lease,
+                        self.control.current["id"],
+                        self.contract,
+                        self.transcript,
+                        phase=phase,
+                        pending=self.pending,
+                        source_revision=self.source_revision,
+                        compaction_versions=compaction_versions,
+                        communication_updates=communication_updates,
+                        metadata={
+                            "sequence": self.sequence,
+                            "event_ids": list(
+                                dict.fromkeys(self.event_ids[:1] + self.event_ids[-255:])
+                            ),
+                            "source_keys": list(
+                                dict.fromkeys(self.source_keys[:1] + self.source_keys[-255:])
+                            ),
+                            "input_ids": self.input_ids[-256:],
+                            "ending": self.control.ending,
+                            "progress": self.progress,
+                            "handoff_work_id": self.handoff_work_id,
+                            "compaction_anchor": encode_transcript(self.compaction_anchor)
+                            if self.compaction_anchor is not None
+                            else None,
+                        },
+                    )
+                    break
+                except WorkConflict as exc:
+                    if (
+                        exc.code != "work_journal_source_changed"
+                        or attempt
+                        or compaction_versions is not None
+                        or self.source_guard is None
+                    ):
+                        raise
+                    # The failed publication/writer has closed. A conversation
+                    # revision may advance for an unselected event; only the
+                    # original activation and source guard can approve it.
+                    await self.control.validate()
+                    if not await self.source_guard.check(self.control):
+                        raise
+                    # Retry this same journal, never the model or tool effects.
             if updated_work is not None:
                 self.control.current = updated_work
         except IntegrityError as exc:
