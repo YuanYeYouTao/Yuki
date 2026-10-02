@@ -8,7 +8,7 @@
 前一轮历史与交互修复的上线事实见[原交付记录](history-interaction-harness-2026-10-02.md)。
 
 本记录固定本轮只读诊断与自然流量计量，并记录容量计量修正的本地实现和定向验证。
-当前本地实现与检查已完成；最新 head 的 CI、PR、合并和部署尚未完成，不把本地通过写成上线。
+代码修复已通过最新 head CI 并合并 PR #220；部署状态与后续观察以本文交付核验为准。
 诊断不发送真实 QQ/模型请求，不调整路由、窗口或数据库，不重发已有结果。
 
 ## 13:32 普通续接停止的已知事实
@@ -162,5 +162,68 @@ Linux 平台 Mypy 683 个 source、`v3.9.0` 发布门禁与 diff 检查通过；
 28、普通搜索 2、普通轮容量停止 6、Work 压缩 26。独立审阅无阻塞；最终实现全仓 Ruff、
 1062 文件格式、Linux Mypy 683 source、`v3.9.0` 发布门禁及 diff 检查通过。
 
-当前状态为本地实现与上述验证完成，尚未完成最新 head CI、PR、合并、部署和新生产
-验收。本记录前面缓存及停止频率统计仍属于修正前 `ops-8ca2e17` 的自然流量证据。
+以上本地验证在提交 PR #220 前完成；最新 CI、合并和部署事实按下文分别核验。
+本记录前面缓存及停止频率统计仍属于修正前 `ops-8ca2e17` 的自然流量证据。
+
+## CI 与合并
+
+[PR #220](https://github.com/YuanYeYouTao/Yuki/pull/220) 测试 head 为
+`661f0191a38899f470a9b833ea1e99c4f20483c8`。
+[CI 36972974752](https://github.com/YuanYeYouTao/Yuki/actions/runs/36972974752) 六项全部成功；
+完整 Python suite 为 **2312 passed、1 skipped、1700 条既有警告，1076.08 秒**。
+前端 88、语音 worker 15、三个插件合同/行为检查 4/84/32 也分别通过，fresh Alembic 安装通过。
+这些检查不等于实际 QQ 能力验收。
+
+2026-10-02 台北 **14:40:40** 合并，merge commit
+`d090a052516e496822be1a92abfbec06daa49613`。
+正式构建使用干净的该 merge tree，与测试 head 的完整树比较无差异。
+包仍为 `3.9.0`，数据库头仍为 `0088`；没有发布 tag 或 GitHub Release。
+
+正式 image 为 `ghcr.io/yuanyeyoutao/yuki-qqbot:ops-d090a05`，linux/amd64，
+OCI revision 为完整 merge SHA。安装后的包版本与 15 个关键源码文件 hash 均与测试源匹配，
+包括本次 `model_runtime/capacity.py`、`services/chat.py` 及原历史/恢复/汇报链。
+镜像 tar SHA256 为
+`18dca747544d769d4e68b9425b2c10556977a68e8ed81edab1ac9e3d5cdcafb2`，服务器复核一致。
+
+最终源码的只读容量构造重新核验，结果与上表一致；机器证据为
+`incident-1331-replay-final.json`。仍为签名等长替代的容量核对，没有真实 HTTP 或 QQ 重放。
+
+更多上线前实际首请求和 AGM 核查、未知计量及后续适配建议见
+[协议与缓存核查](gemini-agm-cache-audit-2026-10-02.md)。
+
+## Bot 部署与留存核验
+
+部署脚本从实际 Bot labels 取得 35 份 Compose 文件，核对原 `ops-8ca2e17` 完整 OCI revision、
+归档 SHA、已安装版本、架构和证据 helper SHA，检查备份所需空间及余量。
+只停止并替换 Bot；未重启 SnowLuma/AGM，也没有切换路由、扩大窗口或恢复旧数据库。
+失败回退使用原 image 的固定 tag，仅回退代码，保留当前数据。
+
+实际停写备份为
+`/opt/yuki-qqbot/backups/pre-capacity-accounting-d090a05-20261002T064316Z`。
+SQLite backup API 副本的 integrity/FK/head `0088` 通过，协议引用核验为
+**993 protocol objects / 0 tool artifacts**。停写和启动后的留存对账
+`comparison.ok=true`，`errors=[]`、`changed_counts={}`：原 **6 Work、60 effects、20 inputs、
+6 journals、6 budgets、6 recoveries** 全部保留；预算和稳定回执没有重置或回退。
+
+新 Bot 实际 StartedAt 为 `2026-10-02T06:48:08.462457111Z`，台北 **14:48:08**。
+部署退出码 0；主 Agent 与独立审阅均核验 image/full OCI revision/amd64/3.9.0，
+running、healthy、restart 0；线上 15 个源码文件 hash 与测试源一致。
+`/healthz` status/database ok、OneBot 已连接、Work/child worker running，
+`/livez` 与 `/ui/` HTTP 200。
+
+SnowLuma 原 ID
+`9e7a1a89696eae3922e4b40daee295edebc0fb60e18c7c9bf5a15efe7a1c8b85` 保持 running/0 restart；
+AGM 原 `gemini-request-correlation-v4.8.4` image 保持 healthy/0 restart。
+原有 `memory_consistency_healthy=false` 仍存在，不把这项既有问题写成本轮已解决；
+本轮没有扩展为 Memory 修复。
+
+机器证据为 ignored `capacity-postflight-d090a05.json`、`capacity-live-installed.json` 与
+`harness-capacity-independent-postflight.json`。独立审阅读取本次真实 backup 的已保存报告，
+没有重复扫生产数据库，也未制造模型/QQ 请求。
+
+实现、定向验证、最新 head CI、合并与 Bot 部署均完成；普通聊天语义、真实长任务行为及
+新版本缓存改善仍需自然流量及用户能力验收，不能由健康检查或短样本宣称通过。
+
+首次上线后计量采样截至台北 **14:52:46**，使用实际启动 cutoff `06:48:08 UTC` 和
+`task/created_at` 索引、500 行上限：尚无成功/失败逻辑 chat 调用，缓存率为 UNKNOWN，
+不是 0% 命中。没有发送测试或保温请求来补样；更多自然流量观察应另记具体 cutoff。
