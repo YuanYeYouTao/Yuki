@@ -10,6 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import select, text
+from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
@@ -101,8 +102,10 @@ class ContextObservationRepository:
             or access.get("generation") != work_record["generation"]
         ):
             raise ProjectionConflict("context observation access owner changed")
-        async with self.database.sessions() as session:
-            await session.execute(text("BEGIN IMMEDIATE"))
+
+        async def checked_note(
+            session: AsyncSession,
+        ) -> tuple[RowMapping, CanonicalConversationModel, int, ContextObservationModel | None]:
             stored = (
                 (await session.execute(select(work).where(work.c.id == work_record["id"])))
                 .mappings()
@@ -121,16 +124,7 @@ class ContextObservationRepository:
                 raise ProjectionConflict("context observation scope changed")
             if stored["checkpoint_json"] != prepared_checkpoint:
                 raise ProjectionConflict("context observation note changed")
-            from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
-
-            privacy = int(
-                await session.scalar(
-                    select(ExecutionTraceStateModel.privacy_generation).where(
-                        ExecutionTraceStateModel.id == 1
-                    )
-                )
-                or 0
-            )
+            privacy = await privacy_generation(session)
             if (
                 note.get("privacy_generation") != privacy
                 or access.get("privacy_generation") != privacy
@@ -146,6 +140,17 @@ class ContextObservationRepository:
                     or old.read_scope != read_scope
                 ):
                     raise ProjectionConflict("context observation intent changed")
+            return stored, conversation, privacy, old
+
+        async with self.database.sessions() as reader:
+            await reader.execute(text("BEGIN"))
+            _, _, _, old = await checked_note(reader)
+            if old is not None:
+                return old.id
+
+        async with self.database.immediate_session() as session:
+            stored, conversation, privacy, old = await checked_note(session)
+            if old is not None:
                 return old.id
             # Ownership registration has no file IO. Unknown/deleting handles
             # reject publication without consuming another model/tool request.
@@ -171,7 +176,6 @@ class ContextObservationRepository:
                     created_at=now,
                 )
             )
-            await session.commit()
             return identity
 
     async def read(
@@ -308,10 +312,10 @@ class ContextObservationRepository:
         from qq_ai_bot.mcp.artifact_schema import artifact_refs
         from qq_ai_bot.mcp.repository import ToolArtifactRepository
 
-        async with self.database.sessions() as session:
-            await session.execute(text("BEGIN IMMEDIATE"))
-            owner = await session.get(CanonicalConversationModel, conversation_id)
-            privacy = await privacy_generation(session)
+        async with self.database.sessions() as reader:
+            await reader.execute(text("BEGIN"))
+            owner = await reader.get(CanonicalConversationModel, conversation_id)
+            privacy = await privacy_generation(reader)
             if (
                 owner is None
                 or owner.generation != generation
@@ -319,17 +323,17 @@ class ContextObservationRepository:
             ):
                 raise ProjectionConflict("context observation summary source changed")
             if not await validate_observations(
-                session, conversation_id, generation, actor_id, read_scope, parents
+                reader, conversation_id, generation, actor_id, read_scope, parents
             ):
                 raise ProjectionConflict("context observation summary parents changed")
-            old = await session.scalar(
+            old = await reader.scalar(
                 select(ContextObservationModel).where(ContextObservationModel.source_key == intent)
             )
             if old is not None:
                 return ContextObservation(old.id, old.version, old.payload_json, parents)
             handles = tuple(
                 (
-                    await session.scalars(
+                    await reader.scalars(
                         select(artifact_refs.c.handle_id)
                         .where(
                             artifact_refs.c.owner_kind == "observation",
@@ -339,6 +343,24 @@ class ContextObservationRepository:
                     )
                 ).all()
             )
+
+        # Observation edits/deletions advance the canonical source revision;
+        # privacy deletion has its own scalar fence. Parent traversal/encoding
+        # and reference collection above belong to one read snapshot, not writer.
+        async with self.database.immediate_session() as session:
+            owner = await session.get(CanonicalConversationModel, conversation_id)
+            if (
+                owner is None
+                or owner.generation != generation
+                or owner.prompt_source_revision != expected_source_revision
+                or await privacy_generation(session) != privacy
+            ):
+                raise ProjectionConflict("context observation summary source changed")
+            old = await session.scalar(
+                select(ContextObservationModel).where(ContextObservationModel.source_key == intent)
+            )
+            if old is not None:
+                return ContextObservation(old.id, old.version, old.payload_json, parents)
             await ToolArtifactRepository.add_refs(session, "observation", identity, handles)
             session.add(
                 ContextObservationModel(
@@ -356,7 +378,6 @@ class ContextObservationRepository:
                     created_at=now,
                 )
             )
-            await session.commit()
         return ContextObservation(identity, 1, encoded, parents)
 
     async def validate_sources(

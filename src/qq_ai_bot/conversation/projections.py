@@ -24,6 +24,7 @@ REBUILD_REASONS = frozenset(
         "bootstrap",
         "reset",
         "rollup",
+        "rollup_ready",
         "capacity",
         "contract_changed",
         "read_scope_changed",
@@ -319,26 +320,35 @@ class PromptProjectionRepository:
         if prepared_snapshot is not None:
             # Source publication is not observation. Only the dispatch CAS below
             # adds selection/coverage, and readers exclude unselected snapshots.
-            async with self.database.immediate_session() as source_writer:
-                owner = await source_writer.get(CanonicalConversationModel, conversation_id)
+            async def checked_snapshot(session: AsyncSession) -> bool:
+                owner = await session.get(CanonicalConversationModel, conversation_id)
                 if (
                     owner is None
                     or (owner.generation, owner.starts_after_event_id, owner.prompt_source_revision)
                     != (generation, starts_after_event_id, expected_source_revision)
-                    or await privacy_generation(source_writer) != prepared_privacy
+                    or await privacy_generation(session) != prepared_privacy
                 ):
                     raise ProjectionConflict("snapshot source changed before publication")
                 if snapshot_event_id is not None:
                     from qq_ai_bot.persistence.models import ChatEventModel
 
-                    anchor = await source_writer.get(ChatEventModel, snapshot_event_id)
+                    anchor = await session.get(ChatEventModel, snapshot_event_id)
                     if anchor is None or anchor.canonical_conversation_id != conversation_id:
                         raise ProjectionConflict("snapshot event source changed")
-                stored = await source_writer.get(ContextObservationModel, prepared_snapshot["id"])
-                if stored is None:
-                    source_writer.add(ContextObservationModel(**prepared_snapshot))
-                elif stored.payload_json != prepared_snapshot["payload_json"]:
+                stored = await session.get(ContextObservationModel, prepared_snapshot["id"])
+                if stored is not None and stored.payload_json != prepared_snapshot["payload_json"]:
                     raise ProjectionConflict("snapshot source changed")
+                return stored is not None
+
+            async with self.database.sessions() as source_reader:
+                from sqlalchemy import text
+
+                await source_reader.execute(text("BEGIN"))
+                exists = await checked_snapshot(source_reader)
+            if not exists:
+                async with self.database.immediate_session() as source_writer:
+                    if not await checked_snapshot(source_writer):
+                        source_writer.add(ContextObservationModel(**prepared_snapshot))
 
         # Traverse parent references in a read snapshot, never in the journal
         # writer. Every mutation/deletion advances the canonical source revision
