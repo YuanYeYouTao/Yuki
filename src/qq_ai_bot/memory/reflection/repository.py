@@ -164,6 +164,19 @@ class MemoryReflectionRepository:
             }
             for candidate in candidates
         ]
+        async with self._database.sessions() as reader:
+            existing = set(
+                await reader.scalars(
+                    select(MemoryReflectionJobModel.fingerprint).where(
+                        MemoryReflectionJobModel.fingerprint.in_(
+                            [row["fingerprint"] for row in rows]
+                        )
+                    )
+                )
+            )
+        rows = [row for row in rows if row["fingerprint"] not in existing]
+        if not rows:
+            return 0
         async with self._database.sessions() as session, session.begin():
             result = await session.execute(
                 insert(MemoryReflectionJobModel)
@@ -177,42 +190,59 @@ class MemoryReflectionRepository:
         *,
         before: datetime,
         now: datetime | None = None,
+        limit: int = 100,
     ) -> int:
-        occurred_at = now or datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
-            recoverable = await session.execute(
-                update(MemoryReflectionJobModel)
-                .where(
-                    MemoryReflectionJobModel.status == "processing",
-                    MemoryReflectionJobModel.claimed_at <= before,
-                    MemoryReflectionJobModel.attempts < MemoryReflectionJobModel.max_attempts,
+        async with self._database.sessions() as reader:
+            candidates = (
+                await reader.execute(
+                    select(
+                        MemoryReflectionJobModel.id,
+                        MemoryReflectionJobModel.claimed_at,
+                        MemoryReflectionJobModel.updated_at,
+                        MemoryReflectionJobModel.attempts,
+                        MemoryReflectionJobModel.max_attempts,
+                    )
+                    .where(
+                        MemoryReflectionJobModel.status == "processing",
+                        MemoryReflectionJobModel.claimed_at <= before,
+                    )
+                    .order_by(MemoryReflectionJobModel.claimed_at, MemoryReflectionJobModel.id)
+                    .limit(max(1, limit))
                 )
-                .values(
-                    status="pending",
-                    next_attempt_at=occurred_at,
-                    claimed_at=None,
-                    error_category="worker_recovered",
-                    updated_at=occurred_at,
+            ).all()
+        if not candidates:
+            return 0
+        recovered = 0
+        async with self._database.immediate_session() as session:
+            occurred_at = now or datetime.now(UTC)
+            for candidate in candidates:
+                exhausted = candidate.attempts >= candidate.max_attempts
+                values = {
+                    "status": "failed" if exhausted else "pending",
+                    "claimed_at": None,
+                    "error_category": "worker_recovery_exhausted"
+                    if exhausted
+                    else "worker_recovered",
+                    "updated_at": occurred_at,
+                }
+                if not exhausted:
+                    values["next_attempt_at"] = occurred_at
+                identity = await session.scalar(
+                    update(MemoryReflectionJobModel)
+                    .where(
+                        MemoryReflectionJobModel.id == candidate.id,
+                        MemoryReflectionJobModel.status == "processing",
+                        MemoryReflectionJobModel.claimed_at == candidate.claimed_at,
+                        MemoryReflectionJobModel.claimed_at <= before,
+                        MemoryReflectionJobModel.updated_at == candidate.updated_at,
+                        MemoryReflectionJobModel.attempts == candidate.attempts,
+                        MemoryReflectionJobModel.max_attempts == candidate.max_attempts,
+                    )
+                    .values(**values)
+                    .returning(MemoryReflectionJobModel.id)
                 )
-            )
-            exhausted = await session.execute(
-                update(MemoryReflectionJobModel)
-                .where(
-                    MemoryReflectionJobModel.status == "processing",
-                    MemoryReflectionJobModel.claimed_at <= before,
-                    MemoryReflectionJobModel.attempts >= MemoryReflectionJobModel.max_attempts,
-                )
-                .values(
-                    status="failed",
-                    claimed_at=None,
-                    error_category="worker_recovery_exhausted",
-                    updated_at=occurred_at,
-                )
-            )
-            return sum(
-                max(0, int(getattr(result, "rowcount", 0) or 0))
-                for result in (recoverable, exhausted)
-            )
+                recovered += int(identity is not None)
+        return recovered
 
     async def claim(
         self,

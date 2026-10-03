@@ -1292,6 +1292,7 @@ class MemoryReflectionJobModel(Base):
             name="ck_memory_reflection_jobs_attempts",
         ),
         Index("ix_memory_reflection_jobs_status_next", "status", "next_attempt_at"),
+        Index("ix_memory_reflection_jobs_status_claimed", "status", "claimed_at", "id"),
         Index("ix_memory_reflection_jobs_fact_issue", "fact_id", "issue_type"),
     )
 

@@ -112,9 +112,13 @@ def require_compatible_v2_live(
     author_presence_id: str | None,
     receipt: CanonicalEventReceiptModel | None,
     external_event_type: str | None,
+    normalized_segments: str | None = None,
 ) -> None:
     receipt_event_type = (external_event_type or "message")[:64]
-    incoming_segments = json.dumps(segments, ensure_ascii=False, separators=(",", ":"))
+    if normalized_segments is None:
+        normalized_segments = normalize_live_json(
+            json.dumps(segments, ensure_ascii=False, separators=(",", ":"))
+        )
     if existing.canonical_conversation_id != conversation_id:
         raise CanonicalIdentityError("receipt_conflict")
     if receipt is not None:
@@ -141,7 +145,7 @@ def require_compatible_v2_live(
         raise CanonicalIdentityError("receipt_conflict")
     if normalize_live_text(existing.content) != normalize_live_text(content):
         raise CanonicalIdentityError("receipt_conflict")
-    if normalize_live_json(existing.segments_json) != normalize_live_json(incoming_segments):
+    if normalize_live_json(existing.segments_json) != normalized_segments:
         raise CanonicalIdentityError("receipt_conflict")
     if occurred_at_token(existing.occurred_at) != occurred_at_token(timestamp):
         raise CanonicalIdentityError("receipt_conflict")

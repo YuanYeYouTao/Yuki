@@ -571,7 +571,9 @@ async def test_missing_activation_is_repaired_without_resetting_history(database
     facts_before = tuple([await repository.get_fact(fact_id) for fact_id in ids])
     with pytest.raises(RuntimeError, match="rollback probe"):
         async with repository.transaction() as session:
-            assert await repository.repair_missing_activation(limit=1, session=session) == 1
+            assert (
+                await repository.repair_missing_activation(fact_ids=(ids[0],), session=session) == 1
+            )
             raise RuntimeError("rollback probe")
     assert await activation.load(tuple(ids)) == before
     settings = make_settings(database.url).model_copy(update={"memory_maintenance_batch_limit": 1})

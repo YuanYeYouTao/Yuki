@@ -345,8 +345,37 @@ class DreamRepository:
                 if sources.setdefault(fact.id, fact) != fact:
                     raise ValueError("dream_plan_source_changed")
         identities = tuple(sorted(sources))
+        statistics_json = statistics.model_dump_json()
+        prepared_statistics = DreamPlanStatistics.model_validate_json(statistics_json)
+        encoded_fact_ids = tuple(json.dumps(cluster.spec[4]) for cluster in prepared)
         now = datetime.now(UTC)
         public_id = str(uuid.uuid4())
+        prepared_values = []
+        for cluster, fact_ids_json in zip(prepared, encoded_fact_ids, strict=True):
+            key, partition, bot, kind, _fact_ids, fingerprint = cluster.spec
+            subject_person, subject_space, visibility_person, visibility_space = cluster.owner
+            prepared_values.append(
+                dict(
+                    cluster_key=key,
+                    partition_key=partition,
+                    bot_user_id=bot,
+                    canonical_subject_person_id=subject_person,
+                    canonical_subject_space_id=subject_space,
+                    canonical_visibility_person_id=visibility_person,
+                    canonical_visibility_space_id=visibility_space,
+                    kind=kind,
+                    status=DreamClusterStatus.PENDING.value,
+                    fact_ids_json=fact_ids_json,
+                    fingerprint=fingerprint,
+                    attempts=0,
+                    model_calls=0,
+                    operation_count=0,
+                    error_category=None,
+                    created_at=now,
+                    updated_at=now,
+                    completed_at=None,
+                )
+            )
         async with optional_session(self.database, session, write=True) as active:
             # A zero-row UPDATE reserves the SQLite writer even for a caller's legacy
             # SELECT-only transaction. No source work or pending ORM flush happens here.
@@ -376,7 +405,7 @@ class DreamRepository:
                     snapshot_max_fact_id=snapshot_max_fact_id,
                     snapshot_created_at=now,
                     created_by_user_id=actor_user_id,
-                    statistics_json=statistics.model_dump_json(),
+                    statistics_json=statistics_json,
                     model_calls=0,
                     completed_clusters=0,
                     failed_clusters=0,
@@ -390,41 +419,13 @@ class DreamRepository:
                 )
                 active.add(row)
                 await active.flush()
-                values = []
-                for cluster in prepared:
-                    key, partition, bot, kind, fact_ids, fingerprint = cluster.spec
-                    subject_person, subject_space, visibility_person, visibility_space = (
-                        cluster.owner
-                    )
-                    values.append(
-                        dict(
-                            run_id=row.id,
-                            cluster_key=key,
-                            partition_key=partition,
-                            bot_user_id=bot,
-                            canonical_subject_person_id=subject_person,
-                            canonical_subject_space_id=subject_space,
-                            canonical_visibility_person_id=visibility_person,
-                            canonical_visibility_space_id=visibility_space,
-                            kind=kind,
-                            status=DreamClusterStatus.PENDING.value,
-                            fact_ids_json=json.dumps(fact_ids),
-                            fingerprint=fingerprint,
-                            attempts=0,
-                            model_calls=0,
-                            operation_count=0,
-                            error_category=None,
-                            created_at=now,
-                            updated_at=now,
-                            completed_at=None,
-                        )
-                    )
+                values = [{**value, "run_id": row.id} for value in prepared_values]
                 for offset in range(0, len(values), 256):
                     await active.execute(
                         insert(cast(Table, MemoryDreamClusterModel.__table__)),
                         values[offset : offset + 256],
                     )
-                return self._run(row)
+                return self._run(row, statistics=prepared_statistics)
 
     async def checkpoint_candidates(
         self,
@@ -890,8 +891,10 @@ class DreamRepository:
                 )
             if not identities:
                 return recovered
-            now = datetime.now(UTC)
-            async with self.database.immediate_session() as session:
+
+            async def recover_page(
+                session: AsyncSession, identities: tuple[int, ...] = identities
+            ) -> int:
                 rows = tuple(
                     await session.scalars(
                         select(MemoryDreamClusterModel).where(
@@ -900,6 +903,8 @@ class DreamRepository:
                         )
                     )
                 )
+                if not rows:
+                    return 0
                 committed: dict[int, int] = {
                     int(row[0]): int(row[1])
                     for row in (
@@ -922,7 +927,9 @@ class DreamRepository:
                         )
                     )
                 }
-                # All reads are complete before any row becomes dirty/autoflushable.
+                # Complete aggregates belong to this read snapshot. A competing
+                # commit rejects its upgrade; reprepare only this database page.
+                now = datetime.now(UTC)
                 for row in rows:
                     row.updated_at = now
                     count = int(committed.get(row.id, 0))
@@ -938,7 +945,9 @@ class DreamRepository:
                     else:
                         row.status = DreamClusterStatus.PENDING.value
                         row.error_category = "process_restart"
-                recovered += len(rows)
+                return len(rows)
+
+            recovered += await self._facts.apply_evidence_write(recover_page)
 
     async def create_operation(
         self,
@@ -1061,6 +1070,7 @@ class DreamRepository:
 
         now = datetime.now(UTC)
         public_id = str(uuid.uuid4())
+        proposal_json = proposal.model_dump_json()
         async with self.database.sessions() as session, session.begin():
             await session.execute(
                 update(MemoryDreamClusterPreviewModel)
@@ -1075,7 +1085,7 @@ class DreamRepository:
                     public_id=public_id,
                     cluster_id=cluster_id,
                     source_fingerprint=source_fingerprint,
-                    proposal_json=proposal.model_dump_json(),
+                    proposal_json=proposal_json,
                     schema_version=_DREAM_PREVIEW_SCHEMA_VERSION,
                     model_calls=model_calls,
                     source_characters=source_characters,
@@ -1297,7 +1307,9 @@ class DreamRepository:
             )
 
     @staticmethod
-    def _run(row: MemoryDreamRunModel) -> DreamRun:
+    def _run(
+        row: MemoryDreamRunModel, *, statistics: DreamPlanStatistics | None = None
+    ) -> DreamRun:
         return DreamRun(
             public_id=row.public_id,
             mode=DreamRunMode(row.mode),
@@ -1305,7 +1317,9 @@ class DreamRepository:
             scheduled_slot=row.scheduled_slot,
             snapshot_max_fact_id=row.snapshot_max_fact_id,
             snapshot_created_at=row.snapshot_created_at,
-            statistics=DreamPlanStatistics.model_validate_json(row.statistics_json),
+            statistics=statistics
+            if statistics is not None
+            else DreamPlanStatistics.model_validate_json(row.statistics_json),
             model_calls=row.model_calls,
             completed_clusters=row.completed_clusters,
             failed_clusters=row.failed_clusters,
