@@ -196,7 +196,7 @@ async def test_hot_scope_policy_isolated_and_incomplete_raw_prefix_is_explicit(d
     base = RollupPolicyConfig(context_token_budget=10_000)
     first = await _seed_private(database, peer="1011", count=5, policy=base)
     second = await _seed_private(database, peer="1012", count=5, policy=base)
-    budgets = {"1011": 60, "1012": 10_000}
+    budgets = {"1011": 20, "1012": 10_000}
 
     async def policy_for_scope(scope):
         await asyncio.sleep(0)
