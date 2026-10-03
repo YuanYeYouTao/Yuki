@@ -1,0 +1,62 @@
+{
+  "recorded_at_utc": "2026-10-04T01:27:23.649452+08:00",
+  "host_pr": "https://github.com/YuanYeYouTao/Yuki/pull/230",
+  "host_revision": "cc676c00acd4b7197cc13027ba464715113b86f6",
+  "library_revision": "68bf033c37a524a2d377d2f67eaa25ce779c9e90",
+  "image_id": "sha256:8e4ec337f569f9a0e6d1daa5b891b0f0a3d4ad00f6389c404da08b5276c5c02b",
+  "image_archive_sha256": "9a483c0b4a6c5dfa02c3cc7cb9f1ea54485c2b38967678769c961ed48b108ed7",
+  "source_manifest_sha256": "cbd7eff382487842cbcb02b3bebee6e97a4bde19811fd977fcb0e5893ac9eced",
+  "installed_source_counts": {
+    "host_files": 679,
+    "library_files": 12,
+    "migrations": 44
+  },
+  "schema_transition": [
+    "0090",
+    "0091"
+  ],
+  "backup": "pre-semantic-continuation-cc676c0-20261003T171956786259Z",
+  "health_scope": "lightweight_readiness",
+  "onebot_connected": true,
+  "work_running": true,
+  "subagents_running": true,
+  "retention": {
+    "scope": "Pre-stop nonterminal Work and its original receipts, inputs, journal and root budgets.",
+    "original_counts": {
+      "work": 7,
+      "effects": 63,
+      "inputs": 22,
+      "journal": 7,
+      "budgets": 7,
+      "recovery": 7
+    },
+    "comparison_ok": true,
+    "changed_counts": {}
+  },
+  "ci": {
+    "run_id": 37136926037,
+    "url": "https://github.com/YuanYeYouTao/Yuki/actions/runs/37136926037",
+    "head": "55a8698719dc0bd40df4b804028b7dcf48761a80",
+    "conclusion": "success",
+    "pytest_summary": "2735 passed, 1 skipped, 2049 warnings in 1202.00s",
+    "webui_tests": 88,
+    "plugin_tests": {
+      "example": 4,
+      "subscription_monitor": 32,
+      "github_monitor": 84
+    },
+    "speech_tests": 15
+  },
+  "limits": [
+    "No live QQ messages sent; natural conversation acceptance belongs to the user.",
+    "Lightweight readiness does not audit all Memory, Dream, embedding or speech components.",
+    "Compatibility rollback retains the upgraded database; no destructive downgrade or restore of an old database."
+  ],
+  "backup_cleanup": {
+    "retained_count": 2,
+    "obsolete_work_backup_deleted": true,
+    "failed_deployment_backup_deleted": true,
+    "operations_pointer_updated": true,
+    "current_bot_restart_count": 0
+  }
+}
