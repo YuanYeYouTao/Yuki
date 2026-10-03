@@ -928,10 +928,10 @@ class ConversationRollupRepository:
         error_category: str,
         retry_max_seconds: int,
     ) -> None:
-        now = _utcnow()
         if not claim.conversation_id:
             raise RollupLeaseLostError("canonical rollup claim has no conversation")
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
+            now = _utcnow()
             job = await session.scalar(
                 select(CanonicalConversationRollupJobModel).where(
                     *self._canonical_lease_conditions(claim, now=now)
@@ -941,14 +941,22 @@ class ConversationRollupRepository:
                 raise RollupLeaseLostError("rollup retry lost its lease")
             failure_count = job.failure_count + 1
             delay = _overlay_backoff_seconds(failure_count, retry_max_seconds)
-            job.status = "pending"
-            job.failure_count = failure_count
-            job.lease_owner = None
-            job.lease_token = None
-            job.lease_until = None
-            job.next_attempt_at = now + timedelta(seconds=delay)
-            job.last_error_category = error_category[:64]
-            job.updated_at = now
+            result = await session.execute(
+                update(CanonicalConversationRollupJobModel)
+                .where(*self._canonical_lease_conditions(claim, now=now))
+                .values(
+                    status="pending",
+                    failure_count=failure_count,
+                    lease_owner=None,
+                    lease_token=None,
+                    lease_until=None,
+                    next_attempt_at=now + timedelta(seconds=delay),
+                    last_error_category=error_category[:64],
+                    updated_at=now,
+                )
+            )
+            if not cast(CursorResult[object], result).rowcount:
+                raise RollupLeaseLostError("rollup retry lost its lease")
 
     async def release_owner(self, lease_owner: str) -> int:
         now = _utcnow()
@@ -1765,6 +1773,7 @@ class ConversationRollupRepository:
     ) -> tuple[ColumnElement[bool], ...]:
         return (
             CanonicalConversationRollupJobModel.conversation_id == claim.conversation_id,
+            CanonicalConversationRollupJobModel.generation == claim.generation,
             CanonicalConversationRollupJobModel.status == "processing",
             CanonicalConversationRollupJobModel.lease_owner == claim.lease_owner,
             CanonicalConversationRollupJobModel.lease_token == claim.lease_token,
@@ -1779,7 +1788,8 @@ class ConversationRollupRepository:
         if lease_until is not None and lease_until.tzinfo is None:
             lease_until = lease_until.replace(tzinfo=UTC)
         return (
-            row.status == "processing"
+            row.generation == claim.generation
+            and row.status == "processing"
             and row.lease_owner == claim.lease_owner
             and row.lease_token == claim.lease_token
             and lease_until is not None

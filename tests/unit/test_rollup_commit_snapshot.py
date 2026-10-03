@@ -54,7 +54,7 @@ async def _publish(repository, claim, candidate, summary, overlay):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("overlay", [False, True], ids=["semantic", "overlay"])
-@pytest.mark.parametrize("mutation", ["append", "edit", "reset", "lease", "hold"])
+@pytest.mark.parametrize("mutation", ["append", "edit", "reset", "lease", "hold", "generation"])
 async def test_source_to_first_write_race_reprepares_only_database(
     database, monkeypatch, overlay, mutation
 ):
@@ -113,6 +113,8 @@ async def test_source_to_first_write_race_reprepares_only_database(
             values = (
                 {"lease_owner": "new-owner", "lease_token": "new-token"}
                 if mutation == "lease"
+                else {"generation": claim.generation + 1}
+                if mutation == "generation"
                 else {"failure_count": 99}
             )
             async with second.immediate_session() as writer:
@@ -208,7 +210,7 @@ async def test_snapshot_retry_is_finite_and_specific(database, monkeypatch, code
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("operation", ["background", "foreground", "heartbeat"])
+@pytest.mark.parametrize("operation", ["background", "foreground", "heartbeat", "retry"])
 async def test_lease_duration_begins_after_writer_acquisition(database, monkeypatch, operation):
     repository, scope, claim, _candidate = await _seed(database)
     before = datetime.now(UTC) - timedelta(minutes=5)
@@ -235,8 +237,18 @@ async def test_lease_duration_begins_after_writer_acquisition(database, monkeypa
         result = await repository.claim_scope_for_foreground(
             scope, lease_owner="new", lease_seconds=30
         )
-    else:
+    elif operation == "heartbeat":
         result = await repository.heartbeat(claim, lease_seconds=30)
+    else:
+        await repository.retry_infrastructure(
+            claim, error_category="db failure", retry_max_seconds=960
+        )
+        async with database.sessions() as reader:
+            job = await reader.get(CanonicalConversationRollupJobModel, claim.conversation_id)
+            assert job is not None and job.status == "pending"
+            assert job.next_attempt_at.replace(tzinfo=UTC) == after + timedelta(seconds=15)
+            assert job.failure_count == 1
+        return
     assert result is not None and result.lease_until == after + timedelta(seconds=30)
 
 
