@@ -12,6 +12,7 @@ from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.conversation.observations import ContextObservationRepository
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ChatResponse, ChatTool
 from qq_ai_bot.llm.fake import FakeLLMProvider
+from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE, entity_memory_rule
 from qq_ai_bot.model_runtime.capacity import ModelCapacity, estimate_request_tokens
 from qq_ai_bot.model_runtime.models import ModelCapability, ModelProtocol, ModelSearchMode
 from qq_ai_bot.services.agent_runner import AgentRuntime
@@ -190,3 +191,64 @@ async def test_main_native_only_hard_fit_does_not_buy_foreground_observation_sum
     assert provider.requests == []
     request = replace(actual, messages=composition.messages)
     assert estimate_request_tokens(request) <= budget
+
+
+@pytest.mark.parametrize("cached_manifest", [True, False])
+async def test_history_budget_uses_the_complete_single_static_prompt(
+    database, tmp_path, monkeypatch, cached_manifest
+):
+    _env, _harness, chat, _state, message = await _scene(database, tmp_path, FakeLLMProvider())
+    runner = chat.runtime.runner
+    runtime = await chat._runtime_config.snapshot()
+    runtime = replace(runtime, context=replace(runtime.context, window_tokens=524288))
+    monkeypatch.setattr(runner._models, "capacity", lambda _: ModelCapacity(input_tokens=524288))
+    if cached_manifest:
+        await runner.main_contract.definitions()
+    assert bool(runner.main_contract._tools) is cached_manifest
+    static = chat._prompt_composer.static_messages()
+    assert len(static) == 1 and static[0].role == "system"
+    assert static[0].content.count(entity_memory_rule(chat._settings.bot_display_name)) == 1
+    assert static[0].content.count(MEMORY_GROUNDING_RULE) == 1
+    compiled = chat._prompt_composer.compose(
+        inbound=message,
+        context=await context_for(database),
+        runtime=runtime,
+        visual_observation=None,
+        visual_failure=False,
+    )
+    assert compiled.messages[0] == static[0]
+    captured = []
+    normalize = runner._capacity_request
+
+    def capture(request):
+        captured.append(request)
+        return normalize(request)
+
+    monkeypatch.setattr(runner, "_capacity_request", capture)
+    hard = chat._history_input_budget(runtime, maintenance=False)
+    assert len(captured) == 1 and captured[0].messages == static
+    template = normalize(captured[0])
+    fallback = 0 if cached_manifest else 32768
+    fixed = estimate_request_tokens(template) + fallback
+    assert hard == 524288 - fixed
+    # Increasing the soft base is a policy change, not a new hard ceiling or a
+    # duplicated system contribution in either budget calculation.
+    larger = replace(
+        runtime,
+        context=replace(
+            runtime.context, compaction_window_tokens=runtime.context.compaction_window_tokens * 2
+        ),
+    )
+    assert chat._history_input_budget(larger, maintenance=False) == hard
+    for policy in (runtime, larger):
+        soft = chat._history_input_budget(policy)
+        assert soft == max(
+            1,
+            int(
+                min(524288, policy.context.compaction_window_tokens)
+                * policy.context.compaction_trigger_ratio
+            )
+            - fixed
+            - 4096,
+        )
+    assert all(request.messages == static for request in captured)

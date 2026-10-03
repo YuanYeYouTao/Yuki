@@ -480,9 +480,7 @@ class ChatService:
         from qq_ai_bot.model_runtime.capacity import (
             ModelCapacity,
             estimate_request_tokens,
-            estimate_text_tokens,
         )
-        from qq_ai_bot.prompting import CORE_CONTRACT
 
         getter = getattr(self._models, "capacity", None)
         capacity = getter(ModelTask.CHAT_AGENT) if callable(getter) else ModelCapacity()
@@ -505,21 +503,21 @@ class ChatService:
                     else allowed_capabilities
                 ),
             )
-            template = self.runtime.runner._capacity_request(
-                ChatRequest(
-                    messages=(ChatMessage("system", self._settings.system_prompt + CORE_CONTRACT),),
-                    model=runtime.llm.model or "fake",
-                    temperature=runtime.llm.temperature,
-                    max_output_tokens=runtime.llm.max_output_tokens,
-                    thinking_enabled=runtime.llm.thinking_enabled,
-                    tools=definitions,
-                    native_tools=native_tools,
-                    tool_choice="auto" if definitions or native_tools else None,
-                )
-            )
-            fixed = estimate_request_tokens(template)
         else:
-            fixed = estimate_text_tokens(self._settings.system_prompt + CORE_CONTRACT) + 32768
+            definitions, native_tools = (), ()
+        template = self.runtime.runner._capacity_request(
+            ChatRequest(
+                messages=self._prompt_composer.static_messages(),
+                model=runtime.llm.model or "fake",
+                temperature=runtime.llm.temperature,
+                max_output_tokens=runtime.llm.max_output_tokens,
+                thinking_enabled=runtime.llm.thinking_enabled,
+                tools=definitions,
+                native_tools=native_tools,
+                tool_choice="auto" if definitions or native_tools else None,
+            )
+        )
+        fixed = estimate_request_tokens(template) + (0 if tools else 32768)
         if maintenance:
             budget = int(budget * runtime.context.compaction_trigger_ratio)
         return max(1, budget - fixed - (4096 if maintenance else 0))
