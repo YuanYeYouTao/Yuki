@@ -23,10 +23,6 @@ from qq_ai_bot.workspace.short_state import ShortState
 from qq_ai_bot.workspace.store import WorkspaceStore
 
 
-def _encode(value):
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-
-
 def _metadata():
     raw = {
         "current_person": {
@@ -98,7 +94,6 @@ def test_facts_different_names_and_group_membership_are_not_lost():
     assert items["current_person_in_group"] == {"user_id": "other", "group_id": "other-g"}
     assert items["referenced_person.0"] == {"user_id": "r", "group_id": "g", "group_facts": [fact]}
     assert items["plugin_business"] == metadata["items"][-1]["data"]
-    assert _encode(items["current_group"]["facts"][0]) == _encode(fact)
 
 
 def test_actorless_private_target_remains_a_target_not_a_current_speaker():

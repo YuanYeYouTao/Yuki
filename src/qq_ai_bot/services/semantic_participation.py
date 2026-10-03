@@ -17,10 +17,6 @@ from pathlib import Path
 from typing import Any, cast
 
 from sqlalchemy import func, select
-from yuki_participation.autonomy_parameters import (
-    DEFAULT_AUTONOMY_PARAMETERS,
-    AutonomyParameters,
-)
 from yuki_participation.controller import Controller, State
 from yuki_participation.models import (
     CandidateKind,
@@ -57,6 +53,10 @@ from qq_ai_bot.persistence.models import ChatEventModel, MemoryEvidenceModel
 from qq_ai_bot.persistence.repository_helpers import keeper_event_clause
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.runtime.work_repository import WorkRepository
+from qq_ai_bot.services.participation_parameters import (
+    DEFAULT_AUTONOMY_PARAMETERS,
+    AutonomyParameters,
+)
 from qq_ai_bot.services.participation_snapshot import AsyncSnapshotStore
 
 logger = logging.getLogger(__name__)

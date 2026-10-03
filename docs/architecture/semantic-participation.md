@@ -106,8 +106,9 @@ call ID，避免不同响应重复使用 `call_0` 被误合并；Provider 请求
 
 主入口使用同一固定提示词、工具顺序和参数 schema。run ID、资料、时间与状态在固定部分
 之后；不根据 legacy/semantic 或场景动态裁剪声明。Work journal 保存实际请求和 Provider
-continuation，分段、等待与恢复只追加。`initiative:<run_id>` 持久标记防止每次唤醒重新注入
-变化后的 brief、short_state 或记忆。来源/合同变化时才建立明确的新链，预算与效果不清零。
+continuation；未决协议按原检查点精确恢复，正常业务续跑使用当前获准聊天及必要任务材料。
+`initiative:<run_id>` 防止将变化后的 brief、short_state 或记忆当作新的发起事实；私有尾部退出或
+整理采用明确新链，公共聊天无需清空，预算与效果不清零。具体边界见[主 Agent 合同](main-agent-runtime.md)。
 
 可选 `<yuki-state>` 尾段只作为主 SELF 自报，按真实 run、请求序号和 response ID 记录。
 可见发送、语音正文和最终正文会剥离该控制尾段；格式错误不靠额外模型请求修复。
@@ -119,6 +120,8 @@ continuation，分段、等待与恢复只追加。`initiative:<run_id>` 持久�
 工作必须继续恢复；`RUNTIME_WORK_ENABLED` 只控制普通聊天新工作接纳，不是恢复停机开关。
 SubagentScheduler 同样持续接管已接纳的子任务；子任务接纳开关不取消原父子执行关系。
 Jev 密钥不得写入公开配置、提示词或验收记录。
+
+开放群聊来源机会率由 `source_interval_seconds` 调节；参数含义与挂载覆盖见[自主参与模型](autonomous-participation-model.md#在线调参)。
 
 | 配置 | 默认值 / 含义 |
 | --- | --- |

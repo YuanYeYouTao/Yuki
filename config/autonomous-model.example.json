@@ -13,7 +13,7 @@
   "work_slow_weight": 0.25,
   "exposure_weight": 0.55,
   "reception_weight": 0.5,
-  "source_interval_seconds": 45.0,
+  "source_interval_seconds": 30.0,
   "source_participation_minimum": 0.15,
   "source_familiarity_weight": 0.15,
   "source_invitation_weight": 0.35,

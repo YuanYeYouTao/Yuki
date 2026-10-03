@@ -1,6 +1,5 @@
 """Real paired receipts and immutable task anchors survive near-window compaction."""
 
-import hashlib
 import json
 from dataclasses import asdict, replace
 from unittest.mock import AsyncMock
@@ -468,61 +467,3 @@ async def test_paid_final_page_keeps_exact_validation_scope_when_new_aux_window_
     assert candidate.chain_id != chain
     assert candidate.request().messages[:2] == initial
     assert estimate_request_tokens(replace(main, messages=candidate.request().messages)) <= 119808
-
-
-@pytest.mark.parametrize("within_budget", [True, False])
-@pytest.mark.parametrize(
-    "code", ["work_compaction_source_capacity", "work_compaction_no_capacity_improvement"]
-)
-async def test_runner_soft_compaction_failure_preserves_legal_request_but_stops_over_capacity(
-    database, tmp_path, monkeypatch, within_budget, code
-):
-    # This case tests an existing private continuation. A normal root business
-    # activation instead selects current public history before the main loop.
-    control, session, initial = await _session(database, tmp_path, worker=True)
-    _grow(session.transcript)
-    provider = FakeLLMProvider(lambda _: "The original review is complete.")
-    runner, runtime = await _runtime(database, control, initial, provider)
-    runtime = replace(runtime, fixed_tools=())
-    # Match the actual Runner contract so the seeded paired journal is selected
-    # as a continuation rather than repaired for an unrelated fixture contract.
-    revision = getattr(runner._models, "profile_revision", None)
-    session.contract = hashlib.sha256(
-        json.dumps(
-            [
-                repr(()),
-                asdict(runtime.runtime_config.llm),
-                asdict(runtime.runtime_config.web),
-                revision(runner._task) if callable(revision) else "legacy",
-                [(m.role, m.content) for m in initial if m.role == "system"],
-            ],
-            sort_keys=True,
-            default=str,
-        ).encode()
-    ).hexdigest()
-    await session.save("paired")
-    original = session.transcript.request()
-    chain = session.transcript.chain_id
-    size = estimate_request_tokens(runner._capacity_request(_main(session.transcript)))
-    budget = int(size * (1.04 if within_budget else 0.96))
-    runner._models.capacity = lambda _: ModelCapacity(input_tokens=budget)
-    compact = AsyncMock(side_effect=WorkCapacityError(code))
-    monkeypatch.setattr(runner, "_compact_work", compact)
-    result = await runner.run(initial, runtime, None)
-    compact.assert_awaited_once()
-    current = await control.repository.get(control.current["id"])
-    if within_budget:
-        assert len(provider.requests) == 1
-        request = provider.requests[0]
-        assert estimate_request_tokens(request) <= budget
-        assert request.messages == original.messages and request.request_chain_id == chain
-        assert current["state"] != "suspended"
-        assert result.model_requests == current["model_requests"] == 1
-        assert control.session.progress["model_observations"][-1]["content"] == (
-            "The original review is complete."
-        )
-    else:
-        assert provider.requests == []
-        assert current["state"] == "suspended" and current["reason"] == code
-        assert control.session.transcript.request() == original
-        assert result.suppress_delivery

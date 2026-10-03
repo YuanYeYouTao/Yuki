@@ -3,8 +3,9 @@
 日期：2026-10-03。基线：PR #228 / `3d9e273`。设计见
 [任务书](../architecture/foreground-rollup-and-sqlite-contention-taskbook-2026-10-03.md)。
 
-本文登记交付前的实现与验证证据；最终 CI、合并与上线记录见
-[PR #229](https://github.com/YuanYeYouTao/Yuki/pull/229)，真实群聊能力由用户另行验收。
+交付快照：2026-10-03，[PR #229](https://github.com/YuanYeYouTao/Yuki/pull/229)
+已合并为 `b8adc492` 并完成 Bot-only 部署，实际数据库 `0090`。
+本文登记实现、验证及该次部署证据；真实群聊能力由用户另行验收。
 
 ## 实现
 
@@ -92,6 +93,23 @@ Gemini 28 次有 cache 字段，40 次缺失；已知 input 618571、hit 484766�
 
 ## 合并与上线
 
-[PR #229](https://github.com/YuanYeYouTao/Yuki/pull/229) 单独登记最终检查、合并 SHA、
-Bot 镜像、0090 实际数据库状态、备份和健康；不从本文的合成回归推断自然流量验收。
-仅替换 Bot，保留线上事件、预算及回执，不恢复旧数据库，不操作 AGM/SnowLuma/Mihomo。
+最终 PR Quality [37107808827](https://github.com/YuanYeYouTao/Yuki/actions/runs/37107808827)
+和精确合并提交的 main Quality [37109224104](https://github.com/YuanYeYouTao/Yuki/actions/runs/37109224104)
+均六项通过。最终 PR Python 全量为 2678 passed / 1 skipped；插件 120 项、CLI 合同和新库迁移另行通过，不能叠加为 Python 全量次数。
+
+合并提交 `b8adc492de8028e5973abe441f4c1afadc4106a0`；镜像
+`ghcr.io/yuanyeyoutao/yuki-qqbot:ops-b8adc49`，镜像 ID
+`sha256:9bcff1272370a60b530df05a49cca30f2886b60073a2ba551583f626171acb53`，
+amd64 / 3.9.0。Bot 于台北 2026-10-03 16:51:42 启动；部署退出码 0，
+675 个安装源码 hash、`0090` 两索引、单一数据库 Bot runtime 与软配置核验通过。
+原 7 项 Work/预算/journal/recovery、63 项效果和 22 项输入的两次保留比对通过。
+备份留两份：`pre-foreground-rollup-b8adc49-20261003T082103Z` 和
+`pre-work-context-3d9e273-20261002T215709Z`。
+
+首轮因完整 `/healthz` 审计超时自动回退旧镜像，沿用当前数据库与效果。
+重试改用既有 `/livez` 和 control `read_health` 轻量就绪检查，并以保存的 wrapper
+隔离子进程 stdin、记录实际退出码。独立轻量检查后来也失败过一次，随后完整部署核验
+与台北 17:15 的就绪检查通过；这些证据不证明全部主机延迟已消除或 Memory 语义完整健康。
+
+仅替换 Bot，Profile、SnowLuma、Mihomo 不变；未恢复旧数据库、修改 AGM、发送 QQ 或发布 release。
+线上自然群聊、负载延迟和缓存改善仍待独立验收，不能从合成回归或手动模型实验推断。

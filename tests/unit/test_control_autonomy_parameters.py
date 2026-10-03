@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import pytest
 from tests.conftest import make_settings
 from tests.unit.test_control_plane_foundation import context
-from yuki_participation.autonomy_parameters import DEFAULT_AUTONOMY_PARAMETERS
 
 from qq_ai_bot.admin.config_files import ConfigFileError, ConfigFileService
 from qq_ai_bot.control_plane import (
@@ -21,6 +20,7 @@ from qq_ai_bot.control_plane import (
 )
 from qq_ai_bot.persistence.control_command import ControlCommandAdapter
 from qq_ai_bot.persistence.control_query import ControlQueryAdapter
+from qq_ai_bot.services.participation_parameters import DEFAULT_AUTONOMY_PARAMETERS
 from qq_ai_bot.services.semantic_participation import SemanticParticipationService
 
 
@@ -51,7 +51,7 @@ async def test_original_save_pending_reload_actual_loaded_state_and_replay(datab
         == DEFAULT_AUTONOMY_PARAMETERS.model_dump(mode="json")
     )
     assert set(first["document"]) == set(first["parameter_schema"]["properties"])
-    draft = {**first["document"], "intrinsic_interval_seconds": 120}
+    draft = {**first["document"], "intrinsic_interval_seconds": 120, "source_interval_seconds": 60}
     ctx = replace(
         context("control.config.file.mutate"), canonical_target=YukiControlTarget.PERMANENT_YUKI
     )
@@ -68,6 +68,10 @@ async def test_original_save_pending_reload_actual_loaded_state_and_replay(datab
     assert result.success and result.effective_state["status"] == "saved_pending_reload"
     assert result.effective_state["revision"] > 0
     assert host.control_model_parameters().intrinsic_interval_seconds == 600
+    assert (
+        host.control_model_parameters().source_interval_seconds
+        == (first["loaded_document"]["source_interval_seconds"])
+    )
     saved = await service.read("autonomous_model")
     assert (
         saved["matches_loaded"] is False and saved["document"]["intrinsic_interval_seconds"] == 120
@@ -75,6 +79,7 @@ async def test_original_save_pending_reload_actual_loaded_state_and_replay(datab
     assert str(path) not in json.dumps(saved)
     host._refresh_model_parameters()
     assert host.control_model_parameters().intrinsic_interval_seconds == 120
+    assert host.control_model_parameters().source_interval_seconds == 60
     assert (await service.read("autonomous_model"))["matches_loaded"] is True
     # An identical original request returns its receipt without touching the file.
     before = path.stat().st_mtime_ns

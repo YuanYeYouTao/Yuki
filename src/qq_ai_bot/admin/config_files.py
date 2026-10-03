@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, Any
 
 import tomlkit
 from pydantic import TypeAdapter, ValidationError
-from yuki_participation.autonomy_parameters import DEFAULT_AUTONOMY_PARAMETERS, AutonomyParameters
 
 from qq_ai_bot.config import Settings
 from qq_ai_bot.model_runtime.executor import TaskModelExecutor
@@ -32,6 +31,10 @@ from qq_ai_bot.model_runtime.secrets import (
     encode_model_secrets,
     model_secrets_path,
     read_model_secrets,
+)
+from qq_ai_bot.services.participation_parameters import (
+    DEFAULT_AUTONOMY_PARAMETERS,
+    AutonomyParameters,
 )
 from qq_ai_bot.web.base import WebSearchProvider
 

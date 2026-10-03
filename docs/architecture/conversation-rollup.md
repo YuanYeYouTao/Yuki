@@ -152,12 +152,13 @@ Provider 输入顺序固定为：
 ```text
 TRUSTED STATIC INSTRUCTIONS
 UNTRUSTED ROLLUP SUMMARY INPUT
-CANONICAL RAW HISTORY INPUT
+FROZEN AUTHORIZED CHAT AND SCOPED OBSERVATIONS
 CURRENT ACTOR DYNAMIC ENVELOPE
 CURRENT MESSAGE
 ```
 
-Rollup 永不进入 system instructions。昵称、群名片和正文来自落账时事件；当前 Actor 的关系、
+Rollup 永不进入 system instructions。冻结历史保留所选聊天与观察的原顺序，新事件在安全点追加。
+昵称、群名片和正文来自落账时事件；当前 Actor 的关系、
 权限和必要场景资料只进入当前 envelope。长期记忆由 Main Agent 按需调用记忆检索工具，
 不在每轮自动预取或注入。
 
