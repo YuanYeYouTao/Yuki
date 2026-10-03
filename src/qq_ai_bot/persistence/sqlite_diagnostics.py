@@ -56,7 +56,15 @@ class SQLiteDiagnostics:
         self.lock = threading.RLock()
         self.timings = {
             name: TimingSummary()
-            for name in ("sql", "acquire", "first_write", "commit", "rollback", "held_lower_bound")
+            for name in (
+                "sql",
+                "acquire",
+                "first_write",
+                "commit",
+                "rollback",
+                "held_lower_bound",
+                "held_release_unknown",
+            )
         }
 
     def snapshot(self) -> dict[str, Any]:
@@ -124,11 +132,54 @@ def install_sqlite_diagnostics(engine: Engine) -> SQLiteDiagnostics:
                     elapsed,
                 )
 
+    def observation_end_unknown(token: int, phase: str, observed_until: float) -> None:
+        # The pool has abandoned this physical connection. Do not retain stale
+        # integer identities indefinitely or count an unconfirmed exit as release.
+        with diagnostics.lock:
+            holder = writers.pop(token, None)
+            if holder is None:
+                return
+            elapsed = observed_until - holder["since"]
+            diagnostics.timings["held_release_unknown"].record(elapsed)
+        logger.warning(
+            "sqlite_transaction_observation_end transaction=%d phase=%s "
+            "held_lower_bound_seconds=%.3f release_confirmed=false "
+            "precision=before_physical_exit holder_scope=installed_engine",
+            holder["transaction"],
+            phase,
+            elapsed,
+        )
+
+    def physical_exit(connection: Any, call: Any, phase: str) -> None:
+        dbapi = physical(connection)
+        token, started = id(dbapi), time.monotonic()
+        try:
+            call(connection)
+        except BaseException:
+            observation_end_unknown(token, f"{phase}_failed", started)
+            raise
+        # aiosqlite's force terminate merely queues stop() on its worker thread.
+        # Its graceful path awaits close(); the driver then has no connection.
+        driver = getattr(dbapi, "driver_connection", None)
+        if (
+            phase == "terminate"
+            and driver is not None
+            and getattr(driver, "_connection", True) is not None
+        ):
+            observation_end_unknown(token, "terminate_unconfirmed", started)
+        else:
+            finish(token, f"physical_{phase}_complete")
+
     original_commit, original_rollback = engine.dialect.do_commit, engine.dialect.do_rollback
     dialect: Any = engine.dialect
     dialect.do_commit = lambda connection: transaction_call(connection, original_commit, "commit")
     dialect.do_rollback = lambda connection: transaction_call(
         connection, original_rollback, "rollback"
+    )
+    original_close, original_terminate = dialect.do_close, dialect.do_terminate
+    dialect.do_close = lambda connection: physical_exit(connection, original_close, "close")
+    dialect.do_terminate = lambda connection: physical_exit(
+        connection, original_terminate, "terminate"
     )
 
     def before(
@@ -245,6 +296,6 @@ def install_sqlite_diagnostics(engine: Engine) -> SQLiteDiagnostics:
     event.listen(engine, "after_cursor_execute", after)
     event.listen(engine, "handle_error", failure)
     event.listen(engine.pool, "checkin", release)
-    event.listen(engine.pool, "invalidate", release)
-    event.listen(engine.pool, "close", release)
+    # Pool invalidate/close events precede DBAPI physical exit. They do not
+    # certify release; the dialect completion wrappers above observe that boundary.
     return diagnostics
