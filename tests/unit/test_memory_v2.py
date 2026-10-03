@@ -1331,8 +1331,9 @@ async def test_context_does_not_automatically_inject_facts(database: Database) -
     context = next(item["data"] for item in items if item["id"] == "context.people_and_scene")
     blocks = {item["id"]: item["data"] for item in context["items"]}
 
-    assert "current_person" in blocks
-    assert "current_group" in blocks
+    assert blocks["current_person"]["user_id"] == "1001"
+    assert blocks["current_person"]["display_name"] == "当前用户"
+    assert blocks["scene"] == {"type": "group", "group_id": "2001"}
     assert all("facts" not in block for block in blocks.values())
     for fact_content in (
         "只属于当前人物",
