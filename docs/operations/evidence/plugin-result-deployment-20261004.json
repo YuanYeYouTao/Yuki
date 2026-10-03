@@ -1,0 +1,124 @@
+{
+  "recorded_at_utc": "2026-10-03T18:47:36.001996+00:00",
+  "host_pr": "https://github.com/YuanYeYouTao/Yuki/pull/232",
+  "host_merged_revision": "8d7fa982e1af68e935cb5db4f2f1a77d8e8727ef",
+  "tested_head_revision": "d57d31e6333aee8174ef6bd23e84f0e52ddbbc4e",
+  "library_revision": "68bf033c37a524a2d377d2f67eaa25ce779c9e90",
+  "image_tag": "ghcr.io/yuanyeyoutao/yuki-qqbot:ops-8d7fa98",
+  "image_id": "sha256:0b49d81eaa269aaf6d6f4f5bc7f878500218364e914decb61e000ea882704a7a",
+  "schema_before": "0091",
+  "schema_after": "0091",
+  "no_schema_migration": true,
+  "ci": {
+    "databaseId": 37142699010,
+    "headSha": "d57d31e6333aee8174ef6bd23e84f0e52ddbbc4e",
+    "status": "completed",
+    "conclusion": "success",
+    "url": "https://github.com/YuanYeYouTao/Yuki/actions/runs/37142699010",
+    "python_tests_passed": 2742,
+    "python_tests_skipped": 1,
+    "jobs": [
+      {
+        "name": "changes",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "baseline",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "docker",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "python",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "memory-quality",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "speech-worker",
+        "status": "completed",
+        "conclusion": "success"
+      }
+    ]
+  },
+  "deploy_helper_sha256": "f0bb59668b37b21f9bdfe3fd3fdd844322a37f6c0b8a07e8844f59d5ec363dec",
+  "source_manifest_sha256": "15f6e440228e14e4a3a7e0278c9596a645db6c86df8f92b216cf780653d8358c",
+  "image_archive_sha256": "d94b3381bb402ed3d5e8e5e2e1b9178f6772778857eeee575dbd702c08534cf2",
+  "targeted_tests": {
+    "existing_tool_artifact_work_results": 47,
+    "plugin_recovery": 2,
+    "new_regressions": 7,
+    "old_source_reproduced_after_real_delivery": true
+  },
+  "installed_source_verified_counts": {
+    "host_files": 679,
+    "library_files": 12,
+    "migrations": 44
+  },
+  "readiness": {
+    "ok": true,
+    "scope": "lightweight_readiness",
+    "onebot_connected": true,
+    "components": {
+      "gateway": {
+        "checked_at": "2026-10-03T18:46:01.273157Z",
+        "enabled": null,
+        "error_category": null,
+        "healthy": null,
+        "running": true
+      },
+      "subagents": {
+        "checked_at": "2026-10-03T18:46:01.273157Z",
+        "enabled": true,
+        "error_category": null,
+        "healthy": null,
+        "running": true
+      },
+      "work": {
+        "checked_at": "2026-10-03T18:46:01.273157Z",
+        "enabled": true,
+        "error_category": null,
+        "healthy": null,
+        "running": true
+      }
+    }
+  },
+  "retained_nonterminal_work_count": 7,
+  "work_effect_receipt_budget_comparison_ok": true,
+  "retained_valid_backups": 2,
+  "old_backup_deleted": true,
+  "backup_pointer_updated": true,
+  "nonbot_services_changed": false,
+  "live_qq_or_model_probe_sent": false,
+  "before_patch_natural_cache": {
+    "window_utc": [
+      "2026-10-03T17:24:11.10873207Z",
+      "2026-10-03T18:07:19.671600+00:00"
+    ],
+    "provider": "gemini",
+    "model": "gemini-3.8-flash",
+    "successful_invocations": 20,
+    "known_cache_invocations": 16,
+    "unknown_cache_invocations": 4,
+    "known_cache_input_tokens": 796239,
+    "cached_tokens": 688972,
+    "weighted_known_cache_rate": 0.8652829112866866,
+    "verified_user_message_samples": 0
+  },
+  "limits": [
+    "Natural usage has missing turn IDs; cache rate covers only known cache accounting and is not a USER_MESSAGE acceptance claim.",
+    "QQ continuous participation acceptance remains with the user.",
+    "The separate Memory evidence-compaction OperationalError has no retained SQL/code/stack evidence and remains unclassified.",
+    "Actorless results that actually require archiving still fail authorization; the patch only removes unnecessary checks for short receipts.",
+    "No version tag or GitHub Release was published."
+  ]
+}
