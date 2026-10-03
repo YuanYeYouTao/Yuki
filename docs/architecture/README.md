@@ -18,7 +18,7 @@ Yuki 正在逐层解耦：永久主体、内部事件和工作身份由核心持
 | [Conversation Rollup](conversation-rollup.md) | 原始事件、历史投影、压缩与 generation |
 | [聊天媒体与发送合同](chat-media-workspace.md) | 会话内媒体索引、24 小时缓存、工作区提升、切换重置与定时 Social 发送 |
 | [Self Reflection](self-reflection.md) | 自省 Responses 合同、后台周期、预算、重试与运维报告 |
-| [语义参与 V6 宿主接入](semantic-participation.md) | 独立观测/selector、正式 SELF 主入口、同 Runner 恢复、发送和自省回执；具体版本与部署状态须单独核验，T20 真实 QQ 社交效果未验收 |
+| [语义参与宿主接入](semantic-participation.md) | Jev 稀疏触发和纠正、真人普通接话、SELF 自主行动、原接纳与真实反馈；部署与自然 QQ 验收分别核验 |
 | [自主参与连续决策模型](autonomous-participation-model.md) | 连续状态与回执决定自主 SELF 思考时机；参数与合成回放验收边界 |
 | [Memory](memory-v2.md) | 记忆范围、证据与权限 |
 | [Tool Kernel](tool-kernel.md) | 固定主声明、目录查询与执行授权 |
@@ -36,6 +36,10 @@ Yuki 正在逐层解耦：永久主体、内部事件和工作身份由核心持
 
 当前自主频率设计与联测范围见[自主参与反馈模型任务书](autonomous-participation-social-feedback-taskbook.md)；
 现行算法以[自主参与连续概率模型](autonomous-participation-model.md)和独立库固定修订为准。
+
+本轮设计与验收清单：[语义参与与持续接话重构任务书](semantic-participation-continuation-taskbook-2026-10-03.md)。
+联合修改 Host 和独立语义库，分开真人持续接话与新 SELF 自主行动，复用既有状态和唯一 Runtime；
+包含普通反馈、Jev 稀疏矫正、开关、快照兼容、固定依赖与文档清理；实现和部署状态以交付记录为准。
 
 历史设计：[主 Agent 全入口执行、恢复与交付统一任务书](main-agent-entrypoint-unification-taskbook.md)。
 基于 2026-09-13 自动化与插件入口审计完成实现，已合并部署；定向验证、CI、迁移及观察边界见
@@ -55,17 +59,15 @@ Yuki 正在逐层解耦：永久主体、内部事件和工作身份由核心持
 包含工具证据保留、Work 压缩、Conversation Rollup、累计预算和子任务并行的代码审计与实施范围；
 本轮实现及逐项验证见[交付记录](../operations/long-task-harness-2026-10-01.md)。合并与上线状态以该记录的实际证据为准。
 
-修复任务书：[历史快照与长任务交互 Harness](history-snapshot-and-work-reporting-taskbook.md)。
+历史实施任务书：[历史快照与长任务交互 Harness](history-snapshot-and-work-reporting-taskbook.md)。
 基于 2026-10-02 的投影漏接与汇报边界核查，补普通历史冻结、长任务开始顺序和既有 steer 上的答复/续行保障；
 阶段汇报复用模型循环，不重新实现 steer 接入与恢复，也不增加逐阶段沟通状态机。
-本文档编制不表示运行代码已修改或生产已完成验收。
+实现与部署证据见[交付记录](../operations/history-interaction-harness-2026-10-02.md)，不替代自然 QQ 能力验收。
 
 V6 迁移链为 `0065`（关系历史索引）→ `0066`（autonomy 接纳）→
 `0067`（SELF 证据与自省水位）→ `0068`（内部引用事件）→
 `0069`（Social 回执内部事件关联）→ `0070`（无来源机会与讨论线程）。
 仓库迁移头不等于生产数据库版本；合成 Jev 与控制器回放也不等于真实 QQ 社交验收。
-
-本轮技术验证、PR/部署与缓存观测：[交付记录](../operations/history-interaction-harness-2026-10-02.md)。
 
 普通搜索续接的容量计量修正与等长缓存窗口核查：
 [2026-10-02 核查记录](../operations/compact-capacity-accounting-2026-10-02.md)。
@@ -77,11 +79,12 @@ V6 迁移链为 `0065`（关系历史索引）→ `0066`（autonomy 接纳）→
 搜索桥使用连接预算、摘要等待及输出预算的放宽设计见
 [2026-10-02 策略调整](../operations/search-compaction-limits-2026-10-02.md)。
 
-后续实施设计：[Work 上下文与普通聊天续接修复任务书](work-context-and-chat-continuation-taskbook.md)。
+实施规格：[Work 上下文与普通聊天续接修复任务书](work-context-and-chat-continuation-taskbook.md)。
 以当前获准聊天和必要观察线索继续工作，原始研究资料外存并按需读取；纳入经源码确认的
-普通同轮容量整理缺口，删除恢复整份旧群史的冲突设计。本地实现与定向验证已完成；最新全量、合并与部署状态见
+普通同轮容量整理，替换恢复整份旧群史的旧设计。PR #228 已合并；验证与部署证据见
 [实施交付记录](../operations/work-context-delivery-2026-10-03.md)。
 
-待实施设计：[前台回复、后台历史整理与 SQLite 写锁修复任务书](foreground-rollup-and-sqlite-contention-taskbook-2026-10-03.md)。
+实施规格：[前台回复、后台历史整理与 SQLite 写锁修复任务书](foreground-rollup-and-sqlite-contention-taskbook-2026-10-03.md)。
 基于 `3d9e273` 的代码核查和隔离 SQLite 竞态复现，规定实际容量内先回复、后台整理及明确采用边界，
-并修复 Rollup 提交快照、周期空写和锁内准备；本文档交付不表示业务代码已修改或上线。
+并修复 Rollup 提交快照、周期空写和锁内准备。PR #229 已合并为 `b8adc49`，Bot-only 部署及重试证据见
+[交付记录](../operations/foreground-rollup-sqlite-contention-2026-10-03.md)；自然聊天延迟、摘要质量与缓存改善仍须分别观察。

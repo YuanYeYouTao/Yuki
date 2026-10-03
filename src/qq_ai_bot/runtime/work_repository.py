@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -956,13 +957,18 @@ class WorkRepository:
             return int(row["id"])
 
     async def prepare_input(
-        self, identity: int, payload: dict[str, Any], *, images: tuple[ChatImage, ...] = ()
+        self,
+        identity: int,
+        payload: dict[str, Any],
+        *,
+        images: tuple[ChatImage, ...] = (),
+        before_publish: Callable[[AsyncSession, int], Awaitable[None]] | None = None,
     ) -> bool:
         from qq_ai_bot.runtime.work_media import externalize
 
         # A retry acknowledges the original durable input, never replaces it.
         async with self.database.sessions() as reader:
-            if await reader.scalar(
+            if before_publish is None and await reader.scalar(
                 select(inputs.c.ready).where(
                     inputs.c.id == identity,
                     inputs.c.state.in_(("pending", "staged", "consumed")),
@@ -1006,7 +1012,7 @@ class WorkRepository:
                 # A wakeup may already carry a ready control signal, or a retry
                 # may arrive after the original input was staged/consumed.
                 # Acknowledge that durable input without replacing its payload.
-                return bool(
+                ready = bool(
                     await session.scalar(
                         select(inputs.c.ready).where(
                             inputs.c.id == identity,
@@ -1015,7 +1021,12 @@ class WorkRepository:
                         )
                     )
                 )
+                if ready and before_publish is not None:
+                    await before_publish(session, identity)
+                return ready
             work_id = changed.work_id
+            if before_publish is not None:
+                await before_publish(session, identity)
             if blobs:
                 if work_id is None:
                     raise WorkConflict("work_input_media_owner_missing")

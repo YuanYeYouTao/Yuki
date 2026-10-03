@@ -11,6 +11,9 @@ from dataclasses import dataclass, replace
 from functools import partial
 from typing import Any, Protocol, TypedDict, TypeVar, cast
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.models import TurnOrigin
@@ -24,6 +27,11 @@ from qq_ai_bot.capabilities import (
     ToolProviderRegistry,
 )
 from qq_ai_bot.config import Settings
+from qq_ai_bot.conversation.ordinary_admission import (
+    OrdinaryAdmissionDuplicate,
+    OrdinaryAdmissionRepository,
+    PreparedOrdinaryAdmission,
+)
 from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
 from qq_ai_bot.conversation.rollup.repository import (
     ConversationRollupRepository,
@@ -447,6 +455,10 @@ class ChatService:
         )
         self._voice_preferences = voice_preferences
         self._event_publisher = event_publisher
+        self.observe_main_response: Callable[..., Awaitable[None]] | None = None
+        self.participation_context: Callable[[int], Awaitable[dict[str, object] | None]] | None = (
+            None
+        )
 
     def set_admin_tools(self, service: AdminToolService) -> None:
         """Attach privileged tools to this same Agent loop without a second router."""
@@ -798,6 +810,8 @@ class ChatService:
         conversation_key: str,
         inbound: InboundMessage,
         event_id: int,
+        *,
+        admission: PreparedOrdinaryAdmission | None = None,
     ) -> int | None:
         from qq_ai_bot.runtime.work_wait import WorkWaitRepository
 
@@ -805,7 +819,9 @@ class ChatService:
         if explicit_reply is not None:
             return explicit_reply
         matched = await WorkWaitRepository(self._work_repository).match_event(
-            event_id=event_id, kind="conversation"
+            event_id=event_id,
+            kind="conversation",
+            on_delivery=self._admission_publisher(admission) if admission else None,
         )
         if matched is not None:
             return matched
@@ -838,11 +854,63 @@ class ChatService:
         identity: int,
         text: str,
         images: tuple[ChatImage, ...] = (),
+        *,
+        admission: PreparedOrdinaryAdmission | None = None,
     ) -> bool:
         # The durable parent owns this input even if its activation just yielded.
         return await self._work_repository.prepare_input(
-            identity, {"text": text[:7000]}, images=images
+            identity,
+            {"text": text[:7000]},
+            images=images,
+            before_publish=self._admission_publisher(admission) if admission else None,
         )
+
+    def _admission_publisher(
+        self, admission: PreparedOrdinaryAdmission
+    ) -> Callable[[AsyncSession, int], Awaitable[None]]:
+        async def publish(session: AsyncSession, input_id: int) -> None:
+            from qq_ai_bot.conversation.ordinary_admission_db_models import (
+                OrdinaryTurnAdmissionModel,
+            )
+            from qq_ai_bot.runtime.work_repository import WorkConflict
+            from qq_ai_bot.runtime.work_schema_v1 import inputs
+
+            existing = await session.get(OrdinaryTurnAdmissionModel, admission.event.id)
+            source = (
+                await session.execute(
+                    select(
+                        inputs.c.work_id,
+                        inputs.c.conversation_id,
+                        inputs.c.generation,
+                        inputs.c.event_id,
+                    ).where(inputs.c.id == input_id)
+                )
+            ).first()
+            if (
+                source is None
+                or source.work_id is None
+                or source.conversation_id != admission.admission.conversation_id
+                or source.generation != admission.admission.generation
+                or source.event_id != admission.event.id
+            ):
+                raise WorkConflict("ordinary_input_source_mismatch")
+            if (
+                existing is not None
+                and existing.activation_id == admission.admission.activation_id
+                and existing.route == "work"
+                and existing.input_id == input_id
+                and existing.work_id == source.work_id
+            ):
+                return
+            if not await OrdinaryAdmissionRepository(self._ledger._database).commit(
+                admission,
+                session=session,
+                work_id=source.work_id,
+                input_id=input_id,
+            ):
+                raise OrdinaryAdmissionDuplicate("ordinary_already_admitted")
+
+        return publish
 
     async def respond(
         self,
@@ -1432,6 +1500,15 @@ class ChatService:
             current_work_control.get(),
             recovery_contract=await self.runtime.main_turns.recovery_contract(runtime),
         )
+        if (
+            self.participation_context is not None
+            and turn_origin is TurnOrigin.USER_MESSAGE
+            and not context.recovery_protocol
+            and turn_snapshot.trigger_event_id is not None
+        ):
+            participation = await self.participation_context(turn_snapshot.trigger_event_id)
+            if participation:
+                context = replace(context, participation_context=participation)
         if memory_session is not None:
             memory_session.stage_prompt_selection(
                 context.injected_memory_ids,

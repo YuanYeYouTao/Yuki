@@ -1099,8 +1099,12 @@ async def test_soft_window_compaction_failure_keeps_hard_fitting_original_reques
         assert provider.requests[0].messages == original.messages
         assert provider.requests[0].request_chain_id == main.request_chain_id
         assert provider.requests[0].tools == main.tools
+        assert estimate_request_tokens(provider.requests[0]) <= hard_limit
         assert current["state"] != "suspended" and current["model_requests"] == 1
         assert result.model_requests == 1
+        assert control.session.progress["model_observations"][-1]["content"] == (
+            "The original review is complete."
+        )
     else:
         assert provider.requests == [] and current["model_requests"] == 0
         assert current["state"] == "suspended" and current["reason"] == code

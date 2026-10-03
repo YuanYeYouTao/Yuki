@@ -142,6 +142,17 @@ class PromptComposer:
                     required=True,
                 )
             )
+        if context.participation_context:
+            contributions.append(
+                PromptContribution(
+                    id="runtime.participation",
+                    channel=PromptChannel.RUNTIME,
+                    trust=PromptTrust.UNTRUSTED,
+                    priority=86,
+                    payload=context.participation_context,
+                    required=True,
+                )
+            )
         for identity, enabled, data in (
             ("runtime.memory_mutation", memory_exclusive_write, {"exclusive_write": True}),
         ):
@@ -286,7 +297,7 @@ class PromptComposer:
             item.id: item.model_dump(mode="json", include={"payload", "content", "trust", "source"})
             for item in compiled.selected
             if item.channel in {PromptChannel.CONTEXT, PromptChannel.PLUGIN, PromptChannel.MODALITY}
-            or item.id == "runtime.short_state"
+            or item.id in {"runtime.short_state", "runtime.participation"}
         }
         from dataclasses import replace
 

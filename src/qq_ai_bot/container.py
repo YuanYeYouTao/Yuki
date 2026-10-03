@@ -617,6 +617,8 @@ class ApplicationContainer:
         from qq_ai_bot.services.semantic_participation import SemanticParticipationService
 
         self.semantic_participation = SemanticParticipationService(self, traces=self.models.traces)
+        self.chat.observe_main_response = self.semantic_participation.observe_main_response
+        self.chat.participation_context = self.semantic_participation.context_for_event
         self.autonomous_groups = AutonomousGroupService(
             chat=self.chat,
             runtime_config=self.runtime_config,
@@ -728,6 +730,8 @@ class ApplicationContainer:
             voice_preferences=self.voice_preference_service,
             turn_observations=self.turn_observations,
         )
+        self.processor.set_participation(self.semantic_participation)
+        self.semantic_participation.set_promoter(self.processor.promote_committed_event)
         self.runtime_foundation.provider_registry.freeze()
         self._cleanup_stop = asyncio.Event()
         self._cleanup_task: asyncio.Task[None] | None = None

@@ -1,4 +1,4 @@
-<!-- release-baseline: version=3.9.0 schema=0090 -->
+<!-- release-baseline: version=3.9.0 schema=0091 -->
 
 中文（默认） · [English](README.en.md)
 
@@ -159,6 +159,8 @@ uv run pytest
 ```
 
 开发时按改动范围选择定向验证；发布流程还会验证迁移、镜像和无源码部署。
+常驻回归使用 fake Provider 和隔离数据库；Gemini、DeepSeek 等付费 API 的缓存对照单独手动执行，
+报告区分冷轮、热轮和缺失计量，不作为普通测试或固定命中率门槛。
 
 | 文档 | 内容 |
 | --- | --- |

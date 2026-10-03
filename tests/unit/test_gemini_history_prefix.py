@@ -41,6 +41,7 @@ async def test_native_checkpoint_preserves_public_prefix_across_ordinary_turns(
     wire = []
     attempts = []
     runtime_observation = {"text": "original-runtime-state"}
+    participation = {"thread": "original-participation", "engage": "stay"}
     original_runtime_state = WorkControl.runtime_state
 
     async def runtime_state(control):
@@ -108,6 +109,12 @@ async def test_native_checkpoint_preserves_public_prefix_across_ordinary_turns(
             provider,
         )
         chat = harness.processor._chat
+
+        async def participation_context(event_id):
+            assert event_id > 0
+            return dict(participation)
+
+        chat.participation_context = participation_context
         profile = ModelProfile(
             id="gemini",
             provider="gemini",
@@ -175,6 +182,7 @@ async def test_native_checkpoint_preserves_public_prefix_across_ordinary_turns(
             assert saved.revision == 1
             assert "original-signature" not in frozen and "functionResponse" not in frozen
             assert "original-runtime-state" not in frozen
+            assert "original-participation" in frozen
 
         # Reopen the service and change dynamic data before the next user turn.
         await database.close()
@@ -183,6 +191,7 @@ async def test_native_checkpoint_preserves_public_prefix_across_ordinary_turns(
         )
         state.update({"slot": 1, "text": "current-state", "expected_revision": 1})
         runtime_observation["text"] = "current-runtime-state"
+        participation.update(thread="current-participation", engage="quiet")
         result = await harness.processor.handle(
             replace(
                 message,
@@ -207,6 +216,7 @@ async def test_native_checkpoint_preserves_public_prefix_across_ordinary_turns(
         assert wire[3]["generationConfig"] == wire[0]["generationConfig"]
         serialized = json.dumps(wire[3], ensure_ascii=False)
         assert "original-private-state" in serialized and "current-state" in serialized
+        assert "original-participation" in serialized and "current-participation" in serialized
         assert "original-signature" not in serialized
         if runtime_enabled:
             assert "original-runtime-state" not in serialized

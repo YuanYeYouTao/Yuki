@@ -9,21 +9,67 @@ from typing import TYPE_CHECKING, cast
 
 from pydantic import ValidationError
 from sqlalchemy import select
-from yuki_participation.models import Effect, Feedback
+from yuki_participation.models import Effect, Feedback, Scope, SourceRef
 from yuki_participation.self_report import SelfReport
 
 from qq_ai_bot.conversation.autonomy_binding import AcceptedInitiative, AutonomyOwner
 from qq_ai_bot.conversation.autonomy_db_models import InitiativeFeedbackModel, InitiativeRunModel
-from qq_ai_bot.persistence.models import MemoryToolReceiptModel
+from qq_ai_bot.conversation.ordinary_admission import OrdinaryAdmission, OrdinaryAdmissionRepository
+from qq_ai_bot.persistence.models import ChatEventModel, MemoryToolReceiptModel
 from qq_ai_bot.runtime.subagent_schema import children
 from qq_ai_bot.runtime.work_schema_v1 import journal, work
 from qq_ai_bot.social.db_models import SocialOperationModel
 
 if TYPE_CHECKING:
+    from yuki_participation.participation import UnitBinding
+
     from qq_ai_bot.services.semantic_participation import SemanticParticipationService, _Session
 
 _ACTIVE = {"accepted", "running"}
 _SEND_ACTIONS = {"send_message", "send_file_caption"}
+
+
+def admission_unit_binding(admission: OrdinaryAdmission) -> UnitBinding | None:
+    """Convert only the unit/source mapping frozen by the original admission."""
+    from yuki_participation.participation import ParticipationUnit, UnitBinding
+
+    binding = admission.binding
+    if binding is None:
+        return None
+    return UnitBinding(
+        scope=Scope(conversation_id=admission.conversation_id, generation=admission.generation),
+        unit=ParticipationUnit(thread=binding.unit_key, target=binding.target_hint),
+        actor=admission.actor_person_id,
+        basis=tuple(SourceRef(event_id=key, revision=revision) for key, revision in binding.basis),
+    )
+
+
+async def _ordinary_bindings(
+    service: SemanticParticipationService, item: _Session, rows: list[SocialOperationModel]
+) -> dict[str, tuple[OrdinaryAdmission, UnitBinding]]:
+    repository = OrdinaryAdmissionRepository(service.database)
+    prepared: dict[str, tuple[OrdinaryAdmission, UnitBinding]] = {}
+    prefix = f"{item.scene.conversation_id}:event:"
+    for turn in dict.fromkeys(row.source_turn_id for row in rows):
+        event_id = turn.removeprefix(prefix) if turn.startswith(prefix) else ""
+        if not event_id.isdecimal() or int(event_id) < 1:
+            continue
+        admission = await repository.current(
+            int(event_id),
+            conversation_id=item.scene.conversation_id,
+            generation=item.scene.generation,
+        )
+        if admission is None or admission.binding is None:
+            continue
+        binding = admission_unit_binding(admission)
+        if binding is None:
+            continue
+        for ref in binding.basis:
+            if not await service._source_current(item, ref):
+                break
+        else:
+            prepared[turn] = admission, binding
+    return prepared
 
 
 def _timestamp(value: datetime) -> float:
@@ -41,6 +87,21 @@ def _charged_ref(ref: str) -> bool:
     )
 
 
+def _send_key(origin: SocialOperationModel, row: SocialOperationModel) -> tuple[str, str, str, str]:
+    call = origin.tool_call_id
+    parts = call.split(":")
+    logical = (
+        parts[1]
+        if len(parts) == 3 and parts[0] == "seq"
+        else hashlib.sha256(call.encode()).hexdigest()[:24]
+    )
+    return origin.source_turn_id, logical, row.target_kind, row.target_id
+
+
+def _send_effect_id(key: tuple[str, str, str, str]) -> str:
+    return "social:" + hashlib.sha256("\0".join(key).encode()).hexdigest()
+
+
 def _logical_social_effects(rows: list[SocialOperationModel]) -> dict[str, tuple[str, Effect]]:
     """A sequence and file caption share their actual parent logical send identity."""
     by_id = {row.id: row for row in rows}
@@ -54,27 +115,17 @@ def _logical_social_effects(rows: list[SocialOperationModel]) -> dict[str, tuple
             if parent_origin is None:
                 continue  # A caption cannot invent the parent execution identity.
             origin = parent_origin
-        call = origin.tool_call_id
-        call_parts = call.split(":")
-        logical = (
-            call_parts[1]
-            if len(call_parts) == 3 and call_parts[0] == "seq"
-            else hashlib.sha256(call.encode()).hexdigest()[:24]
-        )
-        key = (origin.source_turn_id, logical, row.target_kind, row.target_id)
+        key = _send_key(origin, row)
         groups.setdefault(key, []).append(row)
     result = {}
     for (turn, logical, target_kind, target_id), group_rows in groups.items():
-        identity = hashlib.sha256(
-            f"{turn}\0{logical}\0{target_kind}\0{target_id}".encode()
-        ).hexdigest()
         run_ref = (
             turn.split(":initiative:", 1)[1]
             if ":initiative:" in turn
             else "social-run:" + hashlib.sha256(turn.encode()).hexdigest()
         )
         effect = Effect(
-            effect_id=f"social:{identity}",
+            effect_id=_send_effect_id((turn, logical, target_kind, target_id)),
             kind="message",
             at=min(_timestamp(part.updated_at) for part in group_rows),
             actual_targets=("group",) if target_kind == "space" else (target_id,),
@@ -107,6 +158,7 @@ async def sync_scope_effects(service: SemanticParticipationService, item: _Sessi
         row for row in rows if row.target_kind == "space" and row.target_id == item.scene.space_id
     ]
     effects = _logical_social_effects(current)
+    ordinary = await _ordinary_bindings(service, item, current)
     initiative_ids = {run for run, _ in effects.values() if not run.startswith("social-run:")}
     async with service.database.sessions() as session:
         valid_run_rows = (
@@ -148,6 +200,47 @@ async def sync_scope_effects(service: SemanticParticipationService, item: _Sessi
             cached = item.controller.state.events.get(key)
             if cached is not None and cached.kind == "self" and cached.thread != thread:
                 item.controller.state.events[key] = cached.model_copy(update={"thread": thread})
+        frozen = ordinary.get(origin.source_turn_id)
+        actual = effects.get(_send_effect_id(_send_key(origin, row)))
+        if frozen is not None and actual is not None and row.presence_id == frozen[0].presence_id:
+            _, binding = frozen
+            # The receipt is the send fact; the original admission is the unit
+            # fact. Neither later context nor a model-supplied ID can replace it.
+            observed = item.controller.state.events.get(key)
+            async with service.database.sessions() as session:
+                event = await session.get(ChatEventModel, row.event_id)
+                valid_output = (
+                    event is not None
+                    and event.canonical_conversation_id == item.scene.conversation_id
+                    and event.author_kind == "yuki"
+                    and event.direction == "outbound"
+                    and event.suppression_status == "keeper"
+                )
+            if not valid_output:
+                continue
+            # Controller revisions are source versions, not content hashes.
+            # Before hydration the receipt can establish expression, but cannot
+            # invent a public anchor. A subsequent sync attaches the real ref.
+            anchor = (
+                observed.ref
+                if observed is not None
+                and observed.kind == "self"
+                and await service._source_current(item, observed.ref)
+                else None
+            )
+            if item.controller.observe_unit_expression(
+                binding, actual[0], actual[1], anchor=anchor
+            ):
+                outbound_threads[key] = binding.unit.thread
+                cached = item.controller.state.events.get(key)
+                if (
+                    cached is not None
+                    and cached.kind == "self"
+                    and cached.thread != binding.unit.thread
+                ):
+                    item.controller.state.events[key] = cached.model_copy(
+                        update={"thread": binding.unit.thread}
+                    )
     if len(outbound_threads) > 1024:
         for key in tuple(outbound_threads)[:-1024]:
             outbound_threads.pop(key)

@@ -537,6 +537,12 @@ async def test_observer_to_proposal_to_outbox_uses_the_same_self_work_path(
     monkeypatch,
 ):
     host, _ = await _host(database, tmp_path)
+
+    async def open_group(snapshot):
+        host._observer.calls.append(snapshot)
+        return _observation(snapshot, act="open_group")
+
+    host._observer.evaluate = open_group
     try:
         event = await _event_and_route(database, host.app.ledger)
         item = await _item(host, event)
@@ -544,8 +550,13 @@ async def test_observer_to_proposal_to_outbox_uses_the_same_self_work_path(
         item.controller.advance(
             time.time(), controller_epoch=binding.controller_epoch, host_available=True
         )
-        # Deterministic crossing of the stochastic admission threshold, without sleeping.
-        item.controller._set(threshold=1e-12)
+        # Select a source opportunity deterministically while retaining actual
+        # semantic scoring, eligibility, Host admission and outbox publication.
+        monkeypatch.setattr(
+            item.controller,
+            "_sample",
+            lambda _sequence, stream: 0 if stream == "arrival" else 0.999,
+        )
         await host.tick()
         # The V6 attention ramp intentionally does not jump on the HTTP response instant.
         future = time.time() + 8

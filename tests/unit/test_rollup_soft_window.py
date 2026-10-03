@@ -13,15 +13,20 @@ from qq_ai_bot.domain.identity import SpaceId
 from qq_ai_bot.identity.db_models import CanonicalSpaceModel
 
 
-@pytest.mark.parametrize("hard_window", [96000, 524288])
-def test_initial_rollup_watermark_uses_default_soft_window(database, hard_window):
+@pytest.mark.parametrize(
+    "hard_window,soft_window", [(40000, 40000), (96000, 90000), (524288, 90000)]
+)
+def test_initial_rollup_watermark_respects_soft_and_hard_windows(
+    database, hard_window, soft_window
+):
     settings = make_settings(database.url, context_window_tokens=hard_window)
     bundle = PersistenceModule(settings, lifecycle=LifecycleRegistry(), database=database).build()
     policy = bundle.conversation_rollups.config
-    assert policy.context_token_budget == 90000
-    assert policy.context_token_budget * policy.trigger_ratio == 81000
-    assert policy.context_token_budget * policy.target_ratio == 54000
+    assert policy.context_token_budget == soft_window
+    assert policy.context_token_budget * policy.trigger_ratio == soft_window * 0.9
+    assert policy.context_token_budget * policy.target_ratio == soft_window * 0.6
     assert settings.context_window_tokens == hard_window
+    assert settings.context_compaction_window_tokens == 90000
 
 
 @pytest.mark.asyncio
@@ -83,10 +88,3 @@ async def test_hot_rollup_policy_reads_scope_soft_window_without_mutating_base(d
     assert limited.context_token_budget == 40000
     assert limited.trigger_ratio == 0.8
     assert (await runtime.snapshot(group_id=first.text)).context.compaction_window_tokens == 60000
-
-
-def test_initial_rollup_soft_budget_still_respects_smaller_request_window(database):
-    settings = make_settings(database.url, context_window_tokens=40000)
-    bundle = PersistenceModule(settings, lifecycle=LifecycleRegistry(), database=database).build()
-    assert bundle.conversation_rollups.config.context_token_budget == 40000
-    assert settings.context_compaction_window_tokens == 90000

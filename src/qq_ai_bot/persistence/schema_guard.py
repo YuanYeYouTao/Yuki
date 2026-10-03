@@ -1,4 +1,4 @@
-"""Fail-closed startup validation for the frozen 3.8 canonical schema."""
+"""Startup validation for the canonical schema shipped with this code."""
 
 from __future__ import annotations
 
@@ -24,6 +24,25 @@ def canonical_schema_revision(root: Path | None = None) -> str:
 
 
 _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
+    "ordinary_turn_admissions": frozenset(
+        {
+            "event_id",
+            "conversation_id",
+            "generation",
+            "source_revision",
+            "actor_person_id",
+            "presence_id",
+            "activation_id",
+            "coordinator_version",
+            "unit_key",
+            "target_hint",
+            "basis_json",
+            "route",
+            "work_id",
+            "input_id",
+            "created",
+        }
+    ),
     "model_context_observations": frozenset(
         {
             "id",

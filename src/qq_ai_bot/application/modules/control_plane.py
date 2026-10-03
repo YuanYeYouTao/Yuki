@@ -5,8 +5,6 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from yuki_participation.autonomy_parameters import AutonomyParameters
-
 from qq_ai_bot.admin.config_files import ConfigFileService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.application.control_access import ControlOperatorAccess
@@ -30,6 +28,7 @@ from qq_ai_bot.persistence.control_command import ControlCommandAdapter
 from qq_ai_bot.persistence.control_query import ControlQueryAdapter
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.plugin_host.manager import PluginManager
+from qq_ai_bot.services.participation_parameters import AutonomyParameters
 from qq_ai_bot.workspace.service import WorkspaceService
 from qq_ai_bot.workspace.store import WorkspaceStore
 
