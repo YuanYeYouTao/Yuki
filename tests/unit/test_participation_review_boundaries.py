@@ -4,6 +4,7 @@ import asyncio
 import time
 from dataclasses import replace
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -19,6 +20,7 @@ from tests.unit.test_semantic_participation_host import (
     _proposal,
     _score,
 )
+from yuki_participation.self_report import SelfDelta, SelfReport
 
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
@@ -26,7 +28,7 @@ from qq_ai_bot.domain.messages import ChatMessage, ChatResponse
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.runtime.work_schema_v1 import work
 from qq_ai_bot.services.main_agent_backend import MainAgentBackend
-from qq_ai_bot.services.participation_feedback import sync_scope_effects
+from qq_ai_bot.services.participation_feedback import admission_unit_binding, sync_scope_effects
 from qq_ai_bot.social.db_models import SocialOperationModel
 
 
@@ -70,6 +72,90 @@ async def test_out_of_hydration_page_changed_basis_cannot_admit_continuation(dat
         )
         assert await host.continuation_for_event(following.id) is None
         assert await host.ordinary.get(following.id) is None
+    finally:
+        await host.close()
+
+
+@pytest.mark.parametrize("restart", [False, True])
+@pytest.mark.parametrize("continuous", [False, True])
+@pytest.mark.parametrize("invalid", [None, "quiet", "source"])
+async def test_confirmed_expression_survives_raw_retirement_without_footer(
+    database, tmp_path, monkeypatch, continuous, invalid, restart
+):
+    host, item, original, _, _ = await ordinary_expression(database, tmp_path)
+    try:
+        await sync_scope_effects(host, item)
+        await host._hydrate(item)
+        await sync_scope_effects(host, item)
+        assert any(u.expressed for u in item.controller.participating_units(time.time()))
+        admission = await host.ordinary.current(original.id)
+        assert admission is not None
+        if invalid == "quiet":
+            assert item.controller.observe_unit_hint(
+                admission_unit_binding(admission),
+                SelfReport(
+                    run_ref=admission.activation_id,
+                    sequence=1,
+                    response_id="actual-quiet",
+                    at=original.occurred_at.timestamp(),
+                    delta=SelfDelta(engage="quiet"),
+                ),
+            )
+        # Match canonical datetime precision, rather than rounding a future
+        # input a fraction of a microsecond beyond the virtual current time.
+        clock = [datetime.now(UTC).timestamp()]
+        for module in (
+            "qq_ai_bot.services.semantic_participation",
+            "qq_ai_bot.services.participation_ordinary",
+        ):
+            monkeypatch.setattr(module + ".time", SimpleNamespace(time=lambda: clock[0]))
+        steps = [120] * 7 if continuous else [840]
+        for index, seconds in enumerate(steps):
+            clock[0] += seconds
+            item.controller.advance(
+                clock[0], controller_epoch=item.controller.state.epoch, host_available=False
+            )
+            # The negative cases check quiet/source fences after repeated
+            # retirement or one long pause, without adding a new Main hint.
+            if invalid is not None and index < len(steps) - 1:
+                continue
+            if restart and index == len(steps) - 1:
+                await host._save(item)
+                host._sessions.clear()
+                item = await host._session(item.scene)
+            if invalid == "source":
+                async with database.immediate_session() as session:
+                    await session.execute(
+                        update(ChatEventModel)
+                        .where(ChatEventModel.id == original.id)
+                        .values(content="原建立来源已修改")
+                    )
+            following, _ = await host.app.ledger.append(
+                bot_user_id="8000",
+                platform_message_id=str(uuid4()),
+                scope_type=ScopeType.GROUP,
+                sender_user_id="1001",
+                direction="inbound",
+                content="接着这个讨论",
+                group_id=original.group_id,
+                occurred_at=datetime.fromtimestamp(clock[0], UTC),
+            )
+            binding = await host.continuation_for_event(following.id)
+            if invalid is not None:
+                assert binding is None
+                assert await host.ordinary.get(following.id) is None
+            else:
+                assert binding is not None and binding.unit_key == f"event:{original.id}"
+                prepared = host.ordinary.prepare(following, binding.generation, 1, binding)
+                assert await host.ordinary.commit(prepared)
+                await host.on_ordinary_admitted(binding, prepared.admission)
+        assert f"event:{original.id}" not in item.controller.state.events
+        assert not host._observer.calls
+        if invalid is None:
+            assert any(
+                u.expressed and u.engage is None
+                for u in item.controller.participating_units(clock[0])
+            )
     finally:
         await host.close()
 

@@ -28,7 +28,12 @@ Main 可稀疏报告 join/stay/quiet，沉默和 NO_REPLY 无需额外模型补�
 CI 通过并合并。随后核查修复参与依据逐轮累计：固定单元建立依据，保留每次真实
 输入、意愿和表达自己的来源。[库 PR #14](https://github.com/YuanYeYouTao/Yuki-Semantic-Participation/pull/14)
 已合并为 `aa4124d214cbb3f5430cf2d9b59fc9cbc71d42ad`，库最终本地 183 用例通过。
-Host 的 `pyproject.toml` 与 `uv.lock` 已固定该修订，frozen sync 后安装包位于
+该修订是第一轮联合核验产物。最后核查另发现：600 秒原始记录裁剪会误断持续互动，
+真实表达但没有状态尾段的互动也受影响。[库 PR #15](https://github.com/YuanYeYouTao/Yuki-Semantic-Participation/pull/15)
+已合并为 `68bf033c37a524a2d377d2f67eaa25ce779c9e90`，最终库 204 项和 CI 通过。
+修复只保留有限来源证明与原表达回执，不扩大通用来源有效期；unknown 重新解释、来源
+撤销和晚到反馈不能复活失效单元。真实旧 b9 reader 折叠探针与独立 54 项核查通过。
+Host 的 `pyproject.toml` 与 `uv.lock` 已固定最终修订，frozen sync 后安装包位于
 site-packages，`direct_url.json` 指向该提交归档，不是 editable 工作树。
 
 Host 本地全量首轮 2703 passed、8 skipped、1 failed。失败用例沿用已退出的旧采样字段，
@@ -46,6 +51,11 @@ Host 原语义路径 21 项、邀请与边界组合 14 项通过。其中 50 轮
 期间改变后，旧停止状态原先会在下一轮才撤销。现在 HTTP 返回后、保存和调度前复核
 原停止依赖，撤销失效解释，不再请求模型。组合验证保留新轮意愿、有效停止及明确邀请
 重开的既有规则；Main stay 和语义 extend 均不能单独解除真实停止。
+
+最终 PR #15 归档安装下再核对 Host：邀请与边界 26 项（新增 12 个退休/恢复组合），
+接纳、普通反馈、Gemini 原报文前缀和现有语义路径 52 项通过；0091 迁移单独复核。
+Ruff、format、Linux 平台 mypy 697 源文件及 release_validate 通过。旧 68 项数字保留
+为前一产物的核验记录，不混算为新版全量；完整 Linux CI 仍需最终 Host 提交证明。
 
 ## 手工缓存样本
 
