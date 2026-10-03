@@ -1876,7 +1876,7 @@ class ContextAssembler:
                     snapshot.read_version,
                     snapshot.coverage_end,
                     self._settings.conversation_rollup_model_timeout_seconds,
-                    token_budget=remainder,
+                    token_budget=capacity_remainder,
                 )
             if preparation_mode is ContextPreparationMode.FALLBACK:
                 # The original prerequisite deadline/error uses the established
@@ -1898,17 +1898,9 @@ class ContextAssembler:
                 lease_seconds=self._settings.conversation_rollup_lease_seconds,
                 max_batches=1,
                 deadline=deadline,
-                token_budget=remainder,
+                token_budget=capacity_remainder,
             )
             if not committed:
-                if (
-                    snapshot.raw_complete
-                    and self._uncovered_tokens(view, rollup_text) <= capacity_remainder
-                ):
-                    # A source hold or failed auxiliary candidate is not an
-                    # input capacity failure. Never trim uncovered source just
-                    # to certify that a maintenance target was reached.
-                    break
                 raise ConversationCoverageError(
                     "raw history is over budget but no continuous prefix is compressible"
                 )

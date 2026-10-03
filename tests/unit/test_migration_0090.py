@@ -11,7 +11,36 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import text
 
+from qq_ai_bot.persistence.schema_guard import (
+    CanonicalSchemaError,
+    canonical_schema_revision,
+    require_canonical_schema,
+)
+
 MIGRATION = "migrations.versions.0090_memory_maintenance_read_indexes"
+
+
+@pytest.mark.parametrize("index_number", [0, 1])
+@pytest.mark.parametrize("shape", ["missing", "unique", "partial", "descending"])
+async def test_startup_rejects_maintenance_index_drift(database, index_number, shape):
+    migration = importlib.import_module(MIGRATION)
+    name, table, columns = migration.INDEXES[index_number]
+    async with database.engine.begin() as connection:
+        await connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32))"))
+        await connection.execute(
+            text("INSERT INTO alembic_version VALUES (:revision)"),
+            {"revision": canonical_schema_revision()},
+        )
+        await connection.execute(text(f"DROP INDEX {name}"))
+        if shape != "missing":
+            unique = "UNIQUE " if shape == "unique" else ""
+            predicate = " WHERE status='processing'" if shape == "partial" else ""
+            keys = ",".join(columns) + (" DESC" if shape == "descending" else "")
+            await connection.execute(
+                text(f"CREATE {unique}INDEX {name} ON {table}({keys}){predicate}")
+            )
+    with pytest.raises(CanonicalSchemaError, match="maintenance index"):
+        await require_canonical_schema(database.url)
 
 
 async def test_maintenance_indexes_real_upgrade_downgrade_and_query_plans(

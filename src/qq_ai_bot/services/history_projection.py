@@ -397,6 +397,12 @@ async def prepare_history(
             if context_fits is not None
             else history_fits(candidate.messages())
         )
+        if not hard_fits and context_hard_fits is not None:
+            # Required recovery needs to fit the real request, not a smaller
+            # maintenance target. Optional ready summaries still use that target.
+            candidate_fits = context_hard_fits(
+                replace(selected_context, history_messages=candidate.messages())
+            )
         if summary is not None and candidate_fits:
             extended, reason = candidate, "capacity"
         elif context_hard_fits is not None and context_hard_fits(

@@ -230,14 +230,16 @@ class MainAgentTurnService:
             compiled_prefix = composition.messages[:history_start]
             base_prefix = compiled_prefix[:-1] if context.rollup_text.strip() else compiled_prefix
             compiled_current = composition.messages[-1:]
-            prepared_request = ChatRequest(
-                messages=composition.messages,
-                model=runtime.llm.model or "fake",
-                temperature=runtime.llm.temperature,
-                max_output_tokens=runtime.llm.max_output_tokens,
-                thinking_enabled=runtime.llm.thinking_enabled,
-                tools=definitions,
-                tool_choice="auto" if definitions else None,
+            prepared_request = self._runner._capacity_request(
+                ChatRequest(
+                    messages=composition.messages,
+                    model=runtime.llm.model or "fake",
+                    temperature=runtime.llm.temperature,
+                    max_output_tokens=runtime.llm.max_output_tokens,
+                    thinking_enabled=runtime.llm.thinking_enabled,
+                    tools=definitions,
+                    tool_choice="auto" if definitions else None,
+                )
             )
             fresh_tokens = estimate_request_tokens(prepared_request)
             # The maintenance target may choose an already prepared summary;

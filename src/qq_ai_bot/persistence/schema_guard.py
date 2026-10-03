@@ -343,6 +343,16 @@ async def require_canonical_schema(database_url: str) -> None:
                 ("ix_media_analyses_expires_at", "media_analyses", ("expires_at",)),
                 ("ix_web_search_runs_created_at", "web_search_runs", ("created_at",)),
                 ("ix_runtime_work_state_updated", "runtime_work", ("state", "updated")),
+                (
+                    "ix_memory_reflection_jobs_status_claimed",
+                    "memory_reflection_jobs",
+                    ("status", "claimed_at", "id"),
+                ),
+                (
+                    "ix_memory_dream_clusters_status_id",
+                    "memory_dream_clusters",
+                    ("status", "id"),
+                ),
             ):
                 retained = (
                     await connection.execute(
@@ -370,7 +380,7 @@ async def require_canonical_schema(database_url: str) -> None:
                     or index[4] != 0
                     or index_keys != tuple((column, 0, "BINARY") for column in index_columns)
                 ):
-                    raise CanonicalSchemaError("database cache cleanup index is missing or changed")
+                    raise CanonicalSchemaError("database maintenance index is missing or changed")
             trigger_rows = await connection.execute(
                 text("SELECT name, sql FROM sqlite_master WHERE type='trigger'")
             )

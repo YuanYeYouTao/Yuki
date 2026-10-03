@@ -273,7 +273,7 @@ async def test_migration_0089_installs_current_sources_and_preserves_0088_work(
         goal="Original goal and budget",
     )
     await old_database.engine.dispose()
-    await asyncio.to_thread(command.upgrade, Config("alembic.ini"), "0089")
+    await asyncio.to_thread(command.upgrade, Config("alembic.ini"), "head")
     await require_canonical_schema(url)
     assert await repository.get(original["id"]) == original
     await old_database.engine.dispose()
@@ -520,6 +520,52 @@ async def test_optional_summary_does_not_swallow_authority_source_or_programming
             context_hard_fits=lambda _: False,
             summarize_observations=AsyncMock(side_effect=failure),
         )
+
+
+@pytest.mark.parametrize("ready", [False, True])
+async def test_required_summary_can_fit_real_capacity_above_soft_target(database, tmp_path, ready):
+    env = await social_env(database, tmp_path)
+    await add_clue(database, env, "large-clue", size=3000)
+    repository = ContextObservationRepository(database)
+    context = await context_for(database)
+    callback = AsyncMock(side_effect=summary)
+    if ready:
+        observations = await repository.read(
+            conversation_id=env.context.conversation_id,
+            generation=1,
+            actor_id=env.person,
+            read_scope="main",
+            view_key="a" * 64,
+        )
+        await repository.publish_scope_summary(
+            view_key="a" * 64,
+            observations=observations,
+            payload=summary(observations),
+            conversation_id=env.context.conversation_id,
+            generation=1,
+            actor_id=env.person,
+            read_scope="main",
+            expected_source_revision=context.read_version.prompt_source_revision,
+        )
+    prepared = await prepare_history(
+        PromptProjectionRepository(database),
+        context,
+        view_key="a" * 64,
+        context_key="b" * 64,
+        contract_revision="c" * 64,
+        actor_id=env.person,
+        read_scope="main",
+        history_fits=lambda _: True,
+        context_fits=lambda _: False,
+        context_hard_fits=lambda candidate: (
+            sum(len(m.content or "") for m in candidate.history_messages) < 2000
+        ),
+        summarize_observations=callback,
+    )
+    assert "Preserved research clues" in str(prepared.fragments.messages())
+    assert "x" * 3000 not in str(prepared.fragments.messages())
+    assert callback.await_count == (0 if ready else 1)
+    await prepared.commit(prepared.fragments)
 
 
 async def test_prepared_snapshot_source_is_not_observed_or_summarized_before_dispatch(

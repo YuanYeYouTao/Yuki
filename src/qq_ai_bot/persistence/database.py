@@ -21,6 +21,7 @@ from qq_ai_bot.persistence.metadata import Base
 
 if TYPE_CHECKING:
     from qq_ai_bot.admin.models import WorkStorageRuntimeConfig
+    from qq_ai_bot.persistence.sqlite_diagnostics import SQLiteDiagnostics
 
 _SQLITE_BUSY_TIMEOUT_MS = 5_000
 
@@ -43,11 +44,12 @@ class Database:
         self._protocol_gc_iterator: Iterator[Path] | None = None
         self._ensure_sqlite_parent(url)
         self.engine: AsyncEngine = create_async_engine(url, pool_pre_ping=True)
+        self.sqlite_diagnostics: SQLiteDiagnostics | None = None
         if url.startswith("sqlite+aiosqlite:///"):
             event.listen(self.engine.sync_engine, "connect", self._configure_sqlite_connection)
             from qq_ai_bot.persistence.sqlite_diagnostics import install_sqlite_diagnostics
 
-            install_sqlite_diagnostics(self.engine.sync_engine)
+            self.sqlite_diagnostics = install_sqlite_diagnostics(self.engine.sync_engine)
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False, class_=AsyncSession)
 
     @staticmethod
