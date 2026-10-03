@@ -44,7 +44,7 @@ Host 本地全量首轮 2703 passed、8 skipped、1 failed。失败用例沿用�
 实际观察请求、无 pending 停止到 Main quiet 再到 Jev 关闭、先解释后 quiet 不重评、未知
 保持未知、主自主开关关闭时真人仍可接话、原 Work 输入原子回滚、附件权限、重启去重、
 旧快照 reader 和非空解释依据。Host 全源 mypy 704 文件、format 1123 文件与
-`release_validate` 已通过。最终归档依赖下，接纳/迁移/普通反馈/Gemini 前缀 33 项、
+`release_validate` 已通过。第一阶段 PR #14 归档依赖下，接纳/迁移/普通反馈/Gemini 前缀 33 项、
 Host 原语义路径 21 项、邀请与边界组合 14 项通过。其中 50 轮续聊的绑定依据保持两条，
 两种协调器版本下迟到的旧 quiet 都不覆盖更新的意愿或增加观察。Linux CI 数量另记。
 旧 stop、最新 continue 与 in-flight 迟到的同一 Host 流水发现并修复：原消息在 Jev 请求
@@ -55,7 +55,7 @@ Host 原语义路径 21 项、邀请与边界组合 14 项通过。其中 50 轮
 最终 PR #15 归档安装下再核对 Host：邀请与边界 26 项（新增 12 个退休/恢复组合），
 接纳、普通反馈、Gemini 原报文前缀和现有语义路径 52 项通过；0091 迁移单独复核。
 Ruff、format、Linux 平台 mypy 697 源文件及 release_validate 通过。旧 68 项数字保留
-为前一产物的核验记录，不混算为新版全量；完整 Linux CI 仍需最终 Host 提交证明。
+为前一产物的核验记录，不混算为新版全量；该阶段尚待最终 CI，实际结果见下方上线记录。
 
 ## 手工缓存样本
 
