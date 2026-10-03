@@ -694,9 +694,11 @@ class MainAgentBackend(AgentToolBackend):
                     item_limit=item_limit,
                     artifacts=artifact_store,
                     artifact_retention_seconds=retention_seconds,
-                    artifact_access=access_from_runtime(
-                        execution_runtime,
-                        generation=active.lease.generation if active is not None else None,
+                    artifact_access_resolver=(
+                        lambda: access_from_runtime(
+                            execution_runtime,
+                            generation=active.lease.generation if active is not None else None,
+                        )
                     )
                     if artifact_store is not None
                     else None,
