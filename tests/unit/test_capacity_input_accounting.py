@@ -3,9 +3,9 @@
 import json
 from copy import deepcopy
 from dataclasses import replace
-from types import SimpleNamespace
 
 import pytest
+from tests.conftest import build_harness, make_settings
 
 from qq_ai_bot.domain.messages import (
     ChatImage,
@@ -23,12 +23,13 @@ from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
 from qq_ai_bot.llm.gemini import GeminiProvider
 from qq_ai_bot.llm.openai_responses import OpenAIResponsesProvider
 from qq_ai_bot.model_runtime.capacity import (
-    ModelCapacity,
     estimate_request_tokens,
     estimate_text_tokens,
     estimate_tools_tokens,
 )
-from qq_ai_bot.services.chat import ChatService
+from qq_ai_bot.services.main_agent_contract import MainAgentContract
+from qq_ai_bot.workspace.short_state import ShortState
+from qq_ai_bot.workspace.store import WorkspaceStore
 
 
 def declaration():
@@ -394,22 +395,26 @@ async def test_responses_opaque_input_replaces_budgeting_content_mirror_once():
         await provider.close()
 
 
-def test_chat_history_tool_budget_uses_same_frozen_model_declaration_view():
+async def test_chat_history_tool_budget_uses_same_frozen_model_declaration_view(database, tmp_path):
     tools = (declaration(),)
-    contract = SimpleNamespace(_tools=tools)
-    service = SimpleNamespace(
-        _models=SimpleNamespace(capacity=lambda _: ModelCapacity()),
-        _settings=SimpleNamespace(system_prompt="fixed"),
-        runtime=SimpleNamespace(runner=SimpleNamespace(main_contract=contract)),
-    )
-    runtime = SimpleNamespace(
-        context=SimpleNamespace(
-            window_tokens=96000, compaction_window_tokens=90000, compaction_trigger_ratio=0.9
+    harness = build_harness(
+        database,
+        make_settings(
+            database.url,
+            system_prompt="fixed",
+            context_window_tokens=96000,
+            context_compaction_window_tokens=90000,
+            conversation_rollup_trigger_ratio=0.9,
+            llm_max_output_tokens=8192,
         ),
-        llm=SimpleNamespace(max_output_tokens=8192),
     )
-    before = ChatService._history_input_budget(service, runtime)
+    service = harness.processor._chat
+    runtime = await service._runtime_config.snapshot()
+    contract = MainAgentContract(service, ShortState(WorkspaceStore(tmp_path / "state")))
+    service.runtime.runner.main_contract = contract
+    contract._tools = tools
+    before = service._history_input_budget(runtime)
     contract._tools = (host_metadata(tools[0]),)
-    assert ChatService._history_input_budget(service, runtime) == before
+    assert service._history_input_budget(runtime) == before
     contract._tools = (replace(tools[0], description="真正工具合同" * 3000),)
-    assert ChatService._history_input_budget(service, runtime) < before - 20000
+    assert service._history_input_budget(runtime) < before - 20000

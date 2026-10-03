@@ -571,7 +571,9 @@ async def test_missing_activation_is_repaired_without_resetting_history(database
     facts_before = tuple([await repository.get_fact(fact_id) for fact_id in ids])
     with pytest.raises(RuntimeError, match="rollback probe"):
         async with repository.transaction() as session:
-            assert await repository.repair_missing_activation(limit=1, session=session) == 1
+            assert (
+                await repository.repair_missing_activation(fact_ids=(ids[0],), session=session) == 1
+            )
             raise RuntimeError("rollback probe")
     assert await activation.load(tuple(ids)) == before
     settings = make_settings(database.url).model_copy(update={"memory_maintenance_batch_limit": 1})
@@ -1329,8 +1331,9 @@ async def test_context_does_not_automatically_inject_facts(database: Database) -
     context = next(item["data"] for item in items if item["id"] == "context.people_and_scene")
     blocks = {item["id"]: item["data"] for item in context["items"]}
 
-    assert "current_person" in blocks
-    assert "current_group" in blocks
+    assert blocks["current_person"]["user_id"] == "1001"
+    assert blocks["current_person"]["display_name"] == "当前用户"
+    assert blocks["scene"] == {"type": "group", "group_id": "2001"}
     assert all("facts" not in block for block in blocks.values())
     for fact_content in (
         "只属于当前人物",

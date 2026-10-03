@@ -81,6 +81,7 @@ class MemoryDreamClusterModel(Base):
             name="ck_memory_dream_clusters_owner",
         ),
         Index("ix_memory_dream_clusters_run_status", "run_id", "status", "id"),
+        Index("ix_memory_dream_clusters_status_id", "status", "id"),
         Index(
             "ix_memory_dream_clusters_canonical_subject_person_id",
             "canonical_subject_person_id",

@@ -69,6 +69,8 @@ V6 迁移链为 `0065`（关系历史索引）→ `0066`（autonomy 接纳）→
 
 普通搜索续接的容量计量修正与等长缓存窗口核查：
 [2026-10-02 核查记录](../operations/compact-capacity-accounting-2026-10-02.md)。
+前台回复与 SQLite 写锁本轮实现及验证状态见
+[2026-10-03 交付记录](../operations/foreground-rollup-sqlite-contention-2026-10-03.md)。
 实际 Gemini 前缀、AGM 计量与网关方言建议见
 [协议与缓存核查](../operations/gemini-agm-cache-audit-2026-10-02.md)。
 
@@ -79,3 +81,7 @@ V6 迁移链为 `0065`（关系历史索引）→ `0066`（autonomy 接纳）→
 以当前获准聊天和必要观察线索继续工作，原始研究资料外存并按需读取；纳入经源码确认的
 普通同轮容量整理缺口，删除恢复整份旧群史的冲突设计。本地实现与定向验证已完成；最新全量、合并与部署状态见
 [实施交付记录](../operations/work-context-delivery-2026-10-03.md)。
+
+待实施设计：[前台回复、后台历史整理与 SQLite 写锁修复任务书](foreground-rollup-and-sqlite-contention-taskbook-2026-10-03.md)。
+基于 `3d9e273` 的代码核查和隔离 SQLite 竞态复现，规定实际容量内先回复、后台整理及明确采用边界，
+并修复 Rollup 提交快照、周期空写和锁内准备；本文档交付不表示业务代码已修改或上线。

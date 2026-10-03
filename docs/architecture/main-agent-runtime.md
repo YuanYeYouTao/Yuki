@@ -22,10 +22,12 @@ legacy/semantic 自主机会均以正式 SELF 来源进入这条执行链；
 
 运行状态用 `state_scope=current_activation` 区分本轮激活与持久 Work 生命周期。
 `no_active_work` 只表示本轮没有激活的 Work，不表示过去未接纳工作或工具失败。
-没有当前 Work 时，`recent_work` 追加最近一项获准 Work 的有界简表，包括终态、真实 ID、
-目标摘录、三项执行计数和创建者显示名；有当前 Work 时不混入另一项工作的状态。
+没有当前 Work 时，`recent_work` 保留最近一项当前来源可见 Work 的真实 ID、状态和目标短线索，
+用于识别已有工作，避免重复创建；三项执行计数和创建者等详情使用既有查询工具按需读取。
+有当前 Work 时保留其完整目标与已设置的汇报模式，不混入另一项工作的状态。
+未设置的 work ID、goal、reporting 和空 `available_work` 不占常驻提示。
 `available_work` 至多 16 项，只提供内部 ID、状态、目标摘录、创建者显示名和 `has_wait`。
-两种目录投影的目标摘录最多 160 字符、显示名最多 64 字符；`goal_complete=false` 明确表示
+两种目录投影的目标摘录最多 160 字符，available 目录显示名最多 64 字符；`goal_complete=false` 明确表示
 摘录不完整，不能代替原目标。读取使用有界 SQL 最小投影，不逐项预载完整等待 JSON。
 续接目标或等待内容不清楚时先用 `get` 读取完整 goal 与 wait，活动 Work 原目标不截断。
 目录中的 revision、owner/Conversation/generation、来源与审计时间等详情不常驻 Prompt，
@@ -37,6 +39,9 @@ legacy/semantic 自主机会均以正式 SELF 来源进入这条执行链；
 
 人物与场景块保留当前说话人、群及可信引用；关系仅在 `context.relationship` 提供当前阶段、
 风格和未验证陈述规则，不在人物块重复注入好感/信任等数值详情，详情使用 `get_relationship`。
+给模型的资料按当前有效内容投影：空短记录只保留 CAS 必需的 slot/revision，非空记录保留内容和到期信息；
+精确重复的称呼与人群身份、空 group card、空投递媒体列表不重复呈现。
+这只精简新请求的文字视图，不改变原记录、未知业务 JSON 或旧冻结快照。
 短期记录继续保留 CAS revision，权限、时间、当前 Work、最近投递、当前媒体和固定工具合同
 不因显示精简而改变。文件、终端、完整自动化目录和长期记忆均使用已有工具按需查询。
 

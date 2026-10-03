@@ -492,7 +492,9 @@ class AutomationCapabilityHandlers:
                 instruction=str(arguments["instruction"]),
                 profile=str(arguments.get("context_profile") or "none"),
                 current_time=self._time.at(context.actual_started_at, context.timezone),
-                token_budget=self.main_contract.chat._history_input_budget(snapshot),
+                token_budget=self.main_contract.chat._history_input_budget(
+                    snapshot, maintenance=False, allowed_capabilities=frozenset()
+                ),
             ),
             current_work_control.get(),
         )
@@ -504,6 +506,7 @@ class AutomationCapabilityHandlers:
             visual_failure=False,
             scope_type=ScopeType.GROUP if context.current_group_id else ScopeType.PRIVATE,
             include_plugin_context=False,
+            allowed_capabilities=frozenset(),
         )
         return composition
 

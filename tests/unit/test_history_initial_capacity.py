@@ -123,7 +123,11 @@ async def test_two_chinese_turns_rebase_large_frozen_snapshot_before_dispatch(
             # the oversized old epoch. The low connection ceiling is an isolated
             # test boundary; no real profile or model window is changed.
             fresh = chat._prompt_composer.compose(
-                **{key: value for key, value in kwargs.items() if key != "before_preparation"},
+                **{
+                    key: value
+                    for key, value in kwargs.items()
+                    if key not in {"before_preparation", "allowed_capabilities"}
+                },
                 short_state=state.snapshot(),
             )
             runtime = kwargs["runtime"]
@@ -184,7 +188,7 @@ async def test_two_chinese_turns_rebase_large_frozen_snapshot_before_dispatch(
     assert all(estimate_request_tokens(request) <= budget for request in provider.requests)
     if soft_only:
         # The persisted public snapshot is legal under the enlarged hard limit.
-        # Reopening must still rebase it at the independent maintenance window.
+        # Reopening keeps it until a ready summary or real capacity boundary.
         assert 90000 < estimate_request_tokens(first_request) < budget
     state.update({"slot": 1, "text": "current-safe-snapshot", "expected_revision": 1})
     current_snapshot["text"] = "current-safe-runtime"
@@ -253,14 +257,15 @@ async def test_two_chinese_turns_rebase_large_frozen_snapshot_before_dispatch(
         [item.content for item in main_requests[2].messages], ensure_ascii=False
     )
     assert "current-safe-runtime" in next_input and "current-safe-snapshot" in next_input
-    if not smaller_window and not soft_only:
-        # This small old snapshot still fits the unchanged maintenance window.
-        # Its bytes remain frozen while the fresh state is appended at the end.
+    if not smaller_window:
+        # Both a small snapshot and an above-soft snapshot fit the hard request.
+        # No ready summary exists, so retain their bytes and append fresh state.
         assert old_snapshot in next_input
         async with database.sessions() as reader:
             saved = (await reader.scalars(select(PromptProjectionModel))).one()
             assert saved.epoch_id == original_epoch
         assert first_request.messages == original_input
+        assert len(provider.requests) == 4
         return
     assert old_snapshot not in next_input and "original-snapshot" not in next_input
     async with database.sessions() as reader:
@@ -313,7 +318,11 @@ async def test_unreachable_soft_reserve_does_not_rebuild_a_hard_fitting_epoch(
     kwargs = {**kwargs, "context": context}
     runtime = kwargs["runtime"]
     fresh = chat._prompt_composer.compose(
-        **{key: value for key, value in kwargs.items() if key != "before_preparation"},
+        **{
+            key: value
+            for key, value in kwargs.items()
+            if key not in {"before_preparation", "allowed_capabilities"}
+        },
         short_state=chat.runtime.runner.main_contract.state.snapshot(),
     )
     request = ChatRequest(

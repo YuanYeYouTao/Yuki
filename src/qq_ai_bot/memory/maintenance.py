@@ -61,6 +61,9 @@ class MemoryMaintenanceWorker:
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._process_lock = asyncio.Lock()
+        # Reconstructible scheduling position, not a completeness or business watermark.
+        self._activation_after_id = 0
+        self._activation_through_id: int | None = None
 
     @property
     def running(self) -> bool:
@@ -113,10 +116,24 @@ class MemoryMaintenanceWorker:
         if not runtime.enabled:
             return 0
         now = datetime.now(UTC)
-        async with self._facts.repository.transaction() as repair_session:
-            repaired = await self._facts.repository.repair_missing_activation(
-                limit=runtime.batch_limit, session=repair_session
-            )
+        identities, missing, through_id = await self._facts.repository.activation_repair_window(
+            after_id=self._activation_after_id,
+            through_id=self._activation_through_id,
+            limit=runtime.batch_limit,
+        )
+        repaired = 0
+        if missing:
+            async with self._facts.repository.transaction() as repair_session:
+                repaired = await self._facts.repository.repair_missing_activation(
+                    fact_ids=missing, session=repair_session
+                )
+        # Advance after a successful page even when it contained no missing states.
+        if not identities or identities[-1] >= through_id:
+            self._activation_after_id = 0
+            self._activation_through_id = None
+        else:
+            self._activation_after_id = identities[-1]
+            self._activation_through_id = through_id
         if repaired:
             logger.info("memory_activation_states_repaired count=%d", repaired)
         if self._receipts is not None:

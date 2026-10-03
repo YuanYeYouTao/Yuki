@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from contextvars import Context
 from dataclasses import dataclass
 from typing import Any
+
+from qq_ai_bot.persistence.sqlite_diagnostics import TimingSummary
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +20,7 @@ class _Write:
     kind: str
     size: int
     commit: Callable[[], Awaitable[Any]]
+    enqueued_at: float
 
 
 class DiagnosticWriter:
@@ -33,6 +37,8 @@ class DiagnosticWriter:
         self.dropped = 0
         self.failures = 0
         self.committed = 0
+        self._queue_wait = TimingSummary()
+        self._commit_call = TimingSummary()
 
     async def start(self) -> None:
         if self._task is not None and not self._task.done():
@@ -58,12 +64,14 @@ class DiagnosticWriter:
             )
             return False
         self._bytes += size
-        self._queue.put_nowait(_Write(kind, size, commit))
+        self._queue.put_nowait(_Write(kind, size, commit, time.monotonic()))
         return True
 
     async def _consume(self) -> None:
         while True:
             item = await self._queue.get()
+            started = time.monotonic()
+            self._queue_wait.record(started - item.enqueued_at)
             try:
                 await item.commit()
                 self.committed += 1
@@ -78,6 +86,7 @@ class DiagnosticWriter:
                     type(exc).__name__,
                 )
             finally:
+                self._commit_call.record(time.monotonic() - started)
                 self._bytes -= item.size
                 self._queue.task_done()
 
@@ -105,11 +114,13 @@ class DiagnosticWriter:
                 self.dropped += 1
                 self._queue.task_done()
 
-    async def health(self) -> dict[str, int]:
+    async def health(self) -> dict[str, Any]:
         return dict(
             pending=self._queue.qsize(),
             bytes=self._bytes,
             dropped=self.dropped,
             failures=self.failures,
             committed=self.committed,
+            queue_wait=self._queue_wait.snapshot(),
+            commit_call=self._commit_call.snapshot(),
         )

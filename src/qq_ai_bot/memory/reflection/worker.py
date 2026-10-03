@@ -91,14 +91,15 @@ class MemoryReflectionWorker:
         if not self._settings.memory_maintenance_enabled:
             return 0
         now = datetime.now(UTC)
+        limit = self._settings.memory_maintenance_batch_limit
         stale_after = max(60.0, self._settings.memory_maintenance_interval_seconds * 2)
         recovered = await self._repository.recover_stale(
             before=now - timedelta(seconds=stale_after),
             now=now,
+            limit=limit,
         )
         if recovered:
             self.metrics.increment("reflection_jobs_recovered", recovered)
-        limit = self._settings.memory_maintenance_batch_limit
         candidates = await self._repository.discover(limit=limit)
         discovered = await self._repository.enqueue(candidates, now=now)
         if discovered:

@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import cast
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,6 +31,7 @@ from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.identity.ingress import IngressPreAdmit
 from qq_ai_bot.identity.receipt_compat import (
     load_claimed_keeper,
+    normalize_live_json,
     require_claimed_event,
     require_compatible_v2_live,
     require_reply_source,
@@ -99,6 +100,9 @@ class CanonicalIngressUnitOfWork:
             }
         )
         now = _utcnow()
+        segments_json = json.dumps(segments, ensure_ascii=False, separators=(",", ":"))
+        normalized_segments = normalize_live_json(segments_json)
+        utterance_fingerprint = _fingerprint(message.text)
         created = True
         if message.scope_type is ScopeType.GROUP:
             if admitted.space_binding_id is None:
@@ -109,6 +113,68 @@ class CanonicalIngressUnitOfWork:
             # still fences a paused or transferred route.
             if admitted.connection_id is None or admitted.gateway_instance_id is None:
                 raise CanonicalIdentityError("unclassified")
+        canonical_event_id = _new_id()
+        row = ChatEventModel(
+            bot_user_id=scope.bot_user_id,
+            platform_message_id=message.message_id,
+            scope_type=scope.scope_type.value,
+            group_id=scope.group_id,
+            private_peer_user_id=scope.private_peer_user_id,
+            sender_user_id=message.sender.user_id,
+            sender_nickname=message.sender.nickname[:128],
+            sender_group_card=message.sender.group_card[:128],
+            direction="inbound",
+            event_kind="message",
+            content=message.text,
+            visual_summary="",
+            segments_json=segments_json,
+            reply_to_message_id=message.reply_to_message_id,
+            reply_to_event_id=message.reply_to_event_id,
+            origin="user_message",
+            occurred_at=message.received_at,
+            observed_at=now,
+            canonical_event_id=canonical_event_id,
+            canonical_conversation_id=admitted.conversation_id,
+            author_kind=admitted.author_kind,
+            author_person_id=admitted.author_person_id,
+            author_presence_id=admitted.author_presence_id,
+            ingress_presence_id=admitted.presence_id,
+            utterance_fingerprint=utterance_fingerprint,
+            suppression_status="keeper",
+            ingress_provider=admitted.provider,
+            ingress_gateway_instance_id=admitted.gateway_instance_id,
+        )
+        _validate_author_shape(row)
+        # A duplicate needs a consistent receipt/keeper/route view, not a writer.
+        async with self._database.sessions() as reader:
+            await reader.execute(text("BEGIN"))
+            if message.scope_type is ScopeType.GROUP:
+                if admitted.space_binding_id is None:
+                    raise CanonicalIdentityError("unclassified")
+                fence = await self._router.ingest_status_in_session(
+                    reader,
+                    space_binding_id=admitted.space_binding_id,
+                    event_presence_id=admitted.presence_id,
+                    require_connected=False,
+                )
+                if fence != "ok":
+                    raise CanonicalIdentityError(fence)
+            existing = await _existing_claimed_event(
+                reader,
+                presence_id=admitted.presence_id,
+                event_type=message.event_type[:64],
+                platform_message_id=message.message_id[:128],
+            )
+            if existing is not None:
+                return await _reuse_claimed_inbound(
+                    reader,
+                    existing,
+                    message=message,
+                    admitted=admitted,
+                    scope=scope,
+                    segments=segments,
+                    normalized_segments=normalized_segments,
+                )
         async with self._database.immediate_session() as session:
             trip("before_fence_recheck")
             if message.scope_type is ScopeType.GROUP:
@@ -137,8 +203,8 @@ class CanonicalIngressUnitOfWork:
                     admitted=admitted,
                     scope=scope,
                     segments=segments,
+                    normalized_segments=normalized_segments,
                 )
-            canonical_event_id = _new_id()
             try:
                 async with session.begin_nested():
                     session.add(
@@ -168,6 +234,7 @@ class CanonicalIngressUnitOfWork:
                     admitted=admitted,
                     scope=scope,
                     segments=segments,
+                    normalized_segments=normalized_segments,
                 )
             await require_reply_source(
                 session,
@@ -175,37 +242,6 @@ class CanonicalIngressUnitOfWork:
                 reply_to_event_id=message.reply_to_event_id,
             )
             trip("after_receipt_claim")
-            row = ChatEventModel(
-                bot_user_id=scope.bot_user_id,
-                platform_message_id=message.message_id,
-                scope_type=scope.scope_type.value,
-                group_id=scope.group_id,
-                private_peer_user_id=scope.private_peer_user_id,
-                sender_user_id=message.sender.user_id,
-                sender_nickname=message.sender.nickname[:128],
-                sender_group_card=message.sender.group_card[:128],
-                direction="inbound",
-                event_kind="message",
-                content=message.text,
-                visual_summary="",
-                segments_json=json.dumps(segments, ensure_ascii=False, separators=(",", ":")),
-                reply_to_message_id=message.reply_to_message_id,
-                reply_to_event_id=message.reply_to_event_id,
-                origin="user_message",
-                occurred_at=message.received_at,
-                observed_at=now,
-                canonical_event_id=canonical_event_id,
-                canonical_conversation_id=admitted.conversation_id,
-                author_kind=admitted.author_kind,
-                author_person_id=admitted.author_person_id,
-                author_presence_id=admitted.author_presence_id,
-                ingress_presence_id=admitted.presence_id,
-                utterance_fingerprint=_fingerprint(message.text),
-                suppression_status="keeper",
-                ingress_provider=admitted.provider,
-                ingress_gateway_instance_id=admitted.gateway_instance_id,
-            )
-            _validate_author_shape(row)
             session.add(row)
             await session.flush()
             event = _event_record(row)
@@ -308,6 +344,7 @@ async def _reuse_claimed_inbound(
     admitted: IngressPreAdmit,
     scope: ConversationScope,
     segments: list[dict[str, object]],
+    normalized_segments: str,
 ) -> ScopedAppendResult:
     if admitted.conversation_id is None or admitted.presence_id is None:
         raise CanonicalIdentityError("unclassified")
@@ -332,6 +369,7 @@ async def _reuse_claimed_inbound(
         event_kind="message",
         content=message.text,
         segments=segments,
+        normalized_segments=normalized_segments,
         timestamp=message.received_at,
         author_kind=admitted.author_kind,
         author_person_id=admitted.author_person_id,

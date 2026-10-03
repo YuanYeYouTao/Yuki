@@ -286,10 +286,48 @@ class MemoryFactRepository:
         projected = {fact.id: fact for fact in projected_rows}
         return tuple(projected[fact_id] for fact_id in unique_ids if fact_id in projected)
 
-    async def repair_missing_activation(self, *, limit: int, session: AsyncSession) -> int:
-        """Initialize missing states only; retain original age and no invented usage."""
+    async def activation_repair_window(
+        self, *, after_id: int, through_id: int | None, limit: int
+    ) -> tuple[tuple[int, ...], tuple[int, ...], int]:
+        """Scan one PK window, including healthy rows, before testing for missing states."""
         if limit <= 0:
             raise ValueError("activation repair limit must be positive")
+        async with self._database.sessions() as reader:
+            if through_id is None:
+                through_id = int(await reader.scalar(select(func.max(MemoryFactModel.id))) or 0)
+            identities = tuple(
+                await reader.scalars(
+                    select(MemoryFactModel.id)
+                    .where(MemoryFactModel.id > after_id, MemoryFactModel.id <= through_id)
+                    .order_by(MemoryFactModel.id)
+                    .limit(limit)
+                )
+            )
+            if not identities:
+                return (), (), through_id
+            missing = tuple(
+                await reader.scalars(
+                    select(MemoryFactModel.id)
+                    .where(
+                        MemoryFactModel.id.in_(identities),
+                        ~select(MemoryActivationStateModel.fact_id)
+                        .where(MemoryActivationStateModel.fact_id == MemoryFactModel.id)
+                        .exists(),
+                    )
+                    # Active-first is local to the bounded source window.
+                    .order_by(
+                        case((MemoryFactModel.status == "active", 0), else_=1), MemoryFactModel.id
+                    )
+                )
+            )
+        return identities, missing, through_id
+
+    async def repair_missing_activation(
+        self, *, fact_ids: tuple[int, ...], session: AsyncSession
+    ) -> int:
+        """Initialize missing states only; retain original age and no invented usage."""
+        if not fact_ids:
+            return 0
         initial = case(
             (
                 or_(
@@ -303,22 +341,18 @@ class MemoryFactRepository:
             (MemoryFactModel.kind == "episode", 0.65),
             else_=0.70,
         )
-        source = (
-            select(
-                MemoryFactModel.id,
-                initial,
-                MemoryFactModel.created_at,
-                literal(None),
-                literal(0),
-                literal(0),
-            )
-            .where(
-                ~select(MemoryActivationStateModel.fact_id)
-                .where(MemoryActivationStateModel.fact_id == MemoryFactModel.id)
-                .exists()
-            )
-            .order_by(case((MemoryFactModel.status == "active", 0), else_=1), MemoryFactModel.id)
-            .limit(limit)
+        source = select(
+            MemoryFactModel.id,
+            initial,
+            MemoryFactModel.created_at,
+            literal(None),
+            literal(0),
+            literal(0),
+        ).where(
+            MemoryFactModel.id.in_(fact_ids),
+            ~select(MemoryActivationStateModel.fact_id)
+            .where(MemoryActivationStateModel.fact_id == MemoryFactModel.id)
+            .exists(),
         )
         result = await session.execute(
             insert(MemoryActivationStateModel)

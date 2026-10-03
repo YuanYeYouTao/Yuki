@@ -92,6 +92,7 @@ class MainAgentTurnService:
         include_plugin_context: bool = True,
         memory_exclusive_write: bool = False,
         read_scope: str | None = None,
+        allowed_capabilities: frozenset[str] = frozenset(),
         before_preparation: Callable[[], Awaitable[None]] | None = None,
     ) -> PromptComposition:
         with self.executions.track():
@@ -128,6 +129,11 @@ class MainAgentTurnService:
             ):
                 return composition
             definitions = await contract.definitions()
+            definitions, native_definitions = self._runner.prepare_request_tools(
+                definitions,
+                runtime_config=runtime,
+                allowed_capabilities=allowed_capabilities,
+            )
             version = context.read_version
             conversation_id = version.conversation_id
             assert conversation_id is not None
@@ -230,27 +236,25 @@ class MainAgentTurnService:
             compiled_prefix = composition.messages[:history_start]
             base_prefix = compiled_prefix[:-1] if context.rollup_text.strip() else compiled_prefix
             compiled_current = composition.messages[-1:]
-            prepared_request = ChatRequest(
-                messages=composition.messages,
-                model=runtime.llm.model or "fake",
-                temperature=runtime.llm.temperature,
-                max_output_tokens=runtime.llm.max_output_tokens,
-                thinking_enabled=runtime.llm.thinking_enabled,
-                tools=definitions,
-                tool_choice="auto" if definitions else None,
+            prepared_request = self._runner._capacity_request(
+                ChatRequest(
+                    messages=composition.messages,
+                    model=runtime.llm.model or "fake",
+                    temperature=runtime.llm.temperature,
+                    max_output_tokens=runtime.llm.max_output_tokens,
+                    thinking_enabled=runtime.llm.thinking_enabled,
+                    tools=definitions,
+                    tool_choice="auto" if definitions or native_definitions else None,
+                    native_tools=native_definitions,
+                )
             )
             fresh_tokens = estimate_request_tokens(prepared_request)
-            # A soft reserve below the fresh request's fixed cost cannot be met
-            # by dropping old snapshots. Use the hard bound in that case; if
-            # even fresh cannot fit, leave the epoch for Runner to stop honestly.
+            # The maintenance target may choose an already prepared summary;
+            # it cannot require a foreground model while the original fits.
             fixed_tokens = estimate_request_tokens(
                 replace(prepared_request, messages=(*compiled_prefix, *compiled_current))
             )
-            recovery_budget = (
-                input_budget
-                if fixed_tokens > planning_budget
-                else max(planning_budget, fresh_tokens)
-            )
+            maintenance_budget = max(planning_budget, fixed_tokens)
 
             def history_fits(history: tuple[ChatMessage, ...]) -> bool:
                 # Reuse the already compiled system/rollup and current envelope.
@@ -261,8 +265,7 @@ class MainAgentTurnService:
                     messages=(*compiled_prefix, *history, *compiled_current),
                 )
                 return (
-                    fresh_tokens > input_budget
-                    or estimate_request_tokens(request) <= recovery_budget
+                    fresh_tokens > input_budget or estimate_request_tokens(request) <= input_budget
                 )
 
             def context_fits(candidate: AssembledContext) -> bool:
@@ -274,7 +277,7 @@ class MainAgentTurnService:
                         *compiled_current,
                     ),
                 )
-                return estimate_request_tokens(request) <= recovery_budget
+                return estimate_request_tokens(request) <= maintenance_budget
 
             def context_hard_fits(candidate: AssembledContext) -> bool:
                 request = replace(

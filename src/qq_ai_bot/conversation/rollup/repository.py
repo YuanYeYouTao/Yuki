@@ -12,6 +12,7 @@ from typing import cast
 from sqlalchemy import and_, delete, func, or_, select, text, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -337,13 +338,21 @@ async def _load_bounded_prompt_tail(
     conversation_id: str,
     before_event_id: int | None,
     config: RollupPolicyConfig,
+    token_budget: int | None = None,
 ) -> tuple[tuple[EventRecord, ...], bool]:
-    """Read a whole-event suffix in pages; report any omitted visible prefix."""
+    """Read whole events; budget the actual grouped history, not per-row headers."""
     from qq_ai_bot.event_prompt import ChatEventPromptRenderer
 
+    budget = config.context_token_budget if token_budget is None else max(1, token_budget)
     cursor = min(last_event_id + 1, before_event_id or last_event_id + 1)
-    selected: list[EventRecord] = []
-    tokens = 0
+    selected: tuple[EventRecord, ...] = ()
+
+    def cost(events: tuple[EventRecord, ...]) -> int:
+        messages = ChatEventPromptRenderer(
+            events, bot_display_name=config.bot_display_name, timezone=config.timezone
+        ).main_agent_history(events)
+        return sum(estimate_text_tokens(message.content or "") + 8 for _, _, message in messages)
+
     while True:
         rows = tuple(
             (
@@ -362,23 +371,23 @@ async def _load_bounded_prompt_tail(
             ).all()
         )
         if not rows:
-            return await _with_proactive_cause_metadata(session, tuple(reversed(selected))), True
-        for row in rows:
-            event = _event_record(row)
-            messages = ChatEventPromptRenderer(
-                (event,), bot_display_name=config.bot_display_name, timezone=config.timezone
-            ).main_agent_history((event,))
-            if not messages:
-                continue
-            cost = sum(
-                estimate_text_tokens(message.content or "") + 8 for _, _, message in messages
-            )
-            if selected and tokens + cost > config.context_token_budget:
-                return await _with_proactive_cause_metadata(
-                    session, tuple(reversed(selected))
-                ), False
-            selected.append(event)
-            tokens += cost
+            return selected, True
+        page = await _with_proactive_cause_metadata(
+            session, tuple(_event_record(row) for row in reversed(rows))
+        )
+        candidate = (*page, *selected)
+        if cost(candidate) > budget:
+            # Rendering once per page and binary-searching only the overfull
+            # page preserves grouping without quadratic per-event rendering.
+            lower, upper = max(1, len(selected)), len(candidate)
+            while lower < upper:
+                middle = (lower + upper + 1) // 2
+                if cost(candidate[-middle:]) <= budget:
+                    lower = middle
+                else:
+                    upper = middle - 1
+            return candidate[-lower:], False
+        selected = candidate
         cursor = rows[-1].id
 
 
@@ -631,6 +640,7 @@ class ConversationRollupRepository:
         scope: ConversationScope,
         *,
         before_event_id: int | None = None,
+        token_budget: int | None = None,
     ) -> ConversationPromptSnapshot:
         """Load scope, checkpoint, and the exact continuous raw suffix in one transaction."""
 
@@ -640,7 +650,10 @@ class ConversationRollupRepository:
                 # sqlite3 legacy mode does not BEGIN on SELECT.
                 await session.execute(text("BEGIN"))
                 return await self._load_prompt_snapshot_canonical(
-                    session, scope, before_event_id=before_event_id
+                    session,
+                    scope,
+                    before_event_id=before_event_id,
+                    token_budget=token_budget,
                 )
         finally:
             self._active_policy.reset(token)
@@ -653,12 +666,25 @@ class ConversationRollupRepository:
         await drain_rollup_signals(
             self._database, self._config, policy_for_scope=self._policy_for_scope
         )
-        now = _utcnow()
-        lease_until = now + timedelta(seconds=lease_seconds)
+        async with self._database.sessions() as reader:
+            candidate_id = await reader.scalar(
+                select(CanonicalConversationRollupJobModel.conversation_id)
+                .where(self._claimable_job())
+                .order_by(CanonicalConversationRollupJobModel.next_attempt_at.asc())
+                .limit(1)
+            )
+        if candidate_id is None:
+            return None
         token = uuid.uuid4().hex
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
+            now = _utcnow()
             return await self._claim_next_canonical_job(
-                session, lease_owner=lease_owner, lease_until=lease_until, token=token, now=now
+                session,
+                candidate_id=candidate_id,
+                lease_owner=lease_owner,
+                lease_until=now + timedelta(seconds=lease_seconds),
+                token=token,
+                now=now,
             )
 
     async def has_required_work(self, claim: RollupJobClaim) -> bool:
@@ -693,10 +719,10 @@ class ConversationRollupRepository:
     ) -> RollupJobClaim | None:
         """Join live semantic ownership unless an explicit emergency must take over."""
 
-        now = _utcnow()
-        lease_until = now + timedelta(seconds=lease_seconds)
         token = uuid.uuid4().hex
         async with self._database.immediate_session() as session:
+            now = _utcnow()
+            lease_until = now + timedelta(seconds=lease_seconds)
             return await self._claim_canonical_scope_for_foreground(
                 session,
                 scope,
@@ -708,11 +734,11 @@ class ConversationRollupRepository:
             )
 
     async def heartbeat(self, claim: RollupJobClaim, *, lease_seconds: int) -> RollupJobClaim:
-        now = _utcnow()
-        renewed = now + timedelta(seconds=lease_seconds)
         if not claim.conversation_id:
             raise RollupLeaseLostError("canonical rollup claim has no conversation")
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
+            now = _utcnow()
+            renewed = now + timedelta(seconds=lease_seconds)
             result = await session.execute(
                 update(CanonicalConversationRollupJobModel)
                 .where(*self._canonical_lease_conditions(claim, now=now))
@@ -826,10 +852,10 @@ class ConversationRollupRepository:
             if summary_kind is RollupKind.MODEL
             else set()
         )
-        now = _utcnow()
         if not claim.conversation_id:
             raise RollupLeaseLostError("canonical rollup claim has no conversation")
-        async with self._database.sessions() as session, session.begin():
+
+        async def commit(session: AsyncSession) -> RollupCommitResult:
             return await self._commit_canonical_candidate(
                 session,
                 claim,
@@ -837,9 +863,11 @@ class ConversationRollupRepository:
                 summary_text=normalized,
                 summary_kind=summary_kind,
                 retain_lease=retain_lease,
-                now=now,
+                now=_utcnow(),
                 summary_references=references,
             )
+
+        return await self._commit_snapshot(commit)
 
     async def commit_emergency_overlay(
         self,
@@ -860,21 +888,38 @@ class ConversationRollupRepository:
             or len(normalized) > (candidate.policy or self.config).summary_max_characters
         ):
             raise ValueError("summary violates configured output bounds")
-        now = _utcnow()
         if not claim.conversation_id:
             raise RollupLeaseLostError("canonical rollup claim has no conversation")
-        async with self._database.sessions() as session, session.begin():
+
+        async def commit(session: AsyncSession) -> RollupCommitResult:
             return await self._commit_canonical_emergency_overlay(
                 session,
                 claim,
                 candidate,
                 summary_text=normalized,
-                now=now,
+                now=_utcnow(),
                 error_category=error_category,
                 disposition=disposition,
                 source_emergency=source_emergency,
                 retry_max_seconds=retry_max_seconds,
             )
+
+        return await self._commit_snapshot(commit)
+
+    async def _commit_snapshot(
+        self, operation: Callable[[AsyncSession], Awaitable[RollupCommitResult]]
+    ) -> RollupCommitResult:
+        """Reprepare only a rolled-back DB plan, retaining the original paid output."""
+        for attempt in range(3):
+            try:
+                async with self._database.sessions() as session, session.begin():
+                    # Legacy sqlite3 SELECT does not begin a read transaction.
+                    await session.execute(text("BEGIN"))
+                    return await operation(session)
+            except OperationalError as exc:
+                if getattr(exc.orig, "sqlite_errorcode", None) != 517 or attempt == 2:
+                    raise
+        raise AssertionError("unreachable rollup snapshot retry")
 
     async def retry_infrastructure(
         self,
@@ -883,10 +928,10 @@ class ConversationRollupRepository:
         error_category: str,
         retry_max_seconds: int,
     ) -> None:
-        now = _utcnow()
         if not claim.conversation_id:
             raise RollupLeaseLostError("canonical rollup claim has no conversation")
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
+            now = _utcnow()
             job = await session.scalar(
                 select(CanonicalConversationRollupJobModel).where(
                     *self._canonical_lease_conditions(claim, now=now)
@@ -896,14 +941,22 @@ class ConversationRollupRepository:
                 raise RollupLeaseLostError("rollup retry lost its lease")
             failure_count = job.failure_count + 1
             delay = _overlay_backoff_seconds(failure_count, retry_max_seconds)
-            job.status = "pending"
-            job.failure_count = failure_count
-            job.lease_owner = None
-            job.lease_token = None
-            job.lease_until = None
-            job.next_attempt_at = now + timedelta(seconds=delay)
-            job.last_error_category = error_category[:64]
-            job.updated_at = now
+            result = await session.execute(
+                update(CanonicalConversationRollupJobModel)
+                .where(*self._canonical_lease_conditions(claim, now=now))
+                .values(
+                    status="pending",
+                    failure_count=failure_count,
+                    lease_owner=None,
+                    lease_token=None,
+                    lease_until=None,
+                    next_attempt_at=now + timedelta(seconds=delay),
+                    last_error_category=error_category[:64],
+                    updated_at=now,
+                )
+            )
+            if not cast(CursorResult[object], result).rowcount:
+                raise RollupLeaseLostError("rollup retry lost its lease")
 
     async def release_owner(self, lease_owner: str) -> int:
         now = _utcnow()
@@ -1096,6 +1149,7 @@ class ConversationRollupRepository:
         scope: ConversationScope,
         *,
         before_event_id: int | None,
+        token_budget: int | None = None,
     ) -> ConversationPromptSnapshot:
         conversation = await self._conversation_for_scope(session, scope)
         if conversation is None:
@@ -1132,6 +1186,7 @@ class ConversationRollupRepository:
             conversation_id=conversation.id,
             before_event_id=before_event_id,
             config=self.config,
+            token_budget=token_budget,
         )
         tail_end = events[-1].id if events else coverage
         effective = (
@@ -1156,48 +1211,36 @@ class ConversationRollupRepository:
             ),
         )
 
+    @staticmethod
+    def _claimable_job() -> ColumnElement[bool]:
+        return or_(
+            and_(
+                CanonicalConversationRollupJobModel.status == "pending",
+                func.julianday(CanonicalConversationRollupJobModel.next_attempt_at)
+                <= func.julianday("now"),
+            ),
+            and_(
+                CanonicalConversationRollupJobModel.status == "processing",
+                func.julianday(CanonicalConversationRollupJobModel.lease_until)
+                <= func.julianday("now"),
+            ),
+        )
+
     async def _claim_next_canonical_job(
         self,
         session: AsyncSession,
         *,
+        candidate_id: str,
         lease_owner: str,
         lease_until: datetime,
         token: str,
         now: datetime,
     ) -> RollupJobClaim | None:
-        candidate_id = await session.scalar(
-            select(CanonicalConversationRollupJobModel.conversation_id)
-            .where(
-                or_(
-                    and_(
-                        CanonicalConversationRollupJobModel.status == "pending",
-                        CanonicalConversationRollupJobModel.next_attempt_at <= now,
-                    ),
-                    and_(
-                        CanonicalConversationRollupJobModel.status == "processing",
-                        CanonicalConversationRollupJobModel.lease_until <= now,
-                    ),
-                )
-            )
-            .order_by(CanonicalConversationRollupJobModel.next_attempt_at.asc())
-            .limit(1)
-        )
-        if candidate_id is None:
-            return None
         row = await session.scalar(
             update(CanonicalConversationRollupJobModel)
             .where(
                 CanonicalConversationRollupJobModel.conversation_id == candidate_id,
-                or_(
-                    and_(
-                        CanonicalConversationRollupJobModel.status == "pending",
-                        CanonicalConversationRollupJobModel.next_attempt_at <= now,
-                    ),
-                    and_(
-                        CanonicalConversationRollupJobModel.status == "processing",
-                        CanonicalConversationRollupJobModel.lease_until <= now,
-                    ),
-                ),
+                self._claimable_job(),
             )
             .values(
                 status="processing",
@@ -1489,6 +1532,7 @@ class ConversationRollupRepository:
             created_at=current_rollup.created_at if current_rollup is not None else now,
             updated_at=now,
         )
+        await self._confirm_commit_lease(session, claim, now=now)
         await session.execute(
             statement.on_conflict_do_update(
                 index_elements=[CanonicalConversationRollupModel.conversation_id],
@@ -1627,6 +1671,7 @@ class ConversationRollupRepository:
             last_event_id=conversation.last_event_id,
             semantic_revision=semantic_revision,
         )
+        statement = None
         if _overlay_should_replace(
             current_overlay, valid=valid_overlay, covered_through=covered_through
         ):
@@ -1647,22 +1692,21 @@ class ConversationRollupRepository:
                 created_at=created_at,
                 updated_at=now,
             )
-            await session.execute(
-                statement.on_conflict_do_update(
-                    index_elements=[
-                        CanonicalConversationRollupEmergencyOverlayModel.conversation_id
-                    ],
-                    set_={
-                        "generation": candidate.generation,
-                        "covered_through_event_id": covered_through,
-                        "summary_text": summary_text,
-                        "source_fingerprint": candidate.fingerprint,
-                        "base_semantic_revision": semantic_revision,
-                        "revision": overlay_revision + 1,
-                        "updated_at": now,
-                    },
-                )
+            statement = statement.on_conflict_do_update(
+                index_elements=[CanonicalConversationRollupEmergencyOverlayModel.conversation_id],
+                set_={
+                    "generation": candidate.generation,
+                    "covered_through_event_id": covered_through,
+                    "summary_text": summary_text,
+                    "source_fingerprint": candidate.fingerprint,
+                    "base_semantic_revision": semantic_revision,
+                    "revision": overlay_revision + 1,
+                    "updated_at": now,
+                },
             )
+        await self._confirm_commit_lease(session, claim, now=now)
+        if statement is not None:
+            await session.execute(statement)
         _dispose_job_after_overlay(
             job,
             claim,
@@ -1709,6 +1753,18 @@ class ConversationRollupRepository:
             updated_at=row.updated_at,
         )
 
+    async def _confirm_commit_lease(
+        self, session: AsyncSession, claim: RollupJobClaim, *, now: datetime
+    ) -> None:
+        result = await session.execute(
+            update(CanonicalConversationRollupJobModel)
+            .where(*self._canonical_lease_conditions(claim, now=now))
+            .values(updated_at=now)
+            .execution_options(synchronize_session=False)
+        )
+        if not cast(CursorResult[object], result).rowcount:
+            raise RollupLeaseLostError("rollup publication lost its lease")
+
     @staticmethod
     def _canonical_lease_conditions(
         claim: RollupJobClaim,
@@ -1717,10 +1773,11 @@ class ConversationRollupRepository:
     ) -> tuple[ColumnElement[bool], ...]:
         return (
             CanonicalConversationRollupJobModel.conversation_id == claim.conversation_id,
+            CanonicalConversationRollupJobModel.generation == claim.generation,
             CanonicalConversationRollupJobModel.status == "processing",
             CanonicalConversationRollupJobModel.lease_owner == claim.lease_owner,
             CanonicalConversationRollupJobModel.lease_token == claim.lease_token,
-            CanonicalConversationRollupJobModel.lease_until > now,
+            func.julianday(CanonicalConversationRollupJobModel.lease_until) > func.julianday("now"),
         )
 
     @staticmethod
@@ -1731,7 +1788,8 @@ class ConversationRollupRepository:
         if lease_until is not None and lease_until.tzinfo is None:
             lease_until = lease_until.replace(tzinfo=UTC)
         return (
-            row.status == "processing"
+            row.generation == claim.generation
+            and row.status == "processing"
             and row.lease_owner == claim.lease_owner
             and row.lease_token == claim.lease_token
             and lease_until is not None

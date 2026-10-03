@@ -339,10 +339,37 @@ async def require_canonical_schema(database_url: str) -> None:
                 raise CanonicalSchemaError(
                     "database memory receipt reference index is missing or changed"
                 )
-            for index_name, table, index_columns in (
-                ("ix_media_analyses_expires_at", "media_analyses", ("expires_at",)),
-                ("ix_web_search_runs_created_at", "web_search_runs", ("created_at",)),
-                ("ix_runtime_work_state_updated", "runtime_work", ("state", "updated")),
+            for index_name, table, index_columns, error_category in (
+                (
+                    "ix_media_analyses_expires_at",
+                    "media_analyses",
+                    ("expires_at",),
+                    "cache cleanup",
+                ),
+                (
+                    "ix_web_search_runs_created_at",
+                    "web_search_runs",
+                    ("created_at",),
+                    "cache cleanup",
+                ),
+                (
+                    "ix_runtime_work_state_updated",
+                    "runtime_work",
+                    ("state", "updated"),
+                    "cache cleanup",
+                ),
+                (
+                    "ix_memory_reflection_jobs_status_claimed",
+                    "memory_reflection_jobs",
+                    ("status", "claimed_at", "id"),
+                    "maintenance",
+                ),
+                (
+                    "ix_memory_dream_clusters_status_id",
+                    "memory_dream_clusters",
+                    ("status", "id"),
+                    "maintenance",
+                ),
             ):
                 retained = (
                     await connection.execute(
@@ -370,7 +397,9 @@ async def require_canonical_schema(database_url: str) -> None:
                     or index[4] != 0
                     or index_keys != tuple((column, 0, "BINARY") for column in index_columns)
                 ):
-                    raise CanonicalSchemaError("database cache cleanup index is missing or changed")
+                    raise CanonicalSchemaError(
+                        f"database {error_category} index is missing or changed"
+                    )
             trigger_rows = await connection.execute(
                 text("SELECT name, sql FROM sqlite_master WHERE type='trigger'")
             )

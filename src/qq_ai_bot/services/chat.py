@@ -39,6 +39,7 @@ from qq_ai_bot.domain.messages import (
     AttachmentKind,
     ChatImage,
     ChatMessage,
+    ChatRequest,
     ChatTool,
     InboundMessage,
     OutboundMedia,
@@ -470,14 +471,16 @@ class ChatService:
         self._external_tool_providers.append(provider)
 
     def _history_input_budget(
-        self, runtime: RuntimeConfigSnapshot, *, maintenance: bool = True
+        self,
+        runtime: RuntimeConfigSnapshot,
+        *,
+        maintenance: bool = True,
+        allowed_capabilities: frozenset[str] | None = None,
     ) -> int:
         from qq_ai_bot.model_runtime.capacity import (
             ModelCapacity,
-            estimate_text_tokens,
-            estimate_tools_tokens,
+            estimate_request_tokens,
         )
-        from qq_ai_bot.prompting import CORE_CONTRACT
 
         getter = getattr(self._models, "capacity", None)
         capacity = getter(ModelTask.CHAT_AGENT) if callable(getter) else ModelCapacity()
@@ -490,11 +493,34 @@ class ChatService:
             budget = min(budget, runtime.context.compaction_window_tokens)
         contract = getattr(self.runtime.runner, "main_contract", None)
         tools = getattr(contract, "_tools", None)
-        tool_tokens = estimate_tools_tokens(tools) if tools else 32768
-        fixed = estimate_text_tokens(self._settings.system_prompt + CORE_CONTRACT) + tool_tokens
+        if tools:
+            definitions, native_tools = self.runtime.runner.prepare_request_tools(
+                tools,
+                runtime_config=runtime,
+                allowed_capabilities=(
+                    self.web_capabilities(runtime)
+                    if allowed_capabilities is None
+                    else allowed_capabilities
+                ),
+            )
+        else:
+            definitions, native_tools = (), ()
+        template = self.runtime.runner._capacity_request(
+            ChatRequest(
+                messages=self._prompt_composer.static_messages(),
+                model=runtime.llm.model or "fake",
+                temperature=runtime.llm.temperature,
+                max_output_tokens=runtime.llm.max_output_tokens,
+                thinking_enabled=runtime.llm.thinking_enabled,
+                tools=definitions,
+                native_tools=native_tools,
+                tool_choice="auto" if definitions or native_tools else None,
+            )
+        )
+        fixed = estimate_request_tokens(template) + (0 if tools else 32768)
         if maintenance:
             budget = int(budget * runtime.context.compaction_trigger_ratio)
-        return max(1, budget - fixed - 4096)
+        return max(1, budget - fixed - (4096 if maintenance else 0))
 
     def _responses_append_only(self) -> bool:
         protocol = getattr(self.runtime.runner._models, "protocol", None)
@@ -1455,6 +1481,7 @@ class ChatService:
             visual_observation=visual_observation,
             visual_failure=visual_failure,
             memory_exclusive_write=bool(memory_session and memory_session.exclusive_write),
+            allowed_capabilities=self.web_capabilities(runtime),
             before_preparation=validate_preparation,
         )
         messages = composition.messages
@@ -1761,6 +1788,7 @@ class ChatService:
                     visual_observation=None,
                     visual_failure=False,
                     scope_type=ScopeType.GROUP,
+                    allowed_capabilities=self.web_capabilities(runtime),
                     before_preparation=validate,
                 )
                 tool_runtime = replace(
@@ -1853,6 +1881,7 @@ class ChatService:
                 visual_observation=None,
                 visual_failure=False,
                 scope_type=event.scope_type,
+                allowed_capabilities=self.web_capabilities(runtime),
                 before_preparation=before_model_request,
             )
             tool_runtime = ToolRuntime(

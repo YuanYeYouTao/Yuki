@@ -144,6 +144,13 @@ Plugin/Admin 纯查询不产生强化或使用回执。详见
 
 ## 维护与变更边界
 
+Activation 缺失修补按主键扫描有界来源窗口；每轮固定 high-water，游标按已扫描的来源推进，
+即使没有缺失项也推进，扫到边界后回绕。新来源和状态变化在后续轮次回访；页内优先处理 active，
+不保证每周期一定修满原 batch 数量。游标只在 worker 内存中保存，不是业务事实。
+空修补与空治理恢复只读返回。过期治理 job 按 `status/claimed_at/id` 索引取候选，短写重核原 claim、
+状态、期限及 attempts；Dream processing cluster 按 `status/id` 分页，在读快照准备完整聚合，
+517 只重备原 operation 的数据库计划。0090 仅增加这两个候选索引。
+
 - 证据明细及 readable evidence count 共用同一 SQL 来源谓词，按 canonical event、普通
   tool receipt 或无事件 SELF initiative 分支核验来源、owner、隐藏状态及 SELF 可见范围。
   明细在 SQL 中过滤后排序，公开分页继续应用请求的 limit，不逐 evidence 查来源。

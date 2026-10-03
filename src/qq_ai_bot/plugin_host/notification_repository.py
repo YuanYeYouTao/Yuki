@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import (
@@ -1043,10 +1043,10 @@ class PluginNotificationRepository:
             synthetic_scope_id,
         )
 
-        now = datetime.now(UTC)
         category: str | None = None
         result: QueuedCanonicalContext | None = None
-        async with self._database.immediate_session() as session:
+        async with self._database.sessions() as session:
+            await session.execute(text("BEGIN"))
             stored = await session.get(PluginBackgroundTurnJobModel, job.id)
             if not _owns_processing_attempt(stored, attempt=job.attempts):
                 category = TURN_ERROR_ATTEMPT_RECLAIMED
@@ -1058,8 +1058,6 @@ class PluginNotificationRepository:
                     expected_generation=job.generation,
                     include_coverage=True,
                 )
-                if category is not None:
-                    _cancel_turn(stored, category=category, now=now)
             if category is None:
                 assert stored is not None
                 await require_queued_work_readable(session, stored)
@@ -1096,6 +1094,21 @@ class PluginNotificationRepository:
                     generation=int(conversation.generation),
                     scope_id=synthetic_scope_id(conversation.id),
                 )
+        if category is not None and category != TURN_ERROR_ATTEMPT_RECLAIMED:
+            # Discovery did not authorize a cancellation. Recheck the live
+            # attempt and its original source fence in a separate short writer.
+            async with self._database.immediate_session() as writer:
+                stored = await writer.get(PluginBackgroundTurnJobModel, job.id)
+                if not _owns_processing_attempt(stored, attempt=job.attempts):
+                    category = TURN_ERROR_ATTEMPT_RECLAIMED
+                else:
+                    assert stored is not None
+                    current = await _turn_fence_category(
+                        writer, stored, expected_generation=job.generation, include_coverage=True
+                    )
+                    if current is not None:
+                        category = current
+                        _cancel_turn(stored, category=current, now=datetime.now(UTC))
         if category is not None or result is None:
             raise BackgroundTurnFenceError(category or TURN_ERROR_SUPERSEDED_COVERED)
         return result

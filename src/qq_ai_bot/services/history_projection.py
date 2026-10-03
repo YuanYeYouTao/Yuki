@@ -284,15 +284,33 @@ async def prepare_history(
         if context_fits is not None
         else history_fits(extended.messages())
     )
+    hard_fits = (
+        context_hard_fits(replace(selected_context, history_messages=extended.messages()))
+        if context_hard_fits is not None
+        else fits
+    )
     original_fragments, original_context, original_reason = extended, selected_context, reason
-    if extended.items != fresh.items and not fits:
-        reason = "capacity"
+    ready_rollup = (
+        previous is not None
+        and context.prompt_effective_coverage > previous.selected_summary_coverage
+        and bool(context.rollup_text.strip())
+        and context.metrics.rollup_mode != "emergency"
+    )
+    if extended.items != fresh.items and (not hard_fits or (not fits and ready_rollup)):
+        # This preparation is a new activation boundary. A published semantic
+        # summary may replace old chat here, never inside an active transcript.
+        reason = "capacity" if not hard_fits else "rollup_ready"
         extended = fresh
         selected_context = context
     fits = (
         context_fits(replace(selected_context, history_messages=extended.messages()))
         if context_fits is not None
         else history_fits(extended.messages())
+    )
+    hard_fits = (
+        context_hard_fits(replace(selected_context, history_messages=extended.messages()))
+        if context_hard_fits is not None
+        else fits
     )
     if not fits and observations and summarize_observations is not None:
         summary = await sources.prepared_summary(
@@ -303,7 +321,7 @@ async def prepare_history(
             actor_id=actor_id,
             read_scope=read_scope,
         )
-        if summary is None:
+        if summary is None and not hard_fits:
             try:
                 payload = await summarize_observations(observations)
                 summary = await sources.publish_scope_summary(
@@ -379,6 +397,12 @@ async def prepare_history(
             if context_fits is not None
             else history_fits(candidate.messages())
         )
+        if not hard_fits and context_hard_fits is not None:
+            # Required recovery needs to fit the real request, not a smaller
+            # maintenance target. Optional ready summaries still use that target.
+            candidate_fits = context_hard_fits(
+                replace(selected_context, history_messages=candidate.messages())
+            )
         if summary is not None and candidate_fits:
             extended, reason = candidate, "capacity"
         elif context_hard_fits is not None and context_hard_fits(

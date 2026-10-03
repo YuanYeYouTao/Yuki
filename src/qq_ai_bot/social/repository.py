@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -68,6 +68,24 @@ class SocialOperationRepository:
             allow_nan=False,
         ).encode()
         digest = hashlib.sha256(encoded).hexdigest()
+        async with self.database.sessions() as reader:
+            await reader.execute(text("BEGIN"))
+            target_row = await reader.get(
+                CanonicalPersonModel if target.kind == "person" else CanonicalSpaceModel,
+                str(target.id),
+            )
+            if target_row is None:
+                raise SocialError("target_not_found")
+            existing = await reader.scalar(
+                select(SocialOperationModel).where(
+                    SocialOperationModel.source_turn_id == source_turn_id,
+                    SocialOperationModel.tool_call_id == tool_call_id,
+                )
+            )
+            if existing is not None:
+                if existing.payload_hash != digest or existing.planned_parts != planned_parts:
+                    raise SocialError("idempotency_conflict")
+                return self._receipt(existing)
         now = datetime.now(UTC)
         async with self.database.sessions() as session, session.begin():
             target_row = await session.get(

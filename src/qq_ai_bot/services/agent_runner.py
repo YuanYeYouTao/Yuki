@@ -353,20 +353,40 @@ class AgentRunner:
         prepare = getattr(self._models, "capacity_request", None)
         return prepare(self._task, request) if callable(prepare) else request
 
-    def provider_excluded_function_names(self, runtime: AgentRuntime) -> frozenset[str]:
-        web_config = getattr(runtime.runtime_config, "web", None)
+    def prepare_request_tools(
+        self,
+        definitions: tuple[ChatTool, ...],
+        *,
+        runtime_config: RuntimeConfigSnapshot,
+        allowed_capabilities: frozenset[str],
+        web_was_used: bool = False,
+    ) -> tuple[tuple[ChatTool, ...], tuple[NativeToolDefinition, ...]]:
+        """Use the dispatch tool shape for both preparation and the actual request."""
+        web_config = getattr(runtime_config, "web", None)
         try:
             web_mode = WebMode(getattr(web_config, "mode", WebMode.DISABLED.value))
         except ValueError:
             web_mode = WebMode.DISABLED
         search_mode_getter = getattr(self._models, "search_mode", None)
-        return self._native_tools.excluded_function_names(
-            protocol=self._models.protocol(self._task),
-            capabilities=self._models.capabilities(self._task),
-            allowed_capabilities=runtime.allowed_capabilities,
+        protocol = self._models.protocol(self._task)
+        capabilities = self._models.capabilities(self._task)
+        search_mode = search_mode_getter(self._task) if callable(search_mode_getter) else None
+        native = self._native_tools.bind(
+            protocol=protocol,
+            capabilities=capabilities,
+            allowed_capabilities=allowed_capabilities,
             web_mode=web_mode,
-            search_mode=(search_mode_getter(self._task) if callable(search_mode_getter) else None),
+            search_mode=search_mode,
+            web_was_used=web_was_used,
         )
+        excluded = self._native_tools.excluded_function_names(
+            protocol=protocol,
+            capabilities=capabilities,
+            allowed_capabilities=allowed_capabilities,
+            web_mode=web_mode,
+            search_mode=search_mode,
+        )
+        return tuple(tool for tool in definitions if tool.name not in excluded), native
 
     async def run(
         self,
@@ -668,20 +688,12 @@ class AgentRunner:
                 web_mode = WebMode(getattr(web_config, "mode", WebMode.DISABLED.value))
             except ValueError:
                 web_mode = WebMode.DISABLED
-            search_mode_getter = getattr(self._models, "search_mode", None)
-            native_definitions = self._native_tools.bind(
-                protocol=self._models.protocol(self._task),
-                capabilities=self._models.capabilities(self._task),
+            definitions, native_definitions = self.prepare_request_tools(
+                definitions,
+                runtime_config=runtime.runtime_config,
                 allowed_capabilities=runtime.allowed_capabilities,
-                web_mode=web_mode,
                 web_was_used=web_was_used,
-                search_mode=search_mode_getter(self._task)
-                if callable(search_mode_getter)
-                else None,
             )
-            excluded_names = self.provider_excluded_function_names(runtime)
-            if excluded_names:
-                definitions = tuple(item for item in definitions if item.name not in excluded_names)
             restart_chain = getattr(tools, "consume_provider_chain_restart", None)
             if callable(restart_chain):
                 # Discovery/execution policy cannot discard a submitted request prefix.

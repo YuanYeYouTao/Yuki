@@ -15,6 +15,7 @@ class HealthPayload(TypedDict):
     status: str
     version: str
     database: str
+    sqlite_diagnostics: dict[str, object]
     llm_configured: bool
     web_configured: bool
     vision_configured: bool
@@ -96,6 +97,11 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
         status="ok" if database_ok and background_health["running"] else "degraded",
         version=__version__,
         database="ok" if database_ok else "unavailable",
+        sqlite_diagnostics=(
+            container.database.sqlite_diagnostics.snapshot()
+            if container.database.sqlite_diagnostics is not None
+            else {"available": False}
+        ),
         llm_configured=container.settings.llm_configured,
         web_configured=container.settings.web_configured,
         vision_configured=container.settings.vision_configured,

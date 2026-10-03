@@ -859,6 +859,32 @@ class WorkRepository:
 
         if not 1 <= len(source_key) <= 256 or kind not in {"message", "completion", "control"}:
             raise ValueError("invalid_work_input")
+        serialized = bounded_json(resume[1], 32768) if resume else "{}"
+
+        def matches(row: Any) -> bool:
+            return all(
+                row[key] == value
+                for key, value in {
+                    "conversation_id": conversation_id,
+                    "generation": generation,
+                    "kind": kind,
+                    "event_id": event_id,
+                    "work_id": work_id,
+                }.items()
+            )
+
+        # Explicit resume also changes the Work state and retains its writer/CAS.
+        if resume is None:
+            async with self.database.sessions() as reader:
+                existing_row = (
+                    (await reader.execute(select(inputs).where(inputs.c.source_key == source_key)))
+                    .mappings()
+                    .first()
+                )
+                if existing_row is not None:
+                    if not matches(existing_row):
+                        raise WorkConflict("work_input_conflict")
+                    return int(existing_row["id"])
         async with self.database.immediate_session() as session:
             if resume is not None:
                 owned, _payload = resume
@@ -893,7 +919,7 @@ class WorkRepository:
                     event_id=event_id,
                     work_id=work_id,
                     ready=ready,
-                    payload_json=bounded_json(resume[1], 32768) if resume else "{}",
+                    payload_json=serialized,
                     prepare_owner=None if ready else PROCESS_ID,
                     created=time.time(),
                 )
@@ -904,18 +930,9 @@ class WorkRepository:
                 .mappings()
                 .one()
             )
-            if any(
-                row[key] != value
-                for key, value in {
-                    "conversation_id": conversation_id,
-                    "generation": generation,
-                    "kind": kind,
-                    "event_id": event_id,
-                    "work_id": work_id,
-                }.items()
-            ):
+            if not matches(row):
                 raise WorkConflict("work_input_conflict")
-            if resume is not None and row["payload_json"] != bounded_json(resume[1], 32768):
+            if resume is not None and row["payload_json"] != serialized:
                 raise WorkConflict("work_input_conflict")
             if resume is not None and row["state"] == "pending":
                 updated = await session.scalar(
@@ -943,6 +960,16 @@ class WorkRepository:
     ) -> bool:
         from qq_ai_bot.runtime.work_media import externalize
 
+        # A retry acknowledges the original durable input, never replaces it.
+        async with self.database.sessions() as reader:
+            if await reader.scalar(
+                select(inputs.c.ready).where(
+                    inputs.c.id == identity,
+                    inputs.c.state.in_(("pending", "staged", "consumed")),
+                    inputs.c.ready.is_(True),
+                )
+            ):
+                return True
         blobs: dict[str, bytes] = {}
         prepared = externalize({**payload, "images": [asdict(image) for image in images]}, blobs)
         serialized = bounded_json(prepared, 32768)
