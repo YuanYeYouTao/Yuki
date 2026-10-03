@@ -473,7 +473,7 @@ async def test_failed_snapshot_CAS_does_not_publish_and_global_privacy_retires_o
 @pytest.mark.parametrize(
     "failure", [WorkCapacityError("summary_window"), LLMError("provider_failure")]
 )
-async def test_optional_summary_failure_preserves_full_input_below_true_capacity(
+async def test_optional_summary_is_not_requested_while_original_input_fits(
     database, tmp_path, failure
 ):
     env = await social_env(database, tmp_path)
@@ -495,7 +495,7 @@ async def test_optional_summary_failure_preserves_full_input_below_true_capacity
     )
     assert prepared.fragments.observation_sources == (("clue-a", 1),)
     await prepared.commit(prepared.fragments)
-    assert callback.await_count == 1
+    callback.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -517,7 +517,7 @@ async def test_optional_summary_does_not_swallow_authority_source_or_programming
             read_scope="main",
             history_fits=lambda _: False,
             context_fits=lambda _: False,
-            context_hard_fits=lambda _: True,
+            context_hard_fits=lambda _: False,
             summarize_observations=AsyncMock(side_effect=failure),
         )
 

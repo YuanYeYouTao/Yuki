@@ -240,17 +240,12 @@ class MainAgentTurnService:
                 tool_choice="auto" if definitions else None,
             )
             fresh_tokens = estimate_request_tokens(prepared_request)
-            # A soft reserve below the fresh request's fixed cost cannot be met
-            # by dropping old snapshots. Use the hard bound in that case; if
-            # even fresh cannot fit, leave the epoch for Runner to stop honestly.
+            # The maintenance target may choose an already prepared summary;
+            # it cannot require a foreground model while the original fits.
             fixed_tokens = estimate_request_tokens(
                 replace(prepared_request, messages=(*compiled_prefix, *compiled_current))
             )
-            recovery_budget = (
-                input_budget
-                if fixed_tokens > planning_budget
-                else max(planning_budget, fresh_tokens)
-            )
+            maintenance_budget = max(planning_budget, fixed_tokens)
 
             def history_fits(history: tuple[ChatMessage, ...]) -> bool:
                 # Reuse the already compiled system/rollup and current envelope.
@@ -261,8 +256,7 @@ class MainAgentTurnService:
                     messages=(*compiled_prefix, *history, *compiled_current),
                 )
                 return (
-                    fresh_tokens > input_budget
-                    or estimate_request_tokens(request) <= recovery_budget
+                    fresh_tokens > input_budget or estimate_request_tokens(request) <= input_budget
                 )
 
             def context_fits(candidate: AssembledContext) -> bool:
@@ -274,7 +268,7 @@ class MainAgentTurnService:
                         *compiled_current,
                     ),
                 )
-                return estimate_request_tokens(request) <= recovery_budget
+                return estimate_request_tokens(request) <= maintenance_budget
 
             def context_hard_fits(candidate: AssembledContext) -> bool:
                 request = replace(

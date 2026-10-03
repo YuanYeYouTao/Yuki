@@ -236,12 +236,17 @@ async def test_real_capacity_failure_with_hold_still_requires_coverage(database,
 
 
 @pytest.mark.asyncio
-async def test_incomplete_raw_does_not_become_acceptable_because_visible_fragment_fits(database):
+async def test_small_prefetch_is_completed_without_waiting_for_summary(database):
     assembler, repository, model, arguments = await _history(database, read_budget=1)
     original = await repository.load_prompt_snapshot(ConversationScope.group("8000", "2001"))
     assert not original.raw_complete and len(original.raw_events) == 1
-    with pytest.raises(ConversationCoverageError):
-        await assembler.assemble_self_initiative(**arguments)
+    assembled = await assembler.assemble_self_initiative(**arguments)
+    assert len(assembled.visible_event_ids) == 6
+    assert all(
+        f"record-{index}:"
+        in "\n".join(message.content or "" for message in assembled.history_messages)
+        for index in range(6)
+    )
     assert model.requests == []
 
 
@@ -289,7 +294,7 @@ async def test_current_input_above_soft_floor_uses_real_reserve_without_durable_
 
 
 @pytest.mark.asyncio
-async def test_actual_commit_can_finish_above_soft_target_when_complete_request_still_fits(
+async def test_compressible_history_above_soft_target_does_not_start_foreground_model(
     database,
 ):
     assembler, repository, model, arguments = await _history(
@@ -297,10 +302,10 @@ async def test_actual_commit_can_finish_above_soft_target_when_complete_request_
     )
     assembled = await assembler.assemble_self_initiative(**arguments)
     current = await repository.load_prompt_snapshot(ConversationScope.group("8000", "2001"))
-    assert model.requests and current.effective_coverage > 0
-    assert assembled.rollup_text == current.rollup.summary_text
+    assert model.requests == [] and current.effective_coverage == 0
+    assert assembled.rollup_text == ""
     assert assembled.visible_event_ids == frozenset(row.id for row in current.raw_events)
-    assert current.raw_complete and assembled.metrics.raw_history_window_shifted
+    assert current.raw_complete and not assembled.metrics.raw_history_window_shifted
     assert (
         assembler._uncovered_tokens(
             assembler._uncovered_prompt_view(
@@ -323,7 +328,10 @@ async def test_source_edit_during_soft_attempt_is_rejected_by_actual_read_versio
 ):
     assembler, _repository, _model, arguments = await _history(database)
 
-    async def change_source(**_kwargs):
+    original_read = assembler._load_history_snapshot
+
+    async def change_source(*args, **kwargs):
+        snapshot = await original_read(*args, **kwargs)
         async with database.immediate_session() as writer:
             row = await writer.scalar(
                 select(ChatEventModel).where(ChatEventModel.event_kind == "message")
@@ -333,9 +341,9 @@ async def test_source_edit_during_soft_attempt_is_rejected_by_actual_read_versio
                 .where(ChatEventModel.id == row.id)
                 .values(content="changed source")
             )
-        return 0
+        return snapshot
 
-    monkeypatch.setattr(assembler._rollup_service, "ensure_required_coverage", change_source)
+    monkeypatch.setattr(assembler, "_load_history_snapshot", change_source)
     with pytest.raises(HistorySourceChangedError):
         await assembler.assemble_self_initiative(**arguments)
 
@@ -351,7 +359,7 @@ async def test_source_edit_during_soft_attempt_is_rejected_by_actual_read_versio
 async def test_soft_capacity_fallback_never_swallows_source_or_settlement_errors(
     database, monkeypatch, error
 ):
-    assembler, _repository, _model, arguments = await _history(database)
+    assembler, _repository, _model, arguments = await _history(database, capacity=500)
     monkeypatch.setattr(
         assembler._rollup_service, "ensure_required_coverage", AsyncMock(side_effect=error)
     )

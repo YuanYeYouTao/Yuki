@@ -1692,10 +1692,11 @@ class ContextAssembler:
         *,
         turn: ConversationTurnSnapshot,
         before_event_id: int | None,
+        token_budget: int | None = None,
     ) -> _HistoryPromptWindow:
+        read_options = {"token_budget": token_budget} if token_budget is not None else {}
         loaded = await self._rollups.load_prompt_snapshot(
-            scope,
-            before_event_id=before_event_id,
+            scope, before_event_id=before_event_id, **read_options
         )
         if rollup_wakeup_history.get():
             rollup_wakeup_watermark.set(loaded.raw_tail_end_event_id)
@@ -1822,11 +1823,21 @@ class ContextAssembler:
         )
 
         preparation_mode = context_preparation_mode.get()
+        started = asyncio.get_running_loop().time()
+        expanded = not snapshot.raw_complete
+        waited_batches = 0
         coverage_before = snapshot.coverage_end
         rollup_text = snapshot.rollup_text
         capacity_remainder = remainder if capacity_remainder is None else capacity_remainder
         if not self._settings.conversation_rollup_enabled:
             return snapshot, recent, rollup_text, False
+        if not snapshot.raw_complete:
+            # The small startup read is not a capacity verdict. Re-read all pages
+            # in a new consistent snapshot, bounded by this request's real reserve.
+            snapshot = await self._load_history_snapshot(
+                identity, turn=turn, before_event_id=None, token_budget=capacity_remainder
+            )
+            recent, rollup_text = snapshot.recent, snapshot.rollup_text
         rollup_deadline = (
             asyncio.get_running_loop().time()
             + self._settings.conversation_rollup_model_timeout_seconds
@@ -1843,16 +1854,13 @@ class ContextAssembler:
             )
             if view is None:
                 break
-            if snapshot.raw_complete and self._uncovered_tokens(view, rollup_text) <= remainder:
-                break
             if (
                 snapshot.raw_complete
-                and view.current_tokens + estimate_text_tokens(rollup_text) > remainder
                 and self._uncovered_tokens(view, rollup_text) <= capacity_remainder
             ):
-                # No amount of old-history maintenance can make this current
-                # input meet the soft target. Preserve its complete source and
-                # use the real reserve; final dispatch still checks all fields.
+                # Appends already signal the existing background worker. Never
+                # wait for auxiliary models merely to meet its maintenance target.
+                # Main composition and Runner still check the complete request.
                 break
             deadline = rollup_deadline
             requires_coverage = (
@@ -1874,6 +1882,16 @@ class ContextAssembler:
                 # The original prerequisite deadline/error uses the established
                 # timeout fallback, without another long foreground model wait.
                 deadline = asyncio.get_running_loop().time()
+            logger.info(
+                "history_coverage_wait raw_complete=%s estimated_tokens=%d capacity=%d "
+                "soft_budget=%d coverage=%d",
+                snapshot.raw_complete,
+                self._uncovered_tokens(view, rollup_text),
+                capacity_remainder,
+                remainder,
+                snapshot.coverage_end,
+            )
+            waited_batches += 1
             committed = await self._rollup_service.ensure_required_coverage(
                 repository=self._rollups,
                 scope=identity,
@@ -1898,6 +1916,7 @@ class ContextAssembler:
                 identity,
                 turn=turn,
                 before_event_id=None,
+                token_budget=capacity_remainder,
             )
             recent = snapshot.recent
             rollup_text = snapshot.rollup_text
@@ -1917,6 +1936,21 @@ class ContextAssembler:
                 raise ConversationCoverageError(
                     "foreground coverage limit exhausted before prompt became bounded"
                 )
+            logger.info(
+                "history_preparation raw_complete=%s expanded=%s estimated_tokens=%d "
+                "capacity=%d soft_budget=%d soft_exceeded=%s waited_batches=%d "
+                "coverage=%d revision=%d seconds=%.3f",
+                snapshot.raw_complete,
+                expanded,
+                self._uncovered_tokens(final_view, rollup_text),
+                capacity_remainder,
+                remainder,
+                self._uncovered_tokens(final_view, rollup_text) > remainder,
+                waited_batches,
+                snapshot.coverage_end,
+                snapshot.revision,
+                asyncio.get_running_loop().time() - started,
+            )
         return snapshot, recent, rollup_text, snapshot.coverage_end > coverage_before
 
     async def _ensure_turn_generation(

@@ -494,7 +494,7 @@ class ChatService:
         fixed = estimate_text_tokens(self._settings.system_prompt + CORE_CONTRACT) + tool_tokens
         if maintenance:
             budget = int(budget * runtime.context.compaction_trigger_ratio)
-        return max(1, budget - fixed - 4096)
+        return max(1, budget - fixed - (4096 if maintenance else 0))
 
     def _responses_append_only(self) -> bool:
         protocol = getattr(self.runtime.runner._models, "protocol", None)
