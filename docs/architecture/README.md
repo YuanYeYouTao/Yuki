@@ -18,7 +18,7 @@ Yuki 正在逐层解耦：永久主体、内部事件和工作身份由核心持
 | [Conversation Rollup](conversation-rollup.md) | 原始事件、历史投影、压缩与 generation |
 | [聊天媒体与发送合同](chat-media-workspace.md) | 会话内媒体索引、24 小时缓存、工作区提升、切换重置与定时 Social 发送 |
 | [Self Reflection](self-reflection.md) | 自省 Responses 合同、后台周期、预算、重试与运维报告 |
-| [语义参与 V6 宿主接入](semantic-participation.md) | 独立观测/selector、正式 SELF 主入口、同 Runner 恢复、发送和自省回执；具体版本与部署状态须单独核验，T20 真实 QQ 社交效果未验收 |
+| [语义参与宿主接入](semantic-participation.md) | Jev 稀疏触发和纠正、真人普通接话、SELF 自主行动、原接纳与真实反馈；部署与自然 QQ 验收分别核验 |
 | [自主参与连续决策模型](autonomous-participation-model.md) | 连续状态与回执决定自主 SELF 思考时机；参数与合成回放验收边界 |
 | [Memory](memory-v2.md) | 记忆范围、证据与权限 |
 | [Tool Kernel](tool-kernel.md) | 固定主声明、目录查询与执行授权 |
@@ -36,6 +36,10 @@ Yuki 正在逐层解耦：永久主体、内部事件和工作身份由核心持
 
 当前自主频率设计与联测范围见[自主参与反馈模型任务书](autonomous-participation-social-feedback-taskbook.md)；
 现行算法以[自主参与连续概率模型](autonomous-participation-model.md)和独立库固定修订为准。
+
+本轮设计与验收清单：[语义参与与持续接话重构任务书](semantic-participation-continuation-taskbook-2026-10-03.md)。
+联合修改 Host 和独立语义库，分开真人持续接话与新 SELF 自主行动，复用既有状态和唯一 Runtime；
+包含普通反馈、Jev 稀疏矫正、开关、快照兼容、固定依赖与文档清理；实现和部署状态以交付记录为准。
 
 历史设计：[主 Agent 全入口执行、恢复与交付统一任务书](main-agent-entrypoint-unification-taskbook.md)。
 基于 2026-09-13 自动化与插件入口审计完成实现，已合并部署；定向验证、CI、迁移及观察边界见

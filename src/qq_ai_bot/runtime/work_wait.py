@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
@@ -401,7 +402,12 @@ class WorkWaitRepository:
         return int(entry[0]) if entry else None
 
     async def match_event(
-        self, *, event_id: int, kind: str, session: AsyncSession | None = None
+        self,
+        *,
+        event_id: int,
+        kind: str,
+        session: AsyncSession | None = None,
+        on_delivery: Callable[[AsyncSession, int], Awaitable[None]] | None = None,
     ) -> int | None:
         if kind not in {"conversation", "plugin_event"}:
             raise ValueError("invalid_wait_event_kind")
@@ -421,7 +427,9 @@ class WorkWaitRepository:
                 if active is None:
                     return None
             async with self.repository.database.immediate_session() as owned:
-                return await self.match_event(event_id=event_id, kind=kind, session=owned)
+                return await self.match_event(
+                    event_id=event_id, kind=kind, session=owned, on_delivery=on_delivery
+                )
         event = await session.get(ChatEventModel, event_id)
         if event is None or not event.canonical_conversation_id:
             return None
@@ -505,6 +513,8 @@ class WorkWaitRepository:
                 .where(waits.c.id == binding["id"], waits.c.status == "active")
                 .values(conditions_json=bounded_json(conditions, 8192), updated=now)
             )
+        if delivered_input is not None and on_delivery is not None:
+            await on_delivery(session, delivered_input)
         return (
             delivered_input
             if delivered_input is not None

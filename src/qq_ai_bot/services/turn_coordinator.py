@@ -211,6 +211,33 @@ class ConversationTurnCoordinator:
                 token.created_at,
             )
 
+    async def promote_observation(
+        self, token: TurnToken, *, preserve_active: bool = False
+    ) -> TurnToken | None:
+        """Give a committed human observation an ordinary foreground reservation.
+
+        Version is only an ordering fence. A protected direct turn may have lent
+        its version to several observations; their event identity stays outside
+        this coordinator and is checked by the admission repository.
+        """
+        async with self._guard:
+            state = self._states.get(token.conversation_key)
+            if state is None or state.version != token.version:
+                return None
+            if preserve_active:
+                return TurnToken(
+                    token.conversation_key, state.version, TurnOrigin.USER_MESSAGE, token.created_at
+                )
+            if self._occupied(state):
+                return None
+            state.version += 1
+            state.origin = TurnOrigin.USER_MESSAGE
+            state.mutation_started = False
+            state.protected_version = state.version
+            return TurnToken(
+                token.conversation_key, state.version, TurnOrigin.USER_MESSAGE, token.created_at
+            )
+
     async def begin_background(self, conversation_key: str) -> TurnToken | None:
         """Admit plugin background work only while the conversation is idle.
 

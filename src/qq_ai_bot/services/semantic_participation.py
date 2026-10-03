@@ -1,6 +1,6 @@
-"""Host-owned participation selector and admission outbox; never an Agent runner.
+"""Host-owned participation state, human admission and autonomous selector.
 
-Both proposers register SELF Work. The normal WorkScheduler alone executes it.
+Human invitations use ordinary admission; autonomous proposals register SELF Work.
 Observer HTTP and source hydration finish before the short admission transaction.
 """
 
@@ -11,10 +11,11 @@ import hashlib
 import json
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import func, select
 from yuki_participation.controller import Controller, State
@@ -43,6 +44,11 @@ from qq_ai_bot.conversation.canonical_db_models import (
     SpaceActiveRouteModel,
 )
 from qq_ai_bot.conversation.initiative_sources import memory_revision, source_revision
+from qq_ai_bot.conversation.ordinary_admission import (
+    OrdinaryAdmission,
+    OrdinaryAdmissionRepository,
+    OrdinaryParticipationBinding,
+)
 from qq_ai_bot.conversation.self_initiative import validate_self_initiative
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import InboundMessage
@@ -60,6 +66,12 @@ from qq_ai_bot.services.participation_parameters import (
 from qq_ai_bot.services.participation_snapshot import AsyncSnapshotStore
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from yuki_participation.self_report import SelfDelta
+
+    from qq_ai_bot.domain.messages import ChatResponse
+    from qq_ai_bot.services.agent_tools import ToolRuntime
 
 
 def timestamp(value: datetime) -> float:
@@ -114,6 +126,9 @@ class SemanticParticipationService:
         self.database = app.database
         self.repository = AutonomyRepository(self.database)
         self.work = WorkRepository(self.database)
+        self.ordinary = OrdinaryAdmissionRepository(self.database)
+        self._promote: Callable[[int, OrdinaryParticipationBinding], Awaitable[Any]] | None = None
+        self._promotions: dict[str, asyncio.Task[None]] = {}
         self._store: AsyncSnapshotStore | None = None
         self._observer: JevObserver | None = None
         self._traces = traces
@@ -187,6 +202,11 @@ class SemanticParticipationService:
         if self._task is not None:
             self._task.cancel()
             await asyncio.gather(self._task, return_exceptions=True)
+        promotions = tuple(self._promotions.values())
+        for task in promotions:
+            task.cancel()
+        if promotions:
+            await asyncio.gather(*promotions, return_exceptions=True)
         async with self._lock, self._session_lock:
             for item in self._sessions.values():
                 await self._save(item)
@@ -197,6 +217,44 @@ class SemanticParticipationService:
                 self._store = None
             self._sessions.clear()
             self._dirty.clear()
+
+    def set_promoter(
+        self, callback: Callable[[int, OrdinaryParticipationBinding], Awaitable[Any]]
+    ) -> None:
+        self._promote = callback
+
+    async def binding_for_event(self, event_id: int) -> OrdinaryParticipationBinding | None:
+        from qq_ai_bot.services.participation_ordinary import binding_for_event
+
+        return await binding_for_event(self, event_id, continuation_only=False)
+
+    async def continuation_for_event(self, event_id: int) -> OrdinaryParticipationBinding | None:
+        from qq_ai_bot.services.participation_ordinary import binding_for_event
+
+        return await binding_for_event(self, event_id, continuation_only=True)
+
+    async def context_for_event(self, event_id: int) -> dict[str, object] | None:
+        from qq_ai_bot.services.participation_ordinary import context_for_event
+
+        return await context_for_event(self, event_id)
+
+    async def on_ordinary_admitted(
+        self, binding: OrdinaryParticipationBinding | None, admission: OrdinaryAdmission
+    ) -> None:
+        from qq_ai_bot.services.participation_ordinary import on_ordinary_admitted
+
+        await on_ordinary_admitted(self, binding, admission)
+
+    async def observe_main_response(
+        self,
+        runtime: ToolRuntime,
+        request_sequence: int,
+        response: ChatResponse,
+        delta: SelfDelta | None,
+    ) -> None:
+        from qq_ai_bot.services.participation_ordinary import observe_main_response
+
+        await observe_main_response(self, runtime, request_sequence, response, delta)
 
     async def control_snapshot(self) -> dict[str, object]:
         """Read current bounded host state without ticking, saving or re-evaluating Jev."""
@@ -485,7 +543,13 @@ class SemanticParticipationService:
             thread = outbound_threads.get(key, thread)
         options = [HostUnitOption(key="new", thread=thread, target=target)]
         recent = sorted(state.events.values(), key=lambda e: e.at, reverse=True)
-        self_anchors = [event for event in recent if event.kind == "self"][:2]
+        active_refs = {
+            ref for unit in item.controller.participating_units(time.time()) for ref in unit.anchors
+        }
+        self_anchors = sorted(
+            (event for event in recent if event.kind == "self"),
+            key=lambda event: (event.ref not in active_refs, -event.at),
+        )
         for event in (*self_anchors, *(event for event in recent if event.kind != "self")):
             resolved = item.controller.resolved_unit(event)
             if (
@@ -509,9 +573,11 @@ class SemanticParticipationService:
                     for o in options
                 ):
                     options.append(option)
-                if len(options) >= 5:
+                if len(options) >= ScopedEvent.model_fields["unit_options"].metadata[0].max_length:
                     break
         for boundary in state.boundaries.values():
+            if len(options) >= ScopedEvent.model_fields["unit_options"].metadata[0].max_length:
+                break
             if anchor is None and boundary.target in {target, "group"}:
                 option = HostUnitOption(
                     key=f"b{len(options)}",
@@ -630,20 +696,49 @@ class SemanticParticipationService:
                 ):
                     recovered.add(event_id)
         now = time.time()
+        admission_ids = tuple(row.id for row in rows if row.author_is_human())
+        recovered.update(
+            await self.ordinary.admitted_event_ids(
+                item.scene.conversation_id, item.scene.generation, admission_ids
+            )
+        )
+        current_admissions = {
+            admission.event_id: admission
+            for admission in await self.ordinary.current_admissions(
+                item.scene.conversation_id, item.scene.generation, admission_ids
+            )
+        }
+        from qq_ai_bot.services.participation_feedback import admission_unit_binding
+
+        runtime = await self.app.runtime_config.snapshot(group_id=item.scene.group_id)
+        observe_enabled = (
+            item.scene.enabled and runtime.conversation_policy().semantic_participation_enabled
+        )
         for row in rows:
             if timestamp(row.occurred_at) < now - 600:
                 continue
             event = self._event(row, item)
             if event is None:
                 continue
-            if event.kind == "self":
-                item.controller.observe_committed_event(event)
-            elif item.observation is not None:
-                item.observation.observe(event)
-            else:
-                item.controller.observe_committed_event(event)
-            if row.id in recovered or (direct and direct.get(row.id)):
+            fresh = item.controller.observe_committed_event(event)
+            admission = current_admissions.get(row.id)
+            unit = admission_unit_binding(admission) if admission is not None else None
+            if unit is not None and all(
+                [await self._source_current(item, ref) for ref in unit.basis]
+            ):
+                item.controller.observe_unit_input(unit, event.ref)
+            if row.id in recovered:
                 item.controller.state.consumed[event.ref.event_id] = event.ref.revision
+            if (
+                fresh
+                and event.kind == "human"
+                and observe_enabled
+                and item.observation is not None
+                and row.id not in recovered
+                and not (direct and direct.get(row.id))
+                and item.controller.participation_view(event, now).needs_observation
+            ):
+                item.observation.request_observation(event.ref)
 
     async def _source_current(self, item: _Session, ref: SourceRef) -> bool:
         kind, _, identity = ref.event_id.partition(":")
@@ -756,6 +851,10 @@ class SemanticParticipationService:
             )
             item.observation.observe(
                 event,
+                CandidateKind.CONTACT if target != "group" else CandidateKind.RECALL,
+            )
+            item.observation.request_observation(
+                event.ref,
                 CandidateKind.CONTACT if target != "group" else CandidateKind.RECALL,
             )
             offered.pop(key, None)
@@ -1235,12 +1334,17 @@ class SemanticParticipationService:
         await self._hydrate(item)
         await self._validate_boundaries(item)
         binding = await self._binding(item)
-        if item.observation is not None and binding.master_enabled and binding.external_enabled:
-            await self._seeds(item)
+        if item.observation is not None and scene.enabled and binding.external_enabled:
+            if binding.master_enabled:
+                await self._seeds(item)
             await item.observation.evaluate_due(
-                time.time(), active=bool(item.controller.state.candidates)
+                time.time(), active=bool(item.controller.participating_units(time.time()))
             )
             binding = await self._binding(item)
+        from qq_ai_bot.services.participation_ordinary import invitation_unit, promote_invitations
+
+        if scene.enabled and binding.external_enabled:
+            await promote_invitations(self, item)
         for candidate in tuple(item.controller.state.candidates.values()):
             await self._source_current(item, candidate.event.ref)
         pending = item.controller.state.proposals.get(item.controller.state.pending or "")
@@ -1264,13 +1368,23 @@ class SemanticParticipationService:
                         at=pending.created_at,
                     )
                 )
+            elif pending.kind == CandidateKind.CONVERSATION and any(
+                (event := item.controller.state.events.get(ref.event_id)) is not None
+                and invitation_unit(item, event) is not None
+                for ref in pending.sources
+            ):
+                item.controller.discard_unaccepted_proposal(pending.proposal_id)
             else:
                 await self._admit(item, binding, pending)
+        # Addressed human inputs are foreground opportunities, not autonomous SELF work.
+        # Keep their original observations for correction; they are consumed only
+        # after the ordinary admission commits, never merely because a task was queued.
         proposal = item.controller.advance(
             max(time.time(), item.controller.state.now),
             controller_epoch=binding.controller_epoch,
             host_available=binding.effective_owner is AutonomyOwner.SEMANTIC,
             intrinsic_allowed=binding.effective_owner is AutonomyOwner.SEMANTIC,
+            include_addressed=False,
         )
         await self._save(item)
         if proposal is not None:

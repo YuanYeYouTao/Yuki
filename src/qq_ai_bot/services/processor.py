@@ -11,6 +11,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, replace
 from typing import Protocol, cast
+from weakref import WeakValueDictionary
 
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
@@ -28,7 +29,15 @@ from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.automation.worker import AutomationWorker
 from qq_ai_bot.config import Settings
+from qq_ai_bot.conversation.initiative_sources import source_revision
 from qq_ai_bot.conversation.media_service import ConversationMediaService
+from qq_ai_bot.conversation.ordinary_admission import (
+    OrdinaryAdmission,
+    OrdinaryAdmissionConflict,
+    OrdinaryAdmissionDuplicate,
+    OrdinaryAdmissionRepository,
+    OrdinaryParticipationBinding,
+)
 from qq_ai_bot.conversation.rollup.repository import (
     ConversationRollupRepository,
     ConversationScopeRepository,
@@ -60,6 +69,7 @@ from qq_ai_bot.persistence.repositories import (
     RelationshipJobRepository,
     RelationshipRepository,
 )
+from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from qq_ai_bot.plugin_host.direct_command_router import DirectCommandMatch
 from qq_ai_bot.prompting.compiler import PromptCapacityError
@@ -107,6 +117,7 @@ from qq_ai_bot.services.policies import (
     CommandName,
     EffectiveGroupPolicy,
     EffectivePrivatePolicy,
+    PolicyDecision,
     evaluate_message,
 )
 from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
@@ -117,6 +128,7 @@ from qq_ai_bot.services.turn_coordinator import (
     ConversationTurnCoordinator,
     TurnInterruptedError,
     TurnSupersededError,
+    TurnToken,
 )
 from qq_ai_bot.services.user_profiles import (
     PROFILE_LOOKUP_TIMEOUT_SECONDS,
@@ -225,6 +237,30 @@ class ProcessResult:
     handled: bool
     sent_messages: int = 0
     reason: str = ""
+
+
+class OrdinaryParticipationService(Protocol):
+    async def binding_for_event(self, event_id: int) -> OrdinaryParticipationBinding | None: ...
+
+    async def continuation_for_event(
+        self, event_id: int
+    ) -> OrdinaryParticipationBinding | None: ...
+
+    async def on_ordinary_admitted(
+        self, binding: OrdinaryParticipationBinding | None, admission: OrdinaryAdmission
+    ) -> None: ...
+
+
+@dataclass(slots=True)
+class _ObservedHumanTurn:
+    message: InboundMessage
+    sender: OutboundSender
+    profile: UserProfileSnapshot
+    record: EventRecord
+    snapshot: ConversationTurnSnapshot
+    token: TurnToken
+    created: bool
+    has_visual_input: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -363,6 +399,10 @@ class MessageProcessor:
         self._concurrency = concurrency
         self._onebot_connected = onebot_connected
         self._ledger = ledger
+        self.ordinary_admissions = OrdinaryAdmissionRepository(database)
+        self._participation: OrdinaryParticipationService | None = None
+        self._observed_human_turns: OrderedDict[int, _ObservedHumanTurn] = OrderedDict()
+        self._ordinary_locks: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
         self._people = people or PeopleRepository(database)
         self._memories = memories or MemoryFactService(MemoryFactRepository(database))
         self._memory_worker = memory_worker or MemoryWorker(
@@ -476,6 +516,78 @@ class MessageProcessor:
 
         self._event_publisher = publisher
         self._chat.set_event_publisher(publisher)
+
+    def set_participation(self, service: OrdinaryParticipationService) -> None:
+        self._participation = service
+
+    async def promote_committed_event(
+        self, event_id: int, binding: OrdinaryParticipationBinding
+    ) -> ProcessResult:
+        """Promote the original normalized event, never replay ingress or guess it.
+
+        Unadmitted preparation is intentionally process-local. On restart, an
+        absent original envelope is not reconstructed from platform IDs/media.
+        Committed admission survives and continues to fence duplicate activation.
+        """
+        if await self.ordinary_admissions.get(event_id) is not None:
+            return ProcessResult(False, reason="ordinary_already_admitted")
+        observed = self._observed_human_turns.get(event_id)
+        if observed is None:
+            return ProcessResult(False, reason="ordinary_envelope_unavailable")
+        event = await self._ledger.get_event(event_id)
+        if (
+            event is None
+            or str(source_revision(event)) != binding.source_revision
+            or (
+                binding.event_id != event_id
+                or binding.conversation_id != event.canonical_conversation_id
+                or binding.generation != observed.snapshot.generation
+                or event.author_person_id != observed.record.author_person_id
+                or event.ingress_presence_id != observed.record.ingress_presence_id
+            )
+        ):
+            return ProcessResult(False, reason="ordinary_source_changed")
+        group_policy = await self._effective_group_policy(observed.message.group_id)
+        if group_policy is None or not group_policy.enabled:
+            return ProcessResult(False, reason="group_disabled")
+        runtime = await self._runtime_config.snapshot(
+            user_id=observed.message.sender.user_id, group_id=observed.message.group_id
+        )
+        if not runtime.conversation_policy().semantic_participation_enabled:
+            return ProcessResult(False, reason="semantic_disabled")
+        control = self._chat.runtime.bindings.get(observed.snapshot.scope_key)
+        input_only = bool(
+            control is not None
+            and control.current is not None
+            and control.source.get("actor_user_id") == observed.message.sender.user_id
+        )
+        token = await self._turn_coordinator.promote_observation(
+            observed.token,
+            preserve_active=input_only,
+        )
+        if token is None:
+            return ProcessResult(False, reason="ordinary_busy_or_superseded")
+        snapshot = replace(observed.snapshot, coordinator_version=token.version)
+        with self._chat.pin_model_runtime():
+            return await self._handle_foreground(
+                observed.message,
+                observed.sender,
+                observed.profile,
+                event,
+                snapshot,
+                token,
+                runtime,
+                PolicyDecision(True, observed.message.text, reason="semantic_invitation"),
+                None,
+                False,
+                False,
+                True,
+                observed.created,
+                observed.has_visual_input,
+                binding,
+                time.perf_counter(),
+                input_only=input_only,
+            )
 
     async def handle(
         self,
@@ -854,6 +966,28 @@ class MessageProcessor:
                 self._emoji_worker.wake()
 
         if not decision.should_respond and not admin_candidate:
+            if record.author_is_human():
+                self._observed_human_turns[record.id] = _ObservedHumanTurn(
+                    message,
+                    sender,
+                    profile,
+                    record,
+                    turn_snapshot,
+                    turn_token,
+                    created,
+                    has_visual_input,
+                )
+                # Same bound as the controller's recent event window; this is a
+                # transient envelope cache, not another pending execution store.
+                while len(self._observed_human_turns) > 256:
+                    old_id, _ = self._observed_human_turns.popitem(last=False)
+                    old_lock = self._ordinary_locks.get(old_id)
+                    if old_lock is not None and not old_lock.locked():
+                        self._ordinary_locks.pop(old_id, None)
+                if self._participation is not None:
+                    binding = await self._participation.continuation_for_event(record.id)
+                    if binding is not None:
+                        return await self.promote_committed_event(record.id, binding)
             if (
                 message.scope_type is ScopeType.GROUP
                 and group_policy is not None
@@ -864,6 +998,97 @@ class MessageProcessor:
                     self._autonomous.observe(message, profile, sender, turn_token)
             return ProcessResult(False, reason="group_observed")
 
+        binding = None
+        if self._participation is not None and record.author_is_human():
+            binding = await self._participation.binding_for_event(record.id)
+        return await self._handle_foreground(
+            message,
+            sender,
+            profile,
+            record,
+            turn_snapshot,
+            turn_token,
+            runtime_snapshot,
+            decision,
+            direct_match,
+            admin_candidate,
+            image_blocks_command,
+            direct_turn,
+            created,
+            has_visual_input,
+            binding,
+            started,
+        )
+
+    async def _handle_foreground(
+        self,
+        message: InboundMessage,
+        sender: OutboundSender,
+        profile: UserProfileSnapshot,
+        record: EventRecord,
+        turn_snapshot: ConversationTurnSnapshot,
+        turn_token: TurnToken,
+        runtime_snapshot: RuntimeConfigSnapshot,
+        decision: PolicyDecision,
+        direct_match: DirectCommandMatch | None,
+        admin_candidate: bool,
+        image_blocks_command: bool,
+        direct_turn: bool,
+        created: bool,
+        has_visual_input: bool,
+        binding: OrdinaryParticipationBinding | None,
+        started: float,
+        *,
+        input_only: bool = False,
+    ) -> ProcessResult:
+        lock = self._ordinary_locks.setdefault(record.id, asyncio.Lock())
+        async with lock:
+            if await self.ordinary_admissions.get(record.id) is not None:
+                return ProcessResult(False, reason="ordinary_already_admitted")
+            return await self._prepare_foreground(
+                message,
+                sender,
+                profile,
+                record,
+                turn_snapshot,
+                turn_token,
+                runtime_snapshot,
+                decision,
+                direct_match,
+                admin_candidate,
+                image_blocks_command,
+                direct_turn,
+                created,
+                has_visual_input,
+                binding,
+                started,
+                input_only=input_only,
+            )
+
+    async def _prepare_foreground(
+        self,
+        message: InboundMessage,
+        sender: OutboundSender,
+        profile: UserProfileSnapshot,
+        record: EventRecord,
+        turn_snapshot: ConversationTurnSnapshot,
+        turn_token: TurnToken,
+        runtime_snapshot: RuntimeConfigSnapshot,
+        decision: PolicyDecision,
+        direct_match: DirectCommandMatch | None,
+        admin_candidate: bool,
+        image_blocks_command: bool,
+        direct_turn: bool,
+        created: bool,
+        has_visual_input: bool,
+        binding: OrdinaryParticipationBinding | None,
+        started: float,
+        *,
+        input_only: bool = False,
+    ) -> ProcessResult:
+        identity = message.scope()
+        coordinator_key = turn_snapshot.scope_key
+        event_key = build_event_key(message, identity.key)
         category = "command" if direct_match is not None or decision.command is not None else "chat"
         rate = await self._rate_limiter.check(
             user_id=message.sender.user_id,
@@ -994,7 +1219,45 @@ class MessageProcessor:
             and not message.reply_attachments
         ):
             content = MENTION_ONLY_CONTEXT
-        work_input_id = await self._chat.stage_work_input(coordinator_key, message, record.id)
+        if len(content) > self._settings.max_input_characters:
+            return ProcessResult(False, reason="input_too_long")
+        record = await self._ledger.get_event(record.id) or record
+        if binding is not None and binding.source_revision != str(source_revision(record)):
+            if decision.reason == "semantic_invitation":
+                return ProcessResult(False, reason="ordinary_source_changed")
+            binding = (
+                await self._participation.binding_for_event(record.id)
+                if self._participation is not None
+                else None
+            )
+        try:
+            prepared = self.ordinary_admissions.prepare(
+                record,
+                turn_snapshot.generation,
+                turn_token.version,
+                binding,
+            )
+            if not self._turn_coordinator.is_current(turn_token):
+                return ProcessResult(True, reason="turn_interrupted")
+            work_input_id = await self._chat.stage_work_input(
+                coordinator_key,
+                message,
+                record.id,
+                admission=prepared,
+            )
+        except OrdinaryAdmissionDuplicate:
+            return ProcessResult(False, reason="ordinary_already_admitted")
+        except OrdinaryAdmissionConflict:
+            return ProcessResult(False, reason="ordinary_source_changed")
+        # Conversation wait signals are already complete inputs, published with
+        # their admission in the original wait transaction. Unready media inputs
+        # stay visible so the active Runner can release its lease while preparing.
+        accepted = await self.ordinary_admissions.get(record.id)
+        if accepted is not None:
+            if accepted.activation_id != prepared.admission.activation_id:
+                return ProcessResult(False, reason="ordinary_already_admitted")
+            await self._record_ordinary_participation(record.id, binding)
+            return ProcessResult(True, reason="work_input_queued")
         try:
             visual = await self._analyze_visual_input(
                 message=message,
@@ -1049,6 +1312,30 @@ class MessageProcessor:
             await self._chat.discard_work_input(work_input_id)
             return ProcessResult(True, int(sent), "input_too_long")
 
+        record = await self._ledger.get_event(record.id) or record
+        if binding is not None and binding.source_revision != str(source_revision(record)):
+            if decision.reason == "semantic_invitation":
+                await self._chat.discard_work_input(work_input_id)
+                return ProcessResult(False, reason="ordinary_source_changed")
+            binding = (
+                await self._participation.binding_for_event(record.id)
+                if self._participation is not None
+                else None
+            )
+        try:
+            prepared = self.ordinary_admissions.prepare(
+                record,
+                turn_snapshot.generation,
+                turn_token.version,
+                binding,
+            )
+        except OrdinaryAdmissionConflict:
+            await self._chat.discard_work_input(work_input_id)
+            return ProcessResult(False, reason="ordinary_source_changed")
+        if not self._turn_coordinator.is_current(turn_token):
+            await self._chat.discard_work_input(work_input_id)
+            return ProcessResult(True, reason="turn_interrupted")
+
         if work_input_id is not None:
             input_text = "\n\n".join(
                 part
@@ -1059,13 +1346,38 @@ class MessageProcessor:
                 )
                 if part
             )
-            if await self._chat.ready_work_input(
-                coordinator_key,
-                work_input_id,
-                input_text,
-                visual.images,
-            ):
+            try:
+                ready = await self._chat.ready_work_input(
+                    coordinator_key,
+                    work_input_id,
+                    input_text,
+                    visual.images,
+                    admission=prepared,
+                )
+            except OrdinaryAdmissionDuplicate:
+                return ProcessResult(False, reason="ordinary_already_admitted")
+            if ready:
+                await self._record_ordinary_participation(record.id, binding)
                 return ProcessResult(True, reason="work_input_queued")
+
+        if input_only:
+            # A matched activation may have yielded during media preparation.
+            # It cannot lend its ordering token to a second ordinary Main.
+            promoted = await self._turn_coordinator.promote_observation(turn_token)
+            if promoted is None:
+                return ProcessResult(False, reason="ordinary_busy_or_superseded")
+            turn_token = promoted
+            turn_snapshot = replace(turn_snapshot, coordinator_version=promoted.version)
+            prepared = self.ordinary_admissions.prepare(
+                record, turn_snapshot.generation, promoted.version, binding
+            )
+
+        try:
+            if not await self.ordinary_admissions.commit(prepared):
+                return ProcessResult(False, reason="ordinary_already_admitted")
+        except OrdinaryAdmissionConflict:
+            return ProcessResult(False, reason="ordinary_source_changed")
+        await self._record_ordinary_participation(record.id, binding)
 
         await publish_notification(
             self._event_publisher,
@@ -1212,6 +1524,19 @@ class MessageProcessor:
             ),
         )
         return result
+
+    async def _record_ordinary_participation(
+        self, event_id: int, binding: OrdinaryParticipationBinding | None
+    ) -> None:
+        if self._participation is None:
+            return
+        admission = await self.ordinary_admissions.get(event_id)
+        if admission is None:
+            return
+        try:
+            await self._participation.on_ordinary_admitted(binding, admission)
+        except (OSError, RuntimeError, ValueError) as exc:
+            logger.warning("ordinary_participation_save_failed category=%s", type(exc).__name__)
 
     async def _analyze_visual_input(
         self,

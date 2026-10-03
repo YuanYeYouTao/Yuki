@@ -138,6 +138,7 @@ class AssembledContext:
     history_timezone: str = "Asia/Shanghai"
     history_yuki_account_ids: frozenset[str] = frozenset()
     recovery_protocol: bool = False
+    participation_context: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)

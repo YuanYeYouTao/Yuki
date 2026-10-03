@@ -98,6 +98,7 @@ class MainAgentBackend(AgentToolBackend):
         self._capability_runtime: TurnCapabilityRuntime | None = None
         self._callable_tool_names: set[str] = set()
         self._tool_turn_recorded = False
+        self._response_sequence = 0
 
     def record_failure_usage(self, *, tool_calls: int, model_requests: int) -> None:
         self.failed_tool_calls = max(self.failed_tool_calls, tool_calls)
@@ -785,19 +786,37 @@ class MainAgentBackend(AgentToolBackend):
         return result
 
     async def observe_response(self, response: Any, runtime: AgentRuntime) -> None:
-        """Persist optional own-state evidence with the actual durable request identity."""
+        """Apply sparse own-state evidence, using the original main-turn binding."""
         from yuki_participation.self_report import SelfReport, extract_tail
 
+        self._response_sequence += 1
         control = runtime.work_control
+        if control is not None and control.lease.work_id is not None:
+            return
+        _, delta = extract_tail(response.content or "")
+        if delta is None:
+            return
+        if runtime.origin is RuntimeTurnOrigin.USER_MESSAGE and self._runtime.inbound is not None:
+            observe_main = getattr(self._service, "observe_main_response", None)
+            if callable(observe_main):
+                sequence = (
+                    max(1, control.session.sequence)
+                    if control is not None and control.session is not None
+                    else self._response_sequence
+                )
+                try:
+                    await observe_main(self._runtime, sequence, response, delta)
+                except Exception as exc:
+                    # Own-state is derived evidence. A failed checkpoint does not
+                    # invalidate a delivered message or justify replaying the turn.
+                    logger.warning("participation_main_hint_failed category=%s", type(exc).__name__)
+            return
         if (
             not self._runtime.initiative_run_id
             or control is None
             or control.session is None
             or control.lease.work_id is not None
         ):
-            return
-        _, delta = extract_tail(response.content or "")
-        if delta is None:
             return
         session = control.session
         if session.transcript is None:
@@ -831,6 +850,12 @@ class MainAgentBackend(AgentToolBackend):
         from yuki_participation.self_report import extract_tail
 
         body, _ = extract_tail(content)
+        if (
+            runtime.origin is RuntimeTurnOrigin.USER_MESSAGE
+            and self._runtime.inbound is not None
+            and body.strip() in {"", "NO_REPLY"}
+        ):
+            return None
         if self._self_main_run(runtime):
             if body.strip() in {"", "NO_REPLY"}:
                 return None
@@ -849,7 +874,7 @@ class MainAgentBackend(AgentToolBackend):
         if (
             runtime.origin is RuntimeTurnOrigin.USER_MESSAGE
             and self._runtime.inbound is not None
-            and content.strip()
+            and body.strip()
             and not self._send_message_attempted
             and not self.messages_sent
             and (runtime.work_control is None or runtime.work_control.current is None)
@@ -878,7 +903,13 @@ class MainAgentBackend(AgentToolBackend):
         from yuki_participation.self_report import extract_tail
 
         body, _ = extract_tail(content)
-        if self._self_main_run(runtime) and body.strip() == "NO_REPLY":
+        if (
+            self._self_main_run(runtime)
+            or (
+                runtime.origin is RuntimeTurnOrigin.USER_MESSAGE
+                and self._runtime.inbound is not None
+            )
+        ) and body.strip() == "NO_REPLY":
             return ""
         return body
 
