@@ -1340,6 +1340,10 @@ class SemanticParticipationService:
             await item.observation.evaluate_due(
                 time.time(), active=bool(item.controller.participating_units(time.time()))
             )
+            # A real source may change while Jev is in flight. Stops have no
+            # remaining candidate, so invalidate their original dependencies
+            # before promotion, scheduling or saving the derived snapshot.
+            await self._validate_boundaries(item)
             binding = await self._binding(item)
         from qq_ai_bot.services.participation_ordinary import invitation_unit, promote_invitations
 

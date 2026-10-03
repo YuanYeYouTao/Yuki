@@ -1,5 +1,6 @@
 """Source fences outside the bounded hydration page still govern continuation."""
 
+import asyncio
 import time
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -449,4 +450,199 @@ async def test_late_original_main_quiet_cannot_override_new_admitted_stay(
         assert not item.controller.state.effects and not item.controller.state.proposals
         assert original_backend.messages_sent == following_backend.messages_sent == 0
     finally:
+        await host.close()
+
+
+@pytest.mark.parametrize("edit_during_flight", [False, True])
+async def test_inflight_old_stop_keeps_new_main_intent_and_revalidates_source(
+    database, tmp_path, monkeypatch, edit_during_flight
+):
+    host, item, original, _, _ = await ordinary_expression(database, tmp_path)
+    started, release = asyncio.Event(), asyncio.Event()
+    task = None
+    # This case exercises observation/admission ordering, not SELF arrival draws.
+    monkeypatch.setattr(item.controller, "_sample", lambda _sequence, _stream: 1.0)
+    try:
+        await sync_scope_effects(host, item)
+        await host._hydrate(item)
+        await sync_scope_effects(host, item)
+        stop, _ = await host.app.ledger.append(
+            bot_user_id="8000",
+            platform_message_id=str(uuid4()),
+            scope_type=ScopeType.GROUP,
+            sender_user_id="1001",
+            direction="inbound",
+            content="这件事先不聊了",
+            group_id=original.group_id,
+            occurred_at=datetime.now(UTC),
+        )
+        frozen_a = await host.continuation_for_event(stop.id)
+        assert frozen_a is not None
+        prepared = host.ordinary.prepare(stop, frozen_a.generation, 1, frozen_a)
+        assert await host.ordinary.commit(prepared)
+        await host.on_ordinary_admitted(frozen_a, prepared.admission)
+        item.observation.queue.pending.clear()
+        focus = item.controller.state.events[f"event:{stop.id}"]
+        assert item.observation.request_observation(focus.ref)
+
+        async def delayed(snapshot):
+            host._observer.calls.append(snapshot)
+            started.set()
+            await release.wait()
+            option = next(o for o in snapshot.focus.unit_options if o.thread == frozen_a.unit_key)
+            return _observation(snapshot, act="ask_yuki_stop", unit=option.key)
+
+        host._observer.evaluate = delayed
+        item.observation.queue.pending[focus.ref.event_id].first_dirty -= 3
+        item.observation.queue.pending[focus.ref.event_id].last_dirty -= 3
+        task = asyncio.create_task(host._advance_scene(item))
+        await asyncio.wait_for(started.wait(), timeout=5)
+        chat, provider, runtime, agent, _ = await ordinary_backend(
+            database, 'NO_REPLY\n<yuki-state>{"engage":"stay"}</yuki-state>'
+        )
+        host.app.chat = chat
+        chat.observe_main_response = host.observe_main_response
+        scope = ConversationScope.group(stop.bot_user_id, stop.group_id)
+        state = await chat._conversation_scopes.get(scope)
+        token_a = await chat._turn_coordinator.notify_message(scope.key)
+        runtime_a = replace(
+            runtime,
+            inbound=_message(stop),
+            turn_snapshot=ConversationTurnSnapshot(
+                state.id, scope.key, state.generation, stop.id, token_a.version
+            ),
+        )
+        later, _ = await host.app.ledger.append(
+            bot_user_id="8000",
+            platform_message_id=str(uuid4()),
+            scope_type=ScopeType.GROUP,
+            sender_user_id="1001",
+            direction="inbound",
+            content="不过我想继续另一个角度",
+            group_id=original.group_id,
+            occurred_at=datetime.now(UTC),
+        )
+        frozen_b = await host.continuation_for_event(later.id)
+        assert frozen_b is not None
+        token_b = await chat._turn_coordinator.notify_message(scope.key)
+        prepared_b = host.ordinary.prepare(later, frozen_b.generation, token_b.version, frozen_b)
+        assert await host.ordinary.commit(prepared_b)
+        await host.on_ordinary_admitted(frozen_b, prepared_b.admission)
+        runtime_b = replace(
+            runtime,
+            inbound=_message(later),
+            turn_snapshot=ConversationTurnSnapshot(
+                state.id, scope.key, state.generation, later.id, token_b.version
+            ),
+        )
+        provider._responder = lambda _: ChatResponse(
+            'NO_REPLY\n<yuki-state>{"engage":"stay"}</yuki-state>',
+            0,
+            provider_request_id="new-main-stay",
+        )
+        backend = MainAgentBackend(chat, runtime_b)
+        result = await chat.runtime.runner.run(
+            (ChatMessage("system", "fixed"), ChatMessage("user", later.content)),
+            replace(agent, conversation_key=scope.key),
+            backend,
+        )
+        assert result.text == "" and len(provider.requests) == 1
+        before_hint = next(
+            iter(item.controller.state.host_checkpoint["participation_v1"]["units"].values())
+        )["hint"]
+        if edit_during_flight:
+            # The source changes after B's normal Host hydration while the real
+            # observer request is still blocked. No test refresh masks this race.
+            async with database.immediate_session() as session:
+                await session.execute(
+                    update(ChatEventModel)
+                    .where(ChatEventModel.id == stop.id)
+                    .values(content="旧焦点已修订")
+                )
+        release.set()
+        await asyncio.wait_for(task, timeout=5)
+        task = None
+        assert len(host._observer.calls) == 1
+        await MainAgentBackend(chat, runtime_a).observe_response(
+            ChatResponse(
+                '<yuki-state>{"engage":"quiet"}</yuki-state>',
+                0,
+                provider_request_id="late-old-main",
+            ),
+            replace(agent, conversation_key=scope.key),
+        )
+        after_hint = next(
+            iter(item.controller.state.host_checkpoint["participation_v1"]["units"].values())
+        )["hint"]
+        assert after_hint == before_hint
+        boundaries = list(item.controller.state.boundaries.values())
+        if edit_during_flight:
+            assert not boundaries, "changed DB source must not publish late stop boundary"
+            assert focus.ref.event_id not in item.controller.state.observations
+            assert not await host._source_current(item, focus.ref)
+        else:
+            assert len(boundaries) == 1 and boundaries[0].source == focus.ref
+            assert boundaries[0].thread == frozen_a.unit_key
+            # Own willingness alone never releases a real user stop.
+            assert any(
+                u.closed and u.engage == "stay"
+                for u in item.controller.participating_units(time.time())
+            )
+            b_ref = item.controller.state.events[f"event:{later.id}"].ref
+
+            async def extend(snapshot):
+                host._observer.calls.append(snapshot)
+                option = next(
+                    o for o in snapshot.focus.unit_options if o.thread == frozen_a.unit_key
+                )
+                return _observation(snapshot, act="extend_yuki", unit=option.key)
+
+            host._observer.evaluate = extend
+            assert item.observation.request_observation(b_ref)
+            item.observation.queue.last_call -= 9
+            item.observation.queue.pending[b_ref.event_id].first_dirty -= 3
+            item.observation.queue.pending[b_ref.event_id].last_dirty -= 3
+            await host._advance_scene(item)
+            assert len(host._observer.calls) == 2
+            boundary = next(iter(item.controller.state.boundaries.values()))
+            # Existing explicit-stop policy requires a strong invite_yuki;
+            # an extend_yuki interpretation and own stay do not release it.
+            assert boundary.released_by is None
+
+            async def invite(snapshot):
+                host._observer.calls.append(snapshot)
+                option = next(
+                    o for o in snapshot.focus.unit_options if o.thread == frozen_a.unit_key
+                )
+                return _observation(snapshot, act="invite_yuki", unit=option.key)
+
+            host._observer.evaluate = invite
+            assert item.observation.request_observation(b_ref)
+            item.observation.queue.last_call -= 9
+            item.observation.queue.pending[b_ref.event_id].first_dirty -= 3
+            item.observation.queue.pending[b_ref.event_id].last_dirty -= 3
+            await host._advance_scene(item)
+            assert len(host._observer.calls) == 3
+            boundary = next(iter(item.controller.state.boundaries.values()))
+            assert boundary.released_by == b_ref
+            assert any(
+                not u.closed and u.engage == "stay"
+                for u in item.controller.participating_units(time.time())
+            )
+            next_message, _ = await host.app.ledger.append(
+                bot_user_id="8000",
+                platform_message_id=str(uuid4()),
+                scope_type=ScopeType.GROUP,
+                sender_user_id="1001",
+                direction="inbound",
+                content="那继续这个问题",
+                group_id=original.group_id,
+                occurred_at=datetime.now(UTC),
+            )
+            resumed = await host.continuation_for_event(next_message.id)
+            assert resumed is not None and resumed.unit_key == frozen_a.unit_key
+    finally:
+        release.set()
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
         await host.close()
