@@ -30,6 +30,11 @@ from qq_ai_bot.prompting.models import CompiledPrompt, PromptMetrics
 from qq_ai_bot.prompting.serializer import serialized_messages_hash
 from qq_ai_bot.services.context_assembler import AssembledContext
 from qq_ai_bot.services.context_boundary import ContextBoundaryReader
+from qq_ai_bot.services.model_context_projection import (
+    project_people_and_scene,
+    project_recent_delivery,
+    project_short_state,
+)
 from qq_ai_bot.services.prompt_registry import PromptRegistry, PromptTarget
 from qq_ai_bot.vision.models import VisualObservation
 
@@ -133,7 +138,7 @@ class PromptComposer:
                     channel=PromptChannel.RUNTIME,
                     trust=PromptTrust.UNTRUSTED,
                     priority=-9_999,
-                    payload=short_state,
+                    payload=project_short_state(short_state),
                     required=True,
                 )
             )
@@ -195,7 +200,7 @@ class PromptComposer:
                     trust=PromptTrust.TRUSTED,
                     priority=94,
                     payload={
-                        "recent_delivery": list(context.recent_delivery),
+                        "recent_delivery": project_recent_delivery(context.recent_delivery),
                         "purpose": "delivery_status_only",
                     },
                     required=True,
@@ -208,7 +213,7 @@ class PromptComposer:
                     channel=PromptChannel.CONTEXT,
                     trust=PromptTrust.UNTRUSTED,
                     priority=85,
-                    payload=context.metadata_payload,
+                    payload=project_people_and_scene(context.metadata_payload),
                     required=True,
                 )
             )
