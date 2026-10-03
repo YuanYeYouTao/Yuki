@@ -150,14 +150,16 @@ class WorkQueries:
 
     async def recent(self, lease: WorkLease, source: dict[str, Any]) -> dict[str, Any] | None:
         """Only this actor/source and current conversation generation enter prompts."""
+        query = self._prompt_query(lease, source)
+        columns = query.selected_columns
+        query = query.with_only_columns(
+            columns.work_id, columns.goal_excerpt, columns.goal_complete, columns.state
+        )
         async with self.repository.database.sessions() as session:
             row = (
                 (
                     await session.execute(
-                        self._prompt_query(lease, source)
-                        .add_columns(work.c.model_requests, work.c.tool_calls, work.c.sent_messages)
-                        .order_by(work.c.updated.desc(), work.c.id.desc())
-                        .limit(1)
+                        query.order_by(work.c.updated.desc(), work.c.id.desc()).limit(1)
                     )
                 )
                 .mappings()

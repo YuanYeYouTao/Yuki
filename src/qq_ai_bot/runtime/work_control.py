@@ -1042,20 +1042,29 @@ class WorkControl:
     async def runtime_state(self) -> dict[str, Any]:
         """Append fresh scoped facts without replacing any submitted request prefix."""
         active = self.current
-        recent: dict[str, Any] | None = None
-        if active is None:
-            from qq_ai_bot.runtime.work_queries import WorkQueries
-
-            recent = await WorkQueries(self.repository).recent(self.lease, self.source)
-        return {
-            "work_id": active["id"] if active else None,
-            "goal": active["goal"] if active else None,
+        state: dict[str, Any] = {
             "state": active["state"] if active else "no_active_work",
             "state_scope": "current_activation",
-            "reporting": self.reporting,
-            "available_work": await self.available_work() if active is None else [],
-            "recent_work": recent,
         }
+        if active is not None:
+            state.update(work_id=active["id"], goal=active["goal"])
+            if self.reporting is not None:
+                state["reporting"] = self.reporting
+            return state
+
+        from qq_ai_bot.runtime.work_queries import WorkQueries
+
+        queries = WorkQueries(self.repository)
+        available = await queries.available(self.lease, self.source)
+        if available:
+            state["available_work"] = available
+        recent = await queries.recent(self.lease, self.source)
+        if recent is not None:
+            # Absence of the marker never turns an incomplete excerpt into a full goal.
+            if recent["goal_complete"]:
+                recent.pop("goal_complete")
+            state["recent_work"] = recent
+        return state
 
     async def available_work(self) -> list[dict[str, Any]]:
         from qq_ai_bot.runtime.work_queries import WorkQueries

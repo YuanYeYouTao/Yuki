@@ -124,17 +124,12 @@ async def test_status_question_request_contains_terminal_work_and_preserves_pref
     state = json.loads(submitted[-1].content.split("] ", 1)[1])
     assert state["state"] == "no_active_work"
     assert state["state_scope"] == "current_activation"
-    assert state["work_id"] is None
+    assert "work_id" not in state and "goal" not in state and "reporting" not in state
     assert state["recent_work"]["work_id"] == row["id"]
     assert set(state["recent_work"]) == {
         "work_id",
         "goal_excerpt",
-        "goal_complete",
         "state",
-        "model_requests",
-        "tool_calls",
-        "sent_messages",
-        "creator_display_name",
     }
     detailed = json.loads(
         await control.execute("task_control", {"action": "get", "work_id": row["id"]}, "details")
@@ -143,7 +138,7 @@ async def test_status_question_request_contains_terminal_work_and_preserves_pref
     assert detailed["generation"] == row["generation"]
     assert "created_at" in detailed and "updated_at" in detailed
     assert state["recent_work"]["state"] == "completed"
-    assert state["available_work"] == []
+    assert "available_work" not in state
     assert submitted_runtime.dynamic_context_prepared
     assert control.current_message is original[-1]
     assert control.current is None
@@ -224,7 +219,7 @@ async def test_current_work_prompt_preserves_full_goal_and_does_not_load_recent(
     assert state["work_id"] == current["id"]
     assert state["goal"] == goal
     assert state["state"] == current["state"]
-    assert state["recent_work"] is None and state["available_work"] == []
+    assert "recent_work" not in state and "available_work" not in state
 
 
 @pytest.mark.asyncio
