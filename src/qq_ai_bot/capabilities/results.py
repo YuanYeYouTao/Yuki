@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
@@ -93,6 +94,7 @@ class ToolResultBudgeter:
         artifact_retention_seconds: int | None = None,
         max_receipt_bytes: int = 49152,
         artifact_access: ArtifactAccess | None = None,
+        artifact_access_resolver: Callable[[], ArtifactAccess] | None = None,
     ) -> None:
         if max_characters is not None and max_characters <= 0:
             raise ValueError("tool result budget must be positive or null")
@@ -106,6 +108,7 @@ class ToolResultBudgeter:
         self._artifact_retention_seconds = artifact_retention_seconds
         self._max_receipt_bytes = max_receipt_bytes
         self._artifact_access = artifact_access
+        self._artifact_access_resolver = artifact_access_resolver
 
     async def render(self, result: ToolExecutionResult) -> BudgetedToolResult:
         from qq_ai_bot.runtime.effect_outcomes import current_result_capture
@@ -132,7 +135,7 @@ class ToolResultBudgeter:
         # residency. Readers themselves remain paged model input and must not
         # recursively archive each page into another result.
         external_research = (
-            self._artifact_access is not None
+            (self._artifact_access is not None or self._artifact_access_resolver is not None)
             and self._artifacts is not None
             and result.tool_name in {"web_search", "read_webpage"}
             and result.data not in (None, {}, "")
@@ -152,13 +155,19 @@ class ToolResultBudgeter:
             result.provider_id == "artifacts" and result.tool_name == "read_tool_artifact"
         )
         if self._artifacts is not None and not recursive_artifact_read:
+            # Short receipts need no archive identity; resolve it only before a write.
+            access = (
+                self._artifact_access_resolver()
+                if self._artifact_access_resolver is not None
+                else self._artifact_access
+            )
             artifact_id = await self._artifacts.write_artifact(
                 provider_id=result.provider_id,
                 tool_name=result.tool_name,
                 content=text,
                 media_type="application/json",
                 retention_seconds=self._artifact_retention_seconds,
-                access=self._artifact_access,
+                access=access,
             )
             if capture is not None:
                 capture.artifact_handle = artifact_id
