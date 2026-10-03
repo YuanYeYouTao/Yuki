@@ -92,6 +92,7 @@ class MainAgentTurnService:
         include_plugin_context: bool = True,
         memory_exclusive_write: bool = False,
         read_scope: str | None = None,
+        allowed_capabilities: frozenset[str] = frozenset(),
         before_preparation: Callable[[], Awaitable[None]] | None = None,
     ) -> PromptComposition:
         with self.executions.track():
@@ -128,6 +129,11 @@ class MainAgentTurnService:
             ):
                 return composition
             definitions = await contract.definitions()
+            definitions, native_definitions = self._runner.prepare_request_tools(
+                definitions,
+                runtime_config=runtime,
+                allowed_capabilities=allowed_capabilities,
+            )
             version = context.read_version
             conversation_id = version.conversation_id
             assert conversation_id is not None
@@ -238,7 +244,8 @@ class MainAgentTurnService:
                     max_output_tokens=runtime.llm.max_output_tokens,
                     thinking_enabled=runtime.llm.thinking_enabled,
                     tools=definitions,
-                    tool_choice="auto" if definitions else None,
+                    tool_choice="auto" if definitions or native_definitions else None,
+                    native_tools=native_definitions,
                 )
             )
             fresh_tokens = estimate_request_tokens(prepared_request)

@@ -253,6 +253,11 @@ async def _execute_plugin_main_turn(
                 current_time=runtime.current_time,
                 read_history=can_read_history,
                 runtime=runtime.runtime_config,
+                capacity_budget=contract.chat._history_input_budget(
+                    runtime.runtime_config,
+                    maintenance=False,
+                    allowed_capabilities=runtime.allowed_capabilities,
+                ),
                 projection_scope=json.dumps(
                     [
                         "plugin-sdk",
@@ -336,6 +341,7 @@ async def _execute_plugin_main_turn(
                     visual_failure=False,
                     scope_type=inbound.scope_type,
                     include_plugin_context=False,
+                    allowed_capabilities=runtime.allowed_capabilities,
                     read_scope=access_from_runtime(
                         tool_runtime, generation=version.generation
                     ).read_scope,

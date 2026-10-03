@@ -91,6 +91,9 @@ HTTP 登录和正式 WebUI 接线遵守 control-plane-foundation，当前实现�
 `driver_queue_seconds`、`pool_wait_seconds` 与 `sqlite_wait_seconds` 保持未知，不能相减推算。
 holder 仅覆盖已安装钩子的 engine，不代表系统所有连接。诊断 writer 的 `queue_wait` 与 `commit_call`
 是自身队列和提交调用耗时，不能冒称数据库锁等待。计量不写 SQLite，不包含正文或参数。
+物理 close 实际完成后才确认释放；强制 queued stop 或关闭失败无法确认释放时结束观测，
+单列 `held_release_unknown` 并标记 `release_confirmed=false`，不计入确认完成桶。
+因此空 holder 列表不能证明不存在尚未确认关闭的 writer。
 
 真实 Runner + 隔离 SQLite + 假 Provider/网关验证完整轮次，四种 HTTP 协议验证实际请求。
 覆盖工具拒绝/复用/并行、重试、截断、取消、重启、journal 删除后仍可查、媒体过期语义、

@@ -47,7 +47,21 @@ Gemini 28 次有 cache 字段，40 次缺失；已知 input 618571、hit 484766�
 此前同 transcript 的 DeepSeek Responses 9 轮已知加权 95.11%，后 8 热轮 99.02%。
 原报告见 [缓存实验](work-context-cache-experiment-2026-10-03.md)。
 
-新增手动实验待记录。前缀保持与代理上游实际命中是不同证据，不承诺固定缓存率。
+新增 18 次真实请求全部 HTTP 200、零重试，Gemini 13、DeepSeek Responses 5。
+
+| 场景 | 实际 input/output | cache 字段与已知加权 |
+| --- | --- | --- |
+| Gemini C08，同 transcript 8 轮 | 159758 / 3547 | 6/8 次有字段；known input 120776、hit 96705，80.07%；其余未知 |
+| Gemini C06，冷主轮＋普通整理＋3次追加 | 主请求 79694 / 1622；辅助 59236 / 1494 | 3 热主轮 input 60427、hit 48409，80.11%；辅助未知 |
+| DeepSeek Responses C08，同 transcript 5 轮 | 103498 / 757 | 全有字段，hit 95104，整体91.89%；后4热轮98.99% |
+
+主链完整工具与固定设置 hash 不变，C06 摘要通过严格 schema 后显式新输入继续。
+逐物理请求、cache miss、固定设置及首次差异记录保存在 ignored
+`.cache/foreground-rollup-live-*-20261003.json`，汇总说明为
+`.cache/foreground-rollup-live-metadata-20261003.md`；报告不包含正文、签名或凭证。
+本次真实 API 使用 TaskModelExecutor 与合成 session；它不能代替 V01 完整 Processor 的
+阻塞后台回归。未把异尺寸/冷暖/不同协议历史报告称为同 fixture 的修复前后因果对照，
+不据此宣称线上缓存改善。前缀保持与代理上游实际命中是不同证据，不承诺固定缓存率。
 不将直接 serializer 合成场景当作完整运行时回复时延或自然 QQ 能力验收。
 
 ## 保留的边界

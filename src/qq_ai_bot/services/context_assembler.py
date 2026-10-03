@@ -400,6 +400,7 @@ class ContextAssembler:
         read_history: bool,
         projection_scope: str,
         runtime: RuntimeConfigSnapshot,
+        capacity_budget: int | None = None,
     ) -> AssembledContext:
         """Use the canonical Rollup/raw-tail projection within the plugin read grant."""
         scope = inbound.scope()
@@ -411,8 +412,23 @@ class ContextAssembler:
         rollup = ""
         rollup_mode = None
         coverage = 0
+        capacity_budget = (
+            self._history_capacity_token_budget(runtime)
+            if capacity_budget is None
+            else capacity_budget
+        )
         if read_history:
             loaded = await self._rollups.load_prompt_snapshot(scope)
+            if not loaded.raw_complete:
+                loaded = await self._rollups.load_prompt_snapshot(
+                    scope,
+                    token_budget=max(
+                        0,
+                        capacity_budget
+                        - estimate_text_tokens(json.dumps(metadata, ensure_ascii=False))
+                        - estimate_text_tokens(content),
+                    ),
+                )
             if not loaded.raw_complete:
                 raise ConversationCoverageError("plugin context requires explicit compaction")
             rows = tuple(row for row in loaded.raw_events if row.id != inbound.source_event_id)
@@ -437,11 +453,13 @@ class ContextAssembler:
         history = tuple(message for _, _, message in rendered)
         metadata_size = len(json.dumps(metadata, ensure_ascii=False))
         history_size = sum(len(message.content or "") for message in history)
-        if sum(
-            estimate_text_tokens(message.content or "") for message in history
-        ) + estimate_text_tokens(json.dumps(metadata, ensure_ascii=False)) + estimate_text_tokens(
-            content
-        ) + estimate_text_tokens(rollup) > self._history_capacity_token_budget(runtime):
+        if (
+            sum(estimate_text_tokens(message.content or "") for message in history)
+            + estimate_text_tokens(json.dumps(metadata, ensure_ascii=False))
+            + estimate_text_tokens(content)
+            + estimate_text_tokens(rollup)
+            > capacity_budget
+        ):
             raise ConversationCoverageError("plugin context requires explicit compaction")
         return AssembledContext(
             metadata_payload=metadata,

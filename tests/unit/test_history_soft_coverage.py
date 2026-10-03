@@ -42,6 +42,35 @@ class _SummaryModel:
         return ChatResponse(content=model_summary(request, "retained facts"), latency_seconds=0)
 
 
+@pytest.mark.asyncio
+async def test_plugin_history_expands_small_prefetch_without_auxiliary_model(database):
+    from dataclasses import replace
+
+    from tests.unit.test_commands_and_chat import inbound
+
+    from qq_ai_bot.time.models import TimeContext
+
+    assembler, repository, model, arguments = await _history(database, read_budget=1, hold=False)
+    original = await repository.load_prompt_snapshot(ConversationScope.group("8000", "2001"))
+    assert not original.raw_complete
+    now = datetime.now(UTC)
+    assembled = await assembler.assemble_plugin(
+        inbound=replace(
+            inbound("plugin request", group_id="2001", message_id="plugin-prefetch"),
+            bot_user_id="8000",
+        ),
+        content="plugin request",
+        metadata={},
+        current_time=TimeContext(now, now, "UTC"),
+        read_history=True,
+        projection_scope="plugin",
+        runtime=arguments["runtime"],
+    )
+    assert len(assembled.visible_event_ids) == 6
+    assert all(f"record-{index}:" in str(assembled.history_messages) for index in range(6))
+    assert model.requests == []
+
+
 @pytest.mark.parametrize("character", ["x", "猫"], ids=["ascii-fits", "cjk-over-capacity"])
 def test_required_metadata_fallback_uses_tokens_without_expanding_optional(character):
     scene = {"required": character * 60000}
