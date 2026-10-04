@@ -58,6 +58,9 @@ class SQLiteDiagnostics:
             name: TimingSummary()
             for name in (
                 "sql",
+                "read_sql",
+                "other_sql",
+                "connection_acquisition",
                 "acquire",
                 "first_write",
                 "commit",
@@ -170,6 +173,28 @@ def install_sqlite_diagnostics(engine: Engine) -> SQLiteDiagnostics:
         else:
             finish(token, f"physical_{phase}_complete")
 
+    # Start at the application-to-pool call, before queue checkout/pre_ping.
+    # This is inclusive acquisition, not an estimate of either subcomponent.
+    original_connection = engine.raw_connection
+
+    def acquire_connection() -> Any:
+        started = time.monotonic()
+        try:
+            return original_connection()
+        finally:
+            elapsed = time.monotonic() - started
+            with diagnostics.lock:
+                diagnostics.timings["connection_acquisition"].record(elapsed)
+            if elapsed >= 1:
+                logger.warning(
+                    "sqlite_connection_acquisition seconds=%.6f pool_wait_seconds=unknown "
+                    "driver_queue_seconds=unknown",
+                    elapsed,
+                )
+
+    observed_engine: Any = engine
+    observed_engine.raw_connection = acquire_connection
+
     original_commit, original_rollback = engine.dialect.do_commit, engine.dialect.do_rollback
     dialect: Any = engine.dialect
     dialect.do_commit = lambda connection: transaction_call(connection, original_commit, "commit")
@@ -195,7 +220,14 @@ def install_sqlite_diagnostics(engine: Engine) -> SQLiteDiagnostics:
             getattr(context, flag, False) for flag in ("isinsert", "isupdate", "isdelete")
         ):
             operation = "COMPILED DML"
-        context._yuki_write = (time.monotonic(), operation) if operation else None
+        started = time.monotonic()
+        context._yuki_cursor = (
+            started,
+            "read_sql"
+            if (command.startswith(("SELECT ", "WITH ")) and operation is None)
+            else "other_sql",
+        )
+        context._yuki_write = (started, operation) if operation else None
         context._yuki_connection_token = (
             id(physical(conn.connection)) if operation or command.startswith("RELEASE ") else None
         )
@@ -206,8 +238,26 @@ def install_sqlite_diagnostics(engine: Engine) -> SQLiteDiagnostics:
         nonlocal sequence
         write = getattr(context, "_yuki_write", None)
         if write is None:
+            cursor = getattr(context, "_yuki_cursor", None)
+            context._yuki_cursor = None
+            if cursor is not None:
+                started, phase = cursor
+                elapsed = time.monotonic() - started
+                with diagnostics.lock:
+                    diagnostics.timings[phase].record(elapsed)
+                if elapsed >= 1 or not succeeded:
+                    logger.warning(
+                        "sqlite_cursor_timing phase=%s seconds=%.6f outcome=%s "
+                        "sqlite_errorcode=%s driver_queue_seconds=unknown "
+                        "sqlite_wait_seconds=unknown",
+                        phase,
+                        elapsed,
+                        "success" if succeeded else "failed",
+                        error_code,
+                    )
             return
         context._yuki_write = None
+        context._yuki_cursor = None
         started, operation = write
         now, token = time.monotonic(), context._yuki_connection_token
         elapsed = now - started

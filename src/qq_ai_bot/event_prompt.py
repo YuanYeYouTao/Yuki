@@ -267,10 +267,20 @@ class ChatEventPromptRenderer:
         rows: Iterable[EventRecord],
     ) -> tuple[tuple[int, tuple[int, ...], ChatMessage], ...]:
         """Group adjacent visible events from one immutable sender identity."""
+        return self.main_agent_history_views(rows)[0]
+
+    def main_agent_history_views(
+        self, rows: Iterable[EventRecord]
+    ) -> tuple[
+        tuple[tuple[int, tuple[int, ...], ChatMessage], ...],
+        tuple[tuple[int, tuple[int, ...], ChatMessage], ...],
+    ]:
+        """Render once, retaining individual views from the same reference table."""
 
         grouped: list[
             tuple[int, tuple[int, ...], ChatMessage, tuple[str, str, str, str, int | None] | None]
         ] = []
+        individual: list[tuple[int, tuple[int, ...], ChatMessage]] = []
         group_start_utc: datetime | None = None
         group_last_utc: datetime | None = None
         group_local_day: date | None = None
@@ -281,6 +291,7 @@ class ChatEventPromptRenderer:
             rendered = (message.content or "").strip()
             if not rendered:
                 continue
+            individual.append((row.id, (row.id,), message))
             group_key = (
                 message.role,
                 row.sender_user_id,
@@ -321,9 +332,9 @@ class ChatEventPromptRenderer:
             group_start_utc = occurred_utc
             group_last_utc = occurred_utc
             group_local_day = local_day
-        return tuple(
-            (anchor_event_id, event_ids, message)
-            for anchor_event_id, event_ids, message, _ in grouped
+        return (
+            tuple((anchor, ids, message) for anchor, ids, message, _ in grouped),
+            tuple(individual),
         )
 
     def render_event(

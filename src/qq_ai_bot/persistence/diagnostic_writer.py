@@ -1,4 +1,4 @@
-"""One bounded, disposable consumer for already prepared diagnostic writes."""
+"""One bounded disposable consumer, including source validation and encoding."""
 
 from __future__ import annotations
 
@@ -39,6 +39,19 @@ class DiagnosticWriter:
         self.committed = 0
         self._queue_wait = TimingSummary()
         self._commit_call = TimingSummary()
+        self._phases = {
+            name: TimingSummary()
+            for name in (
+                "snapshot_call",
+                "source_validation",
+                "encode_call_inclusive",
+                "encode_execution",
+                "diagnostic_write",
+            )
+        }
+
+    def record_phase(self, phase: str, seconds: float) -> None:
+        self._phases[phase].record(seconds)
 
     async def start(self) -> None:
         if self._task is not None and not self._task.done():
@@ -46,6 +59,25 @@ class DiagnosticWriter:
         self._closing = False
         self._task = asyncio.create_task(
             self._consume(), name="diagnostic-writer", context=Context()
+        )
+
+    def capacity(self) -> int:
+        """Synchronous admission check; callers must not await before submit.
+
+        This prevents copying a payload when the queue is already full. Bytes
+        include the active item until its actual worker/commit has finished.
+        """
+        if self._task is None or self._task.done() or self._closing or self._queue.full():
+            return 0
+        return self._max_bytes - self._bytes
+
+    def drop(self, kind: str) -> None:
+        self.dropped += 1
+        logger.warning(
+            "diagnostic_dropped kind=%s coverage_incomplete=true total=%d "
+            "payload_bytes=unknown payload_sha256=unknown",
+            kind,
+            self.dropped,
         )
 
     def submit(self, kind: str, size: int, commit: Callable[[], Awaitable[Any]]) -> bool:
@@ -58,10 +90,7 @@ class DiagnosticWriter:
             or self._queue.full()
             or self._bytes + size > self._max_bytes
         ):
-            self.dropped += 1
-            logger.warning(
-                "diagnostic_dropped kind=%s coverage_incomplete=true total=%d", kind, self.dropped
-            )
+            self.drop(kind)
             return False
         self._bytes += size
         self._queue.put_nowait(_Write(kind, size, commit, time.monotonic()))
@@ -85,10 +114,17 @@ class DiagnosticWriter:
                     item.kind,
                     type(exc).__name__,
                 )
+                # Only the fixed category is retained. Worker exception cycles
+                # must not keep a completed payload alive until a later GC pass.
+                exc.__traceback__ = None
+                exc.__context__ = None
+                exc.__cause__ = None
             finally:
                 self._commit_call.record(time.monotonic() - started)
                 self._bytes -= item.size
                 self._queue.task_done()
+                # Awaiting the next get must not retain the previous payload.
+                del item
 
     async def drain(self) -> None:
         await self._queue.join()
@@ -107,12 +143,23 @@ class DiagnosticWriter:
             )
         finally:
             self._task.cancel()
-            await asyncio.gather(self._task, return_exceptions=True)
-            while not self._queue.empty():
-                item = self._queue.get_nowait()
-                self._bytes -= item.size
-                self.dropped += 1
-                self._queue.task_done()
+            joined = asyncio.gather(self._task, return_exceptions=True)
+            try:
+                await asyncio.shield(joined)
+            except asyncio.CancelledError:
+                while not joined.done():
+                    try:
+                        await asyncio.shield(joined)
+                    except asyncio.CancelledError:
+                        continue
+                raise
+            finally:
+                self._task = None
+                while not self._queue.empty():
+                    item = self._queue.get_nowait()
+                    self._bytes -= item.size
+                    self.dropped += 1
+                    self._queue.task_done()
 
     async def health(self) -> dict[str, Any]:
         return dict(
@@ -123,4 +170,5 @@ class DiagnosticWriter:
             committed=self.committed,
             queue_wait=self._queue_wait.snapshot(),
             commit_call=self._commit_call.snapshot(),
+            phase_timings={name: timing.snapshot() for name, timing in self._phases.items()},
         )

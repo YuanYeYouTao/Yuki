@@ -45,20 +45,37 @@
 按重启生效模式应用；环境变量使用 EXECUTION_TRACE_RETENTION_DAYS /
 EXECUTION_TRACE_MAX_PAYLOAD_BYTES。超过上限保留明确 omitted 元数据，
 不静默截断为完整记录。诊断写入失败不重跑已完成效果，不丢弃成功模型响应；
-生产模型调用与过程记录复用一个有界、进程内诊断队列：调用任务先复制正文并盖入原
-turn、Work、activation、execution、来源事件、时间和隐私删除代次，再由一个无调用上下文的
-消费者提交短事务。消费者不重新解析身份，不重试提交，不参与业务恢复或投递；
-生产者以一条当前的窄标量查询查证身份类型、Conversation 存在和来源事件的会话关系，
-不为每条诊断重新加载多种主体及事件正文，不缓存该核验。投递的额外回执与出站事件核验
-仍保留。准备超过一秒时只记录固定数值日志：编码调用总耗时、线程内编码耗时、来源核验
-（含会话退出）及总准备耗时。编码调用包含线程排队和事件循环恢复，不能相减宣称精确
-线程队列等待；这些日志不写 SQLite、不包含正文、SQL 参数或凭据。
-模型结果返回及模型名额释放不等待诊断写锁。队列最多等待 256 条、保留 32 MiB 待写数据
-（含正在提交的一条），容量不足直接拒绝该条并记录内容无关的缺口日志与 dropped 计数。
+生产模型调用与过程记录复用一个有界、进程内诊断队列。调用端先冻结原
+turn、Work、activation、execution、Conversation/事件、发生时间及原 privacy generation，
+在原始资源准入检查之后才复制独立的 dict/list/dataclass 快照；不可变字符串和 HTTP 返回
+bytes 可共享，消费者不持有原 response、session、WorkControl 或 live ContextVar。
+每条来源的窄标量 SQL、原 Social 回执/出站事件核验、正文编码及短条件 INSERT 均在同一个
+空 Context 的消费者中执行。来源只读 session 结束后才进入 writer；只接受原 ID 的类型、
+存在及归属，不能补填当前 owner、Work 或 privacy generation。发生时的 Work/activation/
+generation 是历史元数据，不以消费时 lease 仍相同为条件。来源改属/删除及隐私删除代次
+还在 INSERT 中原子复核，失败只丢样，不恢复业务、不重试未知诊断提交。
+
+队列最多等待 256 条，共享 32 MiB 原始资源预留（包含 active item）。预留涵盖独立快照、
+容器与媒体/不透明字段引用、JSON/string/UTF-8/gzip 临时峰值及输出；每条包含 512 KiB
+codec 工作空间下界，再按结构、路径和字符数保守估计。深度超过 48 或节点超过 65536
+直接丢诊断，这不是业务消息上限。队列已满、原始大字符串/媒体、不可压缩或原始巨大但
+压缩很小的输入，在 deepcopy/JSON/hash 前拒绝；这类丢样的 payload_bytes/payload_sha256
+未知，只通过固定缺口日志和 dropped 计数报告，不冒充完整记录。编码后的 16 MiB 上限
+仍保留明确 omitted 元数据。调用端的有界快照 CPU 有成本，writer health 的 snapshot_call
+计量它；不能称为零成本。模型返回及 Provider 名额释放不等待可丢来源读取、编码或写锁。
+
+固定慢准备日志位于消费者：encode_call_inclusive 包含线程排队/事件循环恢复，
+encode_execution 是成功编码在线程内的执行耗时，source_validation 包含只读 session
+退出，prepare 不包含最终 INSERT。不能相减宣称精确线程队列等待。writer 的
+phase_timings 分别计 snapshot_call/source_validation/encode_call_inclusive/encode_execution/
+diagnostic_write；原 commit_call 字段现在表示完整消费者调用，不能解释为纯 commit。
+这些观测不写 SQLite、不带正文、参数或凭据。未进入或未完成的编码不伪造完整执行耗时。
 模型用量统计和过程面板因此是最终可见的诊断视图，不能作为完整计费或真实效果账本。
 轮次结束信息只报告当时已知的缺口；稍后提交失败由诊断日志与生命周期 health 中的
 failures 报告，不能将早期的零缺口解释为全部记录已提交。
-关闭时在所有生产者停止后最多排空两秒，再取消剩余提交并统计丢弃；重启不恢复队列。
+关闭时先停止生产者，按原两秒政策等待排空，再取消剩余消费者并统计丢样；已经启动的
+编码线程须 shield/join 到真实完成后才释放引用与资源预留，关闭总耗时可能超过两秒。
+取消 await 不等于线程退出；消费者空闲后也不保留上一条 payload。重启不恢复队列。
 取消和进程终止继续传播，不保证此时仍能记录/交还结果。业务账本、效果回执和 Work
 检查点继续走原同步持久化合同，禁止放入此诊断队列。清理复用现有维护循环，
 每批最多 500 条、批间释放写锁，排空本次到期窗口，不把每批上限变成每小时清理上限。
@@ -99,7 +116,8 @@ HTTP 登录和正式 WebUI 接线遵守 control-plane-foundation，当前实现�
 初次上下文校验的计时不包含 Runner 首次 dispatch 内真正的 projection 发布；
 后者位于 turn_start 之后，仍按实际模型/请求与SQL诊断核对。
 
-`/healthz` 的 `sqlite_diagnostics` 记录固定分桶的 SQL、显式 writer 获取、首次 deferred 写入、
+`/healthz` 的 `sqlite_diagnostics` 记录固定分桶的 read_sql/other_sql、应用到 pool 的
+connection_acquisition（起点早于 checkout/pre_ping）、写 SQL、显式 writer 获取、首次 deferred 写入、
 真实 commit/rollback 及可观测持有下界。首次写入的驱动排队、SQLite 等待和执行无法精确拆开；
 `driver_queue_seconds`、`pool_wait_seconds` 与 `sqlite_wait_seconds` 保持未知，不能相减推算。
 holder 仅覆盖已安装钩子的 engine，不代表系统所有连接。诊断 writer 的 `queue_wait` 与 `commit_call`
@@ -107,6 +125,21 @@ holder 仅覆盖已安装钩子的 engine，不代表系统所有连接。诊断
 物理 close 实际完成后才确认释放；强制 queued stop 或关闭失败无法确认释放时结束观测，
 单列 `held_release_unknown` 并标记 `release_confirmed=false`，不计入确认完成桶。
 因此空 holder 列表不能证明不存在尚未确认关闭的 writer。
+
+新增 `model_phases` 使用 phase_version=1：logical_call 从共享 execute 入口到结果/异常
+准备完成，success/error/cancel 使用同一单调边界；preparation、slot_wait、slot_hold、
+response_preparation 是互斥区间。slot_hold 在实际 Provider 名额取得/释放处切换，保留整次
+complete 与重试生命周期。nested_seconds 中的 dispatch、attempt dispatch、payload/wire、
+trace_snapshot、transport、response parse、retry budget/backoff 是嵌套明细，不与主阶段相加；
+HTTP transport 含 httpx 自身连接池/调度，不等于精确网络服务时间。physical_attempt_count
+只计实际 HTTP post。配置/容量拒绝可为零，native 工具不确定运输按原单次请求合同处理。
+旧记录没有 phase_version/分段时标 unknown，不反推历史分段。
+
+conversation_lock 记录 coordinator 与 conversation 的 request→acquire 单调等待；固定
+runtime_lock_timing 日志还报告等待中取消/拒绝。chat_processing 原起点仍在取得锁之后，
+不能将入口到处理的全部时差归为会话锁。phase_metrics 按同 turn 记录固定 N/F/E/K、
+item/byte、candidate/estimate 次数和 protocol lock wait/held，来源计数可缺失，不伪造零。
+这些累计计数不参与授权、预算、回放或 cache。跨进程 age 继续使用原 UTC/epoch 时间。
 
 真实 Runner + 隔离 SQLite + 假 Provider/网关验证完整轮次，四种 HTTP 协议验证实际请求。
 覆盖工具拒绝/复用/并行、重试、截断、取消、重启、journal 删除后仍可查、媒体过期语义、

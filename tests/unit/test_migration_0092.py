@@ -99,6 +99,7 @@ async def test_reply_indexes_upgrade_downgrade_metadata_and_full_query_plans(
             )
             plans.append(plan)
         assert not any("TEMP B-TREE" in row[3] for plan in plans for row in plan)
+    await asyncio.to_thread(command.upgrade, config, "head")
     await require_canonical_schema(url)
     await asyncio.to_thread(command.downgrade, config, "0091")
     with sqlite3.connect(path) as db:

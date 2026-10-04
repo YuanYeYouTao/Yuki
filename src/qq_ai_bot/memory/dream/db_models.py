@@ -311,6 +311,12 @@ class MemoryEvidenceCompactionItemModel(Base):
             name="ck_evidence_compaction_items_status",
         ),
         Index("ix_evidence_compaction_items_run_status", "run_id", "status", "id"),
+        Index(
+            "ix_evidence_compaction_items_fact_before_status",
+            "fact_id",
+            "evidence_before",
+            "status",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

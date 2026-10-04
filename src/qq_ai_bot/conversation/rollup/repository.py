@@ -66,6 +66,7 @@ from qq_ai_bot.conversation.rollup.renderer import (
     source_fingerprint,
 )
 from qq_ai_bot.conversation.rollup.summary import parse_summary, summary_references
+from qq_ai_bot.conversation.scope import ConversationTurnSnapshot, turn_matches_hydrated_scope
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.model_runtime.capacity import estimate_text_tokens
 from qq_ai_bot.persistence.database import Database
@@ -635,12 +636,23 @@ class ConversationRollupRepository:
         async with self._database.sessions() as session:
             return await self._detailed_status_canonical(session, scope)
 
+    async def scope_state(self, scope: ConversationScope) -> ConversationScopeState | None:
+        """Read identity metadata only for a protocol recovery fence."""
+
+        async with self._database.sessions() as session, session.begin():
+            await session.execute(text("BEGIN"))
+            conversation = await self._conversation_for_scope(session, scope)
+            if conversation is None:
+                return None
+            return await hydrate_scope_state_from_canonical(session, scope, conversation)
+
     async def load_prompt_snapshot(
         self,
         scope: ConversationScope,
         *,
         before_event_id: int | None = None,
         token_budget: int | None = None,
+        expected_turn: ConversationTurnSnapshot | None = None,
     ) -> ConversationPromptSnapshot:
         """Load scope, checkpoint, and the exact continuous raw suffix in one transaction."""
 
@@ -654,6 +666,7 @@ class ConversationRollupRepository:
                     scope,
                     before_event_id=before_event_id,
                     token_budget=token_budget,
+                    expected_turn=expected_turn,
                 )
         finally:
             self._active_policy.reset(token)
@@ -1150,11 +1163,20 @@ class ConversationRollupRepository:
         *,
         before_event_id: int | None,
         token_budget: int | None = None,
+        expected_turn: ConversationTurnSnapshot | None = None,
     ) -> ConversationPromptSnapshot:
         conversation = await self._conversation_for_scope(session, scope)
         if conversation is None:
             raise ConversationCoverageError("conversation scope does not exist")
         state = await hydrate_scope_state_from_canonical(session, scope, conversation)
+        if expected_turn is not None and not turn_matches_hydrated_scope(
+            expected_turn,
+            scope_id=state.id,
+            generation=state.generation,
+            transport_key=scope.key,
+            runtime_key=state.runtime_scope_key,
+        ):
+            raise ConversationCoverageError("turn identity changed before prompt snapshot")
         rollup_row = await session.get(CanonicalConversationRollupModel, conversation.id)
         if rollup_row is not None and rollup_row.generation != conversation.generation:
             raise ConversationCoverageError("rollup generation mismatch")

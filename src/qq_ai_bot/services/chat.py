@@ -56,6 +56,7 @@ from qq_ai_bot.domain.messages import (
     PromptRequestDiagnostics,
 )
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
+from qq_ai_bot.execution_trace.phases import collect_phase_metrics, timed_lock
 from qq_ai_bot.execution_trace.recorder import trace_span
 from qq_ai_bot.llm.base import LLMEmptyResponseError
 from qq_ai_bot.memory.attribution import (
@@ -1053,8 +1054,12 @@ class ChatService:
             )
 
             async with (
-                self._turn_coordinator.hold(conversation_key),
-                self._concurrency.conversation(conversation_key),
+                timed_lock(
+                    self._turn_coordinator.hold(conversation_key), "turn_coordinator"
+                ) as coordinator_wait,
+                timed_lock(
+                    self._concurrency.conversation(conversation_key), "conversation"
+                ) as conversation_wait,
                 AsyncExitStack() as memory_cleanup,
             ):
                 # Capture the diagnostic privacy generation before assembling history
@@ -1068,6 +1073,17 @@ class ChatService:
                         source_event_id=inbound.source_event_id,
                         origin=turn_origin.value,
                     )
+                )
+                collect_phase_metrics(conversation_lock_wait_seconds=conversation_wait)
+                from qq_ai_bot.execution_trace.recorder import record_trace
+
+                await record_trace(
+                    "conversation_lock",
+                    {
+                        "phase_version": 1,
+                        "coordinator_wait_seconds": coordinator_wait,
+                        "conversation_wait_seconds": conversation_wait,
+                    },
                 )
                 preparation = await memory_cleanup.enter_async_context(collect_chat_preparation())
                 work_control = None
@@ -1194,6 +1210,7 @@ class ChatService:
                     read_version,
                     commit_projection,
                     observation_boundary,
+                    prepared_timezone,
                 ) = await self._build_messages(
                     inbound,
                     identity,
@@ -1261,6 +1278,7 @@ class ChatService:
                     prompt_diagnostics=prompt_diagnostics,
                     before_model_request=validate_context,
                     observation_boundary=observation_boundary,
+                    prepared_timezone=prepared_timezone,
                 )
                 if turn_token is not None:
                     async with self._turn_coordinator.track(turn_token, "generation"):
@@ -1495,6 +1513,7 @@ class ChatService:
         ConversationReadVersion | None,
         Callable[[], Awaitable[None]] | None,
         ContextBoundaryReader | None,
+        str | None,
     ]:
         retrieval = empty_retrieval()
         persist_exposure = True
@@ -1600,6 +1619,7 @@ class ChatService:
             composition.read_version,
             composition.commit_projection,
             composition.observation_boundary,
+            context.current_time.timezone if not context.recovery_protocol else None,
         )
 
     def _context_validator(
@@ -1695,9 +1715,13 @@ class ChatService:
         runtime = replace(runtime, memory_exposure_registry=exposure_registry)
         runtime = await self._prepare_tool_candidates(runtime)
         current_time = (
-            await self._time.current(runtime.inbound.sender.user_id)
-            if runtime.inbound is not None
-            else self._time.current_default()
+            self._time.current_in_timezone(runtime.prepared_timezone)
+            if runtime.prepared_timezone is not None
+            else (
+                await self._time.current(runtime.inbound.sender.user_id)
+                if runtime.inbound is not None
+                else self._time.current_default()
+            )
         )
         backend = MainAgentBackend(self, runtime)
         active_control = current_work_control.get()

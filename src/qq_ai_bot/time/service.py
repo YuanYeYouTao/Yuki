@@ -57,6 +57,15 @@ class TimeContextService:
     def clock(self) -> Clock:
         return self._clock
 
+    @property
+    def default_timezone(self) -> str:
+        return self._default_timezone
+
+    def current_in_timezone(self, timezone: str) -> TimeContext:
+        """Refresh the clock using this preparation's already resolved preference."""
+
+        return self.at(self._utc_now(), timezone)
+
     async def timezone_for(self, user_id: str) -> str:
         async with self._database.sessions() as session:
             if user_id == "self":

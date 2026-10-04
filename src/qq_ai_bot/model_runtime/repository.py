@@ -6,10 +6,13 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from sqlalchemy import func, insert, literal, select
+from sqlalchemy import exists, func, insert, literal, select
 
+from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.conversation.correlation import stamp_conversation_correlation
 from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
+from qq_ai_bot.execution_trace.payload import PayloadCapacityError, freeze_payload
+from qq_ai_bot.execution_trace.recorder import _require_trace_source, current_trace
 from qq_ai_bot.model_runtime.db_models import ModelInvocationModel
 from qq_ai_bot.model_runtime.models import ModelInvocationRecord, ModelStats, ModelTask
 from qq_ai_bot.persistence.database import Database
@@ -77,34 +80,54 @@ class ModelInvocationRepository:
             error_category=error_category,
             created_at=datetime.now(UTC),
         )
-        async with self._database.sessions() as session:
-            await stamp_conversation_correlation(session, row, canonical_conversation_id)
-            privacy_generation = (
-                await session.scalar(
-                    select(ExecutionTraceStateModel.privacy_generation).where(
-                        ExecutionTraceStateModel.id == 1
-                    )
-                )
-                if self.writer is not None
+        if self.writer is not None:
+            scope = current_trace.get()
+            # Missing original privacy provenance is a coverage gap, never a
+            # reason to recapture today's generation after the model returned.
+            capacity = self.writer.capacity()
+            if scope is None or scope.coverage.privacy_generation is None or not capacity:
+                self.writer.drop("model_invocation")
+                return None
+            row.canonical_conversation_id = (
+                str(canonical_conversation_id).strip() or None
+                if canonical_conversation_id is not None
                 else None
             )
-        if self.writer is not None:
-            frozen = tuple(
-                (column.name, getattr(row, column.name))
+            values = {
+                column.name: getattr(row, column.name)
                 for column in row.__table__.columns
                 if column.name != "id"
-            )
-            size = 1024 + sum(
-                len(value.encode("utf-8")) for _, value in frozen if isinstance(value, str)
-            )
+            }
+            try:
+                snapshot, reserved = freeze_payload(
+                    {key: value for key, value in values.items() if key != "created_at"}, capacity
+                )
+                assert isinstance(snapshot, dict)
+                snapshot["created_at"] = values["created_at"]
+            except PayloadCapacityError:
+                self.writer.drop("model_invocation")
+                return None
+            frozen = tuple(snapshot.items())
+            privacy_generation = scope.coverage.privacy_generation
             self.writer.submit(
-                "model_invocation", size, lambda: self._insert(frozen, privacy_generation or 0)
+                "model_invocation",
+                reserved,
+                lambda: self._prepare_and_insert(frozen, privacy_generation),
             )
             return None
+        async with self._database.sessions() as session:
+            await stamp_conversation_correlation(session, row, canonical_conversation_id)
         async with self._database.sessions() as session, session.begin():
             session.add(row)
             await session.flush()
             return self._record(row)
+
+    async def _prepare_and_insert(
+        self, frozen: tuple[tuple[str, Any], ...], privacy_generation: int
+    ) -> None:
+        async with self._database.sessions() as session:
+            await _require_trace_source(session, dict(frozen)["canonical_conversation_id"], None)
+        await self._insert(frozen, privacy_generation)
 
     async def _insert(self, frozen: tuple[tuple[str, Any], ...], privacy_generation: int) -> None:
         values = dict(frozen)
@@ -117,8 +140,21 @@ class ModelInvocationRepository:
         guarded = select(
             *(literal(value, type_=table.c[key].type) for key, value in values.items())
         ).where(func.coalesce(current_generation, 0) == privacy_generation)
+        if values["canonical_conversation_id"] is not None:
+            guarded = guarded.where(
+                exists(
+                    select(CanonicalConversationModel.id).where(
+                        CanonicalConversationModel.id == values["canonical_conversation_id"]
+                    )
+                )
+            )
         async with self._database.sessions() as session, session.begin():
-            await session.execute(insert(ModelInvocationModel).from_select(list(values), guarded))
+            result = await session.execute(
+                insert(ModelInvocationModel).from_select(list(values), guarded)
+            )
+            if getattr(result, "rowcount", 0) == 0:
+                # Visible disposable gap; never retry a guarded/unknown commit.
+                raise ValueError("model_invocation_privacy_or_source_changed")
 
     async def stats(self, *, task: ModelTask | None = None) -> ModelStats:
         statement = self._stats_statement()

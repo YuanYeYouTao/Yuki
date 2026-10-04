@@ -12,10 +12,8 @@ from collections import OrderedDict
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
-
-from sqlalchemy.exc import SQLAlchemyError
 
 from qq_ai_bot.domain.messages import (
     ChatMessage,
@@ -23,6 +21,12 @@ from qq_ai_bot.domain.messages import (
     ChatResponse,
     NativeToolType,
     minimum_reasoning_effort,
+)
+from qq_ai_bot.execution_trace.phases import (
+    ModelPhases,
+    current_model_phases,
+    model_detail,
+    switch_model_phase,
 )
 from qq_ai_bot.execution_trace.recorder import TraceRecorder, record_trace, trace_span
 from qq_ai_bot.llm.base import LLMError, LLMUnsupportedFeatureError
@@ -480,21 +484,41 @@ class TaskModelExecutor:
         priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
         canonical_conversation_id: str | None = None,
     ) -> ChatResponse:
-        with self.pin():
-            async with trace_span(
-                "model",
-                {"task": task.value, "request": asdict(request)},
-                recorder=self.traces,
-                conversation_id=canonical_conversation_id,
-            ) as span:
-                response = await self._execute(
-                    task,
-                    request,
-                    priority=priority,
-                    canonical_conversation_id=canonical_conversation_id,
-                )
-                span.result = asdict(response)
-                return response
+        phases = ModelPhases()
+        phase_token = current_model_phases.set(phases)
+        outcome = "terminated"
+        try:
+            with self.pin():
+                async with trace_span(
+                    "model",
+                    {"task": task.value, "request": request},
+                    recorder=self.traces,
+                    conversation_id=canonical_conversation_id,
+                ) as span:
+                    try:
+                        response = await self._execute(
+                            task,
+                            request,
+                            priority=priority,
+                            canonical_conversation_id=canonical_conversation_id,
+                        )
+                    except asyncio.CancelledError:
+                        outcome = "cancelled"
+                        raise
+                    except Exception:
+                        outcome = "error"
+                        raise
+                    else:
+                        outcome = "success"
+                        span.result = response
+                        return response
+                    finally:
+                        # The same scope/operation contains all outcomes. This
+                        # enqueues only numbers and does not wait for its consumer.
+                        if outcome != "terminated":
+                            await record_trace("model_phases", phases.snapshot(outcome))
+        finally:
+            current_model_phases.reset(phase_token)
 
     async def _execute(
         self,
@@ -566,7 +590,9 @@ class TaskModelExecutor:
                 profile.max_input_tokens or profile.context_window_tokens or 1,
                 output_tokens=request.max_output_tokens,
             )
-            if estimate_request_tokens(_profile_request(request, profile)) > budget:
+            with model_detail("token_estimation"):
+                estimated = estimate_request_tokens(_profile_request(request, profile))
+            if estimated > budget:
                 raise LLMUnsupportedFeatureError(
                     "request exceeds configured provider input capacity"
                 )
@@ -577,23 +603,24 @@ class TaskModelExecutor:
             if task is ModelTask.MEMORY_SELF_REFLECTION
             else pool.get(profile)
         )
-        normalized = replace(
-            _profile_request(request, profile),
-            request_shape_hash=request_shape_hash(
-                request,
+        with model_detail("cache_shape_preparation"):
+            normalized = replace(
+                _profile_request(request, profile),
+                request_shape_hash=request_shape_hash(
+                    request,
+                    provider=profile.provider,
+                    model=profile.model,
+                    profile_id=profile.id,
+                    protocol=profile.protocol.value,
+                ),
+            )
+            provider_cache_shape = provider_cache_shape_diagnostics(
+                normalized,
                 provider=profile.provider,
                 model=profile.model,
                 profile_id=profile.id,
                 protocol=profile.protocol.value,
-            ),
-        )
-        provider_cache_shape = provider_cache_shape_diagnostics(
-            normalized,
-            provider=profile.provider,
-            model=profile.model,
-            profile_id=profile.id,
-            protocol=profile.protocol.value,
-        )
+            )
         if normalized.conversation_prefix_hash:
             self._observe_prompt_shape(
                 normalized,
@@ -629,6 +656,7 @@ class TaskModelExecutor:
             )
 
         started = time.perf_counter()
+        switch_model_phase("slot_wait")
         native_search_requested = any(
             tool.type is NativeToolType.WEB_SEARCH for tool in normalized.native_tools
         )
@@ -680,6 +708,7 @@ class TaskModelExecutor:
             raise
         finally:
             current_provider_attempts.reset(attempt_token)
+            switch_model_phase("response_preparation")
         if response.continuation is not None:
             response = replace(
                 response,
@@ -716,7 +745,7 @@ class TaskModelExecutor:
                 cache_creation_input_tokens=response.cache_creation_input_tokens,
                 cache_creation_5m_input_tokens=response.cache_creation_5m_input_tokens,
                 cache_creation_1h_input_tokens=response.cache_creation_1h_input_tokens,
-                latency_seconds=response.latency_seconds,
+                latency_seconds=time.perf_counter() - started,
                 error_category=None,
                 physical_request_count=attempts.requests,
                 unknown_usage_request_count=attempts.unknown_usage_requests,
@@ -737,8 +766,6 @@ class TaskModelExecutor:
             # outage must not discard a successful provider response; when the
             # provider failed, retain that original exception even if auditing
             # has an independent bug. Never retry an uncertain telemetry commit.
-            if original_failure is None and not isinstance(exc, SQLAlchemyError):
-                raise
             self._invocation_record_failures += 1
             logger.error(
                 "model_invocation_record_failed task=%s category=%s provider_success=%s "
@@ -974,8 +1001,10 @@ class TaskModelExecutor:
                 if not background:
                     self._provider_foreground_waiting -= 1
                 self._priority_condition.notify_all()
+        switch_model_phase("slot_hold")
         try:
-            await check_model_dispatch()
+            with model_detail("dispatch_preparation"):
+                await check_model_dispatch()
             return await provider.complete(request)
         finally:
             async with self._priority_condition:
@@ -983,6 +1012,7 @@ class TaskModelExecutor:
                 if background:
                     self._nonforeground_active -= 1
                 self._priority_condition.notify_all()
+                switch_model_phase("response_preparation")
 
     def profile_id(self, task: ModelTask) -> str:
         route, _profile = self._runtime()[0].route(task)

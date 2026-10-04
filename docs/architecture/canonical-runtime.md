@@ -66,6 +66,13 @@ Binding、Presence、Registry 当前连接代次与能力，无需再次远端�
 此结果不授予写权限；账本首次写入仍执行原持久路由围栏。冷路由、其他 Presence 的路由恢复、
 主动发送与显式恢复继续使用实时成员探针及原 CAS，不缓存成员资格或引入隐式接管。
 
+冷 ingest 恢复只保留短生命周期计划：原 authenticated connection 快照、Presence revision 和
+SpaceBinding owner/revision。外层数据库会话结束后才执行成员探针及恢复；准备/探测阶段总计
+10 秒 deadline 不包围物理提交。路由写入的新事务核验这些版本及原 route CAS，完成后 fresh
+admission 再确认原连接与 pin。探测或 CAS 前取消不安装路由；提交确认未知直接传播，不盲重试
+或反向删除可能已提交的路由。数值日志分别报告初读、探测准备、恢复和 fresh recheck，
+恢复包含 CAS，不能将其耗时称作纯数据库锁等待。
+
 群内超管的精确 `/ai on` 使用独立的确定性控制入口，不是绕过 ingest 的聊天事件：QQ adapter
 验证真实事件连接与管理员 Binding，恢复服务保留健康接入 pin，否则仅接受唯一通过实时成员
 探针的候选。群启用、必要的两张群路由变更、审计和幂等回执在同一个 `BEGIN IMMEDIATE` 中提交；

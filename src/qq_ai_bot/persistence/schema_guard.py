@@ -401,6 +401,12 @@ async def require_canonical_schema(database_url: str) -> None:
                     ("deleting", "prepared_at", "sha256"),
                     "reply maintenance",
                 ),
+                (
+                    "ix_evidence_compaction_items_fact_before_status",
+                    "memory_evidence_compaction_items",
+                    ("fact_id", "evidence_before", "status"),
+                    "evidence compaction",
+                ),
             ):
                 retained = (
                     await connection.execute(

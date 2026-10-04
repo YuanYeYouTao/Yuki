@@ -1,4 +1,4 @@
-"""Trace producers keep source checks narrow without changing their identity fence."""
+"""Consumers keep original source checks narrow; producers do not query sources."""
 
 import asyncio
 import logging
@@ -31,6 +31,9 @@ class CapturedWrites(DiagnosticWriter):
     def __init__(self):
         super().__init__()
         self.writes = []
+
+    def capacity(self):
+        return 32 * 1024 * 1024
 
     def submit(self, kind, size, commit):
         self.writes.append((kind, size, commit))
@@ -125,6 +128,8 @@ async def test_append_source_is_one_narrow_select_without_body_reads(database, s
     event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
     try:
         await recorder.append(current, "model_start", {"request": "synthetic"})
+        assert not selected
+        await writer.writes[0][2]()
     finally:
         event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
     assert len(selected) == 1
@@ -139,7 +144,6 @@ async def test_append_source_is_one_narrow_select_without_body_reads(database, s
     ):
         assert f"chat_events.{field}" not in selected[0]
     assert len(writer.writes) == 1 and current.coverage.failures == 0
-    await writer.writes[0][2]()
     async with database.sessions() as session:
         stored = await session.scalar(select(ExecutionTraceEntryModel))
     assert stored.source_event_id == event_id
@@ -161,14 +165,13 @@ async def test_nullable_legacy_source_is_distinct_from_missing_event(tmp_path):
                 )
             )
             await connection.execute(text("INSERT INTO chat_events VALUES (1, NULL), (2, 'other')"))
-        writer = CapturedWrites()
-        recorder = TraceRecorder(database, writer=writer)
         for event_id, accepted in ((None, True), (1, True), (2, False), (3, False)):
-            current = scope(recorder, event_id=event_id)
-            before = len(writer.writes)
-            await recorder.append(current, "model_start", {"request": "synthetic"})
-            assert len(writer.writes) - before == int(accepted)
-            assert current.coverage.failures == int(not accepted)
+            async with database.sessions() as session:
+                if accepted:
+                    await recording._require_trace_source(session, None, event_id)
+                else:
+                    with pytest.raises(ValueError, match="invalid_trace_source_event"):
+                        await recording._require_trace_source(session, None, event_id)
     finally:
         await database.close()
 
@@ -199,8 +202,9 @@ async def test_source_rechecks_after_physical_deletion_and_privacy_fences_queued
         assert current.coverage.failures == 1
         fresh = scope(recorder, env.context.conversation_id, event_id, generation=1)
         await recorder.append(fresh, "model_start", {})
+        await writer.drain()
         assert fresh.coverage.failures == 1
-        assert writer.committed == 1  # Only the original, privacy-rejected callback.
+        assert writer.committed + writer.failures == 2  # both callbacks consumed once
     finally:
         await writer.close()
 
@@ -236,10 +240,12 @@ async def test_slow_preparation_logs_only_numbers_and_original_correlation(
         clock[0] += 0.4
 
     monkeypatch.setattr(recording, "encode_payload", encode)
-    monkeypatch.setattr(recording, "asyncio", SimpleNamespace(to_thread=to_thread))
+    monkeypatch.setattr(recording.asyncio, "to_thread", to_thread)
     monkeypatch.setattr(recording, "_require_trace_source", validate)
     with caplog.at_level(logging.WARNING, logger=recording.__name__):
         await recorder.append(current, "model_start", {"content": "private-body-marker"})
+        assert not caplog.records
+        await writer.writes[-1][2]()
     records = [
         r for r in caplog.records if r.getMessage().startswith("execution_trace_slow_prepare")
     ]
@@ -263,7 +269,7 @@ def test_slow_preparation_threshold_has_no_diagnostic_side_effect(caplog):
     assert len(caplog.records) == 1
 
 
-async def test_encode_cancellation_does_not_enqueue_or_emit_a_second_diagnostic(
+async def test_consumer_encode_cancellation_does_not_emit_a_second_diagnostic(
     database,
     monkeypatch,
     caplog,
@@ -275,9 +281,10 @@ async def test_encode_cancellation_does_not_enqueue_or_emit_a_second_diagnostic(
     async def cancelled(*_args):
         raise asyncio.CancelledError()
 
-    monkeypatch.setattr(recording, "asyncio", SimpleNamespace(to_thread=cancelled))
+    monkeypatch.setattr(recording.asyncio, "to_thread", cancelled)
     with caplog.at_level(logging.WARNING, logger=recording.__name__):
+        await recorder.append(current, "model_start", {})
         with pytest.raises(asyncio.CancelledError):
-            await recorder.append(current, "model_start", {})
+            await writer.writes[0][2]()
     assert not caplog.records
-    assert not writer.writes and recorder.record_failures == 0
+    assert len(writer.writes) == 1 and recorder.record_failures == 1

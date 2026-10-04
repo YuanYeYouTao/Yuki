@@ -35,6 +35,7 @@ from qq_ai_bot.event_prompt import (
     external_event_digest_metadata_item,
     recent_external_event_digest,
 )
+from qq_ai_bot.execution_trace.phases import collect_phase_metrics
 from qq_ai_bot.memory.attribution import MemoryExposure, MemoryExposureSource
 from qq_ai_bot.memory.context import (
     MemoryContextService,
@@ -167,6 +168,7 @@ class _HistoryPromptWindow:
     starts_after_event_id: int = 0
     read_version: ConversationReadVersion | None = None
     raw_complete: bool = True
+    uncovered_view: _UncoveredPromptView | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +182,11 @@ class _UncoveredPromptView:
     current_characters: int
     rendered_characters: int
     current_tokens: int
+    history_tokens: int
+    current_message: ChatMessage
+    individual: tuple[tuple[int, tuple[int, ...], ChatMessage], ...]
+    recent: tuple[EventRecord, ...]
+    rendering_key: tuple[object, ...]
 
 
 class ContextAssembler:
@@ -268,10 +275,6 @@ class ContextAssembler:
         recovery = await self._protocol_recovery_context(identity, turn)
         if recovery is not None:
             return recovery
-        await self._ensure_turn_generation(
-            identity,
-            turn,
-        )
         snapshot = await self._load_history_snapshot(identity, turn=turn, before_event_id=None)
         # The provided result belongs to the retired automatic recall path.
         # Keep the argument for callers while preventing old facts entering a new prompt.
@@ -349,6 +352,7 @@ class ContextAssembler:
             bot_display_name=self._settings.bot_display_name,
             timezone=self._settings.default_timezone,
             raw_history_window_shifted=shifted,
+            prepared_view=snapshot.uncovered_view,
         )
         if snapshot.read_version is not None and not await self._ledger.read_version_matches(
             snapshot.read_version
@@ -672,9 +676,12 @@ class ContextAssembler:
         if turn.trigger_event_id is None:
             raise ConversationCoverageError("message turn requires a real event anchor")
 
-        await self._ensure_turn_generation(
+        snapshot = await self._load_history_snapshot(
             identity,
-            turn,
+            turn=turn,
+            # Read current authorized group history even when the original Work
+            # trigger precedes newer chat. Current input is removed separately.
+            before_event_id=None,
         )
         current_event = await self._ledger.get_event(turn.trigger_event_id)
         if (
@@ -683,13 +690,6 @@ class ContextAssembler:
             or current_event.platform_message_id != inbound.message_id
         ):
             raise ConversationCoverageError("turn trigger event does not match scope snapshot")
-        snapshot = await self._load_history_snapshot(
-            identity,
-            turn=turn,
-            # Read current authorized group history even when the original Work
-            # trigger precedes newer chat. Current input is removed separately.
-            before_event_id=None,
-        )
         recent = snapshot.recent
         # Ordinary turns never prefill old facts; only an explicit model tool read
         # may expose them. Historical prefetch arguments are intentionally ignored.
@@ -706,8 +706,13 @@ class ContextAssembler:
                 MemoryTargetRole.CURRENT_GROUP,
             }
         }
-        aliases = await self._people.aliases(inbound.sender.user_id)
-        current_time = await self._time.current(inbound.sender.user_id)
+        metadata = await self._people.prompt_metadata(
+            inbound.sender.user_id,
+            default_timezone=self._time.default_timezone,
+            expected_person_id=inbound.person_id,
+        )
+        aliases = metadata.aliases
+        current_time = self._time.current_in_timezone(metadata.timezone)
         current_relationship = (
             await self._relationships.get_or_create(
                 inbound.sender.user_id,
@@ -883,6 +888,7 @@ class ContextAssembler:
             bot_display_name=self._settings.bot_display_name,
             timezone=self._settings.default_timezone,
             raw_history_window_shifted=shifted,
+            prepared_view=snapshot.uncovered_view,
         )
         history_messages = bounded_messages.history_messages
         current_message = bounded_messages.current_message
@@ -980,10 +986,6 @@ class ContextAssembler:
             raise ConversationCoverageError("external wakeup source does not match trigger")
         if identity.key != turn.transport_scope_key:
             raise ConversationCoverageError("external wakeup transport identity changed")
-        await self._ensure_turn_generation(
-            identity,
-            turn,
-        )
         snapshot = await self._load_history_snapshot(
             identity,
             turn=turn,
@@ -1106,6 +1108,7 @@ class ContextAssembler:
             bot_display_name=self._settings.bot_display_name,
             timezone=self._settings.default_timezone,
             raw_history_window_shifted=shifted,
+            prepared_view=snapshot.uncovered_view,
         )
         history = bounded_messages.history_messages
         current_message = bounded_messages.current_message
@@ -1665,7 +1668,7 @@ class ContextAssembler:
     @staticmethod
     def _uncovered_tokens(view: _UncoveredPromptView, rollup_text: str) -> int:
         return (
-            sum(estimate_text_tokens(item.content or "") + 8 for _, _, item in view.rendered)
+            view.history_tokens
             + view.current_tokens
             + estimate_text_tokens(rollup_text)
             + (128 if rollup_text else 0)
@@ -1715,7 +1718,7 @@ class ContextAssembler:
     ) -> _HistoryPromptWindow:
         read_options = {"token_budget": token_budget} if token_budget is not None else {}
         loaded = await self._rollups.load_prompt_snapshot(
-            scope, before_event_id=before_event_id, **read_options
+            scope, before_event_id=before_event_id, expected_turn=turn, **read_options
         )
         if rollup_wakeup_history.get():
             rollup_wakeup_watermark.set(loaded.raw_tail_end_event_id)
@@ -1774,6 +1777,7 @@ class ContextAssembler:
             and current_message_override is not None
         ):
             history_rows = recent
+            current_message = current_message_override
             current_characters = len(current_message_override.content or "")
             current_tokens = estimate_text_tokens(current_message_override.content or "")
             record = None
@@ -1797,19 +1801,17 @@ class ContextAssembler:
             )
             if current_row is None:
                 return None
-            current_text = (
-                renderer.reference_message(
-                    current_row,
-                    current_event_id=current_event_id,
-                    current_content=content,
-                ).content
-                or ""
+            current_message = renderer.reference_message(
+                current_row,
+                current_event_id=current_event_id,
+                current_content=content,
             )
+            current_text = current_message.content or ""
             current_characters = len(current_text)
             current_tokens = estimate_text_tokens(current_text)
             record = current_row
             fallback = current_row.id
-        rendered = renderer.main_agent_history(history_rows)
+        rendered, individual = renderer.main_agent_history_views(history_rows)
         return _UncoveredPromptView(
             history_rows=history_rows,
             rendered=rendered,
@@ -1818,6 +1820,21 @@ class ContextAssembler:
             current_characters=current_characters,
             rendered_characters=sum(len(item.content or "") for _, _, item in rendered),
             current_tokens=current_tokens,
+            history_tokens=sum(
+                estimate_text_tokens(item.content or "") + 8 for _, _, item in rendered
+            ),
+            current_message=current_message_override or current_message,
+            individual=individual,
+            recent=recent,
+            rendering_key=(
+                current_event_id,
+                content,
+                yuki_account_ids,
+                current_message_override,
+                current_event,
+                self._settings.bot_display_name,
+                self._settings.default_timezone,
+            ),
         )
 
     async def _ensure_uncovered_fits_budget(
@@ -1862,6 +1879,8 @@ class ContextAssembler:
             + self._settings.conversation_rollup_model_timeout_seconds
         )
         max_batches = self._settings.conversation_rollup_foreground_max_batches
+        view: _UncoveredPromptView | None = None
+        view_tokens = 0
         for _ in range(max_batches):
             view = self._uncovered_prompt_view(
                 recent,
@@ -1873,19 +1892,14 @@ class ContextAssembler:
             )
             if view is None:
                 break
-            if (
-                snapshot.raw_complete
-                and self._uncovered_tokens(view, rollup_text) <= capacity_remainder
-            ):
+            view_tokens = self._uncovered_tokens(view, rollup_text)
+            if snapshot.raw_complete and view_tokens <= capacity_remainder:
                 # Appends already signal the existing background worker. Never
                 # wait for auxiliary models merely to meet its maintenance target.
                 # Main composition and Runner still check the complete request.
                 break
             deadline = rollup_deadline
-            requires_coverage = (
-                not snapshot.raw_complete
-                or self._uncovered_tokens(view, rollup_text) > capacity_remainder
-            )
+            requires_coverage = not snapshot.raw_complete or view_tokens > capacity_remainder
             if (
                 requires_coverage
                 and preparation_mode is ContextPreparationMode.DURABLE
@@ -1905,7 +1919,7 @@ class ContextAssembler:
                 "history_coverage_wait raw_complete=%s estimated_tokens=%d capacity=%d "
                 "soft_budget=%d coverage=%d",
                 snapshot.raw_complete,
-                self._uncovered_tokens(view, rollup_text),
+                view_tokens,
                 capacity_remainder,
                 remainder,
                 snapshot.coverage_end,
@@ -1931,19 +1945,22 @@ class ContextAssembler:
             )
             recent = snapshot.recent
             rollup_text = snapshot.rollup_text
-        final_view = self._uncovered_prompt_view(
-            recent,
-            current_event_id=current_event_id,
-            content=content,
-            yuki_account_ids=yuki_account_ids,
-            current_message_override=current_message_override,
-            current_event=current_event,
-        )
+            view = None
+        final_view = view
+        if final_view is None:
+            final_view = self._uncovered_prompt_view(
+                recent,
+                current_event_id=current_event_id,
+                content=content,
+                yuki_account_ids=yuki_account_ids,
+                current_message_override=current_message_override,
+                current_event=current_event,
+            )
+            if final_view is not None:
+                view_tokens = self._uncovered_tokens(final_view, rollup_text)
         if final_view is not None:
-            if (
-                not snapshot.raw_complete
-                or self._uncovered_tokens(final_view, rollup_text) > capacity_remainder
-            ):
+            collect_phase_metrics(N=len(final_view.history_rows))
+            if not snapshot.raw_complete or view_tokens > capacity_remainder:
                 raise ConversationCoverageError(
                     "foreground coverage limit exhausted before prompt became bounded"
                 )
@@ -1953,16 +1970,21 @@ class ContextAssembler:
                 "coverage=%d revision=%d seconds=%.3f",
                 snapshot.raw_complete,
                 expanded,
-                self._uncovered_tokens(final_view, rollup_text),
+                view_tokens,
                 capacity_remainder,
                 remainder,
-                self._uncovered_tokens(final_view, rollup_text) > remainder,
+                view_tokens > remainder,
                 waited_batches,
                 snapshot.coverage_end,
                 snapshot.revision,
                 asyncio.get_running_loop().time() - started,
             )
-        return snapshot, recent, rollup_text, snapshot.coverage_end > coverage_before
+        return (
+            replace(snapshot, uncovered_view=final_view),
+            recent,
+            rollup_text,
+            snapshot.coverage_end > coverage_before,
+        )
 
     async def _ensure_turn_generation(
         self,
@@ -1978,7 +2000,7 @@ class ContextAssembler:
 
         if not self._settings.conversation_rollup_enabled:
             return
-        state, _rollup, _job = await self._rollups.status(scope)
+        state = await self._rollups.scope_state(scope)
         if state is None:
             raise ConversationCoverageError("conversation scope does not exist")
         if not turn_matches_hydrated_scope(
@@ -2002,7 +2024,42 @@ class ContextAssembler:
         bot_display_name: str = "Yuki",
         timezone: str = "Asia/Shanghai",
         raw_history_window_shifted: bool = False,
+        prepared_view: _UncoveredPromptView | None = None,
     ) -> _BoundedMessages:
+        if prepared_view is not None and (
+            prepared_view.recent is recent
+            and (current_event is None or any(row.id == current_event.id for row in recent))
+            and prepared_view.rendering_key
+            == (
+                current_event_id,
+                content,
+                yuki_account_ids,
+                current_message_override,
+                current_event,
+                bot_display_name,
+                timezone,
+            )
+        ):
+            rendered = prepared_view.rendered
+            current_row = prepared_view.record
+            return _BoundedMessages(
+                history_messages=tuple(message for _, _, message in rendered),
+                current_message=prepared_view.current_message,
+                history_anchor_event_id=rendered[0][0]
+                if rendered
+                else (current_row.id if current_row is not None else None),
+                raw_history_window_shifted=raw_history_window_shifted,
+                visible_event_ids=frozenset(
+                    (
+                        *(event_id for _, ids, _ in rendered for event_id in ids),
+                        *((current_row.id,) if current_row is not None else ()),
+                    )
+                ),
+                history_fragments=tuple((ids, message) for _, ids, message in rendered),
+                history_event_fragments=tuple(
+                    (ids, message) for _, ids, message in prepared_view.individual
+                ),
+            )
         renderer = ChatEventPromptRenderer(
             (*recent, *((current_event,) if current_event is not None else ())),
             bot_display_name=bot_display_name,
@@ -2026,16 +2083,12 @@ class ContextAssembler:
             for row in recent
             if row.id != current_event_id and (current_event is None or row.id != current_event.id)
         )
-        rendered = renderer.main_agent_history(history_rows)
+        rendered, individual = renderer.main_agent_history_views(history_rows)
         event_ids = tuple(event_id for _, ids, _ in rendered for event_id in ids)
         return _BoundedMessages(
             history_messages=tuple(item for _, _, item in rendered),
             history_fragments=tuple((ids, item) for _, ids, item in rendered),
-            history_event_fragments=tuple(
-                (ids, item)
-                for row in history_rows
-                for _, ids, item in renderer.main_agent_history((row,))
-            ),
+            history_event_fragments=tuple((ids, item) for _, ids, item in individual),
             current_message=current_message,
             history_anchor_event_id=(
                 rendered[0][0]

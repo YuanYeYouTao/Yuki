@@ -498,15 +498,30 @@ SELF 工具证据以 event/run 二选一归属，
 
 模型调用统计是观测数据，不是执行预算或副作用回执。统计写入抛出数据库异常时，
 保留 Provider 已返回的结果；模型请求失败时，统计异常不能覆盖原始模型异常。
-成功请求之后的统计身份校验错误或编程错误仍会抛出。任务取消照常传播，不承诺
+成功请求之后的可丢统计身份校验或编程错误同样只记固定类别和缺样，保留成功响应、
+不重跑模型；实际 dispatch 身份/权限、预算、journal 与效果回执失败仍按原合同阻断。
+任务取消及 SystemExit/KeyboardInterrupt 照常传播，不承诺
 取消或进程终止时仍能交还、持久化已经收到的 Provider 响应。
 
-生产统计由调用任务先盖入可信身份和时间，再提交到共享有界诊断队列；模型返回和
-并发名额释放不等待统计写锁。数据库聚合只代表已经落盘的样本，队列中仍可能有待写记录，
+生产统计由调用任务冻结原可信身份、时间和 trace 根已捕获的 privacy generation，
+有界快照入原共享队列；来源 SQL、编码与 writer 都由同一个空 Context 消费者处理。
+没有原 trace/privacy 来源的直接 queued record 丢样，不在模型成功后重新捕获删除代次。
+同步 writer=None 的独立调用保留原即时 API。模型返回和并发名额释放不等待可丢准备或写锁。数据库聚合只代表已经落盘的样本，队列中仍可能有待写记录，
 不能宣称完整命中率。入队拒绝、异步写入失败及关闭丢弃通过内容无关日志和诊断 health
 报告 coverage_incomplete；报错可能发生在真实提交后，不把失败次数当作确定缺失数，也不重试
 结果未知的 INSERT。容量、隐私删除围栏及生命周期见 [执行过程查看](execution-trace.md)。
 预算、授权、请求检查点和工具回执仍按原持久化合同失败关闭。
+
+ModelInvocation latency_seconds 的新成功/失败样本统一从完成路由/归一化后、进入
+Provider 调用等待前计到调用及结果准备完成，含 Provider slot 等待、guard、重试和响应处理；
+成功样本不再直接使用协议自身的 complete latency。ChatResponse.latency_seconds 保留各协议
+原兼容定义。完整 logical call 与 cancellation 通过 version=1 的 model_phases 观测，旧统计
+没有分段/版本时不可推断新阶段；取消仍不新增虚假的成功统计。互斥/嵌套计量见
+[执行过程查看](execution-trace.md)。
+
+WorkScheduler 仍按原顺序执行 repair_inputs/wake_rollups/reclaim/protocol_cleanup/selection，
+之后逐个 serial_resumer；health.phase_timings 的固定分桶和慢阶段数值日志分别计量这些
+区间，不改变调度并发、maintenance 次序或已承诺 Work 生命周期。等待驱动仍独立。
 
 尚未接纳工作的普通聊天，对原本发送运维反馈的 Provider、校验及其他内部异常分支
 复用 RuntimeFailure 分类，区分数据库繁忙、内部错误、认证/请求配置问题和 Provider

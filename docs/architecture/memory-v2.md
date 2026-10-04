@@ -185,8 +185,11 @@ Activation 缺失修补按主键扫描有界来源窗口；每轮固定 high-wat
   和 Dream provenance 回写资料均在首个 DELETE 前准备。若任意并发提交使快照过期，
   写入升级失败并整体回滚，最多重新准备三次；不重新领取 item、不更换 operation ID。
   DELETE 后只应用已准备的聚合与 provenance，不扫描证据历史。反思结果回填最多读取
-  200 个 receipt，批量映射 run 后在短 writer 中复核身份及唯一映射，单次批量插入；
-    歧义来源不推断归属。候选的已处理过滤在 LIMIT 前完成，避免不可缩减前缀阻塞后续 fact。
+  200 个 receipt，准备时过滤缺失或非唯一 run 映射；无剩余项只读返回。留下项在短
+  writer 中复核身份及原唯一映射，单次批量插入；歧义来源不推断归属。
+    候选的已处理过滤在 LIMIT 前完成，避免不可缩减前缀阻塞后续 fact。
+    `0093` 的 `(fact_id,evidence_before,status)` 完整非唯一索引支持精确终态回执查找；
+    原 `(run_id,fact_id)` 唯一约束、状态和删除级联保持，证据聚合与来源排序仍读完整输入。
     没有候选且没有原 running run 的空轮询只读返回，不创建空 run；既存 run 继续按原
     ID 恢复和结束，没有 processing item 时不执行空的恢复 UPDATE。
 - 不用 /ai new、清空事实或重建 embedding 掩盖队列/召回问题。

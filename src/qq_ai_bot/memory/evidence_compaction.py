@@ -156,6 +156,21 @@ class EvidenceCompactionService:
                 )
                 for key in set(prepared.values())
             }
+            prepared = {
+                receipt_id: key
+                for receipt_id, key in prepared.items()
+                if len(expected_runs[key]) == 1
+            }
+            if not prepared:
+                return
+            expected_runs = {key: expected_runs[key] for key in set(prepared.values())}
+            run_query = select(MemorySelfReflectionRunModel).where(
+                tuple_(
+                    MemorySelfReflectionRunModel.bot_user_id,
+                    MemorySelfReflectionRunModel.first_event_id,
+                    MemorySelfReflectionRunModel.last_event_id,
+                ).in_(tuple(expected_runs))
+            )
             original_receipts = {row.id: row for row in receipts if row.id in prepared}
 
         # Only bounded identity checks precede the single write. Recheck ambiguous
