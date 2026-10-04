@@ -1166,10 +1166,10 @@ class GroupSettingsRepository:
         *,
         name: str = "",
     ) -> GroupSetting:
-        """Create an observed group without overwriting an existing access switch."""
+        """Observe a current group without overwriting its access switch."""
 
         now = datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             return await observe_canonical_space(session, group_id, name=name, now=now)
 
 

@@ -165,6 +165,10 @@ Activation 缺失修补按主键扫描有界来源窗口；每轮固定 high-wat
   模型或外部效果；提交后的 embedding 调度不在重试范围内。模型判断所引用的事实还须
   在准备阶段比较原 fact signature 和 canonical target，拒绝已经改变的候选；请求目标与
   操作人的 canonical owner、原内部事件和 tool receipt／SELF 来源证明也必须与原计划一致。
+  ORM flush属于该纯数据库单元；物理commit/rollback确认错误不作为可安全重备的517。
+  Dream三次操作级517经确认回滚后，按原cluster核对committed operation回执再登记
+  失败或保留实际提交计数。登记及未决提交错误结束当前worker，health显示任务异常，
+  后续自动tick不能把processing改回pending并再次调用模型；不重置原run预算。
   来源隐藏、擦除、换绑或会话 generation 变化时拒绝旧计划，不能成功写入一个无证据事实。
   Dream 将实际模型输入、选中证据身份与内容及 canonical 分区纳入输入指纹，持久 preview
   复用同一指纹；每次新快照首写前核验，证据数量不变不能证明原模型来源仍然有效。
@@ -182,7 +186,9 @@ Activation 缺失修补按主键扫描有界来源窗口；每轮固定 high-wat
   写入升级失败并整体回滚，最多重新准备三次；不重新领取 item、不更换 operation ID。
   DELETE 后只应用已准备的聚合与 provenance，不扫描证据历史。反思结果回填最多读取
   200 个 receipt，批量映射 run 后在短 writer 中复核身份及唯一映射，单次批量插入；
-  歧义来源不推断归属。候选的已处理过滤在 LIMIT 前完成，避免不可缩减前缀阻塞后续 fact。
+    歧义来源不推断归属。候选的已处理过滤在 LIMIT 前完成，避免不可缩减前缀阻塞后续 fact。
+    没有候选且没有原 running run 的空轮询只读返回，不创建空 run；既存 run 继续按原
+    ID 恢复和结束，没有 processing item 时不执行空的恢复 UPDATE。
 - 不用 /ai new、清空事实或重建 embedding 掩盖队列/召回问题。
 - 0051 仅增加 recall 观测列；不改事实、证据、身份、正文或路由。
 - 未来 WebUI 复用 Control Plane，不直接查询 ORM；读取、content、mutation、destructive

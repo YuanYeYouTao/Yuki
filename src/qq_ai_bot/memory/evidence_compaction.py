@@ -48,10 +48,14 @@ class EvidenceCompactionService:
 
     async def run_batch(self) -> int:
         await self._backfill_reflection_results()
-        run_id = await self._ensure_run()
         candidates = await self._candidate_facts(
             limit=self._settings.memory_evidence_compaction_batch_size
         )
+        # Idle polling needs no durable run or writer. A previously started
+        # run still closes under its original identity after recovery.
+        run_id = await self._ensure_run(create=bool(candidates))
+        if run_id is None:
+            return 0
         if not candidates:
             await self._finish_run(run_id)
             return 0
@@ -242,7 +246,7 @@ class EvidenceCompactionService:
                     insert(MemorySelfReflectionResultModel).values(values).on_conflict_do_nothing()
                 )
 
-    async def _ensure_run(self) -> int:
+    async def _ensure_run(self, *, create: bool = True) -> int | None:
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
             current = await session.scalar(
@@ -252,15 +256,26 @@ class EvidenceCompactionService:
                 .limit(1)
             )
             if current is not None:
-                await session.execute(
-                    update(MemoryEvidenceCompactionItemModel)
+                processing = await session.scalar(
+                    select(MemoryEvidenceCompactionItemModel.id)
                     .where(
                         MemoryEvidenceCompactionItemModel.run_id == current.id,
                         MemoryEvidenceCompactionItemModel.status == "processing",
                     )
-                    .values(status="pending", updated_at=now)
+                    .limit(1)
                 )
+                if processing is not None:
+                    await session.execute(
+                        update(MemoryEvidenceCompactionItemModel)
+                        .where(
+                            MemoryEvidenceCompactionItemModel.run_id == current.id,
+                            MemoryEvidenceCompactionItemModel.status == "processing",
+                        )
+                        .values(status="pending", updated_at=now)
+                    )
                 return current.id
+            if not create:
+                return None
             row = MemoryEvidenceCompactionRunModel(
                 public_id=str(uuid.uuid4()),
                 status="running",

@@ -6,7 +6,10 @@
 交付分支：独立 worktree `codex/database-reply-latency`，本地实现及独立复审完成。
 首轮代码提交 `66812b8e3926f2b960fdf16abc2c9ba82e7aeffa` 已推送到
 [PR #236](https://github.com/YuanYeYouTao/Yuki/pull/236)。全量验证及补修的最新结果以该 PR
-当前 head 的 checks 为准；本文记录定向证据。尚未合并或部署，此处不是线上效果验收。
+当前 head 的 checks 为准；本文记录定向证据。该 PR 已于 2026-10-04 合并为
+`7b35e8cac188de55cb0984778748c5e117a552a5`，Bot-only 部署于当日 16:52:36（UTC+08）启动，
+数据库升级至0092。上线后自然流量仍有长尾和数据库竞争，不能将部署成功当作速度验收；
+检查及继续修复见[后续交付记录](database-reply-latency-followup-2026-10-04.md)。
 
 ## 本地修改范围
 

@@ -1682,10 +1682,17 @@ class MessageProcessor:
                     "group_name_resolve_failed exception_category=%s",
                     type(exc).__name__,
                 )
-        await self._groups.observe(
-            message.group_id,
-            name=group_name,
-        )
+        # Ordinary person observation already updates the group's last-seen
+        # timestamp. This optional refresh only publishes a real group name;
+        # cached, unavailable or empty metadata must not add a second writer.
+        if not group_name:
+            return
+        try:
+            await self._groups.observe(message.group_id, name=group_name)
+        except SQLAlchemyError as exc:
+            # Display metadata does not authorize ingress. The authenticated
+            # route, identity and ledger fences below still apply normally.
+            logger.warning("group_metadata_write_failed exception_category=%s", type(exc).__name__)
 
     async def _effective_group_policy(self, group_id: str | None) -> EffectiveGroupPolicy | None:
         if group_id is None:

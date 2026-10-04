@@ -86,6 +86,14 @@ HTTP 登录和正式 WebUI 接线遵守 control-plane-foundation，当前实现�
 
 ## 验收
 
+普通聊天首次主模型运行前可记录一条 `chat_preparation` 元数据：使用单调时钟统计
+固定准备阶段及总耗时，细分阶段归属于其父阶段，不能重复相加。记录继承原内部轮次、
+来源事件和隐私代次，不带正文或权限信息，复用现有有界诊断队列；不为每个阶段创建
+写事务或新的业务状态。诊断失败不改变准备结果，取消继续传播。该记录只描述处理
+开始后的准备，不能冒充入站前等待、Provider 网络时间或 SQLite 独立锁等待。
+初次上下文校验的计时不包含 Runner 首次 dispatch 内真正的 projection 发布；
+后者位于 turn_start 之后，仍按实际模型/请求与SQL诊断核对。
+
 `/healthz` 的 `sqlite_diagnostics` 记录固定分桶的 SQL、显式 writer 获取、首次 deferred 写入、
 真实 commit/rollback 及可观测持有下界。首次写入的驱动排队、SQLite 等待和执行无法精确拆开；
 `driver_queue_seconds`、`pool_wait_seconds` 与 `sqlite_wait_seconds` 保持未知，不能相减推算。

@@ -5,6 +5,11 @@
 Yuki 全局共用 `/home/yuki` 和 `/workspace`，不按用户或群划分，文件不自动过期。
 `short_state` 继续独立、有界并过期；文件目录、内容和完整日志不自动载入提示词。
 
+工作区 manifest 已初始化后，`short_state` 快照只读，不创建缺失的短期状态表，也不取得
+writer 清理过期槽。读取按同一时刻将过期 text 投影为空，保留 slot/revision/期限且不续期；
+实际更新仍在原事务清理过期正文并核验 CAS 与容量。过期正文的物理清空延至下一次
+实际更新，读取和冲突回执不暴露旧正文。首次工作区 schema 初始化仍需必要 DDL。
+
 采用现有 gVisor、常驻容器和宿主 Manager，execd 固定在
 `441042c288a3eacbe93b36236a9baf6f6254ad4d`，镜像内保留 Apache 许可证。
 没有新增 Jupyter、浏览器或另一个 Agent。
