@@ -1,0 +1,141 @@
+{
+  "requires_run_and_exact_image": true,
+  "model": "gemini-3.8-flash",
+  "client_request_limit": 2,
+  "cases": [
+    {
+      "case": "real_signed_dummy_call",
+      "status": 200,
+      "elapsed_seconds": 3.464,
+      "finish_reason": "STOP",
+      "part_types": [
+        [
+          "functionCall",
+          "thoughtSignature"
+        ],
+        [
+          "text"
+        ]
+      ],
+      "function_calls": 1,
+      "has_real_signature": true,
+      "terminal_token": null,
+      "unexpected_text": false,
+      "usage": {
+        "promptTokenCount": 150,
+        "candidatesTokenCount": 17,
+        "thoughtsTokenCount": 162,
+        "totalTokenCount": 329,
+        "cachedContentTokenCount": null
+      }
+    },
+    {
+      "case": "original_call_then_user_function_response",
+      "status": 200,
+      "elapsed_seconds": 2.176,
+      "finish_reason": "STOP",
+      "part_types": [
+        [
+          "text"
+        ]
+      ],
+      "function_calls": 0,
+      "has_real_signature": false,
+      "terminal_token": "PROBE_DONE",
+      "unexpected_text": false,
+      "usage": {
+        "promptTokenCount": 352,
+        "candidatesTokenCount": 4,
+        "thoughtsTokenCount": 52,
+        "totalTokenCount": 408,
+        "cachedContentTokenCount": null
+      }
+    }
+  ],
+  "gateway": "loopback Gemini v1beta generateContent",
+  "same_session_hint": true,
+  "generation_config": {
+    "maxOutputTokens": 40960,
+    "thinkingConfig": {
+      "thinkingLevel": "LOW"
+    }
+  },
+  "limits": [
+    "No real tools, QQ, explicit credential refresh, data/config mutation or client retry.",
+    "Gateway may perform existing upstream fallback or refresh; two client calls is not a physical upstream count.",
+    "Credentials stay in remote memory; raw synthetic responses only in local ignored private file.",
+    "Bounded timestamp-index reads, exact nonce plus original contents match; missing diagnostic copies remain UNKNOWN.",
+    "Diagnostic copies do not attest final physical wire, account continuity, or natural QQ acceptance."
+  ],
+  "observed_at_utc": "2026-10-04T07:08:53.397665+00:00",
+  "image_id": "sha256:f74debec041ec02859ff7cd94cad3b21c52e64408991c58092c359bd3a78f1b4",
+  "stopped": null,
+  "diagnostic_join_complete": true,
+  "diagnostic_samples": [
+    {
+      "case": "original_call_then_user_function_response",
+      "exact_nonce_contents_join": true,
+      "record_id_sha256": "9641a339120b5c4f8b6e1e2c803df5611176b4d86e680f45ed89e8efcd730d5a",
+      "status": 200,
+      "protocol": "gemini",
+      "incoming": {
+        "contents_count": 3,
+        "tail_role": "user",
+        "tail_part_types": [
+          [
+            "functionResponse"
+          ]
+        ],
+        "tail_unknown_keys": 0,
+        "exact_placeholder_count": 0
+      },
+      "upstream_diagnostic": {
+        "contents_count": 3,
+        "tail_role": "model",
+        "tail_part_types": [
+          [
+            "functionResponse"
+          ]
+        ],
+        "tail_unknown_keys": 0,
+        "exact_placeholder_count": 0
+      },
+      "original_signed_call_part_preserved": true,
+      "original_receipt_preserved": true,
+      "no_extra_content_turn": true
+    },
+    {
+      "case": "real_signed_dummy_call",
+      "exact_nonce_contents_join": true,
+      "record_id_sha256": "38ccf2a1450c3dd4eae564c8da5a4cf0d2f9c68a49b670569341c1d3a10df0a2",
+      "status": 200,
+      "protocol": "gemini",
+      "incoming": {
+        "contents_count": 1,
+        "tail_role": "user",
+        "tail_part_types": [
+          [
+            "text"
+          ]
+        ],
+        "tail_unknown_keys": 0,
+        "exact_placeholder_count": 0
+      },
+      "upstream_diagnostic": {
+        "contents_count": 1,
+        "tail_role": "user",
+        "tail_part_types": [
+          [
+            "text"
+          ]
+        ],
+        "tail_unknown_keys": 0,
+        "exact_placeholder_count": 0
+      }
+    }
+  ],
+  "diagnostic_status": "KNOWN",
+  "diagnostic_query_error_category": null,
+  "client_requests": 2,
+  "physical_upstream_requests": null
+}
