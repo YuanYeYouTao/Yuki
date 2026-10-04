@@ -96,7 +96,7 @@ class FrozenFragments:
         newly visible reference changes the new batch's representation.
         """
         covered = set(self.event_ids)
-        result = list(deepcopy(self.items))
+        result = list(self.items)
         for ids, message in grouped:
             fresh = set(ids).difference(covered)
             if not fresh:
@@ -128,11 +128,27 @@ class FrozenFragments:
     def append_observation(
         self, identity: str, version: int, message: ChatMessage
     ) -> FrozenFragments:
-        if identity in {key for key, _ in self.observation_sources}:
-            return self
-        item = _input((), message)
-        item.update(observation_id=identity, observation_version=version)
-        return self.load([*deepcopy(self.items), item])
+        return self.append_observations(((identity, version, message),))
+
+    def append_observations(
+        self, observations: tuple[tuple[str, int, ChatMessage], ...]
+    ) -> FrozenFragments:
+        """Keep identity-first selection and freeze one ordered batch once.
+
+        Existing IDs (including a different offered version) remain no-ops,
+        exactly as single append. The first new ID wins within this batch.
+        load owns the final deep copy; none of the input dictionaries escape.
+        """
+        seen = {identity for identity, _ in self.observation_sources}
+        additions = []
+        for identity, version, message in observations:
+            if identity in seen:
+                continue
+            item = _input((), message)
+            item.update(observation_id=identity, observation_version=version)
+            additions.append(item)
+            seen.add(identity)
+        return self.load([*self.items, *additions]) if additions else self
 
     def append_protocol(self, messages: tuple[ChatMessage, ...]) -> FrozenFragments:
         return self.load([*deepcopy(self.items), *(_input((), m) for m in messages)])

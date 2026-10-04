@@ -30,6 +30,7 @@ from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.memory.enums import MemoryTargetRole
 from qq_ai_bot.model_runtime.executor import provider_cache_shape_diagnostics
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.people_repository import PersonPromptMetadata
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.prompting import ContextBudgeter
 from qq_ai_bot.runtime.trigger import ExternalEventTurnTrigger
@@ -485,8 +486,11 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     )
     ordinary._ledger.get_event = AsyncMock(return_value=ordinary_event)
     ordinary._memory_context.retrieve_for_turn = AsyncMock(return_value=empty_retrieval)
-    ordinary._people.aliases = AsyncMock(return_value=())
-    ordinary._time.current = AsyncMock(return_value=_time())
+    ordinary._people.prompt_metadata = AsyncMock(
+        return_value=PersonPromptMetadata("synthetic-person", (), _time().timezone)
+    )
+    ordinary._time.default_timezone = _time().timezone
+    ordinary._time.current_in_timezone = MagicMock(return_value=_time())
     ordinary_identity = ordinary_event.scope
     turn = ConversationTurnSnapshot(
         scope_id=1,

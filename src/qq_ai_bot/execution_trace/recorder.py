@@ -22,7 +22,14 @@ from qq_ai_bot.conversation.correlation import (
     MISSING_CANONICAL_CONVERSATION,
 )
 from qq_ai_bot.execution_trace.db_models import ExecutionTraceEntryModel, ExecutionTraceStateModel
-from qq_ai_bot.execution_trace.payload import EncodedPayload, encode_payload
+from qq_ai_bot.execution_trace.payload import (
+    EncodedPayload,
+    HTTPResponseSnapshot,
+    PayloadCapacityError,
+    encode_payload,
+    freeze_payload,
+)
+from qq_ai_bot.execution_trace.phases import current_metrics, model_detail
 from qq_ai_bot.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel, PresenceModel
 from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.persistence.database import Database
@@ -77,6 +84,52 @@ async def _require_trace_source(
         event_id is None or event_conversation_id != conversation_id
     ):
         raise ValueError("invalid_trace_source_event")
+
+
+async def _require_trace_delivery(
+    session: AsyncSession, conversation_id: str | None, delivery: tuple[str, int]
+) -> None:
+    from qq_ai_bot.social.db_models import SocialOperationModel
+
+    anchor = select(literal(1).label("delivery_anchor")).subquery()
+    statement = select(
+        SocialOperationModel.id,
+        SocialOperationModel.status,
+        SocialOperationModel.event_id,
+        SocialOperationModel.source_conversation_id,
+        ChatEventModel.id,
+        ChatEventModel.direction,
+        ChatEventModel.author_kind,
+        ChatEventModel.suppression_status,
+        ChatEventModel.canonical_conversation_id,
+    ).select_from(
+        anchor.outerjoin(SocialOperationModel, SocialOperationModel.id == delivery[0]).outerjoin(
+            ChatEventModel, ChatEventModel.id == delivery[1]
+        )
+    )
+    (
+        receipt_id,
+        status,
+        receipt_event,
+        receipt_conversation,
+        event_id,
+        direction,
+        author,
+        keeper,
+        owner,
+    ) = (await session.execute(statement)).one()
+    if (
+        receipt_id is None
+        or status != "succeeded"
+        or receipt_event != delivery[1]
+        or receipt_conversation != conversation_id
+        or event_id is None
+        or direction != "outbound"
+        or author != "yuki"
+        or keeper != "keeper"
+        or owner is None
+    ):
+        raise ValueError("invalid_trace_delivery")
 
 
 def _encode_payload_timed(payload: object, limit: int) -> tuple[EncodedPayload, float]:
@@ -199,9 +252,9 @@ class TraceRecorder:
         from qq_ai_bot.runtime.work_activation import current_work_control
 
         try:
-            if scope.coverage.privacy_generation is None:
+            original_privacy_generation = scope.coverage.privacy_generation
+            if original_privacy_generation is None:
                 return
-            preparation_started = time.perf_counter()
             now = datetime.now(UTC)
             control = current_work_control.get()
             conversation_id = scope.conversation_id
@@ -209,7 +262,6 @@ class TraceRecorder:
             work_id = None
             activation_id = None
             generation = None
-            delivered_event_id = None
             if control is not None:
                 conversation_id = conversation_id or control.lease.conversation_id
                 activation_id = control.lease.owner
@@ -218,74 +270,63 @@ class TraceRecorder:
                 candidate = control.source.get("trigger_event_id")
                 if type(candidate) is int and candidate > 0:
                     source_event_id = candidate
-            encoding_started = time.perf_counter()
-            encoded, encode_execution = await asyncio.to_thread(
-                _encode_payload_timed, payload, self.max_payload_bytes
+            # No await between admission, bounded independent copy and submit.
+            # The consumer never reads the producer's scope/control/ContextVars.
+            capacity = self.writer.capacity() if self.writer else 32 * 1024 * 1024
+            if capacity == 0:
+                if self.writer:
+                    self.writer.drop(kind)
+                scope.coverage.failures += 1
+                self.record_failures += 1
+                return
+            snapshot_started = time.perf_counter()
+            try:
+                with model_detail("trace_snapshot"):
+                    snapshot, reserved = freeze_payload(payload, capacity)
+            except PayloadCapacityError:
+                if self.writer:
+                    self.writer.drop(kind)
+                scope.coverage.failures += 1
+                self.record_failures += 1
+                return
+            finally:
+                if self.writer:
+                    self.writer.record_phase(
+                        "snapshot_call", time.perf_counter() - snapshot_started
+                    )
+            values = tuple(
+                dict(
+                    conversation_id=conversation_id,
+                    turn_id=scope.turn_id,
+                    operation_id=scope.operation_id,
+                    parent_operation_id=scope.parent_operation_id,
+                    work_id=work_id,
+                    activation_id=activation_id,
+                    execution_id=scope.execution_id,
+                    source_event_id=source_event_id,
+                    delivered_event_id=delivery[1] if delivery else None,
+                    generation=generation,
+                    origin=scope.origin,
+                    kind=kind,
+                    created_at=now,
+                    expires_at=now + timedelta(days=self.retention_days),
+                ).items()
             )
-            encode_call = time.perf_counter() - encoding_started
-            # Resolve trusted identifiers before adding a row or taking the writer.
-            source_started = time.perf_counter()
-            async with self.database.sessions() as session:
-                await _require_trace_source(session, conversation_id, source_event_id)
-                if delivery is not None:
-                    from qq_ai_bot.social.db_models import SocialOperationModel
-
-                    operation_id, event_id = delivery
-                    receipt = await session.get(SocialOperationModel, operation_id)
-                    event = await session.get(ChatEventModel, event_id)
-                    if (
-                        receipt is None
-                        or receipt.status != "succeeded"
-                        or receipt.event_id != event_id
-                        or receipt.source_conversation_id != conversation_id
-                        or event is None
-                        or event.direction != "outbound"
-                        or event.author_kind != "yuki"
-                        or event.suppression_status != "keeper"
-                        or event.canonical_conversation_id is None
-                    ):
-                        raise ValueError("invalid_trace_delivery")
-                    delivered_event_id = event.id
-            source_validation = time.perf_counter() - source_started
-            _log_slow_preparation(
-                kind,
-                scope.turn_id,
-                time.perf_counter() - preparation_started,
-                encode_call,
-                encode_execution,
-                source_validation,
-            )
-            values = dict(
-                conversation_id=conversation_id,
-                turn_id=scope.turn_id,
-                operation_id=scope.operation_id,
-                parent_operation_id=scope.parent_operation_id,
-                work_id=work_id,
-                activation_id=activation_id,
-                execution_id=scope.execution_id,
-                source_event_id=source_event_id,
-                delivered_event_id=delivered_event_id,
-                generation=generation,
-                origin=scope.origin,
-                kind=kind,
-                payload_status=encoded.status,
-                payload_gzip=encoded.compressed,
-                payload_sha256=encoded.sha256,
-                payload_bytes=encoded.size,
-                created_at=now,
-                expires_at=now + timedelta(days=self.retention_days),
-            )
-            frozen = tuple(values.items())
-            if self.writer is not None:
+            coverage = scope.coverage
+            if self.writer:
                 if not self.writer.submit(
                     kind,
-                    len(encoded.compressed or b"") + 1024,
-                    lambda: self._commit_queued(scope.coverage, frozen),
+                    reserved,
+                    lambda: self._prepare_and_commit(
+                        coverage, original_privacy_generation, values, snapshot, delivery
+                    ),
                 ):
-                    scope.coverage.failures += 1
+                    coverage.failures += 1
                     self.record_failures += 1
                 return
-            await self._insert(scope.coverage, frozen)
+            await self._prepare_and_commit(
+                coverage, original_privacy_generation, values, snapshot, delivery
+            )
         except Exception as exc:
             scope.coverage.failures += 1
             self.record_failures += 1
@@ -295,17 +336,94 @@ class TraceRecorder:
                 type(exc).__name__,
             )
 
-    async def _commit_queued(
-        self, coverage: TraceCoverage, frozen: tuple[tuple[str, Any], ...]
+    async def _prepare_and_commit(
+        self,
+        coverage: TraceCoverage,
+        original_privacy_generation: int,
+        frozen: tuple[tuple[str, Any], ...],
+        payload: object,
+        delivery: tuple[str, int] | None,
     ) -> None:
+        values = dict(frozen)
+        started = time.perf_counter()
+        source_validation = encode_call = encode_execution = 0.0
+        prepared_seconds: float | None = None
         try:
-            await self._insert(coverage, frozen)
-        except (Exception, asyncio.CancelledError):
-            coverage.failures += 1
-            self.record_failures += 1
+            source_started = time.perf_counter()
+            try:
+                async with self.database.sessions() as session:
+                    await _require_trace_source(
+                        session, values["conversation_id"], values["source_event_id"]
+                    )
+                    if delivery is not None:
+                        await _require_trace_delivery(session, values["conversation_id"], delivery)
+            finally:
+                source_validation = time.perf_counter() - source_started
+                if self.writer:
+                    self.writer.record_phase("source_validation", source_validation)
+            encoding_started = time.perf_counter()
+            # Shield the actual worker. On shutdown, join it before releasing
+            # the item's reservation; cancellation alone cannot stop a thread.
+            worker = asyncio.create_task(
+                asyncio.to_thread(_encode_payload_timed, payload, self.max_payload_bytes)
+            )
+            try:
+                encoded, encode_execution = await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                while not worker.done():
+                    try:
+                        await asyncio.shield(worker)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                if worker.done() and not worker.cancelled():
+                    worker.exception()
+                raise
+            encode_call = time.perf_counter() - encoding_started
+            if self.writer:
+                self.writer.record_phase("encode_call_inclusive", encode_call)
+                self.writer.record_phase("encode_execution", encode_execution)
+            values.update(
+                payload_status=encoded.status,
+                payload_gzip=encoded.compressed,
+                payload_sha256=encoded.sha256,
+                payload_bytes=encoded.size,
+            )
+            prepared_seconds = time.perf_counter() - started
+            write_started = time.perf_counter()
+            try:
+                await self._insert(
+                    coverage, original_privacy_generation, tuple(values.items()), delivery=delivery
+                )
+            finally:
+                if self.writer:
+                    self.writer.record_phase(
+                        "diagnostic_write", time.perf_counter() - write_started
+                    )
+        except (Exception, asyncio.CancelledError) as exc:
+            if self.writer is not None or isinstance(exc, asyncio.CancelledError):
+                coverage.failures += 1
+                self.record_failures += 1
             raise
+        finally:
+            _log_slow_preparation(
+                values["kind"],
+                values["turn_id"],
+                prepared_seconds if prepared_seconds is not None else time.perf_counter() - started,
+                encode_call,
+                encode_execution,
+                source_validation,
+            )
 
-    async def _insert(self, coverage: TraceCoverage, frozen: tuple[tuple[str, Any], ...]) -> None:
+    async def _insert(
+        self,
+        coverage: TraceCoverage,
+        original_privacy_generation: int,
+        frozen: tuple[tuple[str, Any], ...],
+        *,
+        delivery: tuple[str, int] | None = None,
+    ) -> None:
         values = dict(frozen)
         table = ExecutionTraceEntryModel.__table__
         privacy_generation = (
@@ -315,7 +433,48 @@ class TraceRecorder:
         )
         guarded_values = select(
             *(literal(value, type_=table.c[key].type) for key, value in values.items())
-        ).where(func.coalesce(privacy_generation, 0) == coverage.privacy_generation)
+        ).where(func.coalesce(privacy_generation, 0) == original_privacy_generation)
+        # Re-check ownership in the conditional INSERT as well: deletion or
+        # re-ownership between the read session and this writer cannot refill it.
+        if values["conversation_id"] is not None:
+            guarded_values = guarded_values.where(
+                exists(
+                    select(CanonicalConversationModel.id).where(
+                        CanonicalConversationModel.id == str(values["conversation_id"]).strip()
+                    )
+                )
+            )
+        if values["source_event_id"] is not None:
+            guarded_values = guarded_values.where(
+                exists(
+                    select(ChatEventModel.id).where(
+                        ChatEventModel.id == values["source_event_id"],
+                        ChatEventModel.canonical_conversation_id == values["conversation_id"],
+                    )
+                )
+            )
+        if delivery is not None:
+            from qq_ai_bot.social.db_models import SocialOperationModel
+
+            guarded_values = guarded_values.where(
+                exists(
+                    select(SocialOperationModel.id).where(
+                        SocialOperationModel.id == delivery[0],
+                        SocialOperationModel.status == "succeeded",
+                        SocialOperationModel.event_id == delivery[1],
+                        SocialOperationModel.source_conversation_id == values["conversation_id"],
+                    )
+                ),
+                exists(
+                    select(ChatEventModel.id).where(
+                        ChatEventModel.id == delivery[1],
+                        ChatEventModel.direction == "outbound",
+                        ChatEventModel.author_kind == "yuki",
+                        ChatEventModel.suppression_status == "keeper",
+                        ChatEventModel.canonical_conversation_id.is_not(None),
+                    )
+                ),
+            )
         # The erasure fence and insert are one SQL statement; an in-flight
         # response cannot recreate a deleted prompt after privacy erasure.
         async with self.database.sessions() as session, session.begin():
@@ -403,6 +562,7 @@ async def trace_span(
         origin=origin or (parent.origin if parent else None),
         source_event_id=source_event_id or (parent.source_event_id if parent else None),
     )
+    metric_token = current_metrics.set({}) if parent is None else None
     token = current_trace.set(scope)
     recorder._live_spans[scope.operation_id] = LiveTraceSpan(
         turn_id=scope.turn_id,
@@ -417,7 +577,7 @@ async def trace_span(
         await record_trace(f"{family}_start", payload)
         try:
             yield span
-        except BaseException as exc:
+        except (Exception, asyncio.CancelledError) as exc:
             from qq_ai_bot.runtime.activation_outcome import classify_failure
 
             await record_trace(
@@ -430,6 +590,9 @@ async def trace_span(
             )
             raise
         else:
+            metrics = current_metrics.get()
+            if parent is None and metrics:
+                await record_trace("phase_metrics", {"phase_version": 1, **metrics})
             await record_trace(
                 f"{family}_end",
                 {
@@ -440,14 +603,13 @@ async def trace_span(
     finally:
         recorder._live_spans.pop(scope.operation_id, None)
         current_trace.reset(token)
+        if metric_token is not None:
+            current_metrics.reset(metric_token)
 
 
 async def record_http_response(response: Any) -> None:
-    try:
-        body = response.json()
-    except ValueError:
-        body = {"trace_omitted": "non_json_response", "bytes": len(response.content)}
+    # Bytes are immutable and independently bounded before JSON parsing. The
+    # consumer never retains a response/client/session or transport credentials.
     await record_trace(
-        "provider_response",
-        {"http_status": response.status_code, "dispatch": "response_received", "body": body},
+        "provider_response", HTTPResponseSnapshot(response.status_code, response.content)
     )

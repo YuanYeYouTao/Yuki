@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -18,6 +18,7 @@ from sqlalchemy.orm import defer
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.conversation.projection_models import PromptProjectionModel
+from qq_ai_bot.execution_trace.phases import collect_phase_metrics
 from qq_ai_bot.persistence.database import Database
 
 REBUILD_REASONS = frozenset(
@@ -56,6 +57,10 @@ class ProjectionSnapshot:
     source_revision: int
     selected_summary_text: str | None = None
     selected_summary_coverage: int = 0
+    _prefix_stamp: tuple[object, ...] | None = field(default=None, repr=False, compare=False)
+    _prefix_origin: tuple[str, str, tuple[object, ...]] | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def items(self) -> list[dict[str, Any]]:
         # Each consumer gets a copy; changing it cannot mutate the committed view.
@@ -182,6 +187,8 @@ class PromptProjectionRepository:
         current_snapshot: dict[str, Any] | None = None,
         snapshot_event_id: int | None = None,
         snapshot_fragment_index: int | None = None,
+        previous_snapshot: ProjectionSnapshot | None = None,
+        previous_item_count: int | None = None,
     ) -> ProjectionPublication:
         """Append exact items, or explicitly replace an epoch under a compare-and-swap.
 
@@ -245,10 +252,18 @@ class PromptProjectionRepository:
             raise ProjectionCapacityError("projection item limit exceeded")
         payload = json.dumps(items, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
         size = len(payload.encode("utf-8"))
+        collect_phase_metrics(item_count=len(items), payload_bytes=size)
         if size > self.view_bytes:
             raise ProjectionCapacityError("projection view budget exceeded")
         prepared_prefix = (
-            await self._prepare_prefix(view_key, payload) if rebuild_reason is None else None
+            await self._prepare_prefix(
+                view_key,
+                items,
+                previous_snapshot=previous_snapshot,
+                previous_item_count=previous_item_count,
+            )
+            if rebuild_reason is None
+            else None
         )
         # Freeze and encode selected-source rows before taking the writer. Their
         # order is the already prepared model order, never source timestamps.
@@ -639,27 +654,50 @@ class PromptProjectionRepository:
         )
 
     async def _prepare_prefix(
-        self, view_key: str, payload: str
+        self,
+        view_key: str,
+        items: list[dict[str, Any]],
+        *,
+        previous_snapshot: ProjectionSnapshot | None = None,
+        previous_item_count: int | None = None,
     ) -> tuple[tuple[object, ...], bool, frozenset[str]] | None:
         """Compare immutable wire data before reserving the SQLite writer."""
-        async with self.database.sessions() as session:
-            old = await session.get(PromptProjectionModel, view_key)
-            if old is None:
-                return None
-            previous = json.loads(old.payload_json)
-            # Compare serialization, not dict equality: key order is wire data.
-            prefix = json.dumps(
-                json.loads(payload)[: len(previous)],
-                ensure_ascii=False,
-                separators=(",", ":"),
-                allow_nan=False,
+        if previous_snapshot is not None and previous_snapshot._prefix_stamp is not None:
+            # This immutable repository snapshot is already held by preparation.
+            # Publication still compares its complete stamp under the writer.
+            origin = previous_snapshot._prefix_origin
+            if (
+                origin is None
+                or origin[0] != view_key
+                or origin[1] is not previous_snapshot.payload_json
+                or origin[2] is not previous_snapshot._prefix_stamp
+            ):
+                raise ProjectionConflict("projection snapshot origin changed")
+            stamp, old_payload = previous_snapshot._prefix_stamp, previous_snapshot.payload_json
+            count = (
+                previous_item_count
+                if previous_item_count is not None
+                else len(previous_snapshot.items())
             )
-            keys = (
-                frozenset(_selection_key(item) for item in previous)
-                if all("event_ids" in item for item in previous)
-                else frozenset()
-            )
-            return _prefix_version(old), prefix == old.payload_json, keys
+        else:
+            async with self.database.sessions() as session:
+                old = await session.get(PromptProjectionModel, view_key)
+                if old is None:
+                    return None
+                stamp, old_payload = _prefix_version(old), old.payload_json
+                count = len(json.loads(old_payload))
+        prefix_items = items[:count]
+        # Preserve the existing frozen-prefix serialization check. This is an
+        # implementation constraint of the current store, not a new wire rule.
+        prefix = json.dumps(
+            prefix_items, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+        )
+        keys = (
+            frozenset(_selection_key(item) for item in prefix_items)
+            if all("event_ids" in item for item in prefix_items)
+            else frozenset()
+        )
+        return stamp, prefix == old_payload, keys
 
     async def invalidate(self, conversation_id: str) -> None:
         """Remove model-input copies when a source is deleted/reset; leave the ledger intact."""
@@ -705,6 +743,7 @@ def _selection_key(item: dict[str, Any]) -> str:
 
 def _prefix_version(row: PromptProjectionModel) -> tuple[object, ...]:
     return (
+        row.view_key,
         row.conversation_id,
         row.epoch_id,
         row.revision,
@@ -718,6 +757,7 @@ def _prefix_version(row: PromptProjectionModel) -> tuple[object, ...]:
 
 
 def _snapshot(row: PromptProjectionModel) -> ProjectionSnapshot:
+    stamp = _prefix_version(row)
     return ProjectionSnapshot(
         row.epoch_id,
         row.revision,
@@ -729,4 +769,8 @@ def _snapshot(row: PromptProjectionModel) -> ProjectionSnapshot:
         row.source_revision,
         row.selected_summary_text,
         row.selected_summary_coverage,
+        stamp,
+        # Keep the original immutable string reference, without another body
+        # copy or encode. dataclasses.replace must not substitute a new prefix.
+        (row.view_key, row.payload_json, stamp),
     )

@@ -14,6 +14,16 @@ Rollup 是 canonical Conversation 的可重建 Prompt 投影。`chat_events` 始
 MemoryPartitionKey 使用 SELF、PERSON、GROUP 或 PERSON_GROUP owner，不得用 Conversation UUID
 代替。
 
+普通上下文的 expected turn 在 `load_prompt_snapshot` 显式 `BEGIN` 建立的一致快照内，
+先校验 scope id、generation、runtime key 和 transport key，再读取摘要和历史正文。
+协议恢复单独使用只含身份的 scope state 读取；准备后的 read-version/source/privacy 与
+实际 dispatch CAS 继续独立执行。不能以先前展示资料快照替代授权或取消末端围栏。
+
+普通 Person 的 alias 与 timezone 在本次准备中只解析一次 live canonical owner，返回
+不含 ORM/session 的 immutable 展示 DTO。Runner 复用本轮 timezone 并重新取 clock，
+下一轮重新读取偏好；SELF 与 actorless 不借用该 DTO。Relationship 仍使用既有
+get_or_create，保留首次合法写入，不新增展示资料的统一 revision 或变更重试协议。
+
 ## 持久状态
 
 每个 canonical Conversation 至多有：

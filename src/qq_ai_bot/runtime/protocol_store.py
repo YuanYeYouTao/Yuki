@@ -29,6 +29,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from qq_ai_bot.admin.models import WorkStorageRuntimeConfig
 from qq_ai_bot.domain.messages import ChatMessage, FunctionCallOutput
+from qq_ai_bot.execution_trace.phases import timed_lock
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.runtime.protocol_schema import objects, refs, usage
 
@@ -119,7 +120,7 @@ class ProtocolStore:
     async def put_bytes(self, content: bytes) -> str:
         digest = hashlib.sha256(content).hexdigest()
         if digest not in self.prepared_refs:
-            async with self._lock:
+            async with timed_lock(self._lock, "protocol"):
                 await _finish_thread(self._publish, digest, content)
         self.prepared_refs.add(digest)
         self.prepared_sizes[digest] = len(content)
@@ -312,7 +313,7 @@ class ProtocolStore:
     @asynccontextmanager
     async def publication(self, work_id: str) -> AsyncIterator[tuple[dict[str, Any], ...]]:
         """Prepare bounded rows before acquiring SQLite's writer fence."""
-        async with self._lock:
+        async with timed_lock(self._lock, "protocol"):
             published = False
             try:
                 digests = tuple(sorted(self.prepared_refs))
@@ -547,7 +548,7 @@ class ProtocolStore:
             if not selected:
                 return 0
             # Never await SQLite's writer while holding the GC file fence.
-            async with self._lock:
+            async with timed_lock(self._lock, "protocol"):
                 removed = await _finish_thread(
                     self._unlink_objects, [dict(row) for row in selected]
                 )

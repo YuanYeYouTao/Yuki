@@ -466,7 +466,9 @@ async def test_missing_cache_read_keeps_model_invocation_total_unknown():
 
 
 @pytest.mark.parametrize("failed", [False, True])
-async def test_telemetry_does_not_hide_identity_errors_or_cancellation(failed, caplog):
+async def test_disposable_telemetry_preserves_success_original_failure_and_cancellation(
+    failed, caplog
+):
     original = LLMTimeoutError("provider detail")
 
     def respond(request):
@@ -485,18 +487,22 @@ async def test_telemetry_does_not_hide_identity_errors_or_cancellation(failed, c
         CanonicalIdentityError("canonical_kind_mismatch"),
         TypeError("telemetry bug"),
         asyncio.CancelledError(),
+        SystemExit(3),
     ):
         provider = FakeLLMProvider(respond)
         models = executor(provider, BrokenTelemetry(telemetry_error))
         expected = (
-            original
-            if failed and not isinstance(telemetry_error, asyncio.CancelledError)
-            else telemetry_error
+            original if failed and isinstance(telemetry_error, Exception) else telemetry_error
         )
         try:
-            with pytest.raises(type(expected)) as caught:
-                await models.execute(ModelTask.CHAT_AGENT, ChatRequest(messages=()))
-            assert caught.value is expected
+            if not failed and isinstance(telemetry_error, Exception):
+                result = await models.execute(ModelTask.CHAT_AGENT, ChatRequest(messages=()))
+                assert result.content == "answer"
+                assert models._invocation_record_failures == 1
+            else:
+                with pytest.raises(type(expected)) as caught:
+                    await models.execute(ModelTask.CHAT_AGENT, ChatRequest(messages=()))
+                assert caught.value is expected
             assert len(provider.requests) == 1
             assert "telemetry bug" not in caplog.text
         finally:
