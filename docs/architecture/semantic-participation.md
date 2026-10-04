@@ -114,6 +114,14 @@ Space，不能为语义关联改成某个人。普通发送通过原回执和入
 控制器；已结束 run 仍对账迟到效果，反馈序列和效果 ID 防止重入重复累计。
 `suspended`/`waiting_user` 保留 Work 和回执，反馈为 interrupted，不由参与控制器盲目重跑。
 
+活跃 run 保持恢复优先；终态 run 按原稳定 ID、有界页和每次巡回固定上界轮转，
+不只读取最近修改的尾页。游标只存在于进程内，不承担效果事实或跨代所有权。
+每页在显式读快照批读原 Work、Social/MemoryTool 回执、child 计量和全部已提交反馈；
+无变化时不申请 writer。新增反馈仍按原 64 effects/页原子提交，每 run 单轮页数有界，
+剩余回执下一巡回继续。准备快照升级竞争只有限重备数据库计划，不重跑原模型或发送。
+Host 提交后按原 scope/generation 聚合回放并保存一次控制器；冷加载也回放已有反馈。
+普通入场及 boundary 来源按当前核验阶段批读，跨外部等待重新核验，不缓存授权。
+
 工具证据使用内部事件或 initiative run 严格互斥的来源，并按 run、execution、Provider、
 工具名和实际调用身份去重。SELF 的调用身份以原 journal chain/请求序号限定 Provider
 call ID，避免不同响应重复使用 `call_0` 被误合并；Provider 请求历史仍保留原始 ID。

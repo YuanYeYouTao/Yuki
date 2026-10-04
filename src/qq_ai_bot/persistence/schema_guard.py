@@ -389,6 +389,18 @@ async def require_canonical_schema(database_url: str) -> None:
                     ("status", "id"),
                     "maintenance",
                 ),
+                (
+                    "ix_social_operation_scope_updated",
+                    "social_operation_receipts",
+                    ("source_conversation_id", "updated_at"),
+                    "reply maintenance",
+                ),
+                (
+                    "ix_protocol_objects_gc_cursor",
+                    "runtime_protocol_objects",
+                    ("deleting", "prepared_at", "sha256"),
+                    "reply maintenance",
+                ),
             ):
                 retained = (
                     await connection.execute(

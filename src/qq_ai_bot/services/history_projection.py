@@ -184,6 +184,8 @@ async def prepare_history(
             generation=version.generation,
             actor_id=actor_id,
             read_scope=read_scope,
+            visible_event_ids=context.visible_event_ids,
+            allowed_observation_ids=frozenset(row.id for row in observations),
         )
         allowed_observations = {row.id for row in observations}
         selected = [

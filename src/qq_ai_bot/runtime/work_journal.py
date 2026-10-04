@@ -123,6 +123,7 @@ class WorkJournal:
         *,
         source_control: WorkControl | None = None,
     ) -> JournalSnapshot:
+        self.objects.clear_record_cache()
         if source_control is not None and (
             source_control.lease != lease
             or source_control.current is None
@@ -318,12 +319,29 @@ class WorkJournal:
         )
         updated_work = None
         await self.objects.refresh_policy()
+        self.objects.begin_record_chain(work_id, transcript.chain_id)
+        request = transcript.request()
+        encoded_items: list[dict[str, Any]] = []
+        item_digests: list[str | None] = []
+        for record in (*request.messages, *request.items):
+            if self.objects.cacheable_record(record):
+                item_digests.append(await self.objects.put_record(record))
+                encoded_items.append({})  # The existing manifest carries its verified digest.
+            else:
+                item_digests.append(None)
+                encoded_items.append(ProtocolStore._encoded_record(record))
+        encoded_transcript = {
+            "chain_id": transcript.chain_id,
+            "messages_count": len(request.messages),
+            "items": encoded_items,
+            "continuation": asdict(request.continuation) if request.continuation else None,
+        }
         blobs: dict[str, bytes] = {}
         # Opaque Responses items retain insertion order all the way to the next
         # HTTP request; generic bounded_json sorts keys and changes that prefix.
         prepared = externalize(
             {
-                "transcript": encode_transcript(transcript),
+                "transcript": encoded_transcript,
                 "pending": pending,
                 "metadata": metadata,
             },
@@ -334,7 +352,9 @@ class WorkJournal:
                 raise ValueError("work_protocol_media_hash_mismatch")
         prepared["file_media"] = list(blobs)
         payload = json.dumps(
-            await self.objects.manifest(prepared, refresh_policy=False),
+            await self.objects.manifest(
+                prepared, refresh_policy=False, item_digests=tuple(item_digests)
+            ),
             ensure_ascii=False,
             allow_nan=False,
         )

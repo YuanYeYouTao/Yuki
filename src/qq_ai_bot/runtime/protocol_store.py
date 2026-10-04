@@ -13,20 +13,58 @@ import os
 import shutil
 import tempfile
 import time
-from collections.abc import AsyncIterator
+from collections import OrderedDict
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from dataclasses import asdict, dataclass
 from itertools import islice
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import and_, delete, or_, select, tuple_, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from qq_ai_bot.admin.models import WorkStorageRuntimeConfig
+from qq_ai_bot.domain.messages import ChatMessage, FunctionCallOutput
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.runtime.protocol_schema import objects, refs, usage
+
+_CACHE_ENTRIES = 1024  # Metadata only; never retain encoded transcript copies.
+_CACHE_RECORD_BYTES = 2 * 1024 * 1024  # Bound the retained immutable source records too.
+_GC_BRANCH_ROWS = 64  # Two indexed branches visit at most 128 metadata rows per pass.
+_GC_FILE_SECONDS = 0.1  # Yield after the current filesystem operation completes.
+FileIdentity = tuple[int, int, int, int, int]
+
+
+async def _finish_thread[T](call: Callable[..., T], *args: Any) -> T:
+    """Cancellation must not release a file fence while its worker still runs."""
+    worker = asyncio.create_task(asyncio.to_thread(call, *args))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError as original:
+        # A second cancellation must not let an unfinished unlink escape the lock.
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break  # Retrieve the worker failure below without replacing cancellation.
+        try:
+            worker.result()
+        except Exception as cleanup:
+            original.add_note(f"protocol_thread_cleanup_failed:{type(cleanup).__name__}")
+        raise
+
+
+@dataclass
+class _GCScan:
+    cutoff: float
+    high_water: tuple[float, str]
+    cursor: tuple[float, str] | None = None
 
 
 class ProtocolStore:
@@ -37,10 +75,22 @@ class ProtocolStore:
         self.policy = policy or WorkStorageRuntimeConfig()
         self.prepared_refs: set[str] = set()
         self.prepared_sizes: dict[str, int] = {}
+        self._prepared_sources: dict[str, Callable[[], bytes]] = {}
+        self._identities: OrderedDict[str, FileIdentity] = OrderedDict()
+        self._records: OrderedDict[int, tuple[ChatMessage | FunctionCallOutput, str, int]] = (
+            OrderedDict()
+        )
+        self._record_chain: tuple[str, str] | None = None
+        self._record_bytes = 0
         if getattr(database, "_protocol_storage_lock", None) is None:
             database._protocol_storage_lock = asyncio.Lock()
         assert database._protocol_storage_lock is not None
         self._lock = database._protocol_storage_lock
+        if getattr(database, "_protocol_gc_lock", None) is None:
+            database._protocol_gc_lock = asyncio.Lock()
+        assert database._protocol_gc_lock is not None
+        self._gc_lock = database._protocol_gc_lock
+        self._scans = cast(dict[bool, _GCScan], database._protocol_gc_scans)
         database_path = make_url(database.url).database
         if not database_path or database_path == ":memory:":
             root = getattr(database, "_protocol_store_path", None)
@@ -68,19 +118,118 @@ class ProtocolStore:
 
     async def put_bytes(self, content: bytes) -> str:
         digest = hashlib.sha256(content).hexdigest()
-        if digest not in self.prepared_refs or not await asyncio.to_thread(
-            self._path(digest).is_file
-        ):
+        if digest not in self.prepared_refs:
             async with self._lock:
-                await asyncio.to_thread(self._publish, digest, content)
-            self.prepared_refs.add(digest)
-            self.prepared_sizes[digest] = len(content)
+                await _finish_thread(self._publish, digest, content)
+        self.prepared_refs.add(digest)
+        self.prepared_sizes[digest] = len(content)
+        self._prepared_sources[digest] = lambda: content
         return digest
+
+    def begin_record_chain(self, work_id: str, chain_id: str) -> None:
+        if self._record_chain != (work_id, chain_id):
+            self.clear_record_cache()
+            self._record_chain = (work_id, chain_id)
+
+    def clear_record_cache(self) -> None:
+        self._records.clear()
+        self._record_bytes = 0
+        self._record_chain = None
+
+    async def put_record(self, record: ChatMessage | FunctionCallOutput) -> str:
+        """Only deeply immutable, non-media ordinary records can skip encoding."""
+        if not self.cacheable_record(record):
+            raise ValueError("work_protocol_record_not_cacheable")
+        key = id(record)
+        cached = self._records.get(key)
+        if cached is not None and cached[0] is record:
+            _, digest, size = cached
+            self._records.move_to_end(key)
+            self.prepared_refs.add(digest)
+            self.prepared_sizes[digest] = size
+        else:
+            digest = await self.put(self._encoded_record(record))
+            size = self.prepared_sizes[digest]
+            if size <= _CACHE_RECORD_BYTES:
+                self._records[key] = (record, digest, size)
+                self._record_bytes += size
+                while (
+                    len(self._records) > _CACHE_ENTRIES or self._record_bytes > _CACHE_RECORD_BYTES
+                ):
+                    _, (_, _, evicted_size) = self._records.popitem(last=False)
+                    self._record_bytes -= evicted_size
+        self._prepared_sources[digest] = lambda: json.dumps(
+            self._encoded_record(record), ensure_ascii=False, allow_nan=False
+        ).encode("utf-8")
+        return digest
+
+    @staticmethod
+    def _encoded_record(record: ChatMessage | FunctionCallOutput) -> dict[str, Any]:
+        return {
+            "kind": "message" if isinstance(record, ChatMessage) else "result",
+            "value": asdict(record),
+        }
+
+    @staticmethod
+    def cacheable_record(record: ChatMessage | FunctionCallOutput) -> bool:
+        values: tuple[str | None, ...]
+        if isinstance(record, FunctionCallOutput):
+            values = (record.call_id, record.output)
+        else:
+            if record.response_item is not None or record.images:
+                return False
+            values = (
+                record.role,
+                record.content,
+                record.tool_call_id,
+                record.reasoning_content,
+                *(
+                    value
+                    for call in record.tool_calls
+                    for value in (call.id, call.type, call.function.name, call.function.arguments)
+                ),
+            )
+        return not any(value is not None and value.startswith("data:image/") for value in values)
+
+    @staticmethod
+    def _identity(path: Path) -> FileIdentity:
+        info = path.stat()
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    def _verify(self, digest: str) -> FileIdentity:
+        target = self._path(digest)
+        identity = self._identity(target)
+        if self._identities.get(digest) != identity:
+            content = target.read_bytes()
+            if hashlib.sha256(content).hexdigest() != digest or self._identity(target) != identity:
+                raise ValueError("work_protocol_object_corrupt")
+        self._identities[digest] = identity
+        self._identities.move_to_end(digest)
+        if len(self._identities) > _CACHE_ENTRIES:
+            self._identities.popitem(last=False)
+        return identity
+
+    def _verify_prepared(self, digests: tuple[str, ...]) -> None:
+        for digest in digests:
+            try:
+                identity = self._verify(digest)
+            except FileNotFoundError:
+                source = self._prepared_sources.get(digest)
+                if source is None:
+                    raise ValueError("work_protocol_object_missing_source") from None
+                content = source()
+                if hashlib.sha256(content).hexdigest() != digest:
+                    raise ValueError("work_protocol_object_corrupt") from None
+                self._publish(digest, content)
+                identity = self._verify(digest)
+            if identity[2] != self.prepared_sizes[digest]:
+                raise ValueError("work_protocol_object_corrupt")
 
     def _publish(self, digest: str, content: bytes) -> None:
         target = self._path(digest)
         if target.exists():
-            return  # Read/backup verifies full hashes; repeated save reuses immutable bytes.
+            self._verify(digest)
+            return
         if len(content) > self.policy.object_max_bytes:
             raise ValueError("work_protocol_object_capacity")
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -95,6 +244,7 @@ class ProtocolStore:
             os.replace(temporary, target)
         finally:
             Path(temporary).unlink(missing_ok=True)
+        self._verify(digest)
 
     async def get(self, digest: str) -> Any:
         return json.loads(await self.get_bytes(digest))
@@ -106,12 +256,21 @@ class ProtocolStore:
         return content
 
     async def manifest(
-        self, payload: dict[str, Any], *, refresh_policy: bool = True
+        self,
+        payload: dict[str, Any],
+        *,
+        refresh_policy: bool = True,
+        item_digests: tuple[str | None, ...] = (),
     ) -> dict[str, Any]:
         if refresh_policy:
             await self.refresh_policy()
         transcript = dict(payload["transcript"])
-        transcript["items"] = [await self.put(item) for item in transcript["items"]]
+        transcript["items"] = [
+            item_digests[index]
+            if item_digests and item_digests[index] is not None
+            else await self.put(item)
+            for index, item in enumerate(transcript["items"])
+        ]
         transcript["continuation"] = (
             await self.put(transcript["continuation"]) if transcript["continuation"] else None
         )
@@ -154,32 +313,40 @@ class ProtocolStore:
     async def publication(self, work_id: str) -> AsyncIterator[tuple[dict[str, Any], ...]]:
         """Prepare bounded rows before acquiring SQLite's writer fence."""
         async with self._lock:
-            digests = tuple(sorted(self.prepared_refs))
-            if not await asyncio.to_thread(lambda: all(self._path(d).is_file() for d in digests)):
-                raise ValueError("work_protocol_reference_deleting")
-            owned: set[str] = set()
-            async with self.database.sessions() as reader:
-                for offset in range(0, len(digests), 256):
-                    owned.update(
-                        await reader.scalars(
-                            select(refs.c.sha256).where(
-                                refs.c.work_id == work_id,
-                                refs.c.sha256.in_(digests[offset : offset + 256]),
+            published = False
+            try:
+                digests = tuple(sorted(self.prepared_refs))
+                await _finish_thread(self._verify_prepared, digests)
+                owned: set[str] = set()
+                async with self.database.sessions() as reader:
+                    for offset in range(0, len(digests), 256):
+                        owned.update(
+                            await reader.scalars(
+                                select(refs.c.sha256).where(
+                                    refs.c.work_id == work_id,
+                                    refs.c.sha256.in_(digests[offset : offset + 256]),
+                                )
                             )
                         )
-                    )
-            yield tuple(
-                {
-                    "sha256": digest,
-                    "byte_size": self.prepared_sizes[digest],
-                    "prepared_at": time.time(),
-                    "deleting": False,
-                }
-                for digest in digests
-                if digest not in owned
-            )
-            self.prepared_refs.clear()
-            self.prepared_sizes.clear()
+                yield tuple(
+                    {
+                        "sha256": digest,
+                        "byte_size": self.prepared_sizes[digest],
+                        "prepared_at": time.time(),
+                        "deleting": False,
+                    }
+                    for digest in digests
+                    if digest not in owned
+                )
+                published = True
+            finally:
+                # Extra protocol objects may be prepared outside this manifest
+                # (e.g. the pre-compaction chain). Retain their bounded metadata
+                # after failure, but never keep transient encoded bytes for retries.
+                if published:
+                    self.prepared_refs.clear()
+                    self.prepared_sizes.clear()
+                self._prepared_sources.clear()
 
     async def publish_refs(
         self, session: AsyncSession, work_id: str, prepared: tuple[dict[str, Any], ...]
@@ -244,11 +411,85 @@ class ProtocolStore:
                 continue
         return result
 
+    async def _gc_page(self, deleting: bool, cutoff: float) -> list[dict[str, Any]]:
+        """Page metadata before examining ownership, even when every row is owned."""
+        scan = self._scans.get(deleting)
+        async with self.database.sessions() as reader:
+            if scan is None:
+                conditions: list[ColumnElement[bool]] = [objects.c.deleting.is_(deleting)]
+                if not deleting:
+                    conditions.append(objects.c.prepared_at < cutoff)
+                high = (
+                    await reader.execute(
+                        select(objects.c.prepared_at, objects.c.sha256)
+                        .where(*conditions)
+                        .order_by(objects.c.prepared_at.desc(), objects.c.sha256.desc())
+                        .limit(1)
+                    )
+                ).first()
+                if high is None:
+                    return []
+                scan = _GCScan(cutoff, (high.prepared_at, high.sha256))
+                self._scans[deleting] = scan
+            key = tuple_(objects.c.prepared_at, objects.c.sha256)
+            conditions = [objects.c.deleting.is_(deleting), key <= scan.high_water]
+            if not deleting:
+                conditions.append(objects.c.prepared_at < scan.cutoff)
+            if scan.cursor is not None:
+                conditions.append(key > scan.cursor)
+            page = list(
+                (
+                    await reader.execute(
+                        select(objects)
+                        .where(*conditions)
+                        .order_by(objects.c.prepared_at, objects.c.sha256)
+                        .limit(_GC_BRANCH_ROWS)
+                    )
+                ).mappings()
+            )
+            if page:
+                last = page[-1]
+                scan.cursor = (last["prepared_at"], last["sha256"])
+            if len(page) < _GC_BRANCH_ROWS or scan.cursor == scan.high_water:
+                self._scans.pop(deleting, None)
+            if not page:
+                return []
+            owned = set(
+                await reader.scalars(
+                    select(refs.c.sha256).where(refs.c.sha256.in_([row["sha256"] for row in page]))
+                )
+            )
+            return [dict(row) for row in page if row["sha256"] not in owned]
+
+    def _unlink_objects(self, selected: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """The caller holds only the file fence; finish a current unlink before yielding."""
+        removed = []
+        started = time.monotonic()
+        for row in selected:
+            digest = row["sha256"]
+            succeeded = False
+            try:
+                identity = self._verify(digest)
+                if identity[2] == row["byte_size"]:
+                    self._path(digest).unlink()
+                    succeeded = True
+            except FileNotFoundError:
+                succeeded = True  # A prior unlink may have finished before its acknowledgement.
+            except (OSError, ValueError):
+                pass
+            if succeeded:
+                self._identities.pop(digest, None)
+                removed.append(row)
+            if time.monotonic() - started >= _GC_FILE_SECONDS:
+                break
+        return removed
+
     async def cleanup(self, *, grace_seconds: float = 86400) -> int:
-        """CAS unowned objects, unlink outside SQLite, then remove metadata."""
-        removed = 0
-        async with self._lock:
-            orphans = await asyncio.to_thread(self._orphan_candidates, time.time() - grace_seconds)
+        """CAS deletion barriers, briefly fence files, then batch durable acknowledgement."""
+        async with self._gc_lock:
+            cutoff = time.time() - grace_seconds
+            # Directory discovery is bounded and cannot authorize a later unlink.
+            orphans = await _finish_thread(self._orphan_candidates, cutoff)
             if orphans:
                 async with self.database.sessions() as reader:
                     registered = set(
@@ -261,48 +502,73 @@ class ProtocolStore:
                 orphaned = [item for item in orphans if item["sha256"] not in registered]
                 if orphaned:
                     async with self.database.immediate_session() as writer:
-                        await writer.execute(insert(objects).on_conflict_do_nothing(), orphaned)
+                        current_cutoff = time.time() - grace_seconds
+                        still_expired = [
+                            item for item in orphaned if item["prepared_at"] < current_cutoff
+                        ]
+                        if still_expired:
+                            await writer.execute(
+                                insert(objects).on_conflict_do_nothing(), still_expired
+                            )
             unowned = ~select(refs.c.sha256).where(refs.c.sha256 == objects.c.sha256).exists()
-            eligible = unowned & or_(
-                objects.c.deleting.is_(True), objects.c.prepared_at < time.time() - grace_seconds
-            )
-            async with self.database.sessions() as reader:
-                candidates = list(
-                    await reader.scalars(
-                        select(objects.c.sha256)
-                        .where(eligible)
-                        .order_by(objects.c.prepared_at)
-                        .limit(128)
-                    )
-                )
+            candidates = [*await self._gc_page(True, cutoff), *await self._gc_page(False, cutoff)]
             if not candidates:
                 return 0
+            frozen = or_(
+                *(
+                    and_(
+                        objects.c.sha256 == row["sha256"],
+                        objects.c.prepared_at == row["prepared_at"],
+                        objects.c.byte_size == row["byte_size"],
+                        objects.c.deleting.is_(row["deleting"]),
+                    )
+                    for row in candidates
+                )
+            )
             async with self.database.immediate_session() as writer:
+                current_cutoff = time.time() - grace_seconds
                 selected = list(
-                    await writer.scalars(
-                        update(objects)
-                        .where(
-                            objects.c.sha256.in_(candidates),
-                            eligible,
+                    (
+                        await writer.execute(
+                            update(objects)
+                            .where(
+                                frozen,
+                                unowned,
+                                or_(
+                                    objects.c.deleting.is_(True),
+                                    objects.c.prepared_at < current_cutoff,
+                                ),
+                            )
+                            .values(deleting=True)
+                            .returning(objects)
                         )
-                        .values(deleting=True)
+                    ).mappings()
+                )
+            if not selected:
+                return 0
+            # Never await SQLite's writer while holding the GC file fence.
+            async with self._lock:
+                removed = await _finish_thread(
+                    self._unlink_objects, [dict(row) for row in selected]
+                )
+            if not removed:
+                return 0
+            frozen_removed = or_(
+                *(
+                    and_(
+                        objects.c.sha256 == row["sha256"],
+                        objects.c.prepared_at == row["prepared_at"],
+                        objects.c.byte_size == row["byte_size"],
+                    )
+                    for row in removed
+                )
+            )
+            async with self.database.immediate_session() as writer:
+                deleted = list(
+                    await writer.scalars(
+                        delete(objects)
+                        .where(frozen_removed, objects.c.deleting.is_(True), unowned)
                         .returning(objects.c.sha256)
                     )
                 )
-            for digest in selected:
-                try:
-                    await asyncio.to_thread(self._path(digest).unlink, missing_ok=True)
-                except OSError:
-                    continue
-                async with self.database.immediate_session() as writer:
-                    deleted = await writer.scalar(
-                        delete(objects)
-                        .where(
-                            objects.c.sha256 == digest,
-                            objects.c.deleting.is_(True),
-                            unowned,
-                        )
-                        .returning(objects.c.sha256)
-                    )
-                    removed += int(deleted is not None)
-        return removed
+            return len(deleted)

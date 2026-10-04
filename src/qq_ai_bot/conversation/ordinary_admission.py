@@ -24,6 +24,7 @@ from qq_ai_bot.identity.db_models import (
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.repository_records import EventRecord
+from qq_ai_bot.persistence.unit_of_work import optional_session
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,7 +137,12 @@ class OrdinaryAdmissionRepository:
         return rows[0] if rows else None
 
     async def current_admissions(
-        self, conversation_id: str | None, generation: int | None, event_ids: tuple[int, ...]
+        self,
+        conversation_id: str | None,
+        generation: int | None,
+        event_ids: tuple[int, ...],
+        *,
+        session: AsyncSession | None = None,
     ) -> tuple[OrdinaryAdmission, ...]:
         if not event_ids:
             return ()
@@ -187,9 +193,11 @@ class OrdinaryAdmissionRepository:
             query = query.where(a.conversation_id == conversation_id)
         if generation is not None:
             query = query.where(a.generation == generation)
-        async with self.database.sessions() as session:
-            await session.execute(text("BEGIN"))
-            rows = (await session.execute(query)).all()
+        owned = session is None
+        async with optional_session(self.database, session, write=False) as active:
+            if owned:
+                await active.execute(text("BEGIN"))
+            rows = (await active.execute(query)).all()
             return tuple(
                 _dto(row)
                 for row, event in rows
