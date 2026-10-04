@@ -106,7 +106,7 @@ Gemini 适配器转换为 `generationConfig.responseMimeType=application/json` �
 Responses/Chat/Claude 使用各自既有 schema 格式。有效 Profile 必须支持 structured output，
 不支持时由既有执行器明确拒绝，不能改能力声明或隐式换路由。Provider 的结构约束不替代
 本地有界/合法来源校验；代理源码保留该格式也不等于实际上游已验收其支持。
-2026-10-01 的一次无 QQ、无工具微小能力请求通过当前 Gemini 3.8/AGM 路由接受
+2026-10-01 的一次无 QQ、无工具微小能力请求通过当时的 Gemini 3.8/上游代理路由接受
 `responseMimeType`/`responseJsonSchema` 并返回可校验 JSON；它只确认结构输出能力，
 不构成群史摘要质量、长窗口容量或缓存改善验收。
 历史自由文本 checkpoint 继续作为标注“来源引用未验证”的不可信叙述读取；下一次成功

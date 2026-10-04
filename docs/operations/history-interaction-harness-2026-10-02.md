@@ -18,7 +18,6 @@ PR 合并及上线；具体能力验收由用户完成。本记录随进度更�
 `ghcr.io/yuanyeyoutao/yuki-qqbot:ops-ea446d6`，OCI revision `ea446d6`，数据库 `0088`。
 从容器标签读取完整 Compose 列表，SnowLuma ID 仍为
 `9e7a1a89696eae3922e4b40daee295edebc0fb60e18c7c9bf5a15efe7a1c8b85`。
-AGM 仍为 `antigravity-manager:gemini-request-correlation-v4.8.4`，运行中。
 本轮没有切路由或追加测试模型/QQ 请求。
 
 Bot 只读最近最多 5000 条 invocation，并限定上一版部署后成功、input 有计量的 `chat_agent`：
@@ -34,8 +33,8 @@ Bot 只读最近最多 5000 条 invocation，并限定上一版部署后成功�
 | 未知全按 miss 的保守下界 | 79.18%，不是观测到的实际 miss |
 
 现存 prompt_projections 全为失效占位；符合 runtime 开启时跳过普通投影提交的 H1 缺口，
-不能据此认定所有 cache miss 都由 H1 引起。AGM 最近 2000 条另有大量 cache NULL，
-其窗口含不同任务，不与 Bot 直接比较命中率。
+不能据此认定所有 cache miss 都由 H1 引起。不同来源的统计窗口包含不同任务，
+缓存未报告项保持未知，不与 Bot 直接比较命中率。
 
 按这些 invocation 的原 runtime_turn_id，使用已有索引逐轮读取最多 32 条 provider_start；
 筛选实际带 task_control 声明的 Gemini 主请求，共得到 59 条、19 个 turn。
@@ -149,7 +148,7 @@ schema 0088 校验通过，引用核验确认 774 个 protocol objects、0 个 t
 重新只读核实停写/启动后的持久对账文件，`comparison.ok=true`、errors 和 changed_counts
 均为空，随后再次按原停写基线对在线库复核也一致。原 6 Work、60 effects、20 inputs、
 6 journals、6 budgets、6 recoveries 保留原事实；没有重置预算、原 ID 或重发旧回执。
-SnowLuma 原 ID 保持 running/0 restart；AGM 原镜像仍 healthy，没有路由更换。
+SnowLuma 原 ID 保持 running/0 restart；没有路由更换。
 
 上线后健康核验：`/healthz` 的 status/database=ok、OneBot 已连接，automation/emoji/
 runtime-work/wait/subagent workers 正常运行，runtime error category 为 NULL；

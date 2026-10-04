@@ -57,5 +57,5 @@ Gemini input 已含 cached，已知输入加权比例是 `sum(cached)/sum(input)
 记录内部 request_chain_id；它不等于 Provider session header。C08 不注入会话 header。
 相同输入片段和规范化 JSON 的最长公共字节只报长度，不保存正文。
 相邻物理请求与同场景主/摘要各自序列分别比较，避免把无工具摘要链的设置当成主链变化。
-经 AGM 时这只证明 Yuki→AGM 的 wire，不证明 AGM→上游完全相同，也不证明账单。
+经上游代理时，这只证明 Yuki 发往配置 endpoint 的 wire，不证明最终上游完全相同，也不证明账单。
 本实验是受控合成流量，不能当自然群聊平均值或设置固定命中率门槛。
