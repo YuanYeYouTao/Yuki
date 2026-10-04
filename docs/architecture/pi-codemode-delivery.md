@@ -1,6 +1,6 @@
 # Pi 与 Code Mode 开发交付记录
 
-2026-10-04；目标与不变量见 [设计合同](pi-codemode-design.md)。
+2026-10-04；目标与不变量见 [设计合同](pi-codemode-design.md)，接手说明见 [交接](pi-codemode-handoff.md)。
 
 ## 授权与 Git
 
@@ -8,7 +8,7 @@
 - 远端创建 `codex/pi-codemode-experiment` 并拉取已单独授权且实际完成。
 - HEAD/远端测试分支/远端 main 均为 `8204b28ebc8939213dae60dbab94ab1c16d1263a`。
 - 开始时工作区干净；原主工作树 `main` 未切换、未修改。
-- 当前代码提交、代码推送、PR、合并、付费 API、真实消息、生产访问及部署均未执行。
+- 已授权并执行：在测试分支提交与推送。PR、合并、付费 API、真实消息、生产访问及部署均未执行。
 - 共享 Git 存储存在既有 AppleDouble `._pack-…idx` 索引报错；fetch/push/分支追踪
   实际成功。没有删除或修复无关 Git 元数据。
 
@@ -54,9 +54,8 @@ SQLAlchemy 的 `asyncio` extra（`pyproject.toml`/`uv.lock`）。
   （`tests/integration/test_invocation_process_crash.py`）
 - `_unresolved_clause` 只将已识别的 `code_composition` 父从未知围栏排除。
 
-尚未覆盖：artifact 发布失败与引用提交中断的独立 fixture（现有 `result_unavailable` 路径
-沿用旧测试）、writer 排队后过租约、composition 父的最终结算接口（由 P05 控制门提供）。
-`PendingComposition` 目前只被识别，原 owner 驱动在 P03/P04 接入。
+快照发布失败、引用提交中断、writer 排队后过租约已由 `tests/integration/test_p02_failure_windows.py`
+补测（`c0593229`）；composition 父结算与 `PendingComposition` 续跑由 P05 接入。
 
 ## P03：Pi 内核 Python 移植，已完成
 
@@ -147,7 +146,7 @@ mypy 710 文件无错误。
 **未完成：**Linux 构建与 digest 未验证（只核对了本机）；P05 尚未把答复接到 InvocationService，
 `publish_code_boundary` 在测试中由 fixture 调用；转依赖 notice 汇总待 P09。
 
-## P05：完整 Code Mode 能力，已完成（本机，未提交）
+## P05：完整 Code Mode 能力，已完成（`90b6d46a`）
 
 单元 A `feat(codemode): 固定API与全工具受控调用`：
 
