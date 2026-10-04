@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -12,17 +13,98 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import delete, func, insert, literal, select
+from sqlalchemy import delete, exists, func, insert, literal, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from qq_ai_bot.conversation.correlation import require_live_conversation
+from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+from qq_ai_bot.conversation.correlation import (
+    CANONICAL_KIND_MISMATCH,
+    MISSING_CANONICAL_CONVERSATION,
+)
 from qq_ai_bot.execution_trace.db_models import ExecutionTraceEntryModel, ExecutionTraceStateModel
-from qq_ai_bot.execution_trace.payload import encode_payload
+from qq_ai_bot.execution_trace.payload import EncodedPayload, encode_payload
+from qq_ai_bot.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel, PresenceModel
+from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.diagnostic_writer import DiagnosticWriter
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.runtime.observability import current_runtime_turn_correlation
 
 logger = logging.getLogger(__name__)
+
+
+async def _require_trace_source(
+    session: AsyncSession, conversation_id: str | None, source_event_id: int | None
+) -> None:
+    if conversation_id is None and source_event_id is None:
+        return
+    token = str(conversation_id).strip() if conversation_id is not None else None
+    if token == "":
+        raise CanonicalIdentityError(MISSING_CANONICAL_CONVERSATION)
+    kind_checks = (
+        [
+            exists(select(model.id).where(model.id == token))
+            for model in (
+                PresenceModel,
+                CanonicalPersonModel,
+                CanonicalSpaceModel,
+                CanonicalConversationModel,
+            )
+        ]
+        if token is not None
+        else [literal(False)] * 4
+    )
+    statement = select(*kind_checks)
+    if source_event_id is not None:
+        # An outer join retains the missing-event row. Its ID distinguishes a
+        # missing source from a legacy source whose canonical relation is NULL.
+        anchor = select(literal(1).label("trace_anchor")).subquery()
+        statement = statement.add_columns(
+            ChatEventModel.id, ChatEventModel.canonical_conversation_id
+        ).select_from(anchor.outerjoin(ChatEventModel, ChatEventModel.id == source_event_id))
+    else:
+        statement = statement.add_columns(literal(None), literal(None))
+    presence, person, space, conversation, event_id, event_conversation_id = (
+        await session.execute(statement)
+    ).one()
+    # Preserve the original kind/missing-conversation priority over source errors.
+    if token is not None:
+        if presence or person or space:
+            raise CanonicalIdentityError(CANONICAL_KIND_MISMATCH)
+        if not conversation:
+            raise CanonicalIdentityError(MISSING_CANONICAL_CONVERSATION)
+    if source_event_id is not None and (
+        event_id is None or event_conversation_id != conversation_id
+    ):
+        raise ValueError("invalid_trace_source_event")
+
+
+def _encode_payload_timed(payload: object, limit: int) -> tuple[EncodedPayload, float]:
+    started = time.perf_counter()
+    encoded = encode_payload(payload, limit)
+    return encoded, time.perf_counter() - started
+
+
+def _log_slow_preparation(
+    kind: str,
+    turn_id: str,
+    total: float,
+    encode_call: float,
+    encode_execution: float,
+    source_validation: float,
+) -> None:
+    if total >= 1.0:
+        logger.warning(
+            "execution_trace_slow_prepare kind=%s turn_id=%s prepare_seconds=%.6f "
+            "encode_call_inclusive_seconds=%.6f encode_execution_seconds=%.6f "
+            "source_validation_seconds=%.6f",
+            kind,
+            turn_id,
+            total,
+            encode_call,
+            encode_execution,
+            source_validation,
+        )
 
 
 @dataclass(slots=True)
@@ -119,6 +201,7 @@ class TraceRecorder:
         try:
             if scope.coverage.privacy_generation is None:
                 return
+            preparation_started = time.perf_counter()
             now = datetime.now(UTC)
             control = current_work_control.get()
             conversation_id = scope.conversation_id
@@ -135,15 +218,15 @@ class TraceRecorder:
                 candidate = control.source.get("trigger_event_id")
                 if type(candidate) is int and candidate > 0:
                     source_event_id = candidate
-            encoded = await asyncio.to_thread(encode_payload, payload, self.max_payload_bytes)
+            encoding_started = time.perf_counter()
+            encoded, encode_execution = await asyncio.to_thread(
+                _encode_payload_timed, payload, self.max_payload_bytes
+            )
+            encode_call = time.perf_counter() - encoding_started
             # Resolve trusted identifiers before adding a row or taking the writer.
+            source_started = time.perf_counter()
             async with self.database.sessions() as session:
-                if conversation_id is not None:
-                    await require_live_conversation(session, conversation_id)
-                if source_event_id is not None:
-                    event = await session.get(ChatEventModel, source_event_id)
-                    if event is None or event.canonical_conversation_id != conversation_id:
-                        raise ValueError("invalid_trace_source_event")
+                await _require_trace_source(session, conversation_id, source_event_id)
                 if delivery is not None:
                     from qq_ai_bot.social.db_models import SocialOperationModel
 
@@ -163,6 +246,15 @@ class TraceRecorder:
                     ):
                         raise ValueError("invalid_trace_delivery")
                     delivered_event_id = event.id
+            source_validation = time.perf_counter() - source_started
+            _log_slow_preparation(
+                kind,
+                scope.turn_id,
+                time.perf_counter() - preparation_started,
+                encode_call,
+                encode_execution,
+                source_validation,
+            )
             values = dict(
                 conversation_id=conversation_id,
                 turn_id=scope.turn_id,

@@ -42,7 +42,7 @@ async def _guard(database, event):
     return WorkSourceGuard(version), control
 
 
-async def test_source_scans_finish_before_writer_and_new_enrichment_remains_allowed(database):
+async def test_source_scans_finish_before_recheck_and_new_enrichment_remains_allowed(database):
     ledger = EventLedgerRepository(database)
     initial = await _event_and_route(database, ledger)
     guard, control = await _guard(database, initial)
@@ -56,11 +56,12 @@ async def test_source_scans_finish_before_writer_and_new_enrichment_remains_allo
         assert await guard.check(control)
     finally:
         sql_event.remove(database.engine.sync_engine, "before_cursor_execute", record)
-    writer = next(index for index, statement in enumerate(sql) if statement.startswith("UPDATE"))
-    assert any("chat_events" in statement for statement in sql[:writer])
+    recheck = [index for index, statement in enumerate(sql) if statement == "BEGIN"][1]
+    assert any("chat_events" in statement for statement in sql[:recheck])
     assert not any(
-        "chat_events" in statement or "rollups" in statement for statement in sql[writer:]
+        "chat_events" in statement or "rollups" in statement for statement in sql[recheck:]
     )
+    assert all(statement.startswith(("BEGIN", "SELECT")) for statement in sql)
     assert sql[0] == "BEGIN"
     additional = await _event_and_route(database, ledger, content="new event")
     control.session.event_ids.append(additional.id)
@@ -85,10 +86,12 @@ async def test_source_scans_finish_before_writer_and_new_enrichment_remains_allo
 @pytest.mark.parametrize(
     "change", ["metadata", "privacy", "privacy_counter", "cancel", "reset", "owner"]
 )
-async def test_writer_recheck_rejects_changes_after_read_snapshot(database, monkeypatch, change):
+async def test_fresh_snapshot_recheck_rejects_changes_after_read_snapshot(
+    database, monkeypatch, change
+):
     source = await _event_and_route(database, EventLedgerRepository(database))
     guard, control = await _guard(database, source)
-    original = control.repository._assert_lease
+    original = control.repository._assert_lease_readonly
 
     async def between_read_and_write(session, lease):
         if change == "cancel":
@@ -126,7 +129,7 @@ async def test_writer_recheck_rejects_changes_after_read_snapshot(database, monk
                     )
         await original(session, lease)
 
-    monkeypatch.setattr(control.repository, "_assert_lease", between_read_and_write)
+    monkeypatch.setattr(control.repository, "_assert_lease_readonly", between_read_and_write)
     if change == "cancel":
         with pytest.raises(WorkConflict, match="work_activation_obsolete"):
             await guard.check(control)
@@ -197,7 +200,7 @@ async def test_moving_rollup_invalidates_old_owner_during_read_write_gap(
     async with database.sessions() as session, session.begin():
         session.add(model(**values))
     guard, control = await _guard(database, source)
-    original = control.repository._assert_lease
+    original = control.repository._assert_lease_readonly
 
     async def move(session, lease):
         async with database.sessions() as other, other.begin():
@@ -208,7 +211,7 @@ async def test_moving_rollup_invalidates_old_owner_during_read_write_gap(
             )
         await original(session, lease)
 
-    monkeypatch.setattr(control.repository, "_assert_lease", move)
+    monkeypatch.setattr(control.repository, "_assert_lease_readonly", move)
     assert not await guard.check(control)
     assert guard.fingerprint is None
 

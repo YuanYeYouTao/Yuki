@@ -242,10 +242,12 @@ class WorkSourceGuard:
                 fingerprint = hashlib.sha256(repr(values).encode()).hexdigest()
             revision = source.prompt_source_revision
         # All fingerprint sources advance this existing revision on mutation.
-        # The reader is closed before waiting for the writer; only scalar rechecks
-        # and the original lease/cancellation fence remain in the write transaction.
-        async with control.repository.database.sessions() as session, session.begin():
-            await control.repository._assert_lease(session, control.lease)
+        # Recheck the lease and scalar dependencies in one fresh read snapshot.
+        # This is preparation, not mutation authority: journal/publication/effect
+        # writers keep their original execution-time fences and source CAS.
+        async with control.repository.database.sessions() as session:
+            await session.execute(text("BEGIN"))
+            await control.repository._assert_lease_readonly(session, control.lease)
             current = await session.get(CanonicalConversationModel, version.conversation_id)
             current_privacy = (
                 await session.scalar(
