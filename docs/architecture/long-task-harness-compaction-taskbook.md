@@ -94,27 +94,22 @@ Google 官方为 Gemini 3.8 Flash 列出输入 1048576、输出 65536 token；�
 
 Gemini 隐式缓存由上游决定，官方明确无节省保证；显式缓存属于独立能力，当前代理未核实支持，本轮不凭猜测启用，也不靠额外保温请求刷命中率。[Google 缓存合同](https://ai.google.dev/gemini-api/docs/generate-content/caching)
 
-### 2.4 Antigravity Manager 代理侧核查（本轮必做）
+### 2.4 请求链路与计量证据边界
 
-只读核查证据见 [代理逐跳审计（2026-10-01）](../operations/provider-compaction-audit-2026-10-01.md)。真实同一 turn 的三请求已关联至代理 UUID 与最终发送点，并逐项核对 payload/usage；报告另列脱敏、原始 Google wire usage、实际容量认证和上线后自然缓存观察的证据边界。`countTokens` 可达但当前实测只数 contents，列表 `inputTokenLimit` 不能当完整实际请求容量认证；这些能力边界不冒充已完成在线容量/缓存验收。
+Yuki 的缓存核查按实际 Provider、Profile、协议与请求窗口分组，保留原 request、turn 和
+execution 身份。时间只用于筛候选，不能作为跨层请求的唯一关联；一次逻辑请求不等于
+一次物理上游请求。客户端序列化结果不能证明中转后的最终报文，无法核对的层明确保留未知。
 
-用户已指定实施期间读取代理服务器数据，不能只凭 Yuki 侧日志归因缓存差距。2026-10-01 已从本机以 `ssh antigravity-server` 只读连通，当前容器为 `antigravity-manager`、镜像标签 `antigravity-manager:gemini-request-correlation-v4.8.4`，同机有 `mihomo-host`；当前挂载为宿主 `/opt/antigravity-manager/data` → 容器 `/root/.antigravity_tools`。这些是入口快照，采集前再次核对实际镜像 digest、容器、挂载与服务配置。历史补丁/回滚记录见 [供应商切换记录](../operations/provider-cutover-worklist-2026-09-29.md)；不照搬历史 schema、版本或账户状态，也不重复引入已修复的缓存缺失/显式零混同。
-
-采集复用现有代理请求日志/数据库和最终序列化审计，时间有界、查询分页，生产只读。核查以下事实并形成可复查的逐跳对账：
-
-1. Yuki 实际 Profile endpoint → SSH tunnel → AGM → Google 的有效链路。确认模型映射、协议转换、重试及账号选择，不将配置文件的名义路由等同于最终请求。
-2. Yuki 原 request/turn/execution ID、代理日志 UUID 与已有最终发送点关联摘要。优先沿现有 request correlation 对账；时间只能筛候选，不能作为唯一匹配依据。多次转发/重试逐项记录，不把一次 Yuki 逻辑请求当作仅一次上游请求。
-3. 对照客户端输入与 AGM 最终发送结构：system、工具/schema 顺序、contents 顺序、thinking/signature、模型/请求设置，核查新增包装、默认字段、裁剪及跨轮变化。沿既有脱敏摘要与受控本地比较，不输出密钥、OAuth token 或私密聊天正文；比较不到完整上游字节时明确证据边界。
-4. 对照 Google 原 usage、AGM 保存与返还 usage、Yuki model_invocations：input/cached/output/thinking/total 各字段是否准确映射，缺失是否曾转换成零、缓存字段是否被漏记、思考 token 是否重复合计。缓存率统一用 token 加权并披露各层计量覆盖率；缓存缺失不是自动命中或自动零。
-5. 核查路由/账号切换、间隔、重试与命中变化的关联，以及代理支持的实际输入限额、countTokens/显式缓存端点能力。先查已有数据与实现，不为测缓存向群里发消息、不制造保温流量，不凭账号切换的相关性断言它必然造成缓存失效。
-
-代理补丁属于发现真实转换/计量缺陷后的授权修复范围：按其独立源仓库/开发约束定向验证、版本化补丁与回滚记录，部署只替换 AGM 服务，保留 Mihomo 和 Yuki/SnowLuma；不将代理变更混入 Yuki 镜像发布。无必要缺陷则只交付审计结论。最终报告区分 harness 前缀变化、代理转换/计量问题、上游缓存行为和仍无法归因部分；上线后重复同口径自然流量观察，不承诺恢复某个固定命中率。
+对照原 usage 与 `model_invocations` 的 input、cached、output、thinking、total 字段，
+报告 token 加权命中率、计量覆盖率及未缓存绝对量。缓存字段缺失不转零，思考 token
+不重复合计；不同窗口的数据不能直接比较或用于唯一归因。不为观测缓存制造保温请求，
+也不向群内发送未经授权的探针。链路外部服务的源码、部署与运维不属于本仓库任务书。
 
 ### 2.5 成本建模、模拟与热配置（新增必做）
 
 用生产 usage 和代理审计数据分别建模自然群聊与持续 Work，不把 256k 当固定默认。比较 64/96/128/160/192/256k 窗口及多组触发/目标比例；费用包含缓存命中输入、未命中输入、摘要输入/输出、频繁压缩导致的前缀重建。缓存字段缺失保留未知，并给价格比例、未知缓存与长期输入增长的敏感性区间。群聊回放和合成长任务模拟明确分开，不能把有限自然流量称为长期任务实测。
 
-优化受完整当前输入、近期原文、目标/约束/未决事实、压缩次数与延迟约束限制；最短窗口的最低费用不是可用方案。报告给参数候选、数据范围、假设、可复现脚本、成本差异及推荐初始值，无法从数据识别的最优值明确说明。AGM 订阅/代理真实账单与官方 API 公开参考价分开，不能冒称已验证实际费用。
+优化受完整当前输入、近期原文、目标/约束/未决事实、压缩次数与延迟约束限制；最短窗口的最低费用不是可用方案。报告给参数候选、数据范围、假设、可复现脚本、成本差异及推荐初始值，无法从数据识别的最优值明确说明。实际账单与官方 API 公开参考价分开，不能冒称已验证实际费用。
 
 窗口、触发/目标水位和摘要输出预算接现有热配置目录及 WebUI；聊天和 Work 独立配置。热更改作用于下一次准备的请求/activation，已经提交的工具、协议前缀和 source candidate 不被改写。模型输入/输出及联合窗口数字上限另放连接 Profile，容量核验不能被政策上调绕开；跨作用域水位关系在配置写入前验证。
 聊天/群史使用 `context.compaction_trigger_ratio`/`context.compaction_target_ratio`；Work 使用

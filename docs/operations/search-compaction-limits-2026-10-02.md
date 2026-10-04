@@ -54,7 +54,7 @@ Ruff 全量检查与格式检查、683 个源文件的 Linux 平台 mypy、`git 
 停写与启动后的保存报告中，6 Work、60 effects、20 inputs 及 journal、预算、恢复记录
 完全一致。数据库完整性、外键、schema 0088 与 1539 个协议资料引用核验通过；备份原有
 两个数据库入口共用一份完整 SQLite API 快照，权限与原库一致。SnowLuma 的容器身份
-保持；Mihomo、AGM 的容器身份和启动时间保持。原有 Memory consistency 健康告警仍存在。
+保持；Mihomo 的容器身份和启动时间保持。原有 Memory consistency 健康告警仍存在。
 
 本次预算调整前的缓存基线于 16:06:40 统计：76 次成功聊天请求，其中 59 次有缓存用量、
 17 次未报告；已报告输入 2627034 token，命中 2279382 token，按已报告输入加权为

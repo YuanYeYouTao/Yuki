@@ -73,10 +73,6 @@ V6 迁移链为 `0065`（关系历史索引）→ `0066`（autonomy 接纳）→
 [2026-10-02 核查记录](../operations/compact-capacity-accounting-2026-10-02.md)。
 前台回复与 SQLite 写锁本轮实现及验证状态见
 [2026-10-03 交付记录](../operations/foreground-rollup-sqlite-contention-2026-10-03.md)。
-实际 Gemini 前缀、AGM 计量与网关方言建议见
-[协议与缓存核查](../operations/gemini-agm-cache-audit-2026-10-02.md)。
-AGM 工具续接注入与空流伪造正文的本次修复见
-[2026-10-04 记录](../operations/agm-protocol-placeholder-2026-10-04.md)，合并与上线状态单独核验。
 
 搜索桥使用连接预算、摘要等待及输出预算的放宽设计见
 [2026-10-02 策略调整](../operations/search-compaction-limits-2026-10-02.md)。

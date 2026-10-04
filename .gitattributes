@@ -2,5 +2,3 @@
 *.sh text eol=lf
 Dockerfile text eol=lf
 frontend/** text=auto eol=lf
-deploy/antigravity/Dockerfile.* text eol=lf
-deploy/antigravity/*.patch text eol=lf -whitespace
