@@ -107,6 +107,11 @@ from qq_ai_bot.services.agent_runner import (
     AgentRuntime,
 )
 from qq_ai_bot.services.agent_tools import AgentToolService, OneBotToolGateway, ToolRuntime
+from qq_ai_bot.services.chat_preparation_timings import (
+    collect_chat_preparation,
+    emit_chat_preparation,
+    preparation_detail,
+)
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.context_assembler import ContextAssembler
 from qq_ai_bot.services.context_boundary import ContextBoundaryReader
@@ -1064,6 +1069,7 @@ class ChatService:
                         origin=turn_origin.value,
                     )
                 )
+                preparation = await memory_cleanup.enter_async_context(collect_chat_preparation())
                 work_control = None
                 start_work = None
                 if (
@@ -1074,10 +1080,28 @@ class ChatService:
                     from qq_ai_bot.runtime.work_activation import (
                         activate_work,
                         current_work_control,
+                        work_candidate_available,
                     )
                     from qq_ai_bot.runtime.work_control import WorkControl
 
                     work_conversation_id = inbound.conversation_id
+                    work_source_key = (
+                        f"event:{inbound.conversation_id}:{turn_snapshot.trigger_event_id}"
+                    )
+                    work_source = {
+                        "actor_user_id": inbound.sender.user_id,
+                        "actor_person_id": inbound.person_id,
+                        "principal_kind": "person",
+                        "origin": turn_origin.value,
+                        "trigger_event_id": turn_snapshot.trigger_event_id,
+                        "bot_user_id": inbound.bot_user_id,
+                        "generation": turn_snapshot.generation,
+                        "conversation_id": inbound.conversation_id,
+                        "allow_admin_actions": inbound.sender.user_id in self._settings.superusers,
+                        "allow_automation": True,
+                        "actor_is_superuser": inbound.sender.user_id in self._settings.superusers,
+                        "presence_id": inbound.presence_id,
+                    }
 
                     async def validate_work() -> None:
                         if not await self.validate_turn_snapshot(turn_snapshot):
@@ -1114,23 +1138,8 @@ class ChatService:
                                 self._work_repository,
                                 work_conversation_id,
                                 turn_snapshot.generation,
-                                f"event:{inbound.conversation_id}:{turn_snapshot.trigger_event_id}",
-                                {
-                                    "actor_user_id": inbound.sender.user_id,
-                                    "actor_person_id": inbound.person_id,
-                                    "principal_kind": "person",
-                                    "origin": turn_origin.value,
-                                    "trigger_event_id": turn_snapshot.trigger_event_id,
-                                    "bot_user_id": inbound.bot_user_id,
-                                    "generation": turn_snapshot.generation,
-                                    "conversation_id": inbound.conversation_id,
-                                    "allow_admin_actions": inbound.sender.user_id
-                                    in self._settings.superusers,
-                                    "allow_automation": True,
-                                    "actor_is_superuser": inbound.sender.user_id
-                                    in self._settings.superusers,
-                                    "presence_id": inbound.presence_id,
-                                },
+                                work_source_key,
+                                work_source,
                                 validate_work,
                                 resolve_child,
                                 bindings=self.runtime.bindings,
@@ -1138,17 +1147,25 @@ class ChatService:
                             )
                         )
 
-                    work_control = await start_work()
-                    if work_control.current is None:
-                        # Ordinary chat has not admitted a Work yet. Release this
-                        # empty lease while preparing context, then activate the
-                        # same source only after its prerequisite is complete.
-                        await work_scope.aclose()
-                        work_control = None
+                    if await work_candidate_available(
+                        self._work_repository,
+                        work_conversation_id,
+                        turn_snapshot.generation,
+                        work_source_key,
+                        work_source,
+                    ):
+                        work_control = await start_work()
+                        if work_control.current is None:
+                            # The hint can become stale. Releasing the empty lease
+                            # still leaves context preparation outside ownership.
+                            await work_scope.aclose()
+                            work_control = None
+                preparation.advance("runtime_snapshot")
                 runtime_config = runtime_snapshot or await self._runtime_config.snapshot(
                     user_id=inbound.sender.user_id,
                     group_id=inbound.group_id,
                 )
+                preparation.advance("memory_and_repair")
                 memory_session = self.open_memory_session(
                     inbound,
                     identity,
@@ -1166,6 +1183,7 @@ class ChatService:
 
                     await repair_receipt_ledger(work_control, self._ledger)
 
+                preparation.advance("build_messages")
                 (
                     messages,
                     visible_event_ids,
@@ -1190,15 +1208,18 @@ class ChatService:
                     memory_session=memory_session,
                     turn_snapshot=turn_snapshot,
                 )
+                preparation.advance("work_activation")
                 if start_work is not None and work_control is None:
                     work_control = await start_work()
                 # Required rollup/model preparation must not hold reset/privacy's
                 # effect gate. Linearize only the completed snapshot and projection;
                 # dispatch retains this same source guard across subsequent requests.
+                preparation.advance("context_validation")
                 validate_context = self._context_validator(
                     read_version, commit_projection=commit_projection
                 )
                 await self.run_effect(turn_snapshot, validate_context)
+                preparation.advance("agent_setup")
                 gateway = (
                     cast(OneBotToolGateway, sender)
                     if callable(getattr(sender, "call_api", None))
@@ -1481,25 +1502,26 @@ class ChatService:
         memory_intent: MemoryQueryIntent | None = None
         if turn_snapshot is None:
             raise ConversationCoverageError("chat turn requires a conversation snapshot")
-        context = await prepare_context(
-            partial(
-                self._context_assembler.assemble,
-                inbound=inbound,
-                identity=identity,
-                profile=profile,
-                turn=turn_snapshot,
-                content=content,
-                runtime=runtime,
-                memory_mode=memory_mode,
-                self_recall=False,
-                memory_intent=memory_intent,
-                turn_origin=turn_origin.value,
-                memory_retrieval=retrieval,
-                persist_memory_exposure=persist_exposure,
-            ),
-            current_work_control.get(),
-            recovery_contract=await self.runtime.main_turns.recovery_contract(runtime),
-        )
+        with preparation_detail("context_assembly"):
+            context = await prepare_context(
+                partial(
+                    self._context_assembler.assemble,
+                    inbound=inbound,
+                    identity=identity,
+                    profile=profile,
+                    turn=turn_snapshot,
+                    content=content,
+                    runtime=runtime,
+                    memory_mode=memory_mode,
+                    self_recall=False,
+                    memory_intent=memory_intent,
+                    turn_origin=turn_origin.value,
+                    memory_retrieval=retrieval,
+                    persist_memory_exposure=persist_exposure,
+                ),
+                current_work_control.get(),
+                recovery_contract=await self.runtime.main_turns.recovery_contract(runtime),
+            )
         if (
             self.participation_context is not None
             and turn_origin is TurnOrigin.USER_MESSAGE
@@ -1551,16 +1573,17 @@ class ChatService:
             if not await self.validate_turn_snapshot(turn_snapshot):
                 raise TurnSupersededError("turn changed during context preparation")
 
-        composition = await self.runtime.main_turns.compose(
-            inbound=inbound,
-            context=replace(context, current_message=current),
-            runtime=runtime,
-            visual_observation=visual_observation,
-            visual_failure=visual_failure,
-            memory_exclusive_write=bool(memory_session and memory_session.exclusive_write),
-            allowed_capabilities=self.web_capabilities(runtime),
-            before_preparation=validate_preparation,
-        )
+        with preparation_detail("main_turn_composition"):
+            composition = await self.runtime.main_turns.compose(
+                inbound=inbound,
+                context=replace(context, current_message=current),
+                runtime=runtime,
+                visual_observation=visual_observation,
+                visual_failure=visual_failure,
+                memory_exclusive_write=bool(memory_session and memory_session.exclusive_write),
+                allowed_capabilities=self.web_capabilities(runtime),
+                before_preparation=validate_preparation,
+            )
         messages = composition.messages
         return (
             messages,
@@ -1695,6 +1718,7 @@ class ChatService:
             if snapshot is not None and not await self.validate_turn_snapshot(snapshot):
                 raise TurnSupersededError("turn generation changed before model invocation")
 
+        await emit_chat_preparation()
         result = await self.runtime.main_turns.run(
             initial_messages,
             AgentRuntime(

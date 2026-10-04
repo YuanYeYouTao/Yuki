@@ -228,6 +228,12 @@ gate 内只复核 turn snapshot、read version 或原 Work source guard 并提�
 `prepare_context` 负责依原 Work 停放、结算、恢复或采用现行 extractive fallback。
 没有已接纳 Work 的准备继续使用前台路径，不为准备另造 Work 或获取执行租约。
 
+普通聊天先只读检查同一内部 source key、actor 与交接边界是否有可选 Work；没有候选时
+上下文准备不领取再释放空租约。只读结果仅用于安排准备，正式激活仍重新读取候选、
+取得租约并执行原来源与状态核验，准备期间新增、取消或改向的 Work 不复用旧预检授权。
+已占用或过时代际的作用域领取、失效租约的续期和释放可只读拒绝；真实变更仍使用原
+writer 与执行时的 owner/fence/generation/期限条件，不以锁外读取代替 CAS。
+
 尚无模型 journal 的原 Work 遇到 required rollup 时，在原 checkpoint 中记录准备水位与
 原期限，交给既有 canonical rollup job，随即按原 `waiting_external` 结算并释放 activation。
 WorkScheduler 每轮先只读发现至多 32 个已完成、失败或到期的准备，再在短写事务复核并

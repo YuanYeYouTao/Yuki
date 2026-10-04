@@ -8,9 +8,11 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from qq_ai_bot.config import Settings
+from qq_ai_bot.memory.dream.db_models import MemoryDreamClusterModel, MemoryDreamOperationModel
 from qq_ai_bot.memory.dream.models import (
     DreamClusterPreview,
     DreamClusterStatus,
@@ -21,6 +23,7 @@ from qq_ai_bot.memory.dream.models import (
 )
 from qq_ai_bot.memory.dream.repository import DreamRepository
 from qq_ai_bot.memory.dream.service import DreamBudgetExhausted, DreamQualityError, DreamService
+from qq_ai_bot.memory.repository import EvidenceSnapshotRetryExhausted
 from qq_ai_bot.model_runtime.structured import StructuredTaskError
 
 logger = logging.getLogger(__name__)
@@ -132,8 +135,18 @@ class DreamWorker:
 
     async def health(self) -> DreamHealth:
         snapshot = await self._repository.health(enabled=self._settings.memory_dream_enabled)
+        task_error = (
+            self._task.exception()
+            if self._task is not None and self._task.done() and not self._task.cancelled()
+            else None
+        )
         return snapshot.model_copy(
             update={
+                **(
+                    {"running": False, "last_error_category": type(task_error).__name__}
+                    if task_error is not None
+                    else {}
+                ),
                 "compaction_last_error_category": self._compaction_error()
                 or snapshot.compaction_last_error_category,
                 "waiting_for_compaction_lock": (
@@ -144,14 +157,16 @@ class DreamWorker:
 
     async def _run(self) -> None:
         while not self._stop.is_set():
-            try:
-                async with self._process_lock:
+            async with self._process_lock:
+                try:
                     await self._schedule_if_due()
+                except (OSError, RuntimeError, ValueError, IntegrityError) as exc:
+                    logger.warning("memory_dream_loop_failed error_category=%s", type(exc).__name__)
+                else:
+                    # Unsettled drain/finish failures must stop this task. A
+                    # later automatic tick could otherwise reset processing and
+                    # repeat a model call whose database outcome is unknown.
                     await self._drain_active()
-            except asyncio.CancelledError:
-                raise
-            except (OSError, RuntimeError, ValueError, IntegrityError) as exc:
-                logger.warning("memory_dream_loop_failed error_category=%s", type(exc).__name__)
             self._wake.clear()
             try:
                 await asyncio.wait_for(
@@ -202,23 +217,31 @@ class DreamWorker:
                     run,
                     cluster,
                 )
-                await self._repository.finish_cluster(
-                    cluster.id,
-                    status=(DreamClusterStatus.COMPLETED if valid else DreamClusterStatus.STALE),
-                    operation_count=operations,
-                    error_category=(None if valid else "snapshot_changed"),
-                )
             except asyncio.CancelledError:
                 raise
+            except EvidenceSnapshotRetryExhausted:
+                # Only a confirmed database rollback is a known failed action.
+                # Finish errors escape: the next tick must not replay the model.
+                await self._finish_cluster_failure(
+                    cluster.id,
+                    status=DreamClusterStatus.FAILED,
+                    error_category="evidence_snapshot_retry_exhausted",
+                )
+                logger.warning(
+                    "memory_dream_snapshot_retry_exhausted run_id=%s cluster_id=%d "
+                    "error_category=evidence_snapshot_retry_exhausted",
+                    run.public_id,
+                    cluster.id,
+                )
+                continue
             except (OSError, RuntimeError, ValueError, StructuredTaskError) as exc:
-                await self._repository.finish_cluster(
+                await self._finish_cluster_failure(
                     cluster.id,
                     status=(
                         DreamClusterStatus.SKIPPED
                         if isinstance(exc, DreamBudgetExhausted)
                         else DreamClusterStatus.FAILED
                     ),
-                    operation_count=0,
                     error_category=(
                         "budget_deferred"
                         if isinstance(exc, DreamBudgetExhausted)
@@ -230,8 +253,42 @@ class DreamWorker:
                     ),
                 )
                 logger.warning(
-                    "memory_dream_cluster_failed run_id=%s cluster_id=%d error_category=%s",
+                    "memory_dream_cluster_error run_id=%s cluster_id=%d error_category=%s",
                     run.public_id,
                     cluster.id,
                     type(exc).__name__,
                 )
+                continue
+            # A commit acknowledgement failure here has different certainty
+            # from process_cluster's rolled-back snapshot failure.
+            await self._repository.finish_cluster(
+                cluster.id,
+                status=(DreamClusterStatus.COMPLETED if valid else DreamClusterStatus.STALE),
+                operation_count=operations,
+                error_category=(None if valid else "snapshot_changed"),
+            )
+
+    async def _finish_cluster_failure(
+        self, cluster_id: int, *, status: DreamClusterStatus, error_category: str
+    ) -> None:
+        async with self._repository.database.sessions() as reader:
+            current = await reader.get(MemoryDreamClusterModel, cluster_id)
+            if current is None or current.status != DreamClusterStatus.PROCESSING.value:
+                return
+            committed = int(
+                await reader.scalar(
+                    select(func.count())
+                    .select_from(MemoryDreamOperationModel)
+                    .where(
+                        MemoryDreamOperationModel.cluster_id == cluster_id,
+                        MemoryDreamOperationModel.status == "committed",
+                    )
+                )
+                or 0
+            )
+        await self._repository.finish_cluster(
+            cluster_id,
+            status=DreamClusterStatus.COMPLETED if committed else status,
+            operation_count=committed,
+            error_category=("recovered_committed_operation" if committed else error_category),
+        )

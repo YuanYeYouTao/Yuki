@@ -60,13 +60,24 @@ class ShortState:
         }
 
     def snapshot(self) -> list[dict[str, Any]]:
-        with self.store._transaction() as db:
-            self._prepare(db)
+        with self.store._transaction(write=False) as db:
+            if (
+                db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='short_state'"
+                ).fetchone()
+                is None
+            ):
+                return []
+            now = int(time.time())
+            # Expiry is a read projection, never a write or renewal. Physical
+            # clearing waits for an actual update's existing atomic preparation.
             # Empty slots with a version remain visible so CAS can be used after deletion/expiry.
             return [
                 dict(row)
                 for row in db.execute(
-                    "SELECT slot,text,revision,expires_at FROM short_state ORDER BY slot"
+                    "SELECT slot,CASE WHEN expires_at<=? THEN '' ELSE text END AS text,"
+                    "revision,expires_at FROM short_state ORDER BY slot",
+                    (now,),
                 )
             ]
 
