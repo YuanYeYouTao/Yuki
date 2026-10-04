@@ -127,13 +127,13 @@ async def binding_for_event(
         matched = view.matched_unit
         if matched is not None:
             basis = tuple(dict.fromkeys((*matched.binding.basis, event.ref)))
-            if all([await service._source_current(item, ref) for ref in basis]):
+            if all((await service._sources_current(item, basis)).values()):
                 return host_binding(row, item, matched.unit, basis)
             return None
         invited = invitation_unit(item, event)
         if invited is not None:
             basis = invitation_basis(item, event)
-            if all([await service._source_current(item, ref) for ref in basis]):
+            if all((await service._sources_current(item, basis)).values()):
                 return host_binding(row, item, invited, basis)
             return None
         if continuation_only:
@@ -162,9 +162,7 @@ async def on_ordinary_admitted(
             generation=binding.generation,
         )
         unit = admission_unit_binding(current) if current is not None else None
-        if unit is not None and all(
-            [await service._source_current(item, ref) for ref in unit.basis]
-        ):
+        if unit is not None and all((await service._sources_current(item, unit.basis)).values()):
             item.controller.observe_unit_input(unit, event.ref)
             await service._save(item)
 
@@ -184,7 +182,7 @@ async def context_for_event(
         )
         binding = admission_unit_binding(admission) if admission is not None else None
         if binding is None or not all(
-            [await service._source_current(item, ref) for ref in binding.basis]
+            (await service._sources_current(item, binding.basis)).values()
         ):
             return None
         unit = next(
@@ -226,7 +224,7 @@ async def observe_main_response(
         unit = admission_unit_binding(admission) if admission is not None else None
         if admission is None or unit is None:
             return
-        if not all([await service._source_current(item, ref) for ref in unit.basis]):
+        if not all((await service._sources_current(item, unit.basis)).values()):
             return
         # Dispatch ordering is source time, not the arrival time of a late response.
         report = SelfReport(
@@ -252,10 +250,9 @@ async def observe_main_response(
                     interpreted is None
                     or interpreted.snapshot.focus != event.ref
                     or not all(
-                        [
-                            await service._source_current(item, ref)
-                            for ref in interpreted.snapshot.context
-                        ]
+                        (
+                            await service._sources_current(item, interpreted.snapshot.context)
+                        ).values()
                     )
                 ):
                     item.observation.request_observation(event.ref)
@@ -283,7 +280,7 @@ async def promote_invitations(service: SemanticParticipationService, item: _Sess
         if row is None:
             continue
         basis = invitation_basis(item, event)
-        if not all([await service._source_current(item, ref) for ref in basis]):
+        if not all((await service._sources_current(item, basis)).values()):
             continue
         binding = host_binding(row, item, unit, basis)
 

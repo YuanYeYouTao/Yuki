@@ -90,3 +90,8 @@ AGM 工具续接注入与空流伪造正文的本次修复见
 基于 `3d9e273` 的代码核查和隔离 SQLite 竞态复现，规定实际容量内先回复、后台整理及明确采用边界，
 并修复 Rollup 提交快照、周期空写和锁内准备。PR #229 已合并为 `b8adc49`，Bot-only 部署及重试证据见
 [交付记录](../operations/foreground-rollup-sqlite-contention-2026-10-03.md)；自然聊天延迟、摘要质量与缓存改善仍须分别观察。
+
+本轮修复规格：[数据库回复延迟任务书](database-reply-latency-taskbook-2026-10-04.md)。
+包含参与反馈批读与公平对账、Protocol GC 和回复投影的数据库优化；用户已授权实施。
+验证、提交、合并、部署与自然聊天效果见[交付记录](../operations/database-reply-latency-2026-10-04.md)，
+按各自实际证据分别记录。

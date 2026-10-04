@@ -27,6 +27,7 @@ class SocialOperationModel(Base):
         CheckConstraint("target_kind IN ('person','space')", name="ck_social_target_kind"),
         Index("ix_social_operation_target_time", "target_id", "created_at"),
         Index("ix_social_operation_event_id", "event_id"),
+        Index("ix_social_operation_scope_updated", "source_conversation_id", "updated_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)

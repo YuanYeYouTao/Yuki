@@ -253,6 +253,15 @@ Work。steer 与普通观察按原事件顺序呈现一次，输入消费仍沿�
 真实 Work 的 projection CAS、来源依赖和 dispatched journal 同事务
 发布，文件读取、散列及 JSON 编码在 writer 之前完成。
 
+选取准备在显式读快照中确定本次缺失的 `(view_key, source_key)`，writer 只插新增项。
+同 epoch 的既有冻结片段保持不变，显式容量或合同 epoch 边界仍保留原 first-selection
+来源和覆盖口径；owner、scope、generation、事件身份冲突不能用忽略重复插入隐藏。
+只有首次选中的摘要转移 parent artifact refs，写时批量核验真实 parent handles 已由
+对应摘要保留，空集不删除；后续 journal 失败与 projection、selection、refs 一起回滚。
+历史观察先读作用域 metadata 和完整来源闭包，再读取实际有效的正文；合法未选新
+work-note 仍进入下一请求，未选 snapshot/摘要候选不能充当已观察覆盖。
+metadata 分页限制单次读取，当前 JSON 来源图的总访问量仍可能随历史增长。
+
 普通 journal 保存因来源标量版本变化而失败时，最多在 writer 之外用原入口授权与来源
 guard 重新核验一次，再重备同一数据库保存；无原 guard 或真实来源变化保持拒绝。
 重备不请求模型、执行工具、重发消息或重置预算，压缩的冻结来源 CAS 不使用此路径。
@@ -302,6 +311,15 @@ paired 检查点。真实主请求超预算且整理不能使其装窗时，暂�
 保存；新增引用与 journal 在原租约的短事务一起提交。活动 Work 保留引用，归档与隐私清理
 释放拥有者；GC 先取得无拥有者删除围栏，再在 writer 外删文件。对象资源配额和请求 token
 容量分开；存储压力不能触发模型摘要。备份必须包含 DB 和协议/工具证据目录并核验引用。
+
+Protocol GC 分 deleting 恢复与普通过期两个索引分支，先取有界 metadata 页再批读真实 refs；
+owned 页也推进原进程内游标，固定 cutoff 和同排序高水位，次轮回访新插入及状态变化。
+短 writer 重新核对原 metadata、期限和无拥有者条件并提交 deleting 屏障；文件锁只保护
+实际文件查证/删除，释放后批量确认仍 deleting 且无拥有者的 metadata。GC 不持 writer
+等待文件锁；publication 保留文件核验至原 journal/ref 提交的保护和 deleting 全集合检查。
+文件线程在调用方取消后须真正收尾才释放原保护。普通不可变检查点条目可在原 chain
+复用有界 digest/size 缓存，opaque 与会改变媒体外置的条目仍按原协议准备；缓存不代替
+发布前真实文件身份/完整性核验。文件缺失重新准备，变化重新查证，损坏拒绝发布。
 
 热配置 `context.window_tokens` / `context.work_window_tokens` 初始为 96000 / 128000；
 普通历史整理使用独立 `context.compaction_window_tokens`，初始 90000；初始历史预算、

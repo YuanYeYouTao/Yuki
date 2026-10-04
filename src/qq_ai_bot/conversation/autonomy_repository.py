@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
@@ -38,6 +40,17 @@ from qq_ai_bot.persistence.unit_of_work import optional_session
 
 _ACTIVE = ("accepted", "running")
 _OUTCOMES = frozenset({"running", "completed", "no_reply", "interrupted", "failed"})
+
+
+@asynccontextmanager
+async def _feedback_session(
+    database: Database, session: AsyncSession | None
+) -> AsyncIterator[AsyncSession]:
+    if session is not None:
+        yield session
+    else:
+        async with database.immediate_session() as owned:
+            yield owned
 
 
 class AutonomyConflict(ValueError):
@@ -450,20 +463,61 @@ class AutonomyRepository:
             ).all()
             return tuple(_run(row) for row in rows)
 
-    async def list_recent(self) -> tuple[AcceptedInitiative, ...]:
-        """Keep a bounded terminal tail in reconciliation for late factual receipts."""
+    async def terminal_page(
+        self, *, after: str = "", ceiling: str | None = None, limit: int = 16
+    ) -> tuple[tuple[str, ...], str, str]:
+        """One stable-ID sweep; the caller's cursor is disposable scheduling state.
+
+        Freeze the upper ID for a sweep. Inserts behind the cursor and rows which
+        become terminal meanwhile are revisited on the next sweep, including old
+        generations. Mutable feedback timestamps never determine scan position.
+        """
         async with self._database.sessions() as session:
-            rows = (
-                await session.scalars(
-                    select(InitiativeRunModel)
-                    .where(
-                        InitiativeRunModel.state.not_in(_ACTIVE),
+            if ceiling is None:
+                ceiling = (
+                    await session.scalar(
+                        select(InitiativeRunModel.id)
+                        .order_by(InitiativeRunModel.id.desc())
+                        .limit(1)
                     )
-                    .order_by(InitiativeRunModel.updated_at.desc())
-                    .limit(128)
+                    or ""
+                )
+            rows = (
+                await session.execute(
+                    select(InitiativeRunModel.id, InitiativeRunModel.state)
+                    .where(
+                        InitiativeRunModel.id > after,
+                        InitiativeRunModel.id <= ceiling,
+                    )
+                    .order_by(InitiativeRunModel.id)
+                    .limit(max(1, min(limit, 128)))
                 )
             ).all()
-            return tuple(_run(row) for row in rows)
+            return (
+                tuple(identity for identity, state in rows if state not in _ACTIVE),
+                ceiling,
+                rows[-1][0] if rows else "",
+            )
+
+    async def get_runs(
+        self,
+        run_ids: tuple[str, ...],
+        *,
+        session: AsyncSession,
+        errors: list[Exception] | None = None,
+    ) -> tuple[AcceptedInitiative, ...]:
+        rows = await session.scalars(
+            select(InitiativeRunModel).where(InitiativeRunModel.id.in_(run_ids))
+        )
+        result = []
+        for row in rows:
+            try:
+                result.append(_run(row))
+            except (ValueError, TypeError, KeyError) as exc:
+                if errors is None:
+                    raise
+                errors.append(exc)
+        return tuple(result)
 
     async def latest_feedback(self, run_id: str) -> tuple[str, dict[str, Any], datetime] | None:
         async with self._database.sessions() as session:
@@ -557,6 +611,7 @@ class AutonomyRepository:
         actual_target_refs: tuple[str, ...] = (),
         effect_refs: tuple[str, ...] = (),
         considered_sources: tuple[InitiativeSource, ...] = (),
+        session: AsyncSession | None = None,
     ) -> AcceptedInitiative:
         """Commit a real host result exactly once, independent of current selector state.
 
@@ -581,7 +636,7 @@ class AutonomyRepository:
         )
         if len(payload.encode("utf-8")) > 16_384:
             raise ValueError("initiative_feedback_too_large")
-        async with self._database.immediate_session() as session:
+        async with _feedback_session(self._database, session) as session:
             row = await session.get(InitiativeRunModel, run_id)
             if row is None:
                 raise AutonomyConflict("initiative_run_missing")
