@@ -1,10 +1,10 @@
 # AGM 虚构续接消息修复
 
-状态：源码补丁与独立协议探测已完成；Rust 验证、合并、生产部署分别记录，不以探测代替 QQ 验收。
+状态：PR234 已合并，生产 AGM 已更新，部署后合成网关探测通过；真实 QQ 行为仍待后续观察验收。
 
 ## 查明的问题
 
-生产 AGM 4.9.0 的末尾防御会为所有 `model` 尾轮追加 `user: "ok go on"`。
+修复前生产 AGM 4.9.0 的末尾防御会为所有 `model` 尾轮追加 `user: "ok go on"`。
 一条同记录的实际诊断样本中，Yuki 原请求尾部是纯 `user/functionResponse`；AGM 将它
 归一化为 `model/functionResponse`，再追加假用户消息。Yuki 当前代码没有生成此短句。
 诊断副本能够证明该阶段的注入，不能独立证明最后的物理报文或具体 QQ 发言因果。
@@ -15,7 +15,7 @@
 
 非流式 Gemini 请求也会被 AGM 转为内部流式并经过 auto-heal。原实现遇到仅思考的空输出时
 追加“继续 / Continue.”，最多再请求一次；第二次为空或失败时伪造 `task ready` 成功正文。
-最近一小时的有界日志捕获过一次触发、一次续接 200 和一次再次空输出的伪造正文。
+修复前一小时的有界日志捕获过一次触发、一次续接 200 和一次再次空输出的伪造正文。
 该计数没有关联 Yuki 执行 ID，不据此归因某条 QQ 消息。
 
 ## 最小修复
@@ -70,6 +70,45 @@ docker build --build-arg USE_MIRROR=false --build-arg "PATCH_SHA256=$agmPatchSha
 ```
 
 模型探测是本次手工验收，不作为常驻测试或构建步骤。
+
+## 验证与生产状态
+
+- Rust 格式检查、Clippy、锁定依赖的 release 编译通过；16 项 guard 与 13 项 auto-heal
+  定向测试通过。部署 helper 的 12 项隔离 fixture 通过，包含 SQLite/WAL 与回退边界；
+  新镜像无账号、无模型请求的隔离 health 验证通过。
+- [PR234](https://github.com/YuanYeYouTao/Yuki/pull/234) 的 6 项 CI 检查通过，Python 为
+  2742 passed、1 skipped；于 `2026-10-04 06:58:21 UTC` 合并为
+  `678adab8e72fffd3f39ca50fa3fde5fadbdd0ca1`。
+- 第二次部署于 `2026-10-04 07:08:21 UTC` 成功；候选容器于 `07:07:50 UTC` 启动，
+  实测 healthy、restart 0、模型目录 32 项。实际 3 个 Compose 文件的有效配置仅镜像改变，
+  同机其他服务未变化。停写备份的 5 个数据库 integrity、foreign-key、完整文件复制和
+  ownership 核查通过，没有恢复旧数据。
+
+已安装镜像为 `sha256:f74debec041ec02859ff7cd94cad3b21c52e64408991c58092c359bd3a78f1b4`，
+后端二进制 SHA256 为 `8fd3091a1119692b14e7a9f3738427e3055ae4368bf407aa55b8f2640e01a174`，
+补丁 SHA256 为 `03245fc6a063bf929973bc14a374ed013fb2ddcec1646be5621a744d473874cd`。
+
+首轮部署在 `starting_candidate` 阶段失败，自动回退报告为 false；随后只读实测确认原镜像
+running、healthy、restart 0，使用原 2 个 Compose 文件，有效环境值保持不变。
+部署 helper 随后将环境列表的顺序比较改为映射等价比较并拒绝重复 key，保留其他 guard，
+第二次部署通过。首轮具体失败原因未确证，不能倒推一定是列表顺序，也不能将回退报告 false
+解释为当时服务持续离线。首轮已验证的完整备份保留。
+
+## 部署后网关探测
+
+[脱敏记录](evidence/agm-gateway-tool-receipt-canary-20261004.json)于
+`2026-10-04 07:08:53 UTC` 核对上述实际镜像，通过 AGM 的 Gemini `generateContent`
+入口完成 2 次合成客户端请求，没有客户端重试、真实工具执行或 QQ 发送：
+
+- 首次 HTTP 200 / STOP，获得真实 dummy functionCall 及签名。
+- 将原调用、签名与合成 functionResponse 续接后，HTTP 200 返回 `PROBE_DONE`，新增工具调用为 0。
+- 两次诊断记录均以 nonce 与原 contents 精确关联。续接入站为 3 轮、末尾 `user/functionResponse`；
+  上行诊断仍为 3 轮、末尾 `model/functionResponse`，原调用、签名与回执完整保留，没有额外
+  用户轮或协议占位。
+
+两次返回 usage 合计 prompt 502、candidates 21、thoughts 214、total 737 tokens；cache 字段均
+缺失，继续记为未知。客户端请求数不等于物理上游请求数，网关既有 fallback 或刷新不能仅凭
+这份记录排除；诊断副本也不证明最终物理报文、账号连续性、缓存收益或自然 QQ 效果。
 
 上线只替换 AGM 镜像，保留账号、当前数据、路由、API Key、代理与 Yuki 配置。
 停写后保存完整私有数据副本并验证 SQLite/WAL；回退使用原镜像与当前数据，绝不恢复旧数据库
