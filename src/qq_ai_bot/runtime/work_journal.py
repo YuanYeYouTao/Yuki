@@ -518,6 +518,29 @@ class WorkJournal:
                     "replay_forbidden": True,
                 }
             )
+        value = json.loads(row["receipt_json"])
+        invocation = value.get("invocation", {})
+        reference = invocation.get("original_domain_ref")
+        if invocation.get("version") == 1 and isinstance(reference, str):
+            from qq_ai_bot.runtime.effect_queries import RuntimeEffectQueries
+
+            original = await RuntimeEffectQueries(
+                self.repository.database
+            ).inspect_social_operation(
+                reference=reference, work_id=row["work_id"], operation_key=key
+            )
+            if original is not None:
+                return json.dumps(
+                    {
+                        "ok": original["status"] == "succeeded",
+                        "data": original,
+                        "original_domain_ref": reference,
+                        "uncertain": original["status"] == "uncertain",
+                        "work_effect_state": row["state"],
+                        "replay_forbidden": True,
+                    },
+                    ensure_ascii=False,
+                )
         from hashlib import sha256
 
         from qq_ai_bot.sandbox.db_models import SandboxTaskRunModel

@@ -2082,6 +2082,47 @@ class WorkRepository:
         return True
 
     @staticmethod
+    async def bind_domain_receipt(
+        writer: AsyncSession, identity: str, key: str, reference: str
+    ) -> None:
+        """Bind the original domain intent before dispatch, in its prepare transaction."""
+        if not reference or len(reference) > 256:
+            raise WorkConflict("effect_domain_reference_invalid")
+        prior = func.json_extract(effects.c.receipt_json, "$.invocation.original_domain_ref")
+        changed = await writer.scalar(
+            update(effects)
+            .where(
+                effects.c.effect_key == key,
+                effects.c.work_id == identity,
+                effects.c.work_id.in_(
+                    select(work.c.id).where(
+                        work.c.state.not_in(TERMINAL),
+                        work.c.generation
+                        == select(CanonicalConversationModel.generation)
+                        .where(CanonicalConversationModel.id == work.c.conversation_id)
+                        .scalar_subquery(),
+                    )
+                ),
+                func.json_extract(effects.c.receipt_json, "$.invocation.version") == 1,
+                func.json_extract(effects.c.receipt_json, "$.invocation.dispatch_started") == 1,
+                or_(prior.is_(None), prior == reference),
+            )
+            .values(
+                receipt_json=func.json_set(
+                    effects.c.receipt_json,
+                    "$.invocation.original_domain_ref",
+                    reference,
+                    "$.invocation.revision",
+                    func.json_extract(effects.c.receipt_json, "$.invocation.revision") + 1,
+                ),
+                updated=time.time(),
+            )
+            .returning(effects.c.effect_key)
+        )
+        if changed is None:
+            raise WorkConflict("effect_domain_reference_conflict")
+
+    @staticmethod
     def _effect_scope(identity: str) -> Any:
         return or_(
             effects.c.work_id == identity,

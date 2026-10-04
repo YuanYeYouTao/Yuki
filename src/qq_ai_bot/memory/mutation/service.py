@@ -100,6 +100,7 @@ from qq_ai_bot.persistence.models import (
     ChatEventModel,
     MemoryEvidenceModel,
     MemoryFactRelationModel,
+    MemoryMutationReceiptModel,
     MemorySelfReflectionResultModel,
     MemoryToolReceiptModel,
 )
@@ -1254,6 +1255,8 @@ class MemoryMutationService:
                     deduplicated=True,
                     requested_operation=request.operation,
                 )
+            if await self._agent_write_consumed(context):
+                return self._rejected(request.operation, "memory_write_authority_consumed")
             evidence_sources = (prepared.evidence, *additional_evidence)
             async with self._facts.repository.transaction() as source_session:
                 source_snapshot = await self._mutation_source_snapshot(
@@ -1288,6 +1291,13 @@ class MemoryMutationService:
                                 duplicate,
                                 deduplicated=True,
                                 requested_operation=request.operation,
+                            )
+                        from qq_ai_bot.runtime.effect_outcomes import current_result_capture
+
+                        capture = current_result_capture.get()
+                        if await self._agent_write_consumed(context, session=session):
+                            return self._rejected(
+                                request.operation, "memory_write_authority_consumed"
                             )
                         try:
                             current_owners = (
@@ -1404,6 +1414,19 @@ class MemoryMutationService:
                             created_at=datetime.now(UTC),
                             session=session,
                         )
+                        if capture is not None:
+                            from qq_ai_bot.runtime.work_activation import current_work_control
+                            from qq_ai_bot.runtime.work_repository import WorkRepository
+
+                            control = current_work_control.get()
+                            if control is not None:
+                                await control.repository._assert_lease(session, control.lease)
+                            await WorkRepository.bind_domain_receipt(
+                                session,
+                                capture.work_id,
+                                capture.effect_key,
+                                f"memory:{reserved.mutation_id}",
+                            )
                         applied = await self._apply(
                             prepared,
                             session=session,
@@ -1470,6 +1493,38 @@ class MemoryMutationService:
                     )
         await self._schedule_embedding_after_commit(receipt.new_fact_id)
         return MemoryMutationResult.from_receipt(receipt, deduplicated=False)
+
+    async def _agent_write_consumed(
+        self, context: MemoryMutationContext, *, session: AsyncSession | None = None
+    ) -> bool:
+        from qq_ai_bot.runtime.effect_outcomes import current_result_capture
+
+        if (
+            current_result_capture.get() is None
+            or context.decision_actor_type is not MemoryDecisionActorType.AGENT
+        ):
+            return False
+        if session is None:
+            async with self._facts.repository.transaction(read_snapshot=True) as reader:
+                return await self._agent_write_consumed(context, session=reader)
+        # A fresh activation cannot replenish the trusted source's one Agent
+        # write. Repeat this check in the mutation transaction after preflight.
+        return (
+            await session.scalar(
+                select(MemoryMutationReceiptModel.id)
+                .where(
+                    MemoryMutationReceiptModel.trigger_event_id
+                    == (context.event.id if context.event else None),
+                    MemoryMutationReceiptModel.initiative_run_id == context.initiative_run_id,
+                    MemoryMutationReceiptModel.conversation_key == context.conversation_key,
+                    MemoryMutationReceiptModel.decision_actor_type == "agent",
+                    MemoryMutationReceiptModel.executed_by_bot_user_id
+                    == context.executed_by_bot_user_id,
+                )
+                .limit(1)
+            )
+            is not None
+        )
 
     async def _mutation_source_snapshot(
         self,

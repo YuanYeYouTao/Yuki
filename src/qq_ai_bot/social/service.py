@@ -81,6 +81,9 @@ class SocialContext:
     initiative_run_id: str | None = None
     automation_run_id: int | None = None
     presence_id: str | None = None
+    # Host-owned Social parent; split parts and captions cannot replace the
+    # Work effect's original domain reference with one of their own receipts.
+    parent_operation_id: str | None = None
 
 
 def _self_scene(context: SocialContext) -> bool:
@@ -737,7 +740,9 @@ class SocialService:
         # A content-free manifest freezes the split plan before any gateway call.
         # It remains PREPARED because it is not itself a transport effect.
         await self._validate_self_context(context)
-        await self.receipts.prepare(
+        from qq_ai_bot.runtime.effect_outcomes import current_result_capture
+
+        parent = await self.receipts.prepare(
             source_turn_id=context.turn_id,
             tool_call_id=context.call_id,
             source_conversation_id=context.conversation_id,
@@ -745,6 +750,7 @@ class SocialService:
             target=target,
             payload={"original": args, "chunks": chunks},
             planned_parts=len(chunks),
+            work_effect=current_result_capture.get(),
         )
         prefix = hashlib.sha256(context.call_id.encode()).hexdigest()[:24]
         planned = []
@@ -754,7 +760,10 @@ class SocialService:
                 part_args.pop("mentions", None)
                 part_args.pop("reply_to_event_id", None)
             part_context = replace(
-                context, call_id=f"seq:{prefix}:{index}", sequence_part_index=index
+                context,
+                call_id=f"seq:{prefix}:{index}",
+                sequence_part_index=index,
+                parent_operation_id=parent.operation_id,
             )
             planned.append((part_args, part_context))
         parts: list[dict[str, Any]] = []
@@ -776,6 +785,7 @@ class SocialService:
             else parts[-1].get("status", OperationStatus.FAILED.value)
         )
         result = {
+            "operation_id": parent.operation_id,
             "status": status,
             "target": target.model_dump(mode="json"),
             "planned_messages": len(chunks),
@@ -802,6 +812,9 @@ class SocialService:
     async def execute(
         self, name: str, args: dict[str, Any], context: SocialContext
     ) -> dict[str, Any]:
+        from qq_ai_bot.social.source_keys import social_call_key
+
+        context = replace(context, call_id=social_call_key(context.call_id))
         await self._validate_self_context(context)
         if _self_scene(context):
             if name not in {
@@ -1298,6 +1311,9 @@ class SocialService:
         caption_segments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         await self._validate_self_context(context)
+        from qq_ai_bot.runtime.effect_outcomes import current_result_capture
+
+        capture = current_result_capture.get()
         receipt = await self.receipts.prepare(
             source_turn_id=context.turn_id,
             tool_call_id=context.call_id,
@@ -1305,6 +1321,7 @@ class SocialService:
             action=name,
             target=target,
             payload=args,
+            work_effect=capture if context.parent_operation_id is None else None,
         )
         if receipt.status is not OperationStatus.PREPARED:
             await self._record_work_delivery(receipt)
@@ -1364,6 +1381,25 @@ class SocialService:
         # Probes and preparation never serialize unrelated social operations.
         # The durable prepared -> executing CAS is the sole dispatch owner.
         async with self.database.immediate_session() as session:
+            if capture is not None:
+                from qq_ai_bot.runtime.work_repository import TERMINAL, WorkConflict
+                from qq_ai_bot.runtime.work_schema_v1 import work
+
+                if work_control is not None:
+                    await work_control.repository._assert_lease(session, work_control.lease)
+                active = await session.scalar(
+                    select(work.c.id).where(
+                        work.c.id == capture.work_id,
+                        work.c.conversation_id == context.conversation_id,
+                        work.c.state.not_in(TERMINAL),
+                        work.c.generation
+                        == select(CanonicalConversationModel.generation)
+                        .where(CanonicalConversationModel.id == context.conversation_id)
+                        .scalar_subquery(),
+                    )
+                )
+                if active is None:
+                    raise WorkConflict("social_work_dispatch_obsolete")
             await self._validate_self_context(context, session=session)
             await self.check_target(
                 target,
@@ -1487,7 +1523,10 @@ class SocialService:
         if caption or caption_segments:
             if completed.status is OperationStatus.SUCCEEDED:
                 caption_context = replace(
-                    context, turn_id=f"social-caption:{receipt.operation_id}", call_id="caption"
+                    context,
+                    turn_id=f"social-caption:{receipt.operation_id}",
+                    call_id="caption",
+                    parent_operation_id=receipt.operation_id,
                 )
                 try:
                     await self._effect(
@@ -1538,7 +1577,13 @@ class SocialService:
         control = current_work_control.get()
         if control is None or control.current is None:
             return
-        state = "accepted" if receipt.status is OperationStatus.SUCCEEDED else "unknown"
+        state = (
+            "accepted"
+            if receipt.status is OperationStatus.SUCCEEDED
+            else "failed"
+            if receipt.status is OperationStatus.FAILED
+            else "unknown"
+        )
         try:
             await record(control, receipt.operation_id, state, receipt.model_dump(mode="json"))
         except Exception:

@@ -35,8 +35,7 @@ INVENTORY = json.loads(
 BACKEND_TOOLS = [
     row["model_name"]
     for row in INVENTORY["tools"]
-    if row["model_name"] not in WORK_CONTROL_NAMES
-    and row["model_name"] not in {"execute_code", "update_short_state"}
+    if row["model_name"] not in WORK_CONTROL_NAMES and row["model_name"] != "execute_code"
 ]
 
 
@@ -110,6 +109,6 @@ async def test_closed_tools_close_children_too(backends, name):
     backend._tools_closed = True  # A committed mutation closed this turn's tools.
     call = ToolCall("direct", ToolFunction(name, "{}"))
     direct = direct_invocations((call,), runtime, chain_id="chain", request_sequence=1)[0]
-    if name == "send_message":
-        pytest.skip("send_message stays callable after a committed mutation, for both paths")
+    # Direct delivery remains available after a committed mutation. This checks
+    # identical backend policy, while the composition Host closes after memory.
     assert await backend.execute_call(direct) == await backend.execute_call(child_of(direct, 3))

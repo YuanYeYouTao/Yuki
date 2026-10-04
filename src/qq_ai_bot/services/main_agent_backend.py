@@ -549,9 +549,11 @@ class MainAgentBackend(AgentToolBackend):
                 )
             else:
                 started = time.perf_counter()
+                binding_started = False
                 try:
 
                     async def invoke_binding() -> ToolExecutionResult:
+                        nonlocal binding_started
                         from qq_ai_bot.runtime.work_activation import current_work_control
 
                         work = current_work_control.get()
@@ -569,6 +571,7 @@ class MainAgentBackend(AgentToolBackend):
                                 )
                         if name == "send_message":
                             self._send_message_attempted = True
+                        binding_started = True
                         return await binding.invoke(
                             {str(key): value for key, value in parsed.items()},
                             ToolInvocationContext(
@@ -592,11 +595,17 @@ class MainAgentBackend(AgentToolBackend):
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
+                    uncertain = binding_started and effective_descriptor.effect not in {
+                        CapabilityEffect.READ_STATE,
+                        CapabilityEffect.EXTERNAL_READ,
+                    }
                     outcome = ToolExecutionResult(
                         ok=False,
                         error_code=type(exc).__name__,
                         public_message="工具执行失败",
                         retryable=False,
+                        uncertain=uncertain,
+                        mutation_committed=None if uncertain else False,
                         provider_id=descriptor.provider_id,
                         tool_name=descriptor.provider_tool_name or descriptor.model_name,
                     )

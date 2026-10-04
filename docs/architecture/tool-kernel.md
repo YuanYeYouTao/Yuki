@@ -65,6 +65,17 @@ flowchart LR
 WorkSession T2/T3 → `MainAgentBackend.execute_call`，拒绝理由与直接调用逐字一致；
 VM 只收到已保存的原回执视图（`ToolReceiptView`）。
 
+Social 在父操作首次持久准备时，把 `social:<operation_id>` 与原 effect 的
+`invocation.original_domain_ref` 原子关联；分片、文件与附言保留各自确定性身份。
+实际 claim 再核对原 Work 的 lease、generation、状态与现行来源/目标/路由权限。
+长 Host operation ID 只在 Social 存储表示中完整 SHA256，不能用该表示重建业务所有权。
+工具汇总丢失时，原 effect 查询按这个关联读取计划数量和逐片回执；缺失、executing 或
+unknown 的片不能被另一成功片覆盖。查询本身不派发，也不清除 Work 的未决效果围栏。
+
+Work 中的 Agent 记忆写把 `memory:<mutation_id>` 与原 effect 在领域提交交易中关联，
+按可信原 event/initiative 的持久回执核对已消费的一次写权；恢复后的新 session 不补发授权。
+MCP/插件在连接或 scope 等待后再次检查当前定义与批准状态；已派发的未知写入不重放。
+
 宿主而非脚本决定并发：只读子调用受 `max_parallel_calls` 约束，发送、修改、记忆写和控制为
 屏障；同一响应多个 `execute_code` 按顺序执行，且不能与直接调用混在同一批。生命周期控制
 只在没有在途同伴时独占执行；`wait/need_input/complete/fail` 等以及 `memory_change`、

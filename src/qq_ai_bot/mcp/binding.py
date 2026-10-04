@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities.invocation import ToolInvocationContext
-from qq_ai_bot.capabilities.models import AuthorityContext
+from qq_ai_bot.capabilities.models import AuthorityContext, CapabilityEffect
 from qq_ai_bot.capabilities.policy import CapabilityPolicyContext, CapabilityPolicyEngine
 from qq_ai_bot.capabilities.results import ToolExecutionResult, resolve_mutation_commit
 from qq_ai_bot.mcp.descriptors import descriptor_from_mcp_tool
@@ -97,6 +97,8 @@ class MCPToolBinding:
             canonical_conversation_id=canonical_conversation_id,
             bot_user_id=bot_user_id,
             ingress_presence_id=ingress_presence_id,
+            side_effecting=descriptor.effect
+            not in {CapabilityEffect.READ_STATE, CapabilityEffect.EXTERNAL_READ},
         )
         mutation_committed = resolve_mutation_commit(result, descriptor)
         return replace(

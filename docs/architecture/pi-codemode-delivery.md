@@ -6,9 +6,12 @@
 
 - 本地实现和隔离测试已授权；本地依赖安装及指定 Monty 编译已单独授权。
 - 远端创建 `codex/pi-codemode-experiment` 并拉取已单独授权且实际完成。
-- HEAD/远端测试分支/远端 main 均为 `8204b28ebc8939213dae60dbab94ab1c16d1263a`。
+- 初次分支创建基线为 `8204b28ebc8939213dae60dbab94ab1c16d1263a`；本次接手前已 fetch
+  远端测试分支并确认本地与远端均为 `226b5d6ac5e39021a5a4dca8eccc9f8e7401580f`。
 - 开始时工作区干净；原主工作树 `main` 未切换、未修改。
-- 已授权并执行：在测试分支提交与推送。PR、合并、付费 API、真实消息、生产访问及部署均未执行。
+- 已授权并执行：在测试分支提交与推送。2026-10-04 后续请求另外授权使用研究者指定的
+  本地 DeepSeek 凭据完成真实 Provider 验收（尚未运行）。PR、合并、真实消息、生产访问、
+  镜像发布与部署仍待明确授权，均未执行。
 - 共享 Git 存储存在既有 AppleDouble `._pack-…idx` 索引报错；fetch/push/分支追踪
   实际成功。没有删除或修复无关 Git 元数据。
 
@@ -180,6 +183,46 @@ mypy 710 文件无错误。
 领域闭合（P06）；真实 Provider wire 下的 execute_code 前缀与缓存对照（P08）；
 `execute_code` 在模型侧的使用质量未评估（需付费模型，未授权）。
 
+## P06：发送、记忆和来源权限闭合，离线验证完成
+
+- Social prepare 与原 Work effect 的 `invocation.original_domain_ref` 在同一交易提交，
+  保存原父操作；分片、文件附言不替换该关联。Work 取消/generation/lease 在实际 Social
+  claim 处再次检查，晚到的已完成事实仍只结算原回执。
+- 保留计划数量与逐片向量；同参新调用各有原 ID，原调用重入不发送；长 operation ID
+  仅在 Social 存储键表示中完整 SHA256，Work 保留原身份。恢复查询严格按原关联与
+  子片身份读回执，不按正文或“最近消息”匹配，不清除原 Work unknown 围栏。
+- Memory 的 Agent 写入在原来源持久回执与实际提交交易中核对已消费授权，并将
+  `memory:<mutation_id>` 与 Work effect 原子关联；新激活/新服务不重发一次写权。
+- MCP 在连接等待后核对原配置与 metadata，已派发写入的超时/断连/服务器失败为 unknown，
+  不以 reconnect 重放。读取与确定的 HTTP 拒绝仍保留各自原错误语义。
+- Plugin 在 scope 等待后重核当前安装状态与原注册项；真实 manifest revision 撤销
+  批准时不能进入旧 handler。通用 binding 抛异常也按是否已派发及 effect 分类保留未知。
+
+新增证据：`test_codemode_social_receipts.py`（真实 Monty＋独立外部发送日志，8 项）、
+`test_codemode_memory_authority.py`（真实领域写入＋恢复）、`test_codemode_mcp_authority.py`
+（9 项）与 `test_codemode_plugin_revocation.py`（3 项）。定向 Social/Memory/MCP/插件首轮
+14 项通过；补上 HTTP 408/500、连接等待撤权和真实安装批准变更后，MCP/插件 12 项通过。
+记忆领域与原 effect 审计集合 64 项通过；主入口/MCP 集合最后一轮 52 通过、1 个新增夹具
+配置错误（已将模型设为 `extra='forbid'`，随后新增集合 12 项全通过）。
+
+既有测试调整：`test_social_source_keys.py` 的长 call ID 从拒绝改为完整身份存储表示、
+重入与参数冲突断言（合约变化有注释）；`test_codemode_authority_parity.py` 纳入
+`update_short_state`，移除 send_message 对照跳过；`test_automation_timeout_certainty.py`
+用真实 asyncio Timeout 在派发边界触发，消除 0.2 秒期限在 SQLite 准备阶段被机器负载
+耗尽的问题，原未知/不重发断言保留。没有删除或放宽验收断言。
+
+环境：重跑 `scripts/build_monty_worker.sh` 成功，本机 worker SHA256
+`af76448a14fe980c823f1c6092692f90a8ddc6341f236f17d6d47d72f49548e8`；
+wheel SHA256 `e3c99d8890b265babb90a50be336e4e3b3f25619c26ff607265578580c547c75`。
+`frontend/` 中 `npm ci && npm run build` 通过；Node 22.17.1 有依赖 engine 提示，未升级运行时。
+
+阶段结束命令：ruff check、ruff format check 通过；mypy 719 文件通过。第一次全量为更新
+既有长 call ID 合约测试而中止，不计为通过；最新全量使用真实 worker：
+**3127 通过、1 跳过，679.37 秒**。唯一跳过为未提供私有生产备份路径的 replay；
+不计为迁移/生产备份验收通过。worker 测试无跳过。
+阶段代码及文档准备提交、推送；最终 commit/远端状态以 Git 记录为准。
+P07 已开始 worker 固定子集投影与入口故障测试，未完成全量验证；P08 Provider wire 尚未运行。
+
 ## 验证记录（2026-10-04）
 
 ```sh
@@ -202,7 +245,8 @@ WebUI 前端资源未构建（`npm ci && npm run build`，产物已 gitignore）
 
 ## 后续依赖
 
-下一步 P06（发送、记忆与来源权限闭合）与 P08（Provider 与上下文），P07 入口接线依赖 P06。
-P09–P10 未开始；P11 真实外部与生产验收待单独授权。
+P06 的离线闭合完成；继续 P07 全入口及 worker 子集、P08 Provider/上下文/轨迹。
+P09–P10 未开始；真实 DeepSeek Provider 调用已授权、尚未运行；P11 的真实消息、生产访问、
+镜像发布与部署待明确授权。
 Monty Python binding 为本地构建 wheel，未进 `uv.lock`，`uv sync` 后需重跑
 `scripts/build_monty_worker.sh`，P09 落地可复现分发。

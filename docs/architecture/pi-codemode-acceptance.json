@@ -608,8 +608,12 @@
       "phases": [
         "P06"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_social_receipts.py::test_two_equal_sends_bind_two_original_social_parents_and_reentry_only_queries",
+        "tests/unit/test_social_source_keys.py",
+        "P06: real Monty worker; independent downstream logs; full suite 3127 passed / 1 skipped (private production backup unavailable)."
+      ]
     },
     {
       "id": "D02",
@@ -622,8 +626,12 @@
       "phases": [
         "P06"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_social_receipts.py::test_sequence_unknown_stops_remaining_parts_and_later_script_send",
+        "tests/integration/test_codemode_social_receipts.py::test_cancel_between_parts_keeps_confirmed_first_part_and_blocks_next_dispatch",
+        "P06: real Monty worker; independent downstream logs; full suite 3127 passed / 1 skipped (private production backup unavailable)."
+      ]
     },
     {
       "id": "D03",
@@ -636,8 +644,12 @@
       "phases": [
         "P06"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_social_receipts.py::test_uploaded_file_is_not_repeated_when_caption_response_is_lost",
+        "tests/unit/test_social_delivery_integrity.py",
+        "P06: real Monty worker; independent downstream logs; full suite 3127 passed / 1 skipped (private production backup unavailable)."
+      ]
     },
     {
       "id": "D04",
@@ -664,8 +676,12 @@
       "phases": [
         "P06"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_social_receipts.py",
+        "tests/unit/test_codemode_mcp_authority.py",
+        "P06: real Monty worker; independent downstream logs; full suite 3127 passed / 1 skipped (private production backup unavailable)."
+      ]
     },
     {
       "id": "D06",
@@ -706,8 +722,12 @@
       "phases": [
         "P06"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_social_receipts.py::test_lost_work_projection_queries_exact_social_vector_without_replaying",
+        "tests/unit/test_tool_effect_audit.py",
+        "P06: real Monty worker; independent downstream logs; full suite 3127 passed / 1 skipped (private production backup unavailable)."
+      ]
     },
     {
       "id": "F01",

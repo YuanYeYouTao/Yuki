@@ -141,6 +141,14 @@ class PluginCapabilityAdapter:
             try:
                 async with asyncio.timeout(registration.metadata.timeout_seconds):
                     async with self._scope(item.plugin_id, runtime, web_was_used=web_was_used):
+                        # Entering a scope may wait. Approval/lifecycle and the
+                        # registered handler must still be current at dispatch.
+                        if self._registry.resolve_model_name(
+                            name
+                        ) is not item or not await self._available(
+                            item, registration, runtime, web_was_used
+                        ):
+                            return _error("plugin_tool_denied", "当前真实事件不能调用该插件工具")
                         dispatched = True
                         raw_result = await registration.handler(arguments)
                 result = _validated_result(raw_result, registration.output_model)

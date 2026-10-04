@@ -1,9 +1,11 @@
 """Durable claims for social effects; uncertainty is never a retry instruction."""
 
+from __future__ import annotations
+
 import hashlib
 import json
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from sqlalchemy import select, text, update
@@ -16,7 +18,10 @@ from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.unit_of_work import optional_session
 from qq_ai_bot.social.db_models import SocialOperationModel
 from qq_ai_bot.social.models import OperationStatus, SocialError, SocialReceipt, SocialTarget
-from qq_ai_bot.social.source_keys import social_source_key
+from qq_ai_bot.social.source_keys import social_call_key, social_source_key
+
+if TYPE_CHECKING:
+    from qq_ai_bot.runtime.effect_outcomes import ResultCapture
 
 _ACTIONS = frozenset(
     {
@@ -43,11 +48,11 @@ class SocialOperationRepository:
         target: SocialTarget,
         payload: dict[str, Any],
         planned_parts: int | None = None,
+        work_effect: ResultCapture | None = None,
     ) -> SocialReceipt:
         if action not in _ACTIONS or not source_turn_id or not tool_call_id:
             raise SocialError("invalid_operation")
-        if len(tool_call_id) > 128:
-            raise SocialError("invalid_operation")
+        tool_call_id = social_call_key(tool_call_id)
         if planned_parts is not None and (
             action != "send_message_sequence"
             or type(planned_parts) is not int
@@ -85,7 +90,8 @@ class SocialOperationRepository:
             if existing is not None:
                 if existing.payload_hash != digest or existing.planned_parts != planned_parts:
                     raise SocialError("idempotency_conflict")
-                return self._receipt(existing)
+                if work_effect is None:
+                    return self._receipt(existing)
         now = datetime.now(UTC)
         async with self.database.sessions() as session, session.begin():
             target_row = await session.get(
@@ -121,6 +127,12 @@ class SocialOperationRepository:
             assert row is not None
             if row.payload_hash != digest or row.planned_parts != planned_parts:
                 raise SocialError("idempotency_conflict")
+            if work_effect is not None:
+                from qq_ai_bot.runtime.work_repository import WorkRepository
+
+                await WorkRepository.bind_domain_receipt(
+                    session, work_effect.work_id, work_effect.effect_key, f"social:{row.id}"
+                )
             return self._receipt(row)
 
     async def claim(
@@ -197,6 +209,7 @@ class SocialOperationRepository:
 
     async def find(self, source_turn_id: str, tool_call_id: str) -> SocialReceipt | None:
         source_turn_id = social_source_key(source_turn_id)
+        tool_call_id = social_call_key(tool_call_id)
         async with self.database.sessions() as session:
             row = await session.scalar(
                 select(SocialOperationModel).where(

@@ -287,6 +287,7 @@ class MCPManager:
         canonical_conversation_id: str | None = None,
         bot_user_id: str | None = None,
         ingress_presence_id: str | None = None,
+        side_effecting: bool = True,
     ) -> ToolExecutionResult:
         """Execute metadata that was resolved and policy-checked by a ToolBinding.
 
@@ -321,6 +322,7 @@ class MCPManager:
             tool_name=tool_name,
         )
         cancelled = False
+        dispatched = False
         semaphore = self._semaphores.setdefault(
             self._max_parallel_calls,
             asyncio.Semaphore(self._max_parallel_calls),
@@ -328,9 +330,25 @@ class MCPManager:
         async with semaphore:
             self._active_calls += 1
             try:
-                current = await self.resolve_tool(server_id, tool_name)
-                tool_name = current.remote_tool_name
                 connection = await self._ensure_connection(server_id, config)
+                # Connecting can wait through a disable/config/metadata change.
+                # Revalidate the original approved definition after that wait.
+                if self._require_enabled(server_id) != config:
+                    raise RuntimeError("MCP server configuration changed before dispatch")
+                current = await self.resolve_tool(server_id, tool_name)
+                if current != metadata:
+                    result = ToolExecutionResult(
+                        ok=False,
+                        error_code="mcp_tool_metadata_changed",
+                        public_message="MCP 工具定义已改变，此调用未执行",
+                        mutation_committed=False,
+                        provider_id=f"mcp.{server_id}",
+                        tool_name=tool_name,
+                        data={"executed": False},
+                    )
+                    return result
+                tool_name = current.remote_tool_name
+                dispatched = True
                 raw = await connection.call_tool(tool_name, arguments)
                 result = normalize_mcp_result(raw, server_id=server_id, tool_name=tool_name)
                 return result
@@ -339,12 +357,22 @@ class MCPManager:
                 raise
             except Exception as exc:
                 failure = classify_mcp_exception(exc)
+                rejected = failure.code in {
+                    "mcp_authentication_failed",
+                    "mcp_rate_limited",
+                    "mcp_http_400",
+                    "mcp_http_404",
+                    "mcp_http_405",
+                    "mcp_http_422",
+                }
+                uncertain = dispatched and side_effecting and not rejected
                 result = ToolExecutionResult(
                     ok=False,
                     error_code=failure.code,
                     public_message=failure.public_message,
-                    retryable=failure.retryable,
-                    mutation_committed=False,
+                    retryable=failure.retryable and not uncertain,
+                    mutation_committed=None if uncertain else False,
+                    uncertain=uncertain,
                     provider_id=f"mcp.{server_id}",
                     tool_name=tool_name,
                 )

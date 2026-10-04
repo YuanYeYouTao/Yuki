@@ -1,6 +1,6 @@
 # Pi 与 Code Mode 交接说明
 
-2026-10-04。接手 P06 及之后阶段的开发者先读本页，再读下列依据。本页只写接手需要的状态、
+2026-10-04。接手后续阶段的开发者先读本页，再读下列依据。本页只写接手需要的状态、
 环境和约束；逐阶段证据见 [交付记录](pi-codemode-delivery.md)。
 
 ## 依据与阅读顺序
@@ -27,17 +27,18 @@
 | `c0593229` | P02 补测：快照发布失败、引用提交中断、writer 排队过租约 |
 | `90b6d46a` | P05 `execute_code`、wrapper 投影、子调用接 InvocationService、控制门 |
 
-最后一次全量：3102 通过、2 跳过、1 失败（既有计时测试，见下文“已知问题”）；mypy 719 文件无错误。
+P06 最后一次全量：3127 通过、1 跳过（未提供私有生产备份路径）；真实 worker 测试无跳过，
+ruff check/format 与 mypy 719 文件通过。此前 0.2 秒计时失败已改成派发边界触发，断言保留。
 
 | 阶段 | 状态 |
 | --- | --- |
 | P00–P05 | 完成，离线验收 |
-| P06 发送/记忆/来源权限闭合 | 未开始，下一步 |
-| P07 全部入口接线 | 未开始，依赖 P06 |
+| P06 发送/记忆/来源权限闭合 | 离线实现及全量验证完成 |
+| P07 全部入口接线 | 已开始，worker 子集与真实入口测试开发中 |
 | P08 Provider/上下文/轨迹 | 未开始，可与 P06/P07 并行 |
 | P09 迁移、worker 运维、回退演练 | 未开始，依赖 P07、P08 |
 | P10 整体验收与旧循环删除 | 未开始 |
-| P11 真实外部验收 | 需用户单独授权，未授权前不执行 |
+| P11 真实外部验收 | DeepSeek Provider 调用已授权，尚未运行；其余外部范围待授权 |
 
 ## 已存在、后续阶段直接复用的部件
 
@@ -88,14 +89,13 @@ YUKI_MONTY_BINARY=<worker 路径> uv run --frozen pytest -q -p no:warnings tests
 
 ## 已知问题与遗留
 
-- `tests/unit/test_automation_timeout_certainty.py::test_transport_deadline_preserves_uncertain_receipt_and_original_dispatch`
-  只留 0.2 秒截止，在负载很高的全量轮次中失败过一次，单独重跑 5/5 通过。P05 未改该执行器。
-  如再次出现，应改为不依赖墙钟的确定性等待，不要放宽断言。
+- `test_automation_timeout_certainty.py` 的 transport deadline 在 P06 改为由实际派发边界
+  触发真实 asyncio Timeout，不依赖准备阶段的 0.2 秒剩余期限；原未知及不重发断言保留。
 - `AgentRunner` 中仍有约 25 个跨步骤共享的 `nonlocal` 变量，应收敛为显式回合状态（P05 已合并，
   可以做；会大面积改 `agent_runner.py`，避免与 P07/P08 同时动这个文件）。
 - `begin_batch` 兼容调用仍在 `agent_runner.py`，P10 删除。
-- 持久 worker 合同还没有 `execute_code` 子集投影，目前返回 `code_engine_unavailable`（P07）。
-- `update_short_state` 未纳入授权一致性对照测试。
+- 持久 worker 的 `execute_code` 子集投影正在 P07 开发，尚未阶段验收。
+- `update_short_state` 已纳入 P06 直接/子调用授权一致性对照。
 - 供应商真实 streaming 未支持，只有合成 frame 测试；需要 P08 支持后在 P11 授权下实测。
 - `execute_code` 的模型侧使用质量未评估（需付费模型）。
 - 598 个 Cargo 转依赖与 vendored typeshed 的许可汇总待 P09。
@@ -128,5 +128,7 @@ function_call。签名、思考块、原生工具 continuation 原样保留。co
 
 已授权：本地开发、依赖安装与 Monty 编译、在 `codex/pi-codemode-experiment` 上提交并推送。
 
-未授权，需用户另行明确：PR、合并、付费 API、真实消息发送、访问生产数据库/凭据/工作区、启动
+另已授权：使用研究者指定的本地 DeepSeek 凭据进行真实 Provider 验收；目前尚未调用。
+
+未授权，需用户另行明确：PR、合并、真实消息发送、访问生产数据库/凭据/工作区、启动
 第二个 Bot 写同一 SQLite、镜像发布与部署。授权以当次对话为准，文档中的步骤不构成授权。
