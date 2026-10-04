@@ -167,10 +167,17 @@ class CanonicalIngressResolver:
                 return _drop("no_space_binding", overlay)
             space_binding_id = binding.id
             space_id = binding.space_id
-            fence = await self._router.evaluate_ingest(
+            fence = await self._router.authenticated_ingest_status_in_session(
+                session,
                 space_binding_id=binding.id,
                 event_presence_id=presence_id,
+                connection=connection,
             )
+            if fence is None:
+                fence = await self._router.evaluate_ingest(
+                    space_binding_id=binding.id,
+                    event_presence_id=presence_id,
+                )
             if fence != "ok":
                 return _drop(fence, overlay)
         else:

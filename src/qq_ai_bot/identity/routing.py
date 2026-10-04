@@ -698,6 +698,67 @@ class PresenceRouter:
                 session, space_binding_id=space_binding_id, event_presence_id=event_presence_id
             )
 
+    async def authenticated_ingest_status_in_session(
+        self,
+        session: AsyncSession,
+        *,
+        space_binding_id: str,
+        event_presence_id: str,
+        connection: ConnectionResolution,
+    ) -> str | None:
+        """Reuse a same-Presence pin only for an authenticated inbound handle.
+
+        None leaves cold provisioning and unhealthy-pin recovery to the original
+        membership/CAS path. This read does not authorize the eventual ledger write.
+        """
+        route = await session.get(SpaceBindingIngestRouteModel, space_binding_id)
+        if route is None:
+            return None
+        if route.paused:
+            return "paused"
+        if route.ingest_presence_id != event_presence_id:
+            return None
+        status = await self.ingest_status_in_session(
+            session,
+            space_binding_id=space_binding_id,
+            event_presence_id=event_presence_id,
+            require_connected=False,
+        )
+        if status != "ok":
+            return None
+        presence = await session.get(PresenceModel, event_presence_id)
+        binding = await session.get(SpaceBindingModel, space_binding_id)
+        assert presence is not None and binding is not None
+        original = connection.snapshot
+        if (
+            presence.platform != original.platform
+            or presence.external_account_id != original.external_account_id
+            or binding.platform != original.platform
+        ):
+            return "not_ingest"
+        try:
+            current = self._registry.resolve_by_handle(connection.bot)
+        except RegistryClosed:
+            return "paused"
+        if (
+            current.snapshot.connection_id != original.connection_id
+            or current.snapshot.generation != original.generation
+            or current.snapshot.gateway_instance_id != original.gateway_instance_id
+            or current.snapshot.platform != original.platform
+            or current.snapshot.external_account_id != original.external_account_id
+            or current.snapshot.presence_id != event_presence_id
+        ):
+            return "not_ingest"
+        try:
+            active = self._registry.resolve_active(event_presence_id)
+            require_capability(active, "send_group")
+            require_capability(active, "group_member_probe")
+        except RegistryClosed:
+            return None
+        if active.snapshot != current.snapshot or active.bot is not connection.bot:
+            return "not_ingest"
+        return "ok"
+
     async def ingest_status_in_session(
         self,
         session: AsyncSession,
