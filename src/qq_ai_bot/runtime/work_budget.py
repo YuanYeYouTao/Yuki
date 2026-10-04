@@ -1,8 +1,6 @@
 """Atomic accounting shared by a root task and all its workers."""
 
-import json
-
-from sqlalchemy import or_, select, true, update
+from sqlalchemy import func, or_, select, true, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,12 +23,14 @@ async def charge(session: AsyncSession, identity: str, *, models: int, tools: in
     root = root or identity
     current = (
         await session.execute(
-            select(work.c.model_requests, work.c.tool_calls, work.c.source_json).where(
-                work.c.id == root
-            )
+            select(
+                work.c.model_requests,
+                work.c.tool_calls,
+                func.json_extract(work.c.source_json, "$.owner").label("source_owner"),
+                func.json_extract(work.c.source_json, "$.automation_run_id").label("run_id"),
+            ).where(work.c.id == root)
         )
     ).one()
-    source = json.loads(current.source_json)
     await session.execute(
         insert(budgets)
         .values(
@@ -66,10 +66,8 @@ async def charge(session: AsyncSession, identity: str, *, models: int, tools: in
     ).first()
     if accepted is None:
         raise WorkBudgetExceeded("work_total_budget_exhausted")
-    if source.get("owner") == "automation" and isinstance(source.get("automation_run_id"), int):
-        await charge_automation_run(
-            session, source["automation_run_id"], models=models, tools=tools
-        )
+    if current.source_owner == "automation" and isinstance(current.run_id, int):
+        await charge_automation_run(session, current.run_id, models=models, tools=tools)
 
 
 async def charge_automation_run(

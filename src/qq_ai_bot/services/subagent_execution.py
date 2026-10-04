@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
+from qq_ai_bot.capabilities.invocation import Invocation
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, ChatTool, InboundMessage, SenderIdentity
 from qq_ai_bot.domain.tool_actor import ToolActor
@@ -68,10 +69,10 @@ class WorkerBackend:
         # it does not inherit the main Agent's global Automation read authority.
         return "task_control" in self.names and action in {"get", "list"}
 
-    async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str:
-        if name not in self.names:
+    async def execute_call(self, invocation: Invocation) -> str:
+        if invocation.call.function.name not in self.names:
             return '{"ok":false,"error":"worker_tool_not_declared"}'
-        return str(await self.delegate.execute(name, arguments_json, runtime))
+        return str(await self.delegate.execute_call(invocation))
 
 
 class SubagentExecution:

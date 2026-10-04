@@ -10,7 +10,9 @@ import pytest
 from tests.conftest import build_harness, make_settings
 
 from qq_ai_bot.automation.tools import AutomationToolService
+from qq_ai_bot.capabilities.invocation import direct_invocations
 from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.messages import ToolCall, ToolFunction
 from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.services.agent_tools import ToolRuntime
@@ -114,8 +116,9 @@ async def test_revocation_precedes_every_common_tool(database, tmp_path):
     chat, _, runtime = await setup(database, tmp_path)
     check = AsyncMock(side_effect=PermissionError("revoked"))
     backend = MainAgentBackend(chat, replace(runtime, before_model_request=check))
+    call = ToolCall(id="revoked", function=ToolFunction(name="update_short_state", arguments="{}"))
     with pytest.raises(PermissionError, match="revoked"):
-        await backend.execute("update_short_state", "{}", None)
+        await backend.execute_call(direct_invocations((call,), None)[0])
     check.assert_awaited_once()
 
 

@@ -9,6 +9,7 @@ import pytest
 
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.automation.registry import AutomationCapabilityRegistry
+from qq_ai_bot.capabilities.invocation import direct_invocations
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, ChatResponse, ToolCall, ToolFunction
 from qq_ai_bot.llm.fake import FakeLLMProvider
@@ -130,18 +131,14 @@ async def run_short_state_cases(database, tmp_path, context):
                 ),
             ),
         )
-        backend.begin_batch((call,), scoped)
-        assert json.loads(
-            await backend.execute(call.function.name, call.function.arguments, scoped)
-        )["ok"]
+        assert json.loads(await backend.execute_call(direct_invocations((call,), scoped)[0]))["ok"]
         denied = ToolCall(
             id="denied",
             function=ToolFunction(name="call_onebot_api", arguments='{"action":"x","params":{}}'),
         )
-        backend.begin_batch((denied,), scoped)
-        assert not json.loads(
-            await backend.execute(denied.function.name, denied.function.arguments, scoped)
-        )["ok"]
+        assert not json.loads(await backend.execute_call(direct_invocations((denied,), scoped)[0]))[
+            "ok"
+        ]
     automation = MainAgentBackend(
         chat,
         ToolRuntime(

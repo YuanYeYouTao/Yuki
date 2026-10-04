@@ -19,7 +19,8 @@ from qq_ai_bot.capabilities import (
     InProcessToolProvider,
     ToolProviderRegistry,
 )
-from qq_ai_bot.capabilities.invocation import current_invocation
+from qq_ai_bot.capabilities.coordinator import ToolInvocationCoordinator
+from qq_ai_bot.capabilities.invocation import current_invocation, direct_invocations
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
     SpaceActiveRouteModel,
@@ -75,6 +76,69 @@ async def active_work(database, tmp_path):
         execution_id=f"event:{source.id}",
     )
     return env, work, runtime
+
+
+async def test_equal_sends_and_cross_response_ids_keep_distinct_social_operations(
+    database, tmp_path
+):
+    env, owner, runtime = await active_work(database, tmp_path)
+    chat = build_harness(database, make_settings(database.url)).processor._chat
+    runtime = replace(
+        runtime, runtime_config=await chat._runtime_config.snapshot(), space_id=env.space
+    )
+
+    async def dispatch(_name, _arguments, _runtime):
+        context = current_invocation.get()
+        assert context is not None
+        result = await env.service.execute(
+            "send_message",
+            {"target": {"kind": "space", "target_id": env.space}, "text": "same"},
+            replace(
+                env.context, call_id=context.call_id, trigger_event_id=runtime.trigger_event_id
+            ),
+        )
+        return {"ok": result["status"] == "succeeded", "data": result}
+
+    registry = ToolProviderRegistry()
+    registry.register(
+        InProcessToolProvider(
+            provider_id="core",
+            source=CapabilityTrustSource.CORE,
+            definitions=lambda _: (ChatTool("send_message", "send", {"type": "object"}),),
+            execute=dispatch,
+        )
+    )
+    backend = MainAgentBackend(chat, runtime)
+    backend._catalog = registry.catalog(runtime)
+    backend._callable_tool_names = {"send_message"}
+    agent = SimpleNamespace(work_control=owner.control)
+    calls = tuple(ToolCall(i, ToolFunction("send_message", "{}")) for i in ("call_0", "call_1"))
+    coordinator = ToolInvocationCoordinator()
+
+    async def batch(selected):
+        return await coordinator.execute_batch(
+            selected,
+            backend,
+            agent,
+            remaining_calls=10,
+            max_parallel_calls=2,
+            manifest_revision="contract",
+        )
+
+    first = await batch(calls)
+    assert all(json.loads(value)["data"]["status"] == "succeeded" for _, value, _ in first.calls)
+    await batch(calls)  # Reentry queries both original receipts.
+    owner.sequence += 1
+    await batch(calls[:1])  # Same Provider ID in a later model response.
+    assert len([entry for entry in env.bot.calls if entry[0] == "send_group_msg"]) == 3
+    async with database.sessions() as reader:
+        original_ids = set(await reader.scalars(select(SocialOperationModel.tool_call_id)))
+        assert original_ids == {
+            f"{owner.transcript.chain_id}:0:call_0",
+            f"{owner.transcript.chain_id}:0:call_1",
+            f"{owner.transcript.chain_id}:1:call_0",
+        }
+        assert await reader.scalar(select(func.count()).select_from(effects)) == 3
 
 
 async def invoke_audit(recorder, runtime, call_key, result='{"ok":true}'):
@@ -150,10 +214,9 @@ async def test_social_success_and_original_work_call_survive_telemetry_failure(
     backend._catalog = registry.catalog(runtime)
     backend._callable_tool_names = {"send_message"}
     agent = SimpleNamespace(work_control=work.control)
-    backend.begin_batch((call,), agent)
 
     async def invoke():
-        result = await backend.execute(call.function.name, call.function.arguments, agent)
+        result = await backend.execute_call(direct_invocations((call,), agent)[0])
         assert audit_calls == []
         return result
 
@@ -170,7 +233,7 @@ async def test_social_success_and_original_work_call_survive_telemetry_failure(
         assert effect["effect_key"] == key and effect["state"] == "accepted"
         assert json.loads(effect["receipt_json"])["result"] == result
         social = await session.scalar(select(SocialOperationModel))
-        assert social.status == "succeeded" and social.tool_call_id == call.id
+        assert social.status == "succeeded" and social.tool_call_id == key
         source = await session.scalar(select(MemoryToolReceiptModel))
         assert source.trigger_event_id == runtime.trigger_event_id
         assert source.canonical_space_id == env.space

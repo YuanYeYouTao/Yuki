@@ -20,6 +20,7 @@ from qq_ai_bot.capabilities.coordinator import (
     CoordinatedToolResult,
     ToolInvocationCoordinator,
 )
+from qq_ai_bot.capabilities.invocation import Invocation
 from qq_ai_bot.domain.messages import (
     ChatMessage,
     ChatRequest,
@@ -56,6 +57,7 @@ from qq_ai_bot.runtime.work_repository import WorkCapacityError
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.context_boundary import ContextBoundary, ContextBoundaryReader
 from qq_ai_bot.services.evidence_observation import EVIDENCE_TOOLS, EvidenceObservation
+from qq_ai_bot.services.invocation_service import BatchPlan
 from qq_ai_bot.services.native_tool_binder import NativeToolBinder
 from qq_ai_bot.services.turn_transcript import (
     DispatchOrigin,
@@ -137,9 +139,7 @@ class AgentRunResult:
 class AgentToolBackend(Protocol):
     def definitions(self, runtime: AgentRuntime, *, web_was_used: bool) -> tuple[ChatTool, ...]: ...
 
-    def begin_batch(self, calls: tuple[ToolCall, ...], runtime: AgentRuntime) -> None: ...
-
-    async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str: ...
+    async def execute_call(self, invocation: Invocation) -> str: ...
 
     def parallel_safe(self, name: str, runtime: AgentRuntime) -> bool: ...
 
@@ -1515,6 +1515,8 @@ class AgentRunner:
                 reusable_results=reusable_tool_results,
                 cacheable_names=frozenset(t.name for t in definitions if t.result_cacheable),
                 declared_names=frozenset(t.name for t in definitions),
+                chain_id=transcript.chain_id,
+                request_sequence=request_index + 1,
             )
             batch, executed = coordinated.calls, coordinated.executed_count
             calls_used += executed
@@ -1769,6 +1771,8 @@ class AgentRunner:
         reusable_results: dict[tuple[str, str], str],
         cacheable_names: frozenset[str],
         declared_names: frozenset[str],
+        chain_id: str = "",
+        request_sequence: int = 0,
     ) -> CoordinatedToolResult:
         async with trace_span("tool_batch", {"calls": [asdict(call) for call in calls]}) as span:
             result = await self._execute_tool_batch_impl(
@@ -1780,6 +1784,8 @@ class AgentRunner:
                 reusable_results=reusable_results,
                 cacheable_names=cacheable_names,
                 declared_names=declared_names,
+                chain_id=chain_id,
+                request_sequence=request_sequence,
             )
             span.result = asdict(result)
             return result
@@ -1795,8 +1801,16 @@ class AgentRunner:
         reusable_results: dict[tuple[str, str], str],
         cacheable_names: frozenset[str],
         declared_names: frozenset[str],
+        chain_id: str = "",
+        request_sequence: int = 0,
     ) -> CoordinatedToolResult:
-        """Execute each semantic call once and fan its result out to duplicate IDs."""
+        """Preserve original IDs; only explicitly safe read results may be reused."""
+
+        if BatchPlan.prepare(calls).conflicting_ids:
+            result = json.dumps(
+                {"ok": False, "executed": False, "error": "duplicate_provider_call_id"}
+            )
+            return CoordinatedToolResult(tuple((call, result, False) for call in calls), 0)
 
         control = runtime.work_control
         control_calls = [call for call in calls if call.function.name in WORK_CONTROL_NAMES]
@@ -1946,7 +1960,11 @@ class AgentRunner:
                 unique_calls = [
                     call for call in unique_calls if call.function.name != "send_message"
                 ]
-            tools.begin_batch(tuple(unique_calls), runtime)
+            # Compatibility for existing custom/test backends only. The production
+            # Backend has no batch-owned identity or mutable batch state.
+            begin_batch = getattr(tools, "begin_batch", None)
+            if callable(begin_batch):
+                begin_batch(tuple(unique_calls), runtime)
         coordinated = await self._tool_coordinator.execute_batch(
             tuple(unique_calls),
             tools,
@@ -1954,6 +1972,9 @@ class AgentRunner:
             remaining_calls=remaining_calls,
             max_parallel_calls=max_parallel_calls,
             before_execute=partial(before_work_tool, control),
+            chain_id=chain_id,
+            request_sequence=request_sequence,
+            manifest_revision=self.main_contract.revision if self.main_contract else "",
         )
         unique_results = {call.id: result for call, result, _executed in coordinated.calls}
         unique_executed = {call.id: executed for call, _result, executed in coordinated.calls}

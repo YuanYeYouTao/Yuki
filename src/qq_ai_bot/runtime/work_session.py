@@ -15,6 +15,12 @@ from sqlalchemy import func, select, true
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.capabilities.invocation import (
+    Invocation,
+    InvocationIdentity,
+    TrustedInvocationContext,
+    direct_operation_id,
+)
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ToolCall
 from qq_ai_bot.model_runtime.capacity import estimate_request_tokens, estimate_text_tokens
@@ -1184,7 +1190,7 @@ class WorkSession:
 
     def call_key(self, call_id: str) -> str:
         assert self.transcript is not None
-        return f"{self.transcript.chain_id}:{self.sequence}:{call_id}"
+        return direct_operation_id(self.transcript.chain_id, self.sequence, call_id)
 
     async def save(
         self,
@@ -1313,8 +1319,30 @@ class WorkSession:
         *,
         side_effecting: bool = True,
         allow_pending: bool = False,
+        invocation: Invocation | None = None,
     ) -> str:
         control = self.control
+        if control.current is not None:
+            if invocation is None:
+                assert self.transcript is not None
+                invocation = Invocation(
+                    InvocationIdentity(
+                        self.call_key(call.id),
+                        str(control.current["id"]),
+                        self.transcript.chain_id,
+                        self.sequence,
+                        call.id,
+                    ),
+                    call,
+                    TrustedInvocationContext(control, self.contract),
+                )
+            if invocation.identity.owner_execution_id != control.current[
+                "id"
+            ] or invocation.identity.operation_id != self.call_key(call.id):
+                raise WorkConflict("invocation_owner_conflict")
+            await control.repository.validate_invocation(
+                invocation.identity.operation_id, invocation.durable_metadata()
+            )
         report = None
         report_target = None
         if call.function.name == "send_message":
@@ -1360,6 +1388,7 @@ class WorkSession:
             control.current["id"],
             key,
             "tool",
+            invocation=invocation.durable_metadata() if invocation is not None else None,
             outcome={
                 "tool": call.function.name,
                 "side_effecting": side_effecting,
@@ -1370,11 +1399,18 @@ class WorkSession:
                 **({"work_report": report, "report_target": report_target} if report else {}),
             },
         ):
+            assert invocation is not None
+            await control.repository.validate_invocation(key, invocation.durable_metadata())
             return await self.journal.effect_result(key)
         from qq_ai_bot.runtime.work_budget import WorkBudgetExceeded
 
         try:
-            await control.charge_tools(1)
+            if not await control.repository.admit_dispatch(
+                control.lease, control.current["id"], key
+            ):
+                return await self.journal.effect_result(key)
+            control.current["tool_calls"] += 1
+            control.tools_started += 1
         except WorkBudgetExceeded:
             await control.repository.record_effect(
                 key,

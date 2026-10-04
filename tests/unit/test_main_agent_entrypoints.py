@@ -10,6 +10,7 @@ from tests.conftest import build_harness, make_settings
 from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.automation.models import TurnOrigin
+from qq_ai_bot.capabilities.invocation import direct_invocations
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, ToolCall, ToolFunction
 from qq_ai_bot.domain.tool_actor import ToolActor
@@ -222,10 +223,7 @@ async def test_host_granted_environment_reaches_shared_executor(database, tmp_pa
             allowed_tools=frozenset({"workspace_write"}),
         )
         await backend.prepare(runtime)
-        backend.begin_batch((call,), runtime)
-        result = json.loads(
-            await backend.execute(call.function.name, call.function.arguments, runtime)
-        )
+        result = json.loads(await backend.execute_call(direct_invocations((call,), runtime)[0]))
         assert result["ok"] is allowed, result
     assert calls == [("workspace_write", {"path": "测试.txt", "text": "hello"})]
 
@@ -690,8 +688,7 @@ async def test_scoped_background_reads_do_not_use_send_route_or_expand_scope(dat
         ("read_conversation_history", {"kind": "person", "target_id": env.person}, False),
     ):
         call = ToolCall(name, ToolFunction(name, json.dumps(args)))
-        backend.begin_batch((call,), runtime)
-        result = json.loads(await backend.execute(name, call.function.arguments, runtime))
+        result = json.loads(await backend.execute_call(direct_invocations((call,), runtime)[0]))
         assert result["ok"] is allowed, result
         if name == "get_recent_chat_history":
             assert result["data"]["source"] == "ledger"

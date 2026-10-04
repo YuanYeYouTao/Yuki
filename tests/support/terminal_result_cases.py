@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from sqlalchemy import select
 
 from qq_ai_bot.automation.models import TurnOrigin
+from qq_ai_bot.capabilities.invocation import direct_invocations
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity, ToolCall, ToolFunction
@@ -112,8 +113,7 @@ async def check_terminal_result_recovery(database, tmp_path):
             call = ToolCall(
                 id=f"call-{index}", function=ToolFunction(name=name, arguments=json.dumps(args))
             )
-            backend.begin_batch((call,), runtime)
-            text = await backend.execute(name, call.function.arguments, runtime)
+            text = await backend.execute_call(direct_invocations((call,), runtime)[0])
             payload = json.loads(text)
             assert payload["ok"], payload
             assert len(text) <= snapshot.agent.tool_result_max_characters
@@ -157,9 +157,8 @@ async def check_terminal_result_recovery(database, tmp_path):
                     name="save_conversation_attachment_to_workspace", arguments=json.dumps(args)
                 ),
             )
-            backend.begin_batch((call,), runtime)
             payload = json.loads(
-                await backend.execute(call.function.name, call.function.arguments, runtime)
+                await backend.execute_call(direct_invocations((call,), runtime)[0])
             )
             assert payload["ok"] is bool(index), payload
             assert not backend._tools_closed

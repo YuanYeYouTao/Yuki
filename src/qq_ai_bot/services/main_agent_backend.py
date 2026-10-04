@@ -27,6 +27,7 @@ from qq_ai_bot.capabilities import (
 )
 from qq_ai_bot.capabilities.catalog import DescriptorRegistrySnapshot
 from qq_ai_bot.capabilities.exposure import NO_LONGER_AUTHORIZED
+from qq_ai_bot.capabilities.invocation import Invocation
 from qq_ai_bot.capabilities.runtime import TurnCapabilityRuntime
 from qq_ai_bot.capabilities.validation import UNDECLARED_TOOL
 from qq_ai_bot.domain.messages import ChatTool, ToolCall, ToolFunction
@@ -91,8 +92,6 @@ class MainAgentBackend(AgentToolBackend):
         self._admin_terminal_failure: dict[str, object] | None = None
         self._completed_admin_mutations: set[tuple[str, str]] = set()
         self._mutation_committed = False
-        self._batch: list[ToolCall] = []
-        self._batch_lock = asyncio.Lock()
         self._catalog: UnifiedToolCatalog | None = None
         self._provider_registry: ToolProviderRegistry | None = None
         self._capability_runtime: TurnCapabilityRuntime | None = None
@@ -356,11 +355,6 @@ class MainAgentBackend(AgentToolBackend):
             reason,
         )
 
-    def begin_batch(self, calls: tuple[ToolCall, ...], runtime: AgentRuntime) -> None:
-        del runtime
-        self._batch = list(calls)
-        self._send_message_attempted |= any(call.function.name == "send_message" for call in calls)
-
     def did_use_web(self) -> bool:
         """Expose a provider-metadata-derived effect to the shared Agent loop."""
 
@@ -370,7 +364,10 @@ class MainAgentBackend(AgentToolBackend):
         tools = self._service._tools
         return tools.pin_web_provider() if tools is not None else nullcontext()
 
-    async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str:
+    async def execute_call(self, invocation: Invocation) -> str:
+        call = invocation.call
+        name, arguments_json = call.function.name, call.function.arguments
+        runtime: AgentRuntime = invocation.context.runtime
         if name == "send_message" and runtime.work_control is None:
             try:
                 arguments = json.loads(arguments_json)
@@ -384,34 +381,10 @@ class MainAgentBackend(AgentToolBackend):
             await self._runtime.before_model_request()
         if self._allowed_tools is not None and name not in self._allowed_tools:
             return json.dumps({"ok": False, "error": "capability_not_allowed", "executed": False})
-        async with self._batch_lock:
-            if not self._batch:
-                return json.dumps(
-                    {"ok": False, "error": "tool_batch_state_missing"}, ensure_ascii=False
-                )
-            call_index = next(
-                (
-                    index
-                    for index, item in enumerate(self._batch)
-                    if item.function.name == name and item.function.arguments == arguments_json
-                ),
-                None,
-            )
-            if call_index is None:
-                return json.dumps(
-                    {"ok": False, "error": "tool_batch_state_mismatch"}, ensure_ascii=False
-                )
-            call = self._batch.pop(call_index)
         control = runtime.work_control
-        # Provider IDs are response-local. Durable SELF receipts need the
-        # original journal request identity to distinguish a later call_0.
-        receipt_call_id = (
-            control.session.call_key(call.id)
-            if self._runtime.initiative_run_id
-            and control is not None
-            and control.session is not None
-            else call.id
-        )
+        # Provider IDs are response-local for every origin. The domain receipt
+        # follows the original Host operation, including ordinary direct sends.
+        receipt_call_id = invocation.identity.operation_id
         if (
             name != "send_message"
             and control is not None
@@ -569,6 +542,8 @@ class MainAgentBackend(AgentToolBackend):
                                     public_message="新要求已到达，此调用未执行，请按新要求继续。",
                                     retryable=True,
                                 )
+                        if name == "send_message":
+                            self._send_message_attempted = True
                         return await binding.invoke(
                             {str(key): value for key, value in parsed.items()},
                             ToolInvocationContext(
@@ -994,7 +969,7 @@ class MainAgentBackend(AgentToolBackend):
         entry = self._catalog.by_model_name(name) if self._catalog is not None else None
         descriptor = entry.descriptor if entry is not None else None
         if descriptor is None:
-            return False
+            return True
         call = ToolCall(
             id="cache-classification",
             function=ToolFunction(name=name, arguments=arguments_json),
@@ -1009,6 +984,13 @@ class MainAgentBackend(AgentToolBackend):
 
     def _mutation_identity(self, call: ToolCall) -> tuple[str, str] | None:
         if not self._is_mutating_call(call):
+            return None
+        entry = self._catalog.by_model_name(call.function.name) if self._catalog else None
+        if call.function.name != "memory_change" and (
+            entry is None or entry.descriptor.trust_source is not CapabilityTrustSource.ADMIN
+        ):
+            # This is a turn-local single-write grant, not effect deduplication.
+            # Legitimate sends, files, MCP and plugin writes keep their original IDs.
             return None
         try:
             arguments = json.loads(call.function.arguments)

@@ -9,8 +9,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
+from qq_ai_bot.capabilities.invocation import Invocation, direct_invocations
 from qq_ai_bot.domain.messages import ToolCall
 from qq_ai_bot.execution_trace.recorder import trace_span
+from qq_ai_bot.services.invocation_service import BatchPlan, InvocationService
 
 logger = logging.getLogger(__name__)
 TOOL_RESULT_MISSING = "tool_result_missing"
@@ -25,7 +27,7 @@ MISSING_TOOL_RESULT = json.dumps(
 
 
 class CoordinatedToolBackend(Protocol):
-    async def execute(self, name: str, arguments_json: str, runtime: Any) -> str: ...
+    async def execute_call(self, invocation: Invocation) -> str: ...
 
     def parallel_safe(self, name: str, runtime: Any) -> bool: ...
 
@@ -49,6 +51,9 @@ class ToolInvocationCoordinator:
         remaining_calls: int,
         max_parallel_calls: int,
         before_execute: Callable[[ToolCall], Awaitable[str | None]] | None = None,
+        chain_id: str = "",
+        request_sequence: int = 0,
+        manifest_revision: str = "",
     ) -> CoordinatedToolResult:
         if remaining_calls < 0 or max_parallel_calls <= 0:
             raise ValueError("tool call budgets must be non-negative and parallelism positive")
@@ -70,9 +75,27 @@ class ToolInvocationCoordinator:
         rejected_ids: set[str] = set()
         counted_executions = 0
         results: dict[str, str] = {}
+        plan = BatchPlan.prepare(calls)
+        invocations = {
+            invocation.call.id: invocation
+            for invocation in direct_invocations(
+                calls,
+                runtime,
+                chain_id=chain_id,
+                request_sequence=request_sequence,
+                manifest_revision=manifest_revision,
+            )
+        }
+        service = InvocationService()
 
         async def admit(call: ToolCall) -> bool:
             nonlocal counted_executions
+            if call.id in plan.conflicting_ids:
+                results[call.id] = json.dumps(
+                    {"ok": False, "executed": False, "error": "duplicate_provider_call_id"}
+                )
+                rejected_ids.add(call.id)
+                return False
             if before_execute is not None:
                 rejection = await before_execute(call)
                 if rejection is not None:
@@ -99,10 +122,16 @@ class ToolInvocationCoordinator:
             nonlocal counted_executions
 
             async def invoke() -> str:
-                return await backend.execute(call.function.name, call.function.arguments, runtime)
+                explicit = getattr(backend, "execute_call", None)
+                if callable(explicit):
+                    return str(await explicit(invocations[call.id]))
+                # Transitional adapter for existing custom/test backends. Main and
+                # Worker backends use the explicit interface; retire this in P10.
+                legacy = getattr(backend, "execute", None)
+                if not callable(legacy):
+                    raise TypeError("missing_invocation_backend")
+                return str(await legacy(call.function.name, call.function.arguments, runtime))
 
-            control = getattr(runtime, "work_control", None)
-            session = getattr(control, "session", None)
             check_effect = getattr(backend, "is_side_effecting", None)
             side_effecting = not callable(check_effect) or bool(
                 check_effect(
@@ -111,15 +140,8 @@ class ToolInvocationCoordinator:
                     runtime,
                 )
             )
-            results[call.id] = (
-                await session.execute(
-                    call,
-                    invoke,
-                    side_effecting=side_effecting,
-                    allow_pending=call.function.name == "send_message",
-                )
-                if session
-                else await invoke()
+            results[call.id] = await service.invoke(
+                invocations[call.id], invoke, side_effecting=side_effecting
             )
             try:
                 receipt = json.loads(results[call.id])

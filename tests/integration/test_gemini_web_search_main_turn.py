@@ -261,7 +261,10 @@ async def test_gemini_search_bridge_main_turn_with_trusted_receipt(database: Dat
     assert source_event is not None
     assert social.context.trigger_event_id == source_event.id
     assert social.context.origin == "social_tool"
-    assert social.context.call_id == SEND_CALL_ID
+    # Social receipts follow the Host operation (chain:sequence:call), not the
+    # response-local Provider call ID, so a later response's reused ID stays distinct.
+    assert social.context.call_id.endswith(f":{SEND_CALL_ID}")
+    assert social.context.call_id != SEND_CALL_ID
     assert social.context.actor.user_id == "10001"
     assert social.context.actor.event_id == source_event.id
     assert social.context.actor.source_key == f"event:{source_event.id}"

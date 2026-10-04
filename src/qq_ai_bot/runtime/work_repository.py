@@ -8,10 +8,10 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from sqlalchemy import and_, case, delete, func, or_, select, update
+from sqlalchemy import and_, case, delete, false, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,6 +35,9 @@ from qq_ai_bot.runtime.work_schema_v1 import (
     work,
 )
 from qq_ai_bot.runtime.work_wait_schema import waits
+
+if TYPE_CHECKING:
+    from qq_ai_bot.runtime.protocol_store import CodeSnapshotBinding, ProtocolStore
 
 TERMINAL = frozenset({"completed", "failed", "cancelled"})
 
@@ -1727,10 +1730,18 @@ class WorkRepository:
         kind: str,
         *,
         outcome: dict[str, Any] | None = None,
+        invocation: dict[str, Any] | None = None,
+        composition: dict[str, Any] | None = None,
     ) -> bool:
         """False means an intent already exists, not that it is safe to send again."""
         now = time.time()
-        receipt = bounded_json({"outcome": outcome} if outcome is not None else {})
+        receipt = bounded_json(
+            {
+                **({"outcome": outcome} if outcome is not None else {}),
+                **({"invocation": invocation} if invocation is not None else {}),
+                **({"composition": composition} if composition is not None else {}),
+            }
+        )
         async with self.database.sessions() as session, session.begin():
             await self._assert_lease(session, lease)
             row = (
@@ -1763,6 +1774,236 @@ class WorkRepository:
             ).first()
             return inserted is not None
 
+    async def publish_code_boundary(
+        self,
+        lease: WorkLease,
+        identity: str,
+        parent_key: str,
+        *,
+        expected_revision: int,
+        composition: dict[str, Any],
+        child: dict[str, Any],
+        store: ProtocolStore,
+        binding: CodeSnapshotBinding,
+        side_effecting: bool,
+    ) -> bool:
+        """T1 publishes a private prepared snapshot and one original child intent."""
+        if (
+            binding.work_id != identity
+            or binding.operation_id != parent_key
+            or binding.conversation_id != lease.conversation_id
+            or binding.generation != lease.generation
+            or child.get("version") != 1
+            or child.get("parent_effect_key") != parent_key
+            or child.get("owner_execution_id") != identity
+            or child.get("dispatch_started") is not False
+            or child.get("budget_admitted") is not False
+            or not isinstance(child.get("child_ordinal"), int)
+            or not isinstance(child.get("feed_index"), int)
+            or not isinstance(child.get("engine_call_id"), str)
+        ):
+            raise WorkConflict("code_boundary_identity_conflict")
+        async with self.database.sessions() as reader:
+            original = (
+                (
+                    await reader.execute(
+                        select(effects).where(
+                            effects.c.effect_key == parent_key,
+                            effects.c.work_id == identity,
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if (
+            original is None
+            or original["kind"] != "code_composition"
+            or original["state"] not in {"prepared", "unknown"}
+        ):
+            raise WorkConflict("code_composition_closed")
+        previous = json.loads(original["receipt_json"])
+        saved = previous.get("composition", {})
+        if saved.get("version") != 1 or saved.get("snapshot_revision") != expected_revision:
+            raise WorkConflict("code_checkpoint_conflict")
+        for field in (
+            "script_id",
+            "code_ref",
+            "inputs_ref",
+            "api_revision",
+            "engine_digest",
+            "dump_format",
+        ):
+            if field in composition and composition[field] != saved.get(field):
+                raise WorkConflict("code_composition_binding_conflict")
+        if (
+            saved.get("api_revision") != binding.api_revision
+            or saved.get("engine_digest") != binding.engine_digest
+            or saved.get("dump_format") != binding.dump_format
+        ):
+            raise WorkConflict("code_composition_binding_conflict")
+        next_composition = {
+            **saved,
+            **composition,
+            "version": 1,
+            "snapshot_revision": expected_revision + 1,
+        }
+        snapshot_ref = next_composition.get("snapshot_ref")
+        if snapshot_ref not in store.prepared_refs:
+            raise WorkConflict("code_snapshot_not_prepared")
+        store.decode_code_snapshot(await store.get_bytes(snapshot_ref), binding)
+        parent_receipt = bounded_json({**previous, "composition": next_composition})
+        child_receipt = bounded_json(
+            {
+                "invocation": child,
+                "outcome": {
+                    "tool": child["tool_id"],
+                    "side_effecting": side_effecting,
+                    "ok": False,
+                    "pending": False,
+                    "uncertain": False,
+                    "executed": False,
+                },
+            }
+        )
+        from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
+
+        async with store.publication(identity) as prepared_objects:
+            async with self.database.immediate_session() as writer:
+                await self._assert_lease(writer, lease)
+                source = await writer.get(CanonicalConversationModel, lease.conversation_id)
+                privacy = (
+                    await writer.scalar(
+                        select(ExecutionTraceStateModel.privacy_generation).where(
+                            ExecutionTraceStateModel.id == 1,
+                        )
+                    )
+                    or 0
+                )
+                if (
+                    source is None
+                    or source.generation != binding.generation
+                    or source.prompt_source_revision != binding.source_revision
+                    or privacy != binding.privacy_generation
+                ):
+                    raise WorkConflict("code_boundary_authority_changed")
+                if not await writer.scalar(
+                    select(work.c.id).where(
+                        work.c.id == identity,
+                        work.c.conversation_id == lease.conversation_id,
+                        work.c.generation == lease.generation,
+                        work.c.state.not_in(TERMINAL),
+                    )
+                ):
+                    raise WorkConflict("work_effect_obsolete")
+                changed = await writer.scalar(
+                    update(effects)
+                    .where(
+                        effects.c.effect_key == parent_key,
+                        effects.c.work_id == identity,
+                        effects.c.state.in_(("prepared", "unknown")),
+                        effects.c.receipt_json == original["receipt_json"],
+                    )
+                    .values(receipt_json=parent_receipt, updated=time.time())
+                    .returning(effects.c.effect_key)
+                )
+                if changed is None:
+                    raise WorkConflict("code_checkpoint_conflict")
+                await writer.execute(
+                    insert(effects).values(
+                        effect_key=child["operation_id"],
+                        work_id=identity,
+                        kind="tool",
+                        state="prepared",
+                        receipt_json=child_receipt,
+                        created=time.time(),
+                        updated=time.time(),
+                    )
+                )
+                await store.publish_refs(writer, identity, prepared_objects)
+        return True
+
+    async def validate_invocation(self, key: str, expected: dict[str, Any]) -> None:
+        """The fingerprint detects changed content, never determines an effect ID."""
+        async with self.database.sessions() as reader:
+            previous_json = await reader.scalar(
+                select(effects.c.receipt_json).where(effects.c.effect_key == key)
+            )
+        if previous_json is None:
+            return
+        previous = json.loads(previous_json).get("invocation")
+        if previous is None:
+            return  # Historical receipts are not assigned fabricated metadata.
+        stable = {
+            k: v
+            for k, v in expected.items()
+            if k not in {"dispatch_started", "budget_admitted", "revision", "original_domain_ref"}
+        }
+        if any(previous.get(k) != v for k, v in stable.items()):
+            raise WorkConflict("invocation_content_conflict")
+
+    async def admit_dispatch(self, lease: WorkLease, identity: str, key: str) -> bool:
+        """T2: one dispatch marker and all root/run usage commit together."""
+        async with self.database.sessions() as reader:
+            original = (
+                (
+                    await reader.execute(
+                        select(effects).where(
+                            effects.c.effect_key == key, effects.c.work_id == identity
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if original is None:
+            raise WorkConflict("invocation_intent_missing")
+        receipt = json.loads(original["receipt_json"])
+        invocation = receipt.get("invocation")
+        if not isinstance(invocation, dict) or invocation.get("version") != 1:
+            raise WorkConflict("invocation_metadata_missing")
+        if invocation.get("dispatch_started") or original["state"] != "prepared":
+            return False
+        receipt["invocation"] = {
+            **invocation,
+            "dispatch_started": True,
+            "budget_admitted": True,
+            "revision": invocation["revision"] + 1,
+        }
+        serialized = bounded_json(receipt)
+        from qq_ai_bot.runtime.work_budget import charge
+
+        async with self.database.immediate_session() as writer:
+            await self._assert_lease(writer, lease)
+            changed = await writer.scalar(
+                update(effects)
+                .where(
+                    effects.c.effect_key == key,
+                    effects.c.work_id == identity,
+                    effects.c.state == "prepared",
+                    effects.c.receipt_json == original["receipt_json"],
+                )
+                .values(receipt_json=serialized, updated=time.time())
+                .returning(effects.c.effect_key)
+            )
+            if changed is None:
+                return False
+            await charge(writer, identity, models=0, tools=1)
+            updated = await writer.scalar(
+                update(work)
+                .where(
+                    work.c.id == identity,
+                    work.c.conversation_id == lease.conversation_id,
+                    work.c.generation == lease.generation,
+                    work.c.state.not_in(TERMINAL),
+                )
+                .values(tool_calls=work.c.tool_calls + 1, updated=time.time())
+                .returning(work.c.id)
+            )
+            if updated is None:
+                raise WorkConflict("work_effect_obsolete")
+        return True
+
     @staticmethod
     def _effect_scope(identity: str) -> Any:
         return or_(
@@ -1788,7 +2029,17 @@ class WorkRepository:
                     ),
                 )
             )
-        return or_(*clauses) if clauses else False
+        unresolved = or_(*clauses) if clauses else false()
+        # Only a recognized parent is aggregate state, never a business leaf.
+        # Legacy/unknown versions retain the conservative historical fence.
+        return and_(
+            unresolved,
+            or_(
+                effects.c.kind != "code_composition",
+                func.coalesce(func.json_extract(effects.c.receipt_json, "$.composition.version"), 0)
+                != 1,
+            ),
+        )
 
     async def effect_evidence(
         self,
@@ -1927,83 +2178,80 @@ class WorkRepository:
                 )
 
     async def record_effect(self, key: str, state: str, receipt: dict[str, Any]) -> None:
-        # A late receipt must survive cancellation. It records an already-issued
-        # effect, never authorizes another one, so no current lease is required.
+        # Late settlement records the original dispatch; it grants no new lease.
         if state not in {"accepted", "failed", "unknown"}:
             raise ValueError("invalid_work_effect_state")
-        # Invocation state is never inferred from its model-facing projection.
-        if "outcome" not in receipt:
+        for _attempt in range(4):
             async with self.database.sessions() as reader:
-                prior = await reader.scalar(
-                    select(effects.c.receipt_json).where(effects.c.effect_key == key)
+                existing = (
+                    (await reader.execute(select(effects).where(effects.c.effect_key == key)))
+                    .mappings()
+                    .first()
                 )
-            existing_outcome = json.loads(prior or "{}").get("outcome", {})
-            if "result" in receipt:
-                from qq_ai_bot.capabilities.results import normalize_legacy_result
-                from qq_ai_bot.runtime.effect_outcomes import execution_evidence
+            if existing is None:
+                raise WorkConflict("work_effect_receipt_conflict")
+            previous = json.loads(existing["receipt_json"])
+            candidate = dict(receipt)
+            # The ordinary outcome path cannot replace Host-owned identity or
+            # snapshot metadata. Decode and serialize before opening the writer.
+            for field in ("invocation", "composition"):
+                if field in previous:
+                    if field in candidate and candidate[field] != previous[field]:
+                        raise WorkConflict("work_effect_metadata_conflict")
+                    candidate[field] = previous[field]
+            existing_outcome = previous.get("outcome", {})
+            if "outcome" not in candidate:
+                if "result" in candidate:
+                    from qq_ai_bot.capabilities.results import normalize_legacy_result
+                    from qq_ai_bot.runtime.effect_outcomes import execution_evidence
 
-                original = normalize_legacy_result(
-                    receipt["result"],
-                    provider_id="legacy",
-                    tool_name=existing_outcome.get("tool", "legacy_tool"),
-                )
-                receipt = {
-                    **receipt,
-                    "outcome": execution_evidence(
+                    original = normalize_legacy_result(
+                        candidate["result"],
+                        provider_id="legacy",
+                        tool_name=existing_outcome.get("tool", "legacy_tool"),
+                    )
+                    candidate["outcome"] = execution_evidence(
                         original,
                         tool=original.tool_name,
                         side_effecting=existing_outcome.get(
                             "side_effecting", original.mutation_committed is not False
                         ),
-                    ),
-                }
-            if existing_outcome:
-                receipt = {
-                    **receipt,
-                    "outcome": {
+                    )
+                if existing_outcome:
+                    candidate["outcome"] = {
                         **existing_outcome,
-                        **receipt.get("outcome", {}),
+                        **candidate.get("outcome", {}),
                         "uncertain": (
                             state == "unknown" and existing_outcome.get("side_effecting", True)
                         )
-                        or receipt.get("outcome", {}).get("uncertain", False),
-                    },
-                }
-        serialized = bounded_json(receipt)
-        async with self.database.sessions() as session, session.begin():
-            row = (
-                await session.execute(
+                        or candidate.get("outcome", {}).get("uncertain", False),
+                    }
+            if existing["state"] == "accepted":
+                if state == "unknown":
+                    return  # Bookkeeping failure cannot undo known acceptance.
+                if state != "accepted" or any(candidate.get(k) != v for k, v in previous.items()):
+                    raise WorkConflict("work_effect_receipt_conflict")
+                if candidate == previous:
+                    return
+            elif existing["state"] not in {"prepared", "unknown"}:
+                if existing["state"] == state and candidate == previous:
+                    return
+                raise WorkConflict("work_effect_receipt_conflict")
+            metadata = candidate.get("invocation")
+            if isinstance(metadata, dict) and metadata.get("version") == 1:
+                candidate["invocation"] = {**metadata, "revision": metadata["revision"] + 1}
+            serialized = bounded_json(candidate)
+            async with self.database.immediate_session() as writer:
+                changed = await writer.scalar(
                     update(effects)
                     .where(
                         effects.c.effect_key == key,
-                        effects.c.state.in_(("prepared", "unknown")),
+                        effects.c.state == existing["state"],
+                        effects.c.receipt_json == existing["receipt_json"],
                     )
                     .values(state=state, receipt_json=serialized, updated=time.time())
                     .returning(effects.c.effect_key)
                 )
-            ).first()
-            if row is None:
-                existing = (
-                    (await session.execute(select(effects).where(effects.c.effect_key == key)))
-                    .mappings()
-                    .first()
-                )
-                if existing and existing["state"] == "accepted":
-                    previous = json.loads(existing["receipt_json"])
-                    if state == "unknown":
-                        return  # Later bookkeeping failure cannot undo transport acceptance.
-                    if state == "accepted" and all(
-                        receipt.get(k) == v for k, v in previous.items()
-                    ):
-                        await session.execute(
-                            update(effects)
-                            .where(effects.c.effect_key == key)
-                            .values(receipt_json=serialized, updated=time.time())
-                        )
-                        return
-                if (
-                    not existing
-                    or existing["state"] != state
-                    or existing["receipt_json"] != serialized
-                ):
-                    raise WorkConflict("work_effect_receipt_conflict")
+            if changed is not None:
+                return
+        raise WorkConflict("work_effect_receipt_conflict")
