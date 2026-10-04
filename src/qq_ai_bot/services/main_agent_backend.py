@@ -144,6 +144,14 @@ class MainAgentBackend(AgentToolBackend):
 
         self._web_was_used = True
 
+    async def protect_native_dispatch(self, runtime: AgentRuntime) -> None:
+        """Native effects cannot be ruled out after a transport cancellation."""
+        execution_runtime = self._request_runtime()
+        if execution_runtime.turn_token is not None:
+            await self._service._turn_coordinator.mark_mutation_started(
+                execution_runtime.turn_token
+            )
+
     def consume_provider_chain_restart(self) -> bool:
         """Consume a local schema-change signal; the Runner retains the submitted chain."""
 

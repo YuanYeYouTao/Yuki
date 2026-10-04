@@ -1024,6 +1024,7 @@ class AgentRunner:
                     input_feedback_watermark: int = input_feedback_watermark,
                     stage_feedback_batch: str | None = stage_feedback_batch,
                     boundary: ContextBoundary | None = boundary,
+                    has_native_effects: bool = bool(request.native_tools),
                 ) -> ChatResponse:
                     prepared = False
                     # A capacity compaction can replace this candidate with a
@@ -1116,6 +1117,12 @@ class AgentRunner:
                         elif selected_boundary is not None:
                             await selected_boundary.commit()
                             observed_event_ids.update(selected_boundary.event_ids)
+                        if has_native_effects:
+                            # MainAgentBackend owns the ordinary private turn
+                            # token; other SDK backends do not use its preemption.
+                            protect_native = getattr(tools, "protect_native_dispatch", None)
+                            if callable(protect_native):
+                                await protect_native(runtime)
                         prepared = True
 
                     with model_dispatch_guard(prepare_dispatch):

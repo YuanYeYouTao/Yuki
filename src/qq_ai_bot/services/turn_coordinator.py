@@ -44,12 +44,21 @@ class TurnToken:
 
 
 @dataclass(slots=True)
+class _RegisteredTurn:
+    token: TurnToken
+    stages: int = 1
+    effect_started: bool = False
+    cancellation_requested: bool = False
+
+
+@dataclass(slots=True)
 class _TurnState:
     version: int = 0
     origin: TurnOrigin = TurnOrigin.USER_MESSAGE
     mutation_started: bool = False
     protected_version: int | None = None
     tasks: dict[TurnStage, asyncio.Task[object]] = field(default_factory=dict)
+    registrations: dict[asyncio.Task[object], _RegisteredTurn] = field(default_factory=dict)
     holders: dict[asyncio.Task[object], int] = field(default_factory=dict)
 
 
@@ -88,10 +97,12 @@ class ConversationTurnCoordinator:
         observation: bool = False,
         protect_from_observations: bool = False,
         preserve_active: bool = False,
+        preempt_private: bool = False,
     ) -> TurnToken:
         """Advance input version while keeping direct group turns above observations."""
 
         to_cancel: set[asyncio.Task[object]] = set()
+        to_join: set[asyncio.Task[object]] = set()
         async with self._guard:
             state = self._states.setdefault(conversation_key, _TurnState())
             if preserve_active:
@@ -99,15 +110,34 @@ class ConversationTurnCoordinator:
             if observation and state.protected_version == state.version:
                 return TurnToken(conversation_key, state.version, state.origin)
             previous_origin = state.origin
+            if preempt_private:
+                for task, registered in state.registrations.items():
+                    if (
+                        registered.token.origin == TurnOrigin.USER_MESSAGE
+                        and not registered.effect_started
+                        and not task.done()
+                    ):
+                        to_join.add(task)
+                        if not registered.cancellation_requested:
+                            registered.cancellation_requested = True
+                            to_cancel.add(task)
             if (
                 self._interrupt_autonomous
                 and previous_origin in {TurnOrigin.AUTONOMOUS_GROUP, TurnOrigin.PLUGIN_BACKGROUND}
                 and not state.mutation_started
             ):
                 for stage in ("admission", "generation"):
-                    task = state.tasks.get(stage)
-                    if task is not None and not task.done():
-                        to_cancel.add(task)
+                    prior_task = state.tasks.get(stage)
+                    if prior_task is not None and not prior_task.done():
+                        prior_registration = state.registrations.get(prior_task)
+                        if prior_registration is None or not prior_registration.effect_started:
+                            if (
+                                prior_registration is None
+                                or not prior_registration.cancellation_requested
+                            ):
+                                to_cancel.add(prior_task)
+                                if prior_registration is not None:
+                                    prior_registration.cancellation_requested = True
             state.version += 1
             state.origin = origin
             state.mutation_started = False
@@ -117,6 +147,21 @@ class ConversationTurnCoordinator:
         for task in to_cancel:
             if task is not current:
                 task.cancel()
+        if current is not None:
+            to_join.discard(current)
+        if to_join:
+            # Join the captured original owners, never whoever next owns this key.
+            # Repeated input/caller cancellation must not interrupt their cleanup.
+            joined = asyncio.gather(*to_join, return_exceptions=True)
+            try:
+                await asyncio.shield(joined)
+            except asyncio.CancelledError:
+                while not joined.done():
+                    try:
+                        await asyncio.shield(joined)
+                    except asyncio.CancelledError:
+                        continue
+                raise
         return token
 
     @asynccontextmanager
@@ -158,6 +203,15 @@ class ConversationTurnCoordinator:
             state = self._states.get(token.conversation_key)
             if state is None or state.version != token.version:
                 raise TurnSupersededError("turn was superseded before stage registration")
+            registered = state.registrations.get(typed_task)
+            if registered is None:
+                state.registrations[typed_task] = _RegisteredTurn(
+                    token, effect_started=state.mutation_started
+                )
+            elif registered.token != token:
+                raise TurnSupersededError("task already belongs to another turn")
+            else:
+                registered.stages += 1
             state.tasks[stage] = typed_task
         try:
             yield
@@ -170,14 +224,26 @@ class ConversationTurnCoordinator:
                 state = self._states.get(token.conversation_key)
                 if state is not None and state.tasks.get(stage) is task:
                     state.tasks.pop(stage, None)
+                if state is not None:
+                    registered = state.registrations.get(typed_task)
+                    if registered is not None:
+                        registered.stages -= 1
+                        if registered.stages == 0:
+                            state.registrations.pop(typed_task, None)
 
     async def mark_mutation_started(self, token: TurnToken) -> None:
         """Protect an already-started side effect from automatic cancellation."""
 
         async with self._guard:
             state = self._states.get(token.conversation_key)
-            if state is not None and state.version == token.version:
-                state.mutation_started = True
+            if state is not None:
+                # New input versions do not revoke protection for an original
+                # task that is already delivering its paired tool results.
+                for registered in state.registrations.values():
+                    if registered.token == token:
+                        registered.effect_started = True
+                if state.version == token.version:
+                    state.mutation_started = True
 
     def can_retry_uncommitted(self, token: TurnToken | None) -> bool:
         """A fresh chat attempt must not replay a turn that started a mutation."""

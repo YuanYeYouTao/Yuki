@@ -562,7 +562,10 @@ async def validate_observations(
     actor_id: str,
     read_scope: str,
     sources: tuple[tuple[str, int], ...],
+    *,
+    snapshot_privacy_generation: int | None = None,
 ) -> bool:
+    """Validate the DAG in this snapshot; supplied privacy must come from this transaction."""
     if not sources:
         return True
     ids = tuple(identity for identity, _ in sources)
@@ -571,7 +574,11 @@ async def validate_observations(
     pending = dict(sources)
     verified: dict[str, int] = {}
     parents: dict[str, tuple[tuple[str, int], ...]] = {}
-    privacy = await privacy_generation(session)
+    privacy = (
+        await privacy_generation(session)
+        if snapshot_privacy_generation is None
+        else snapshot_privacy_generation
+    )
     while pending:
         rows: list[Row[tuple[str, int, str]]] = []
         identities = tuple(pending)

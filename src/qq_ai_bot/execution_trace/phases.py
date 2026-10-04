@@ -25,6 +25,12 @@ _METRICS = frozenset(
         "protocol_lock_wait_seconds",
         "protocol_lock_held_seconds",
         "conversation_lock_wait_seconds",
+        "work_restore_source_read_seconds",
+        "source_guard_read_seconds",
+        "source_guard_final_read_seconds",
+        "projection_snapshot_read_seconds",
+        "projection_snapshot_publish_seconds",
+        "projection_sources_read_seconds",
     }
 )
 
@@ -109,5 +115,7 @@ def model_detail(name: str) -> Iterator[None]:
     try:
         yield
     finally:
+        elapsed = time.perf_counter() - started
         if phases is not None:
-            phases.nested[name] = phases.nested.get(name, 0.0) + time.perf_counter() - started
+            phases.nested[name] = phases.nested.get(name, 0.0) + elapsed
+        collect_phase_metrics(**{f"{name}_seconds": elapsed})
