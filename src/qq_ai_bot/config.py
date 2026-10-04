@@ -108,6 +108,14 @@ class Settings(BaseSettings):
     social_transfer_directory: Path = Path("social-transfer")
     social_gateway_transfer_directory: str = ""
     sandbox_socket: Path = Path("/run/yuki-sandbox/manager.sock")
+    # Code Mode native worker: explicit path and pinned digest; empty disables it.
+    code_mode_worker_path: Path | None = None
+    code_mode_worker_sha256: str = Field(default="", pattern=r"^([0-9a-f]{64})?$")
+    code_mode_max_feed_seconds: float = Field(default=10.0, gt=0, le=120)
+    code_mode_max_memory_bytes: int = Field(default=64 * 1024 * 1024, ge=1 << 20, le=1 << 30)
+    code_mode_max_output_bytes: int = Field(default=64 * 1024, ge=1024, le=1 << 22)
+    code_mode_max_snapshot_bytes: int = Field(default=8 << 20, ge=1 << 16, le=1 << 27)
+    code_mode_request_timeout_seconds: float = Field(default=30.0, gt=0, le=600)
 
     onebot_access_token: str = ""
     superusers_csv: str = Field(default="", validation_alias="SUPERUSERS")

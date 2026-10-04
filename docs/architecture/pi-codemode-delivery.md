@@ -58,15 +58,94 @@ SQLAlchemy 的 `asyncio` extra（`pyproject.toml`/`uv.lock`）。
 沿用旧测试）、writer 排队后过租约、composition 父的最终结算接口（由 P05 控制门提供）。
 `PendingComposition` 目前只被识别，原 owner 驱动在 P03/P04 接入。
 
-## P04 前置：Monty 原生 worker 编译
+## P03：Pi 内核 Python 移植，已完成
 
-固定 `3f9d6ef` 在 Rust 1.96.0 上编译 `monty` crate 失败（`string_cache.rs:98`，定长数组
-`&mut` 不是迭代器）。最小补丁 `vendor/patches/monty-3f9d6ef-string-cache-iterator.patch`
-改为 `iter_mut()`，不改语义。打补丁后 `cargo +1.96.0 build --release -p monty-runtime`
-成功；二进制 `monty`（含 `subprocess` 协议子命令）sha256
-`2db64324459259fa291fe24d03518677b5f44f5eabcdb2a9435b00482d2d9430`，仅本机
-aarch64-apple-darwin。冒烟只跑了列表推导脚本，不是 sandbox 验收；产物在系统临时目录，
-P09 需改为可复现构建。
+- 新增 `src/qq_ai_bot/agent_core/{__init__,loop,types,state,events,model_boundary}.py`，
+  均带 Pi MIT 署名与源符号/行范围；只依赖 `qq_ai_bot.domain.messages`（有测试强制）。
+- `AgentRunner._run` 的 `for request_index` 循环删除，改由 `run_agent_loop` 驱动；
+  原循环体按职责拆为 `Callbacks` 的 9 个边界闭包。截断响应的非执行回执改由核心
+  `fail_truncated_calls` 生成（字节不变）。Work 会话下重复批次计数只读持久 `repeats`，
+  不再先算一遍内存指纹再覆盖。保留职责清单见 [来源记录](pi-port-provenance.md)。
+- 差分：同一组 fake 模型序列（8 个场景，含 Work accept→执行→complete）在移植前
+  `b4fdef7d` 采集黄金样本（模型请求、工具顺序、持久 effects、Work 预算、可见输出），
+  移植后逐项一致。刻意差异各有 fixture。
+
+```sh
+uv run --frozen pytest -q tests/unit/test_agent_core_loop.py \
+  tests/unit/test_agent_core_differences.py tests/unit/test_agent_core_differential.py
+# 26 passed
+uv run --frozen mypy            # 716 文件无错误
+uv run --frozen pytest -q -p no:warnings tests
+# 2817 passed, 28 skipped（27 项为 Monty worker 未设 YUKI_MONTY_BINARY，1 项需生产备份）
+```
+
+未完成：真实供应商 streaming（当前仅完整响应＋合成 frame）；Pi 上游测试未运行；
+跨步变量仍经 `nonlocal` 共享，P05/P08 收敛；`PendingComposition` 尚未由内核驱动（P05）。
+
+## P04：Monty 隔离驱动，已完成（本机 aarch64-apple-darwin）
+
+**驱动方式。**使用固定源码构建的官方绑定 `pydantic-monty-client` 1.0.1，而不是自写 protobuf
+帧协议：绑定经 monty-pool 启动本地 `monty subprocess`，`worker.rs:185-194` 已做
+`env_clear`、piped stdio、`kill_on_drop`，并提供手动 `feed_start`、`resume`、
+`FutureSnapshot.resume({call_id: …})`、`dump`/`load_snapshot` 与类型化限额错误。只用手动接口：
+不用 `resume_auto`、`feed_run`、`external_lookup`、mount、`os=` 回调、WebSocket/remote 或宿主 exec。
+
+**新增模块 `src/qq_ai_bot/codemode/`：**
+
+- `engine_monty.py`：`PinnedWorker`（绝对路径＋sha256＋平台核验，不经 PATH/wheel 发现）；
+  `MontyEngine`（每个 worker 只服务一次 checkout）；`MontyRun` 的 start/answer/settle/dump/
+  restore/terminate。OS 调用一律 `resume_not_handled`（沙箱内 PermissionError），未定义名称
+  NameError，非 manifest 函数与带 object_id 的调用回 NameError，`__import__/open/exec/eval/
+  compile/input` 不能进 manifest。参数、输入、答复和结果都过严格 JSON 闸门。任何失败丢弃 worker。
+- `limits.py`：引擎限额（feed 时间、内存、递归、`max_suspensions`）与独立宿主限额（代码/输入/
+  输出/结果/快照字节、pending future、跨恢复累计挂起数、父侧 watchdog）。`max_suspensions` 只是
+  引擎资源上限，不是工具预算。
+- `snapshot_binding.py`：dump 只经 `ProtocolStore.put_code_snapshot/get_code_snapshot` 与
+  `CodeSnapshotBinding`；边界记录保存 engine call、参数摘要与宿主累计计数，供 T1
+  `publish_code_boundary` 发布。恢复时重新宣告的调用必须与保存边界一致，否则
+  `snapshot_binding_conflict` 并丢弃 worker。
+- `driver_types.py`：宿主侧 DTO；答复异常类型为封闭集合。
+- 配置：`Settings.code_mode_worker_path/_sha256` 与限额字段（env，进程级）；未配置即不可用。
+  镜像/服务接线留给 P09。
+
+**观察到的引擎行为（真实 worker）：**`while True` 在 feed 限额处终止；输出洪泛 1s 内产生约
+125MB print 回调，宿主只保留上限内文本并标记截断；`MemoryError` 限额脚本不能捕获；
+20 万项加法表达式使原生编译器栈溢出（SIGABRT），只丢该 worker；`max_suspensions` 超限为
+RuntimeError；旧 dump-format（版本 1 < 13）与截断 dump 被拒并丢弃 worker；同一挂起二次
+resume 由引擎拒绝。
+
+**构建：**`scripts/build_monty_worker.sh` 固定 SHA、套补丁、`cargo +1.96.0 build --release
+--locked -p monty-runtime --no-default-features`（仅 worker）并用 maturin 1.9.6 构建 wheel。
+
+| 产物 | sha256 |
+| --- | --- |
+| `monty`（worker-only，`--no-default-features`） | `c77fd658c0af299a687aae4949826a5ee902b7fdd5d2db1db34142b3e9dee41a` |
+| `monty`（默认 features，含 CLI） | `2db64324459259fa291fe24d03518677b5f44f5eabcdb2a9435b00482d2d9430` |
+| `pydantic_monty_client-1.0.1-cp312-cp312-macosx_11_0_arm64.whl` | `752fa7c616e49364b6eb2748ce67bd63e2874551239f596d5a3b17e4d789fa53` |
+
+绑定 wheel 用 `uv pip install --no-deps` 装入 `.venv`，未写入 `pyproject.toml`/`uv.lock`：
+它不在任何索引上，只能由构建脚本从固定源码产出。`uv sync` 会移除它，需重跑脚本。P09 决定
+镜像内打包方式。
+
+**测试：**
+
+```sh
+uv run --frozen pytest -q tests/unit/test_codemode_contracts.py        # 14 通过
+YUKI_MONTY_BINARY=<worker> uv run --frozen pytest -q tests/integration/test_codemode_worker.py
+# 两种构建产物各 27 通过；无 worker 时 27 跳过并给出原因
+```
+
+覆盖：manifest 挂起与完成、死循环、输出洪泛、内存耗尽、超大代码、长编译崩溃后宿主可继续、
+名称/OS/文件/环境/网络/模块探测（9 项）、任意对象双向拒绝、挂起上限非业务预算、保留名称、
+答复只能对准当前挂起、FutureSnapshot 跨“重启”（新 engine 从 ProtocolStore 恢复）手动 settle、
+恢复不产生新 engine id、累计计数不清零、边界不符冲突、篡改/截断/旧格式不恢复、绕过私有存储
+无效、同一快照不能在一个 run 上二次恢复或二次 settle。
+
+全量（含真实 worker，`YUKI_MONTY_BINARY` 指向 worker-only 构建）：2818 通过、1 跳过；
+mypy 710 文件无错误。
+
+**未完成：**Linux 构建与 digest 未验证（只核对了本机）；P05 尚未把答复接到 InvocationService，
+`publish_code_boundary` 在测试中由 fixture 调用；转依赖 notice 汇总待 P09。
 
 ## 验证记录（2026-10-04）
 
@@ -76,6 +155,7 @@ uv run --frozen ruff format --check src tests scripts migrations   # 通过
 uv run --frozen mypy   # 705 文件无错误（修复 _unresolved_clause 的 bool/ColumnElement 混用后）
 uv run --frozen pytest -q tests   # P01 后：2758 通过、1 跳过（需生产备份路径）
 # P02 后：2777 通过、1 跳过；mypy 705 文件无错误
+# P03+P04 合并后（YUKI_MONTY_BINARY=worker-only 构建）：2844 通过、1 跳过；mypy 716 文件无错误
 ```
 
 第一轮全量：2727 通过、7 失败、24 错误。失败为本次删除旧 `execute/begin_batch` 后未迁移的
@@ -84,5 +164,7 @@ WebUI 前端资源未构建（`npm ci && npm run build`，产物已 gitignore）
 
 ## 后续依赖
 
-下一步 P03（Pi 循环移植）与 P04（Monty 驱动），可并行。P05–P10 未开始。
-P11 真实外部与生产验收待单独授权。代码提交、推送、PR 尚未执行。
+下一步 P05（完整 Code Mode 能力：`execute_code` 声明、bridge 接 InvocationService、控制门、
+计量），依赖 P03 与 P04 均已具备。P06–P10 未开始；P11 真实外部与生产验收待单独授权。
+Monty Python binding 为本地构建 wheel，未进 `uv.lock`，`uv sync` 后需重跑
+`scripts/build_monty_worker.sh`，P09 落地可复现分发。

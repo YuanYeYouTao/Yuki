@@ -13,6 +13,17 @@ from functools import partial
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
+from qq_ai_bot.agent_core import (
+    RETRY,
+    STOP,
+    Continue,
+    End,
+    ToolBatchOutcome,
+    ToolCallOutcome,
+    TurnDecision,
+    run_agent_loop,
+)
+from qq_ai_bot.agent_core.model_boundary import Callbacks, LoopSignal
 from qq_ai_bot.automation.authority import DelegatedAuthority
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities.coordinator import (
@@ -618,12 +629,23 @@ class AgentRunner:
             pending_stage_feedback = None
             return None
 
-        for request_index in range(runtime.max_model_requests):
+        # Per-request state shared by the boundaries below. The original loop body
+        # was one scope; these keep its exact cross-step values.
+        control: WorkControl | None = runtime.work_control
+        boundary: ContextBoundary | None = None
+        paid_staging = False
+        exact_dispatch_replay = False
+        definitions: tuple[ChatTool, ...] = ()
+        response_observation: dict[str, Any] = {}
+        coordinated = CoordinatedToolResult((), 0)
+
+        async def _begin(request_index: int) -> LoopSignal | None:
+            nonlocal boundary, control, exact_dispatch_replay, paid_staging
             if (
                 runtime.auxiliary_requests
                 and request_index + runtime.auxiliary_requests[0] >= runtime.max_model_requests
             ):
-                break
+                return STOP
             control = runtime.work_control
             boundary = None
             if (
@@ -653,7 +675,7 @@ class AgentRunner:
                 and control.current is not None
                 and control.requests_started >= runtime.max_model_requests
             ):
-                break
+                return STOP
             paid_staging = bool(
                 control and control.session and control.session.progress.get("compaction_staging")
             )
@@ -663,6 +685,9 @@ class AgentRunner:
                 and control.session
                 and control.session.recovered_phase == "dispatched"
             )
+            return None
+
+        async def _steer(request_index: int) -> End | None:
             if (
                 control is not None
                 and not provider_pause_replay
@@ -671,7 +696,14 @@ class AgentRunner:
             ):
                 waiting = await take_boundary_inputs(request_index, boundary)
                 if waiting is not None:
-                    return waiting
+                    return End(waiting)
+            return None
+
+        async def _request(request_index: int) -> ChatResponse | End | LoopSignal:
+            nonlocal continuation_native_tools, continuation_tools, deferred_paid_compaction
+            nonlocal definitions, empty_retries, observations, ordinary_compaction_tokens
+            nonlocal provider_pause_replay, response_observation, response_status
+            nonlocal staged_evidence_results, transcript, web_was_used
             if fixed_definitions is not None:
                 refresh_catalog = getattr(tools, "refresh_catalog", None)
                 if callable(refresh_catalog):
@@ -863,11 +895,11 @@ class AgentRunner:
                         # The paid source is now safely paired. New inputs can
                         # enter this new request without invalidating its cursor.
                         if control.requests_started >= runtime.max_model_requests:
-                            break
+                            return STOP
                         if paid_staging and not provider_pause_replay:
                             waiting = await take_boundary_inputs(request_index, boundary)
                             if waiting is not None:
-                                return waiting
+                                return End(waiting)
                         # Keep this prepared public delta through the explicit
                         # private-tail replacement; dispatch it once below.
                         sequence = transcript.request()
@@ -1174,14 +1206,16 @@ class AgentRunner:
                 if has_visible_effects and (
                     control is None or control.current is None or control.ending == "completed"
                 ):
-                    return AgentRunResult(
-                        text="",
-                        tool_calls_used=calls_used,
-                        model_requests=request_index + 1,
-                        web_was_used=web_was_used,
-                        native_tool_events=tuple(native_events),
-                        citations=tuple(citations),
-                        response_status=response_status,
+                    return End(
+                        AgentRunResult(
+                            text="",
+                            tool_calls_used=calls_used,
+                            model_requests=request_index + 1,
+                            web_was_used=web_was_used,
+                            native_tool_events=tuple(native_events),
+                            citations=tuple(citations),
+                            response_status=response_status,
+                        )
                     )
                 if empty_retries >= 2 or request_index + 1 >= runtime.max_model_requests:
                     self._record_failure_usage(
@@ -1204,7 +1238,7 @@ class AgentRunner:
                         ),
                     )
                 )
-                continue
+                return RETRY
             except LLMError:
                 self._record_failure_usage(
                     tools, tool_calls=calls_used, model_requests=request_index + 1
@@ -1268,198 +1302,201 @@ class AgentRunner:
                 observations.append(response_observation)
                 continuation_tools = definitions
                 continuation_native_tools = native_definitions
-            if response.status is ModelResponseStatus.INCOMPLETE:
-                # Truncated calls never execute. Pair non-execution receipts before
-                # recovery so either protocol retains a valid, append-only history.
-                if response.continuation is None:
-                    transcript.append(
-                        ChatMessage(
-                            role="assistant",
-                            content=response.content or None,
-                            tool_calls=response.tool_calls,
-                            reasoning_content=response.reasoning_content,
-                        )
+            return response
+
+        async def _settle_truncated(
+            request_index: int,
+            response: ChatResponse,
+            outcomes: tuple[ToolCallOutcome, ...],
+        ) -> TurnDecision:
+            nonlocal incomplete_recovery_used
+            # Truncated calls never execute. Pair non-execution receipts before
+            # recovery so either protocol retains a valid, append-only history.
+            if response.continuation is None:
+                transcript.append(
+                    ChatMessage(
+                        role="assistant",
+                        content=response.content or None,
+                        tool_calls=response.tool_calls,
+                        reasoning_content=response.reasoning_content,
                     )
-                for call in response.tool_calls:
-                    transcript.append_result(
-                        call.id,
-                        json.dumps(
-                            {
-                                "ok": False,
-                                "error": "provider_response_incomplete",
-                                "executed": False,
-                                "mutation_committed": False,
-                            }
+                )
+            # Pi failToolCallsFromTruncatedMessage: the core produced these
+            # non-execution receipts; nothing was dispatched.
+            for outcome in outcomes:
+                transcript.append_result(outcome.call.id, outcome.result)
+            if control is not None and control.session is not None:
+                await control.session.save("paired")
+            if incomplete_recovery_used or request_index + 1 >= runtime.max_model_requests:
+                raise LLMIncompleteResponseError(
+                    "provider response remained incomplete after bounded recovery"
+                )
+            incomplete_recovery_used = True
+            if response.incomplete_reason == "pause_turn":
+                if response.continuation is None:
+                    raise LLMIncompleteResponseError(
+                        "paused provider response has no resumable checkpoint"
+                    )
+                # Claude's paused server tool must be echoed unchanged.
+                # A synthetic user/system message would change that replay.
+            else:
+                transcript.append(
+                    ChatMessage(
+                        role="system",
+                        content=(
+                            "上一响应未完整结束。根据真实回执继续原任务，必要时查询或解释；"
+                            "不要重复任何已经完成的原生搜索或本地工具调用。"
                         ),
                     )
-                if control is not None and control.session is not None:
-                    await control.session.save("paired")
-                if incomplete_recovery_used or request_index + 1 >= runtime.max_model_requests:
-                    raise LLMIncompleteResponseError(
-                        "provider response remained incomplete after bounded recovery"
-                    )
-                incomplete_recovery_used = True
-                if response.incomplete_reason == "pause_turn":
-                    if response.continuation is None:
-                        raise LLMIncompleteResponseError(
-                            "paused provider response has no resumable checkpoint"
-                        )
-                    # Claude's paused server tool must be echoed unchanged.
-                    # A synthetic user/system message would change that replay.
-                else:
-                    transcript.append(
-                        ChatMessage(
-                            role="system",
-                            content=(
-                                "上一响应未完整结束。根据真实回执继续原任务，必要时查询或解释；"
-                                "不要重复任何已经完成的原生搜索或本地工具调用。"
-                            ),
-                        )
-                    )
-                logger.warning(
-                    "agent_incomplete_response_recovery reason=%s",
-                    response.incomplete_reason or "unknown",
                 )
-                continue
-            if not response.tool_calls:
-                content = response.content
-                assistant_recorded = False
-                assistant_message = ChatMessage(
-                    role="assistant",
-                    content=response.content,
-                    reasoning_content=response.reasoning_content,
-                )
-                control = runtime.work_control
-                if deferred_paid_compaction and control is not None and control.session is not None:
-                    if response.continuation is None:
-                        transcript.append(assistant_message)
-                        assistant_recorded = True
-                    await control.session.retire_paid_compaction()
-                    deferred_paid_compaction = False
-                if control is not None and await control.pending():
-                    if response.continuation is None and not assistant_recorded:
-                        transcript.append(assistant_message)
-                    transcript.append(
-                        ChatMessage(
-                            role="system",
-                            content=(
-                                "上一段回复尚未发送；有新的用户输入到达，请先处理新增内容再继续。"
-                            ),
-                        )
+            logger.warning(
+                "agent_incomplete_response_recovery reason=%s",
+                response.incomplete_reason or "unknown",
+            )
+            return Continue()
+
+        async def _settle_final(request_index: int, response: ChatResponse) -> TurnDecision:
+            nonlocal answer_recovery_used, control, deferred_paid_compaction, empty_retries
+            nonlocal mention_recovery_used
+            content = response.content
+            assistant_recorded = False
+            assistant_message = ChatMessage(
+                role="assistant",
+                content=response.content,
+                reasoning_content=response.reasoning_content,
+            )
+            control = runtime.work_control
+            if deferred_paid_compaction and control is not None and control.session is not None:
+                if response.continuation is None:
+                    transcript.append(assistant_message)
+                    assistant_recorded = True
+                await control.session.retire_paid_compaction()
+                deferred_paid_compaction = False
+            if control is not None and await control.pending():
+                if response.continuation is None and not assistant_recorded:
+                    transcript.append(assistant_message)
+                transcript.append(
+                    ChatMessage(
+                        role="system",
+                        content=(
+                            "上一段回复尚未发送；有新的用户输入到达，请先处理新增内容再继续。"
+                        ),
                     )
-                    continue
-                # The final body is internal; the main backend can reject an
-                # unsent user-facing answer without implicitly delivering it.
-                if "[提及" in content:
-                    if (
-                        not mention_recovery_used
-                        and request_index + 1 < runtime.max_model_requests
-                        and any(tool.name == "send_message" for tool in definitions)
-                    ):
-                        mention_recovery_used = True
-                        if response.continuation is None and not assistant_recorded:
-                            transcript.append(assistant_message)
-                        transcript.append(
-                            ChatMessage(
-                                role="system",
-                                content=(
-                                    "上一回复含 [提及…] 历史占位标记，已拦截且未发送；"
-                                    "该占位标记不是发送回执。若用户要求提醒成员，"
-                                    "先明确人物，再用 send_message.mentions 发送；"
-                                    "普通正文和 @名字都不能触发提醒。无法执行时如实说明。"
-                                ),
-                            )
-                        )
-                        continue
-                    raise LLMError("model repeated an invalid mention placeholder")
-                feedback = getattr(tools, "response_feedback", None)
-                issue = feedback(content, runtime) if callable(feedback) else None
+                )
+                return Continue()
+            # The final body is internal; the main backend can reject an
+            # unsent user-facing answer without implicitly delivering it.
+            if "[提及" in content:
                 if (
-                    control is not None
-                    and getattr(control, "reporting", None) == "interactive"
-                    and control.ending is None
+                    not mention_recovery_used
+                    and request_index + 1 < runtime.max_model_requests
+                    and any(tool.name == "send_message" for tool in definitions)
                 ):
+                    mention_recovery_used = True
                     if response.continuation is None and not assistant_recorded:
                         transcript.append(assistant_message)
-                    if await require_interactive_exit(control, transcript, extra_feedback=issue):
-                        continue
-                if issue:
-                    if answer_recovery_used or request_index + 1 >= runtime.max_model_requests:
-                        raise LLMError("model repeated an unsupported final response")
-                    answer_recovery_used = True
-                    if response.continuation is None and not assistant_recorded:
-                        transcript.append(assistant_message)
-                    transcript.append(ChatMessage(role="system", content=issue))
-                    continue
-                if tools is not None:
-                    content = tools.finalize(content, runtime)
-                has_visible_effects = bool(
-                    tools is not None
-                    and callable(getattr(tools, "has_visible_effects", None))
-                    and tools.has_visible_effects()  # type: ignore[attr-defined]
-                )
-                if not content.strip() and not has_visible_effects:
-                    allow_silence = getattr(tools, "allow_silent_final", None)
-                    if callable(allow_silence) and allow_silence(runtime):
-                        logger.info("agent_silent_final origin=%s", runtime.origin.value)
-                    else:
-                        if empty_retries >= 2 or request_index + 1 >= runtime.max_model_requests:
-                            raise LLMEmptyResponseError("model returned no final answer")
-                        empty_retries += 1
-                        logger.warning(
-                            "agent_empty_final_retry retry=%d tool_calls_used=%d",
-                            empty_retries,
-                            calls_used,
+                    transcript.append(
+                        ChatMessage(
+                            role="system",
+                            content=(
+                                "上一回复含 [提及…] 历史占位标记，已拦截且未发送；"
+                                "该占位标记不是发送回执。若用户要求提醒成员，"
+                                "先明确人物，再用 send_message.mentions 发送；"
+                                "普通正文和 @名字都不能触发提醒。无法执行时如实说明。"
+                            ),
                         )
+                    )
+                    return Continue()
+                raise LLMError("model repeated an invalid mention placeholder")
+            feedback = getattr(tools, "response_feedback", None)
+            issue = feedback(content, runtime) if callable(feedback) else None
+            if (
+                control is not None
+                and getattr(control, "reporting", None) == "interactive"
+                and control.ending is None
+            ):
+                if response.continuation is None and not assistant_recorded:
+                    transcript.append(assistant_message)
+                if await require_interactive_exit(control, transcript, extra_feedback=issue):
+                    return Continue()
+            if issue:
+                if answer_recovery_used or request_index + 1 >= runtime.max_model_requests:
+                    raise LLMError("model repeated an unsupported final response")
+                answer_recovery_used = True
+                if response.continuation is None and not assistant_recorded:
+                    transcript.append(assistant_message)
+                transcript.append(ChatMessage(role="system", content=issue))
+                return Continue()
+            if tools is not None:
+                content = tools.finalize(content, runtime)
+            has_visible_effects = bool(
+                tools is not None
+                and callable(getattr(tools, "has_visible_effects", None))
+                and tools.has_visible_effects()  # type: ignore[attr-defined]
+            )
+            if not content.strip() and not has_visible_effects:
+                allow_silence = getattr(tools, "allow_silent_final", None)
+                if callable(allow_silence) and allow_silence(runtime):
+                    logger.info("agent_silent_final origin=%s", runtime.origin.value)
+                else:
+                    if empty_retries >= 2 or request_index + 1 >= runtime.max_model_requests:
+                        raise LLMEmptyResponseError("model returned no final answer")
+                    empty_retries += 1
+                    logger.warning(
+                        "agent_empty_final_retry retry=%d tool_calls_used=%d",
+                        empty_retries,
+                        calls_used,
+                    )
+                    if response.continuation is None and not assistant_recorded:
+                        transcript.append(assistant_message)
+                    transcript.append(
+                        ChatMessage(
+                            role="system",
+                            content=(
+                                "上一响应正文为空；回执仍保留，不能据此断言整个任务完成。"
+                                "根据目标和真实结果选择继续执行、等待或回答；"
+                                "不要重复已经成功的工具调用，也不要只描述发送模式。"
+                            ),
+                        )
+                    )
+                    return Continue()
+            if control is not None and control.current is not None and control.ending is None:
+                # Infer lifecycle completion from a real final answer, but use
+                # the same receipt validation as explicit task_control.complete.
+                await control.reconcile_completed_children()
+                state = await control.background_state()
+                await control.refresh_effects()
+                if await control.has_unresolved_effects(pending=False):
+                    state = "suspended"
+                elif await control.has_unresolved_effects(uncertain=False):
+                    state = state or "waiting_external"
+                if state is not None:
+                    control.ending = state
+                else:
+                    artifacts = list(
+                        dict.fromkeys(
+                            artifact
+                            for effect in control.known_effects
+                            if effect.get("ok") or effect.get("delivered_artifacts")
+                            for artifact in effect.get("artifacts", [])
+                        )
+                    )[-8:]
+                    receipt = await control.execute(
+                        "task_control",
+                        {"action": "complete", "artifact_ids": artifacts},
+                        f"final-answer:{request_index}",
+                    )
+                    if not json.loads(receipt).get("ok"):
                         if response.continuation is None and not assistant_recorded:
                             transcript.append(assistant_message)
-                        transcript.append(
-                            ChatMessage(
-                                role="system",
-                                content=(
-                                    "上一响应正文为空；回执仍保留，不能据此断言整个任务完成。"
-                                    "根据目标和真实结果选择继续执行、等待或回答；"
-                                    "不要重复已经成功的工具调用，也不要只描述发送模式。"
-                                ),
-                            )
-                        )
-                        continue
-                if control is not None and control.current is not None and control.ending is None:
-                    # Infer lifecycle completion from a real final answer, but use
-                    # the same receipt validation as explicit task_control.complete.
-                    await control.reconcile_completed_children()
-                    state = await control.background_state()
-                    await control.refresh_effects()
-                    if await control.has_unresolved_effects(pending=False):
-                        state = "suspended"
-                    elif await control.has_unresolved_effects(uncertain=False):
-                        state = state or "waiting_external"
-                    if state is not None:
-                        control.ending = state
-                    else:
-                        artifacts = list(
-                            dict.fromkeys(
-                                artifact
-                                for effect in control.known_effects
-                                if effect.get("ok") or effect.get("delivered_artifacts")
-                                for artifact in effect.get("artifacts", [])
-                            )
-                        )[-8:]
-                        receipt = await control.execute(
-                            "task_control",
-                            {"action": "complete", "artifact_ids": artifacts},
-                            f"final-answer:{request_index}",
-                        )
-                        if not json.loads(receipt).get("ok"):
-                            if response.continuation is None and not assistant_recorded:
-                                transcript.append(assistant_message)
-                            transcript.append(ChatMessage(role="system", content=receipt))
-                            continue
-                if control is not None and control.session is not None:
-                    if response.continuation is None and not assistant_recorded:
-                        transcript.append(assistant_message)
-                    await control.session.save("paired")
-                return AgentRunResult(
+                        transcript.append(ChatMessage(role="system", content=receipt))
+                        return Continue()
+            if control is not None and control.session is not None:
+                if response.continuation is None and not assistant_recorded:
+                    transcript.append(assistant_message)
+                await control.session.save("paired")
+            return End(
+                AgentRunResult(
                     text=content,
                     tool_calls_used=calls_used,
                     model_requests=request_index + 1,
@@ -1468,21 +1505,30 @@ class AgentRunner:
                     citations=tuple(citations),
                     response_status=response_status,
                 )
+            )
+
+        async def _stop_before_tools(request_index: int, response: ChatResponse) -> End | None:
             if no_progress_recovery:
                 logger.warning(
                     "agent_tool_no_progress_stopped tool_calls_used=%d model_requests=%d",
                     calls_used,
                     request_index + 1,
                 )
-                return AgentRunResult(
-                    text=("检测到模型反复调用相同工具且结果没有变化，已停止本轮工具循环。"),
-                    tool_calls_used=calls_used,
-                    model_requests=request_index + 1,
-                    web_was_used=web_was_used,
-                    native_tool_events=tuple(native_events),
-                    citations=tuple(citations),
-                    response_status=response_status,
+                return End(
+                    AgentRunResult(
+                        text=("检测到模型反复调用相同工具且结果没有变化，已停止本轮工具循环。"),
+                        tool_calls_used=calls_used,
+                        model_requests=request_index + 1,
+                        web_was_used=web_was_used,
+                        native_tool_events=tuple(native_events),
+                        citations=tuple(citations),
+                        response_status=response_status,
+                    )
                 )
+            return None
+
+        async def _execute_tools(request_index: int, response: ChatResponse) -> ToolBatchOutcome:
+            nonlocal calls_used, coordinated
             responses_path = response.continuation is not None
             if not responses_path:
                 transcript.append(
@@ -1520,6 +1566,19 @@ class AgentRunner:
             )
             batch, executed = coordinated.calls, coordinated.executed_count
             calls_used += executed
+            return ToolBatchOutcome(
+                tuple(ToolCallOutcome(c, r, e) for c, r, e in batch),
+                executed_count=executed,
+                reused_count=coordinated.reused_count,
+            )
+
+        async def _finish_tool_turn(
+            request_index: int, response: ChatResponse, _outcome: ToolBatchOutcome
+        ) -> TurnDecision | LoopSignal:
+            nonlocal deferred_paid_compaction, no_progress_recovery, observations, opportunity
+            nonlocal pending_stage_feedback, previous_batch_fingerprint, repeated_batch_count
+            nonlocal stage_feedback_batch, staged_evidence_results, web_was_used
+            batch = coordinated.calls
             for call, result, _was_executed in batch:
                 try:
                     outcome = json.loads(result)
@@ -1647,13 +1706,15 @@ class AgentRunner:
                         "paired", communication_updates=communication_updates
                     )
                 if runtime.work_control.handoff_work_id is not None:
-                    return AgentRunResult(
-                        text="",
-                        tool_calls_used=calls_used,
-                        model_requests=request_index + 1,
-                        web_was_used=web_was_used,
-                        suppress_delivery=True,
-                        work_state="suspended",
+                    return End(
+                        AgentRunResult(
+                            text="",
+                            tool_calls_used=calls_used,
+                            model_requests=request_index + 1,
+                            web_was_used=web_was_used,
+                            suppress_delivery=True,
+                            work_state="suspended",
+                        )
                     )
                 if (
                     runtime.work_control.ending == "completed"
@@ -1663,13 +1724,15 @@ class AgentRunner:
                 ):
                     runtime.work_control.final_delivery = True
                     await runtime.work_control.session.save("delivered")
-                    return AgentRunResult(
-                        text="",
-                        tool_calls_used=calls_used,
-                        model_requests=request_index + 1,
-                        web_was_used=web_was_used,
-                        suppress_delivery=True,
-                        work_state="completed",
+                    return End(
+                        AgentRunResult(
+                            text="",
+                            tool_calls_used=calls_used,
+                            model_requests=request_index + 1,
+                            web_was_used=web_was_used,
+                            suppress_delivery=True,
+                            work_state="completed",
+                        )
                     )
                 if (
                     runtime.work_control.lease.work_id
@@ -1678,26 +1741,30 @@ class AgentRunner:
                     "waiting_user",
                     "waiting_external",
                 }:
-                    return AgentRunResult(
-                        text="",
-                        tool_calls_used=calls_used,
-                        model_requests=request_index + 1,
-                        web_was_used=web_was_used,
-                        suppress_delivery=True,
-                        work_state=runtime.work_control.ending,
+                    return End(
+                        AgentRunResult(
+                            text="",
+                            tool_calls_used=calls_used,
+                            model_requests=request_index + 1,
+                            web_was_used=web_was_used,
+                            suppress_delivery=True,
+                            work_state=runtime.work_control.ending,
+                        )
                     )
-            fingerprint = tuple(
-                (call.function.name, self._tool_call_signature(call)[1], result)
-                for call, result, _was_executed in batch
-            )
-            pending_work = any(self._tool_result_pending(result) for _, result, _ in batch)
-            if fingerprint and fingerprint == previous_batch_fingerprint and not pending_work:
-                repeated_batch_count += 1
-            else:
-                repeated_batch_count = 0
-            previous_batch_fingerprint = fingerprint
             if runtime.work_control is not None and runtime.work_control.session is not None:
+                # The journal's persisted count, computed above, survives restarts.
                 repeated_batch_count = int(runtime.work_control.session.progress.get("repeats", 0))
+            else:
+                fingerprint = tuple(
+                    (call.function.name, self._tool_call_signature(call)[1], result)
+                    for call, result, _was_executed in batch
+                )
+                pending_work = any(self._tool_result_pending(result) for _, result, _ in batch)
+                if fingerprint and fingerprint == previous_batch_fingerprint and not pending_work:
+                    repeated_batch_count += 1
+                else:
+                    repeated_batch_count = 0
+                previous_batch_fingerprint = fingerprint
             if coordinated.reused_count == len(batch) and batch:
                 logger.info(
                     "agent_tool_batch_reused reused_calls=%d tool_calls_used=%d",
@@ -1733,32 +1800,59 @@ class AgentRunner:
                 runtime.work_control is not None
                 and runtime.work_control.tools_started >= runtime.max_tool_calls
             ):
-                break
-        if runtime.work_control is not None and runtime.work_control.current is not None:
-            runtime.work_control.yield_segment = True
-            runtime.work_control.ending = "queued"
-            if runtime.work_control.session is not None:
-                await runtime.work_control.session.save("paired")
-            return AgentRunResult(
-                text="",
-                tool_calls_used=calls_used,
-                model_requests=runtime.work_control.requests_started,
-                web_was_used=web_was_used,
-                suppress_delivery=True,
-                work_state="queued",
+                return STOP
+            return Continue()
+
+        async def _exhausted() -> AgentRunResult:
+            if runtime.work_control is not None and runtime.work_control.current is not None:
+                runtime.work_control.yield_segment = True
+                runtime.work_control.ending = "queued"
+                if runtime.work_control.session is not None:
+                    await runtime.work_control.session.save("paired")
+                return AgentRunResult(
+                    text="",
+                    tool_calls_used=calls_used,
+                    model_requests=runtime.work_control.requests_started,
+                    web_was_used=web_was_used,
+                    suppress_delivery=True,
+                    work_state="queued",
+                )
+            exhausted = (
+                tools.exhausted(runtime)
+                if tools is not None
+                else "工具调用次数过多，Agent 已停止。"
             )
-        exhausted = (
-            tools.exhausted(runtime) if tools is not None else "工具调用次数过多，Agent 已停止。"
+            return AgentRunResult(
+                text=exhausted,
+                tool_calls_used=calls_used,
+                model_requests=runtime.max_model_requests,
+                web_was_used=web_was_used,
+                native_tool_events=tuple(native_events),
+                citations=tuple(citations),
+                response_status=response_status,
+            )
+
+        # Pi runAgentLoop/runLoop owns iteration, turn order and truncation;
+        # the closures above are its model/invocation/settlement boundaries.
+        boundaries = Callbacks(
+            begin=_begin,
+            steer=_steer,
+            request=_request,
+            execute_tools=_execute_tools,
+            settle_truncated=_settle_truncated,
+            settle_final=_settle_final,
+            stop_before_tools=_stop_before_tools,
+            finish_tool_turn=_finish_tool_turn,
+            exhausted=_exhausted,
         )
-        return AgentRunResult(
-            text=exhausted,
-            tool_calls_used=calls_used,
-            model_requests=runtime.max_model_requests,
-            web_was_used=web_was_used,
-            native_tool_events=tuple(native_events),
-            citations=tuple(citations),
-            response_status=response_status,
+        result = await run_agent_loop(
+            max_requests=runtime.max_model_requests,
+            model=boundaries,
+            invocation=boundaries,
+            settlement=boundaries,
         )
+        assert isinstance(result, AgentRunResult)
+        return result
 
     async def _execute_tool_batch(
         self,

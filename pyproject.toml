@@ -76,6 +76,12 @@ plugins = ["pydantic.mypy"]
 module = ["nonebot.*", "nonebot_adapter_onebot.*"]
 ignore_missing_imports = true
 
+# Built from the pinned Monty source by scripts/build_monty_worker.sh; optional
+# at import time so hosts without Code Mode still type-check and run.
+[[tool.mypy.overrides]]
+module = ["pydantic_monty", "pydantic_monty.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 addopts = "-ra"
 asyncio_mode = "auto"
