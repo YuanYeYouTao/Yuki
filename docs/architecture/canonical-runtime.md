@@ -61,6 +61,10 @@ Rollup source projection 会显示有界因果标签，平台正文不被改写�
 Agent 和 Memory 之前丢弃。事件触发的即时回复优先复用本次 ingress 连接，主动发送才读取持久路由。
 已由接入层验证的群消息（包括 `/ai new`）在写入时复核持久 ingest 路由与 Presence；
 处理期间原 WebSocket 断开不撤销已收到的消息，路由暂停或改绑仍拒绝写入。
+真实已认证入站连接对应既存、未暂停的同 Presence ingest pin 时，在当前入站会话内只读核验
+Binding、Presence、Registry 当前连接代次与能力，无需再次远端查询自身群成员资格。
+此结果不授予写权限；账本首次写入仍执行原持久路由围栏。冷路由、其他 Presence 的路由恢复、
+主动发送与显式恢复继续使用实时成员探针及原 CAS，不缓存成员资格或引入隐式接管。
 
 群内超管的精确 `/ai on` 使用独立的确定性控制入口，不是绕过 ingest 的聊天事件：QQ adapter
 验证真实事件连接与管理员 Binding，恢复服务保留健康接入 pin，否则仅接受唯一通过实时成员
