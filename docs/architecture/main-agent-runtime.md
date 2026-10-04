@@ -330,6 +330,11 @@ paired 检查点。真实主请求超预算且整理不能使其装窗时，暂�
 释放拥有者；GC 先取得无拥有者删除围栏，再在 writer 外删文件。对象资源配额和请求 token
 容量分开；存储压力不能触发模型摘要。备份必须包含 DB 和协议/工具证据目录并核验引用。
 
+Work 输入准备恢复使用 pending 且 ready 为 false 的部分索引发现有界候选；空轮询
+不读取已消费或取消输入的历史页，也不申请 writer。准备 owner 不同或超过原 120 秒
+时限的判定不变，unknown owner 的 SQL NULL 语义不变；取得 writer 后按原 ID、
+state、ready、owner 和时限复核，保留原输入、Work 与累计预算。
+
 Protocol GC 分 deleting 恢复与普通过期两个索引分支，先取有界 metadata 页再批读真实 refs；
 owned 页也推进原进程内游标，固定 cutoff 和同排序高水位，次轮回访新插入及状态变化。
 短 writer 重新核对原 metadata、期限和无拥有者条件并提交 deleting 屏障；文件锁只保护
