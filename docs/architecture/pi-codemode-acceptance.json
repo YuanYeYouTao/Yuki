@@ -243,8 +243,13 @@
       "phases": [
         "P07"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_trace.py",
+        "frontend/src/console.test.tsx",
+        "tests/unit/test_control_plane_foundation.py",
+        "P08: full suite with real Monty worker 3207 passed / 1 skipped (private production backup unavailable), 707.09s; frontend 89 passed and build passed; ruff, format and mypy passed. Offline wire evidence only."
+      ]
     },
     {
       "id": "E14",
@@ -431,8 +436,14 @@
         "P05",
         "P06"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_composition.py::test_oversized_program_result_is_a_bounded_view",
+        "tests/unit/test_work_protocol_gc.py",
+        "tests/unit/test_tool_artifact_orphans.py",
+        "tests/unit/test_context_note_artifact_lifecycle.py",
+        "P08: full suite with real Monty worker 3207 passed / 1 skipped (private production backup unavailable), 707.09s; frontend 89 passed and build passed; ruff, format and mypy passed. Offline wire evidence only."
+      ]
     },
     {
       "id": "T11",
@@ -465,8 +476,13 @@
         "P05",
         "P06"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/unit/test_codemode_api_projection.py",
+        "tests/unit/test_provider_protocols.py",
+        "tests/unit/test_deepseek_responses.py",
+        "P08: full suite with real Monty worker 3207 passed / 1 skipped (private production backup unavailable), 707.09s; frontend 89 passed and build passed; ruff, format and mypy passed. Offline wire evidence only."
+      ]
     },
     {
       "id": "W01",
@@ -480,8 +496,13 @@
         "P03",
         "P08"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_provider_wire.py",
+        "tests/unit/test_chat_vendor_http.py",
+        "tests/unit/test_provider_protocols.py",
+        "P08: full suite with real Monty worker 3207 passed / 1 skipped (private production backup unavailable), 707.09s; frontend 89 passed and build passed; ruff, format and mypy passed. Offline wire evidence only."
+      ]
     },
     {
       "id": "W02",
@@ -495,8 +516,13 @@
         "P03",
         "P08"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_provider_wire.py",
+        "tests/unit/test_chat_vendor_http.py",
+        "tests/unit/test_provider_protocols.py",
+        "P08: full suite with real Monty worker 3207 passed / 1 skipped (private production backup unavailable), 707.09s; frontend 89 passed and build passed; ruff, format and mypy passed. Offline wire evidence only."
+      ]
     },
     {
       "id": "W03",
@@ -510,8 +536,13 @@
         "P03",
         "P08"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_provider_wire.py",
+        "tests/unit/test_chat_vendor_http.py",
+        "tests/unit/test_provider_protocols.py",
+        "P08: full suite with real Monty worker 3207 passed / 1 skipped (private production backup unavailable), 707.09s; frontend 89 passed and build passed; ruff, format and mypy passed. Offline wire evidence only."
+      ]
     },
     {
       "id": "W04",
@@ -525,8 +556,13 @@
         "P03",
         "P08"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_provider_wire.py",
+        "tests/unit/test_chat_vendor_http.py",
+        "tests/unit/test_provider_protocols.py",
+        "P08: full suite with real Monty worker 3207 passed / 1 skipped (private production backup unavailable), 707.09s; frontend 89 passed and build passed; ruff, format and mypy passed. Offline wire evidence only."
+      ]
     },
     {
       "id": "W05",
@@ -540,8 +576,13 @@
         "P03",
         "P08"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_provider_wire.py",
+        "tests/unit/test_chat_vendor_http.py",
+        "tests/unit/test_provider_protocols.py",
+        "P08: full suite with real Monty worker 3207 passed / 1 skipped (private production backup unavailable), 707.09s; frontend 89 passed and build passed; ruff, format and mypy passed. Offline wire evidence only."
+      ]
     },
     {
       "id": "W06",
@@ -555,8 +596,13 @@
         "P03",
         "P08"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_provider_wire.py",
+        "tests/unit/test_chat_vendor_http.py",
+        "tests/unit/test_provider_protocols.py",
+        "P08: full suite with real Monty worker 3207 passed / 1 skipped (private production backup unavailable), 707.09s; frontend 89 passed and build passed; ruff, format and mypy passed. Offline wire evidence only."
+      ]
     },
     {
       "id": "W07",
@@ -570,8 +616,13 @@
         "P03",
         "P08"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_provider_wire.py",
+        "tests/unit/test_chat_vendor_http.py",
+        "tests/unit/test_provider_protocols.py",
+        "P08: full suite with real Monty worker 3207 passed / 1 skipped (private production backup unavailable), 707.09s; frontend 89 passed and build passed; ruff, format and mypy passed. Offline wire evidence only."
+      ]
     },
     {
       "id": "W08",
@@ -585,8 +636,13 @@
         "P03",
         "P08"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_provider_wire.py",
+        "tests/unit/test_chat_vendor_http.py",
+        "tests/unit/test_provider_protocols.py",
+        "P08: full suite with real Monty worker 3207 passed / 1 skipped (private production backup unavailable), 707.09s; frontend 89 passed and build passed; ruff, format and mypy passed. Offline wire evidence only."
+      ]
     },
     {
       "id": "W09",
@@ -600,8 +656,13 @@
         "P03",
         "P08"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_provider_wire.py",
+        "tests/unit/test_chat_vendor_http.py",
+        "tests/unit/test_provider_protocols.py",
+        "P08: full suite with real Monty worker 3207 passed / 1 skipped (private production backup unavailable), 707.09s; frontend 89 passed and build passed; ruff, format and mypy passed. Offline wire evidence only."
+      ]
     },
     {
       "id": "W10",
@@ -615,8 +676,13 @@
         "P03",
         "P08"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_provider_wire.py",
+        "tests/unit/test_chat_vendor_http.py",
+        "tests/unit/test_provider_protocols.py",
+        "P08: full suite with real Monty worker 3207 passed / 1 skipped (private production backup unavailable), 707.09s; frontend 89 passed and build passed; ruff, format and mypy passed. Offline wire evidence only."
+      ]
     },
     {
       "id": "W11",
@@ -630,8 +696,13 @@
         "P03",
         "P08"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_provider_wire.py",
+        "tests/unit/test_chat_vendor_http.py",
+        "tests/unit/test_provider_protocols.py",
+        "P08: full suite with real Monty worker 3207 passed / 1 skipped (private production backup unavailable), 707.09s; frontend 89 passed and build passed; ruff, format and mypy passed. Offline wire evidence only."
+      ]
     },
     {
       "id": "W12",
@@ -645,8 +716,14 @@
         "P03",
         "P08"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/unit/test_provider_protocols.py",
+        "tests/unit/test_deepseek_search_bridge.py",
+        "tests/unit/test_gemini_search_bridge.py",
+        "tests/unit/test_ordinary_search_capacity_accounting.py",
+        "P08: full suite with real Monty worker 3207 passed / 1 skipped (private production backup unavailable), 707.09s; frontend 89 passed and build passed; ruff, format and mypy passed. Offline wire evidence only."
+      ]
     },
     {
       "id": "D01",
@@ -1187,8 +1264,12 @@
         "P02",
         "P09"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/unit/test_work_protocol_continuity.py",
+        "tests/integration/test_code_composition_restore.py",
+        "P08: full suite with real Monty worker 3207 passed / 1 skipped (private production backup unavailable), 707.09s; frontend 89 passed and build passed; ruff, format and mypy passed. Offline wire evidence only."
+      ]
     },
     {
       "id": "M04",
@@ -1201,8 +1282,12 @@
         "P02",
         "P09"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/unit/test_work_protocol_continuity.py",
+        "tests/integration/test_codemode_provider_wire.py",
+        "P08: full suite with real Monty worker 3207 passed / 1 skipped (private production backup unavailable), 707.09s; frontend 89 passed and build passed; ruff, format and mypy passed. Offline wire evidence only."
+      ]
     },
     {
       "id": "M05",
@@ -1229,8 +1314,13 @@
         "P02",
         "P09"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "partial",
+      "evidence": [
+        "tests/integration/test_codemode_worker.py",
+        "tests/unit/test_codemode_contracts.py",
+        "P08: full suite with real Monty worker 3207 passed / 1 skipped (private production backup unavailable), 707.09s; frontend 89 passed and build passed; ruff, format and mypy passed. Offline wire evidence only.",
+        "Current resource reduction across restored dumps remains to be verified in P09; current evidence proves counters, dump/binding rejection and worker discard only."
+      ]
     },
     {
       "id": "M07",
@@ -1397,8 +1487,13 @@
         "P00",
         "P10"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_provider_wire.py",
+        "tests/unit/test_chat_vendor_http.py",
+        "tests/unit/test_provider_protocols.py",
+        "P08: full suite with real Monty worker 3207 passed / 1 skipped (private production backup unavailable), 707.09s; frontend 89 passed and build passed; ruff, format and mypy passed. Offline wire evidence only."
+      ]
     },
     {
       "id": "X11",

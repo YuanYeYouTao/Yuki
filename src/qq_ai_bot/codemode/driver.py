@@ -18,6 +18,7 @@ script and settles the outer call; a script cannot catch that and continue.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -48,6 +49,7 @@ from qq_ai_bot.codemode.driver_types import EngineAnswer, EngineCall, EngineOutc
 from qq_ai_bot.codemode.limits import CodeModeLimits
 from qq_ai_bot.codemode.snapshot_binding import load_boundary, persist_boundary
 from qq_ai_bot.domain.messages import ToolCall, ToolFunction
+from qq_ai_bot.execution_trace.recorder import record_trace, trace_span
 from qq_ai_bot.runtime.protocol_store import CodeSnapshotBinding
 from qq_ai_bot.runtime.work_control import WORK_CONTROL_NAMES
 from qq_ai_bot.runtime.work_repository import WorkConflict
@@ -167,6 +169,43 @@ class CodeModeDriver:
     # -- entry points --------------------------------------------------------------
 
     async def run(self) -> str:
+        return await self._traced_composition(resumed=False)
+
+    async def resume(self) -> str:
+        return await self._traced_composition(resumed=True)
+
+    async def _traced_composition(self, *, resumed: bool) -> str:
+        """Diagnostic hierarchy only; originals stay in Work/artifact storage."""
+        identity = self.outer.identity
+        async with trace_span(
+            "code_composition",
+            {
+                "operation_id": identity.operation_id,
+                "owner_execution_id": identity.owner_execution_id,
+                "provider_call_id": identity.provider_call_id,
+                "manifest_revision": self.host.api.manifest_revision,
+                "api_revision": self.host.api.digest(),
+                "resumed": resumed,
+            },
+        ) as span:
+            result = await self._resume() if resumed else await self._start()
+            try:
+                decoded = json.loads(result)
+            except ValueError:
+                decoded = None
+            value = decoded if isinstance(decoded, dict) else {}
+            span.result = {
+                "operation_id": identity.operation_id,
+                "receipt_sha256": hashlib.sha256(result.encode()).hexdigest(),
+                "status": value.get("status"),
+                "stop_reason": value.get("stop_reason"),
+                "error": value.get("error"),
+                "usage": value.get("usage"),
+                "result_ref": value.get("result_ref"),
+            }
+            return result
+
+    async def _start(self) -> str:
         control = self.control
         if control.current is None or control.session is None:
             return _refusal("accept_work_before_execution")
@@ -180,7 +219,7 @@ class CodeModeDriver:
             if existing["state"] in {"accepted", "failed"}:
                 self.usage.reused_receipts += 1
                 return await control.session.journal.effect_result(key)
-            return await self.resume()
+            return await self._resume()
         try:
             arguments = json.loads(self.outer.call.function.arguments)
         except ValueError:
@@ -228,7 +267,7 @@ class CodeModeDriver:
         state = _State(key, 0)
         return await self._drive(state, start=(code, inputs))
 
-    async def resume(self) -> str:
+    async def _resume(self) -> str:
         """Continue the same composition from its last trusted boundary."""
         control = self.control
         assert control.current is not None and control.session is not None
@@ -496,6 +535,34 @@ class CodeModeDriver:
                 raise next((item for item in stops if isinstance(item, _Stop)), stops[0])
 
     async def _dispatch_one(self, state: _State, child: _Child, *, peers: list[_Child]) -> None:
+        async with trace_span(
+            "code_child",
+            {
+                "operation_id": child.operation_id,
+                "parent_effect_key": state.parent_key,
+                "child_ordinal": child.ordinal,
+                "tool": child.tool,
+                "feed_index": child.feed_index,
+                "engine_call_id": child.engine_call_id,
+            },
+        ) as span:
+            try:
+                await self._dispatch_child(state, child, peers=peers)
+            finally:
+                view = child.view
+                span.result = {
+                    "operation_id": child.operation_id,
+                    "status": view.status if view else "not_dispatched",
+                    "executed": view.executed if view else False,
+                    "reused": view.reused if view else False,
+                    "pending": view.pending if view else False,
+                    "uncertain": view.uncertain if view else False,
+                }
+                # A closing Host stop exits the span through its error path;
+                # retain the observed status without duplicating the result body.
+                await record_trace("code_child_outcome", span.result)
+
+    async def _dispatch_child(self, state: _State, child: _Child, *, peers: list[_Child]) -> None:
         control = self.control
         if child.state != "prepared":
             # Restored child: the original receipt only, never a second dispatch.

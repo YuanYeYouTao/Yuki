@@ -249,8 +249,32 @@ trace 夹具明确 `script_api=None`。原行为断言保留，修改处写明�
 首轮真实 worker 全量为 3162 通过、3 个旧夹具失败、1 跳过（695.63 秒）；不计为通过。
 修正上述夹具后，失败项及静态提醒 5 项通过；第二轮全量 **3165 通过、1 跳过，713.81 秒**。
 唯一跳过仍为未提供私有生产备份；真实 worker 无跳过。ruff check/format、mypy 720 文件
-均通过，最终 diff check 通过。阶段准备提交并推送；没有执行 PR、合并或生产动作。
+均通过，最终 diff check 通过。阶段已提交并推送 `b49e4da6b2e8c13bda5dfb0576e4edfdf4bad666`，
+远端精确 SHA 已核验；没有执行 PR、合并或生产动作。
 下一依赖：P08 外层 Code Mode wire、上下文与唯读父子轨迹；随后 P09。
+
+## P08：Provider wire、上下文与只读轨迹，离线验证完成
+
+- 新增 19 项 HTTP 实际请求对照：Chat 15 个 vendor、两种 Responses、Anthropic 与 Gemini，
+  使用真实 Runner、Monty 和隔离 Work。外层 execute_code 只配一个工具结果，三个业务子调用
+  不伪造成 Provider function_call；SQLite 私有 checkpoint 经新 Journal 读取、解码后，
+  生成的请求与原请求逐字节一致，opaque 签名保持，效果和预算不重复。
+- 另有 20 项 Chat HTTP 参数测试，逐 vendor 核对端点、header、固定完整工具/schema、
+  thinking/token 字段、冷/热缓存用量和受支持 override；超出 Groq 声明的档位在请求前拒绝。
+- Code Mode 父子轨迹只记录原 operation 身份、工具、序号、状态和私有结果引用/摘要哈希，
+  不镜像程序或领域正文。三项真实 worker 测试覆盖正常、unknown 和诊断写入故障，证明
+  trace 丢失不改变业务效果/预算；沿现有 control 读取授权与分页，查询不触发执行。
+- WebUI 在原轨迹页面显示父子身份与状态，保留原隐藏正文行为；DOM 测试核对只读和缺样。
+  现有两项图片预览夹具改用同正文与 MIME 的 Node Response，避开 jsdom Blob 缺失 stream()，
+  原预览/延迟加载断言未变，修改附注释。
+
+定向 CodeMode/轨迹/wire 49 项通过；原 Provider、搜索桥、协议续接、compaction/artifact/GC
+集合 270 项通过。前端全套 89 项通过，npm build 通过；npm lint 退出 0，现有 7 个 warning
+未改动，三个改动文件的 Prettier check 通过。没有进行上游 streaming 或真实 Provider 调用。
+
+阶段命令：ruff check、format check（1116 文件）通过；mypy 720 源文件通过；真实 worker
+全量 pytest **3207 通过、1 跳过，707.09 秒**。唯一跳过是私有生产备份路径未提供；worker
+无跳过。阶段准备提交并推送。下一依赖：P09 正常迁移链、隔离池、备份/回退和许可汇总。
 
 ## 验证记录（2026-10-04）
 
@@ -274,8 +298,8 @@ WebUI 前端资源未构建（`npm ci && npm run build`，产物已 gitignore）
 
 ## 后续依赖
 
-P06、P07 的离线闭合及全量验证完成；继续 P08 Provider/上下文/轨迹。
-P09–P10 未开始；真实 DeepSeek Provider 调用已授权、尚未运行；P11 的真实消息、生产访问、
+P06–P08 的离线实现及全量验证完成；继续 P09 迁移、worker 运维和回退。
+P09 调查/准备中，P10 未开始；真实 DeepSeek Provider 调用已授权、尚未运行；P11 的真实消息、生产访问、
 镜像发布与部署待明确授权。
 Monty Python binding 为本地构建 wheel，未进 `uv.lock`，`uv sync` 后需重跑
 `scripts/build_monty_worker.sh`，P09 落地可复现分发。
