@@ -3,8 +3,10 @@
 日期：2026-10-04。实现基线 `678adab8e72fffd3f39ca50fa3fde5fadbdd0ca1`。
 规格及只读生产证据见[任务书](../architecture/database-reply-latency-taskbook-2026-10-04.md)。
 
-当前状态：独立 worktree `codex/database-reply-latency` 本地实现及独立复审完成，全量验证进行中。
-提交、推送、CI、合并及部署尚未完成；此处不是线上效果验收。
+交付分支：独立 worktree `codex/database-reply-latency`，本地实现及独立复审完成。
+首轮代码提交 `66812b8e3926f2b960fdf16abc2c9ba82e7aeffa` 已推送到
+[PR #236](https://github.com/YuanYeYouTao/Yuki/pull/236)。全量验证及补修的最新结果以该 PR
+当前 head 的 checks 为准；本文记录定向证据。尚未合并或部署，此处不是线上效果验收。
 
 ## 本地修改范围
 
@@ -29,14 +31,14 @@
 
 | 范围 | 结果与边界 |
 | --- | --- |
-| 0092 迁移 | 首轮 23 项及新增预校验/幂等 1 项通过；完整 Social/GC SQL 使用匹配 SEARCH，无 TEMP B-TREE；真实升降级保留协议对象、配额及旧 GC 索引 |
+| 0092 迁移 | 最终0092文件26项、0069兼容对比2项通过；包括第二个索引名被table/view占用时首次DDL前拒绝。完整 Social/GC SQL 使用匹配 SEARCH，无 TEMP B-TREE；真实升降级保留协议对象、配额及旧 GC 索引 |
 | 既有迁移 | 0090/0091/0084/0085/Work result 59 项通过；未修改冻结旧迁移 |
 | 诊断边界 | SQLite diagnostics/phase/physical exit/DiagnosticWriter 20 项通过；正常 read rollback 不当失败，真实 DBAPI 收尾及可丢诊断保持原合同 |
 | 参与反馈 | 新对账文件11项、新来源文件12项；受影响85项及最终反馈45项通过。冷快照缺proposal只恢复原已提交effect，receipt-first与直接cold hydrate均不提前失效合法来源；现存proposal冲突拒绝不被兜底绕过，commit确认丢失下轮查原64refs继续 |
 | Protocol | 协议/媒体/存储/boundary组合70项通过；新增文件最终16项通过，主会话追加 missing-source 分类与零引用重建回归1项通过 |
 | Projection | 初轮54项通过；宽parent补修后组合51项通过，真实SQLite变量上限300下验证640父节点、paid summary发布及selection引用转移。source/privacy、循环拒绝、逐summary-parent持有及journal回滚覆盖；主会话追加130项bootstrap各INSERT≤999绑定变量且顺序完整的回归通过 |
 | 静态检查 | 全仓Ruff check/format通过；本机按生产Linux目标执行 `mypy --platform linux src`，697源文件通过。原生Windows目标报29项既有POSIX API缺失，不改运行接口压过类型错误 |
-| 集成、CI | 尚未完成 |
+| 集成、CI | 见 [PR当前提交的checks](https://github.com/YuanYeYouTao/Yuki/pull/236/checks)；本地全量HTTP测试需先构建WebUI资产，补齐后两项此前失败的HTTP用例已通过。全量门槛包含Linux Python、前端、镜像、Memory质量、speech worker和迁移fresh install，不以定向次数代替 |
 
 各子组次数不相加冒充最终冻结代码的全量结果。只有固定最终提交上的验证可以作为交付门槛。
 所有本地竞争用隔离 SQLite/WAL、fake Provider/transport；没有发送合成 QQ 探测消息。

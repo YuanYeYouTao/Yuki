@@ -157,6 +157,38 @@ async def test_reply_migration_validates_all_owned_shapes_before_ddl(
         await connection.run_sync(exercise)
 
 
+@pytest.mark.parametrize("object_type", ["TABLE", "VIEW"])
+async def test_reply_migration_rejects_later_non_index_before_first_ddl(
+    database, monkeypatch, object_type
+):
+    migration = importlib.import_module(MIGRATION)
+
+    def exercise(connection):
+        monkeypatch.setattr(migration, "op", Operations(MigrationContext.configure(connection)))
+        first, second = migration.INDEXES
+        for name, _table, _columns in migration.INDEXES:
+            connection.exec_driver_sql(f"DROP INDEX {name}")
+        definition = "(unrelated TEXT)" if object_type == "TABLE" else "AS SELECT 1 AS unrelated"
+        connection.exec_driver_sql(f"CREATE {object_type} {second[0]} {definition}")
+        with pytest.raises(RuntimeError, match="index shape mismatch"):
+            migration.upgrade()
+        assert (
+            connection.exec_driver_sql(
+                "SELECT name FROM sqlite_master WHERE name=?", (first[0],)
+            ).first()
+            is None
+        )
+        assert (
+            connection.exec_driver_sql(
+                "SELECT type FROM sqlite_master WHERE name=?", (second[0],)
+            ).scalar()
+            == object_type.lower()
+        )
+
+    async with database.engine.begin() as connection:
+        await connection.run_sync(exercise)
+
+
 async def test_reply_migration_prevalidates_later_index_and_is_idempotent(database, monkeypatch):
     migration = importlib.import_module(MIGRATION)
 

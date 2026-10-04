@@ -53,13 +53,20 @@ def test_social_event_migration_matches_runtime_metadata(monkeypatch):
     original = importlib.import_module("migrations.versions.0052_social_operation_receipts")
     migration = importlib.import_module("migrations.versions.0069_social_receipt_event_reference")
     sequence_plan = importlib.import_module("migrations.versions.0080_social_sequence_plan")
+    read_indexes = importlib.import_module(
+        "migrations.versions.0092_reply_maintenance_read_indexes"
+    )
     deployed, runtime = create_engine("sqlite:///:memory:"), create_engine("sqlite:///:memory:")
     with deployed.begin() as migrated, runtime.begin() as metadata:
         for connection in (migrated, metadata):
             connection.exec_driver_sql("CREATE TABLE chat_events (id INTEGER PRIMARY KEY)")
             for table in ("canonical_conversations", "presences"):
                 connection.exec_driver_sql(f"CREATE TABLE {table} (id TEXT PRIMARY KEY)")
-        for module in (original, migration, sequence_plan):
+        migrated.exec_driver_sql(
+            "CREATE TABLE runtime_protocol_objects (sha256 TEXT PRIMARY KEY, "
+            "deleting BOOLEAN NOT NULL, prepared_at REAL NOT NULL)"
+        )
+        for module in (original, migration, sequence_plan, read_indexes):
             monkeypatch.setattr(module, "op", Operations(MigrationContext.configure(migrated)))
             module.upgrade()
         SocialOperationModel.__table__.create(metadata)

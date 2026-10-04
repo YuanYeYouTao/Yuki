@@ -26,13 +26,15 @@ INDEXES = (
 def _validate(name: str, table: str, columns: tuple[str, ...], *, required: bool) -> bool:
     bind = op.get_bind()
     existing = bind.execute(
-        sa.text("SELECT tbl_name FROM sqlite_master WHERE type='index' AND name=:name"),
+        sa.text("SELECT type,tbl_name FROM sqlite_master WHERE name=:name"),
         {"name": name},
-    ).scalar()
+    ).first()
     if existing is None:
         if required:
             raise RuntimeError(f"reply maintenance index missing: {name}")
         return False
+    if existing[0] != "index":
+        raise RuntimeError(f"reply maintenance index shape mismatch: {name}")
     actual_columns = tuple(row[2] for row in bind.exec_driver_sql(f"PRAGMA index_info('{name}')"))
     keys = tuple(row for row in bind.exec_driver_sql(f"PRAGMA index_xinfo('{name}')") if row[5])
     shape = next(
@@ -40,7 +42,7 @@ def _validate(name: str, table: str, columns: tuple[str, ...], *, required: bool
         None,
     )
     if (
-        existing != table
+        existing[1] != table
         or actual_columns != columns
         or shape is None
         or shape[2]

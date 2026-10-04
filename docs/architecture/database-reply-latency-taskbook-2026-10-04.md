@@ -1,6 +1,8 @@
 # 数据库回复延迟：后台对账、投影与 Work 存储修复任务书
 
-日期：2026-10-04，Asia/Taipei（UTC+08）。状态：设计复核完成，已获用户授权开始修复；实现和验证进行中。
+日期：2026-10-04，Asia/Taipei（UTC+08）。状态：实现及独立复审完成，已提交
+[PR #236](https://github.com/YuanYeYouTao/Yuki/pull/236)；验证与交付证据见
+[交付记录](../operations/database-reply-latency-2026-10-04.md)。
 
 用户在本任务书完成后授权“开始修复，老规矩”，允许使用 subagent。实现从最新 origin/main
 `678adab8e72fffd3f39ca50fa3fde5fadbdd0ca1` 的独立 worktree 开始。具体提交、合并和
@@ -137,8 +139,10 @@ Social/MemoryTool 的新回执不推进 initiative 更新时间；只有进入�
 不能简化成 `fact.updated_at` 或主键存在，也不能扩大 SELF/Person 可读范围。
 
 `SourceRef.revision` 是 controller 版本号，Host `source_revision` 是真实来源指纹，不能互换。
-继续按 `source_versions` 的 `[原 ref.revision, 当前真实 digest]` 双重核验；缺失/失效来源
-走原 `observe_source_change`，不能把批读缺项默认为可用。
+继续按 `source_versions` 的 `[原 ref.revision, 当前真实 digest]` 双重核验；已知来源缺失或失效
+走原 `observe_source_change`，不能把批读缺项默认为可用。冷加载普通入场时，从未识别且
+没有已保留事件、unit 或 boundary 依赖的来源暂为 unknown，不授权也不提前失效；同 tick
+水合先建立来源版本，再完成批量核验，仍保持原逐事件 projection 与观察顺序。
 
 一个显式读快照只准备当前派生观察；不跨 tick 缓存授权。发生 Jev/模型/网络 await 或来源
 变化后，后续消费来源重新读取；写与派发边界仍用原 generation、revision、owner、privacy、
