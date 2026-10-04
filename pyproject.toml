@@ -17,7 +17,7 @@ dependencies = [
     "pillow>=11,<13",
     "pydantic-settings>=2.7,<3",
     "pypdf>=6,<7",
-    "sqlalchemy>=2.0.36,<3",
+    "sqlalchemy[asyncio]>=2.0.36,<3",
     "tenacity>=9,<10",
     "tzdata>=2025.2",
     "yuki-semantic-participation @ https://github.com/YuanYeYouTao/Yuki-Semantic-Participation/archive/68bf033c37a524a2d377d2f67eaa25ce779c9e90.tar.gz",

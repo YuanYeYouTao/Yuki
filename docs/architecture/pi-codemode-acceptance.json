@@ -1,0 +1,1361 @@
+{
+  "source_document": "03_验收矩阵与故障恢复规范.md",
+  "source_sha256": "5688c960b6c49f06711bc1d525c6a3f845aa56590b633f0ac09854095fe82c14",
+  "baseline_sha": "8204b28ebc8939213dae60dbab94ab1c16d1263a",
+  "items": [
+    {
+      "id": "E01",
+      "title": "普通聊天",
+      "requirements": [
+        "Chat→MainAgentTurnService→Runner；短回答不强制 Work，显式发送。([源码 Y03]、[源码 Y25])",
+        "新 Python 内核；完整固定工具；直接发送无需脚本",
+        "ChatService、MainAgentTurnService、Runner门面；P03/P07",
+        "真内部事件＋fake Provider/QQ；不建多余 Work，正常发送一次；无发送正文按原规则处理。"
+      ],
+      "phases": [
+        "P07"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "E02",
+      "title": "直接用户持续任务",
+      "requirements": [
+        "原事件接纳 Work，journal/inputs/预算/lease恢复。([源码 Y07]、[源码 Y08])",
+        "execute_code 在原已接纳 Work 中运行；重启续原身份",
+        "WorkSession/Repository/Resumer、CodeModeDriver；P02/P05/P07",
+        "接纳→混合工具→进程中断→恢复；Work/root/预算/已完成effect不变。"
+      ],
+      "phases": [
+        "P07"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "E03",
+      "title": "主动 SELF",
+      "requirements": [
+        "原 initiative＋稳定SELF主体，不借最近真人。([源码 Y25])",
+        "同一内核/manifest，执行处按SELF当前场景拒绝",
+        "主SELF入口、来源校验、Social；P06/P07",
+        "同群读写允许范围、私人目标拒绝、无真人event的合法run；NO_REPLY不投递。"
+      ],
+      "phases": [
+        "P07"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "E04",
+      "title": "SELF自动化",
+      "requirements": [
+        "原automation run/step＋SELF原场景，保持群/Presence/generation。([源码 Y25])",
+        "CodeMode子调用继承原run，不取管理者权限",
+        "AutomationWorker/handlers/SELF授权；P06/P07",
+        "run重启、路由改变、SELF场景失效；不换执行主体、不扩大目标。"
+      ],
+      "phases": [
+        "P07"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "E05",
+      "title": "Person自动化",
+      "requirements": [
+        "以创建者当前身份和权限运行，不交集旧白名单冒充最新权。([源码 Y25])",
+        "同一代码API、原creator/总预算，执行前持续重核",
+        "Automation与领域授权；P06/P07",
+        "创建后降权/禁用creator，再唤醒；拒绝未授权修改，已有回执仍保留。"
+      ],
+      "phases": [
+        "P07"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "E06",
+      "title": "原静态提醒",
+      "requirements": [
+        "确定性调度和发送，不是模型工具迭代。([源码 Y25])",
+        "保留原路径，不额外调用Pi/CodeMode",
+        "原Automation固定步骤与Social；P07",
+        "同一提醒执行一次；模型计数无新增；时区/重复tick/断连回执保持。"
+      ],
+      "phases": [
+        "P07"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "E07",
+      "title": "插件自主唤醒",
+      "requirements": [
+        "原job/event→主唤醒入口，PluginBackgroundTurnWorker拥有恢复。([源码 Y41]、[源码 Y25])",
+        "共用新内核，保留批准revision和原来源",
+        "插件后台worker、主服务、ContextFactory；P07",
+        "插件停用/重启/重复通知；不另建工作、不重发、不继承其它插件批准。"
+      ],
+      "phases": [
+        "P07"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "E08",
+      "title": "SDK主Agent调用",
+      "requirements": [
+        "真实内部来源，主入口；DurableInvocations 管原invocation和return_to_caller。([源码 Y13]、[源码 Y14])",
+        "子调用接原Host Work，回调断开可查原结果",
+        "plugin_host/main_turn、DurableInvocations；P02/P07",
+        "pending句柄→调用方断开→result/retry；同原请求不重算、不自动QQ发言。"
+      ],
+      "phases": [
+        "P07"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "E09",
+      "title": "独立插件计算会话",
+      "requirements": [
+        "`tools=None`、`max_tool_calls=0`；独立历史，嵌套模型计root。([源码 Y37])",
+        "迁移共用循环实现，仍不开放业务bridge/execute_code",
+        "PluginSessionService与同一Agent core；P03/P07",
+        "传有capability元数据也不能调用工具；模型尝试计原root；不伪造Conversation。"
+      ],
+      "phases": [
+        "P07"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "E10",
+      "title": "持久子Agent",
+      "requirements": [
+        "独立child lease，固定WORKER_NAMES，原root预算；不能发送/写长期记忆/管理。([源码 Y15]、[源码 Y26])",
+        "固定worker合同增加execute_code，仅投影原获准子集；其业务权限不扩大",
+        "SubagentExecution/WorkerBackend/InvocationService；P05/P07",
+        "直接与脚本越权均拒绝；伪造主actor无效；父root有限预算被原子执行。"
+      ],
+      "phases": [
+        "P07"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "E11",
+      "title": "父子验收/通信",
+      "requirements": [
+        "原input日志、child状态、父验收与主发送。([源码 Y26]、[源码 Y35])",
+        "同一控制语义；代码不能用某页无child宣告全部完成",
+        "WorkControl/SubagentRepository/主结算；P05/P07",
+        "跨分页存在活跃child、waiting_parent、迟到结果、取消后结果；父不提前完成/重复发送。"
+      ],
+      "phases": [
+        "P07"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "E12",
+      "title": "WebUI已有工作管理写",
+      "requirements": [
+        "`_METHODS`有mutate_work，无任意prompt方法。([源码 Y21]、[源码 Y40])",
+        "通过原管理服务输入/恢复/取消原Work，非新主入口",
+        "control_plane、Work management；P07/P08",
+        "管理者resume不成为执行actor；幂等request冲突、CSRF/来源权限不绕过；不新增万能RPC。"
+      ],
+      "phases": [
+        "P07"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "E13",
+      "title": "WebUI轨迹/账本查询",
+      "requirements": [
+        "查询执行、聊天、Social、Work；读取有权限边界。([源码 Y21])",
+        "可显示父code和子operation，保持只读",
+        "原query/trace投影与UI；P08",
+        "刷新/分页不调用模型；跨主体不可见正文；trace缺样不解释为没发生操作。"
+      ],
+      "phases": [
+        "P07"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "E14",
+      "title": "CLI管理/诊断",
+      "requirements": [
+        "`cli.main()`是迁移、配置、插件、诊断等子命令，无通用主聊天子命令。([源码 Y22])",
+        "原命令保留，必要诊断认新元数据；不转模型工具",
+        "cli.py及原领域服务；P08/P09",
+        "原命令合同回归；只读诊断不派发Agent；有副作用命令仍要求原授权。"
+      ],
+      "phases": [
+        "P07"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "T01",
+      "title": "Core普通工具",
+      "requirements": [
+        "主注册表descriptor/binding、实际领域授权。([源码 Y05]、[源码 Y59])",
+        "直接与代码子调用共享InvocationService",
+        "Backend、Coordinator、参数相关分类",
+        "inventory每项输入合法/非法/无权/同参新调用；无绕过binding的“快捷版”。"
+      ],
+      "phases": [
+        "P01",
+        "P05",
+        "P06"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "T02",
+      "title": "MCP",
+      "requirements": [
+        "resolve当前工具、策略核验，再调用远端；schema声明与启用状态分离。([源码 Y16])",
+        "受控bridge沿原MCPToolBinding；重连不重放unknown写",
+        "MCP元数据版本、原operation关联",
+        "disabled、schema drift、read retry、write断连、取消；未知时只有原ID查询，无则保留unknown。"
+      ],
+      "phases": [
+        "P01",
+        "P05",
+        "P06"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "T03",
+      "title": "插件工具",
+      "requirements": [
+        "原批准/权限、原handler及结果",
+        "同一调用者/批准版本和根预算，插件递归主生成限制保留",
+        "插件capability adapter/Host invocation接线",
+        "handler未入与入后异常分开；停用后新调用拒绝；合法迟到结果只结算原ID。"
+      ],
+      "phases": [
+        "P01",
+        "P05",
+        "P06"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "T04",
+      "title": "Work控制",
+      "requirements": [
+        "task_control get/list等原动作；直接model batch要求单调用。([源码 Y04]、[源码 Y36])",
+        "脚本独占控制门；等待/交接/终止强制交还原owner",
+        "Invocation控制分流、CodeModeDriver、WorkControl",
+        "控制与其它inflight不混跑；wait登记一次、complete看完整未决集合。"
+      ],
+      "phases": [
+        "P01",
+        "P05",
+        "P06"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "T05",
+      "title": "子任务控制",
+      "requirements": [
+        "subagent_start/message/control与root规则。([源码 Y35])",
+        "保留原lease/通信/owner；worker不能递归派生",
+        "同一控制门与Subagent服务",
+        "队列容量、根预算、重复消息ID、同child恢复、越权拒绝。"
+      ],
+      "phases": [
+        "P01",
+        "P05",
+        "P06"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "T06",
+      "title": "short_state",
+      "requirements": [
+        "固定全局短记录与CAS revision，非长期记忆。([源码 Y23]、[源码 Y25])",
+        "同原状态服务；脚本无直接文件旁路",
+        "Backend状态分支变显式handler",
+        "并发revision冲突、过期、worker拒绝；不能以写文件冒充状态更新。"
+      ],
+      "phases": [
+        "P01",
+        "P05",
+        "P06"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "T07",
+      "title": "长期记忆",
+      "requirements": [
+        "真实evidence/target和一次写授权；memory_change独占，先观察结果再发送。([源码 Y04]、[源码 T02])",
+        "代码里写后强制回模型，程序不能自行继续发送",
+        "Memory session/Invocation分类/Driver停止",
+        "相同参数第二次无授权仍拒绝；成功回执不被展示异常覆写；伪造evidence拒绝。"
+      ],
+      "phases": [
+        "P01",
+        "P05",
+        "P06"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "T08",
+      "title": "终端/持久环境",
+      "requirements": [
+        "Manager意图和原run_id、gVisor、共享持久文件、异步完成。([源码 Y17]、[源码 Y27])",
+        "作为业务工具调用，原run只查询；CodeMode VM与共享终端隔离",
+        "原Manager source映射、effect resolver",
+        "命令成功后断连、Bot重启、Manager重连、OOM、pending；不重执行原命令。"
+      ],
+      "phases": [
+        "P01",
+        "P05",
+        "P06"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "T09",
+      "title": "workspace文件",
+      "requirements": [
+        "原内容版本、不可变发布、共享目录而非每actor私有。([源码 Y27])",
+        "原工具内读写；VM无直接挂载",
+        "workspace binding、大对象接口",
+        "陈旧revision、符号链接边界、并发终端编辑、中文/字节分页；不承诺终端自动冲突保护。"
+      ],
+      "phases": [
+        "P01",
+        "P05",
+        "P06"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "T10",
+      "title": "artifact/超大结果",
+      "requirements": [
+        "原完整对象与模型预算视图，私有访问和生命周期。([源码 Y24]、[源码 Y34]、[源码 Y46])",
+        "程序得完整数据或有授权分页；模型得摘要",
+        "ResultBudgeter/ProtocolStore/代码结果view",
+        "截断标志、ID/unknown保留、结果正文发布失败、root活跃引用GC、隐私清除。"
+      ],
+      "phases": [
+        "P01",
+        "P05",
+        "P06"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "T11",
+      "title": "显式发送",
+      "requirements": [
+        "send_message经Social，不等于模型final。([源码 Y12])",
+        "代码wrapper与直接调用同完整规则",
+        "Social关联与结果聚合",
+        "D01至D08全部通过；不以VM completed作为投递成功。"
+      ],
+      "phases": [
+        "P01",
+        "P05",
+        "P06"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "T12",
+      "title": "Provider原生工具",
+      "requirements": [
+        "服务端执行，private continuation/usage",
+        "不伪装tools wrapper；仅消费已返回的获准数据/引用",
+        "现行native binder、代码输入投影",
+        "函数API中无虚构native拦截；native断连和费用未知不归零；配置禁用保持。"
+      ],
+      "phases": [
+        "P01",
+        "P05",
+        "P06"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "W01",
+      "title": "Chat共同合同",
+      "requirements": [
+        "OpenAICompatibleProvider",
+        "固定完整tools，call/result顺序，图片、严格配置、输出截断、reasoning私有字段",
+        "实际HTTP serializer+MockTransport；新内核与原请求同含义；截断call不执行。"
+      ],
+      "phases": [
+        "P03",
+        "P08"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "W02",
+      "title": "openai / azure_openai",
+      "requirements": [
+        "Chat预设",
+        "max_completion_tokens、不回放非标准reasoning；Azure部署/model与现行endpoint约定",
+        "捕获payload/header；不自动降级字段或换协议，原配置错误仍明确拒绝。"
+      ],
+      "phases": [
+        "P03",
+        "P08"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "W03",
+      "title": "deepseek",
+      "requirements": [
+        "Chat及其真实方言",
+        "thinking、effort映射、不发送tool_choice；仅合法且声明内DSML工具",
+        "合法/半截/未知名称DSML fixture；没有DSML自由文本执行旁路。"
+      ],
+      "phases": [
+        "P03",
+        "P08"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "W04",
+      "title": "qwen",
+      "requirements": [
+        "Chat",
+        "enable_thinking及显式budget/effort覆盖",
+        "wire_options覆盖和输出预算fixture；不按模型名字猜字段。"
+      ],
+      "phases": [
+        "P03",
+        "P08"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "W05",
+      "title": "moonshot / zhipu / doubao",
+      "requirements": [
+        "Chat",
+        "thinking；doubao的额外effort与私有encrypted字段按原实现",
+        "三个配置分别参数化；未知字段拒绝，private状态原样续接。"
+      ],
+      "phases": [
+        "P03",
+        "P08"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "W06",
+      "title": "minimax / openrouter",
+      "requirements": [
+        "Chat",
+        "builtin+reasoning_split/reasoning_details；openrouter reasoning方言",
+        "检查reasoning与正文隔离、续接顺序和参数，不因port漏掉私有部分。"
+      ],
+      "phases": [
+        "P03",
+        "P08"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "W07",
+      "title": "groq / mistral",
+      "requirements": [
+        "Chat",
+        "max_completion_tokens/include_reasoning或显式format；Mistral支持档位向上满足规则",
+        "默认及override逐一捕获；互斥配置/超档位请求前拒绝，不静默降要求。"
+      ],
+      "phases": [
+        "P03",
+        "P08"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "W08",
+      "title": "siliconflow / together / xai / openai_compatible",
+      "requirements": [
+        "Chat",
+        "通用effort与显式wire_options，不声称所有模型支持",
+        "按每个vendor及override生成fixture；内容变化不能强制改Provider。"
+      ],
+      "phases": [
+        "P03",
+        "P08"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "W09",
+      "title": "Responses",
+      "requirements": [
+        "DeepSeekResponsesProvider、OpenAIResponsesProvider及声明的兼容vendor",
+        "function_call/output、reasoning/native items、原ID、HTTP重试与物理请求计量；DeepSeek禁用边界",
+        "原continuation encode→store→restart→wire对比；native未知不重发；不把DeepSeek和OpenAI私有状态混接。"
+      ],
+      "phases": [
+        "P03",
+        "P08"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "W10",
+      "title": "Anthropic Messages",
+      "requirements": [
+        "原生Claude适配",
+        "tool_use/tool_result、签名thinking、max_tokens/pause_turn、原生搜索、结构化schema限制",
+        "paused原native回合不插假消息；工具回执有序；截断不执行；内/外搜索同名处理遵循原部署模式。"
+      ],
+      "phases": [
+        "P03",
+        "P08"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "W11",
+      "title": "Gemini GenerateContent",
+      "requirements": [
+        "原生Gemini适配",
+        "thoughtSignature、原生或内部确定性call ID、functionResponse顺序、schema方言/thinkingLevel或budget",
+        "原并行结果组合顺序、无call ID映射、opaque原样、JSON schema切换严格能力检查。"
+      ],
+      "phases": [
+        "P03",
+        "P08"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "W12",
+      "title": "原生搜索/搜索桥/跨链能力",
+      "requirements": [
+        "NativeToolBinder、DeepSeek/Gemini桥与显式Profile",
+        "桥是独立模型请求；只接受真实来源；配置失败兜底不成为隐式路由；服务端执行不经Host逐次授权",
+        "main/bridge的物理请求与用量分开；native可用性按配置；真实代理不支持组合时明确报错/按已配置bridge，不自动换Provider。"
+      ],
+      "phases": [
+        "P03",
+        "P08"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "D01",
+      "title": "同参两次合法发送／原调用重入",
+      "requirements": [
+        "不同operation同target同text；随后重入第一个ID",
+        "fakeQQ真实接收日志、Social原ID、Work关联",
+        "首两次均可发送；重入不再发送。同一ID换参数是冲突，不等价于新发送。"
+      ],
+      "phases": [
+        "P06"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "D02",
+      "title": "分条投递",
+      "requirements": [
+        "首条成功，第二条未知，后面未开始",
+        "持久计划段数、逐段ID与status、网关调用顺序",
+        "保留第一条成功，停止后续；父为partial/unknown，不能最后一条成功覆盖中间unknown。"
+      ],
+      "phases": [
+        "P06"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "D03",
+      "title": "附件与附言",
+      "requirements": [
+        "文件成功，caption明确失败或未知",
+        "文件receipt、caption独立receipt及父关联",
+        "文件不重传；只能查询/处理原caption，未知不盲重试；不能把文件送达当整工具完成。"
+      ],
+      "phases": [
+        "P06"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "D04",
+      "title": "跨目标、回复与Presence",
+      "requirements": [
+        "当前群→其它群/人；路由在排队中变；引用别会话event",
+        "canonical target、原Presence、授权拒绝、实际网关零/一次记录",
+        "只按原授权目标；别处发送不当当前会话已回复；引用、权限、连接复核不省略。"
+      ],
+      "phases": [
+        "P06"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "D05",
+      "title": "已投递但上游响应丢失",
+      "requirements": [
+        "网关接受后断连，回执未确认",
+        "下游独立日志、Social executing/uncertain、原request键",
+        "unknown不当未执行；原ID有查询能力就查，没有保持未知，不重发。"
+      ],
+      "phases": [
+        "P06"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "D06",
+      "title": "进度、开始、最终工作报告",
+      "requirements": [
+        "interactive/quiet、stage用途、原内部事件引用",
+        "原Work communication、send用途元数据、原事件ID",
+        "保留原开始/回复/最终规则；不制造新阶段状态机；NO_REPLY和内部控制尾段不作为消息发出。"
+      ],
+      "phases": [
+        "P06"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "D07",
+      "title": "内部final、空输出、安静结束",
+      "requirements": [
+        "final文本但未send；空正文；SELF NO_REPLY；插件return_to_caller",
+        "实际send尝试、run result、模型次数",
+        "不自动外发；原普通未送达纠正仍有效；合法沉默不强制多问模型；只调用方取结果不记QQ已送达。"
+      ],
+      "phases": [
+        "P06"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "D08",
+      "title": "工具汇总丢失但领域回执存在",
+      "requirements": [
+        "Social子回执全/部分落库，父工具结果保存失败",
+        "首写时的effect↔Social所有权、计划段数、每段回执",
+        "可精确对账时还原原事实；不能按文字/目标猜另一发送；无完整证据仍unknown。"
+      ],
+      "phases": [
+        "P06"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "F01",
+      "title": "意图登记前崩溃",
+      "requirements": [
+        "只有未承诺纯计算，业务尚不许执行",
+        "T1未成功不得调用binding；已有更早children不受影响",
+        "原Work加载最后快照；新意图尚未登记可再准备；已有child只读原回执",
+        "外部日志无本次业务；重新准备不重复此前成功child；无凭空预算消费。"
+      ],
+      "phases": [
+        "P02",
+        "P04",
+        "P05"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "F02",
+      "title": "意图已登记尚未派发",
+      "requirements": [
+        "T1成功；T2可能未提交，也可能提交但网络还未送出",
+        "dispatch_started=false仅在T2前可信；T2预算+标记原子",
+        "false：重核权限后同ID接纳；true：视为可能派发，查原ID或确认的幂等合同",
+        "一次真实dispatch最多一次业务admission；T2确认丢失先读，不重复扣费。"
+      ],
+      "phases": [
+        "P02",
+        "P04",
+        "P05"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "F03",
+      "title": "远端成功、Host没收到",
+      "requirements": [
+        "网络已派发且结果未知",
+        "原operation、domain request/intent预先保存；无结果不能构造success",
+        "原domain可query就查；无可核验查询或幂等能力保持unknown并停后续副作用",
+        "fake下游已发生一次；Host不再发；正确报告未知而非确认失败。"
+      ],
+      "phases": [
+        "P02",
+        "P04",
+        "P05"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "F04",
+      "title": "Host收到结果、回执落库失败",
+      "requirements": [
+        "外部可已成功，内存有typed outcome",
+        "T3先最小效果事实，正文发布另行；commit确认丢失读取原row；不能执行外部作为DB重试一部分",
+        "活着的任务有界重试同一纯DB保存；进程已死用domain原ID对账；无法确定继续unknown",
+        "DB失败/磁盘满不导致重复发送；正文缺失与效果成功分开；预算不退还。"
+      ],
+      "phases": [
+        "P02",
+        "P04",
+        "P05"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "F05",
+      "title": "回执落库、VM没收到",
+      "requirements": [
+        "原child结果已确认",
+        "原result/参数/边界映射在私有持久层，先于answer",
+        "restore重新宣告同child：返回原回执；future按原IDsettle；不调用handler",
+        "原外部日志仍一条，原预算不变，VM数据与原结果一致。"
+      ],
+      "phases": [
+        "P02",
+        "P04",
+        "P05"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "F06",
+      "title": "部分children成功后脚本失败/被杀",
+      "requirements": [
+        "任意成功、失败、pending或unknown组合",
+        "每个child独立effect；父只聚合，partial带完整查询入口",
+        "仅父未结算且journal仍pending、快照兼容时续原ID；已配对partial永不恢复VM，原Work模型只规划未完成部分",
+        "不从头执行；已发送/已创建artifact不删除或回滚冒充原子脚本；unknown保留。"
+      ],
+      "phases": [
+        "P02",
+        "P04",
+        "P05"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "F07",
+      "title": "并发读取、取消、迟到结果或发送在运行",
+      "requirements": [
+        "部分siblings完成，其余未派发/在途；发送可能已提交",
+        "单child派发/结果记录；取消closing标记阻止后续；callback属于原activation",
+        "未派发取消；只读在原授权下可安全重试但不得改写已确认结果；在途effect只查原ID；迟到只补原row",
+        "结果按调用序、并发受限；无遗留worker/跨Work回调；取消后不新发消息、不复活终态。"
+      ],
+      "phases": [
+        "P02",
+        "P04",
+        "P05"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "F08",
+      "title": "撤权/停插件/MCP重连/generation/lease/预算/Provider改变",
+      "requirements": [
+        "旧意图、旧结果、旧private协议并存",
+        "各次执行处重查，旧结果结算与新执行授权分离；预算和opaque原ID保留",
+        "按下表分别处理，不统一“重试一次”；原owner仍唯一",
+        "任一失效不扩大权限、不清预算、不重建来源、不盲重放。"
+      ],
+      "phases": [
+        "P02",
+        "P04",
+        "P05"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "C01",
+      "title": "有界只读并发",
+      "requirements": [
+        "多于配置的await/gather子调用，返回乱序",
+        "活跃调用不超上限；原调用序号固定；模型和程序结果映射正确；排队不提前消费真实业务额度。"
+      ],
+      "phases": [
+        "P03",
+        "P04",
+        "P05"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "C02",
+      "title": "屏障",
+      "requirements": [
+        "read/read→send→read，另有write被标错误parallel_safe",
+        "send等待前序结算，后序等send确定；实际分类由Host决定，外部hint不能授权并行写。"
+      ],
+      "phases": [
+        "P03",
+        "P04",
+        "P05"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "C03",
+      "title": "同activation多个code外层",
+      "requirements": [
+        "模型同响应给两个execute_code",
+        "顺序调度，不覆盖batch/source；父等待不占子调用信号量；全局并发1不自锁。"
+      ],
+      "phases": [
+        "P03",
+        "P04",
+        "P05"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "C04",
+      "title": "新输入与观察",
+      "requirements": [
+        "user steer在查询/发送/compaction时到达；普通群消息增加",
+        "新业务按原pending规则停止；已发生结果先持久；输入只消费一次；普通观察不自动唤醒所有Work。"
+      ],
+      "phases": [
+        "P03",
+        "P04",
+        "P05"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "C05",
+      "title": "catch无法绕控制",
+      "requirements": [
+        "脚本捕获授权拒绝/控制stop/unknown后继续send",
+        "Host关门仍拒绝后续；普通参数错误可由脚本处理，但不会刷新grant/预算/lease。"
+      ],
+      "phases": [
+        "P03",
+        "P04",
+        "P05"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "C06",
+      "title": "取消/关闭",
+      "requirements": [
+        "main取消、shutdown二次取消、worker忙死循环、callback晚完成",
+        "admission先关；VM被终止；原回执保存收拢；无DB关闭后写入、无孤儿任务；取消不证明无效果。"
+      ],
+      "phases": [
+        "P03",
+        "P04",
+        "P05"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "C07",
+      "title": "memory与control独占",
+      "requirements": [
+        "gather(memory_change,send)，或read运行中task_control.complete",
+        "不产生冲突效果；memory真实结果需模型新观察；complete精确核对children和effects，不因父composition自己阻塞永久。"
+      ],
+      "phases": [
+        "P03",
+        "P04",
+        "P05"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "C08",
+      "title": "Work/worker来源隔离",
+      "requirements": [
+        "两Work/两actor并行，猜对方script/operation ID",
+        "无可见正文/句柄泄漏；原parent/root/权限独立；共享runtime仅资源共享。"
+      ],
+      "phases": [
+        "P03",
+        "P04",
+        "P05"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "B01",
+      "title": "父code与真实子业务",
+      "requirements": [
+        "一次code内10个真实业务工具",
+        "composition计1、正常真实子调用/admission计10；不计1也不重复计11；生命周期另列。重读该父历史时本activation UsageDelta为0。"
+      ],
+      "phases": [
+        "P02",
+        "P05"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "B02",
+      "title": "被拒绝/读取复用",
+      "requirements": [
+        "非法参数、未授权、同批可复用只读、恢复原回执",
+        "T2前拒绝、缓存复用、原回执恢复不增加admission；T2后领域拒绝保留已用admission，实际handler/远端效果另列；不通过无限拒绝绕过资源限制。"
+      ],
+      "phases": [
+        "P02",
+        "P05"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "B03",
+      "title": "同原ID重启",
+      "requirements": [
+        "原T2/T3任一点重启",
+        "原budget_admitted不重扣；已发生计量不退还；root/automation计数无充值。"
+      ],
+      "phases": [
+        "P02",
+        "P05"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "B04",
+      "title": "root/child竞争",
+      "requirements": [
+        "并发主/子占有限模型与工具预算",
+        "原子上限和主收尾预留有效；last-slot竞争仅一方成功；旧有限额度不随迁移变无限。"
+      ],
+      "phases": [
+        "P02",
+        "P05"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "B05",
+      "title": "segment与根分离",
+      "requirements": [
+        "本段工具次数耗尽，根仍有额度",
+        "保存原挂起并让出；下段继续而非业务失败；根计数累积。"
+      ],
+      "phases": [
+        "P02",
+        "P05"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "B06",
+      "title": "真实模型成本",
+      "requirements": [
+        "重试、compaction、视觉、搜索桥、插件嵌套模型",
+        "每个实际请求计physical HTTP；逻辑请求和重试分开；失败可能有用量/成本，不归零。"
+      ],
+      "phases": [
+        "P02",
+        "P05"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "B07",
+      "title": "VM资源独立",
+      "requirements": [
+        "名称解析/OS拒绝/future结算多于工具次数；snapshot恢复计数",
+        "max_suspensions不能作业务预算；Host累计跨恢复；wall、CPU/运行时、输出、内存各自界限有效。"
+      ],
+      "phases": [
+        "P02",
+        "P05"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "B08",
+      "title": "unknown与费用不可得",
+      "requirements": [
+        "请求已发但无usage、native价格未知、缓存量缺失",
+        "标未知量/未知费用，不填0；缓存率分母只用有报告数据；可核算价格注明来源和生效时间。"
+      ],
+      "phases": [
+        "P02",
+        "P05"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "M01",
+      "title": "755→当前main→目标迁移",
+      "requirements": [
+        "附件旧格式与当前格式的隔离fixture",
+        "完整遵循实际迁移链；不反向把820功能删除当升级；原owner/Work/预算/回执保持。"
+      ],
+      "phases": [
+        "P02",
+        "P09"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "M02",
+      "title": "旧effect无新metadata",
+      "requirements": [
+        "原prepared/accepted/failed/unknown",
+        "按legacy解释；不猜parent/dispatch；unknown保守围栏；旧记录只读不自动改写。"
+      ],
+      "phases": [
+        "P02",
+        "P09"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "M03",
+      "title": "旧未决协议检查点",
+      "requirements": [
+        "dispatched/response/paired多状态、call_0跨请求",
+        "原call配对、预算和签名保持；新内核能读取，不复活旧执行、不重复调用。"
+      ],
+      "phases": [
+        "P02",
+        "P09"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "M04",
+      "title": "新工具合同/API/Provider",
+      "requirements": [
+        "tools增加execute_code；Profile更新或MCP schema变",
+        "原链不原位变；未决先核对；新链携必要合法材料，旧effects不清除。"
+      ],
+      "phases": [
+        "P02",
+        "P09"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "M05",
+      "title": "新子effect与旧binary",
+      "requirements": [
+        "code已写子回执后试图downgrade",
+        "不认识新children的binary拒绝接管；只允许兼容reader/修复版本；禁止恢复旧DB覆盖新消息。"
+      ],
+      "phases": [
+        "P02",
+        "P09"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "M06",
+      "title": "engine/dump/资源变化",
+      "requirements": [
+        "兼容/不兼容snapshot、binary变化、限额下调、伪造快照",
+        "私有来源与格式正确才load；不兼容回partial并保存原事实；不绕过当前Host限额；失败worker丢弃。"
+      ],
+      "phases": [
+        "P02",
+        "P09"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "M07",
+      "title": "GC/归档/隐私",
+      "requirements": [
+        "活跃root/child、已终态保留期、删除中断",
+        "活跃引用不被TTL删；引用0才可GC；两阶段文件删除可恢复；删除正文不因late receipt重建。"
+      ],
+      "phases": [
+        "P02",
+        "P09"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "M08",
+      "title": "备份恢复与回退演练",
+      "requirements": [
+        "DB＋work-protocol＋artifact＋Manager/环境回执的一致性备份",
+        "引用闭合，原未知可见；缺对象精确报错不当可重跑；已发生副作用不因回退消失。"
+      ],
+      "phases": [
+        "P02",
+        "P09"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "X01",
+      "title": "版本与来源",
+      "requirements": [
+        "GitHub实际main/本地HEAD/祖先关系/选定源码",
+        "有固定SHA、source map、差异；不把报告观点当当前代码。"
+      ],
+      "phases": [
+        "P00",
+        "P10"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "X02",
+      "title": "清单完整",
+      "requirements": [
+        "entrypoint/tool/provider/delivery逐项映射",
+        "清单无未说明遗漏；标明源码事实、设计改变、运行状态。"
+      ],
+      "phases": [
+        "P00",
+        "P10"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "X03",
+      "title": "同参合法副作用",
+      "requirements": [
+        "两个不同ID同样请求＋原ID重入",
+        "前两项合法效果都发生，原ID不再发生；参数hash不作去重身份。"
+      ],
+      "phases": [
+        "P00",
+        "P10"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "X04",
+      "title": "DB短事务",
+      "requirements": [
+        "网络/模型/VM/fsync人为长等待",
+        "writer不跨这些await；CAS在真正提交窗口；不可丢账本/预算不进诊断队列。"
+      ],
+      "phases": [
+        "P00",
+        "P10"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "X05",
+      "title": "结果与trace分离",
+      "requirements": [
+        "trace队列丢失/后置审计失败",
+        "原effect/预算/投递保持正确；输出明确coverage缺失，不重跑。"
+      ],
+      "phases": [
+        "P00",
+        "P10"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "X06",
+      "title": "实质移植与单循环",
+      "requirements": [
+        "provenance+依赖图+调用者扫描",
+        "移植Pi实际控制流、有刻意差异；无一整份旧loop藏hook；最终生产仅一实现。"
+      ],
+      "phases": [
+        "P00",
+        "P10"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "X07",
+      "title": "sandbox真实身份",
+      "requirements": [
+        "binary/worker/process/remote peer鉴别",
+        "固定nativeworker与digest；远程CPython被拒；无BotDB/凭据/Docker挂载；资源实际限制。"
+      ],
+      "phases": [
+        "P00",
+        "P10"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "X08",
+      "title": "私有快照安全",
+      "requirements": [
+        "公共artifact伪快照、篡改、原snapshot并发fork",
+        "可信生产者和私有存储验证；同一原lease/checkpoint只一方可派发；不会给攻击脚本Host对象。"
+      ],
+      "phases": [
+        "P00",
+        "P10"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "X09",
+      "title": "来源与权限",
+      "requirements": [
+        "伪造actor/event、猜operation、worker冒充主、SELF冒充人",
+        "执行层拒绝；不扫最新消息补身份；合法旧事实仍按原归属保存。"
+      ],
+      "phases": [
+        "P00",
+        "P10"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "X10",
+      "title": "真实wire和缓存",
+      "requirements": [
+        "全请求结构/顺序/opaque与配置",
+        "原始fixture可比；哈希不能单独验收；母子call不伪造Provider协议。"
+      ],
+      "phases": [
+        "P00",
+        "P10"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "X11",
+      "title": "维护和许可",
+      "requirements": [
+        "实际source/license/binary/SBOM/差异记录",
+        "MIT原版权和许可随移植保留；转依赖单独核对；无浮动main自动更新。"
+      ],
+      "phases": [
+        "P00",
+        "P10"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    },
+    {
+      "id": "X12",
+      "title": "授权与交付状态",
+      "requirements": [
+        "本地改/测试/commit/push/PR/merge/deploy外部发送",
+        "每一项独立有证据；未授权不执行，离线通过不当生产通过。"
+      ],
+      "phases": [
+        "P00",
+        "P10"
+      ],
+      "verdict": "not_run",
+      "evidence": []
+    }
+  ]
+}
