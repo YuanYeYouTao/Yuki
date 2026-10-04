@@ -1,0 +1,219 @@
+{
+  "run_requires_explicit_flag": true,
+  "ssh_host": "antigravity-server",
+  "model": "gemini-3.8-flash-low",
+  "request_limit": 7,
+  "generation_config": {
+    "maxOutputTokens": 40960,
+    "thinkingConfig": {
+      "thinkingBudget": 32768
+    }
+  },
+  "system_instruction_role": "user",
+  "include_thoughts": "UNKNOWN; not injected",
+  "variants": [
+    "plain_user_control",
+    "real_dummy_function_call_control",
+    "receipt_user",
+    "receipt_model_no_tail",
+    "receipt_model_placeholder",
+    "terminal_model_no_tail",
+    "terminal_model_placeholder"
+  ],
+  "placeholder": "[Protocol placeholder: no additional user input.]",
+  "limits": [
+    "No token refresh, account/config/database mutation, tool execution or QQ.",
+    "One existing valid account, same configured HTTP proxy and headers/envelope.",
+    "Original function-call parts/signatures copied unchanged; no fabricated signatures.",
+    "One physical request per case, no retry or endpoint/account fallback.",
+    "HTTP error is recorded once; auth/transport/control failure stops the experiment.",
+    "Raw synthetic responses stay in the local ignored private file; only safe aggregate printed.",
+    "urllib TLS differs from AGM rquest; reviewed HTTP headers/envelope do not prove identical physical wire.",
+    "Behavior classification is limited to synthetic output tokens/call shapes, not proof of intent."
+  ],
+  "observed_at_utc": "2026-10-03T19:55:21.857582+00:00",
+  "cases": [
+    {
+      "case": "plain_user_control",
+      "status": 200,
+      "elapsed_seconds": 3.947,
+      "finish_reason": "STOP",
+      "part_types": [
+        [
+          "text",
+          "thoughtSignature"
+        ]
+      ],
+      "function_calls": 0,
+      "has_real_signature": true,
+      "terminal_token": "SYNTHETIC_DONE",
+      "placeholder_echoed": false,
+      "unexpected_content": false,
+      "usage": {
+        "promptTokenCount": 98,
+        "candidatesTokenCount": 5,
+        "thoughtsTokenCount": 283,
+        "totalTokenCount": 386,
+        "cachedContentTokenCount": null
+      }
+    },
+    {
+      "case": "real_dummy_function_call_control",
+      "status": 200,
+      "elapsed_seconds": 5.382,
+      "finish_reason": "STOP",
+      "part_types": [
+        [
+          "functionCall",
+          "thoughtSignature"
+        ]
+      ],
+      "function_calls": 1,
+      "has_real_signature": true,
+      "terminal_token": null,
+      "placeholder_echoed": false,
+      "unexpected_content": false,
+      "usage": {
+        "promptTokenCount": 148,
+        "candidatesTokenCount": 17,
+        "thoughtsTokenCount": 252,
+        "totalTokenCount": 417,
+        "cachedContentTokenCount": null
+      }
+    },
+    {
+      "case": "receipt_user",
+      "status": 200,
+      "elapsed_seconds": 2.904,
+      "finish_reason": "STOP",
+      "part_types": [
+        [
+          "text",
+          "thoughtSignature"
+        ]
+      ],
+      "function_calls": 0,
+      "has_real_signature": true,
+      "terminal_token": "PROBE_DONE",
+      "placeholder_echoed": false,
+      "unexpected_content": false,
+      "usage": {
+        "promptTokenCount": 440,
+        "candidatesTokenCount": 3,
+        "thoughtsTokenCount": 70,
+        "totalTokenCount": 513,
+        "cachedContentTokenCount": null
+      }
+    },
+    {
+      "case": "receipt_model_no_tail",
+      "status": 200,
+      "elapsed_seconds": 2.994,
+      "finish_reason": "STOP",
+      "part_types": [
+        [
+          "text",
+          "thoughtSignature"
+        ]
+      ],
+      "function_calls": 0,
+      "has_real_signature": true,
+      "terminal_token": "PROBE_DONE",
+      "placeholder_echoed": false,
+      "unexpected_content": false,
+      "usage": {
+        "promptTokenCount": 440,
+        "candidatesTokenCount": 4,
+        "thoughtsTokenCount": 58,
+        "totalTokenCount": 502,
+        "cachedContentTokenCount": null
+      }
+    },
+    {
+      "case": "receipt_model_placeholder",
+      "status": 200,
+      "elapsed_seconds": 117.291,
+      "finish_reason": "STOP",
+      "part_types": [
+        [
+          "text",
+          "thoughtSignature"
+        ]
+      ],
+      "function_calls": 0,
+      "has_real_signature": true,
+      "terminal_token": "PROBE_DONE",
+      "placeholder_echoed": false,
+      "unexpected_content": false,
+      "usage": {
+        "promptTokenCount": 198,
+        "candidatesTokenCount": 4,
+        "thoughtsTokenCount": 15525,
+        "totalTokenCount": 15727,
+        "cachedContentTokenCount": null
+      }
+    },
+    {
+      "case": "terminal_model_no_tail",
+      "status": 400,
+      "elapsed_seconds": 0.95,
+      "finish_reason": null,
+      "part_types": [],
+      "function_calls": 0,
+      "has_real_signature": false,
+      "terminal_token": null,
+      "placeholder_echoed": false,
+      "unexpected_content": false,
+      "usage": {
+        "promptTokenCount": null,
+        "candidatesTokenCount": null,
+        "thoughtsTokenCount": null,
+        "totalTokenCount": null,
+        "cachedContentTokenCount": null
+      },
+      "google_error_status": "INVALID_ARGUMENT",
+      "error_category": "model_tail_not_supported"
+    },
+    {
+      "case": "terminal_model_placeholder",
+      "status": 200,
+      "elapsed_seconds": 3.574,
+      "finish_reason": "STOP",
+      "part_types": [
+        [
+          "text",
+          "thoughtSignature"
+        ]
+      ],
+      "function_calls": 0,
+      "has_real_signature": true,
+      "terminal_token": "NO_NEW_INPUT",
+      "placeholder_echoed": false,
+      "unexpected_content": false,
+      "usage": {
+        "promptTokenCount": 397,
+        "candidatesTokenCount": 5,
+        "thoughtsTokenCount": 149,
+        "totalTokenCount": 551,
+        "cachedContentTokenCount": null
+      }
+    }
+  ],
+  "accounting": {
+    "physical_requests": 7,
+    "http_success": 6,
+    "http_400": 1,
+    "retries": 0,
+    "fallback_requests": 0,
+    "known_usage_requests": 6,
+    "unknown_usage_requests": 1,
+    "known_prompt_tokens": 1721,
+    "known_candidates_tokens": 38,
+    "known_thoughts_tokens": 16337,
+    "known_total_tokens": 18096,
+    "known_cached_requests": 0,
+    "unknown_cached_requests": 7,
+    "known_cached_tokens": null
+  },
+  "error_classification_note": "terminal_model_no_tail classified from private Google error: ending-in-model-turn unsupported; error text omitted."
+}
