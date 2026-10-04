@@ -76,7 +76,8 @@ Provider 覆盖沿现有 Chat 15 个 vendor、Responses、Claude、Gemini 与显
   `rejected_before_dispatch`、`reused_receipts`，仅本 activation 增量。
 - 段额度让出返回内部哨兵，外层 call 不配对；原 Work 下一段 restore 识别
   `PendingComposition`，在任何模型请求前续跑同一程序。
-- worker 合同的子集投影尚未接入（P07）；没有主合同投影时 `execute_code` 返回
+- worker 从原 `WORKER_NAMES` 的实际声明冻结独立子集并增加 `execute_code`，沿原 child lease
+  和 root 预算执行。worker 缺少显式子集时拒绝，不借用主合同；未配置引擎时返回
   `code_engine_unavailable`。
 
 ## 删除和切换边界

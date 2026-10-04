@@ -91,6 +91,7 @@ from qq_ai_bot.web.models import WebMode
 from qq_ai_bot.web.route_context import web_model_task
 
 if TYPE_CHECKING:
+    from qq_ai_bot.codemode.api_projection import ScriptApi
     from qq_ai_bot.services.main_agent_contract import MainAgentContract
 
 logger = logging.getLogger(__name__)
@@ -127,6 +128,7 @@ class AgentRuntime:
     execution_id: str | None = None
     source_event_id: int | None = None
     fixed_tools: tuple[ChatTool, ...] | None = None
+    script_api: ScriptApi | None = None
     invocation_source: dict[str, Any] | None = None
     invocation_goal: str | None = None
     compaction_brief: ChatMessage | None = None
@@ -2019,9 +2021,7 @@ class AgentRunner:
                         item.call_id,
                     ),
                     call,
-                    TrustedInvocationContext(
-                        runtime, self.main_contract.revision if self.main_contract else ""
-                    ),
+                    TrustedInvocationContext(runtime, host.api.manifest_revision),
                 )
                 try:
                     result = await CodeModeDriver(host, outer).resume()
@@ -2080,7 +2080,7 @@ class AgentRunner:
             runtime,
             chain_id=chain_id,
             request_sequence=request_sequence,
-            manifest_revision=self.main_contract.revision if self.main_contract else "",
+            manifest_revision=host.api.manifest_revision,
         )[0]
         try:
             return await CodeModeDriver(host, outer).run()
@@ -2106,9 +2106,13 @@ class AgentRunner:
 
         control = runtime.work_control
         assert control is not None
-        # Only the frozen main manifest projects a script API. Worker contracts
-        # get their own approved subset in P07; until then they have no engine.
-        api = self.main_contract.script_api if self.main_contract is not None else None
+        # Worker execution supplies its separately frozen subset. The shared
+        # runner never substitutes the main API for that explicitly bound view.
+        api = runtime.script_api or (
+            self.main_contract.script_api
+            if self.main_contract is not None and control.lease.work_id is None
+            else None
+        )
         settings = self.code_mode_settings
         if api is None or tools is None:
             return json.dumps({"ok": False, "executed": False, "error": "code_engine_unavailable"})
@@ -2370,7 +2374,13 @@ class AgentRunner:
             before_execute=partial(before_work_tool, control),
             chain_id=chain_id,
             request_sequence=request_sequence,
-            manifest_revision=self.main_contract.revision if self.main_contract else "",
+            manifest_revision=(
+                runtime.script_api.manifest_revision
+                if runtime.script_api is not None
+                else self.main_contract.revision
+                if self.main_contract
+                else ""
+            ),
         )
         unique_results = {call.id: result for call, result, _executed in coordinated.calls}
         unique_executed = {call.id: executed for call, _result, executed in coordinated.calls}

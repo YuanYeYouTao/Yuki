@@ -1181,6 +1181,7 @@ async def test_plugin_background_send_is_bound_to_frozen_job_target(
     from datetime import UTC, datetime
     from types import SimpleNamespace
 
+    from tests.support.background_authority import approve_background_plugin
     from tests.support.social_identity_cases import social_env
 
     from qq_ai_bot.capabilities.invocation import ToolInvocationContext, current_invocation
@@ -1188,6 +1189,14 @@ async def test_plugin_background_send_is_bound_to_frozen_job_target(
     from qq_ai_bot.social.agent_adapter import invoke_social
 
     env = await social_env(database, tmp_path)
+    # Background dispatch now rechecks the real current installation and grant.
+    await approve_background_plugin(
+        database,
+        plugin_id="test-plugin",
+        bot_user_id="80001",
+        group_id="20001",
+        creator_user_id="10001",
+    )
     event = await env.service.writer.append_external(
         scope=ConversationScope.group("80001", "20001"),
         platform_message_id="plugin-event-1",

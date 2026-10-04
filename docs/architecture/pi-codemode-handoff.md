@@ -26,16 +26,18 @@
 | `10f07855` | P03 Pi 循环移植（`agent_core/`）；P04 Monty 驱动（`codemode/`） |
 | `c0593229` | P02 补测：快照发布失败、引用提交中断、writer 排队过租约 |
 | `90b6d46a` | P05 `execute_code`、wrapper 投影、子调用接 InvocationService、控制门 |
+| `5414065f` | P06 领域回执与来源权限闭合，已推送 |
 
-P06 最后一次全量：3127 通过、1 跳过（未提供私有生产备份路径）；真实 worker 测试无跳过，
-ruff check/format 与 mypy 719 文件通过。此前 0.2 秒计时失败已改成派发边界触发，断言保留。
+P07 最后一次全量：3165 通过、1 跳过（未提供私有生产备份路径），713.81 秒；真实 worker
+测试无跳过，ruff check/format 与 mypy 720 文件通过。此前 0.2 秒计时失败已改成派发边界触发，
+断言保留。P07 旧夹具缺字段/批准的三项失败已修正，全量重验通过。
 
 | 阶段 | 状态 |
 | --- | --- |
 | P00–P05 | 完成，离线验收 |
 | P06 发送/记忆/来源权限闭合 | 离线实现及全量验证完成 |
-| P07 全部入口接线 | 已开始，worker 子集与真实入口测试开发中 |
-| P08 Provider/上下文/轨迹 | 未开始，可与 P06/P07 并行 |
+| P07 全部入口接线 | 离线实现及全量验证完成 |
+| P08 Provider/上下文/轨迹 | HTTP 对照新增 39 项通过；父子轨迹开发中，尚未提交 |
 | P09 迁移、worker 运维、回退演练 | 未开始，依赖 P07、P08 |
 | P10 整体验收与旧循环删除 | 未开始 |
 | P11 真实外部验收 | DeepSeek Provider 调用已授权，尚未运行；其余外部范围待授权 |
@@ -94,7 +96,7 @@ YUKI_MONTY_BINARY=<worker 路径> uv run --frozen pytest -q -p no:warnings tests
 - `AgentRunner` 中仍有约 25 个跨步骤共享的 `nonlocal` 变量，应收敛为显式回合状态（P05 已合并，
   可以做；会大面积改 `agent_runner.py`，避免与 P07/P08 同时动这个文件）。
 - `begin_batch` 兼容调用仍在 `agent_runner.py`，P10 删除。
-- 持久 worker 的 `execute_code` 子集投影正在 P07 开发，尚未阶段验收。
+- 持久 worker 的 `execute_code` 已使用独立固定子集，P07 全量验证通过。
 - `update_short_state` 已纳入 P06 直接/子调用授权一致性对照。
 - 供应商真实 streaming 未支持，只有合成 frame 测试；需要 P08 支持后在 P11 授权下实测。
 - `execute_code` 的模型侧使用质量未评估（需付费模型）。

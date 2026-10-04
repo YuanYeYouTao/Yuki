@@ -104,7 +104,6 @@ from qq_ai_bot.runtime.work_activation import current_work_control
 from qq_ai_bot.services.agent_runner import (
     AgentRunner,
     AgentRunResult,
-    AgentRuntime,
 )
 from qq_ai_bot.services.agent_tools import AgentToolService, OneBotToolGateway, ToolRuntime
 from qq_ai_bot.services.concurrency import ConcurrencyManager
@@ -115,6 +114,7 @@ from qq_ai_bot.services.effect_gate import (
     EffectGateTimeoutError,
     EffectPermitRejectedError,
 )
+from qq_ai_bot.services.invocation_context import InvocationContextFactory
 from qq_ai_bot.services.main_agent_backend import (
     _ARTIFACT_READER_NAME,
     MainAgentBackend,
@@ -1658,6 +1658,9 @@ class ChatService:
         conversation_key: str,
         initial_messages: tuple[ChatMessage, ...],
         runtime: ToolRuntime,
+        *,
+        invocation_goal: str | None = None,
+        invocation_source: dict[str, Any] | None = None,
     ) -> _CompletedAgentRun:
         config = runtime.runtime_config
         if config is None:
@@ -1697,39 +1700,23 @@ class ChatService:
 
         result = await self.runtime.main_turns.run(
             initial_messages,
-            AgentRuntime(
-                origin=runtime.origin,
-                actor_user_id=runtime.actor_user_id,
-                actor_is_superuser=runtime.actor_is_superuser,
-                delegated_authority=None,
-                conversation_key=conversation_key,
-                current_group_id=runtime.current_group_id,
-                bot_user_id=runtime.effective_bot_user_id or "bot",
-                gateway=runtime.gateway,
-                runtime_config=config,
-                current_time=current_time,
-                allowed_capabilities=self.web_capabilities(config),
-                max_tool_calls=min(config.agent.max_tool_calls, runtime.max_tool_calls_override)
-                if runtime.max_tool_calls_override is not None
-                else config.agent.max_tool_calls,
-                max_model_requests=(
-                    min(
-                        config.agent.max_model_requests,
-                        runtime.max_model_requests_override,
+            replace(
+                InvocationContextFactory.from_tools(
+                    replace(runtime, conversation_key=conversation_key),
+                    current_time=current_time,
+                    allowed_capabilities=self.web_capabilities(config),
+                    max_tool_calls=min(config.agent.max_tool_calls, runtime.max_tool_calls_override)
+                    if runtime.max_tool_calls_override is not None
+                    else config.agent.max_tool_calls,
+                    max_model_requests=min(
+                        config.agent.max_model_requests, runtime.max_model_requests_override
                     )
                     if runtime.max_model_requests_override is not None
-                    else config.agent.max_model_requests
+                    else config.agent.max_model_requests,
                 ),
-                prompt_diagnostics=runtime.prompt_diagnostics,
                 before_model_request=before_model_request,
-                observation_boundary=runtime.observation_boundary,
-                canonical_conversation_id=runtime.effective_conversation_id,
-                execution_id=runtime.effective_execution_id,
-                source_event_id=runtime.effective_trigger_event_id,
-                visible_event_ids=runtime.visible_event_ids,
-                preparation_model_requests=runtime.prompt_diagnostics.preparation_model_requests
-                if runtime.prompt_diagnostics is not None
-                else 0,
+                invocation_goal=invocation_goal,
+                invocation_source=invocation_source,
             ),
             backend,
         )
@@ -2017,7 +2004,29 @@ class ChatService:
                     turn_snapshot=turn_snapshot,
                     selection_query=tool_runtime.selection_query,
                 )
-            completed = await self._run_agent(conversation_key, composition.messages, tool_runtime)
+            external_source = (
+                {
+                    "owner": "plugin_background",
+                    "plugin_id": trigger.plugin_id,
+                    "trigger_event_id": event.id,
+                    "conversation_id": conversation_id,
+                    "generation": turn_snapshot.generation,
+                    "presence_id": presence_id,
+                    "space_id": space_id,
+                    "bot_user_id": event.bot_user_id,
+                }
+                if isinstance(trigger, ExternalEventTurnTrigger)
+                else None
+            )
+            completed = await self._run_agent(
+                conversation_key,
+                composition.messages,
+                tool_runtime,
+                invocation_goal=(trigger.agent_intent or "处理原插件事件")
+                if isinstance(trigger, ExternalEventTurnTrigger)
+                else None,
+                invocation_source=external_source,
+            )
             result = completed.result
             try:
                 rendered = sanitize_model_output(

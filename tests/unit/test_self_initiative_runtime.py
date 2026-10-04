@@ -13,7 +13,13 @@ from qq_ai_bot.conversation.autonomy_repository import AutonomyRepository
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
-from qq_ai_bot.domain.messages import ChatMessage, ProviderContinuation, ToolCall, ToolFunction
+from qq_ai_bot.domain.messages import (
+    ChatMessage,
+    ChatTool,
+    ProviderContinuation,
+    ToolCall,
+    ToolFunction,
+)
 from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.identity.canonical_repository import ensure_presence, ensure_space
 from qq_ai_bot.identity.db_models import CanonicalSpaceModel, PresenceModel
@@ -475,7 +481,10 @@ async def test_self_worker_uses_existing_runner_without_synthetic_inbound(databa
         config=app.runtime_config,
         runner=runner,
         load_tools=AsyncMock(
-            return_value=tuple(SimpleNamespace(name=name) for name in sorted(WORKER_NAMES))
+            # A worker now freezes the complete schema for its Code Mode subset.
+            return_value=tuple(
+                ChatTool(name, name, {"type": "object"}) for name in sorted(WORKER_NAMES)
+            )
         ),
     )
     assert await executor.run(child_id) is None

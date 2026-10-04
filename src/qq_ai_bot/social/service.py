@@ -1381,6 +1381,26 @@ class SocialService:
         # Probes and preparation never serialize unrelated social operations.
         # The durable prepared -> executing CAS is the sole dispatch owner.
         async with self.database.immediate_session() as session:
+            if context.origin == "plugin_background" and context.caused_by_event_id is not None:
+                from qq_ai_bot.plugin_host.notification_repository import background_authority_live
+
+                original_event = await session.get(ChatEventModel, context.caused_by_event_id)
+                conversation = await session.get(
+                    CanonicalConversationModel, context.conversation_id
+                )
+                if (
+                    original_event is None
+                    or conversation is None
+                    or not original_event.source_plugin_id
+                    or original_event.canonical_conversation_id != conversation.id
+                    or not await background_authority_live(
+                        session,
+                        plugin_id=original_event.source_plugin_id,
+                        person_id=conversation.person_id,
+                        space_id=conversation.space_id,
+                    )
+                ):
+                    raise SocialError("permission_denied")
             if capture is not None:
                 from qq_ai_bot.runtime.work_repository import TERMINAL, WorkConflict
                 from qq_ai_bot.runtime.work_schema_v1 import work

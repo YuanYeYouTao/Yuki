@@ -28,7 +28,14 @@ from qq_ai_bot.workspace.short_state import ShortState
 
 
 async def setup_run(
-    database, tmp_path, *, strategy="generated", delivery="current_group", mode="send"
+    database,
+    tmp_path,
+    *,
+    strategy="generated",
+    delivery="current_group",
+    mode="send",
+    principal="person",
+    worker=None,
 ):
     env = await social_env(database, tmp_path)
     if delivery == "self_private":
@@ -60,12 +67,18 @@ async def setup_run(
     settings = make_settings(
         database.url, automation_enabled=True, enabled_groups_csv="20001", runtime_work_enabled=True
     )
+    if worker is not None:
+        import hashlib
+
+        settings.code_mode_worker_path = worker
+        settings.code_mode_worker_sha256 = hashlib.sha256(worker.read_bytes()).hexdigest()
     harness = build_harness(database, settings, provider)
     chat = harness.processor._chat
     chat._tools.social_service = env.service
     env.service.runtime_config = chat._runtime_config
     contract = MainAgentContract(chat, ShortState(env.store))
     chat.runtime.runner.main_contract = contract
+    chat.runtime.runner.code_mode_settings = settings
     repository = AutomationRepository(database)
 
     def gateway(context):
@@ -104,6 +117,10 @@ async def setup_run(
         person_id=env.person,
         conversation_id=env.context.conversation_id,
     )
+    if principal == "self":
+        from tests.integration.test_self_automation_delivery import self_actor
+
+        actor = await self_actor(database, env)
     row, plan = await service.create_task(
         {
             "name": "delivery regression",
@@ -135,6 +152,7 @@ async def setup_run(
         repository=repository,
         plan=plan,
         clock=chat._time.clock,
+        chat=chat,
     )
 
 
@@ -168,6 +186,7 @@ async def test_static_person_reminder_uses_social_receipt(database, tmp_path, de
     replay = await case.executor.execute(case.row, case.run)
     assert replay.status is RunStatus.SUCCEEDED
     assert len(sent(case.env)) == 1
+    assert not case.provider.requests  # Static delivery and replay never enter Pi.
 
 
 @pytest.mark.asyncio

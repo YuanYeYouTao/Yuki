@@ -15,8 +15,12 @@
       "phases": [
         "P07"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_chat_entrypoint.py",
+        "tests/unit/test_execution_trace.py::test_real_runner_records_tools_and_original_chat_delivery",
+        "P07: original entrypoints and real Monty worker; full suite 3165 passed / 1 skipped (private production backup unavailable), 713.81s; ruff and mypy passed."
+      ]
     },
     {
       "id": "E02",
@@ -30,8 +34,13 @@
       "phases": [
         "P07"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_chat_entrypoint.py",
+        "tests/integration/test_codemode_runner.py",
+        "tests/integration/test_invocation_process_crash.py",
+        "P07: original entrypoints and real Monty worker; full suite 3165 passed / 1 skipped (private production backup unavailable), 713.81s; ruff and mypy passed."
+      ]
     },
     {
       "id": "E03",
@@ -45,8 +54,12 @@
       "phases": [
         "P07"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_self_entrypoint.py",
+        "tests/unit/test_self_initiative_runtime.py",
+        "P07: original entrypoints and real Monty worker; full suite 3165 passed / 1 skipped (private production backup unavailable), 713.81s; ruff and mypy passed."
+      ]
     },
     {
       "id": "E04",
@@ -60,8 +73,12 @@
       "phases": [
         "P07"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_automation_entrypoint.py",
+        "tests/unit/test_self_initiative_runtime.py",
+        "P07: original entrypoints and real Monty worker; full suite 3165 passed / 1 skipped (private production backup unavailable), 713.81s; ruff and mypy passed."
+      ]
     },
     {
       "id": "E05",
@@ -75,8 +92,12 @@
       "phases": [
         "P07"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_automation_entrypoint.py",
+        "tests/integration/test_automation_unified_delivery.py",
+        "P07: original entrypoints and real Monty worker; full suite 3165 passed / 1 skipped (private production backup unavailable), 713.81s; ruff and mypy passed."
+      ]
     },
     {
       "id": "E06",
@@ -90,8 +111,12 @@
       "phases": [
         "P07"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_automation_unified_delivery.py::test_static_person_reminder_uses_social_receipt",
+        "tests/unit/test_automation_timeout_certainty.py",
+        "P07: original entrypoints and real Monty worker; full suite 3165 passed / 1 skipped (private production backup unavailable), 713.81s; ruff and mypy passed."
+      ]
     },
     {
       "id": "E07",
@@ -105,8 +130,12 @@
       "phases": [
         "P07"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_background_entrypoint.py",
+        "tests/unit/test_plugin_result_access.py",
+        "P07: original entrypoints and real Monty worker; full suite 3165 passed / 1 skipped (private production backup unavailable), 713.81s; ruff and mypy passed."
+      ]
     },
     {
       "id": "E08",
@@ -120,8 +149,12 @@
       "phases": [
         "P07"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_plugin_main_entrypoint.py",
+        "tests/unit/test_main_agent_entrypoints.py",
+        "P07: original entrypoints and real Monty worker; full suite 3165 passed / 1 skipped (private production backup unavailable), 713.81s; ruff and mypy passed."
+      ]
     },
     {
       "id": "E09",
@@ -135,8 +168,11 @@
       "phases": [
         "P07"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_plugin_computation_entrypoint.py",
+        "P07: original entrypoints and real Monty worker; full suite 3165 passed / 1 skipped (private production backup unavailable), 713.81s; ruff and mypy passed."
+      ]
     },
     {
       "id": "E10",
@@ -150,8 +186,12 @@
       "phases": [
         "P07"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_worker_entrypoint.py",
+        "tests/unit/test_subagents.py",
+        "P07: original entrypoints and real Monty worker; full suite 3165 passed / 1 skipped (private production backup unavailable), 713.81s; ruff and mypy passed."
+      ]
     },
     {
       "id": "E11",
@@ -165,8 +205,12 @@
       "phases": [
         "P07"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/unit/test_subagents.py",
+        "tests/integration/test_codemode_control_gate.py",
+        "P07: original entrypoints and real Monty worker; full suite 3165 passed / 1 skipped (private production backup unavailable), 713.81s; ruff and mypy passed."
+      ]
     },
     {
       "id": "E12",
@@ -180,8 +224,12 @@
       "phases": [
         "P07"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/unit/test_control_work_mutations.py",
+        "tests/unit/test_control_wire_contract.py",
+        "P07: original entrypoints and real Monty worker; full suite 3165 passed / 1 skipped (private production backup unavailable), 713.81s; ruff and mypy passed."
+      ]
     },
     {
       "id": "E13",
@@ -210,8 +258,11 @@
       "phases": [
         "P07"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/unit/test_cli_entrypoint_contract.py",
+        "P07: original entrypoints and real Monty worker; full suite 3165 passed / 1 skipped (private production backup unavailable), 713.81s; ruff and mypy passed."
+      ]
     },
     {
       "id": "T01",

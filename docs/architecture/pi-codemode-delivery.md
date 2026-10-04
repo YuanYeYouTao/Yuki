@@ -220,8 +220,37 @@ wheel SHA256 `e3c99d8890b265babb90a50be336e4e3b3f25619c26ff607265578580c547c75`�
 既有长 call ID 合约测试而中止，不计为通过；最新全量使用真实 worker：
 **3127 通过、1 跳过，679.37 秒**。唯一跳过为未提供私有生产备份路径的 replay；
 不计为迁移/生产备份验收通过。worker 测试无跳过。
-阶段代码及文档准备提交、推送；最终 commit/远端状态以 Git 记录为准。
-P07 已开始 worker 固定子集投影与入口故障测试，未完成全量验证；P08 Provider wire 尚未运行。
+阶段已提交并推送：`5414065f670230008aa796289a3ec49b1fd1d37b`，远端精确 SHA 已核验。
+
+## P07：全部入口接线，离线验证完成
+
+- `InvocationContextFactory` 只复制入口已有的可信 `ToolRuntime`，收敛 Chat、SDK 主调用、
+  独立插件计算和 child 的重复装配；保留原 actor、内部 event、conversation 和 execution。
+- 持久 worker 冻结自己的原工具子集与 API revision，增加 `execute_code`；仍不能发送、
+  写记忆/短状态、管理或再派生 child，业务计量沿原 root。
+- 插件自主唤醒将原 job/event/plugin 身份和 intent 交原 Work，恢复仍由原后台 job owner
+  驱动。claim 和实际 Social 派发重核当前安装及目标批准；撤销不进模型、不发送。
+- durable SDK 返回前读原 Work 终态，修正激活中取消仍返回 running 的过时状态；取消/失败
+  的后台 job 不再回到 pending 重试。
+- 独立插件计算保留独立会话、无业务 backend、`tools=None/max_tool_calls=0`；CLI 保持原
+  管理/诊断命令，未知 Agent 命令在解析处拒绝，诊断不读取模型配置或调用 Provider。
+
+新增实际入口测试：普通聊天 5 项（含短聊、未接纳拒绝）、SELF 4 项、Person/SELF 自动化
+8 项、SDK 主调用 4 项、自主唤醒 4 项、独立插件计算 4 项、持久 worker 4 项；分别核对
+正常、拒绝、取消和原身份跨段恢复，以及独立下游日志、预算和原来源。CLI 合同 5 项。
+定向测试均通过；原 worker/SELF 集合 50 项、后台/插件原合同集合 25 项通过。
+
+既有夹具调整：SELF worker 声明由仅含 name 的模拟对象改为真实 `ChatTool`（投影需要
+完整 schema）；五项 actorless 插件发言/媒体测试增加真实当前安装及目标批准；直接工具
+trace 夹具明确 `script_api=None`。原行为断言保留，修改处写明现行授权合同。静态提醒
+新增正常及重入都没有 Provider 请求的断言。没有删除测试或放宽预期。
+
+阶段静态检查：ruff check、format check（1113 文件）和 mypy（720 源文件）通过。
+首轮真实 worker 全量为 3162 通过、3 个旧夹具失败、1 跳过（695.63 秒）；不计为通过。
+修正上述夹具后，失败项及静态提醒 5 项通过；第二轮全量 **3165 通过、1 跳过，713.81 秒**。
+唯一跳过仍为未提供私有生产备份；真实 worker 无跳过。ruff check/format、mypy 720 文件
+均通过，最终 diff check 通过。阶段准备提交并推送；没有执行 PR、合并或生产动作。
+下一依赖：P08 外层 Code Mode wire、上下文与唯读父子轨迹；随后 P09。
 
 ## 验证记录（2026-10-04）
 
@@ -245,7 +274,7 @@ WebUI 前端资源未构建（`npm ci && npm run build`，产物已 gitignore）
 
 ## 后续依赖
 
-P06 的离线闭合完成；继续 P07 全入口及 worker 子集、P08 Provider/上下文/轨迹。
+P06、P07 的离线闭合及全量验证完成；继续 P08 Provider/上下文/轨迹。
 P09–P10 未开始；真实 DeepSeek Provider 调用已授权、尚未运行；P11 的真实消息、生产访问、
 镜像发布与部署待明确授权。
 Monty Python binding 为本地构建 wheel，未进 `uv.lock`，`uv sync` 后需重跑

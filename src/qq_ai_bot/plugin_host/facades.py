@@ -1705,21 +1705,11 @@ class _AgentFacade:
             else base_runtime.max_model_requests,
             base_runtime.max_model_requests,
         )
-        runtime = AgentRuntime(
-            origin=TurnOrigin.PLUGIN_SESSION,
-            actor_user_id=base_runtime.actor_user_id,
-            actor_is_superuser=base_runtime.actor_is_superuser,
-            delegated_authority=base_runtime.delegated_authority,
-            conversation_key=invocation.conversation_key,
-            current_group_id=base_runtime.current_group_id,
-            bot_user_id=base_runtime.bot_user_id,
-            gateway=base_runtime.gateway,
-            runtime_config=base_runtime.runtime_config,
-            current_time=base_runtime.current_time,
+        runtime = replace(
+            base_runtime,
             allowed_capabilities=effective,
             max_tool_calls=max(0, tool_limit),
             max_model_requests=max(1, request_limit),
-            canonical_conversation_id=base_runtime.canonical_conversation_id,
         )
         result = await run_plugin_main_turn(
             self._host,

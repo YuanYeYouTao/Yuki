@@ -19,6 +19,7 @@ from qq_ai_bot.runtime.activation_outcome import ContextBoundaryChanged
 from qq_ai_bot.runtime.context_preparation import prepare_context
 from qq_ai_bot.services.agent_runner import AgentRunResult, AgentRuntime, AgentToolBackend
 from qq_ai_bot.services.agent_tools import OneBotToolGateway, ToolRuntime
+from qq_ai_bot.services.invocation_context import InvocationContextFactory
 from qq_ai_bot.services.main_agent_backend import MainAgentBackend
 from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
 from yuki_plugin_sdk.errors import PluginPermissionError
@@ -356,9 +357,14 @@ async def _execute_plugin_main_turn(
                 result = await main.run(
                     composition.messages,
                     replace(
-                        runtime,
-                        conversation_key=invocation.conversation_key,
-                        execution_id=execution_id,
+                        InvocationContextFactory.from_tools(
+                            tool_runtime,
+                            current_time=runtime.current_time,
+                            allowed_capabilities=runtime.allowed_capabilities,
+                            max_tool_calls=runtime.max_tool_calls,
+                            max_model_requests=runtime.max_model_requests,
+                        ),
+                        delegated_authority=runtime.delegated_authority,
                         invocation_goal=instruction,
                         invocation_source={
                             "owner": "plugin_invocation",

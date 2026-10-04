@@ -697,7 +697,8 @@ async def test_tool_batch_retains_reused_denied_and_parallel_results(database):
         ToolCall("second", ToolFunction("read", '{"item":2}')),
         ToolCall("denied", ToolFunction("unknown", "{}")),
     )
-    runtime = SimpleNamespace(work_control=None)
+    # This direct-only fixture has no separately frozen Code Mode API.
+    runtime = SimpleNamespace(work_control=None, script_api=None)
     cache = {}
     async with trace_span("turn", {}, recorder=TraceRecorder(database)):
         result = await runner._execute_tool_batch(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from qq_ai_bot.codemode.contract import EXECUTE_CODE_NAME
 from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.runtime.subagent_repository import SubagentRepository
 from qq_ai_bot.sandbox.environment_tools import SANDBOX_TOOLS, tool
@@ -34,6 +35,7 @@ WORKER_NAMES = (
     | WORKSPACE_TOOLS
     | frozenset(
         {
+            EXECUTE_CODE_NAME,
             "task_control",
             "subagent_message",
             "read_tool_artifact",

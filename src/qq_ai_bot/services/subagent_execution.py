@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -16,6 +17,8 @@ from sqlalchemy import func, select
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.capabilities.invocation import Invocation
+from qq_ai_bot.codemode.api_projection import ScriptApi, project
+from qq_ai_bot.codemode.contract import CODE_API_REVISION
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, ChatTool, InboundMessage, SenderIdentity
 from qq_ai_bot.domain.tool_actor import ToolActor
@@ -31,9 +34,10 @@ from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import work
 from qq_ai_bot.sandbox.client import SandboxClient
 from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
-from qq_ai_bot.services.agent_runner import AgentRunner, AgentRuntime, AgentToolBackend
+from qq_ai_bot.services.agent_runner import AgentRunner, AgentToolBackend
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.execution_sources import SelfTaskSource, recover_execution_source
+from qq_ai_bot.services.invocation_context import InvocationContextFactory
 from qq_ai_bot.time.models import TimeContext
 
 logger = logging.getLogger(__name__)
@@ -86,15 +90,31 @@ class SubagentExecution:
         self.children = children
         self.services = services
         self.definitions: tuple[ChatTool, ...] | None = None
+        self.script_api: ScriptApi | None = None
 
     async def prepare(self, *, admission_enabled: bool) -> None:
-        self.definitions = tuple(
-            t for t in await self.services.load_tools() if t.name in WORKER_NAMES
-        )
+        if self.definitions is None:
+            self.definitions = tuple(
+                t for t in await self.services.load_tools() if t.name in WORKER_NAMES
+            )
         if admission_enabled and not WORKER_REQUIRED_NAMES <= frozenset(
             t.name for t in self.definitions
         ):
             raise ValueError("incomplete_worker_tool_manifest")
+        if self.script_api is not None:
+            return
+        revision = hashlib.sha256(
+            json.dumps(
+                {
+                    "worker_contract": 2,
+                    "code_api": CODE_API_REVISION,
+                    "tools": [asdict(tool) for tool in self.definitions],
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        self.script_api = project(self.definitions, revision)
 
     async def cancel_commands(self) -> None:
         """Reconcile cancellation outside the database transaction, by original run ID."""
@@ -312,9 +332,8 @@ class SubagentExecution:
                     )
                     runner = self.services.runner
                     if self.definitions is None:
-                        self.definitions = tuple(
-                            t for t in await self.services.load_tools() if t.name in WORKER_NAMES
-                        )
+                        await self.prepare(admission_enabled=True)
+                    assert self.definitions is not None
                     names = frozenset(t.name for t in self.definitions)
                     if not WORKER_REQUIRED_NAMES <= names:
                         raise ValueError("incomplete_worker_tool_manifest")
@@ -332,26 +351,19 @@ class SubagentExecution:
                             ChatMessage(role="system", content=WORKER_PROMPT),
                             brief_message,
                         ),
-                        AgentRuntime(
-                            origin=TurnOrigin(recovered.origin),
-                            actor_user_id=recovered.actor_user_id,
-                            actor_is_superuser=False,
-                            delegated_authority=None,
-                            conversation_key=f"worker:{identity}",
-                            current_group_id=group_id,
-                            bot_user_id=recovered.bot_user_id,
-                            gateway=None,
-                            runtime_config=config,
-                            current_time=TimeContext(now, now, "UTC"),
-                            allowed_capabilities=self.services.web_capabilities(config),
-                            max_tool_calls=32,
-                            max_model_requests=24,
+                        replace(
+                            InvocationContextFactory.from_tools(
+                                tool_runtime,
+                                current_time=TimeContext(now, now, "UTC"),
+                                allowed_capabilities=self.services.web_capabilities(config),
+                                max_tool_calls=32,
+                                max_model_requests=24,
+                            ),
                             before_model_request=validate,
-                            canonical_conversation_id=recovered.conversation_id,
                             dynamic_context_prepared=True,
                             work_control=control,
-                            execution_id=identity,
                             fixed_tools=self.definitions,
+                            script_api=self.script_api,
                             compaction_brief=brief_message,
                         ),
                         backend,
