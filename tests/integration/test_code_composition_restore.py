@@ -38,8 +38,15 @@ async def test_open_composition_is_returned_to_owner_and_not_paired(database, tm
     control.session = resumed
     restored = await resumed.restore(TurnTranscript(LATEST))
     assert resumed.pending_compositions == [
+        # P05: the saved outer call travels with it so the owner resumes the
+        # same composition without reading the transcript.
         PendingComposition(
-            call_id=call.id, operation_id=key, snapshot_revision=3, snapshot_ref="abc"
+            call_id=call.id,
+            operation_id=key,
+            snapshot_revision=3,
+            snapshot_ref="abc",
+            name=call.function.name,
+            arguments=call.function.arguments,
         )
     ]
     # The original outer call keeps its response; no synthetic unknown result

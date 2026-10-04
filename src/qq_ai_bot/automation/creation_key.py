@@ -13,7 +13,7 @@ def creation_key(source_key: str) -> str:
         return source_key
     work = current_work_control.get()
     call_key = (
-        work.session.call_key(invocation.call_id)
+        work.session.receipt_key(invocation.call_id)
         if work is not None and work.session is not None
         else f"{invocation.execution_key}:{invocation.call_id}"
     )

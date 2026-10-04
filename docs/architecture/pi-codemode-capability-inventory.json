@@ -1,6 +1,6 @@
 {
   "fixture": "synthetic core/admin/automation declaration; no external service",
-  "manifest_revision": "cacaa26c0abf6218b9d3c3dfd0aca96e2fdf97e9b7c2366df94aae07a3b0a172",
+  "manifest_revision": "859a4ee772adb22d7f9b5b1cb283a9ccbd22fc1f3745312c94cbc0aceee3b0ee",
   "catalog_revision": "d4f09d98110af0a246e1d76cb863bffa1ca7c27f60d6d754d5b3e211e0f89dd1",
   "tools": [
     {
@@ -2222,6 +2222,43 @@
       "required_permissions": [],
       "schema_version": "1",
       "idempotency": "idempotent",
+      "parameter_classification": "descriptor plus domain execution checks",
+      "receipt_owner": "WorkSession and original domain service",
+      "acceptance_status": "not_run"
+    },
+    {
+      "model_name": "execute_code",
+      "canonical_name": "execute_code",
+      "provider_id": "host_control",
+      "binding": "qq_ai_bot.codemode.driver.CodeModeDriver.run",
+      "description": "在已接纳的持续工作内运行一段受限 Python 组合脚本。短聊和单次发送直接用原工具；只有需要批量读取、循环、汇总或多步组合时才用本工具。脚本里每个已声明工具都是`await yuki_<工具名>({参数})`，参数与直接调用同一 schema，返回回执字典：status/ok/data/error/operation_id/result_ref/executed/reused/pending/uncertain/complete。业务失败是回执而不是异常；asyncio.gather 可并发只读调用，发送与修改按顺序执行。没有文件系统、网络、环境变量或模块导入；最后一个表达式是脚本结果。memory_change、task_control 结束/等待、新输入、未知副作用或权限变化会由宿主停止脚本并交回模型，脚本无法捕获后继续。脚本结果不会自动发送给任何人。",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536,
+            "description": "受限 Python 源码；用 await yuki_<工具名>(参数字典) 调用工具。"
+          },
+          "inputs": {
+            "type": "object",
+            "description": "可选的纯 JSON 输入，在脚本中以同名变量出现。"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": null,
+      "effect": "host_control",
+      "parallel_safe": false,
+      "result_cacheable": false,
+      "allowed_origins": [],
+      "required_permissions": [],
+      "schema_version": "1",
+      "idempotency": "host_control",
       "parameter_classification": "descriptor plus domain execution checks",
       "receipt_owner": "WorkSession and original domain service",
       "acceptance_status": "not_run"
@@ -6491,6 +6528,38 @@
         "sandbox.read",
         "core",
         "sandbox"
+      ],
+      "schema_version": "1",
+      "result_cacheable": false
+    },
+    {
+      "name": "execute_code",
+      "description": "在已接纳的持续工作内运行一段受限 Python 组合脚本。短聊和单次发送直接用原工具；只有需要批量读取、循环、汇总或多步组合时才用本工具。脚本里每个已声明工具都是`await yuki_<工具名>({参数})`，参数与直接调用同一 schema，返回回执字典：status/ok/data/error/operation_id/result_ref/executed/reused/pending/uncertain/complete。业务失败是回执而不是异常；asyncio.gather 可并发只读调用，发送与修改按顺序执行。没有文件系统、网络、环境变量或模块导入；最后一个表达式是脚本结果。memory_change、task_control 结束/等待、新输入、未知副作用或权限变化会由宿主停止脚本并交回模型，脚本无法捕获后继续。脚本结果不会自动发送给任何人。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536,
+            "description": "受限 Python 源码；用 await yuki_<工具名>(参数字典) 调用工具。"
+          },
+          "inputs": {
+            "type": "object",
+            "description": "可选的纯 JSON 输入，在脚本中以同名变量出现。"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "additionalProperties": false
+      },
+      "namespace": "",
+      "aliases": [],
+      "use_when": [],
+      "tags": [
+        "code",
+        "composition"
       ],
       "schema_version": "1",
       "result_cacheable": false

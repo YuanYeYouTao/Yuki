@@ -967,7 +967,7 @@ class AgentToolService:
                     work_control = current_work_control.get()
                     if work_control is not None and work_control.session is not None:
                         request_id = sha256(
-                            work_control.session.call_key(invocation.call_id).encode()
+                            work_control.session.receipt_key(invocation.call_id).encode()
                         ).hexdigest()
                     result = await self.sandbox_client.execute(
                         name,

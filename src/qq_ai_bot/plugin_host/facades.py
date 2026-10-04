@@ -3099,7 +3099,7 @@ def _delivery_identity(host: HostPluginContext, invocation: PluginInvocation) ->
     if identity is None and tool is not None and tool.call_id:
         control = current_work_control.get()
         identity = (
-            control.session.call_key(tool.call_id)
+            control.session.receipt_key(tool.call_id)
             if control is not None and control.session is not None
             else f"{tool.execution_key}:{tool.call_id}"
         )

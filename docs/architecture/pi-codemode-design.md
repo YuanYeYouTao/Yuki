@@ -64,6 +64,21 @@ Provider 覆盖沿现有 Chat 15 个 vendor、Responses、Claude、Gemini 与显
 验收比较真实 serializer payload、opaque、顺序和费用口径；当前 Provider 对 Yuki 暴露 complete，
 合成 streaming frame 测试不等于上游 token streaming 已支持。
 
+## Code Mode 合同（P05 实施）
+
+- 主合同 version 11 加入固定 `execute_code`；`MainAgentContract.script_api` 随冻结声明生成，
+  其 digest（API revision + manifest revision + wrapper 映射）写入父 composition 的
+  `api_revision`。digest、engine digest 或 dump format 不符时恢复结算为 partial，不跑旧码。
+- 子调用 T1 元数据追加 `arguments_ref`（ProtocolStore 私有对象），恢复只按保存的映射重建，
+  不按名称+参数寻找相似调用。未 T2 的版本化 intent 不计入未知效果围栏；旧行保守保留。
+- 生命周期控制子调用使用 `admit_dispatch(charge=False)`：有派发标记、不扣业务额度。
+- 外层 composition 永不计业务工具；`usage` 区分 `business_admitted`、`control_calls`、
+  `rejected_before_dispatch`、`reused_receipts`，仅本 activation 增量。
+- 段额度让出返回内部哨兵，外层 call 不配对；原 Work 下一段 restore 识别
+  `PendingComposition`，在任何模型请求前续跑同一程序。
+- worker 合同的子集投影尚未接入（P07）；没有主合同投影时 `execute_code` 返回
+  `code_engine_unavailable`。
+
 ## 删除和切换边界
 
 P01 删除可变 `_batch` 作为身份来源；P02 统一原子 admission；P03 移植 Pi 控制流；

@@ -50,6 +50,28 @@ flowchart LR
 `mutation_committed` 与投递成功、失败、未知状态按真实回执解释；它们不是自然语言
 “已经完成”的替代品。工作区、MCP 结果等 artifact 的保留期由各自存储合同决定。
 
+## 代码组合 `execute_code`
+
+冻结声明额外包含固定的 `execute_code`（合同 version 11，`yuki.codemode.api.v1`）。
+脚本里的 `await yuki_<工具名>({参数})` 是同一 canonical 工具的调用语法，由
+`codemode/api_projection.py` 从冻结声明确定性投影：参数 schema 为原件，名称编码可逆，
+不增加别名、目录查询或权限；`execute_code` 自身不投影，未知名称在沙箱内即 NameError。
+
+`execute_code` 要求已接纳的 Work，否则返回 `accept_work_before_execution`；短聊与单次
+发送仍走直接工具。外层调用是 `kind=code_composition` 父 effect，不计业务工具次数；每个
+子调用是带 `parent_operation_id/child_ordinal/engine_call_id/feed_index` 的显式 Invocation，
+身份为 `<父 operation>/c<序号>`，与参数无关。子调用经 T1 `publish_code_boundary`
+（快照、父 checkpoint、子意图同事务）后，走与直接调用相同的 InvocationService →
+WorkSession T2/T3 → `MainAgentBackend.execute_call`，拒绝理由与直接调用逐字一致；
+VM 只收到已保存的原回执视图（`ToolReceiptView`）。
+
+宿主而非脚本决定并发：只读子调用受 `max_parallel_calls` 约束，发送、修改、记忆写和控制为
+屏障；同一响应多个 `execute_code` 按顺序执行，且不能与直接调用混在同一批。生命周期控制
+只在没有在途同伴时独占执行；`wait/need_input/complete/fail` 等以及 `memory_change`、
+未知副作用、新输入、权限/接纳关闭会由宿主停止脚本并配对外层结果，脚本 `try/except`
+不能继续副作用。段工具额度用尽时外层 call 保持未配对，下一段由原 Work 从同一快照续跑；
+已配对的 partial 永不恢复 VM。程序完整结果超出预算时保存为授权 artifact，模型只得预览。
+
 ## 代码定位
 
 - `services/main_agent_contract.py`：冻结主 Agent 声明与合同 revision。
@@ -57,6 +79,7 @@ flowchart LR
 - `services/main_agent_backend.py`：执行授权、工具回执与业务效果围栏。
 - `capabilities/`：descriptor、catalog、policy、binding、协调器和结果预算。
 - `mcp/`、`plugin_host/`：各来源的注册和执行适配；不建立第二套 Yuki 主循环。
+- `codemode/`：`execute_code` 声明、API 投影、Monty 驱动与组合控制门。
 
 
 持久 Work 在结果预算之前从类型化执行结果保存 `ok/status/run_id/pending/uncertain/error_code`

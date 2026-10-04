@@ -349,6 +349,7 @@ class ApplicationContainer:
         )
         self.agent_tools.short_state = self.main_agent_contract.state
         self.runtime.runner.main_contract = self.main_agent_contract
+        self.runtime.runner.code_mode_settings = settings
         from qq_ai_bot.runtime.subagent_repository import SubagentRepository
         from qq_ai_bot.runtime.subagent_scheduler import SubagentScheduler
         from qq_ai_bot.runtime.work_repository import WorkRepository

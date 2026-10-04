@@ -19,6 +19,7 @@ from qq_ai_bot.capabilities.invocation import (
     Invocation,
     InvocationIdentity,
     TrustedInvocationContext,
+    child_operation_id,
     direct_operation_id,
 )
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
@@ -75,6 +76,8 @@ class PendingComposition:
     operation_id: str
     snapshot_revision: int
     snapshot_ref: str | None
+    name: str = "execute_code"
+    arguments: str = "{}"
 
 
 class WorkSession:
@@ -309,7 +312,12 @@ class WorkSession:
                 )
                 if composition is not None:
                     self.pending_compositions.append(
-                        PendingComposition(call_id=call["id"], **composition)
+                        PendingComposition(
+                            call_id=call["id"],
+                            name=call.get("name", "execute_code"),
+                            arguments=call.get("arguments", "{}"),
+                            **composition,
+                        )
                     )
                     continue
                 result = await self.journal.effect_result(self.call_key(call["id"]))
@@ -1220,6 +1228,18 @@ class WorkSession:
         assert self.transcript is not None
         return direct_operation_id(self.transcript.chain_id, self.sequence, call_id)
 
+    def receipt_key(self, call_id: str) -> str:
+        """The Host operation a domain receipt belongs to.
+
+        Bindings receive ``ToolInvocationContext.call_id`` already set to the
+        original operation ID (direct or composition child); only legacy callers
+        still pass a response-local Provider ID.
+        """
+        assert self.transcript is not None
+        if call_id.startswith((f"{self.transcript.chain_id}:", "invocation:")):
+            return call_id
+        return self.call_key(call_id)
+
     async def save(
         self,
         phase: str,
@@ -1364,19 +1384,36 @@ class WorkSession:
                     call,
                     TrustedInvocationContext(control, self.contract),
                 )
-            if invocation.identity.owner_execution_id != control.current[
-                "id"
-            ] or invocation.identity.operation_id != self.call_key(call.id):
+            identity = invocation.identity
+            expected = (
+                self.call_key(call.id)
+                if identity.parent_operation_id is None
+                else child_operation_id(identity.parent_operation_id, identity.child_ordinal or 0)
+            )
+            if (
+                identity.owner_execution_id != control.current["id"]
+                or identity.operation_id != expected
+                or (identity.parent_operation_id is not None and identity.child_ordinal is None)
+            ):
                 raise WorkConflict("invocation_owner_conflict")
             await control.repository.validate_invocation(
                 invocation.identity.operation_id, invocation.durable_metadata()
             )
+        # The original Host operation, including a composition child's identity.
+        operation_key = (
+            invocation.identity.operation_id if invocation is not None else self.call_key(call.id)
+        )
         report = None
         report_target = None
         if call.function.name == "send_message":
             if control.current is not None:
-                key = self.call_key(call.id)
-                if await self.journal.effect_state(key) is not None:
+                key = operation_key
+                child_intent = (
+                    invocation is not None
+                    and invocation.identity.parent_operation_id is not None
+                    and await control.repository.undispatched_intent(control.current["id"], key)
+                )
+                if not child_intent and await self.journal.effect_state(key) is not None:
                     if not await control.repository.valid(control.lease):
                         raise WorkConflict("work_activation_obsolete")
                     return await self.journal.effect_result(key)
@@ -1410,7 +1447,7 @@ class WorkSession:
                 },
                 ensure_ascii=False,
             )
-        key = self.call_key(call.id)
+        key = operation_key
         if not await control.repository.prepare_effect(
             control.lease,
             control.current["id"],
@@ -1429,7 +1466,13 @@ class WorkSession:
         ):
             assert invocation is not None
             await control.repository.validate_invocation(key, invocation.durable_metadata())
-            return await self.journal.effect_result(key)
+            # A composition child's intent was published at T1 with its snapshot;
+            # only that exact undispatched intent continues to T2. Anything else
+            # (dispatched, settled, legacy) returns the original receipt.
+            if invocation.identity.parent_operation_id is None or not (
+                await control.repository.undispatched_intent(control.current["id"], key)
+            ):
+                return await self.journal.effect_result(key)
         from qq_ai_bot.runtime.work_budget import WorkBudgetExceeded
 
         try:

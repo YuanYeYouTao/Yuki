@@ -355,6 +355,31 @@ class MainAgentBackend(AgentToolBackend):
             reason,
         )
 
+    async def archive_code_result(self, text: str) -> str | None:
+        """Full program result as an authorized artifact; the model sees a preview."""
+        store = self._service._tool_artifacts
+        config = self._runtime.runtime_config
+        tooling = config.tooling if config is not None else None
+        if store is None or tooling is None or not tooling.result_artifact_enabled:
+            return None
+        from qq_ai_bot.mcp.artifact_access import access_from_runtime
+        from qq_ai_bot.runtime.work_activation import current_work_control
+
+        active = current_work_control.get()
+        request_runtime = self._request_runtime()
+        handle: str = await store.write_artifact(
+            provider_id="codemode",
+            tool_name="execute_code",
+            content=text,
+            media_type="application/json",
+            retention_seconds=tooling.result_artifact_retention_seconds,
+            access=access_from_runtime(
+                request_runtime,
+                generation=active.lease.generation if active is not None else None,
+            ),
+        )
+        return handle
+
     def did_use_web(self) -> bool:
         """Expose a provider-metadata-derived effect to the shared Agent loop."""
 
@@ -695,11 +720,8 @@ class MainAgentBackend(AgentToolBackend):
                         artifact_created=budgeted.artifact_id is not None,
                         error_category=outcome.error_code,
                         result_excerpt=result,
-                        tool_call_id=(
-                            control.session.call_key(call.id)
-                            if control is not None and control.session is not None
-                            else receipt_call_id
-                        ),
+                        # The same Host operation the effect row and audit fence use.
+                        tool_call_id=receipt_call_id,
                     )
             if contains_internal_capability_payload(result):
                 self._capability_was_used = True

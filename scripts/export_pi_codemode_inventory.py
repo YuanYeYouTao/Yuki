@@ -28,6 +28,7 @@ _CONTROL_BINDINGS = {
     for tool in (*work_control_tools(), *subagent_tools())
 }
 _CONTROL_BINDINGS[STATE_TOOL.name] = "qq_ai_bot.workspace.short_state.ShortState.execute"
+_CONTROL_BINDINGS["execute_code"] = "qq_ai_bot.codemode.driver.CodeModeDriver.run"
 
 
 def inventory_rows(

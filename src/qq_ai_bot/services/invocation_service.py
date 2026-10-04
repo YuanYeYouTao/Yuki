@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from qq_ai_bot.capabilities.invocation import Invocation
+from qq_ai_bot.capabilities.invocation import Invocation, child_operation_id
 from qq_ai_bot.domain.messages import ToolCall
 
 
@@ -47,18 +47,25 @@ class InvocationService:
         session = getattr(control, "session", None)
         if session is None:
             return await execute()
-        if invocation.identity.parent_operation_id is not None:
-            # Composition admission/checkpoints are introduced in P02. Never silently
-            # use a top-level Provider key for an unimplemented child invocation.
-            raise ValueError("composition_invocation_not_supported")
-        if session.call_key(invocation.call.id) != invocation.identity.operation_id:
+        identity = invocation.identity
+        if identity.parent_operation_id is None:
+            if session.call_key(invocation.call.id) != identity.operation_id:
+                raise ValueError("invocation_journal_identity_conflict")
+        elif (
+            identity.child_ordinal is None
+            or child_operation_id(identity.parent_operation_id, identity.child_ordinal)
+            != identity.operation_id
+        ):
+            # A child is keyed by its parent and Host admission ordinal only.
             raise ValueError("invocation_journal_identity_conflict")
         return str(
             await session.execute(
                 invocation.call,
                 execute,
                 side_effecting=side_effecting,
-                allow_pending=invocation.call.function.name == "send_message",
+                # A composition child never bypasses the pending-input fence.
+                allow_pending=invocation.call.function.name == "send_message"
+                and identity.parent_operation_id is None,
                 invocation=invocation,
             )
         )

@@ -147,6 +147,40 @@ mypy 710 文件无错误。
 **未完成：**Linux 构建与 digest 未验证（只核对了本机）；P05 尚未把答复接到 InvocationService，
 `publish_code_boundary` 在测试中由 fixture 调用；转依赖 notice 汇总待 P09。
 
+## P05：完整 Code Mode 能力，已完成（本机，未提交）
+
+单元 A `feat(codemode): 固定API与全工具受控调用`：
+
+- 新增 `codemode/{contract,api_projection,driver}.py`；主合同 version 11 加入固定
+  `execute_code`，`MainAgentContract.script_api` 从冻结声明投影（原 schema、可逆名称）。
+- 外层调用为 `code_composition` 父 effect；子调用为显式 child Invocation
+  （`<父>/c<序号>`），T1 `publish_code_boundary` 后经同一 InvocationService → WorkSession
+  T2/T3 → `MainAgentBackend.execute_call`；VM 只收原回执视图。InvocationService 去掉
+  `composition_invocation_not_supported`，WorkSession/领域回执键改为原 operation
+  （`receipt_key`），子调用不能借 `allow_pending` 绕过新输入围栏。
+- 计量：外层不计业务；子调用 T2 计一次；T2 前拒绝/预算拒绝为零；复用回执另列。
+- 并发：只读段受 `max_parallel_calls`，发送/修改/记忆/控制为屏障；同响应多个外层顺序执行，
+  不能与直接调用同批。程序结果超限时存授权 artifact，返回预览与 `complete=false`。
+- `publish_code_boundary` 允许无子意图的程序 checkpoint；新增 `composition_children`、
+  `undispatched_intent`；未 T2 的版本化 intent 不再计入未知效果围栏（旧行保守）。
+
+单元 B `feat(codemode): 控制门及原Work让出`：
+
+- 生命周期控制在同伴结算后独占执行，复用直接调用的同一检查（抽出
+  `AgentRunner._execute_control_call`），`admit_dispatch(charge=False)` 不扣业务额度。
+  wait/need_input/complete/fail 等、`memory_change`、未知副作用、新输入、权限或接纳关闭由
+  宿主停止脚本并配对外层结果；get/list 保持原分页且不停止脚本。
+- 记忆写与其他副作用不同步；先前已有副作用时记忆写被拒；同步的发送不派发。
+- 段额度用尽：外层 call 不配对，下一段 restore 的 `PendingComposition` 在任何模型请求前
+  续跑同一程序；已配对 partial 永不恢复 VM。
+
+更新的既有测试：`tests/integration/test_code_composition_restore.py`
+（`PendingComposition` 现携带原外层 call 的 name/arguments）。清单 JSON 重新导出为 76 项。
+
+未覆盖／待后续：worker 合同的子集投影与插件主调用入口（P07）；发送分片/附件的
+领域闭合（P06）；真实 Provider wire 下的 execute_code 前缀与缓存对照（P08）；
+`execute_code` 在模型侧的使用质量未评估（需付费模型，未授权）。
+
 ## 验证记录（2026-10-04）
 
 ```sh
@@ -156,6 +190,11 @@ uv run --frozen mypy   # 705 文件无错误（修复 _unresolved_clause 的 boo
 uv run --frozen pytest -q tests   # P01 后：2758 通过、1 跳过（需生产备份路径）
 # P02 后：2777 通过、1 跳过；mypy 705 文件无错误
 # P03+P04 合并后（YUKI_MONTY_BINARY=worker-only 构建）：2844 通过、1 跳过；mypy 716 文件无错误
+# P05+P02 补测后：3102 通过、2 跳过、1 失败；mypy 719 文件无错误。失败为既有计时测试
+#   test_automation_timeout_certainty::test_transport_deadline_preserves_uncertain_receipt_and_original_dispatch
+#   （剩余 0.2s 截止；该轮因机器负载耗时 25 分钟，截止在发送意图前触发）。单独重跑 5/5 通过，
+#   P05 未改 automation 执行器；记为计时敏感，未修改测试。
+# P05 后（同上）：3100 通过、2 跳过（生产备份路径；send_message 在已提交修改后仍可调用的对照项）；mypy 719 文件无错误
 ```
 
 第一轮全量：2727 通过、7 失败、24 错误。失败为本次删除旧 `execute/begin_batch` 后未迁移的
@@ -164,7 +203,7 @@ WebUI 前端资源未构建（`npm ci && npm run build`，产物已 gitignore）
 
 ## 后续依赖
 
-下一步 P05（完整 Code Mode 能力：`execute_code` 声明、bridge 接 InvocationService、控制门、
-计量），依赖 P03 与 P04 均已具备。P06–P10 未开始；P11 真实外部与生产验收待单独授权。
+下一步 P06（发送、记忆与来源权限闭合）与 P08（Provider 与上下文），P07 入口接线依赖 P06。
+P09–P10 未开始；P11 真实外部与生产验收待单独授权。
 Monty Python binding 为本地构建 wheel，未进 `uv.lock`，`uv sync` 后需重跑
 `scripts/build_monty_worker.sh`，P09 落地可复现分发。

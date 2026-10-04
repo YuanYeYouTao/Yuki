@@ -7,12 +7,16 @@ import hashlib
 import json
 import logging
 from copy import deepcopy
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from qq_ai_bot.codemode.contract import CODE_API_REVISION
 from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.runtime.work_control import work_control_tools
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.workspace.short_state import STATE_TOOL, ShortState
+
+if TYPE_CHECKING:
+    from qq_ai_bot.codemode.api_projection import ScriptApi
 
 
 class MainAgentContract:
@@ -20,6 +24,7 @@ class MainAgentContract:
         self.chat, self.state = chat, state
         self._tools: tuple[ChatTool, ...] | None = None
         self.revision = ""
+        self.script_api: ScriptApi | None = None
         self._lock = asyncio.Lock()
 
     def health(self) -> dict[str, object]:
@@ -65,6 +70,10 @@ class MainAgentContract:
 
             tools.extend(work_control_tools())
             tools.extend(subagent_tools())
+            from qq_ai_bot.codemode.contract import EXECUTE_CODE_TOOL
+
+            # Code composition is calling syntax over this same frozen manifest.
+            tools.append(EXECUTE_CODE_TOOL)
             names = [tool.name for tool in tools]
             if len(names) != len(set(names)):
                 raise ValueError("duplicate Main Agent manifest tool")
@@ -72,7 +81,9 @@ class MainAgentContract:
             revision = hashlib.sha256(
                 json.dumps(
                     {
-                        "version": 10,
+                        # 11: adds the fixed execute_code composition entry.
+                        "version": 11,
+                        "code_api": CODE_API_REVISION,
                         "tools": [
                             {
                                 "name": t.name,
@@ -90,6 +101,9 @@ class MainAgentContract:
                 ).encode("utf-8")
             ).hexdigest()
             self._tools, self.revision = frozen, revision
+            from qq_ai_bot.codemode.api_projection import project
+
+            self.script_api = project(frozen, revision)
             logging.getLogger(__name__).info(
                 "main_agent_manifest_frozen tools=%d revision=%s", len(self._tools), self.revision
             )

@@ -87,6 +87,19 @@ def direct_operation_id(chain_id: str, request_sequence: int, provider_call_id: 
     return "invocation:v1:" + hashlib.sha256(encoded).hexdigest()
 
 
+def child_operation_id(parent_operation_id: str, child_ordinal: int) -> str:
+    """A composition child's Host identity: parent + Host admission ordinal."""
+    candidate = f"{parent_operation_id}/c{child_ordinal}"
+    if len(candidate.encode()) <= 256:
+        return candidate
+    encoded = json.dumps(
+        ["yuki.invocation.child.v1", parent_operation_id, child_ordinal],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode()
+    return "invocation:child:v1:" + hashlib.sha256(encoded).hexdigest()
+
+
 def direct_invocations(
     calls: tuple[ToolCall, ...],
     runtime: Any,

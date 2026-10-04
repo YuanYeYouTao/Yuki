@@ -1783,18 +1783,25 @@ class WorkRepository:
         *,
         expected_revision: int,
         composition: dict[str, Any],
-        child: dict[str, Any],
+        child: dict[str, Any] | None,
         store: ProtocolStore,
         binding: CodeSnapshotBinding,
         side_effecting: bool,
     ) -> bool:
-        """T1 publishes a private prepared snapshot and one original child intent."""
+        """T1 publishes a private prepared snapshot and at most one original child intent.
+
+        Without a child this is a pure program checkpoint (e.g. a future wait):
+        the same CAS and publication, and no business intent.
+        """
         if (
             binding.work_id != identity
             or binding.operation_id != parent_key
             or binding.conversation_id != lease.conversation_id
             or binding.generation != lease.generation
-            or child.get("version") != 1
+        ):
+            raise WorkConflict("code_boundary_identity_conflict")
+        if child is not None and (
+            child.get("version") != 1
             or child.get("parent_effect_key") != parent_key
             or child.get("owner_execution_id") != identity
             or child.get("dispatch_started") is not False
@@ -1854,18 +1861,22 @@ class WorkRepository:
             raise WorkConflict("code_snapshot_not_prepared")
         store.decode_code_snapshot(await store.get_bytes(snapshot_ref), binding)
         parent_receipt = bounded_json({**previous, "composition": next_composition})
-        child_receipt = bounded_json(
-            {
-                "invocation": child,
-                "outcome": {
-                    "tool": child["tool_id"],
-                    "side_effecting": side_effecting,
-                    "ok": False,
-                    "pending": False,
-                    "uncertain": False,
-                    "executed": False,
-                },
-            }
+        child_receipt = (
+            bounded_json(
+                {
+                    "invocation": child,
+                    "outcome": {
+                        "tool": child["tool_id"],
+                        "side_effecting": side_effecting,
+                        "ok": False,
+                        "pending": False,
+                        "uncertain": False,
+                        "executed": False,
+                    },
+                }
+            )
+            if child is not None
+            else None
         )
         from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
 
@@ -1911,22 +1922,75 @@ class WorkRepository:
                 if changed is None:
                     raise WorkConflict("code_checkpoint_conflict")
                 try:
-                    await writer.execute(
-                        insert(effects).values(
-                            effect_key=child["operation_id"],
-                            work_id=identity,
-                            kind="tool",
-                            state="prepared",
-                            receipt_json=child_receipt,
-                            created=time.time(),
-                            updated=time.time(),
+                    if child is not None:
+                        await writer.execute(
+                            insert(effects).values(
+                                effect_key=child["operation_id"],
+                                work_id=identity,
+                                kind="tool",
+                                state="prepared",
+                                receipt_json=child_receipt,
+                                created=time.time(),
+                                updated=time.time(),
+                            )
                         )
-                    )
                 except IntegrityError as exc:
                     # Same ordinal/engine call or operation ID: one original child only.
                     raise WorkConflict("code_child_identity_conflict") from exc
                 await store.publish_refs(writer, identity, prepared_objects)
         return True
+
+    async def composition_children(self, identity: str, parent_key: str) -> list[dict[str, Any]]:
+        """Exact parent index lookup; never a bounded display page or a text scan."""
+        async with self.database.sessions() as reader:
+            rows = (
+                (
+                    await reader.execute(
+                        select(effects.c.effect_key, effects.c.state, effects.c.receipt_json)
+                        .where(
+                            effects.c.work_id == identity,
+                            func.json_extract(
+                                effects.c.receipt_json, "$.invocation.parent_effect_key"
+                            )
+                            == parent_key,
+                            func.json_extract(effects.c.receipt_json, "$.invocation.version") == 1,
+                        )
+                        .order_by(effects.c.effect_key)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [
+            {
+                "effect_key": row["effect_key"],
+                "state": row["state"],
+                **json.loads(row["receipt_json"]),
+            }
+            for row in rows
+        ]
+
+    async def undispatched_intent(self, identity: str, key: str) -> bool:
+        async with self.database.sessions() as reader:
+            row = (
+                (
+                    await reader.execute(
+                        select(effects.c.state, effects.c.receipt_json).where(
+                            effects.c.effect_key == key, effects.c.work_id == identity
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if row is None or row["state"] != "prepared":
+            return False
+        metadata = json.loads(row["receipt_json"]).get("invocation")
+        return (
+            isinstance(metadata, dict)
+            and metadata.get("version") == 1
+            and metadata.get("dispatch_started") is False
+        )
 
     async def validate_invocation(self, key: str, expected: dict[str, Any]) -> None:
         """The fingerprint detects changed content, never determines an effect ID."""
@@ -1947,8 +2011,14 @@ class WorkRepository:
         if any(previous.get(k) != v for k, v in stable.items()):
             raise WorkConflict("invocation_content_conflict")
 
-    async def admit_dispatch(self, lease: WorkLease, identity: str, key: str) -> bool:
-        """T2: one dispatch marker and all root/run usage commit together."""
+    async def admit_dispatch(
+        self, lease: WorkLease, identity: str, key: str, *, charge: bool = True
+    ) -> bool:
+        """T2: one dispatch marker and all root/run usage commit together.
+
+        ``charge=False`` is only for lifecycle controls, which use the model and
+        message budgets rather than the business tool allowance.
+        """
         async with self.database.sessions() as reader:
             original = (
                 (
@@ -1972,11 +2042,11 @@ class WorkRepository:
         receipt["invocation"] = {
             **invocation,
             "dispatch_started": True,
-            "budget_admitted": True,
+            "budget_admitted": charge,
             "revision": invocation["revision"] + 1,
         }
         serialized = bounded_json(receipt)
-        from qq_ai_bot.runtime.work_budget import charge
+        from qq_ai_bot.runtime.work_budget import charge as charge_budget
 
         async with self.database.immediate_session() as writer:
             await self._assert_lease(writer, lease)
@@ -1993,7 +2063,9 @@ class WorkRepository:
             )
             if changed is None:
                 return False
-            await charge(writer, identity, models=0, tools=1)
+            if not charge:
+                return True
+            await charge_budget(writer, identity, models=0, tools=1)
             updated = await writer.scalar(
                 update(work)
                 .where(
@@ -2035,6 +2107,19 @@ class WorkRepository:
                 )
             )
         unresolved = or_(*clauses) if clauses else false()
+        # A versioned intent whose T2 never committed was never dispatched: it is
+        # not an unknown effect. Legacy prepared rows keep the conservative fence.
+        never_dispatched = and_(
+            effects.c.state == "prepared",
+            # NULL-safe: a legacy row without metadata must stay inside the fence.
+            func.coalesce(func.json_extract(effects.c.receipt_json, "$.invocation.version"), 0)
+            == 1,
+            func.coalesce(
+                func.json_extract(effects.c.receipt_json, "$.invocation.dispatch_started"), 1
+            )
+            == 0,
+        )
+        unresolved = and_(unresolved, ~never_dispatched)
         # Only a recognized parent is aggregate state, never a business leaf.
         # Legacy/unknown versions retain the conservative historical fence.
         return and_(

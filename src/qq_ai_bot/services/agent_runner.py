@@ -32,6 +32,7 @@ from qq_ai_bot.capabilities.coordinator import (
     ToolInvocationCoordinator,
 )
 from qq_ai_bot.capabilities.invocation import Invocation
+from qq_ai_bot.codemode.contract import EXECUTE_CODE_NAME
 from qq_ai_bot.domain.messages import (
     ChatMessage,
     ChatRequest,
@@ -43,6 +44,7 @@ from qq_ai_bot.domain.messages import (
     PromptRequestDiagnostics,
     ResponseCitation,
     ToolCall,
+    ToolFunction,
 )
 from qq_ai_bot.execution_trace.recorder import trace_span
 from qq_ai_bot.llm.base import (
@@ -92,6 +94,8 @@ if TYPE_CHECKING:
     from qq_ai_bot.services.main_agent_contract import MainAgentContract
 
 logger = logging.getLogger(__name__)
+# Never a tool result: the outer code call stays unpaired for its original owner.
+CODE_COMPOSITION_YIELDED = "\x00yuki.code.yielded"
 
 
 class _RequestNotStarted(Exception):
@@ -188,6 +192,8 @@ class AgentRunner:
         self._tool_coordinator = ToolInvocationCoordinator()
         self._native_tools = NativeToolBinder()
         self.main_contract: MainAgentContract | None = None
+        # Pinned worker path/digest and limits; Code Mode is unavailable until set.
+        self.code_mode_settings: Any = None
 
     def work_contract(
         self,
@@ -556,6 +562,21 @@ class AgentRunner:
                 compaction_brief=runtime.compaction_brief,
                 visible_event_ids=runtime.visible_event_ids,
             )
+            pending_code = runtime.work_control.session.pending_compositions
+            if pending_code:
+                # The original owner continues the same composition before any
+                # generic pairing or new model request (P02 restore split).
+                if await self._resume_compositions(
+                    pending_code, transcript, tools, runtime, fixed_definitions
+                ):
+                    return AgentRunResult(
+                        text="",
+                        tool_calls_used=0,
+                        model_requests=0,
+                        web_was_used=False,
+                        suppress_delivery=True,
+                        work_state="queued",
+                    )
             repeated_batch_count = int(runtime.work_control.session.progress.get("repeats", 0))
             provider_pause_replay = bool(
                 runtime.work_control.session.progress.get("provider_pause_replay", False)
@@ -1579,6 +1600,8 @@ class AgentRunner:
             nonlocal pending_stage_feedback, previous_batch_fingerprint, repeated_batch_count
             nonlocal stage_feedback_batch, staged_evidence_results, web_was_used
             batch = coordinated.calls
+            if any(result == CODE_COMPOSITION_YIELDED for _, result, _ in batch):
+                return End(await _code_yield(request_index + 1))
             for call, result, _was_executed in batch:
                 try:
                     outcome = json.loads(result)
@@ -1803,6 +1826,21 @@ class AgentRunner:
                 return STOP
             return Continue()
 
+        async def _code_yield(model_requests: int) -> AgentRunResult:
+            # The response with the pending code call is already journaled; no
+            # result is paired, so the next segment resumes the same program.
+            assert runtime.work_control is not None
+            runtime.work_control.yield_segment = True
+            runtime.work_control.ending = "queued"
+            return AgentRunResult(
+                text="",
+                tool_calls_used=calls_used,
+                model_requests=model_requests,
+                web_was_used=web_was_used,
+                suppress_delivery=True,
+                work_state="queued",
+            )
+
         async def _exhausted() -> AgentRunResult:
             if runtime.work_control is not None and runtime.work_control.current is not None:
                 runtime.work_control.yield_segment = True
@@ -1884,6 +1922,289 @@ class AgentRunner:
             span.result = asdict(result)
             return result
 
+    async def _execute_code_batch(
+        self,
+        calls: tuple[ToolCall, ...],
+        tools: AgentToolBackend | None,
+        runtime: AgentRuntime,
+        *,
+        declared_names: frozenset[str],
+        chain_id: str,
+        request_sequence: int,
+        max_parallel_calls: int,
+        remaining_calls: int,
+    ) -> CoordinatedToolResult:
+        """Outer code calls run in model order, alone in their batch.
+
+        A composition is a lifecycle-bound program: mixing it with direct calls
+        in one response would let two owners race on the same effects.
+        """
+        if len(calls) != len([c for c in calls if c.function.name == EXECUTE_CODE_NAME]):
+            result = json.dumps(
+                {"ok": False, "executed": False, "error": "execute_code_requires_own_batch"}
+            )
+            return CoordinatedToolResult(tuple((call, result, False) for call in calls), 0)
+        ordered: list[tuple[ToolCall, str, bool]] = []
+        control = runtime.work_control
+        for index, call in enumerate(calls):
+            if (
+                index
+                and control is not None
+                and (control.ending is not None or control.handoff_work_id is not None)
+            ):
+                # An earlier composition ended or yielded the Work: no later code runs.
+                ordered.append(
+                    (
+                        call,
+                        json.dumps(
+                            {"ok": False, "executed": False, "error": "code_composition_closed"}
+                        ),
+                        False,
+                    )
+                )
+                continue
+            result = await self._run_code_call(
+                call,
+                tools,
+                runtime,
+                declared_names=declared_names,
+                chain_id=chain_id,
+                request_sequence=request_sequence,
+                max_parallel_calls=max_parallel_calls,
+                remaining_calls=remaining_calls,
+            )
+            ordered.append((call, result, True))
+        return CoordinatedToolResult(tuple(ordered), 0)
+
+    async def _resume_compositions(
+        self,
+        pending: list[Any],
+        transcript: TurnTranscript,
+        tools: AgentToolBackend | None,
+        runtime: AgentRuntime,
+        definitions: tuple[ChatTool, ...] | None,
+    ) -> bool:
+        """Resume restored compositions; True means the segment yielded again."""
+        from qq_ai_bot.capabilities.invocation import (
+            Invocation,
+            InvocationIdentity,
+            TrustedInvocationContext,
+        )
+        from qq_ai_bot.codemode.driver import CodeCompositionYield, CodeModeDriver
+
+        control = runtime.work_control
+        assert control is not None and control.session is not None
+        session = control.session
+        declared = frozenset(tool.name for tool in definitions or ())
+        tooling = getattr(runtime.runtime_config, "tooling", None)
+        host = self._code_host(
+            tools,
+            runtime,
+            declared_names=declared,
+            max_parallel_calls=tooling.max_parallel_calls if tooling is not None else 1,
+            remaining_calls=runtime.max_tool_calls,
+        )
+        for item in pending:
+            call = ToolCall(item.call_id, ToolFunction(item.name, item.arguments))
+            if isinstance(host, str):
+                result = host
+            else:
+                assert control.current is not None and session.transcript is not None
+                outer = Invocation(
+                    InvocationIdentity(
+                        item.operation_id,
+                        str(control.current["id"]),
+                        session.transcript.chain_id,
+                        session.sequence,
+                        item.call_id,
+                    ),
+                    call,
+                    TrustedInvocationContext(
+                        runtime, self.main_contract.revision if self.main_contract else ""
+                    ),
+                )
+                try:
+                    result = await CodeModeDriver(host, outer).resume()
+                except CodeCompositionYield:
+                    control.yield_segment = True
+                    control.ending = "queued"
+                    return True
+            transcript.append_result(item.call_id, result)
+            control.observe_result(
+                call.function.name, result, True, arguments=call.function.arguments
+            )
+        session.pending_compositions = []
+        await session.save("paired")
+        return False
+
+    async def _run_code_call(
+        self,
+        call: ToolCall,
+        tools: AgentToolBackend | None,
+        runtime: AgentRuntime,
+        *,
+        declared_names: frozenset[str],
+        chain_id: str,
+        request_sequence: int,
+        max_parallel_calls: int,
+        remaining_calls: int,
+    ) -> str:
+        from qq_ai_bot.capabilities.invocation import direct_invocations
+        from qq_ai_bot.codemode.driver import CodeCompositionYield, CodeModeDriver
+
+        control = runtime.work_control
+        if call.function.name not in declared_names:
+            return json.dumps({"ok": False, "executed": False, "error": "tool_not_declared"})
+        if control is None or control.current is None or control.session is None:
+            # Short chat and single sends stay direct; code needs an admitted Work.
+            return json.dumps(
+                {
+                    "ok": False,
+                    "executed": False,
+                    "error": "accept_work_before_execution",
+                    "detail": "execute_code 需要已接纳的持续工作；短聊和单次发送直接调用原工具。",
+                },
+                ensure_ascii=False,
+            )
+        host = self._code_host(
+            tools,
+            runtime,
+            declared_names=declared_names,
+            max_parallel_calls=max_parallel_calls,
+            remaining_calls=remaining_calls,
+        )
+        if isinstance(host, str):
+            return host
+        outer = direct_invocations(
+            (call,),
+            runtime,
+            chain_id=chain_id,
+            request_sequence=request_sequence,
+            manifest_revision=self.main_contract.revision if self.main_contract else "",
+        )[0]
+        try:
+            return await CodeModeDriver(host, outer).run()
+        except CodeCompositionYield:
+            # Resource yield: the outer call stays pending in the journal; the
+            # original Work resumes the same composition in its next segment.
+            control.yield_segment = True
+            return CODE_COMPOSITION_YIELDED
+
+    def _code_host(
+        self,
+        tools: AgentToolBackend | None,
+        runtime: AgentRuntime,
+        *,
+        declared_names: frozenset[str],
+        max_parallel_calls: int,
+        remaining_calls: int,
+    ) -> Any:
+        from qq_ai_bot.codemode.driver import ChildClass, CodeHost
+        from qq_ai_bot.codemode.engine_monty import CodeEngineUnavailable, PinnedWorker
+        from qq_ai_bot.codemode.limits import CodeModeLimits
+        from qq_ai_bot.services.invocation_service import InvocationService
+
+        control = runtime.work_control
+        assert control is not None
+        # Only the frozen main manifest projects a script API. Worker contracts
+        # get their own approved subset in P07; until then they have no engine.
+        api = self.main_contract.script_api if self.main_contract is not None else None
+        settings = self.code_mode_settings
+        if api is None or tools is None:
+            return json.dumps({"ok": False, "executed": False, "error": "code_engine_unavailable"})
+        try:
+            worker = PinnedWorker.from_settings(settings) if settings is not None else None
+            limits = CodeModeLimits.from_settings(settings) if settings is not None else None
+        except CodeEngineUnavailable:
+            worker, limits = None, None
+        if worker is None or limits is None:
+            return json.dumps({"ok": False, "executed": False, "error": "code_engine_unavailable"})
+        service = InvocationService()
+
+        def classify(call: ToolCall) -> ChildClass:
+            name = call.function.name
+            if name in WORK_CONTROL_NAMES:
+                return ChildClass("control", False, False)
+            if name == "memory_change":
+                return ChildClass("memory_write", False, True)
+            side = self._is_side_effecting(tools, call, runtime)
+            if name == "send_message":
+                return ChildClass("send", False, True)
+            parallel = (not side) and bool(tools.parallel_safe(name, runtime))
+            return ChildClass("write" if side else "read", parallel, side)
+
+        async def execute_business(invocation: Invocation, side_effecting: bool) -> str:
+            call = invocation.call
+            if call.function.name not in declared_names:
+                return json.dumps({"ok": False, "executed": False, "error": "tool_not_declared"})
+
+            async def invoke() -> str:
+                return str(await tools.execute_call(invocation))
+
+            return await service.invoke(invocation, invoke, side_effecting=side_effecting)
+
+        async def execute_control(call: ToolCall, key: str) -> tuple[str, bool]:
+            return await self._execute_control_call(call, tools, runtime, declared_names, key)
+
+        async def before_dispatch(call: ToolCall) -> str | None:
+            return await before_work_tool(control, call)
+
+        agent = getattr(runtime.runtime_config, "agent", None)
+        archive = getattr(tools, "archive_code_result", None)
+        return CodeHost(
+            control=control,
+            api=api,
+            worker=worker,
+            limits=limits,
+            execute_business=execute_business,
+            execute_control=execute_control,
+            before_dispatch=before_dispatch,
+            classify=classify,
+            max_parallel=max_parallel_calls,
+            # Segment business allowance: the same counter direct calls use.
+            tool_limit=runtime.max_tool_calls,
+            result_limit=getattr(agent, "tool_result_max_characters", 12000) or 12000,
+            archive=archive if callable(archive) else None,
+        )
+
+    async def _execute_control_call(
+        self,
+        call: ToolCall,
+        tools: AgentToolBackend | None,
+        runtime: AgentRuntime,
+        declared_names: frozenset[str],
+        key: str,
+    ) -> tuple[str, bool]:
+        """One lifecycle control with the original checks; shared by direct and code calls."""
+        control = runtime.work_control
+        allowed = getattr(tools, "work_control_allowed", None)
+        if (
+            call.function.name not in declared_names
+            or control is None
+            or (callable(allowed) and not allowed(call.function.name))
+        ):
+            return json.dumps({"ok": False, "error": "work_control_unavailable"}), False
+        try:
+            arguments = json.loads(call.function.arguments)
+            if not isinstance(arguments, dict):
+                raise ValueError("arguments must be an object")
+        except (ValueError, TypeError):
+            return json.dumps({"ok": False, "error": "invalid_work_arguments"}), False
+        query_allowed = getattr(tools, "work_query_allowed", None)
+        action = arguments.get("action")
+        if (
+            call.function.name == "task_control"
+            and isinstance(action, str)
+            and action in {"get", "list"}
+            and callable(query_allowed)
+            and not query_allowed(action)
+        ):
+            return json.dumps({"ok": False, "error": "work_query_not_authorized"}), False
+        rejection = await before_work_tool(control, call)
+        if rejection is not None:
+            return rejection, False
+        return await control.execute(call.function.name, arguments, key), True
+
     async def _execute_tool_batch_impl(
         self,
         calls: tuple[ToolCall, ...],
@@ -1907,6 +2228,18 @@ class AgentRunner:
             return CoordinatedToolResult(tuple((call, result, False) for call in calls), 0)
 
         control = runtime.work_control
+        code_calls = [call for call in calls if call.function.name == EXECUTE_CODE_NAME]
+        if code_calls:
+            return await self._execute_code_batch(
+                calls,
+                tools,
+                runtime,
+                declared_names=declared_names,
+                chain_id=chain_id,
+                request_sequence=request_sequence,
+                max_parallel_calls=max_parallel_calls,
+                remaining_calls=remaining_calls,
+            )
         control_calls = [call for call in calls if call.function.name in WORK_CONTROL_NAMES]
         if control_calls:
             if len(calls) != 1:
@@ -1917,48 +2250,17 @@ class AgentRunner:
                     reused_count=0,
                 )
             call = calls[0]
-            control = runtime.work_control
-            allowed = getattr(tools, "work_control_allowed", None)
-            if (
-                call.function.name not in declared_names
-                or control is None
-                or (callable(allowed) and not allowed(call.function.name))
-            ):
-                result = json.dumps({"ok": False, "error": "work_control_unavailable"})
-                executed = False
-            else:
-                try:
-                    arguments = json.loads(call.function.arguments)
-                    if not isinstance(arguments, dict):
-                        raise ValueError("arguments must be an object")
-                except (ValueError, TypeError):
-                    result = json.dumps({"ok": False, "error": "invalid_work_arguments"})
-                    executed = False
-                else:
-                    query_allowed = getattr(tools, "work_query_allowed", None)
-                    action = arguments.get("action")
-                    if (
-                        call.function.name == "task_control"
-                        and isinstance(action, str)
-                        and action in {"get", "list"}
-                        and callable(query_allowed)
-                        and not query_allowed(action)
-                    ):
-                        result = json.dumps({"ok": False, "error": "work_query_not_authorized"})
-                        executed = False
-                    else:
-                        rejection = await before_work_tool(control, call)
-                        if rejection is not None:
-                            result, executed = rejection, False
-                        else:
-                            result = await control.execute(
-                                call.function.name,
-                                arguments,
-                                control.session.call_key(call.id)
-                                if control.session
-                                else f"{control.lease.owner}:{call.id}",
-                            )
-                            executed = True
+            result, executed = await self._execute_control_call(
+                call,
+                tools,
+                runtime,
+                declared_names,
+                runtime.work_control.session.call_key(call.id)
+                if runtime.work_control is not None and runtime.work_control.session
+                else f"{runtime.work_control.lease.owner}:{call.id}"
+                if runtime.work_control is not None
+                else call.id,
+            )
             return CoordinatedToolResult(
                 calls=((call, result, executed),),
                 # Lifecycle controls use the model and message budgets, not
