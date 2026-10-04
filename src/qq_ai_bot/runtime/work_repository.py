@@ -225,6 +225,20 @@ class WorkRepository:
                 )
             ).first() is not None
 
+    async def _assert_lease_readonly(self, session: AsyncSession, lease: WorkLease) -> None:
+        """Check the original lease in a read snapshot, without authorizing a write.
+
+        The caller owns the snapshot. Actual mutations must still use
+        ``_assert_lease`` in their writer transaction, including SQL-time expiry.
+        """
+        row = (
+            await session.execute(
+                select(self._lease_table(lease).c.fence).where(self._fence(lease))
+            )
+        ).first()
+        if row is None:
+            raise WorkConflict("work_activation_obsolete")
+
     async def _assert_lease(self, session: Any, lease: WorkLease) -> None:
         # A write obtains SQLite's transaction writer reservation, preventing a
         # cancel/acquire from interleaving between validation and the mutation.

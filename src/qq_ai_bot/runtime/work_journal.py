@@ -135,8 +135,8 @@ class WorkJournal:
         )
         if loaded.reason != "source_changed" or loaded.record is None or source_control is None:
             return loaded
-        # The read/file-hydration session above is closed before the guard takes
-        # its own short writer. Never substitute newly assembled chat evidence.
+        # The read/file-hydration session above is closed before the guard opens
+        # its own read snapshots. Never substitute newly assembled chat evidence.
         from dataclasses import replace
 
         from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
