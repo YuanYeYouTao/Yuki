@@ -8,7 +8,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from copy import deepcopy
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select, true
@@ -67,6 +67,16 @@ def tool_audit_source(call_key: str) -> tuple[str, int, int] | None:
     return current[1]
 
 
+@dataclass(frozen=True, slots=True)
+class PendingComposition:
+    """An outer code call whose program, not the model, owns the next step."""
+
+    call_id: str
+    operation_id: str
+    snapshot_revision: int
+    snapshot_ref: str | None
+
+
 class WorkSession:
     def __init__(self, control: WorkControl, contract: str) -> None:
         self.control = control
@@ -89,6 +99,7 @@ class WorkSession:
         self.uses_recovery_transcript = False
         self.public_event_ids: set[int] = set()
         self.dispatch_boundary: PreparedContextBoundary | None = None
+        self.pending_compositions: list[PendingComposition] = []
 
     def record_search_sources(self, sources: list[tuple[str, str] | tuple[str, str, str]]) -> None:
         """Keep bounded public search observations across a provider chain change."""
@@ -284,7 +295,23 @@ class WorkSession:
 
             # Never run calls from a recovered model response. Attach persisted
             # outcomes, or uncertainty, before any fresh input/model dispatch.
+            # An unsettled code composition is not an ordinary unknown: its
+            # original owner resumes the same program, then pairs exactly once.
+            self.pending_compositions = []
             for call in value["pending"]:
+                # Code Mode needs an admitted Work; turn-local calls keep the generic path.
+                composition = (
+                    await self.journal.unsettled_composition(
+                        control.current["id"], self.call_key(call["id"])
+                    )
+                    if control.current
+                    else None
+                )
+                if composition is not None:
+                    self.pending_compositions.append(
+                        PendingComposition(call_id=call["id"], **composition)
+                    )
+                    continue
                 result = await self.journal.effect_result(self.call_key(call["id"]))
                 self.transcript.append_result(call["id"], result)
                 control.observe_result(
@@ -305,6 +332,7 @@ class WorkSession:
                 not control.lease.work_id
                 and self.recovered_delivery is None
                 and row["phase"] in {"response", "paired"}
+                and not self.pending_compositions
                 and not self.progress.get("provider_pause_replay")
                 and not self.progress.get("compaction_staging")
             ):

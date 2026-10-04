@@ -34,16 +34,29 @@ SQLAlchemy 的 `asyncio` extra（`pyproject.toml`/`uv.lock`）。
 - `_mutation_identity` 的单次写授权只限 `memory_change` 与管理写，不再合并合法同参发送。
 - 未知 descriptor 的缓存分类改为保守副作用。
 
-## P02：原 effect 内持久化，进行中
+## P02：原 effect 内持久化，主体完成
 
-已实现：T2 将根预算扣除与 `dispatch_started` 合并为同一短事务；T3 保存结果并拒绝冲突结果；
-`0092_invocation_effect_indexes` 为版本化 invocation 增加父调用、子序号、引擎调用 JSON 索引，
-存在新事实时拒绝 downgrade。3.9.0 未发行，其 README/发行/升级文档基线已同步为 `0092`。
+已实现并有 fixture：
 
-已写未测：`ProtocolStore` 的 `CodeSnapshotBinding`/`get_code_snapshot` 与
-`WorkRepository.publish_code_boundary`（T1 父快照＋子意图）。尚无调用者和 fixture，
-不宣称通过。未开始：restore 的未结算 composition 分流、late receipt、artifact 发布失败窗口、
-独立下游事实日志的子进程强杀测试。
+- T1 `publish_code_boundary`：私有快照、父 checkpoint CAS、唯一子 intent、对象引用同一
+  writer 事务；过期 revision、伪造 dispatch/budget/父/owner、binding 不符均不发布任何行；
+  同父 ordinal/engine call 重复映射为 `code_child_identity_conflict`。
+  （`tests/integration/test_code_boundary_publication.py`）
+- 快照读取复核 Work owner ref、来源 revision、隐私 generation 与 binding header；未发布
+  到本 Work 的字节不能加载。
+- T2/T3：预算与 `dispatch_started` 同事务；冲突结果拒绝；取消后原 operation 仍可结算迟到
+  回执，但 T1 已登记未派发的 intent 不能再接纳。
+- restore 分流：未结算且 `composition.version=1` 的父调用在一般 pending 配对前返回
+  `PendingComposition`，不配 unknown、不退休链；已结算父只配一次原回执；未知版本走保守路径。
+  （`tests/integration/test_code_composition_restore.py`）
+- 真实子进程硬杀（`os._exit`）四个窗口：T1 后、T2 后、下游已写后、T3 后；下游有独立
+  append-only 日志。重启后均不重发、不重扣，T2 后一律 unknown。
+  （`tests/integration/test_invocation_process_crash.py`）
+- `_unresolved_clause` 只将已识别的 `code_composition` 父从未知围栏排除。
+
+尚未覆盖：artifact 发布失败与引用提交中断的独立 fixture（现有 `result_unavailable` 路径
+沿用旧测试）、writer 排队后过租约、composition 父的最终结算接口（由 P05 控制门提供）。
+`PendingComposition` 目前只被识别，原 owner 驱动在 P03/P04 接入。
 
 ## P04 前置：Monty 原生 worker 编译
 
@@ -61,7 +74,8 @@ P09 需改为可复现构建。
 uv run --frozen ruff check src tests scripts migrations   # 通过
 uv run --frozen ruff format --check src tests scripts migrations   # 通过
 uv run --frozen mypy   # 705 文件无错误（修复 _unresolved_clause 的 bool/ColumnElement 混用后）
-uv run --frozen pytest -q tests   # 第二轮：2758 通过、1 跳过（需生产备份路径）
+uv run --frozen pytest -q tests   # P01 后：2758 通过、1 跳过（需生产备份路径）
+# P02 后：2777 通过、1 跳过；mypy 705 文件无错误
 ```
 
 第一轮全量：2727 通过、7 失败、24 错误。失败为本次删除旧 `execute/begin_batch` 后未迁移的
@@ -70,5 +84,5 @@ WebUI 前端资源未构建（`npm ci && npm run build`，产物已 gitignore）
 
 ## 后续依赖
 
-P02 剩余项完成后进入 P03（Pi 循环移植）与 P04（Monty 驱动）。P05–P10 未开始。
+下一步 P03（Pi 循环移植）与 P04（Monty 驱动），可并行。P05–P10 未开始。
 P11 真实外部与生产验收待单独授权。代码提交、推送、PR 尚未执行。

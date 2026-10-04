@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from sqlalchemy import and_, case, delete, false, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import (
@@ -1909,17 +1910,21 @@ class WorkRepository:
                 )
                 if changed is None:
                     raise WorkConflict("code_checkpoint_conflict")
-                await writer.execute(
-                    insert(effects).values(
-                        effect_key=child["operation_id"],
-                        work_id=identity,
-                        kind="tool",
-                        state="prepared",
-                        receipt_json=child_receipt,
-                        created=time.time(),
-                        updated=time.time(),
+                try:
+                    await writer.execute(
+                        insert(effects).values(
+                            effect_key=child["operation_id"],
+                            work_id=identity,
+                            kind="tool",
+                            state="prepared",
+                            receipt_json=child_receipt,
+                            created=time.time(),
+                            updated=time.time(),
+                        )
                     )
-                )
+                except IntegrityError as exc:
+                    # Same ordinal/engine call or operation ID: one original child only.
+                    raise WorkConflict("code_child_identity_conflict") from exc
                 await store.publish_refs(writer, identity, prepared_objects)
         return True
 

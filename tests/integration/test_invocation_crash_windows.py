@@ -152,3 +152,51 @@ async def test_unknown_dispatch_is_never_replayed_after_reentry(database, tmp_pa
     receipt, total, root = await facts(database, owner.call_key(call.id))
     assert receipt["invocation"]["dispatch_started"] is True
     assert total == root == 1
+
+
+async def test_late_receipt_settles_original_after_cancel_without_new_admission(database, tmp_path):
+    owner, invocation = await prepared(database, tmp_path)
+    repository = owner.control.repository
+    lease, identity = owner.control.lease, owner.control.current["id"]
+    key = invocation.identity.operation_id
+    assert await repository.admit_dispatch(lease, identity, key)
+    waiting = direct_invocations(
+        (ToolCall("queued", ToolFunction("send_message", '{"text":"later"}')),),
+        SimpleNamespace(work_control=owner.control),
+        manifest_revision="contract",
+    )[0]
+    assert await repository.prepare_effect(
+        lease,
+        identity,
+        waiting.identity.operation_id,
+        "tool",
+        invocation=waiting.durable_metadata(),
+        outcome={"tool": "send_message", "side_effecting": True},
+    )
+    await repository.cancel(lease.conversation_id)
+    # The already-dispatched send reports back after the hard boundary.
+    late = {"result": '{"ok":true}', "outcome": {"ok": True, "side_effecting": True}}
+    await repository.record_effect(key, "accepted", late)
+    receipt, total, root = await facts(database, key)
+    assert receipt["result"] == late["result"] and total == root == 1
+    # The narrow settlement path cannot authorize another dispatch.
+    other = direct_invocations(
+        (ToolCall("after-cancel", ToolFunction("send_message", "{}")),),
+        SimpleNamespace(work_control=owner.control),
+        manifest_revision="contract",
+    )[0]
+    with pytest.raises(WorkConflict):
+        await repository.prepare_effect(
+            lease,
+            identity,
+            other.identity.operation_id,
+            "tool",
+            invocation=other.durable_metadata(),
+        )
+    # T1-registered but undispatched work is closed by the boundary, not charged.
+    with pytest.raises(WorkConflict, match="work_activation_obsolete"):
+        await repository.admit_dispatch(lease, identity, waiting.identity.operation_id)
+    # The original reports "already admitted" and is never re-dispatched or recharged.
+    assert not await repository.admit_dispatch(lease, identity, key)
+    queued, total, root = await facts(database, waiting.identity.operation_id)
+    assert queued["invocation"]["dispatch_started"] is False and total == root == 1
