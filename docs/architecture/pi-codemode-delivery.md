@@ -1,6 +1,6 @@
 # Pi 与 Code Mode 开发交付记录
 
-2026-10-04；目标与不变量见 [设计合同](pi-codemode-design.md)，接手说明见 [交接](pi-codemode-handoff.md)。
+始于 2026-10-04，最后更新 2026-10-05；目标与不变量见 [设计合同](pi-codemode-design.md)，接手说明见 [交接](pi-codemode-handoff.md)。
 
 ## 授权与 Git
 
@@ -10,7 +10,7 @@
   远端测试分支并确认本地与远端均为 `226b5d6ac5e39021a5a4dca8eccc9f8e7401580f`。
 - 开始时工作区干净；原主工作树 `main` 未切换、未修改。
 - 已授权并执行：在测试分支提交与推送。2026-10-04 后续请求另外授权使用研究者指定的
-  本地 DeepSeek 凭据完成真实 Provider 验收（尚未运行）。PR、合并、真实消息、生产访问、
+  本地 DeepSeek 凭据完成真实 Provider 验收（三协议十二个配置场景实际通过）。PR、合并、真实消息、生产访问、
   镜像发布与部署仍待明确授权，均未执行。
 - 共享 Git 存储存在既有 AppleDouble `._pack-…idx` 索引报错；fetch/push/分支追踪
   实际成功。没有删除或修复无关 Git 元数据。
@@ -418,7 +418,7 @@ Linux 61 项证据在 `p10-linux.json`。P00 清单保留历史 not_run，不改
 P10 提交并推送 `9edc5f1e624fae3e3abb63d66bf3db53065d9686`，远端精确 SHA 已核验。
 真实 DeepSeek 与清理状态见下节。
 
-## P11：真实 DeepSeek 首轮已运行，修正后重验待确认
+## P11：已授权 Provider 场景实际通过，生产与真实发送待授权
 
 只使用研究者指定的 DeepSeek 凭据；没有复制或输出 key。配置的
 Chat Completions、Responses、Anthropic Messages 三种协议均实际收到 HTTP 200，
@@ -455,16 +455,40 @@ YUKI_MONTY_BINARY=<actual-Darwin-worker> uv run --frozen pytest -q -p no:warning
 改用 uv 管理的 CPython 3.12 后实际预算重建及篡改拒绝均通过。金额依据
 [DeepSeek 官方价格](https://api-docs.deepseek.com/quick_start/pricing/)，没有用离线次数声称真实费用。
 
-重验已具体准备：只运行失败/未运行的七项，继承首轮已用 HTTP 和费用 reservation，
+重验仅运行失败/未运行的七项，继承首轮已用 HTTP 和费用 reservation，
 累计费用 ceiling $1 不变，追加最多 24 次请求（累计最多 48）；从原 wire 元数据重建
-已用 counter/reservation，零化或不一致数据拒绝，nested resume 拒绝，不能把已通过项夹带重跑。此前声明上限是 24，
-追加确认尚待答复，未执行重验。ruff/format（1134 文件）和 mypy（722）通过；
+已用 counter/reservation，零化或不一致数据拒绝，nested resume 拒绝，不能把已通过项夹带重跑。此前将自设的 24 次请求上限误当成新的授权需求，发出了重复确认；
+随后依据用户已有的真实 API 验收授权撤回该确认，原 $1 费用上限没有增加。
+**重验 7/7 通过，18.72 秒**，三协议 direct/code/truncation/disconnect 共 **12/12** 场景
+均有实际通过记录，首轮失败/未运行证据不删除。直接工具各 3 次 HTTP、code 各 2 次；
+成功场景各执行两次真实 Host→fake 下游调用，原预算准确保留，零重复 operation。
+新重验逐请求比较完整 tools payload（schema、顺序、说明），全部一致；思考/opaque
+材料在实际后续请求逐字段原样回传。
+ruff/format（1134 文件）和 mypy（722）通过；
 最后全量 **3258 通过、1 跳过，731.20 秒**，原生 worker 无跳过。脚本随后收紧假文件路径
 及完整工具 payload 对照，使用实际安装 worker 的最终离线 12 项重验通过（3.95 秒）；
 生产 Runner 在 P10 后未改变。原始全量 JUnit 与最后定向证据在
 `p11-full-results.xml.gz`、`p11-local-validation.json`，首轮真实失败 log 在
 `p11-real-initial.log.gz`，精确 paid/failed/not-run/费用界限汇总在 `p11-deepseek-summary.json`。
-真实消息、生产访问、发布、部署仍待授权。
+实际重验命令（其余已通过场景没有重跑）：
+
+```sh
+PYTHONPATH=. YUKI_MONTY_BINARY=.venv/bin/yuki-monty-worker uv run --frozen python \
+  scripts/verify_deepseek_codemode.py --credentials <user-credential-file> \
+  --resume-report docs/architecture/pi-codemode-evidence/p11-deepseek-initial.json \
+  --maximum-total-physical-calls 48 --authorize-paid \
+  --case chat_completions/direct --case responses/direct --case anthropic_messages/direct \
+  --case chat_completions/code --case anthropic_messages/code \
+  --case responses/disconnect --case anthropic_messages/disconnect \
+  --output docs/architecture/pi-codemode-evidence/p11-deepseek-retest.json
+```
+
+累计两轮 **39 次 HTTP**，保守 reservation **$0.8518629**；实际 wire usage 合计
+input 621782、cache hit 549632、output 3169，按两档公开费率估算约 **$0.01437–$0.02875**，
+实际账单未核验。三项受控断连的应用 usage 均 unknown，观察器各收到 wire usage。
+重验原始证据 `p11-deepseek-retest.json`、`p11-real-retest.log.gz`；当前总裁决见
+`p11-deepseek-summary.json`。重验只创建一个临时输出 log，保存证据后已删除。
+真实消息、生产访问、发布、部署仍待授权；X11 的八份许可全文缺口仍为 partial。
 
 最终 `uv build --python .venv/bin/python --wheel --out-dir <owned-output>` 成功；
 从实际 wheel 解包并隔离导入新 `TurnExecution/TurnState`（38 字段），确认无旧 `_run`/
@@ -502,7 +526,7 @@ WebUI 前端资源未构建（`npm ci && npm run build`，产物已 gitignore）
 ## 后续依赖
 
 P06–P08 的离线实现及全量验证完成；继续 P09 迁移、worker 运维和回退。
-P09 迁移/资源/完整备份、原生 Linux 隔离及 45 项定向测试已验证，最终全量及两个镜像装配通过，P10 完整实现及离线复验通过，89/90 矩阵项通过、X11 许可项部分通过；真实 DeepSeek 首轮已运行，修正后七项重验待追加请求确认；P11 的真实消息、生产访问、
+P09 迁移/资源/完整备份、原生 Linux 隔离及 45 项定向测试已验证，最终全量及两个镜像装配通过，P10 完整实现及离线复验通过，89/90 矩阵项通过、X11 许可项部分通过；真实 DeepSeek 三协议十二场景已有实际通过记录，首轮失败与修正后七项重验均保留；P11 的真实消息、生产访问、
 镜像发布与部署待明确授权。
 Monty Python binding 为本地构建 wheel，未进 `uv.lock`，`uv sync` 后需重跑
 `scripts/build_monty_worker.sh`；P09 共用分发已在 Darwin/Linux 构建并安装；两个镜像装配与离线包装探针通过，容器 Code Mode 默认仍不启用。

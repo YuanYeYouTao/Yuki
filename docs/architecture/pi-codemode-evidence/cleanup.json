@@ -20,5 +20,6 @@
   "mac_build_allocated_kib_at_deletion": 3797500,
   "task_stage_allocated_kib_at_deletion": 103008,
   "free_kib_after": 55085516,
-  "allocated_kib_removed": 21816624
+  "allocated_kib_removed": 21816624,
+  "final_paid_retest_temporary_log_deleted": true
 }
