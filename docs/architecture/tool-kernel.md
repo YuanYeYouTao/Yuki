@@ -83,6 +83,11 @@ MCP/插件在连接或 scope 等待后再次检查当前定义与批准状态；
 不能继续副作用。段工具额度用尽时外层 call 保持未配对，下一段由原 Work 从同一快照续跑；
 已配对的 partial 永不恢复 VM。程序完整结果超出预算时保存为授权 artifact，模型只得预览。
 
+等待队列超限以 `code_limit_wait_queue` 配对代码结果，丢弃该 VM；模型可根据回执改为
+较小的分批程序。已执行子调用仍按原身份保留回执，未派发子调用结算为未执行，不能把
+资源拒绝变成整个 Work 的裸异常暂停。直接 `task_control` 的所有 action（含 get/list）
+必须独占一个工具批次，固定说明与执行检查保持一致。
+
 ## 代码定位
 
 - `services/main_agent_contract.py`：冻结主 Agent 声明与合同 revision。

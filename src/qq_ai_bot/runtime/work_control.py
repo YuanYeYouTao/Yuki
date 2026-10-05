@@ -51,7 +51,7 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                 "wait_mode=any/all，deadline_at 可选；信号到达续原 work_id。"
                 "wait_status 查询，cancel_wait 撤销。need_input 说明缺失信息；"
                 "complete 提出结束，后端核对未决执行和 artifact。"
-                "此工具与其他副作用分批调用。"
+                "所有 action（包括 get/list/update）必须独占一个工具批次，不能与其他工具同批调用。"
             ),
             parameters={
                 "type": "object",

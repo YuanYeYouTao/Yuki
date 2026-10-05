@@ -164,6 +164,9 @@ def summarize(report: dict[str, Any]) -> dict[str, Any]:
                 "business_scope",
                 "recovery_scope",
                 "harness_sha256",
+                "read_identity",
+                "receipt_errors_scope",
+                "runtime_source_sha256",
             )
         },
         "cost_basis": "public peak rates times observed wire usage; "

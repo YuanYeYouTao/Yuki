@@ -59,6 +59,26 @@ def test_invalid_usage_cannot_refund_reservation():
     assert ledger.pending[identity] > reserve
 
 
+def test_new_or_static_code_parents_are_not_resumed_program_progress():
+    previous = {}
+    assert not bench.advancing_code_boundaries(
+        [{"operation_id": "original", "snapshot_revision": 16}], previous
+    )
+    assert not bench.advancing_code_boundaries(
+        [
+            {"operation_id": "original", "snapshot_revision": 16},
+            {"operation_id": "new-orphan", "snapshot_revision": 20},
+        ],
+        previous,
+    )
+    assert bench.advancing_code_boundaries(
+        [{"operation_id": "original", "snapshot_revision": 17}], previous
+    ) == {("code_boundary", "original:17")}
+    assert not bench.advancing_code_boundaries(
+        [{"operation_id": "original", "snapshot_revision": 17}], previous
+    )
+
+
 def test_authorized_unlimited_mode_records_cost_without_financial_or_call_quota():
     ledger = bench.BudgetLedger(prior_usd=5, ceiling_usd=None, maximum_calls=None)
     for _ in range(401):
@@ -115,16 +135,57 @@ def test_repeat_is_same_within_groups_and_different_across_repeats(task):
 
 
 @requires_worker
+async def test_resumed_benchmark_keeps_trusted_note_in_actual_model_material(database, tmp_path):
+    from tests.integration.test_codemode_runner import ACCEPT, runner_env
+
+    from qq_ai_bot.runtime.work_context_note import visible_context_note
+    from qq_ai_bot.runtime.work_session import WorkSession
+    from qq_ai_bot.services.turn_transcript import TurnTranscript
+
+    _, _, control, _, repo = await runner_env(database, tmp_path, iter(()))
+    assert json.loads(await control.execute("task_control", ACCEPT, "accept"))["ok"]
+    note = {
+        "version": 1,
+        "facts": [{"text": "Completed the first four nodes", "refs": ["goal"]}],
+        "unresolved": [],
+        "next_steps": [{"text": "Continue from the fifth node", "refs": ["goal"]}],
+    }
+    assert json.loads(
+        await control.execute("task_control", {"action": "update", "context_note": note}, "note")
+    )["ok"]
+    original = await repo.get(control.current["id"])
+    for _ in range(2):
+        control = await bench.resumed_control(control)
+        assert await visible_context_note(control) == note
+        restored = await WorkSession(control, "benchmark-test").restore(TurnTranscript(()))
+        material = [
+            json.loads(message.content)
+            for message in restored.request().messages
+            if message.content and '"kind": "work_current_material"' in message.content
+        ]
+        assert material[-1]["context_note"] == note
+        assert control.current["id"] == original["id"]
+        assert control.source["actor_person_id"] == control.context_access.actor_person_id
+        assert (await repo.get(original["id"]))["tool_calls"] == original["tool_calls"]
+    control.context_access = None
+    with pytest.raises(ValueError, match="benchmark_read_identity_missing"):
+        await bench.resumed_control(control)
+
+
+@requires_worker
 @pytest.mark.parametrize(
-    "loop,mode,task",
+    "loop,mode,task,repeated_reads",
     [
-        ("new", "code", "batch_ledger"),
-        ("old", "code", "dependency_chain"),
-        ("new", "code", "resumed_work"),
-        ("old", "direct", "resumed_work"),
+        ("new", "code", "batch_ledger", 0),
+        ("old", "code", "dependency_chain", 0),
+        ("new", "code", "resumed_work", 0),
+        ("old", "direct", "resumed_work", 0),
+        ("new", "code", "resumed_work", 70),
     ],
 )
-async def test_unpaid_long_task_assembly(database, tmp_path, monkeypatch, loop, mode, task):
+async def test_unpaid_long_task_assembly(
+    database, tmp_path, monkeypatch, loop, mode, task, repeated_reads
+):
     monkeypatch.setattr(
         bench,
         "CREDENTIALS",
@@ -177,6 +238,13 @@ async def test_unpaid_long_task_assembly(database, tmp_path, monkeypatch, loop, 
             )
             code += "await yuki_workspace_write({'path':'batch.tsv','text':out})\n"
             code += "await yuki_workspace_read({'path':'batch.tsv'})\n'OK'"
+        if repeated_reads:
+            # Repeated paths can still advance one bounded, durable program.
+            # A path-only observer must not kill it before its later writes.
+            code = (
+                f"for _ in range({repeated_reads}):\n"
+                "    await yuki_workspace_read({'path':'start.txt'})\n" + code
+            )
         steps = iter(
             [
                 call("execute_code", {"code": code}, "code"),
@@ -222,4 +290,4 @@ async def test_unpaid_long_task_assembly(database, tmp_path, monkeypatch, loop, 
             # Code result and explicit completion; quiet completion needs no
             # extra purchased final response.
             assert result["physical_http"] == 2
-            assert result["business_calls"] == 27
+            assert result["business_calls"] == 27 + repeated_reads

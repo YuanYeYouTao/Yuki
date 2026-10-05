@@ -28,6 +28,7 @@ import httpx
 import pytest
 
 from scripts.benchmark_pi_codemode import BASELINE, historical_runner
+from scripts.export_pi_codemode_inventory import export_inventory
 from scripts.verify_deepseek_codemode import read_credentials
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +40,63 @@ STARTED = ""
 IN_PROGRESS: dict[str, Any] | None = None
 LEDGER: BudgetLedger | None = None
 TASKS = ("batch_ledger", "dependency_chain", "resumed_work")
+
+
+async def resumed_control(control: Any) -> Any:
+    """Rebind the same trusted caller while retaining the original Work/lease."""
+    from qq_ai_bot.runtime.work_control import WorkControl
+
+    if control.context_access is None:
+        raise ValueError("benchmark_read_identity_missing")
+    fresh = WorkControl(
+        control.repository,
+        control.lease,
+        control.source_key,
+        dict(control.source),
+        control.validate,
+    )
+    fresh.bind_context_access(control.context_access)
+    fresh.current = await control.repository.get(control.current["id"])
+    return fresh
+
+
+async def pending_code_boundaries(control: Any) -> list[dict[str, Any]]:
+    """Observe original live VM checkpoints, never execute or invent progress."""
+    from sqlalchemy import select
+
+    from qq_ai_bot.runtime.work_schema_v1 import effects
+
+    if control.session is None or control.current is None:
+        return []
+    async with control.repository.database.sessions() as reader:
+        keys = await reader.scalars(
+            select(effects.c.effect_key).where(
+                effects.c.work_id == control.current["id"],
+                effects.c.kind == "code_composition",
+                effects.c.state.in_(("prepared", "unknown")),
+            )
+        )
+        candidates = list(keys)
+    boundaries = []
+    for key in candidates:
+        boundary = await control.session.journal.unsettled_composition(control.current["id"], key)
+        if boundary is not None and boundary["snapshot_ref"] is not None:
+            boundaries.append(boundary)
+    return boundaries
+
+
+def advancing_code_boundaries(
+    boundaries: list[dict[str, Any]], previous: dict[str, int]
+) -> set[tuple[str, str]]:
+    """Only continuation of the same original operation counts as VM progress."""
+    progress = set()
+    for boundary in boundaries:
+        key, revision = boundary["operation_id"], boundary["snapshot_revision"]
+        before = previous.get(key)
+        if before is not None and revision > before:
+            progress.add(("code_boundary", f"{key}:{revision}"))
+        previous[key] = max(revision, before or 0)
+    return progress
 
 
 def usage_cost(usage: dict[str, Any]) -> tuple[float, dict[str, int]]:
@@ -267,12 +325,24 @@ def write_report() -> None:
         "completion_definition": "independent oracle correct, all required inputs read, report "
         "verified, no repeated committed writes, and original Work durably completed",
         "stop_policy": "runtime pause/failure, or 10 consecutive activations with no new "
-        "successful read/write path or context note; no task time ceiling",
+        "successful read/write path, semantic context note or same original code "
+        "snapshot advancing across activations; no task time ceiling",
         "business_scope": "temporary FileWorkspace, real SQLite/InvocationService/Monty, "
         "no production, gateway or real messaging",
         "recovery_scope": "fresh Runner and WorkControl activations in same process; "
         "not an OS process crash or provider disconnect",
+        "read_identity": "canonical synthetic person bound before accept and on every activation",
+        "receipt_errors_scope": "visible tool history per HTTP request; repeated history is "
+        "not a new failed operation",
         "harness_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "runtime_source_sha256": {
+            path: hashlib.sha256((ROOT / path).read_bytes()).hexdigest()
+            for path in (
+                "src/qq_ai_bot/codemode/engine_monty.py",
+                "src/qq_ai_bot/runtime/work_control.py",
+                "tests/integration/test_codemode_runner.py",
+            )
+        },
         "records": RECORDS,
         "in_progress": IN_PROGRESS,
         "budget": LEDGER.summary(),
@@ -303,7 +373,7 @@ async def compare_case(
     from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
     from qq_ai_bot.model_runtime.routes import ModelRouter
     from qq_ai_bot.runtime.work_budget_schema import budgets
-    from qq_ai_bot.runtime.work_control import WorkControl
+    from qq_ai_bot.runtime.work_context_note import visible_context_note
     from qq_ai_bot.runtime.work_supervisor import settle
     from qq_ai_bot.workspace.files import FileWorkspace
     from qq_ai_bot.workspace.store import WorkspaceError
@@ -316,9 +386,9 @@ async def compare_case(
     files = FileWorkspace(workspace_path)
     for path, text in task.files.items():
         files.write(path, text.encode())
-    inventory = json.loads(
-        (ROOT / "docs/architecture/pi-codemode-capability-inventory.json").read_text()
-    )
+    # Build today's frozen declarations in an isolated synthetic assembly.
+    # The P00 inventory is historical evidence, not the current tool contract.
+    inventory = await export_inventory()
     definitions = tuple(ChatTool(**row) for row in inventory["frozen_definitions"])
     revision = inventory["manifest_revision"]
     chat, _, control, runtime, repo = await runner_env(database, tmp_path, iter(()))
@@ -430,6 +500,7 @@ async def compare_case(
         tools = json.dumps(payload.get("tools", []), sort_keys=True).encode()
         # Only synthetic tool receipts are retained, never raw reasoning or headers.
         errors = []
+        error_call_ids = []
         for message in payload.get("messages", []):
             if message.get("role") == "tool":
                 try:
@@ -438,6 +509,7 @@ async def compare_case(
                         receipt.get("error") or not receipt.get("ok", True)
                     ):
                         errors.append(receipt)
+                        error_call_ids.append(message.get("tool_call_id"))
                 except (ValueError, TypeError):
                     pass
         wires.append(
@@ -450,6 +522,7 @@ async def compare_case(
                 "tools_sha256": hashlib.sha256(tools).hexdigest(),
                 "tools_count": len(payload.get("tools", [])),
                 "receipt_errors": errors,
+                "receipt_error_call_ids": error_call_ids,
                 "started_seconds": time.perf_counter() - started,
             }
         )
@@ -563,6 +636,7 @@ async def compare_case(
         result = None
         index, stagnant = 0, 0
         observed_progress: set[tuple[str, str]] = set()
+        code_revisions: dict[str, int] = {}
 
         async def renew_lease():
             while True:
@@ -573,9 +647,7 @@ async def compare_case(
         heartbeat = asyncio.create_task(renew_lease())
         while True:
             if index:
-                fresh = WorkControl(repo, control.lease, "code-runner", {}, control.validate)
-                fresh.current = await repo.get(control.current["id"])
-                control = fresh
+                control = await resumed_control(control)
             runner = runner_kind(executor, original_runner._concurrency)
             runner.code_mode_settings = original_runner.code_mode_settings
             runner.main_contract = contract
@@ -589,6 +661,8 @@ async def compare_case(
                 canonical_conversation_id=control.lease.conversation_id,
             )
             before = await repo.get(control.current["id"])
+            saved_note = json.loads(before["checkpoint_json"]).get("context_note")
+            visible_note = await visible_context_note(control)
             calls_before = len(wires)
             try:
                 result = await runner.run(initial, current_runtime, backend)
@@ -599,6 +673,7 @@ async def compare_case(
             # model's complete proposal alone has not transitioned the Work yet.
             await settle(control, delivered=False, pending_inputs=bool(await control.pending()))
             after = await repo.get(control.current["id"])
+            boundaries = await pending_code_boundaries(control)
             if result.outcome is not None and result.outcome.failure is not None:
                 failure_details.append(
                     {
@@ -617,6 +692,9 @@ async def compare_case(
                     "tools_before": before["tool_calls"],
                     "tools_after": after["tool_calls"],
                     "new_physical_requests": len(wires) - calls_before,
+                    "context_note_saved_at_start": bool(saved_note),
+                    "context_note_visible_at_start": visible_note is not None,
+                    "pending_code_boundaries": boundaries,
                     "elapsed_seconds": time.perf_counter() - started,
                 }
             )
@@ -629,7 +707,9 @@ async def compare_case(
             }
             note = json.loads(after["checkpoint_json"]).get("context_note")
             if note:
-                progress.add(("context_note", json.dumps(note, sort_keys=True)))
+                # Administrative note revision/call IDs are not semantic progress.
+                progress.add(("context_note", json.dumps(note.get("payload"), sort_keys=True)))
+            progress.update(advancing_code_boundaries(boundaries, code_revisions))
             stagnant = stagnant + 1 if progress <= observed_progress else 0
             observed_progress.update(progress)
             if stagnant >= 10:

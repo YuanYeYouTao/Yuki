@@ -154,6 +154,32 @@ async def test_engine_suspension_cap_is_not_a_business_budget():
     assert counters.suspensions == 2
 
 
+@pytest.mark.parametrize("count", [16, 17])
+async def test_pending_future_limit_is_a_typed_failure_and_does_not_damage_the_host(count):
+    async with MontyEngine(worker(), FAST) as engine:
+        run = engine.run(MANIFEST)
+        outcome = await run.start(
+            f"import asyncio\nr = await asyncio.gather(*[lookup(i) for i in range({count})])\nr",
+            {},
+        )
+        while outcome.status == "suspended" and outcome.call.kind == "function":
+            outcome = await run.answer(outcome.call.engine_call_id, EngineAnswer.future())
+        if count == 16:
+            assert outcome.status == "suspended" and outcome.call.kind == "future"
+            pending = outcome.call.pending_call_ids
+            assert len(pending) == count
+            outcome = await run.settle({key: EngineAnswer.ok(key) for key in pending})
+            assert outcome.status == "completed" and len(outcome.output) == count
+        else:
+            assert outcome.status == "failed"
+            assert outcome.failure.category == "limit_wait_queue"
+            assert "smaller awaited batches" in outcome.failure.message
+            assert outcome.failure.worker_discarded
+        await run.terminate()
+    again, _, _ = await run_once("1 + 1")
+    assert again.status == "completed" and again.output == 2
+
+
 async def test_reserved_names_cannot_enter_the_manifest():
     async with MontyEngine(worker(), FAST) as engine:
         with pytest.raises(ValueError, match="code_manifest_reserved_name"):

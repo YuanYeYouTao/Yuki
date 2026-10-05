@@ -341,6 +341,15 @@ class MontyRun:
             raise RuntimeError("code_answer_not_pending")
         if call.function_name not in self.manifest:
             raise RuntimeError("code_answer_outside_manifest")
+        if answer.kind == "future" and len(self._futures) >= self.limits.max_pending_futures:
+            # A script resource limit is a paired code failure, not a Host
+            # exception that suspends the entire Work. The driver settles all
+            # registered, undispatched children and preserves earlier receipts.
+            return await self._fail_async(
+                "limit_wait_queue",
+                f"code_wait_queue_full: at most {self.limits.max_pending_futures} pending "
+                "calls; split independent calls into smaller awaited batches",
+            )
         payload = self._answer_payload(answer)
         if answer.kind == "future":
             self._futures.add(engine_call_id)
@@ -411,8 +420,6 @@ class MontyRun:
 
     def _answer_payload(self, answer: EngineAnswer) -> dict[str, Any]:
         if answer.kind == "future":
-            if len(self._futures) >= self.limits.max_pending_futures:
-                raise RuntimeError("code_wait_queue_full")
             return {"future": ...}
         if answer.kind == "error":
             return {"exc_type": answer.error_type, "message": answer.message[:2000]}

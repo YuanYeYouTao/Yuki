@@ -15,6 +15,7 @@ from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.codemode.api_projection import project
 from qq_ai_bot.domain.messages import ChatMessage, ChatResponse, ToolCall, ToolFunction
 from qq_ai_bot.llm.fake import FakeLLMProvider
+from qq_ai_bot.mcp.artifact_access import ArtifactAccess
 from qq_ai_bot.runtime.work_control import WorkControl, work_control_tools
 from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.services.agent_runner import AgentRuntime
@@ -78,7 +79,14 @@ async def runner_env(database, tmp_path, responses, *, max_tool_calls=8):
     async def validate():
         assert await repo.valid(lease)
 
-    control = WorkControl(repo, lease, "code-runner", {}, validate)
+    # The real entrypoint binds canonical read identity before accepting Work.
+    # Anonymous controls can save a note but cannot read it on business resume.
+    control = WorkControl(
+        repo, lease, "code-runner", {"origin": TurnOrigin.USER_MESSAGE.value}, validate
+    )
+    control.bind_context_access(
+        ArtifactAccess(lease.conversation_id, 1, env.person, read_scope="main")
+    )
     runtime = AgentRuntime(
         origin=TurnOrigin.USER_MESSAGE,
         actor_user_id="10001",
@@ -140,6 +148,42 @@ async def test_execute_code_runs_children_and_pairs_the_outer_call_once(database
     assert all("/c" in operation for _, operation in backend.log)
     current = await repo.get(control.current["id"])
     assert current["tool_calls"] == 3  # B01: composition itself is not charged.
+
+
+@pytest.mark.parametrize("prior_write", [False, True])
+async def test_future_overflow_pairs_error_and_allows_correction_without_replaying_effects(
+    database, tmp_path, prior_write
+):
+    prefix = "await yuki_workspace_write({'path': 'first'})\n" if prior_write else ""
+    bad = prefix + (
+        "import asyncio\nawait asyncio.gather(*[yuki_lookup({'q': i}) for i in range(17)])"
+    )
+    corrected = "await yuki_lookup({'q': 42})\nawait yuki_workspace_write({'path': 'corrected'})"
+    responses = iter(
+        [
+            call("task_control", ACCEPT, "accept"),
+            call("execute_code", {"code": bad}, "bad"),
+            call("execute_code", {"code": corrected}, "corrected"),
+            call("task_control", {"action": "complete"}, "complete"),
+        ]
+    )
+    chat, provider, control, runtime, repo = await runner_env(database, tmp_path, responses)
+    backend = Backend()
+    result = await chat.runtime.runner.run((ChatMessage("user", "x"),), runtime, backend)
+    paired = [m for m in provider.requests[2].messages if m.tool_call_id == "bad"]
+    assert len(paired) == 1
+    body = json.loads(paired[0].content)
+    assert body["error"] == "code_limit_wait_queue"
+    assert body["status"] == ("partial" if prior_write else "failed")
+    assert body["executed"] is prior_write
+    assert "smaller awaited batches" in body["detail"]
+    assert [name for name, _ in backend.log] == (
+        (["workspace_write"] if prior_write else []) + ["lookup", "workspace_write"]
+    )
+    assert len({key for _, key in backend.log}) == len(backend.log)
+    assert result.work_state == "completed"
+    assert not await control.has_unresolved_effects()
+    assert (await repo.get(control.current["id"]))["tool_calls"] == 2 + int(prior_write)
 
 
 async def test_two_outer_code_calls_run_in_order(database, tmp_path):
