@@ -1,0 +1,22 @@
+[
+  {
+    "id": "f3a372a3-5bbc-493a-a3cb-91940854b4a3",
+    "state": "suspended",
+    "reason": "LLMIncompleteResponseError",
+    "model_requests": 4,
+    "tool_calls": 26,
+    "exit_reason": "paused",
+    "failure_json": "{\"certainty\": \"unknown\", \"code\": \"LLMIncompleteResponseError\", \"diagnostics\": {}, \"retryable\": false, \"stage\": \"provider\"}",
+    "fixture": "test_long_tasks_old_direct_bat0"
+  },
+  {
+    "id": "162b970e-b87d-452a-8d29-2cd7b130a907",
+    "state": "running",
+    "reason": null,
+    "model_requests": 50,
+    "tool_calls": 80,
+    "exit_reason": null,
+    "failure_json": null,
+    "fixture": "test_long_tasks_old_code_resum1"
+  }
+]

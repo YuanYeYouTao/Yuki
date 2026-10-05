@@ -18,6 +18,9 @@
   镜像发布与部署仍待明确授权，均未执行。
 - 共享 Git 存储存在既有 AppleDouble `._pack-…idx` 索引报错；fetch/push/分支追踪
   实际成功。没有删除或修复无关 Git 元数据。
+- 2026-10-05 用户另外要求真实长任务完成度/成本/时间对照，并明确取消本次比较的
+  费用上限。只在新建合成工作区和临时数据库中调用已指定的 DeepSeek；其他未授权范围
+  不因这次费用授权而改变。
 
 ## P00：基线与清单，已完成
 
@@ -649,3 +652,70 @@ Dockerfile/命令重试成功，不改编译政策或检查。应用镜像复用
 
 本轮未增加付费调用；原真实 API 十二场景结果和累计 39 次请求不变。PR、合并、
 真实发送、生产访问、镜像发布与部署：待授权，未执行。
+
+## 长任务真实 Provider 对照（2026-10-05）
+
+本地新增 opt-in 付费测量脚本 `scripts/benchmark_long_tasks.py`、不发请求的汇总脚本
+`scripts/summarize_long_tasks.py` 及两份单元/原生 worker 装配回归测试。没有修改生产
+运行时代码、旧测试或依赖锁；没有创建新 VM。实测解读见
+[长任务对照报告](pi-codemode-long-task-benchmark.md)。
+
+三种任务（480 条跨文件去重汇总、18 层条件依赖链、12 层带一次性审计写入的分段续跑）
+各使用两个输入，在历史/新循环 × direct/Code 可用四组运行，共 24 次测量。模型自行
+规划，使用真实 DeepSeek、完整固定 76 个工具声明、原生 Monty、FileWorkspace、SQLite、
+InvocationService 和 Work supervisor。历史循环按固定 SHA 隔离加载，共用当前调用内核；
+不是旧应用原封不动的部署。新循环/Code 可用组实际都用了代码，旧循环有一组自主选择
+直接调用。每个输入在四组中的 hash、工具声明 hash 均一致。
+
+原始证据：`long-tasks-unlimited.json`；统计：`long-tasks-summary.json`；局部离线故障
+重放：`long-tasks-unlimited-diagnostics.json`。探索期 `long-tasks-initial.json` 与
+`long-tasks-comparison.json` 保留，完成条件/配额/中断问题明确列出，不并入正式完成率。
+这些原始报告包括 HTTP、程序、答案、业务调用、预算和 Work 状态；没有密钥、请求头
+或原始 reasoning。已核对本次输出没有命中实际 API key，脚本 hash 与正式报告相同。
+
+正式执行命令完整保存在对照报告；关键参数为 `--authorize-paid --unlimited-cost
+--max-output-tokens 32768 --repeats 2`、真实 `YUKI_MONTY_BINARY` 及四份 prior-report。
+没有费用/累计请求/累计工具上限；单请求 600 秒超时、引擎隔离与每段配额保持。连续
+十段没有新增成功读写路径或便签、真实暂停/错误时停止样本并记录未完成。恢复是同一
+进程的新激活，未模拟 OS 崩溃。没有接触生产数据或发送真实消息。
+
+实际结果：付费装配执行器 `24 passed in 807.92s`，独立任务验收 **16 完成 / 8 未完成**。
+分组为历史/direct 3/6、历史/Code 4/6、新/direct 4/6、新/Code 5/6。新 Code 批量计算
+两次用 13.47/14.59 秒，较同输入新 direct 约快 4.61/3.08 倍；依赖链四组都通过，
+新 Code 比新 direct 略慢。恢复仅新 Code 成功一次；另一次文件全对但 Work 未结束，
+仍算未完成。两个旧 Code 恢复样本的局部引擎重放均触发 `code_wait_queue_full`，
+默认并发 future 上限为 16，是共同内核限制，不能归为旧循环独有缺陷。
+
+正式轮 388 HTTP，所有用量已返回，按相同公开峰值费率估算 $0.407706。含失败的新
+Code 组总计 $0.058602、历史/direct $0.153945。此前 P11/探索期峰值费用或未知保守
+留额累计 $0.546281，合计暴露估算 $0.953987；实际账单未核验。用户不设费用上限，
+本轮没有因预算或请求数被截断的样本。
+
+本地验证：
+
+```sh
+uv run --frozen ruff check src tests scripts migrations
+uv run --frozen ruff format --check src tests scripts migrations
+uv run --frozen mypy
+# 通过；format 1138 文件，mypy 722 源文件
+YUKI_MONTY_BINARY="$PWD/.venv/bin/yuki-monty-worker" \
+  uv run --frozen pytest -q -p no:warnings \
+  tests/unit/test_long_task_benchmark.py tests/unit/test_deepseek_acceptance_harness.py
+# 26 通过，7.31 秒，无付费请求
+uv run --frozen pytest -q -p no:warnings tests/unit/test_long_task_summary.py
+# 10 通过，0.05 秒，无付费请求
+YUKI_MONTY_BINARY="$PWD/.venv/bin/yuki-monty-worker" \
+  uv run --frozen pytest -q -p no:warnings tests --basetemp <本轮自有临时目录>
+# 3298 通过 / 1 跳过，660.00 秒；跳过项需要未授权的私有生产备份
+```
+
+全量退出码 0，真实 worker 没有跳过；日志和 worker hash 保存在
+`long-tasks-regression.log.gz`、`long-tasks-regression.json`。汇总脚本最后一次元数据/文案
+调整后另外重跑 10 项汇总测试和 ruff check/format，全部通过。正式报告、派生汇总与
+报告表格逐行核对，24 次记录、388 HTTP 和费用总和一致。正式轮与回归的自有临时
+工作区/数据库目录均已删除，原项目和已安装 worker/binding 保留。
+
+未通过的任务样本保留，没有改断言、删样本或放宽完成条件。本次 Git 目标仍是已授权
+测试分支 `codex/pi-codemode-experiment`，最终提交/推送状态由回报核验。下一依赖：
+若继续改善任务完成度，需专门处理并发程序超限后的模型可恢复错误、便签使用和完成
+动作；本轮未把这些修复混入比较。小时/天尺度运行、真实进程故障与生产入口均未运行。
