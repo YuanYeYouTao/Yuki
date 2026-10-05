@@ -152,11 +152,13 @@ async def prepare_history(
         else ()
     )
     reason = None
+    invalidated_reason = None
     previous_item_count = None
     frozen = FrozenFragments.load([])
     frozen_event_ids: frozenset[int] = frozenset()
     if previous is None:
-        reason = await repository.invalidation_reason(view_key) or "bootstrap"
+        invalidated_reason = await repository.invalidation_reason(view_key)
+        reason = invalidated_reason or "bootstrap"
     elif previous.contract_revision != contract_revision:
         reason = "contract_changed"
     elif previous.context_key != context_key:
@@ -210,6 +212,20 @@ async def prepare_history(
             if (not item["event_ids"] or set(item["event_ids"]) <= context.visible_event_ids)
             and ("observation_id" not in item or item["observation_id"] in allowed_observations)
         ]
+        if any(context.current_event_id in item["event_ids"] for item in selected):
+            # A contract/capacity rebuild can recover this trigger's older
+            # representation from selection provenance, after the repeat check
+            # above. Treat it as the same explicit new-attempt source boundary.
+            # Keep immutable records and unrelated frozen envelopes unchanged;
+            # history extension below covers the other events of a rejected
+            # group using this attempt's already authorized individual views.
+            # An already invalidated row must retain its exact rebuild reason
+            # for publication CAS; that invalidation is already a new boundary.
+            if invalidated_reason is None:
+                reason = "source_changed"
+            selected = [
+                item for item in selected if context.current_event_id not in item["event_ids"]
+            ]
         # Grouping can change across an explicit capacity epoch. Replay each
         # original event only once; use the current event fragment for the new
         # portion of an overlapping group rather than duplicating its envelope.

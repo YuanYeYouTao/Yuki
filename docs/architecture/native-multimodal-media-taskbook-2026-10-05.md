@@ -144,7 +144,7 @@ ASR 可能复用 Qwen 连接配置（`config.py:928–938`），且这项借用�
 - [x] P5：MCP 图片、大结果私有 artifact 和获准插件显式选图接入同一通道。SDK `media_artifacts` 只选择本插件拥有的 Host 句柄；SDK MCP 不自动注入。实际派发前复核原插件/工具、批准 revision、精确委托、原句柄 TTL/hash/文件，归档副本不扩权。本地授权/失效/回执测试通过，真实 API 与生产验收在 P7/P8。
 - [x] P6：当前/引用图片的隐式视觉回退已删除；历史/工作区准备脱离独立 Provider 生命周期，后台表情/选择器、SDK 显式视觉和 ASR 保留。工具说明、workspace schema、主合同 revision 和现行媒体/Provider/Tool Kernel 文档已更新；未关闭仍被非主 Agent 消费者使用的凭据或配置。
 - [ ] P7：完成下表回放及可控真实请求验收，记录未覆盖协议/路由，不以单一 Gemini 成功宣称所有 Provider 成功。
-- [ ] P8：按授权提交、CI、PR、合并及 Bot + sandbox Manager 配套部署；不更新 QQ 网关。新增 Manager 私有读取操作需兼容更新，不能仅部署 Bot 后宣称工作区路径看图可用。部署与自然 QQ 图片回复效果分别验收，当前未完成。
+- [x] P8：PR #247 已通过六项 CI、合并并配套部署 Bot 与 sandbox Manager，生产 revision `f2d06f12e73894f8df7c78880a77b9539753b556`。实际 Bot UID 10001 的私有读图、来源验证和版本冲突拒绝通过；QQ 网关及持久环境的容器 ID/启动时间保持。自然 QQ 图片回复速度及 P7 全路由验收仍未全部覆盖。上线后发现的投影重建缺口另列于下面的补修记录，不由此勾选推定已修复。
 
 建议并行实现分工：媒体授权/纯准备，Runner/协议输入，恢复/权限/资源测试；主会话持有共同类型、工具合同及文档整合。先确定文件归属，再并行修改；交叉依赖先固定接口，不各造图片队列。
 
@@ -185,3 +185,13 @@ ASR 可能复用 Qwen 连接配置（`config.py:928–938`），且这项借用�
 交叉复核补修只读别名/缓存 accepted→paired 崩溃恢复：执行前原 response/pending 保存精确原回执 key，恢复复核同 Work/链、只读 accepted 状态和参数签名。新增 `test_work_readonly_reuse` 5 项通过，包括同批别名、跨批缓存、未知原执行、变造参数及错误借用副作用回执；与原生回执/Runner 相关组合共 25 passed。没有额外执行或预算，也没有另建媒体队列或 ledger。相关 3 个源文件 Linux 平台 mypy、Ruff 与 whitespace 检查通过。这些数量属于定向复核，不与此前重叠测试相加。
 
 P5 插件桥接定向本地测试 `test_plugin_native_media` 及既有 facade、notification、cleanup、result-access 共 85 passed；涵盖明确选图、SDK MCP 只返回 owned handle、跨插件/假 JSON 拒绝、权限与 manifest 变化、过期/删除/字节变化在有效归档副本仍存在时由实际 dispatch hook 拒绝、原 TTL 不被延长及图片出版失败不重跑原效果。新增精确委托和 origin 测试另在最终整合记录。SDK 文档与迁移说明已更新。冷缓存容量 `rglob` 为另列的资源问题，未在本次原生媒体改造中宣称已解决。
+
+### 上线后补修：合同切换的旧选取回放
+
+2026-10-05 14:52:46 UTC 有界生产日志观察到插件后台唤醒 `ProjectionConflict`：当前触发事件已存在于 frozen input，随后 `append_current` 再次追加同一内部事件。失败位于主 Agent 上下文装配，不能归因于 Qwen 或本次 Manager 读图接口。
+
+主工具合同 10→11 会改变投影合同 revision。`prepare_history` 原先只在装入旧 projection 时检查重复 current；bootstrap/capacity/contract_changed 从不可变选取记录重新恢复片段后漏掉同一检查，因此本次正常升级可能触发现有缺口。尚未读取该生产样本的实际 epoch reason，不把这一机制当成该样本的唯一原因。
+
+补修复用既有 deliberate repeat/source_changed 边界：恢复选取后若包含当前 trigger，排除整个含 current 的旧片段，其余 frozen 片段保持原文；同组其余获准历史由新边界补齐，当前输入只追加一次。选取原件保持不变，不放宽重复事件保护，不重置 Work 或预算，不取得重跑已确认效果的资格。覆盖三个重建原因、混合 group、未变片段和无 current 的 Work 恢复。该补丁的验证、合并与 Bot-only 部署另记；Manager 协议保持，不再更新或重启。
+
+新增 9 项真实 SQLite 回放通过；与既有选取 delta、准备复用、容量 I/O、来源读取及历史时间投影组合共 47 passed。覆盖有效旧投影和真正缓存缺失的 source_changed、新边界中混合 group 的历史补齐，以及显式 invalidated capacity 保留原 CAS reason；没有额外查询或写入机制。Ruff、格式、单源文件 Linux mypy 和 diff 检查通过。全量 CI 与这份补丁的生产部署尚待完成。
