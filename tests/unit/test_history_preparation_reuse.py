@@ -209,15 +209,36 @@ async def test_summary_page_filter_binds_frozen_ids_once_not_per_row(monkeypatch
     rows = tuple(record(i, now) for i in range(1, 602))
     pages = []
 
-    async def read(_scope, *, after_event_id, **_kwargs):
-        page = tuple(row for row in rows if row.id > after_event_id)[:256]
-        pages.append(len(page))
-        return page
+    bound_ids = []
+
+    async def read(
+        expected,
+        *,
+        after_event_id,
+        through_event_id,
+        frozen_event_ids,
+        current_event_id,
+    ):
+        # The reader now owns ID paging in one snapshot. The preparation must
+        # bind its already-built immutable exclusion set once for that read.
+        bound_ids.append(frozen_event_ids)
+        assert expected == ctx.read_version
+        assert (after_event_id, through_event_id, current_event_id) == (0, 601, 601)
+        assert frozen_event_ids == frozenset(range(1, 601))
+        discovered = tuple(row for row in rows if after_event_id < row.id <= through_event_id)
+        pages.extend(
+            len(discovered[start : start + 256]) for start in range(0, len(discovered), 256)
+        )
+        return expected, tuple(
+            row
+            for row in discovered
+            if row.id not in frozen_event_ids and row.id != current_event_id
+        )
 
     monkeypatch.setattr(
         history_projection,
         "EventLedgerRepository",
-        lambda _: SimpleNamespace(list_scope_after=read),
+        lambda _: SimpleNamespace(read_scope_missing_history=read),
     )
     getter = FrozenFragments.event_ids.fget
     calls = []
@@ -243,6 +264,7 @@ async def test_summary_page_filter_binds_frozen_ids_once_not_per_row(monkeypatch
     )
     assert prepared.fragments.items == frozen.items
     assert pages == [256, 256, 89]
+    assert len(bound_ids) == 1 and isinstance(bound_ids[0], frozenset)
     assert len(calls) <= 5  # independent of R=601; no per-row set construction
 
 
@@ -252,14 +274,16 @@ async def test_same_fragments_new_summary_coverage_keep_existing_decision(monkey
     repo = SimpleNamespace(
         database=None, read=AsyncMock(return_value=snapshot(frozen, summary="old summary"))
     )
-    ledger = SimpleNamespace(list_scope_after=AsyncMock(return_value=()))
-    monkeypatch.setattr(history_projection, "EventLedgerRepository", lambda _: ledger)
     ctx = replace(
         context(parts),
         rollup_text="new summary",
         prompt_effective_coverage=1,
         prompt_raw_tail_end_event_id=1,
     )
+    ledger = SimpleNamespace(
+        read_scope_missing_history=AsyncMock(return_value=(ctx.read_version, ()))
+    )
+    monkeypatch.setattr(history_projection, "EventLedgerRepository", lambda _: ledger)
     prepared = await history_projection.prepare_history(
         repo,
         ctx,
@@ -273,3 +297,10 @@ async def test_same_fragments_new_summary_coverage_keep_existing_decision(monkey
     assert prepared.context.rollup_text == "old summary"
     assert prepared.context.prompt_effective_coverage == 0
     assert prepared.fragments.items == frozen.items
+    ledger.read_scope_missing_history.assert_awaited_once_with(
+        ctx.read_version,
+        after_event_id=0,
+        through_event_id=1,
+        frozen_event_ids=frozenset({1}),
+        current_event_id=ctx.current_event_id,
+    )
