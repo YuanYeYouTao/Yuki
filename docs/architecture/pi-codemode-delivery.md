@@ -364,8 +364,8 @@ Linux 最终本地安装 wheel `c7351f8da95cf3c317200863cef8aa5c2bb2102a452c0f20
 Darwin 已安装/测试 wheel 为审计内 `5f77cfbcf15ca0e0bb405d6d586aeb98aacbbcfc10555ba0b882c1b73868aa6f`。
 重复构建的 wheel ZIP 时间会改变 hash，payload 已核对一致，不声称归档字节可复现。
 
-VM `yuki-p09-20261005` 及本任务临时构建/下载缓存将在完成全部授权验收后删除，当前尚未
-删除。应用镜像以 UID 10001、只读 root、cap-drop=ALL、no-new-privileges、network=none 和
+P09 记录时 VM `yuki-p09-20261005` 及临时构建/下载缓存尚未删除；P11 收工清理已全部
+删除，当前状态见 `cleanup.json`。应用镜像以 UID 10001、只读 root、cap-drop=ALL、no-new-privileges、network=none 和
 私有 tmpfs 运行包装探针：真实绑定导入、固定文件/hash、598/353/321/8 notices、四份
 原始许可证、wheel 内 Pi 许可、构建后的 WebUI 和全正常迁移链至 0092 均通过。
 具体命令用 `scripts/verify_monty_packaging.py application|validation`；证据在
@@ -375,7 +375,7 @@ VM `yuki-p09-20261005` 及本任务临时构建/下载缓存将在完成全部�
 下一依赖：P10 显式回合状态、兼容删除、
 四组计量与全矩阵；真实 DeepSeek 已授权，按 P10 前置条件尚未运行。生产验证待授权。
 
-## P10：完整实现与离线验证通过，提交前证据已保存
+## P10：完整实现与离线验证通过，已提交并推送
 
 P09 已提交并推送 `85a35aa92ace8b4b54dcfb95ad35b5014e2b5cb3`，远端精确 SHA 已核验。
 生产 `AgentRunner._run`、Callbacks bag/union、`begin_batch` 调用、工具
@@ -415,8 +415,69 @@ fixture 合同更新：`StubAgentBackend` 是固定测试接口；原 execute �
 Linux 61 项证据在 `p10-linux.json`。P00 清单保留历史 not_run，不改历史快照。
 最终 ruff check/format 通过（1133 文件），mypy 722 源文件通过；git diff --check 通过。
 
-真实 DeepSeek 脚本的 12 项隔离装配模拟测试通过，**付费调用尚未运行**；P10 完整复验通过
-后再开始。专用 VM/临时缓存保留至所有所需验证结束，再按授权删除。
+P10 提交并推送 `9edc5f1e624fae3e3abb63d66bf3db53065d9686`，远端精确 SHA 已核验。
+真实 DeepSeek 与清理状态见下节。
+
+## P11：真实 DeepSeek 首轮已运行，修正后重验待确认
+
+只使用研究者指定的 DeepSeek 凭据；没有复制或输出 key。配置的
+Chat Completions、Responses、Anthropic Messages 三种协议均实际收到 HTTP 200，
+使用完整固定 76 声明、真实 Runner/SQLite/Monty；业务仅连接隔离 fake workspace。
+这是一次调用完整 response 的验收，不是流式 token delta 或生产验证。
+
+首轮 12 项：pytest **5 通过、7 失败，27.63 秒**，实际 24 次 HTTP，触及声明的请求上限。
+分别为 Responses code、三协议截断、Chat 受控断连通过；三协议 direct 与
+Chat/Anthropic code 失败；Responses/Anthropic disconnect 在付费派发前被请求上限
+挡住，没有实际运行。截断/断连均无业务派发。思考 content、Responses opaque 及
+Anthropic thinking/signature 在有后续请求时逐字段原样回传（保存 hash/布尔，不保存正文）。
+这证明观测到的材料没有改变，不宣称本地验证供应商签名或永久缓存保证。
+
+首轮暴露验收夹具错误：写入后读取 result.txt 仍返回 numbers.json 的数据，且提示要求
+“核验写入”却又只接受两次业务调用，模型因此反复读取。已修正为保存隔离文件实际状态、
+返回真实写入参数，并要求根据写入回执核验后返回；没有改变生产 Runner、固定声明或断言。
+未删除首轮失败，证据为 `p11-deepseek-initial.json`。修正后独立 MockTransport 装配
+**12 通过，4.27 秒**；新永久夹具只用 synthetic key，普通 pytest 不调用真实 Provider。
+
+实际命令：
+
+```sh
+PYTHONPATH=. YUKI_MONTY_BINARY=<actual-Darwin-worker> uv run --frozen python \
+  scripts/verify_deepseek_codemode.py --credentials <user-credential-file> \
+  --output docs/architecture/pi-codemode-evidence/p11-deepseek-initial.json --authorize-paid
+YUKI_MONTY_BINARY=<actual-Darwin-worker> uv run --frozen pytest -q -p no:warnings \
+  tests/unit/test_deepseek_acceptance_harness.py
+```
+
+首轮 conservative reservation 为 $0.5190585（按请求 byte 上界及最大输出预留，非账单）。
+实际返回 usage 合计 input 382827、cache hit 345856、output 1961；按官方 Flash peak 费率
+估算 $0.015519636，off-peak 约一半，实际账单未核验。受控断连的应用 usage 为 unknown，
+观察器已读到 wire usage；两者分开记录。一次预算重建辅助命令误用系统 Python 3.9，导入 datetime.UTC 失败、无网络调用；
+改用 uv 管理的 CPython 3.12 后实际预算重建及篡改拒绝均通过。金额依据
+[DeepSeek 官方价格](https://api-docs.deepseek.com/quick_start/pricing/)，没有用离线次数声称真实费用。
+
+重验已具体准备：只运行失败/未运行的七项，继承首轮已用 HTTP 和费用 reservation，
+累计费用 ceiling $1 不变，追加最多 24 次请求（累计最多 48）；从原 wire 元数据重建
+已用 counter/reservation，零化或不一致数据拒绝，nested resume 拒绝，不能把已通过项夹带重跑。此前声明上限是 24，
+追加确认尚待答复，未执行重验。ruff/format（1134 文件）和 mypy（722）通过；
+最后全量 **3258 通过、1 跳过，731.20 秒**，原生 worker 无跳过。脚本随后收紧假文件路径
+及完整工具 payload 对照，使用实际安装 worker 的最终离线 12 项重验通过（3.95 秒）；
+生产 Runner 在 P10 后未改变。原始全量 JUnit 与最后定向证据在
+`p11-full-results.xml.gz`、`p11-local-validation.json`，首轮真实失败 log 在
+`p11-real-initial.log.gz`，精确 paid/failed/not-run/费用界限汇总在 `p11-deepseek-summary.json`。
+真实消息、生产访问、发布、部署仍待授权。
+
+最终 `uv build --python .venv/bin/python --wheel --out-dir <owned-output>` 成功；
+从实际 wheel 解包并隔离导入新 `TurnExecution/TurnState`（38 字段），确认无旧 `_run`/
+Callbacks，源文件和 Pi LICENSE 完全一致，WebUI assets 存在；
+证据 `p10-final-wheel.json`。这次是最终 Darwin wheel 包装检查，P09 两镜像构建状态独立保留，
+未声称 P10 后重新构建 Linux 镜像。
+
+Linux 证据已保存，VM `yuki-p09-20261005`、其镜像下载缓存、Monty/Pi 临时源码构建目录、
+本任务临时日志目录，以及本次新安装的 Lima 已删除，自有目录 du 分配量合计 20.8 GiB；
+最后观察可用空间约 52.5 GiB。
+实际 Mac worker 安装为 `.venv/bin/yuki-monty-worker`，22.9 MB，SHA 与验证过的原生文件
+完全一致，属于保留的本地开发依赖。项目、.venv、设计包、其他缓存与全局工具保留。
+清理结果及空间观察见 `pi-codemode-evidence/cleanup.json`。
 
 ## 验证记录（2026-10-04）
 
@@ -441,7 +502,7 @@ WebUI 前端资源未构建（`npm ci && npm run build`，产物已 gitignore）
 ## 后续依赖
 
 P06–P08 的离线实现及全量验证完成；继续 P09 迁移、worker 运维和回退。
-P09 迁移/资源/完整备份、原生 Linux 隔离及 45 项定向测试已验证，最终全量及两个镜像装配通过，P10 完整实现及离线复验通过，89/90 矩阵项通过、X11 许可项部分通过；真实 DeepSeek Provider 调用已授权、尚未运行；P11 的真实消息、生产访问、
+P09 迁移/资源/完整备份、原生 Linux 隔离及 45 项定向测试已验证，最终全量及两个镜像装配通过，P10 完整实现及离线复验通过，89/90 矩阵项通过、X11 许可项部分通过；真实 DeepSeek 首轮已运行，修正后七项重验待追加请求确认；P11 的真实消息、生产访问、
 镜像发布与部署待明确授权。
 Monty Python binding 为本地构建 wheel，未进 `uv.lock`，`uv sync` 后需重跑
 `scripts/build_monty_worker.sh`；P09 共用分发已在 Darwin/Linux 构建并安装；两个镜像装配与离线包装探针通过，容器 Code Mode 默认仍不启用。

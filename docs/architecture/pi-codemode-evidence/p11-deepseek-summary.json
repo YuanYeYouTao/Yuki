@@ -1,0 +1,141 @@
+{
+  "overall": "partial; seven corrected retests await added request authorization",
+  "configured_protocols": [
+    "chat_completions",
+    "responses",
+    "anthropic_messages"
+  ],
+  "pytest_initial_passed": 5,
+  "pytest_initial_failed": 7,
+  "actual_passed_cases": 5,
+  "actual_failed_cases": 5,
+  "quota_blocked_unrun_cases": 2,
+  "physical_calls": 24,
+  "input_tokens": 382827,
+  "cache_hit_tokens": 345856,
+  "output_tokens": 1961,
+  "wire_usage_missing": 0,
+  "application_usage_unknown_calls": 1,
+  "estimated_usd_peak": 0.015519635999999998,
+  "estimated_usd_off_peak": 0.007759817999999999,
+  "actual_invoice_verified": false,
+  "pricing_source": "https://api-docs.deepseek.com/quick_start/pricing/",
+  "conservative_reserved_usd": 0.5190584999999999,
+  "total_cost_ceiling_usd": 1.0,
+  "retest_request_permission": "pending; additional at most 24, cumulative at most 48",
+  "initial_tool_shape_check_scope": "names/order; corrected harness compares whole serialized tools",
+  "real_sends": 0,
+  "production_access": false,
+  "published": false,
+  "deployed": false,
+  "cases": [
+    {
+      "protocol": "chat_completions",
+      "case": "direct",
+      "status": "failed",
+      "physical_http": 4,
+      "business_calls": 4,
+      "duplicate_operation_ids": 0,
+      "elapsed_seconds": 4.524401083122939
+    },
+    {
+      "protocol": "responses",
+      "case": "direct",
+      "status": "failed",
+      "physical_http": 4,
+      "business_calls": 4,
+      "duplicate_operation_ids": 0,
+      "elapsed_seconds": 3.7742847921326756
+    },
+    {
+      "protocol": "anthropic_messages",
+      "case": "direct",
+      "status": "failed",
+      "physical_http": 4,
+      "business_calls": 4,
+      "duplicate_operation_ids": 0,
+      "elapsed_seconds": 3.3418517080135643
+    },
+    {
+      "protocol": "chat_completions",
+      "case": "code",
+      "status": "failed",
+      "physical_http": 3,
+      "business_calls": 4,
+      "duplicate_operation_ids": 0,
+      "elapsed_seconds": 3.743940917076543
+    },
+    {
+      "protocol": "responses",
+      "case": "code",
+      "status": "passed",
+      "physical_http": 2,
+      "business_calls": 2,
+      "duplicate_operation_ids": 0,
+      "elapsed_seconds": 1.7648422920610756
+    },
+    {
+      "protocol": "anthropic_messages",
+      "case": "code",
+      "status": "failed",
+      "physical_http": 3,
+      "business_calls": 4,
+      "duplicate_operation_ids": 0,
+      "elapsed_seconds": 3.7663337918929756
+    },
+    {
+      "protocol": "chat_completions",
+      "case": "truncation",
+      "status": "passed",
+      "physical_http": 1,
+      "business_calls": 0,
+      "duplicate_operation_ids": 0,
+      "elapsed_seconds": 0.655395083129406
+    },
+    {
+      "protocol": "responses",
+      "case": "truncation",
+      "status": "passed",
+      "physical_http": 1,
+      "business_calls": 0,
+      "duplicate_operation_ids": 0,
+      "elapsed_seconds": 0.6280369169544429
+    },
+    {
+      "protocol": "anthropic_messages",
+      "case": "truncation",
+      "status": "passed",
+      "physical_http": 1,
+      "business_calls": 0,
+      "duplicate_operation_ids": 0,
+      "elapsed_seconds": 0.8397776251658797
+    },
+    {
+      "protocol": "chat_completions",
+      "case": "disconnect",
+      "status": "passed",
+      "physical_http": 1,
+      "business_calls": 0,
+      "duplicate_operation_ids": 0,
+      "elapsed_seconds": 0.7734793748240918
+    },
+    {
+      "protocol": "responses",
+      "case": "disconnect",
+      "status": "not_run_quota",
+      "physical_http": 0,
+      "business_calls": 0,
+      "duplicate_operation_ids": 0,
+      "elapsed_seconds": 0.06935758283361793
+    },
+    {
+      "protocol": "anthropic_messages",
+      "case": "disconnect",
+      "status": "not_run_quota",
+      "physical_http": 0,
+      "business_calls": 0,
+      "duplicate_operation_ids": 0,
+      "elapsed_seconds": 0.0672498750500381
+    }
+  ]
+}

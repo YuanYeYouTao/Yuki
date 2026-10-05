@@ -30,9 +30,10 @@
 | `b49e4da6` | P07 全部入口接线，已推送 |
 | `bab3448a` | P08 wire、私有续接与父子轨迹，已推送 |
 | `85a35aa9` | P09 迁移/资源/完整备份、Linux 原生隔离及两个镜像装配，已推送 |
+| `9edc5f1e` | P10 显式 TurnState/三边界、单循环退休与完整离线证据，已推送 |
 
-P08 最后一次全量：3207 通过、1 跳过（未提供私有生产备份路径），707.09 秒；真实 worker
-测试无跳过，ruff check/format 与 mypy 720 文件通过。此前 0.2 秒计时失败已改成派发边界触发，
+当前最后一次全量：3258 通过、1 跳过（未提供私有生产备份路径），731.20 秒；真实 worker
+测试无跳过，ruff check/format（1134 文件）与 mypy 722 文件通过。此前 0.2 秒计时失败已改成派发边界触发，
 断言保留。P07 旧夹具缺字段/批准的三项失败已修正，全量重验通过。
 
 | 阶段 | 状态 |
@@ -42,8 +43,8 @@ P08 最后一次全量：3207 通过、1 跳过（未提供私有生产备份路
 | P07 全部入口接线 | 离线实现及全量验证完成 |
 | P08 Provider/上下文/轨迹 | 离线实现及全量验证完成；前端 89 项通过 |
 | P09 迁移、worker 运维、回退演练 | 本地迁移/完整 Manager 备份、原生 Linux 隔离与 45 项定向测试通过；最终全量 3246 通过/1 跳过；应用与验证镜像装配通过（默认容器 Code Mode 不启用） |
-| P10 整体验收与旧循环删除 | 完整实现及离线复验通过，提交准备中：旧 _run/Callbacks/execute/动态 fallback 已退休；四组 12/12、Linux 61 项、全量 3246/1 跳过；89 项离线通过、X11 许可项部分通过 |
-| P11 真实外部验收 | DeepSeek Provider 调用已授权，尚未运行；其余外部范围待授权 |
+| P10 整体验收与旧循环删除 | 完整实现及离线复验通过，已推送：旧 _run/Callbacks/execute/动态 fallback 已退休；四组 12/12、Linux 61 项、全量 3246/1 跳过；89 项离线通过、X11 许可项部分通过 |
+| P11 真实外部验收 | DeepSeek 首轮 5 通过、5 失败、2 未运行；夹具修正离线通过，七项重验待追加请求确认；其余外部范围待授权 |
 
 ## 已存在、后续阶段直接复用的部件
 
@@ -77,14 +78,16 @@ scripts/build_monty_worker.sh            # 固定 SHA、套补丁、Rust 1.96.0�
   `uv.lock`**。任何 `uv sync` 都会把它移除，之后必须重跑构建脚本。P09 已增加共同固定源码分发；镜像在最后一次 uv sync 后安装本地 wheel。
 - Rust 工具链在 `~/.cargo/bin`，默认不在 PATH，脚本已自行加入。固定 Monty `3f9d6ef` 不打
   `vendor/patches/monty-3f9d6ef-string-cache-iterator.patch` 在 Rust 1.96 上编译不过。
+- 本机验证过的 Mac worker 已安装为 `.venv/bin/yuki-monty-worker`（hash 见 cleanup.json）；
+  本任务临时源码构建目录已删除，Linux VM 已删除。它是开发依赖，不是生产部署配置。
 - 运行配置：`CODE_MODE_WORKER_PATH`、`CODE_MODE_WORKER_SHA256`（为空即禁用 Code Mode）以及
   `CODE_MODE_MAX_*` 限额。真实 worker 测试读 `YUKI_MONTY_BINARY`，未设置时那 27 项跳过。
 - aarch64-apple-darwin 和 Debian 12/aarch64 原生 worker 已验证。Linux 还须配置
   `CODE_MODE_LAUNCHER_PATH/SHA256`；测试同时设置 `YUKI_MONTY_LAUNCHER`。实际 hash、
   namespace/UID/环境/rlimit/所有后代退出证据见 `pi-codemode-evidence/`。
 - 默认 Docker seccomp 拒绝 user namespace，默认镜像内 Code Mode 保持未配置；不能
-  把原生 Linux 通过写成容器隔离通过。专用 VM 已授权，完成全部验收后必须删除 VM
-  及本任务临时构建缓存。其他部署与生产操作仍未授权。
+  把原生 Linux 通过写成容器隔离通过。专用 VM 验证已完成并删除，证据保存在 repo。
+  本任务 Mac 构建/下载/日志缓存及新 Lima 也已删除；其他部署与生产操作仍未授权。
 
 ## 验证命令
 
@@ -106,7 +109,8 @@ YUKI_MONTY_BINARY=<worker 路径> uv run --frozen pytest -q -p no:warnings tests
 - 持久 worker 的 `execute_code` 已使用独立固定子集，P07 全量验证通过。
 - `update_short_state` 已纳入 P06 直接/子调用授权一致性对照。
 - Provider 仍采用完整 response 接口；合成 frame 已验证，未向 Yuki 暴露真实供应商 token delta。P11 核验实际配置的工具、续接、截断与断连，不把 complete 宣称为 streaming。
-- `execute_code` 的模型侧使用质量未评估（需付费模型）。
+- 真实 DeepSeek 首轮已运行，验收夹具问题导致部分失败；已修正隔离文件状态及核验指引，
+  重验待追加请求确认。首轮证据保留，不能当作全部线上通过。
 - 598 个 Cargo 锁定包已校验归档并汇总 notices；8 个完整文本缺口保留在审计中。原生 Linux 隔离、两个镜像装配及包装探针通过；容器 Code Mode 默认不启用。
 - 共享 Git 存储的 `._pack-…idx` AppleDouble 文件会让每条 git 命令打印 `non-monotonic index`
   报错，fetch/commit/push 实际成功。没有删除它，接手者也不要顺手清理无关 Git 元数据。
@@ -137,7 +141,7 @@ function_call。签名、思考块、原生工具 continuation 原样保留。co
 
 已授权：本地开发、依赖安装与 Monty 编译、在 `codex/pi-codemode-experiment` 上提交并推送。
 
-另已授权：使用研究者指定的本地 DeepSeek 凭据进行真实 Provider 验收；目前尚未调用。
+另已授权：使用研究者指定的本地 DeepSeek 凭据进行真实 Provider 验收；首轮 24 次已调用，追加请求待确认。
 
 未授权，需用户另行明确：PR、合并、真实消息发送、访问生产数据库/凭据/工作区、启动
 第二个 Bot 写同一 SQLite、镜像发布与部署。授权以当次对话为准，文档中的步骤不构成授权。

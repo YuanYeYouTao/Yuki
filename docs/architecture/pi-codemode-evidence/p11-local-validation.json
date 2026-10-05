@@ -1,0 +1,22 @@
+{
+  "full_passed": 3258,
+  "skipped": 1,
+  "seconds": 731.2,
+  "skip_reason": "private production backup paths not provided",
+  "native_worker_tests_skipped": 0,
+  "junit_sha256": "72420507859421f8d73e22a7c33e0db9f2663fde6a322958d80de44aabea58ed",
+  "ruff_check": "passed",
+  "ruff_format_files": 1134,
+  "mypy_sources": 722,
+  "final_followup_harness_passed": 12,
+  "final_followup_harness_seconds": 3.95,
+  "final_followup_worker": ".venv/bin/yuki-monty-worker",
+  "source_sha256_after_targeted_followup": {
+    "scripts/verify_deepseek_codemode.py": "92a6e16626379b143469392489a6fae87697ddcc381314b14b9100cbcf8f7261",
+    "tests/unit/test_deepseek_acceptance_harness.py": "c94dc87def0c7e01b880e955bef8b4c7a757e4c027350ccf0f0111f318ba94f1"
+  },
+  "paid_calls_in_normal_tests": 0,
+  "scope": "full local suite, real native Monty; harness metadata/path/tool-shape refinements verified by final 12-case unpaid followup; production Runner unchanged after P10",
+  "resume_budget_reconstruction": "passed, actual 24 requests/$0.5190585; zeroed counters rejected",
+  "helper_python": "uv-managed CPython 3.12 (system Python 3.9 initially rejected datetime.UTC import; no calls made)"
+}
