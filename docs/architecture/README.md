@@ -25,6 +25,7 @@ Yuki 正在逐层解耦：永久主体、内部事件和工作身份由核心持
 | [Pi 与 Code Mode 交接](pi-codemode-handoff.md) | 实验分支当前状态、环境准备、已知问题与 P06–P11 接手要点 |
 | [Code Mode 与 main 兼容](pi-codemode-main-compatibility.md) | 主线修复接入新循环、两边旧数据库正常升级及联合验证 |
 | [Pi / Code Mode 运维](../operations/pi-codemode-operations.md) | 原数据兼容矩阵、固定 worker 分发、私有对象备份与切换/回退门 |
+| [Windows 私有一键部署](../../deploy/windows/README.md) | 独立 WSL、普通用户 Bot 与 Monty、QQ 网关、固定源码私有包及现场验收 |
 | [MCP 架构](../mcp/architecture.md) | 外部工具、固定清单和执行授权 |
 | [插件架构](../plugin-development/architecture.md) | SDK、Host 与隔离插件会话 |
 | [持久环境](../operations/persistent-environment.zh-CN.md) | 工作区、终端、Manager、文件交付和恢复 |

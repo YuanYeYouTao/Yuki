@@ -917,3 +917,48 @@ hash 保留，最终脚本的独立行为检查、14 项安装器回归及最终
 
 下一依赖：使用同一份已验证的源码提交生成私有 Windows 包；目标 Windows 的
 原生运行和 QQ 扫码尚未运行，私有生产备份测试仍缺数据。
+
+## 2026-10-06：Windows 私有一键部署包
+
+用户在最新 main 兼容后继续要求 Windows 一键安装。当前兼容提交 `783d0873`
+是 `c4afe62d` 与 `3ca36510` 的正常双父合并；安装器使用随后已验证的完整源码提交，
+不使用旧发行镜像。公开仓库只保存通用脚本，真实密钥、完整角色提示词和机器人
+账号仅在仓库外生成的私有包中。首次部署由用户输入独立管理员 QQ。
+
+新增 `deploy/windows/` 与 `scripts/build_windows_private_bundle.py`：
+
+- 全新 x64 Windows 10/11 启用 WSL2、缺新 WSL 时安装校验固定 SHA 的官方 MSI，
+  导入独立 `Yuki-Bocchi` Ubuntu 24.04，重启续装且拒绝覆盖其他所有者的环境。
+- Bot / Monty 以普通 `yuki` 用户运行；NapCat 通过同一 WSL 内的 Docker Engine
+  启动，使用固定 amd64 manifest。编译固定 Monty 与 wheel、构建 WebUI，校验
+  原生 namespace / UID / 无网络 / watchdog / 所有者死亡，不放宽隔离规则。
+- 原子配置接入完整角色提示词、Anthropic 主/后台 profiles、全部 ModelTask 路由、
+  Work / 自动化 / 子 Agent / Code Mode 与原生图片；不硬编码用户密钥或管理员。
+  管理凭据随机生成，Linux 私有文件和 Windows 安装目录限制访问。
+- 现场检查真实 API 的图片、工具与原回执续接，再正常迁移至 `0096` 并只读
+  quick_check；服务与 Windows localhost 均通过后才标记安装完成。重试先停
+  原 Bot，systemd 重启后再次停，避免第二个 SQLite 写者。QQ 登录仍由用户扫码。
+- 源码 tar 固定 git 提交，私有 ZIP 校验每项 SHA、来源和完整性；Windows 脚本
+  使用 CRLF。安装/启动/停止入口保存运行数据，成功后仅删除自有 Monty 构建缓存。
+
+验证没有依赖目标 Windows：14 项真实 Settings / 路由 / 权限 / 私有文件 / 原子
+配置 / 安全解包 / 固定 git archive / ZIP 回归通过（0.26 秒），已包含在最终
+4022 项通过的联合检查中。PowerShell 7.6.6 的实际 Legacy 模式行为检查、Bash
+语法及含临时合成 `.env` 的 Compose config 检查通过，具体输入、输出与 hash
+保存在[安装器验证](pi-codemode-evidence/windows-deployment-verification.json)。
+它们不冒充 Windows PowerShell 5.1、WSL 导入或目标 QQ 运行测试。
+
+用户真实 API 已验证：原连通探针两次请求 8.009 秒，原生图片探针两次 18.499 秒，
+最终安装器自身探针两次 5.845 秒，共六次实际请求；安装器主 profile 接收蓝色原图、
+返回指定函数参数后，原 continuation 配对工具结果并回复 READY。对应原始
+[安装器探针](pi-codemode-evidence/windows-deployment-provider-probe.json)保留 token
+与时间；没有从时间不同推断性能提升，没有真实 QQ 消息外发。
+
+目标 Windows 的导入、原生编译/隔离、迁移、systemd、网关、localhost 与扫码状态
+均标记**未运行**，由安装器在用户部署电脑上逐项执行。额外搜索、语音及 gVisor /
+Manager 终端服务尚无对应连接，默认不启用；不影响已配置的聊天、原生图片和受限
+Python Code Mode。使用方式与这些边界见[安装说明](../../deploy/windows/README.md)。
+
+这次交付范围为本地通用安装器、私有包生成、验证及测试分支提交/推送；没有替用户
+在当前 Mac 或生产环境部署。私有包由上述 builder 在提交后生成并独立核对；实际
+路径、固定源码提交、ZIP SHA 与推送结果随最终回报交付，不把密钥载荷加入 Git。
