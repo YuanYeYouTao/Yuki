@@ -20,7 +20,9 @@ from qq_ai_bot.capabilities.coordinator import (
     CoordinatedToolResult,
     ToolInvocationCoordinator,
 )
+from qq_ai_bot.capabilities.media import result_images
 from qq_ai_bot.domain.messages import (
+    ChatImage,
     ChatMessage,
     ChatRequest,
     ChatResponse,
@@ -1109,6 +1111,12 @@ class AgentRunner:
                     stage_feedback_batch: str | None = stage_feedback_batch,
                     boundary: ContextBoundary | None = boundary,
                     has_native_effects: bool = bool(request.native_tools),
+                    selected_media: tuple[ChatImage, ...] = tuple(
+                        image
+                        for item in transcript.portable_entries()
+                        if isinstance(item, ChatMessage)
+                        for image in item.images
+                    ),
                 ) -> ChatResponse:
                     prepared = False
                     # A capacity compaction can replace this candidate with a
@@ -1128,6 +1136,8 @@ class AgentRunner:
                         nonlocal prepared
                         if prepared:
                             return
+                        self._check_request_media_budget(selected_media, runtime, tools)
+                        await self._validate_tool_media(tools, runtime, sequence, selected_media)
                         # The executor invokes this only after real admission.
                         # HTTP retries must not reserve this logical request again.
                         if runtime.before_model_request is not None:
@@ -1620,8 +1630,6 @@ class AgentRunner:
                         reasoning_content=response.reasoning_content,
                     )
                 )
-            if runtime.work_control is not None and runtime.work_control.session is not None:
-                await runtime.work_control.session.save("response", response.tool_calls)
             tooling = getattr(runtime.runtime_config, "tooling", None)
             coordinated = await self._execute_tool_batch(
                 response.tool_calls,
@@ -1644,6 +1652,7 @@ class AgentRunner:
                 declared_names=frozenset(t.name for t in definitions),
             )
             batch, executed = coordinated.calls, coordinated.executed_count
+            batch = self._budget_tool_media(batch, transcript, runtime, tools)
             calls_used += executed
             for call, result, _was_executed in batch:
                 try:
@@ -1703,6 +1712,7 @@ class AgentRunner:
                         side_effecting=self._is_side_effecting(tools, call, runtime),
                         arguments=call.function.arguments,
                     )
+            transcript.append_tool_media(tuple((call.id, result) for call, result, _ in batch))
             from qq_ai_bot.capabilities.results import normalize_legacy_result
             from qq_ai_bot.runtime.effect_outcomes import execution_evidence
 
@@ -1906,6 +1916,84 @@ class AgentRunner:
             response_status=response_status,
         )
 
+    @staticmethod
+    async def _validate_tool_media(
+        tools: AgentToolBackend | None,
+        runtime: AgentRuntime,
+        sequence: TranscriptRequest,
+        selected_media: tuple[ChatImage, ...] = (),
+    ) -> None:
+        images = tuple(
+            image for image in selected_media if image.source in {"history", "workspace", "tool"}
+        ) or tuple(
+            image
+            for message in (*sequence.messages, *sequence.items)
+            if isinstance(message, ChatMessage)
+            for image in message.images
+            if image.source in {"history", "workspace", "tool"}
+        )
+        # Older pixels may already live in an opaque continuation. The portable
+        # dependency set is validated by the backend separately below.
+        validator = getattr(tools, "validate_images", None)
+        if images:
+            if not callable(validator):
+                raise LLMError("tool_media_source_validator_unavailable")
+            await validator(images, runtime)
+
+    @staticmethod
+    def _check_request_media_budget(
+        images: tuple[ChatImage, ...],
+        runtime: AgentRuntime,
+        tools: AgentToolBackend | None,
+    ) -> None:
+        if len(images) > runtime.runtime_config.vision.max_frames_per_turn or sum(
+            len(image.data_url) for image in images
+        ) > getattr(tools, "media_max_bytes", 16_777_216):
+            raise WorkCapacityError("media_request_budget_exceeded")
+
+    def _budget_tool_media(
+        self,
+        batch: tuple[tuple[ToolCall, str, bool], ...],
+        transcript: TurnTranscript,
+        runtime: AgentRuntime,
+        tools: AgentToolBackend | None,
+    ) -> tuple[tuple[ToolCall, str, bool], ...]:
+        existing = {
+            image
+            for message in transcript.portable_entries()
+            if isinstance(message, ChatMessage)
+            for image in message.images
+        }
+        limit = getattr(tools, "media_max_bytes", 16_777_216)
+        frames = runtime.runtime_config.vision.max_frames_per_turn
+        size = sum(len(image.data_url) for image in existing)
+        count = len(existing)
+        output = []
+        for call, result, executed in batch:
+            images = result_images(result)
+            if images:
+                fresh = set(images) - existing
+                error = None
+                if ModelCapability.IMAGE_INPUT not in self._models.capabilities(self._task):
+                    error = "image_capability_unavailable"
+                elif (
+                    count + len(fresh) > frames
+                    or size + sum(len(image.data_url) for image in fresh) > limit
+                ):
+                    error = "media_request_budget_exceeded"
+                if error:
+                    outcome = json.loads(result)
+                    if isinstance(outcome, dict) and outcome.get("mutation_committed") is True:
+                        result = json.dumps({**outcome, "media_read": False, "media_error": error})
+                    else:
+                        result = json.dumps({"ok": False, "error": error, "read": False})
+                else:
+                    existing.update(fresh)
+                    count += len(fresh)
+                    size += sum(len(image.data_url) for image in fresh)
+            output.append((call, result, executed))
+        return tuple(output)
+
     async def _execute_tool_batch(
         self,
         calls: tuple[ToolCall, ...],
@@ -1947,8 +2035,12 @@ class AgentRunner:
         """Execute each semantic call once and fan its result out to duplicate IDs."""
 
         control = runtime.work_control
+        session = getattr(control, "session", None)
         control_calls = [call for call in calls if call.function.name in WORK_CONTROL_NAMES]
         if control_calls:
+            if session is not None:
+                session.pending_readonly_keys = {}
+                await session.save("response", calls)
             if len(calls) != 1:
                 result = json.dumps({"ok": False, "error": "work_control_requires_single_call"})
                 return CoordinatedToolResult(
@@ -2044,6 +2136,25 @@ class AgentRunner:
                 if not side_effecting and call.function.name in cacheable_names
                 else None
             )
+            if (
+                cached is not None
+                and session is not None
+                and control is not None
+                and control.current is not None
+                and signature not in session.readonly_result_keys
+            ):
+                # An unowned in-memory value is not a durable reuse receipt.
+                cached = None
+            if (
+                cached is not None
+                and session is not None
+                and control is not None
+                and control.current is not None
+                and not session.readonly_result_keys.get(signature, "").startswith(
+                    session.call_key("").rsplit(":", 2)[0] + ":"
+                )
+            ):
+                cached = None
             if cached is not None:
                 reused_by_id[call.id] = cached
                 continue
@@ -2054,6 +2165,22 @@ class AgentRunner:
             if not side_effecting:
                 first_call_by_signature[signature] = call
             unique_calls.append(call)
+
+        if session is not None and control is not None and control.current is not None:
+            session.pending_readonly_keys = {
+                call.id: session.readonly_result_keys[signatures[call.id]]
+                for call in calls
+                if call.id in reused_by_id
+            }
+            session.pending_readonly_keys.update(
+                {
+                    alias: session.call_key(representative)
+                    for alias, representative in aliases.items()
+                }
+            )
+            # Exact original response/call IDs and reuse ownership are durable
+            # before any representative can dispatch or charge a tool budget.
+            await session.save("response", calls)
 
         if tools is not None:
             write_calls = [call for call in unique_calls if call.function.name == "memory_change"]
@@ -2136,11 +2263,15 @@ class AgentRunner:
             signature = signatures[call.id]
             if self._successful_side_effect(tools, call, result, runtime):
                 reusable_results.clear()
+                if session is not None:
+                    session.readonly_result_keys.clear()
             elif (
                 not self._is_side_effecting(tools, call, runtime)
                 and call.function.name in cacheable_names
             ):
                 reusable_results[signature] = result
+                if session is not None and control is not None and control.current is not None:
+                    session.readonly_result_keys[signature] = session.call_key(call.id)
 
         return CoordinatedToolResult(
             calls=tuple(ordered),

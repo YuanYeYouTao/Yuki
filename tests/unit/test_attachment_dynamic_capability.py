@@ -181,7 +181,7 @@ async def test_image_and_video_follow_current_model_capability(monkeypatch):
     async def sample_frame(*_args, **_kwargs):
         return (ChatImage(data_url="data:image/jpeg;base64,AA==", video_timestamp_seconds=0),)
 
-    monkeypatch.setattr("qq_ai_bot.services.attachment_inputs.sample_video", sample_frame)
+    monkeypatch.setattr("qq_ai_bot.services.native_media.sample_video", sample_frame)
     enabled = True
     assert service.images_enabled
     prepared_image = await service.prepare(

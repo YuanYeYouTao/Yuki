@@ -29,7 +29,7 @@ from qq_ai_bot.capabilities.catalog import DescriptorRegistrySnapshot
 from qq_ai_bot.capabilities.exposure import NO_LONGER_AUTHORIZED
 from qq_ai_bot.capabilities.runtime import TurnCapabilityRuntime
 from qq_ai_bot.capabilities.validation import UNDECLARED_TOOL
-from qq_ai_bot.domain.messages import ChatTool, ToolCall, ToolFunction
+from qq_ai_bot.domain.messages import ChatImage, ChatTool, ToolCall, ToolFunction
 from qq_ai_bot.llm.base import LLMError
 from qq_ai_bot.memory.runtime.contract import MemoryReadPolicy
 from qq_ai_bot.runtime.authority import TurnAuthority
@@ -65,6 +65,50 @@ _ADMIN_RETRYABLE_ERRORS = frozenset(
 
 class MainAgentBackend(AgentToolBackend):
     """Preserve event-bound chat policies behind the shared model tool loop."""
+
+    @property
+    def media_max_bytes(self) -> int:
+        return self._service._settings.vision_max_prepared_bytes
+
+    async def validate_images(self, images: tuple[ChatImage, ...], runtime: AgentRuntime) -> None:
+        """Recheck selected tool sources after model admission, before dispatch."""
+        selected = tuple(dict.fromkeys(images))
+        workspace = tuple(image for image in selected if image.source in {"history", "workspace"})
+        if workspace:
+            if any(
+                image.source == "history"
+                and image.conversation_id != runtime.canonical_conversation_id
+                for image in workspace
+            ):
+                raise LLMError("attachment_scope_denied")
+            service = self._service._tools.workspace_service
+            if service is None:
+                raise LLMError("workspace_unavailable")
+            await service.validate_images(workspace)
+        external = tuple(image for image in selected if image.source == "tool")
+        if external:
+            plugin_images = tuple(image for image in external if image.plugin_id is not None)
+            if plugin_images:
+                plugin_tools = self._service._plugin_tools
+                if plugin_tools is None:
+                    raise LLMError("plugin_media_source_validator_unavailable")
+                await plugin_tools.validate_images(
+                    plugin_images, self._runtime, web_was_used=self._web_was_used
+                )
+            from qq_ai_bot.mcp.artifact_access import access_from_runtime
+
+            store = self._service._tool_artifacts
+            validator = getattr(store, "validate_media", None)
+            if not callable(validator):
+                raise LLMError("tool_media_source_validator_unavailable")
+            control = runtime.work_control
+            await validator(
+                external,
+                access_from_runtime(
+                    self._runtime,
+                    generation=control.lease.generation if control is not None else None,
+                ),
+            )
 
     def __init__(
         self,
@@ -682,7 +726,7 @@ class MainAgentBackend(AgentToolBackend):
                 )
                 artifact_store = (
                     self._service._tool_artifacts
-                    if tooling is not None and tooling.result_artifact_enabled
+                    if outcome.images or (tooling is not None and tooling.result_artifact_enabled)
                     else None
                 )
                 retention_seconds = (

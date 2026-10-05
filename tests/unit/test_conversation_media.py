@@ -18,9 +18,9 @@ from qq_ai_bot.persistence.models import ConversationMediaItemModel
 from qq_ai_bot.persistence.people_repository import PeopleRepository
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
-from qq_ai_bot.vision.models import DownloadedMedia, VisualObservation
+from qq_ai_bot.vision.models import DownloadedMedia
 from qq_ai_bot.workspace.service import WorkspaceService
-from qq_ai_bot.workspace.store import WorkspaceStore
+from qq_ai_bot.workspace.store import WorkspaceError, WorkspaceStore
 
 
 def _png() -> bytes:
@@ -46,12 +46,6 @@ class _Resolver:
     async def download_attachment(self, _reference, destination, *, max_download_bytes):
         assert len(self.payload) <= max_download_bytes
         destination.write_bytes(self.payload)
-
-
-class _Provider:
-    async def analyze(self, inputs, question):
-        assert inputs and question
-        return VisualObservation(items=(), overall_description="红色方块")
 
 
 @pytest.mark.asyncio
@@ -85,9 +79,7 @@ async def test_media_index_cache_scope_expiry_and_reset(database, tmp_path):
     await uow.append_inbound(other.message, other)
 
     source = _Resolver()
-    service = ConversationMediaService(
-        database, tmp_path / "media", source, ImagePreprocessor(), _Provider()
-    )
+    service = ConversationMediaService(database, tmp_path / "media", source, ImagePreprocessor())
     item, path = await service.authorized_path(
         event_id=appended.event.id,
         attachment_index=0,
@@ -98,9 +90,12 @@ async def test_media_index_cache_scope_expiry_and_reset(database, tmp_path):
     assert path.read_bytes() == source.payload
     assert path.parent.parent.name == admitted.conversation_id
     observation = await service.inspect(item, path, "这是什么颜色？")
-    assert observation["observation"]["overall_description"] == "红色方块"
+    assert observation.images and observation.images[0].source == "history"
+    assert observation["status"] == "prepared_for_main_agent"
+    assert "data:image" not in str(observation)
     assert observation["event_id"] == appended.event.id
     assert source.calls == 1
+    await service.validate_images(observation.images)
 
     workspace = WorkspaceService(WorkspaceStore(tmp_path / "workspace"))
     workspace.conversation_media = service
@@ -113,7 +108,7 @@ async def test_media_index_cache_scope_expiry_and_reset(database, tmp_path):
         runtime=runtime,
     )
     assert inspected["event_id"] == appended.event.id
-    assert inspected["observation"]["overall_description"] == "红色方块"
+    assert inspected.images == observation.images
     assert source.calls == 1
 
     with pytest.raises(ConversationMediaError, match="attachment_scope_denied"):
@@ -131,6 +126,8 @@ async def test_media_index_cache_scope_expiry_and_reset(database, tmp_path):
     second = await reset_all(database, "media-cutover-test", apply=True)
     assert first["newly_reset"] == first["total"]
     assert second["newly_reset"] == 0
+    with pytest.raises(WorkspaceError, match="attachment_scope_denied"):
+        await workspace.validate_images(observation.images)
     with pytest.raises(ConversationMediaError, match="attachment_scope_denied"):
         await service.authorized_path(
             event_id=appended.event.id,
@@ -171,7 +168,7 @@ async def test_file_with_image_bytes_uses_visual_reader(database, tmp_path):
     assert admitted is not None
     appended = await uow.append_inbound(admitted.message, admitted)
     service = ConversationMediaService(
-        database, tmp_path / "media", _Resolver(), ImagePreprocessor(), _Provider()
+        database, tmp_path / "media", _Resolver(), ImagePreprocessor()
     )
     item, path = await service.authorized_path(
         event_id=appended.event.id,
@@ -183,7 +180,7 @@ async def test_file_with_image_bytes_uses_visual_reader(database, tmp_path):
     assert path.suffix == ".bin"
     result = await service.inspect(item, path, "图里是什么？")
     assert result["mode"] == "image"
-    assert result["observation"]["overall_description"] == "红色方块"
+    assert result.images and result.images[0].source == "history"
 
 
 @pytest.mark.asyncio
@@ -202,7 +199,7 @@ async def test_forgetting_person_removes_index_and_cached_bytes(database, tmp_pa
     assert admitted is not None
     appended = await uow.append_inbound(admitted.message, admitted)
     service = ConversationMediaService(
-        database, tmp_path / "media", _Resolver(), ImagePreprocessor(), _Provider()
+        database, tmp_path / "media", _Resolver(), ImagePreprocessor()
     )
     _, path = await service.authorized_path(
         event_id=appended.event.id,
@@ -212,8 +209,52 @@ async def test_forgetting_person_removes_index_and_cached_bytes(database, tmp_pa
         gateway=None,
     )
     assert path.is_file()
+    item, _ = await service.authorized_path(
+        event_id=appended.event.id,
+        attachment_index=0,
+        conversation_id=admitted.conversation_id,
+        generation=1,
+        gateway=None,
+    )
+    prepared = await service.inspect(item, path, "检查原图")
     assert await PeopleRepository(database).delete_person("1001") is True
+    with pytest.raises(ConversationMediaError, match="attachment_not_found"):
+        await service.validate_images(prepared.images)
     await service.cleanup()
     assert not path.exists()
     async with database.sessions() as session:
         assert await session.get(ConversationMediaItemModel, (appended.event.id, 0)) is None
+
+
+@pytest.mark.asyncio
+async def test_historical_document_remains_local_bounded_reader(database, tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    registry, resolver, uow = await _stack(database)
+    bot = _Bot("8000")
+    async with database.sessions() as session, session.begin():
+        presence = await ensure_presence(session, "8000")
+    registry.connect(bot)
+    registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
+    message = replace(
+        _message(message_id="document-1", user_id="1001"),
+        segments=({"type": "file", "data": {"name": "note.txt", "url": "https://example.test/f"}},),
+    )
+    admitted = await resolver.pre_admit(bot, message)
+    appended = await uow.append_inbound(admitted.message, admitted)
+    source = _Resolver()
+    source.payload = b"bounded document"
+    media = ConversationMediaService(database, tmp_path / "media", source, ImagePreprocessor())
+    item, path = await media.authorized_path(
+        event_id=appended.event.id,
+        attachment_index=0,
+        conversation_id=admitted.conversation_id,
+        generation=1,
+        gateway=None,
+    )
+    parser = AsyncMock(return_value=b'{"text":"bounded document","kind":"text"}')
+    monkeypatch.setattr("qq_ai_bot.conversation.media_service.run_parser", parser)
+    result = await media.inspect(item, path, "read this file")
+    assert result["mode"] == "document"
+    assert result["result"]["text"] == "bounded document"
+    assert parser.await_args.args[-2:] == ("20000", "20")

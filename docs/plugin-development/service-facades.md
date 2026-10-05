@@ -124,6 +124,8 @@ search，不受此项差异影响；不依赖 `tool_choice` 实现权限控制�
 `ctx.mcp.status/list_servers/search_tools` 需要 `mcp.read`；
 `ctx.mcp.call(server_id, tool_name, arguments)` 需要 `mcp.call`。Facade 复用宿主唯一
 `MCPManager`，不会创建插件私有连接池，也不会向插件暴露 Session、Header 或环境 Secret。
+图片返回在 `PluginResult.media_artifacts` 中，仅为调用插件拥有的 Host 句柄；不会自动注入
+主 Agent。插件工具需要本次显式返回选中的句柄，见[媒体与视觉](media-and-vision.md)。
 
 这两项是 Plugin Host 的能力批准，不是针对每个 MCP Tool 的审批；Server 是否可用仍只取决于
 Yuki 配置和启停状态。

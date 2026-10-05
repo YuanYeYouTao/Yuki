@@ -275,6 +275,10 @@ class PluginToolProvider(Protocol):
 
     def is_read_only(self, name: str) -> bool: ...
 
+    async def validate_images(
+        self, images: tuple[ChatImage, ...], runtime: ToolRuntime, *, web_was_used: bool
+    ) -> None: ...
+
     async def execute(
         self,
         name: str,
@@ -646,9 +650,12 @@ class ChatService:
                         tool_name=_ARTIFACT_READER_NAME,
                     )
                 if result.get("mode") != "text":
+                    from qq_ai_bot.capabilities.media import result_images
+
                     return ToolExecutionResult(
                         ok=True,
                         data=result,
+                        images=result_images(result),
                         provider_id=_ARTIFACT_PROVIDER_ID,
                         tool_name=_ARTIFACT_READER_NAME,
                     )
@@ -667,6 +674,7 @@ class ChatService:
                             description=(
                                 "读取工具产生的短期 Artifact。JSON 优先使用 inspect 查看结构、"
                                 "get 按路径读取、search 返回关键词命中的完整对象；旧文本使用 text。"
+                                "图片 Artifact 使用 image 将原图交给当前主模型原生查看。"
                             ),
                             parameters={
                                 "type": "object",
@@ -674,10 +682,10 @@ class ChatService:
                                     "handle": {"type": "string"},
                                     "operation": {
                                         "type": "string",
-                                        "enum": ["inspect", "get", "search", "text"],
+                                        "enum": ["inspect", "get", "search", "text", "image"],
                                         "description": (
                                             "JSON 使用 inspect/get/search；"
-                                            "省略或 text 保持旧文本读取"
+                                            "图片使用 image；省略或 text 保持旧文本读取"
                                         ),
                                     },
                                     "path": {

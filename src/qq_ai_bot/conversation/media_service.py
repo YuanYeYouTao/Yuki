@@ -11,7 +11,7 @@ import stat
 import sys
 import time
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -19,21 +19,22 @@ from uuid import uuid4
 
 from sqlalchemy import and_, or_, select, update
 
+from qq_ai_bot.admin.models import VisionRuntimeConfig
+from qq_ai_bot.capabilities.media import PreparedMediaData
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+from qq_ai_bot.domain.messages import ChatImage
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel, ConversationMediaItemModel
-from qq_ai_bot.runtime.work_activation import current_work_control
 from qq_ai_bot.services.image_preprocessor import ImagePreprocessingError, ImagePreprocessor
 from qq_ai_bot.services.media_resolver import (
     MediaResolutionError,
     MediaResolver,
     OneBotMediaGateway,
 )
+from qq_ai_bot.services.native_media import MAX_IMAGE_BYTES, NativeMediaPreparer
 from qq_ai_bot.services.video_frames import _run as run_parser
-from qq_ai_bot.services.video_frames import sample_video
 from qq_ai_bot.services.vision_service import VisionProcessingError
-from qq_ai_bot.vision.base import VisionProvider
-from qq_ai_bot.vision.models import DownloadedMedia, MediaReference
+from qq_ai_bot.vision.models import MediaReference
 
 _LIFETIME = timedelta(hours=24)
 _MAX_FILE = 200 * 1024 * 1024
@@ -130,6 +131,49 @@ def _aware(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
+@dataclass(frozen=True, slots=True)
+class _CacheFileFacts:
+    head: bytes
+    digest: str
+    byte_size: int
+    token: tuple[int, int, int, int, int]
+
+
+def _cache_file_facts(path: Path, max_bytes: int) -> _CacheFileFacts:
+    """Hash downloaded bytes with a fixed read budget, before opening a writer."""
+    initial = path.lstat()
+    if not stat.S_ISREG(initial.st_mode) or not 0 < initial.st_size <= max_bytes:
+        raise ConversationMediaError("attachment_invalid")
+    token = _file_token(initial)
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(descriptor, "rb") as stream:
+        if _file_token(os.fstat(stream.fileno())) != token:
+            raise ConversationMediaError("attachment_changed")
+        digest = hashlib.sha256()
+        head = b""
+        byte_size = 0
+        while chunk := stream.read(64 * 1024):
+            byte_size += len(chunk)
+            if byte_size > max_bytes:
+                raise ConversationMediaError("attachment_invalid")
+            if len(head) < 12:
+                head += chunk[: 12 - len(head)]
+            digest.update(chunk)
+        if (
+            byte_size != initial.st_size
+            or _file_token(os.fstat(stream.fileno())) != token
+            or _file_token(path.lstat()) != token
+        ):
+            raise ConversationMediaError("attachment_changed")
+    return _CacheFileFacts(head, digest.hexdigest(), byte_size, token)
+
+
+def _publish_cache_file(temporary: Path, final: Path, facts: _CacheFileFacts) -> None:
+    if _file_token(temporary.lstat()) != facts.token:
+        raise ConversationMediaError("attachment_changed")
+    os.replace(temporary, final)
+
+
 class ConversationMediaService:
     def __init__(
         self,
@@ -137,13 +181,14 @@ class ConversationMediaService:
         root: Path,
         resolver: MediaResolver,
         preprocessor: ImagePreprocessor,
-        provider: VisionProvider | None,
+        *,
+        max_prepared_bytes: int = 6_291_456,
     ) -> None:
         self.database = database
         self.root = root / "v1"
         self.resolver = resolver
         self.preprocessor = preprocessor
-        self.provider = provider
+        self.preparer = NativeMediaPreparer(preprocessor, max_bytes=max_prepared_bytes)
         self._lock = asyncio.Lock()
         self._cleanup_lock = asyncio.Lock()
         self._gc_iterator: Iterator[Path] | None = None
@@ -259,27 +304,25 @@ class ConversationMediaService:
                 await self.resolver.download_attachment(
                     reference, temporary, max_download_bytes=_MAX_FILE
                 )
-            blob = await asyncio.to_thread(temporary.read_bytes)
-            if not blob or len(blob) > _MAX_FILE:
-                raise ConversationMediaError("attachment_invalid")
+            facts = await asyncio.to_thread(_cache_file_facts, temporary, _MAX_FILE)
             if item.kind == "image":
-                if blob.startswith(b"\xff\xd8\xff"):
+                if facts.head.startswith(b"\xff\xd8\xff"):
                     extension = ".jpg"
-                elif blob.startswith(b"\x89PNG"):
+                elif facts.head.startswith(b"\x89PNG"):
                     extension = ".png"
-                elif blob.startswith(b"GIF8"):
+                elif facts.head.startswith(b"GIF8"):
                     extension = ".gif"
-                elif blob.startswith(b"RIFF") and blob[8:12] == b"WEBP":
+                elif facts.head.startswith(b"RIFF") and facts.head[8:12] == b"WEBP":
                     extension = ".webp"
                 else:
                     raise ConversationMediaError("attachment_type_invalid")
             elif item.kind == "video":
-                if blob[4:8] != b"ftyp":
+                if facts.head[4:8] != b"ftyp":
                     raise ConversationMediaError("attachment_type_invalid")
                 extension = ".mp4"
             else:
                 extension = ".bin"
-            digest = hashlib.sha256(blob).hexdigest()
+            digest = facts.digest
             final_name = f"{index}-{digest}{extension}"
             final = directory / final_name
             async with self._lock:
@@ -305,11 +348,11 @@ class ConversationMediaService:
                 occupied = await asyncio.to_thread(occupied_bytes, self.root)
                 local = await asyncio.to_thread(occupied_bytes, self.root / item.conversation_id)
                 if (
-                    occupied + len(blob) > _GLOBAL_BUDGET
-                    or local + len(blob) > _CONVERSATION_BUDGET
+                    occupied + facts.byte_size > _GLOBAL_BUDGET
+                    or local + facts.byte_size > _CONVERSATION_BUDGET
                 ):
                     raise ConversationMediaError("cache_budget_exhausted")
-                os.replace(temporary, final)
+                await asyncio.to_thread(_publish_cache_file, temporary, final, facts)
                 now = datetime.now(UTC)
                 async with self.database.sessions() as session:
                     live = await session.get(ConversationMediaItemModel, (event_id, index))
@@ -365,22 +408,38 @@ class ConversationMediaService:
         return item, path
 
     async def inspect(
-        self, item: ConversationMediaItemModel, path: Path, question: str
+        self,
+        item: ConversationMediaItemModel,
+        path: Path,
+        question: str,
+        *,
+        runtime: VisionRuntimeConfig | None = None,
     ) -> dict[str, Any]:
         try:
-            return await self._inspect(item, path, question)
+            return await self._inspect(item, path, question, runtime=runtime)
         except (VisionProcessingError, ImagePreprocessingError) as exc:
             raise ConversationMediaError(exc.code) from exc
 
     async def _inspect(
-        self, item: ConversationMediaItemModel, path: Path, question: str
+        self,
+        item: ConversationMediaItemModel,
+        path: Path,
+        question: str,
+        *,
+        runtime: VisionRuntimeConfig | None = None,
     ) -> dict[str, Any]:
         if not 1 <= len(question) <= 2000:
             raise ConversationMediaError("invalid_question")
-        digest = (
-            item.content_sha256
-            or hashlib.sha256(await asyncio.to_thread(path.read_bytes)).hexdigest()
-        )
+        # Cache metadata returned by authorized_path predates download. Fetch
+        # the published version again, without resolving its URL a second time.
+        async with self.database.sessions() as session:
+            live = await session.get(
+                ConversationMediaItemModel, (item.source_event_id, item.attachment_index)
+            )
+            if live is None or live.cache_status != "cached" or not live.content_sha256:
+                raise ConversationMediaError("attachment_expired")
+            item = live
+        digest = item.content_sha256
 
         def content_kind() -> str:
             if item.kind != "file":
@@ -424,51 +483,94 @@ class ConversationMediaService:
                 "reader_version": "document-reader-v1",
                 "result": result,
             }
-        if self.provider is None:
-            raise ConversationMediaError("vision_unavailable")
-        control = current_work_control.get()
-        if control is not None:
-            await control.validate()
-            await control.reserve_request(auxiliary=True)
         if media_kind == "video":
-            frames = await sample_video(
-                path,
-                source="current",
-                maximum=6,
-                max_duration_seconds=120,
-                sample_interval_seconds=15,
-            )
-            import base64
-
-            payloads = [base64.b64decode(frame.data_url.split(",", 1)[1]) for frame in frames]
+            limit = runtime.video_max_download_bytes if runtime else _MAX_FILE
+            if (await asyncio.to_thread(path.stat)).st_size > limit:
+                raise ConversationMediaError("attachment_too_large")
+            images = await self.preparer.prepare_video(path, source="history", runtime=runtime)
         else:
-            payloads = [await asyncio.to_thread(path.read_bytes)]
-        prepared = tuple(
-            [
-                await asyncio.to_thread(
-                    self.preprocessor.prepare,
-                    DownloadedMedia(
-                        content=payload,
-                        content_type=None,
-                        content_hash=hashlib.sha256(payload).hexdigest(),
-                        byte_size=len(payload),
-                    ),
-                    source="current",
-                )
-                for payload in payloads
-            ]
+
+            def read_image() -> bytes:
+                with path.open("rb") as stream:
+                    data = stream.read(MAX_IMAGE_BYTES + 1)
+                if len(data) > MAX_IMAGE_BYTES or hashlib.sha256(data).hexdigest() != digest:
+                    raise ConversationMediaError("attachment_invalid")
+                return data
+
+            data = await asyncio.to_thread(read_image)
+            images = await asyncio.to_thread(
+                self.preparer.prepare_image,
+                data,
+                source="history",
+                max_frames=runtime.max_frames_per_turn if runtime else None,
+            )
+        images = tuple(
+            replace(
+                image,
+                conversation_id=item.conversation_id,
+                generation=item.generation,
+                source_event_id=item.source_event_id,
+                attachment_index=item.attachment_index,
+                content_hash=digest,
+                expires_at=_aware(item.expires_at).isoformat() if item.expires_at else None,
+            )
+            for image in images
         )
-        observation = await self.provider.analyze(prepared, question)
-        return {
-            "event_id": item.source_event_id,
-            "attachment_index": item.attachment_index,
-            "sha256": digest,
-            "mode": "video_frames" if media_kind == "video" else "image",
-            "analysis_version": "conversation-media-v1",
-            "sampled_frames": len(payloads),
-            "audio_analyzed": False if media_kind == "video" else None,
-            "observation": observation.model_dump(mode="json"),
-        }
+        await self.validate_images(images)
+        return PreparedMediaData(
+            {
+                "event_id": item.source_event_id,
+                "attachment_index": item.attachment_index,
+                "sha256": digest,
+                "mode": "video_frames" if media_kind == "video" else "image",
+                "preparation_version": "native-media-v1",
+                "question": question,
+                "sampled_frames": len(images),
+                "audio_analyzed": False if media_kind == "video" else None,
+                "status": "prepared_for_main_agent",
+            },
+            images,
+        )
+
+    async def validate_images(self, images: tuple[ChatImage, ...]) -> None:
+        """Recheck selected sources; never reread pixels or re-fetch a URL."""
+        seen: dict[tuple[int, int], tuple[str | None, int | None, str | None, str | None]] = {}
+        for image in images:
+            if image.source != "history":
+                continue
+            if image.source_event_id is None or image.attachment_index is None:
+                raise ConversationMediaError("attachment_source_invalid")
+            key = (image.source_event_id, image.attachment_index)
+            dependency = (
+                image.conversation_id,
+                image.generation,
+                image.content_hash,
+                image.expires_at,
+            )
+            if key in seen:
+                if seen[key] != dependency:
+                    raise ConversationMediaError("attachment_source_invalid")
+                continue
+            seen[key] = dependency
+            item, _, _ = await self._source(*key)
+            async with self.database.sessions() as session:
+                conversation = await session.get(CanonicalConversationModel, image.conversation_id)
+                if (
+                    conversation is None
+                    or item.conversation_id != image.conversation_id
+                    or item.generation != image.generation
+                    or conversation.generation != image.generation
+                    or image.source_event_id <= conversation.starts_after_event_id
+                ):
+                    raise ConversationMediaError("attachment_scope_denied")
+            if (
+                item.cache_status != "cached"
+                or item.content_sha256 != image.content_hash
+                or item.expires_at is None
+                or _aware(item.expires_at) <= datetime.now(UTC)
+                or _aware(item.expires_at).isoformat() != image.expires_at
+            ):
+                raise ConversationMediaError("attachment_expired")
 
     async def _expire_page(self, now: datetime) -> None:
         model = ConversationMediaItemModel

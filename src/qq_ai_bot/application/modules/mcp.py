@@ -11,6 +11,8 @@ from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.mcp.provider import MCPToolProvider
 from qq_ai_bot.mcp.repository import MCPRepository, ToolArtifactRepository
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
+from qq_ai_bot.services.native_media import NativeMediaPreparer
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +46,8 @@ class MCPModule:
             self._database,
             Path("data/tool_artifacts"),
             retention_seconds=settings.tooling_result_artifact_retention_seconds,
+            max_media_bytes=settings.vision_max_prepared_bytes,
+            max_media_frames=settings.vision_max_frames_per_turn,
         )
         manager = MCPManager(
             enabled=settings.mcp_enabled,
@@ -54,6 +58,16 @@ class MCPModule:
             request_timeout_seconds=settings.mcp_request_timeout_seconds,
             max_parallel_calls=settings.mcp_max_parallel_calls,
             repository=repository,
+            media_preparer=NativeMediaPreparer(
+                ImagePreprocessor(
+                    max_dimension=settings.vision_max_dimension,
+                    max_pixels=settings.vision_max_pixels,
+                    max_prepared_bytes=settings.vision_max_prepared_bytes,
+                    gif_max_frames=settings.vision_gif_max_frames,
+                ),
+                max_bytes=settings.vision_max_prepared_bytes,
+                max_frames=settings.vision_max_frames_per_turn,
+            ),
         )
         provider = MCPToolProvider(
             manager,

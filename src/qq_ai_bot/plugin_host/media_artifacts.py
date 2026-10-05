@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import os
 import re
+import stat
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -35,6 +36,7 @@ class ResolvedMediaArtifact:
     local_path: Path
     byte_size: int
     expires_at: datetime
+    sha256: str
 
 
 class PluginMediaArtifactStore:
@@ -51,6 +53,7 @@ class PluginMediaArtifactStore:
         filename: str,
         ttl_seconds: int,
         storage_mb: int,
+        expires_at_cap: datetime | None = None,
     ) -> MediaArtifactHandle:
         mime = content_type.strip().casefold()
         if mime not in _ALLOWED_MIME or not _matches_mime(data, mime):
@@ -74,6 +77,10 @@ class PluginMediaArtifactStore:
             raise PluginPermissionError("plugin media storage quota exceeded")
         now = datetime.now(UTC)
         expires_at = now + timedelta(seconds=ttl_seconds)
+        if expires_at_cap is not None:
+            expires_at = min(expires_at, _aware(expires_at_cap))
+        if expires_at <= now:
+            raise PluginPermissionError("media artifact has already expired")
         digest = hashlib.sha256(data).hexdigest()
         handle_id = uuid.uuid4().hex
         directory = self._root / _plugin_directory(plugin_id)
@@ -109,7 +116,7 @@ class PluginMediaArtifactStore:
     async def resolve(self, *, plugin_id: str, handle_id: str) -> ResolvedMediaArtifact:
         async with self._database.sessions() as session:
             row = await session.get(PluginMediaArtifactModel, handle_id)
-        if row is None or row.plugin_id != plugin_id:
+        if row is None or row.plugin_id != plugin_id or _aware(row.expires_at) <= datetime.now(UTC):
             raise PluginPermissionError("media artifact is missing, expired, or foreign")
         path, expected_root, available = await asyncio.to_thread(
             _resolve_artifact_path,
@@ -126,7 +133,19 @@ class PluginMediaArtifactStore:
             local_path=path,
             byte_size=row.byte_size,
             expires_at=row.expires_at,
+            sha256=row.sha256,
         )
+
+    async def read_owned(
+        self, *, plugin_id: str, handle_id: str
+    ) -> tuple[ResolvedMediaArtifact, bytes]:
+        """Read one explicitly returned owned handle, bounded and version checked."""
+        resolved = await self.resolve(plugin_id=plugin_id, handle_id=handle_id)
+        data = await asyncio.to_thread(_read_verified, resolved)
+        current = await self.resolve(plugin_id=plugin_id, handle_id=handle_id)
+        if current != resolved:
+            raise PluginPermissionError("media artifact changed during reading")
+        return resolved, data
 
     async def cleanup(self) -> int:
         now = datetime.now(UTC)
@@ -202,3 +221,17 @@ def _resolve_artifact_path(value: str, expected_root: Path) -> tuple[Path, Path,
 
 def _aware(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _read_verified(item: ResolvedMediaArtifact) -> bytes:
+    descriptor = os.open(item.local_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(descriptor, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size != item.byte_size:
+            raise PluginPermissionError("media artifact storage version changed")
+        if not 0 < info.st_size <= _MAX_FILE_BYTES:
+            raise PluginPermissionError("media artifact exceeds read budget")
+        data = stream.read(_MAX_FILE_BYTES + 1)
+    if len(data) != item.byte_size or hashlib.sha256(data).hexdigest() != item.sha256:
+        raise PluginPermissionError("media artifact content version changed")
+    return data
