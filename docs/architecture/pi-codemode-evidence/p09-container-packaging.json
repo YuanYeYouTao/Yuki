@@ -1,0 +1,88 @@
+{
+  "format": "yuki_p09_container_packaging_v1",
+  "probe": "scripts/verify_monty_packaging.py",
+  "probe_sha256": "63ff4aeadef453fc552e8b21868623c29c3c13348b8500030b9c6b6860f63a34",
+  "profiles": [
+    {
+      "format": "yuki_monty_container_packaging_v1",
+      "role": "application",
+      "uid": 10001,
+      "binding_version": "1.0.1",
+      "artifacts": {
+        "worker": {
+          "filename": "monty",
+          "sha256": "d1d449643162e1fec69d38c9863b7076f37a184334b22062432b38200cc8d220"
+        },
+        "binding": {
+          "filename": "pydantic_monty_client-1.0.1-cp312-cp312-manylinux_2_39_aarch64.whl",
+          "sha256": "b16bd42b960da77537e9e8a164281d1d2013d87c2c205445a5df0f2d189f8d0e"
+        },
+        "launcher": {
+          "filename": "monty-isolated",
+          "sha256": "519550c8eac24439d671aaec0842170864215713d5b3db075c9df186f44c7904"
+        }
+      },
+      "locked_packages": 598,
+      "target_packages": 353,
+      "notice_texts_verified": 321,
+      "license_text_audit_complete": false,
+      "license_text_gaps": 8,
+      "default_namespace_policy": "denied_EPERM_fail_closed",
+      "licenses": {
+        "Monty-LICENSE": "5841db47ee6e1f0becafe2d19ca43c08cbc6d2c0952822ccf88cbbf2bd0749bd",
+        "Pi-LICENSE": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48",
+        "TYPESHED-LICENSE": "295f8538c94ae5c3043301cf7cff1c852dab6a786a8ddee471e061b40d5ecabe",
+        "Yuki-LICENSE": "9de2d1cf6a153bb7f8c11c5bc56cce753bf8b797728820c65b34a8ed5643e27e"
+      },
+      "bot_started": false,
+      "external_model_calls": 0,
+      "migration_head": "0092",
+      "packaged_pi_license": true,
+      "built_webui": true,
+      "verdict": "packaging_passed_container_isolation_unavailable",
+      "image_id": "sha256:076b7cfb5fc836d66b4ccd722e382ef11a097df503f62efddcfbb1585316a5c3"
+    },
+    {
+      "format": "yuki_monty_container_packaging_v1",
+      "role": "validation",
+      "uid": 10001,
+      "binding_version": "1.0.1",
+      "artifacts": {
+        "worker": {
+          "filename": "monty",
+          "sha256": "d1d449643162e1fec69d38c9863b7076f37a184334b22062432b38200cc8d220"
+        },
+        "binding": {
+          "filename": "pydantic_monty_client-1.0.1-cp312-cp312-manylinux_2_39_aarch64.whl",
+          "sha256": "b16bd42b960da77537e9e8a164281d1d2013d87c2c205445a5df0f2d189f8d0e"
+        },
+        "launcher": {
+          "filename": "monty-isolated",
+          "sha256": "519550c8eac24439d671aaec0842170864215713d5b3db075c9df186f44c7904"
+        }
+      },
+      "locked_packages": 598,
+      "target_packages": 353,
+      "notice_texts_verified": 321,
+      "license_text_audit_complete": false,
+      "license_text_gaps": 8,
+      "default_namespace_policy": "denied_EPERM_fail_closed",
+      "licenses": {
+        "Monty-LICENSE": "5841db47ee6e1f0becafe2d19ca43c08cbc6d2c0952822ccf88cbbf2bd0749bd",
+        "Pi-LICENSE": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48",
+        "TYPESHED-LICENSE": "295f8538c94ae5c3043301cf7cff1c852dab6a786a8ddee471e061b40d5ecabe",
+        "Yuki-LICENSE": "9de2d1cf6a153bb7f8c11c5bc56cce753bf8b797728820c65b34a8ed5643e27e"
+      },
+      "bot_started": false,
+      "external_model_calls": 0,
+      "verdict": "packaging_passed_container_isolation_unavailable",
+      "image_id": "sha256:a28571171a834b1c08417b900c7cd470cde10c481af9ecdf17d1df66925cb099"
+    }
+  ],
+  "network": "none",
+  "root_filesystem": "read_only",
+  "capabilities": "all_dropped",
+  "no_new_privileges": true,
+  "published": false,
+  "deployed": false
+}

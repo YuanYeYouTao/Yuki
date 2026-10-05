@@ -2169,6 +2169,10 @@ class AgentRunner:
             tool_limit=runtime.max_tool_calls,
             result_limit=getattr(agent, "tool_result_max_characters", 12000) or 12000,
             archive=archive if callable(archive) else None,
+            background=(
+                control.lease.work_id is not None
+                or runtime.origin not in {TurnOrigin.USER_MESSAGE, TurnOrigin.PLUGIN_SESSION}
+            ),
         )
 
     async def _execute_control_call(

@@ -58,7 +58,17 @@ LIMITS = CodeModeLimits(
 
 
 def worker() -> PinnedWorker:
-    return PinnedWorker(BINARY, hashlib.sha256(BINARY.read_bytes()).hexdigest())
+    # Linux acceptance uses the actual root-owned namespace launcher. Leaving
+    # it unset still exercises the production refusal; there is no unrestricted
+    # Linux fallback in the fixture or in the engine.
+    value = os.environ.get("YUKI_MONTY_LAUNCHER")
+    launcher = Path(value) if value else None
+    return PinnedWorker(
+        BINARY,
+        hashlib.sha256(BINARY.read_bytes()).hexdigest(),
+        launcher,
+        hashlib.sha256(launcher.read_bytes()).hexdigest() if launcher else "",
+    )
 
 
 @dataclass

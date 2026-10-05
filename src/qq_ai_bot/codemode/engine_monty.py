@@ -10,15 +10,18 @@ decides whether a business call may run.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
+import os
 import platform
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from qq_ai_bot.codemode.capacity import runtime_capacity
 from qq_ai_bot.codemode.driver_types import (
     EngineAnswer,
     EngineCall,
@@ -58,12 +61,19 @@ class PinnedWorker:
 
     binary_path: Path
     sha256: str
+    launcher_path: Path | None = None
+    launcher_sha256: str = ""
 
     @classmethod
     def from_settings(cls, settings: Any) -> PinnedWorker:
         if settings.code_mode_worker_path is None or not settings.code_mode_worker_sha256:
             raise CodeEngineUnavailable("code_engine_not_configured")
-        return cls(Path(settings.code_mode_worker_path), settings.code_mode_worker_sha256)
+        return cls(
+            Path(settings.code_mode_worker_path),
+            settings.code_mode_worker_sha256,
+            settings.code_mode_launcher_path,
+            settings.code_mode_launcher_sha256,
+        )
 
     def verify(self) -> str:
         if (platform.system(), platform.machine()) not in SUPPORTED_PLATFORMS:
@@ -74,35 +84,94 @@ class PinnedWorker:
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         if digest != self.sha256.lower():
             raise CodeEngineUnavailable("code_engine_binary_digest_mismatch")
+        if platform.system() == "Linux":
+            # The compiled launcher executes this literal read-only mount.
+            # A hash for a different file cannot identify the actual worker.
+            if path != Path("/opt/yuki-monty/monty"):
+                raise CodeEngineUnavailable("code_engine_binary_layout_mismatch")
+            launcher = self.launcher_path
+            if launcher is None or not launcher.is_absolute() or not launcher.is_file():
+                raise CodeEngineUnavailable("code_engine_isolation_not_configured")
+            if hashlib.sha256(launcher.read_bytes()).hexdigest() != self.launcher_sha256:
+                raise CodeEngineUnavailable("code_engine_launcher_digest_mismatch")
+            # A Linux deployment cannot silently fall back to unrestricted
+            # subprocesses. Immutable root-owned launcher/worker/library image
+            # and an unprivileged Host are part of its explicit deployment.
+            files = (path, launcher, Path("/usr/bin/bwrap"))
+            immutable_paths = {
+                item
+                for file in files
+                for item in (file, *file.parents, file.resolve(), *file.resolve().parents)
+            }
+            for file in immutable_paths:
+                try:
+                    info = file.lstat()
+                except OSError as exc:
+                    raise CodeEngineUnavailable("code_engine_isolation_missing") from exc
+                # Symlink permissions are not access permissions; both its
+                # owner and its resolved path/ancestors are checked above.
+                if info.st_uid != 0 or (not file.is_symlink() and info.st_mode & 0o022):
+                    raise CodeEngineUnavailable("code_engine_isolation_mutable")
+            if os.geteuid() == 0:
+                raise CodeEngineUnavailable("code_engine_host_must_be_unprivileged")
         return digest
+
+    def execution_digest(self) -> str:
+        if self.launcher_path is None:
+            return self.sha256.lower()  # Existing local macOS development dumps.
+        return hashlib.sha256(
+            f"{self.sha256.lower()}:{self.launcher_sha256}:linux-bwrap-v1".encode()
+        ).hexdigest()
 
 
 def strict_json(value: Any, *, limit: int) -> JsonValue:
     """Accept only plain JSON data; tuples become lists. Everything else is refused."""
+    size = 0
+
+    def charge(count: int) -> None:
+        nonlocal size
+        size += count
+        if size > limit:
+            raise ValueError("code_value_too_large")
+
+    def scalar(item: Any) -> None:
+        # Refuse a large string before creating its escaped/UTF-8 copy. Each
+        # subsequently encoded scalar and the checked tree remain bounded by
+        # the Host limit, independently of the VM's heap allowance.
+        if isinstance(item, str) and len(item) > limit - size:
+            raise ValueError("code_value_too_large")
+        charge(len(json.dumps(item, ensure_ascii=False, allow_nan=False).encode()))
 
     def walk(item: Any, depth: int) -> JsonValue:
         if depth > 64:
             raise ValueError("code_value_too_deep")
         if item is None or isinstance(item, bool | str):
+            scalar(item)
             return item
         if isinstance(item, int):
+            scalar(item)
             return item
         if isinstance(item, float):
             if not math.isfinite(item):
                 raise ValueError("code_value_not_json")
+            scalar(item)
             return item
         if isinstance(item, list | tuple):
+            charge(2 + max(0, len(item) - 1) * 2)
             return [walk(x, depth + 1) for x in item]
         if isinstance(item, dict):
-            if not all(isinstance(k, str) for k in item):
-                raise ValueError("code_value_not_json")
-            return {k: walk(v, depth + 1) for k, v in item.items()}
+            charge(2 + max(0, len(item) - 1) * 2)
+            checked = {}
+            for key, child in item.items():
+                if not isinstance(key, str):
+                    raise ValueError("code_value_not_json")
+                scalar(key)
+                charge(2)
+                checked[key] = walk(child, depth + 1)
+            return checked
         raise ValueError("code_value_not_json")
 
-    checked = walk(value, 0)
-    if len(json.dumps(checked, ensure_ascii=False, allow_nan=False).encode()) > limit:
-        raise ValueError("code_value_too_large")
-    return checked
+    return walk(value, 0)
 
 
 class _OutputSink:
@@ -135,17 +204,21 @@ class _OutputSink:
 class MontyEngine:
     """Owns the worker pool resource only: no actor, prompt, or tool results."""
 
-    def __init__(self, worker: PinnedWorker, limits: CodeModeLimits) -> None:
+    def __init__(
+        self, worker: PinnedWorker, limits: CodeModeLimits, *, background: bool = False
+    ) -> None:
         self.worker = worker
         self.limits = limits
         self.binding = _load_binding()
         self._pool: Any = None
+        self.background = background
 
     async def __aenter__(self) -> MontyEngine:
         self.worker.verify()
         self._pool = self.binding.AsyncMonty(
-            binary_path=self.worker.binary_path,
+            binary_path=self.worker.launcher_path or self.worker.binary_path,
             min_processes=0,
+            max_processes=1,
             # A worker never serves a second script: no state or handle reuse.
             max_checkouts_per_worker=1,
             request_timeout=self.limits.request_timeout_seconds,
@@ -180,6 +253,11 @@ class MontyRun:
         self._call: EngineCall | None = None
         self._output = _OutputSink(self.limits.max_output_bytes)
         self._closed = False
+        self._capacity = runtime_capacity(
+            self.limits.max_worker_processes, self.limits.foreground_reserved_processes
+        )
+        self._capacity_owned = False
+        self._termination: asyncio.Task[None] | None = None
         # Engine calls answered with a future and not yet settled.
         self._futures: set[int] = set()
 
@@ -188,23 +266,52 @@ class MontyRun:
     async def _open(self) -> None:
         if self._closed or self._session is not None:
             raise RuntimeError("code_run_state_invalid")
-        self._session_cm = self.engine._pool.checkout(
-            limits=self.limits.engine(),
-            # Deterministic, host-free clock/sleep/random; no host callbacks.
-            os_policy={"sleep": "zero", "process_time": "zero"},
+        await self._capacity.acquire(
+            background=self.engine.background, wait_seconds=self.limits.request_timeout_seconds
         )
-        self._session = await self._session_cm.__aenter__()
+        self._capacity_owned = True
+        try:
+            self._session_cm = self.engine._pool.checkout(
+                limits=self.limits.engine(),
+                # Deterministic, host-free clock/sleep/random; no host callbacks.
+                os_policy={"sleep": "zero", "process_time": "zero"},
+            )
+            self._session = await self._session_cm.__aenter__()
+        except BaseException:
+            await self.terminate()
+            raise
 
     async def terminate(self) -> None:
         """Discard the worker. Idempotent; never leaves a callback or forked VM."""
+        if self._termination is None:
+            self._closed = True
+            self._termination = asyncio.create_task(self._terminate_owned_session())
+        cancelled = False
+        # Original owner cleanup survives repeated caller cancellation; no
+        # second cleanup can release the same capacity while the worker exits.
+        while not self._termination.done():
+            try:
+                await asyncio.shield(self._termination)
+            except asyncio.CancelledError:
+                cancelled = True
+        self._termination.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _terminate_owned_session(self) -> None:
         self._closed = True
         self._snapshot, self._call = None, None
         session_cm, self._session_cm, self._session = self._session_cm, None, None
-        if session_cm is not None:
-            try:
-                await session_cm.__aexit__(None, None, None)
-            except Exception:  # A dead worker has nothing to release.
-                pass
+        try:
+            if session_cm is not None:
+                try:
+                    await session_cm.__aexit__(None, None, None)
+                except Exception:  # A dead worker has nothing to release.
+                    pass
+        finally:
+            if self._capacity_owned:
+                await self._capacity.release(background=self.engine.background)
+                self._capacity_owned = False
 
     # -- execution -----------------------------------------------------------------
 
@@ -217,7 +324,10 @@ class MontyRun:
             return self._fail("result_not_json", str(exc), discard=False)
         if not isinstance(checked, dict):
             return self._fail("result_not_json", "code_inputs_not_object", discard=False)
-        await self._open()
+        try:
+            await self._open()
+        except TimeoutError:
+            return self._fail("limit_wait_queue", "code_worker_capacity", discard=False)
         self.counters.feeds += 1
         return await self._advance(
             lambda: self._session.feed_start(
@@ -266,8 +376,13 @@ class MontyRun:
         if len(dump) > self.limits.max_snapshot_bytes:
             return self._fail("limit_snapshot", "code_snapshot_capacity", discard=False)
         self.counters = counters
-        await self._open()
-        outcome = await self._advance(lambda: self._session.load_snapshot(dump), restoring=True)
+        try:
+            await self._open()
+        except TimeoutError:
+            return self._fail("limit_wait_queue", "code_worker_capacity", discard=False)
+        outcome = await self._advance(
+            lambda: self._session.load_snapshot(dump, print_callback=self._output), restoring=True
+        )
         if outcome.status != "suspended" or outcome.call is None:
             if outcome.status == "failed":
                 return outcome

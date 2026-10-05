@@ -28,6 +28,7 @@
 | `90b6d46a` | P05 `execute_code`、wrapper 投影、子调用接 InvocationService、控制门 |
 | `5414065f` | P06 领域回执与来源权限闭合，已推送 |
 | `b49e4da6` | P07 全部入口接线，已推送 |
+| `bab3448a` | P08 wire、私有续接与父子轨迹，已推送 |
 
 P08 最后一次全量：3207 通过、1 跳过（未提供私有生产备份路径），707.09 秒；真实 worker
 测试无跳过，ruff check/format 与 mypy 720 文件通过。此前 0.2 秒计时失败已改成派发边界触发，
@@ -39,7 +40,7 @@ P08 最后一次全量：3207 通过、1 跳过（未提供私有生产备份路
 | P06 发送/记忆/来源权限闭合 | 离线实现及全量验证完成 |
 | P07 全部入口接线 | 离线实现及全量验证完成 |
 | P08 Provider/上下文/轨迹 | 离线实现及全量验证完成；前端 89 项通过 |
-| P09 迁移、worker 运维、回退演练 | 调查与准备中，Linux 隔离尚未运行 |
+| P09 迁移、worker 运维、回退演练 | 本地迁移/完整 Manager 备份、原生 Linux 隔离与 45 项定向测试通过；最终全量 3246 通过/1 跳过；应用与验证镜像装配通过（默认容器 Code Mode 不启用） |
 | P10 整体验收与旧循环删除 | 未开始 |
 | P11 真实外部验收 | DeepSeek Provider 调用已授权，尚未运行；其余外部范围待授权 |
 
@@ -72,12 +73,17 @@ scripts/build_monty_worker.sh            # 固定 SHA、套补丁、Rust 1.96.0�
 ```
 
 - Monty Python 绑定 `pydantic-monty-client` 是从固定源码构建的本地 wheel，**没有写进
-  `uv.lock`**。任何 `uv sync` 都会把它移除，之后必须重跑构建脚本。P09 要改成可复现分发。
+  `uv.lock`**。任何 `uv sync` 都会把它移除，之后必须重跑构建脚本。P09 已增加共同固定源码分发；镜像在最后一次 uv sync 后安装本地 wheel。
 - Rust 工具链在 `~/.cargo/bin`，默认不在 PATH，脚本已自行加入。固定 Monty `3f9d6ef` 不打
   `vendor/patches/monty-3f9d6ef-string-cache-iterator.patch` 在 Rust 1.96 上编译不过。
 - 运行配置：`CODE_MODE_WORKER_PATH`、`CODE_MODE_WORKER_SHA256`（为空即禁用 Code Mode）以及
   `CODE_MODE_MAX_*` 限额。真实 worker 测试读 `YUKI_MONTY_BINARY`，未设置时那 27 项跳过。
-- 只验证过 aarch64-apple-darwin。Linux 构建与 digest 未做。
+- aarch64-apple-darwin 和 Debian 12/aarch64 原生 worker 已验证。Linux 还须配置
+  `CODE_MODE_LAUNCHER_PATH/SHA256`；测试同时设置 `YUKI_MONTY_LAUNCHER`。实际 hash、
+  namespace/UID/环境/rlimit/所有后代退出证据见 `pi-codemode-evidence/`。
+- 默认 Docker seccomp 拒绝 user namespace，默认镜像内 Code Mode 保持未配置；不能
+  把原生 Linux 通过写成容器隔离通过。专用 VM 已授权，完成全部验收后必须删除 VM
+  及本任务临时构建缓存。其他部署与生产操作仍未授权。
 
 ## 验证命令
 
@@ -94,14 +100,14 @@ YUKI_MONTY_BINARY=<worker 路径> uv run --frozen pytest -q -p no:warnings tests
 
 - `test_automation_timeout_certainty.py` 的 transport deadline 在 P06 改为由实际派发边界
   触发真实 asyncio Timeout，不依赖准备阶段的 0.2 秒剩余期限；原未知及不重发断言保留。
-- `AgentRunner` 中仍有约 25 个跨步骤共享的 `nonlocal` 变量，应收敛为显式回合状态（P05 已合并，
+- `AgentRunner` 中仍有 31 个跨步骤共享的 `nonlocal` 变量，应收敛为显式回合状态（P05 已合并，
   可以做；会大面积改 `agent_runner.py`，避免与 P07/P08 同时动这个文件）。
 - `begin_batch` 兼容调用仍在 `agent_runner.py`，P10 删除。
 - 持久 worker 的 `execute_code` 已使用独立固定子集，P07 全量验证通过。
 - `update_short_state` 已纳入 P06 直接/子调用授权一致性对照。
-- 供应商真实 streaming 未支持，只有合成 frame 测试；需要 P08 支持后在 P11 授权下实测。
+- Provider 仍采用完整 response 接口；合成 frame 已验证，未向 Yuki 暴露真实供应商 token delta。P11 核验实际配置的工具、续接、截断与断连，不把 complete 宣称为 streaming。
 - `execute_code` 的模型侧使用质量未评估（需付费模型）。
-- 598 个 Cargo 转依赖与 vendored typeshed 的许可汇总待 P09。
+- 598 个 Cargo 锁定包已校验归档并汇总 notices；8 个完整文本缺口保留在审计中。原生 Linux 隔离、两个镜像装配及包装探针通过；容器 Code Mode 默认不启用。
 - 共享 Git 存储的 `._pack-…idx` AppleDouble 文件会让每条 git 命令打印 `non-monotonic index`
   报错，fetch/commit/push 实际成功。没有删除它，接手者也不要顺手清理无关 Git 元数据。
 

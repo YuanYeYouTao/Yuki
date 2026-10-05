@@ -3,15 +3,15 @@
 Set YUKI_MONTY_BINARY to the worker built by scripts/build_monty_worker.sh.
 """
 
-import hashlib
 import os
 from pathlib import Path
 
 import pytest
 from tests.integration.test_code_boundary_publication import PARENT, child, composed
+from tests.support.codemode_cases import worker
 
 from qq_ai_bot.codemode.driver_types import EngineAnswer, HostCounters
-from qq_ai_bot.codemode.engine_monty import MontyEngine, PinnedWorker
+from qq_ai_bot.codemode.engine_monty import MontyEngine
 from qq_ai_bot.codemode.limits import CodeModeLimits
 from qq_ai_bot.codemode.snapshot_binding import load_boundary, persist_boundary
 
@@ -37,10 +37,6 @@ FAST = CodeModeLimits(
     max_output_bytes=4096,
     request_timeout_seconds=5.0,
 )
-
-
-def worker() -> PinnedWorker:
-    return PinnedWorker(BINARY, hashlib.sha256(BINARY.read_bytes()).hexdigest())
 
 
 async def run_once(code, *, limits=FAST, inputs=None, answers=()):

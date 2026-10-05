@@ -274,7 +274,106 @@ trace 夹具明确 `script_api=None`。原行为断言保留，修改处写明�
 
 阶段命令：ruff check、format check（1116 文件）通过；mypy 720 源文件通过；真实 worker
 全量 pytest **3207 通过、1 跳过，707.09 秒**。唯一跳过是私有生产备份路径未提供；worker
-无跳过。阶段准备提交并推送。下一依赖：P09 正常迁移链、隔离池、备份/回退和许可汇总。
+无跳过。阶段已提交并推送 `bab3448a414f07e758b00b437e09bae7c49b39b9`，远端精确 SHA 已核验。下一依赖：P09 正常迁移链、隔离池、备份/回退和许可汇总。
+
+## P09：迁移、资源池、完整备份和 Linux 隔离验证
+
+P09 授权范围内的离线实现、阶段全量和镜像装配验证已通过；提交/推送状态见本阶段回报。许可文本缺口及生产边界仍单独保留。
+
+- 精确归档的 755/0081 和 820/0091 历史 producer 用原 API 生成合法数据，再执行全部
+  正常 Alembic 迁移至 0092。原 Work/journal、有限 7/9 根预算、Social unknown、Manager
+  原 run/continuation、插件批准及 automation run/cursor 保持。新 reader 接纳真实 Monty
+  子效果后，实际旧 CLI 拒绝未知 0092，downgrade guard 拒绝丢失新 invocation 事实。
+- runtime loop 共用 worker admission（总数 2、背景上限 1）。实际背景 worker 占用一个
+  名额时，第二个背景等待，前台 native PID 仍可启动；排队取消/超时无新 PID。并发
+  terminate 和二次取消等待同一次清理，容量只释放一次。这是准入验证，不是生产容量测量。
+- T0 保存原 VM policy；四种上限下调或缺失、binary/API/dump 合同变化、实际 worker
+  篡改均结算原 partial，保留 child、计数和快照，不加载旧堆或重跑业务。Host JSON 在
+  超限前拒绝整树复制，UTF-8 字节边界与 tracemalloc 通过；stdout 跨 feed 按 UTF-8 累计。
+- SQLite backup API 加原私有对象、artifact、workspace、Manager DB/回执及配置形成
+  一致副本。新 reader 读取原 owned refs；活跃对象不被 GC，隐私删除中断后复制旧字节
+  不能恢复读取权。实际 PersistentManager 仓库恢复原 run，对账产生唯一 completion，
+  新 Bot repository 重复消费仍是同一结果，无重执行。execd 和容器句柄是明确合成下游，
+  不声称真实 gVisor 或生产环境通过。缺失、篡改及 deleting 对象精确拒绝。
+- 共用 builder 固定 SHA/补丁、Rust 1.96.0、maturin 1.9.6 和 CPython 3.12；最后一次
+  uv sync 后重跑 worker wrapper 并安装本地 wheel。编译与 notices 分成两个可缓存步骤；
+  许可下载仅对同一固定公开 URL 有界重试，断连失败与 404 缺失严格区分。
+- 专用 Debian 12/aarch64 VM 没有用户目录挂载，没有模型凭据、生产数据或 Bot。
+  实际非 root Host 启动 root-owned launcher/native；观察六个独立 namespace、UID/GID
+  65534 映射、只读 worker/运行库、零能力、仅 PWD=/tmp 环境、仅 lo、无应用/工作区/socket
+  以及 AS/CPU/FSIZE/NOFILE/CORE 限制。真实无限循环、所有后代退出、绑定 owner SIGKILL、
+  前台竞争和 SIGSTOP→Host 0.5 秒 watchdog 均通过，证据见
+  `pi-codemode-evidence/p09-linux-isolation.json`。两个挂起脚本 HWM 为 4040/4088 KiB，
+  watchdog 0.5024 秒；仅代表这个合成 fixture。
+- 默认 Docker seccomp 实测拒绝 user namespace（EPERM）。默认镜像内 Code Mode 保持
+  未配置，原生 Linux Host 是本阶段验证过的隔离方式。未用 privileged/unconfined/
+  额外 capabilities 绕过限制，容器部署须有自己的获准隔离配置与证据。
+- 原 Pi/Monty/typeshed 许可独立保留；Yuki wheel 内 Pi LICENSE 逐字节一致。598 个锁定
+  Cargo 包逐归档核验，Darwin target 352、Linux target 353，共用 321 份全文。
+  Linux target/实际 artifact 见 `pi-codemode-evidence/p09-linux-distribution.json`。
+  8 个文本缺口保留，其中 quote-use/quote-use-macros 是建置依赖；完整精确 upstream tree
+  查验也未找到这两项及 r-efi 的许可文件，其余四项没有 packaged VCS revision。
+  未合成版权，X11 仍为 partial，镜像发布未授权且未执行。
+- 运维文档给出 reader/producer 矩阵、停止接纳和原操作对账、一致备份、正常迁移、
+  单实例切换及失败处置。没有生产访问、Bot 启动、真实消息、PR、合并或部署。
+
+实际命令与结果：
+
+```sh
+bash scripts/build_monty_distribution.sh <owned-output> <venv-python>
+# Darwin 和 Linux 均成功；Linux wrapper 在 uv sync 后重建并安装成功
+uv build --python .venv/bin/python --wheel --out-dir <owned-output>
+# 成功，原 Pi LICENSE 完全一致
+bash -n scripts/build_monty_distribution.sh scripts/build_monty_worker.sh
+# 通过；精确自有补丁复用及后续修改/暂存/未跟踪保护另用隔离 Git fixture 验证
+uv run --frozen ruff check src tests scripts migrations
+uv run --frozen ruff format --check src tests scripts migrations
+uv run --frozen mypy
+# 通过，format 1126 文件，mypy 721 源文件
+YUKI_MONTY_BINARY=<actual-worker> uv run --frozen pytest -q -p no:warnings tests
+# 最终全量 3246 通过 / 1 跳过，896.09 秒；真实 worker 无跳过
+YUKI_MONTY_BINARY=/opt/yuki-monty/monty YUKI_MONTY_LAUNCHER=/opt/yuki-monty/monty-isolated \
+  .venv/bin/python -m pytest -q -p no:warnings \
+  tests/integration/test_codemode_worker.py tests/integration/test_codemode_resource_policy.py \
+  tests/integration/test_codemode_manager_backup.py tests/unit/test_monty_notice_download.py
+# Linux：45 通过，无跳过，26.99 秒；Mac 相应 worker/resource/Manager 41 通过，14.40 秒
+.venv/bin/python scripts/verify_monty_isolation.py --output <owned-report>
+# Linux：passed，所有原后代 PID 均退出
+sudo docker build -f deploy/codemode/Dockerfile.validation -t yuki-monty-validation:p09 .
+# 成功；应用 Dockerfile 同样构建成功。两个镜像的离线包装探针通过，无 Bot/模型调用
+```
+
+全量唯一跳过是未提供私有生产备份路径，真实 worker 无跳过。现有 worker 测试保留行为
+断言，改用明确的测试 worker helper，在 Linux 必须同时提供 launcher；没有自动发现或
+不受限 fallback。新增 Manager 完整备份夹具最初缺少 home/workspace，补齐合法初始目录
+后通过。早期 migration fixture 的历史 API/配置、表名及数据形状错误均已修正并重验。
+
+Linux 编译的两次 OOM 已记录：初次 jobs=2，以及错误地并行原生与镜像 LTO。之后加入
+VM 内 3 GiB 临时 swap，固定 jobs=1 并串行重型构建，原生重建完成。验证镜像首次编译
+通过后 notices 下载遇到 TLS 断连，构建失败；已加有界重试并拆开缓存层，最终构建通过，应用构建复用了原生编译层。
+验证镜像探针发现缺少 typing_extensions，现按 uv.lock 固定 4.16.0 及 wheel hash 安装；
+修复后导入和探针通过。探针初版依赖旧 bwrap 错误字符串，实际新版本使用
+“No permissions to create a new namespace”；改为同时查实际 unshare errno=EPERM 与
+该拒绝诊断，未改变隔离策略或拒绝断言。
+这些失败没有被当作通过，未调低测试或隔离要求。
+
+实际 native SHA256：Darwin `af76448a14fe980c823f1c6092692f90a8ddc6341f236f17d6d47d72f49548e8`；
+Linux `fc4ee999669c5f520f6d37333b13e341fc4a00493785e0a6e6b6133dfe435241`；
+Linux launcher `bc3dd9cd7d1d0f0c11fe294c5e586ca30a28f4281271ee9cda3db800abd07c63`。
+Linux 最终本地安装 wheel `c7351f8da95cf3c317200863cef8aa5c2bb2102a452c0f20727e3279fd15bba3`；
+Darwin 已安装/测试 wheel 为审计内 `5f77cfbcf15ca0e0bb405d6d586aeb98aacbbcfc10555ba0b882c1b73868aa6f`。
+重复构建的 wheel ZIP 时间会改变 hash，payload 已核对一致，不声称归档字节可复现。
+
+VM `yuki-p09-20261005` 及本任务临时构建/下载缓存将在完成全部授权验收后删除，当前尚未
+删除。应用镜像以 UID 10001、只读 root、cap-drop=ALL、no-new-privileges、network=none 和
+私有 tmpfs 运行包装探针：真实绑定导入、固定文件/hash、598/353/321/8 notices、四份
+原始许可证、wheel 内 Pi 许可、构建后的 WebUI 和全正常迁移链至 0092 均通过。
+具体命令用 `scripts/verify_monty_packaging.py application|validation`；证据在
+`pi-codemode-evidence/p09-container-packaging.json`。两个镜像默认 namespace 创建仍被
+拒绝，未启用容器 Code Mode，没有启动 Bot。
+
+下一依赖：P10 显式回合状态、兼容删除、
+四组计量与全矩阵；真实 DeepSeek 已授权，按 P10 前置条件尚未运行。生产验证待授权。
 
 ## 验证记录（2026-10-04）
 
@@ -299,7 +398,7 @@ WebUI 前端资源未构建（`npm ci && npm run build`，产物已 gitignore）
 ## 后续依赖
 
 P06–P08 的离线实现及全量验证完成；继续 P09 迁移、worker 运维和回退。
-P09 调查/准备中，P10 未开始；真实 DeepSeek Provider 调用已授权、尚未运行；P11 的真实消息、生产访问、
+P09 迁移/资源/完整备份、原生 Linux 隔离及 45 项定向测试已验证，最终全量及两个镜像装配通过，P10 未开始；真实 DeepSeek Provider 调用已授权、尚未运行；P11 的真实消息、生产访问、
 镜像发布与部署待明确授权。
 Monty Python binding 为本地构建 wheel，未进 `uv.lock`，`uv sync` 后需重跑
-`scripts/build_monty_worker.sh`，P09 落地可复现分发。
+`scripts/build_monty_worker.sh`；P09 共用分发已在 Darwin/Linux 构建并安装；两个镜像装配与离线包装探针通过，容器 Code Mode 默认仍不启用。

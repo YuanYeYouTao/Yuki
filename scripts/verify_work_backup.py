@@ -27,6 +27,12 @@ def verify(database_path: Path, data_directory: Path) -> dict[str, int]:
             row[0] for row in database.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
         if "runtime_protocol_refs" in tables:
+            invalid = database.execute(
+                "SELECT 1 FROM runtime_protocol_refs r LEFT JOIN runtime_protocol_objects o "
+                "ON r.sha256=o.sha256 WHERE o.sha256 IS NULL OR o.deleting=1 LIMIT 1"
+            ).fetchone()
+            if invalid is not None:
+                raise RuntimeError("backup contains missing/deleting owned protocol metadata")
             for key, size in database.execute(
                 "SELECT DISTINCT o.sha256,o.byte_size FROM runtime_protocol_objects o "
                 "JOIN runtime_protocol_refs r ON r.sha256=o.sha256"

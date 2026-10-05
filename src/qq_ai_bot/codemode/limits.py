@@ -24,11 +24,17 @@ class CodeModeLimits:
     max_pending_futures: int = 16
     max_total_suspensions: int = 1024  # Cumulative across restores.
     request_timeout_seconds: float = 30.0  # Parent watchdog; kills the worker.
+    max_worker_processes: int = 2
+    foreground_reserved_processes: int = 1
 
     def __post_init__(self) -> None:
         for name in self.__slots__:
+            if name == "foreground_reserved_processes":
+                continue
             if getattr(self, name) <= 0:
                 raise ValueError(f"code_mode_limit_invalid:{name}")
+        if not 0 <= self.foreground_reserved_processes < self.max_worker_processes:
+            raise ValueError("code_mode_limit_invalid:foreground_reserved_processes")
         if self.request_timeout_seconds <= self.max_feed_seconds:
             # The watchdog must back the engine limit, not pre-empt it.
             raise ValueError("code_mode_limit_invalid:request_timeout_seconds")
@@ -41,6 +47,8 @@ class CodeModeLimits:
             max_output_bytes=settings.code_mode_max_output_bytes,
             max_snapshot_bytes=settings.code_mode_max_snapshot_bytes,
             request_timeout_seconds=settings.code_mode_request_timeout_seconds,
+            max_worker_processes=settings.code_mode_max_worker_processes,
+            foreground_reserved_processes=settings.code_mode_foreground_reserved_processes,
         )
 
     def engine(self) -> dict[str, float | int]:
@@ -50,3 +58,14 @@ class CodeModeLimits:
             "max_recursion_depth": self.max_recursion_depth,
             "max_suspensions": self.max_suspensions,
         }
+
+    def accepts_saved_engine_policy(self, saved: object) -> bool:
+        # Monty dumps restore their own VM limits. A reduced current limit
+        # cannot be applied to that heap through the pinned binding; stop at
+        # the original boundary instead of silently restoring a larger budget.
+        if not isinstance(saved, dict) or set(saved) != set(self.engine()):
+            return False
+        return all(
+            type(saved[name]) in (int, float) and 0 < saved[name] <= value
+            for name, value in self.engine().items()
+        )

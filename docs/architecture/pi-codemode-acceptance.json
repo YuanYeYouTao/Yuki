@@ -1080,8 +1080,14 @@
         "P04",
         "P05"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_resource_policy.py: actual native slot reservation, cancelled waiter, repeated cancellation/concurrent termination releases once after cleanup",
+        "tests/integration/test_codemode_worker.py: infinite feed and worker crash stop the VM",
+        "tests/unit/test_yuki_runtime.py: shutdown closes admission and joins original Work recovery/budget/receipt before dependent resource release",
+        "tests/integration/test_invocation_crash_windows.py: late original receipt after cancellation settles only original effect",
+        "Offline evidence; Linux namespace/mount/UID proof remains separately pending under X07."
+      ]
     },
     {
       "id": "C07",
@@ -1236,8 +1242,10 @@
         "P02",
         "P09"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_pi_migration_chains.py: actual archived 755/0081 and 820/0091 producers, complete normal upgrades to 0092, original finite budgets and domain facts retained"
+      ]
     },
     {
       "id": "M02",
@@ -1250,8 +1258,12 @@
         "P02",
         "P09"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_pi_migration_chains.py: original legacy columns/records retained without fabricated invocation metadata",
+        "tests/integration/test_code_composition_restore.py",
+        "tests/integration/test_invocation_crash_windows.py"
+      ]
     },
     {
       "id": "M03",
@@ -1300,8 +1312,10 @@
         "P02",
         "P09"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_pi_migration_chains.py: new child fact; actual old init-db rejects 0092; downgrade refuses versioned original facts without changing original effects/head"
+      ]
     },
     {
       "id": "M06",
@@ -1314,12 +1328,10 @@
         "P02",
         "P09"
       ],
-      "verdict": "partial",
+      "verdict": "passed",
       "evidence": [
-        "tests/integration/test_codemode_worker.py",
-        "tests/unit/test_codemode_contracts.py",
-        "P08: full suite with real Monty worker 3207 passed / 1 skipped (private production backup unavailable), 707.09s; frontend 89 passed and build passed; ruff, format and mypy passed. Offline wire evidence only.",
-        "Current resource reduction across restored dumps remains to be verified in P09; current evidence proves counters, dump/binding rejection and worker discard only."
+        "tests/integration/test_codemode_resource_policy.py: four reduced VM policies and changed binary/API/dump contracts settle partial without VM load/replay/recharge; actual replaced worker bytes rejected; original snapshot retained",
+        "tests/integration/test_codemode_worker.py: private provenance, format/tamper refusal, restored original boundary and counters"
       ]
     },
     {
@@ -1333,8 +1345,12 @@
         "P02",
         "P09"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/unit/test_work_protocol_gc.py: live root/child refs, archive, shared owner, deletion fences and resumed GC",
+        "tests/integration/test_codemode_backup_recovery.py: privacy-deleted bytes do not regain original authority",
+        "tests/unit/test_work_effect_results.py: owned artifacts survive TTL and deletion interruption"
+      ]
     },
     {
       "id": "M08",
@@ -1347,8 +1363,13 @@
         "P02",
         "P09"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "tests/integration/test_codemode_backup_recovery.py",
+        "tests/integration/test_codemode_manager_backup.py::test_complete_backup_reconciles_original_manager_receipt_without_execution",
+        "tests/integration/test_pi_migration_chains.py",
+        "P09: real isolated Bot/Manager SQLite, private bytes, workspace manifest/files, original dispatched run and independent synthetic execd status/log survive the consistent copy; new owners reconcile the same run and consume one durable completion twice without relaunch. No production/gVisor runtime acceptance claimed."
+      ]
     },
     {
       "id": "X01",
@@ -1445,8 +1466,15 @@
         "P00",
         "P10"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "passed",
+      "evidence": [
+        "docs/architecture/pi-codemode-evidence/p09-linux-isolation.json",
+        "scripts/verify_monty_isolation.py",
+        "tests/integration/test_codemode_worker.py",
+        "tests/integration/test_codemode_resource_policy.py",
+        "P09: unprivileged Debian 12/aarch64 native Host, six independent namespaces, UID map, read-only worker/libraries, no app/home/DB/credentials/socket mount, loopback-only network and actual rlimits. Owner SIGKILL, stopped-native Host watchdog and all observed descendants terminate; global 2/1 admission observed. Native Linux targeted set: 41 passed in 19.67s, no skip. Strict Docker defaults refuse required user namespaces; Code Mode remains unconfigured there, with no security bypass or claimed container isolation acceptance.",
+        "P09 final: actual six Linux namespaces, UID/GID mapping, empty capabilities, only fixed PWD environment, read-only worker/libs, network lo only, AS/CPU/FSIZE/NOFILE/CORE limits, SIGKILL/watchdog termination; Linux 45 passed / zero skips (26.99s). Native Host verified; default Docker user namespace denied and feature unconfigured."
+      ]
     },
     {
       "id": "X08",
@@ -1506,8 +1534,18 @@
         "P00",
         "P10"
       ],
-      "verdict": "not_run",
-      "evidence": []
+      "verdict": "partial",
+      "evidence": [
+        "THIRD_PARTY_NOTICES.md",
+        "vendor/pi/LICENSE",
+        "vendor/monty/LICENSE",
+        "vendor/monty/TYPESHED-LICENSE",
+        "vendor/monty/THIRD_PARTY_NOTICES.json: 598 verified locked archives; Darwin target 352 packages; 321 full notice texts; 8 text gaps explicitly retained, including 2 built dependencies",
+        "scripts/build_monty_distribution.sh: fixed SHA/patch/compiler/wheel and actual artifact hashes; repeated native bytes identical",
+        "Built Yuki wheel contains full original Pi license; Linux native distribution built/installed and target audit saved (353 target packages, 321 full texts, same 8 gaps); both application and validation images built; exact-hash/notice/license/import probes passed; application normal migrations reach 0092 and built WebUI present; no image publication.",
+        "docs/architecture/pi-codemode-evidence/p09-linux-distribution.json: exact built worker/launcher/wheel hashes and all locked packages with target membership; full license texts verified identical to the shared source audit.",
+        "docs/architecture/pi-codemode-evidence/p09-container-packaging.json; scripts/verify_monty_packaging.py. Default container namespace denial remains fail-closed; no publication/deployment."
+      ]
     },
     {
       "id": "X12",

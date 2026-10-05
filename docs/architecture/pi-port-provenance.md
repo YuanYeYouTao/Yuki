@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | Yuki | `8204b28ebc8939213dae60dbab94ab1c16d1263a` | 保留原项目许可 |
 | Pi | `200387122ca450d6387f033949423114a270b96c` | MIT，Copyright 2025 Mario Zechner |
-| Monty | `3f9d6ef413fb951e5b80113b7088d535bd028fcb` | MIT，Copyright Pydantic Services Inc.；Cargo.lock 598 个转依赖与 vendored typeshed 的 notice 汇总待 P09 镜像打包时生成 |
+| Monty | `3f9d6ef413fb951e5b80113b7088d535bd028fcb` | MIT，Copyright Pydantic Services Inc.；598 个锁定依赖已逐归档校验；typeshed 原 Apache 2.0 许可已保留，8 个完整 notice 缺口仍记录在审计中 |
 
 旧参照 `755f7250e0ac465e57e748ea2e6583d1a76353b0` 是当前基线祖先，实际相差 65 提交。
 旧文件较短不表示较新，也不能据旧包缺失删除当前 `DurableInvocations` 所有者。
@@ -63,6 +63,29 @@ Pi 上游自带测试未在本机运行（需要 npm 依赖安装，未授权）
 - `_settle_*`/`_finish_tool_turn`/`_exhausted`（回合结算）：提及占位、未支持终答、交互退出、
   隐式 complete 校验、证据与 Work 存档、重复批次检测。
 
-原单一作用域的跨步变量（约 25 个）由闭包 `nonlocal` 共享；P05/P08 收敛为显式 turn state 时
+原单一作用域的跨步变量（当前 AST 核对为 31 个）由闭包 `nonlocal` 共享；P10 收敛为显式 turn state 时
 需再拆分，并删除 `begin_batch` 兼容调用（P10）。差分黄金样本
 `tests/fixtures/agent_core/runner_golden.json` 取自移植前 `b4fdef7d` 的 Runner 循环。
+
+## P09 固定分发与许可证据（2026-10-05）
+
+共用 `scripts/build_monty_distribution.sh` 从精确 Monty SHA 和记录的唯一补丁构建
+worker-only runtime 与 CPython 3.12 binding；固定 Rust 1.96.0 / maturin 1.9.6。
+本机重复构建 native SHA256 相同：
+`af76448a14fe980c823f1c6092692f90a8ddc6341f236f17d6d47d72f49548e8`。
+本轮 wheel SHA256 为 `5f77cfbcf15ca0e0bb405d6d586aeb98aacbbcfc10555ba0b882c1b73868aa6f`；
+wheel 包装时间可改变归档哈希，不能据 worker 相同宣称 wheel 逐字节可复现。
+
+完整许可在 `vendor/pi/LICENSE`、`vendor/monty/LICENSE` 和
+`vendor/monty/TYPESHED-LICENSE`；构建后的 Yuki wheel 已核对含原 Pi 许可全文。
+`vendor/monty/THIRD_PARTY_NOTICES.json` 是 Darwin 实际 worker/wheel 对应的审计：
+598 个锁定包逐 `.crate` 校验 Cargo checksum，352 个当前 normal/build 目标依赖，
+321 份去重完整 notice；不将锁内所有包冒充镜像实际依赖。原 SPDX 选择表达式保留，
+不替许可人选择。typeshed 固定 `0e16ea31d2e188fdc126cb31e7c4fcc6b5a8da96`。
+
+8 个包没有可核对的完整文本，其中实际建置目标包含 quote-use 和 quote-use-macros
+0.8.4；准确清单、精确 source commit 和缺口在 JSON 与根 THIRD_PARTY_NOTICES.md。
+审计明确 `license_text_audit_complete=false`，没有合成版权署名；外部发布未执行。
+Linux 原生分发已构建/安装，353 个目标依赖及实际 hashes 见 `pi-codemode-evidence/p09-linux-distribution.json`；321 份全文逐字节与共享审计核对一致。
+应用与验证镜像构建及包装探针通过，证据见 `pi-codemode-evidence/p09-container-packaging.json`。
+两个镜像保留各自实际 worker/wheel hashes；不把 native Host 的隔离通过写成默认容器隔离通过。

@@ -46,6 +46,7 @@ from qq_ai_bot.codemode.contract import (
     STOP_UNKNOWN_EFFECT,
 )
 from qq_ai_bot.codemode.driver_types import EngineAnswer, EngineCall, EngineOutcome
+from qq_ai_bot.codemode.engine_monty import CodeEngineUnavailable
 from qq_ai_bot.codemode.limits import CodeModeLimits
 from qq_ai_bot.codemode.snapshot_binding import load_boundary, persist_boundary
 from qq_ai_bot.domain.messages import ToolCall, ToolFunction
@@ -99,6 +100,7 @@ class CodeHost:
     result_limit: int
     archive: Callable[[str], Awaitable[str | None]] | None = None
     engine_factory: Callable[[PinnedWorker, CodeModeLimits], Any] | None = None
+    background: bool = False
 
 
 @dataclass(slots=True)
@@ -184,6 +186,7 @@ class CodeModeDriver:
                 "owner_execution_id": identity.owner_execution_id,
                 "provider_call_id": identity.provider_call_id,
                 "manifest_revision": self.host.api.manifest_revision,
+                "engine_resource_policy": self.host.limits.engine(),
                 "api_revision": self.host.api.digest(),
                 "resumed": resumed,
             },
@@ -248,10 +251,11 @@ class CodeModeDriver:
                 "script_id": uuid4().hex,
                 "code_ref": code_ref,
                 "api_revision": self.host.api.digest(),
-                "engine_digest": self.host.worker.sha256.lower(),
+                "engine_digest": self.host.worker.execution_digest(),
                 "dump_format": DUMP_FORMAT,
                 "snapshot_revision": 0,
                 "manifest_revision": self.host.api.manifest_revision,
+                "engine_resource_policy": self.host.limits.engine(),
             },
             outcome={
                 "tool": "execute_code",
@@ -287,11 +291,17 @@ class CodeModeDriver:
             # nothing was dispatched. Settle instead of re-running the code.
             return await self._settle(state, stop=_Stop(STOP_SNAPSHOT, "no_trusted_boundary"))
         if (
-            composition.get("engine_digest") != self.host.worker.sha256.lower()
+            composition.get("engine_digest") != self.host.worker.execution_digest()
             or composition.get("api_revision") != self.host.api.digest()
             or composition.get("dump_format") != DUMP_FORMAT
         ):
             return await self._settle(state, stop=_Stop(STOP_SNAPSHOT, "code_api_changed"))
+        if not self.host.limits.accepts_saved_engine_policy(
+            composition.get("engine_resource_policy")
+        ):
+            return await self._settle(
+                state, stop=_Stop(STOP_SNAPSHOT, "code_engine_resource_policy_changed")
+            )
         binding = self._binding(composition)
         try:
             dump, _expected, counters = await load_boundary(
@@ -312,12 +322,16 @@ class CodeModeDriver:
     ) -> str:
         assert self.host.worker is not None
         factory = self.host.engine_factory
-        if factory is None:
-            from qq_ai_bot.codemode.engine_monty import MontyEngine
-
-            factory = MontyEngine
         try:
-            async with factory(self.host.worker, self.host.limits) as engine:
+            if factory is None:
+                from qq_ai_bot.codemode.engine_monty import MontyEngine
+
+                engine_context = MontyEngine(
+                    self.host.worker, self.host.limits, background=self.host.background
+                )
+            else:
+                engine_context = factory(self.host.worker, self.host.limits)
+            async with engine_context as engine:
                 run = engine.run(self.host.api.names)
                 self._run = run
                 try:
@@ -339,6 +353,8 @@ class CodeModeDriver:
                     await run.terminate()
         except _Stop as stop:
             return await self._settle(state, stop=stop)
+        except CodeEngineUnavailable as exc:
+            return await self._settle(state, stop=_Stop(STOP_SNAPSHOT, str(exc)))
 
     async def _step(self, state: _State, call: EngineCall, *, restored: bool) -> EngineOutcome:
         run = self._run
@@ -417,7 +433,7 @@ class CodeModeDriver:
             generation=control.lease.generation,
             source_revision=source_revision,
             privacy_generation=privacy,
-            engine_digest=self.host.worker.sha256.lower() if self.host.worker else "",
+            engine_digest=self.host.worker.execution_digest() if self.host.worker else "",
             api_revision=self.host.api.digest(),
             dump_format=DUMP_FORMAT,
         )
@@ -781,6 +797,8 @@ class CodeModeDriver:
                 body["error"] = stop.reason
             if stop.reason == STOP_UNKNOWN_EFFECT:
                 body["uncertain_operation_id"] = stop.detail
+            if stop.reason == STOP_SNAPSHOT:
+                body["snapshot_reason"] = stop.detail
         elif outcome is not None and outcome.status == "completed":
             body.update(ok=True, status="completed", executed=executed)
             body.update(await self._result_view(outcome.output))
@@ -975,9 +993,9 @@ class CodeModeDriver:
         if outcome.stdout:
             self._stdout.append(outcome.stdout)
         self._stdout_truncated = self._stdout_truncated or outcome.stdout_truncated
-        text = "".join(self._stdout)
-        if len(text) > self.host.limits.max_output_bytes:
-            self._stdout = [text[-self.host.limits.max_output_bytes :]]
+        encoded = "".join(self._stdout).encode()
+        if len(encoded) > self.host.limits.max_output_bytes:
+            self._stdout = [encoded[-self.host.limits.max_output_bytes :].decode(errors="ignore")]
             self._stdout_truncated = True
 
 
