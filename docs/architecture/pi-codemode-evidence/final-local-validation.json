@@ -1,0 +1,513 @@
+{
+  "format": "yuki_final_local_validation_v1",
+  "date": "2026-10-05",
+  "baseline_sha": "b54c666a3c46eb95ccb701ac29b8fbdea443a2ad",
+  "passed": 3274,
+  "failed": 0,
+  "skipped": [
+    {
+      "node": "tests.integration.test_legacy_profile_backup_replay::test_production_backup_preserves_five_legacy_works_without_gateway",
+      "reason": "private production backup paths not provided"
+    }
+  ],
+  "seconds": 689.19,
+  "junit_sha256": "039ff3500ae6b7b82abd99a8a0a8ce36d2bbcffb5424b4bb6f8909d58e81cec6",
+  "log_sha256": "9433dd4ac35d4f1fe208d807fbeebfa93702e2b0794ac9f1d276dacfd61b15a3",
+  "ruff_check": "passed",
+  "ruff_format_check": {
+    "passed": true,
+    "files": 1134
+  },
+  "mypy": {
+    "passed": true,
+    "source_files": 722
+  },
+  "worker_sha256": "af76448a14fe980c823f1c6092692f90a8ddc6341f236f17d6d47d72f49548e8",
+  "real_worker_skips": 0,
+  "prior_matrix_obligations_reobserved": [
+    {
+      "id": "E01",
+      "observed_prior_test_scenarios": 22,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "E02",
+      "observed_prior_test_scenarios": 16,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "E03",
+      "observed_prior_test_scenarios": 22,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "E04",
+      "observed_prior_test_scenarios": 26,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "E05",
+      "observed_prior_test_scenarios": 18,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "E06",
+      "observed_prior_test_scenarios": 18,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "E07",
+      "observed_prior_test_scenarios": 11,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "E08",
+      "observed_prior_test_scenarios": 20,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "E09",
+      "observed_prior_test_scenarios": 4,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "E10",
+      "observed_prior_test_scenarios": 32,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "E11",
+      "observed_prior_test_scenarios": 36,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "E12",
+      "observed_prior_test_scenarios": 24,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "E13",
+      "observed_prior_test_scenarios": 14,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "E14",
+      "observed_prior_test_scenarios": 5,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "T01",
+      "observed_prior_test_scenarios": 232,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "T02",
+      "observed_prior_test_scenarios": 34,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "T03",
+      "observed_prior_test_scenarios": 19,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "T04",
+      "observed_prior_test_scenarios": 42,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "T05",
+      "observed_prior_test_scenarios": 32,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "T06",
+      "observed_prior_test_scenarios": 27,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "T07",
+      "observed_prior_test_scenarios": 7,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "T08",
+      "observed_prior_test_scenarios": 8,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "T09",
+      "observed_prior_test_scenarios": 14,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "T10",
+      "observed_prior_test_scenarios": 32,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "T11",
+      "observed_prior_test_scenarios": 8,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "T12",
+      "observed_prior_test_scenarios": 193,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "W01",
+      "observed_prior_test_scenarios": 127,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "W02",
+      "observed_prior_test_scenarios": 127,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "W03",
+      "observed_prior_test_scenarios": 127,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "W04",
+      "observed_prior_test_scenarios": 127,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "W05",
+      "observed_prior_test_scenarios": 127,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "W06",
+      "observed_prior_test_scenarios": 127,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "W07",
+      "observed_prior_test_scenarios": 127,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "W08",
+      "observed_prior_test_scenarios": 127,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "W09",
+      "observed_prior_test_scenarios": 127,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "W10",
+      "observed_prior_test_scenarios": 127,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "W11",
+      "observed_prior_test_scenarios": 127,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "W12",
+      "observed_prior_test_scenarios": 116,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "D01",
+      "observed_prior_test_scenarios": 14,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "D02",
+      "observed_prior_test_scenarios": 8,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "D03",
+      "observed_prior_test_scenarios": 13,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "D04",
+      "observed_prior_test_scenarios": 21,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "D05",
+      "observed_prior_test_scenarios": 17,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "D06",
+      "observed_prior_test_scenarios": 24,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "D07",
+      "observed_prior_test_scenarios": 24,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "D08",
+      "observed_prior_test_scenarios": 23,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "F01",
+      "observed_prior_test_scenarios": 11,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "F02",
+      "observed_prior_test_scenarios": 11,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "F03",
+      "observed_prior_test_scenarios": 15,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "F04",
+      "observed_prior_test_scenarios": 11,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "F05",
+      "observed_prior_test_scenarios": 16,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "F06",
+      "observed_prior_test_scenarios": 35,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "F07",
+      "observed_prior_test_scenarios": 20,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "F08",
+      "observed_prior_test_scenarios": 58,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "C01",
+      "observed_prior_test_scenarios": 20,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "C02",
+      "observed_prior_test_scenarios": 20,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "C03",
+      "observed_prior_test_scenarios": 7,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "C04",
+      "observed_prior_test_scenarios": 41,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "C05",
+      "observed_prior_test_scenarios": 20,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "C06",
+      "observed_prior_test_scenarios": 57,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "C07",
+      "observed_prior_test_scenarios": 8,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "C08",
+      "observed_prior_test_scenarios": 32,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "B01",
+      "observed_prior_test_scenarios": 26,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "B02",
+      "observed_prior_test_scenarios": 25,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "B03",
+      "observed_prior_test_scenarios": 16,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "B04",
+      "observed_prior_test_scenarios": 28,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "B05",
+      "observed_prior_test_scenarios": 40,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "B06",
+      "observed_prior_test_scenarios": 117,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "B07",
+      "observed_prior_test_scenarios": 40,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "B08",
+      "observed_prior_test_scenarios": 46,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "M01",
+      "observed_prior_test_scenarios": 3,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "M02",
+      "observed_prior_test_scenarios": 13,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "M03",
+      "observed_prior_test_scenarios": 36,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "M04",
+      "observed_prior_test_scenarios": 52,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "M05",
+      "observed_prior_test_scenarios": 3,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "M06",
+      "observed_prior_test_scenarios": 40,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "M07",
+      "observed_prior_test_scenarios": 21,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "M08",
+      "observed_prior_test_scenarios": 9,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "X01",
+      "observed_prior_test_scenarios": 54,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "X02",
+      "observed_prior_test_scenarios": 92,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "X03",
+      "observed_prior_test_scenarios": 15,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "X04",
+      "observed_prior_test_scenarios": 41,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "X05",
+      "observed_prior_test_scenarios": 20,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "X06",
+      "observed_prior_test_scenarios": 34,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "X07",
+      "observed_prior_test_scenarios": 40,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "X08",
+      "observed_prior_test_scenarios": 45,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "X09",
+      "observed_prior_test_scenarios": 151,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "X10",
+      "observed_prior_test_scenarios": 127,
+      "all_observed_passing_again": true
+    },
+    {
+      "id": "X12",
+      "observed_prior_test_scenarios": 21,
+      "all_observed_passing_again": true
+    }
+  ],
+  "random_parameter_id_changes": [
+    {
+      "item": "E12",
+      "prior_node": "tests/unit/test_control_work_mutations.py::test_invalid_id_and_arbitrary_spec_do_not_rebuild_work[675A231B-9093-4821-A5CF-567B9927103C]",
+      "current_node": "tests/unit/test_control_work_mutations.py::test_invalid_id_and_arbitrary_spec_do_not_rebuild_work[D7163080-1D96-4E86-87C0-EADE364E12EE]",
+      "reason": "The unchanged source parametrizes str(uuid4()).upper() at collection; the same invalid-ID scenario has a new random UUID."
+    }
+  ],
+  "notice_regressions_passed": 20,
+  "source_sha256": {
+    "scripts/export_monty_notices.py": "23577436cec70444e9e97b332ccaf86678fb93969eb5a64480609c746ac175e8",
+    "scripts/verify_monty_packaging.py": "45e755ebe8e6721ff2c9e1edbba48cb6796bfcb9fcfe1ca27de7bc08d5cf97cb",
+    "Dockerfile": "f88c1cb9db0afb4ac78392d5cf807595d6ece7fd2e23359ab80ac9dee01be45c",
+    "deploy/codemode/Dockerfile.validation": "244caff510cb659d8f4e20beddbb8b819b27c53c2b09c9924829827a7991d1bd"
+  },
+  "external_model_calls_this_run": 0,
+  "production_access": false,
+  "real_sends": 0,
+  "published": false,
+  "deployed": false,
+  "acceptance_export_regressions": [
+    {
+      "case": "missing_report",
+      "observed_X11_verdict": "partial",
+      "total_items": 90
+    },
+    {
+      "case": "actual_report",
+      "observed_X11_verdict": "passed",
+      "total_items": 90
+    },
+    {
+      "case": "stale_probe",
+      "observed_X11_verdict": "partial",
+      "total_items": 90
+    }
+  ],
+  "post_full_suite_static_checks": "ruff check/format and mypy rerun after the acceptance-export metadata correction: all passed",
+  "acceptance_export_sha256": "869003d1fabe4decbd37b38b5a270ab4562db8324d379e20bb4ad0da29d99051"
+}

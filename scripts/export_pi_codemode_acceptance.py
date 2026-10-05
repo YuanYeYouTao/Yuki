@@ -126,9 +126,41 @@ def main() -> None:
             ]
         nodes = [node for node in passed if node.split("::")[0] in targets]
         if item["id"] == "X11":
-            item["verdict"] = "partial"
+            audit = json.loads((ROOT / "vendor/monty/THIRD_PARTY_NOTICES.json").read_text())
+            packaging_path = EVIDENCE / "final-container-packaging.json"
+            packaging = json.loads(packaging_path.read_text()) if packaging_path.is_file() else {}
+            profiles = packaging.get("profiles", [])
+            probe_sha256 = hashlib.sha256(
+                (ROOT / "scripts/verify_monty_packaging.py").read_bytes()
+            ).hexdigest()
+            images_current = (
+                packaging.get("probe_sha256") == probe_sha256
+                and all(
+                    packaging.get("source_sha256", {}).get(path)
+                    == hashlib.sha256((ROOT / path).read_bytes()).hexdigest()
+                    for path in (
+                        "Dockerfile",
+                        "deploy/codemode/Dockerfile.validation",
+                        "scripts/export_monty_notices.py",
+                    )
+                )
+                and {p["role"] for p in profiles} == {"application", "validation"}
+                and all(
+                    p["license_text_audit_complete"]
+                    and p["license_text_gaps"] == 0
+                    and p["packaged_pi_license"] is False
+                    for p in profiles
+                )
+            )
+            item["verdict"] = (
+                "passed" if audit["license_text_audit_complete"] and images_current else "partial"
+            )
             item["scope"] = (
-                "8 upstream license texts unresolved; image publication/deployment unperformed"
+                f"{len(audit['license_text_gaps'])} license text inventory gaps; "
+                f"{len(audit.get('upstream_notice_omissions', []))} original upstream notice "
+                "omissions retained separately; Pi is a design reference; "
+                f"updated image verification {'observed' if images_current else 'unavailable'}; "
+                "image publication/deployment unperformed"
             )
         else:
             assert nodes, f"no observed test evidence for {item['id']}"

@@ -10,28 +10,36 @@ and the [Apache 2.0 license](vendor/monty/TYPESHED-LICENSE) for its vendored
 typeshed at `0e16ea31d2e188fdc126cb31e7c4fcc6b5a8da96` are retained separately.
 
 [The machine-readable audit](vendor/monty/THIRD_PARTY_NOTICES.json) records
-all 598 Cargo.lock packages, exact archive checksums, declared SPDX expressions,
-complete available license/notice texts with hashes, and membership in the
-native worker / CPython binding build trees. The committed audit is for
-`aarch64-apple-darwin`: 352 target packages and 321 distinct notice texts.
-It does not assert that all 598 packages are shipped, or select a license from
-an alternative-license expression. Each Linux distribution build generates
-its own target-specific audit beside its actual worker and wheel.
-The verified [Linux target audit](docs/architecture/pi-codemode-evidence/p09-linux-distribution.json)
-records 353 target packages and the actual worker, launcher and installed wheel
-hashes. Its 321 full notice texts were verified identical to the shared audit;
-the target report references those texts by hash rather than duplicating them.
+598 Cargo.lock packages: 580 registry archives verified against their exact
+checksums and 18 local workspace packages. It preserves declared SPDX
+expressions, notice texts with hashes, and native worker / CPython binding
+normal/build tree membership. The committed Darwin audit covers 352 target
+packages and 326 distinct texts. Lock membership does not imply shipping every
+package or selecting one license from an alternative-license expression.
+Each Linux build generates its own audit beside the actual worker and wheel.
 
-Eight package archives and their available exact upstream source lack complete
-license text. Two are in the current target tree: `quote-use-0.8.4` and
-`quote-use-macros-0.8.4` (declared MIT; exact packaged upstream commit
-`05096f346f8b17fba8a57a235b958917ad9d99e0`). Six are lock-only on this target:
-`r-efi-5.3.0`, `r-efi-6.0.0`, `rustls-platform-verifier-android-0.1.1`,
-`symbolic-common-12.18.3`, `winapi-i686-pc-windows-gnu-0.4.0`, and
-`winapi-x86_64-pc-windows-gnu-0.4.0`. The audit preserves their license metadata
-and marks `license_text_audit_complete=false`; no copyright attribution is
-invented. External publication has not been performed and this audit does not
-claim those missing notices have been resolved.
+The [notice supplement evidence](docs/architecture/pi-codemode-evidence/monty-notice-supplement.json)
+records how the eight previously missing text entries were resolved, without
+changing the recorded Darwin artifacts. `r-efi` carries complete MIT terms and
+original copyright statements in its archived AUTHORS files. Four other
+packages use original license texts from fixed publication source revisions,
+verified against their archived authored payload; generated files and winapi's
+publish-only version edit are listed separately. No floating branch was used.
+
+`quote-use-0.8.4` and `quote-use-macros-0.8.4` explicitly declare MIT in their
+original manifests. Their pinned archives/upstream source do not supply a
+license file or copyright attribution. The audit attaches the fixed
+[SPDX standard MIT text](https://spdx.org/licenses/MIT.html) to those original
+MIT declarations and separately retains both upstream omissions. The standard
+text's year/holder placeholders are kept as template text, never presented as
+package copyright. Unknown or changed declarations cannot use this fallback.
+`license_text_audit_complete=true` describes text inventory, not a certification
+that upstream supplied every notice or a legal selection of alternatives.
+
+Historical [P09 Linux evidence](docs/architecture/pi-codemode-evidence/p09-linux-distribution.json)
+records 353 target packages, 321 texts and eight missing entries before this
+supplement. Its hashes and results are retained as history; current image
+verification is recorded separately in the delivery document.
 
 The reproducible source/build procedure is
 `scripts/build_monty_distribution.sh OUTPUT_DIR ABSOLUTE_PYTHON`.

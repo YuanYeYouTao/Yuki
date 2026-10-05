@@ -33,8 +33,23 @@ assert audit["worker_sha256"] == artifacts["worker"]["sha256"]
 assert audit["wheel_sha256"] == artifacts["binding"]["sha256"]
 assert audit["source_sha"] == "3f9d6ef413fb951e5b80113b7088d535bd028fcb"
 assert len(audit["packages"]) == 598
+assert sum(p["archive_sha256"] is not None for p in audit["packages"]) == 580
+assert audit["license_text_audit_complete"] is True
+assert audit["license_text_gaps"] == []
+notice_hashes = {notice["sha256"] for notice in audit["notice_texts"]}
 for notice in audit["notice_texts"]:
     assert hashlib.sha256(notice["text"].encode()).hexdigest() == notice["sha256"]
+for package in audit["packages"]:
+    assert package["notices"]
+    assert all(notice["sha256"] in notice_hashes for notice in package["notices"])
+omissions = audit["upstream_notice_omissions"]
+assert {item["package"] for item in omissions} == {"quote-use-0.8.4", "quote-use-macros-0.8.4"}
+for item in omissions:
+    assert item["declared_license"] == "MIT"
+    assert item["copyright_notice_status"] == "not_supplied_by_upstream"
+# The original MIT declarations are known. The standard text retains template
+# placeholders; they are never claimed as package copyright attribution.
+assert "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5" in notice_hashes
 assert pydantic_monty.__version__ == "1.0.1"
 assert version("typing-extensions") == "4.16.0"
 assert os.getuid() == 10001
@@ -55,10 +70,12 @@ report = {
     "binding_version": pydantic_monty.__version__,
     "artifacts": artifacts,
     "locked_packages": len(audit["packages"]),
+    "verified_registry_archives": sum(p["archive_sha256"] is not None for p in audit["packages"]),
     "target_packages": sum(p["in_worker_or_binding_target_tree"] for p in audit["packages"]),
     "notice_texts_verified": len(audit["notice_texts"]),
     "license_text_audit_complete": audit["license_text_audit_complete"],
     "license_text_gaps": len(audit["license_text_gaps"]),
+    "upstream_notice_omissions": omissions,
     "default_namespace_policy": "denied_EPERM_fail_closed",
     "licenses": {
         p.name: hashlib.sha256(p.read_bytes()).hexdigest()
@@ -70,6 +87,7 @@ report = {
 assert {"Yuki-LICENSE", "Monty-LICENSE", "TYPESHED-LICENSE"} <= report["licenses"].keys()
 # Pi is a design reference. Its SDK/source is not part of this distribution.
 assert "Pi-LICENSE" not in report["licenses"]
+report["packaged_pi_license"] = False
 if role == "application":
     from importlib.resources import files
 

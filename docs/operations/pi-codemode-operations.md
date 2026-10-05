@@ -59,8 +59,8 @@ worker command.
 Docker's default seccomp profile was observed to refuse `unshare(CLONE_NEWUSER)`
 with EPERM in the dedicated validation VM. Packaging the launcher and wheel
 does not enable its sandbox under that profile. Leave Code Mode unconfigured
-there; the verified deployment in this stage is the unprivileged native Linux
-Host. No `--privileged`, `seccomp=unconfined`, extra capability or host Docker
+there; the verified isolation profile in this stage is the unprivileged native
+Linux Host. This is local validation, not a production deployment. No `--privileged`, `seccomp=unconfined`, extra capability or host Docker
 security change was used. A container deployment must prove its own approved
 isolation configuration before enabling Code Mode; the default image is not
 evidence for that deployment.
@@ -118,9 +118,15 @@ verified the fixed artifact hashes, binding import, original licenses and notice
 the application also migrated a new temporary DB normally through 0092 and verified
 its built WebUI. That historical build also bundled the Pi reference license;
 the current packaging contract includes Yuki, Monty and typeshed licenses, with
-Pi recorded only as a design reference. The updated container recipes have not
-been rebuilt since this clarification. See
-[the packaging evidence](../architecture/pi-codemode-evidence/p09-container-packaging.json).
+Pi recorded only as a design reference. Both current recipes have now been
+built and their probes passed, with zero text-inventory gaps and both original
+quote-use notice omissions retained separately. All 697 installed Python
+sources match the current worktree and Pi is absent from package metadata. See
+[the current packaging evidence](../architecture/pi-codemode-evidence/final-container-packaging.json);
+[the P09 report](../architecture/pi-codemode-evidence/p09-container-packaging.json)
+remains an unchanged historical record. Current container bytes have their own
+hashes; earlier native Linux isolation evidence does not assert these container
+bytes can run under default seccomp.
 Run `scripts/verify_monty_packaging.py application|validation` inside those
 network-disabled, read-only containers as UID 10001, with a private /tmp tmpfs
 for the application role. This probe verifies the actual default namespace refusal;

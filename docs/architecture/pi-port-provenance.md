@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | Yuki | `8204b28ebc8939213dae60dbab94ab1c16d1263a` | 本项目基线；保留原项目许可 |
 | Pi | `200387122ca450d6387f033949423114a270b96c` | 设计参考与行为对照；不加入依赖清单或制品 |
-| Monty | `3f9d6ef413fb951e5b80113b7088d535bd028fcb` | 实际依赖，MIT，Copyright Pydantic Services Inc.；598 个锁定依赖已逐归档校验；typeshed 原 Apache 2.0 许可已保留，8 个完整 notice 缺口仍记录在审计中 |
+| Monty | `3f9d6ef413fb951e5b80113b7088d535bd028fcb` | 实际依赖，MIT，Copyright Pydantic Services Inc.；598 个锁定包（580 份 registry 归档逐 checksum 校验、18 个本地 workspace 包）；typeshed 原 Apache 2.0 许可已保留，全文清单已补齐，上游两份 MIT 署名缺失单独记录 |
 
 早期记录中的“语义移植”统一改为“参考行为、在 Yuki 合同下实现”。当前没有 Pi SDK、
 TypeScript 源文件或 Pi 的依赖链进入运行环境。下表保留查阅对象以便复核思路，不将
@@ -31,7 +31,7 @@ wheel 和 Dockerfile 已取消这项打包配置。本次改动不改变模型�
 | Monty `crates/monty-pool/src/worker.rs:185-194` | 原生 subprocess：`env_clear`、piped stdio、`kill_on_drop` | 经绑定使用，不另实现传输 | 已验证（worker-only 构建） |
 
 Pi SDK、pi-ai Provider、durable/chord、CLI/TUI/RPC 均不进入本交付。
-实际 Monty 依赖及其传递依赖的来源、许可和缺口继续按原审计保留。
+实际 Monty 依赖及其传递依赖的来源、许可和上游 notice 状态由当前审计记录。
 
 ## 刻意差异
 
@@ -95,13 +95,25 @@ wheel 包装时间可改变归档哈希，不能据 worker 相同宣称 wheel �
 P09 的历史构建也曾打包 Pi 许可文本并核对全文；这是该次构建的实测事实，当前参考关系
 澄清后不再将这份文本作为 Yuki wheel 或镜像的必需内容，旧报告不覆盖更新后的制品。
 `vendor/monty/THIRD_PARTY_NOTICES.json` 是 Darwin 实际 worker/wheel 对应的审计：
-598 个锁定包逐 `.crate` 校验 Cargo checksum，352 个当前 normal/build 目标依赖，
-321 份去重完整 notice；不将锁内所有包冒充镜像实际依赖。原 SPDX 选择表达式保留，
+P09 当时的清单包含 598 个锁定包（580 份 registry 归档、18 个本地包），352 个当前 normal/build 目标依赖，
+321 份去重 notice；不将锁内所有包冒充镜像实际依赖。原 SPDX 选择表达式保留，
 不替许可人选择。typeshed 固定 `0e16ea31d2e188fdc126cb31e7c4fcc6b5a8da96`。
 
-8 个包没有可核对的完整文本，其中实际建置目标包含 quote-use 和 quote-use-macros
-0.8.4；准确清单、精确 source commit 和缺口在 JSON 与根 THIRD_PARTY_NOTICES.md。
-审计明确 `license_text_audit_complete=false`，没有合成版权署名；外部发布未执行。
+P09 原审计记有 8 个全文缺口，`license_text_audit_complete=false`。这是补充前的历史状态，
+当前 JSON 已按下述来源查证更新；没有合成版权署名，外部发布未执行。
 Linux 原生分发已构建/安装，353 个目标依赖及实际 hashes 见 `pi-codemode-evidence/p09-linux-distribution.json`；321 份全文逐字节与共享审计核对一致。
 应用与验证镜像构建及包装探针通过，证据见 `pi-codemode-evidence/p09-container-packaging.json`。
 两个镜像保留各自实际 worker/wheel hashes；不把 native Host 的隔离通过写成默认容器隔离通过。
+
+## Notice 来源补充（2026-10-05）
+
+当前 Darwin 审计仍对应原 worker / wheel 哈希，598 个锁定包、580 份 registry checksum、
+352 个目标依赖未变；全文增至 326 份，文本清单缺口为 0。r-efi 两个归档的 AUTHORS
+实际含完整 MIT 与版权；symbolic、rustls Android 和两份 winapi 原文来自固定发布提交，
+已逐 Git blob 与归档源码对应，生成文件及发布时的版本改动单独记录。
+
+quote-use 两包的原始 manifest 明确声明 MIT，上游没有附文件与版权署名。审计保留
+原声明、附固定 SPDX 标准全文，模板的 `<year>` / `<copyright holders>` 不作包署名。
+两项 `upstream_notice_omissions` 持续可见；不将“MIT 类型已知”写成“原版权文件已找到”。
+证据见 `pi-codemode-evidence/monty-notice-supplement.json` 与根 `THIRD_PARTY_NOTICES.md`。
+历史 P09 镜像证据不改写；更新后制品的实测结果见交付记录最后一节。

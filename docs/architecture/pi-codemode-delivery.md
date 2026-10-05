@@ -529,11 +529,13 @@ WebUI 前端资源未构建（`npm ci && npm run build`，产物已 gitignore）
 
 ## 后续依赖
 
-P06–P08 的离线实现及全量验证完成；继续 P09 迁移、worker 运维和回退。
-P09 迁移/资源/完整备份、原生 Linux 隔离及 45 项定向测试已验证，最终全量及两个镜像装配通过，P10 完整实现及离线复验通过，89/90 矩阵项通过、X11 许可项部分通过；真实 DeepSeek 三协议十二场景已有实际通过记录，首轮失败与修正后七项重验均保留；P11 的真实消息、生产访问、
-镜像发布与部署待明确授权。
-Monty Python binding 为本地构建 wheel，未进 `uv.lock`，`uv sync` 后需重跑
-`scripts/build_monty_worker.sh`；P09 共用分发已在 Darwin/Linux 构建并安装；两个镜像装配与离线包装探针通过，容器 Code Mode 默认仍不启用。
+P06–P10 的完整实现、旧循环退休、迁移与离线验收已完成并推送。真实 DeepSeek 三协议
+十二场景有实际通过记录，首轮失败与修正后七项重验保留；真实业务发送、生产访问、
+镜像发布与部署仍待单独授权。Monty notice 补充和当前制品复验见文末。
+
+Monty Python binding 是本地构建 wheel，未进 `uv.lock`；`uv sync` 后需重跑
+`scripts/build_monty_worker.sh`。原生 Linux 隔离有独立实测证据；默认容器 Code Mode
+仍不启用，不能拿装配探针冒充容器 sandbox 通过。
 
 ## Pi 参考关系澄清（2026-10-05）
 
@@ -574,3 +576,76 @@ metadata 不含 Pi。wheel SHA、AST 对照和命令结果见
 更新后 Linux 镜像构建与容器探针：未运行。原全量 3258 通过 / 1 跳过为此前实测结果。
 Monty 八份依赖许可文本缺口仍为 partial，本次不将它改成通过。下一依赖：若要交付更新后
 镜像，需按当前 Dockerfile 重建并运行原包装探针；发布、部署仍待授权。
+
+## Monty notice 补充与最终制品复验（2026-10-05）
+
+本轮闭合 X11 的当前文本清单和更新后镜像证据。Pi 仅为设计参考，实际许可保留
+Yuki、Monty 与 typeshed；未修改模型循环、业务权限、回执、恢复或预算执行逻辑。
+
+- 对 580 份 registry `.crate` 逐 Cargo checksum 核验，另 18 个为本地 workspace 包。
+  之前“598 份归档”的说法应按此纠正；598 是锁定包总数。
+- r-efi 两包的 AUTHORS 实际含完整 MIT 与原版权。四个缺 packaged VCS 的包通过
+  固定发布提交与归档源码 Git blob 对应，取得原 license；生成文件及 winapi 发布时
+  的唯一版本编辑分别记录。原 Darwin worker / wheel SHA 未变。
+- quote-use 两包原始 manifest 明确声明 MIT。附固定 SPDX 标准全文并保留两项
+  `upstream_notice_omissions`；模板 year/holder 不是包版权署名，未声称找到原许可文件。
+  文本清单缺口为 0，Darwin 去重文本 326 份。来源证据是
+  `pi-codemode-evidence/monty-notice-supplement.json`。
+- 新增归档/署名/声明/固定源码/损坏标准全文的回归覆盖；notice 测试 20 项通过。
+  镜像探针保留 worker/hash、UID、默认 namespace 拒绝、迁移及 WebUI 断言，并增加
+  580 份归档计数、全 notice 引用/hash、零文本缺口及两项上游事实核验。
+- 验收导出器按当前审计和实际镜像源码/probe SHA 判定 X11；不再固定写旧八项缺口，
+  缺少或陈旧镜像报告不能判为完整通过。
+
+实际本地验证：
+
+```sh
+uv run --frozen ruff check src tests scripts migrations          # 通过
+uv run --frozen ruff format --check src tests scripts migrations # 1134 文件通过
+uv run --frozen mypy                                            # 722 源文件通过
+uv run --frozen pytest -q -p no:warnings tests/unit/test_monty_notice_download.py # 20 通过
+YUKI_MONTY_BINARY=<保留的 Mac worker 绝对路径> uv run --frozen pytest -q -p no:warnings --junitxml=<临时目录>/final-results.xml tests
+# 3274 通过 / 1 跳过，689.19 秒
+```
+
+唯一跳过为未提供私有生产备份；真实 worker 测试无跳过。全量 XML/日志及逐项复核在
+`final-full-results.xml.gz`、`final-full-tests.log.gz`、`final-local-validation.json`。
+原 89 项测试场景再次实际通过，其中一个参数在采集时使用 `uuid4()`，新旧 UUID
+节点分别记录，未把随机参数误当漏测，也未修改该测试。
+
+当前 Docker 构建/探针：两镜像构建与严格探针全部通过。初次 4 GiB VM 无 swap，内核
+OOM 杀死 Rust 编译；初次 exit 101 与内核日志保留。加 4 GiB task swap 后按同一
+Dockerfile/命令重试成功，不改编译政策或检查。应用镜像复用了同一已完成的 Monty 层。
+
+- 应用镜像 `c3b31ab58a4eee21c8e30ac17efe44f883977f5cbc2f0178957a03637d6a6906`；
+  验证镜像 `4e53351b5c5ac0fd124db2afd26d5e66fb083e5f1fa663869973a58feaf3bb61`。
+- 均使用 UID 10001、network none、只读 root、drop ALL capabilities、no-new-privileges
+  与独立 /tmp tmpfs；没有 privileged/unconfined。真实绑定导入、worker/launcher/wheel
+  hash、598/580/353/326 清单、零文本缺口与两项上游 notice 事实均通过。
+- 应用新建临时 DB 正常迁移至 `0092`，SQLite integrity/foreign-key 检查通过，已构建
+  WebUI 存在。额外核对镜像实际安装的 697 个 Python 源文件，逐字节 hash 与当前
+  worktree 相符；Pi 依赖 metadata 与随包许可均不存在。
+- 真实 full XML 加镜像报告执行验收导出器；实际报告判 X11 通过，缺报告/陈旧 probe
+  SHA 的两种情形均判 partial，不能拿历史包装报告满足当前源码。
+- Linux 目标审计与 Darwin 的 326 个文本 hash 全部相同，完整实际 Linux JSON 保存在
+  `final-linux-notices.json.gz`。制品 hashes、构建/探针记录与源文件证明见
+  `final-container-packaging.json`、`final-image-sources.json.gz`；三份构建日志和 kernel
+  原文另有 gzip，原 P09/P10 报告保持历史实测内容。
+
+**默认容器隔离仍不可用**：实际 unshare 返回 EPERM，launcher 硬拒绝；Code Mode
+保持未配置。此处通过的是当前制品装配，不能宣称新容器 worker 字节的 sandbox 已通过。
+原生 Linux Host 的独立隔离证据仍对应此前原生制品，当前镜像有自己的真实 SHA。
+
+临时 VM `yuki-final-20261005`（含镜像、swap、Rust/Cargo 构建层）、本次下载镜像缓存、
+源码 staging、原始临时日志与本轮 full pytest 的 5.493 GiB 临时目录已在证据保存后删除；
+此前两轮测试目录保留，pytest-current 自身本轮改动已回到原目录。新装 Lima 2.2.0 已卸载，禁用 autoremove
+以保留其他依赖。项目、前端产物、已安装 Mac worker/binding、全局 Lima keys 及其他用户
+内容保留。删除核验与实际剩余空间见 `final-cleanup.json`；未把路径 allocation 总和当成
+精确释放量。两个验证镜像随 VM 删除，后续获准部署需按当前配方重建。
+
+当前 90 项离线义务已有实际证据；文本清单通过保留上游两项缺文件/署名事实。未通过项：
+本轮最终测试无失败；首次编译 OOM 已修复并保留原记录。下一依赖：P11 真实发送、生产
+访问与切换的独立授权和实际实例资料。
+
+本轮未增加付费调用；原真实 API 十二场景结果和累计 39 次请求不变。PR、合并、
+真实发送、生产访问、镜像发布与部署：待授权，未执行。

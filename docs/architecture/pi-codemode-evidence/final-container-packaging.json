@@ -1,0 +1,208 @@
+{
+  "format": "yuki_final_container_packaging_v1",
+  "date": "2026-10-05",
+  "baseline_sha": "b54c666a3c46eb95ccb701ac29b8fbdea443a2ad",
+  "probe": "scripts/verify_monty_packaging.py",
+  "probe_sha256": "45e755ebe8e6721ff2c9e1edbba48cb6796bfcb9fcfe1ca27de7bc08d5cf97cb",
+  "source_sha256": {
+    "Dockerfile": "f88c1cb9db0afb4ac78392d5cf807595d6ece7fd2e23359ab80ac9dee01be45c",
+    "deploy/codemode/Dockerfile.validation": "244caff510cb659d8f4e20beddbb8b819b27c53c2b09c9924829827a7991d1bd",
+    "scripts/export_monty_notices.py": "23577436cec70444e9e97b332ccaf86678fb93969eb5a64480609c746ac175e8",
+    "scripts/export_pi_codemode_acceptance.py": "869003d1fabe4decbd37b38b5a270ab4562db8324d379e20bb4ad0da29d99051"
+  },
+  "profiles": [
+    {
+      "format": "yuki_monty_container_packaging_v1",
+      "role": "application",
+      "uid": 10001,
+      "binding_version": "1.0.1",
+      "artifacts": {
+        "worker": {
+          "filename": "monty",
+          "sha256": "69f5f3bd51868db30dc1f2cdded97adb1b67222d00498af0cc4bed39b2ef10b5"
+        },
+        "binding": {
+          "filename": "pydantic_monty_client-1.0.1-cp312-cp312-manylinux_2_39_aarch64.whl",
+          "sha256": "d932dbbc7c193439464d11e69f9799b9790fe676a9eb24fe4820627691cb2cbf"
+        },
+        "launcher": {
+          "filename": "monty-isolated",
+          "sha256": "519550c8eac24439d671aaec0842170864215713d5b3db075c9df186f44c7904"
+        }
+      },
+      "locked_packages": 598,
+      "verified_registry_archives": 580,
+      "target_packages": 353,
+      "notice_texts_verified": 326,
+      "license_text_audit_complete": true,
+      "license_text_gaps": 0,
+      "upstream_notice_omissions": [
+        {
+          "package": "quote-use-0.8.4",
+          "declared_license": "MIT",
+          "archive_sha256": "9619db1197b497a36178cfc736dc96b271fe918875fbf1344c436a7e93d0321e",
+          "manifest_path": "quote-use-0.8.4/Cargo.toml.orig",
+          "manifest_license_field": "MIT",
+          "vcs_commit": "05096f346f8b17fba8a57a235b958917ad9d99e0",
+          "standard_text_source": "https://raw.githubusercontent.com/spdx/license-list-data/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/MIT.txt",
+          "copyright_notice_status": "not_supplied_by_upstream",
+          "note": "Standard MIT text is attached to the original MIT declaration; template placeholders are not package copyright attribution."
+        },
+        {
+          "package": "quote-use-macros-0.8.4",
+          "declared_license": "MIT",
+          "archive_sha256": "82ebfb7faafadc06a7ab141a6f67bcfb24cb8beb158c6fe933f2f035afa99f35",
+          "manifest_path": "quote-use-macros-0.8.4/Cargo.toml.orig",
+          "manifest_license_field": "MIT",
+          "vcs_commit": "05096f346f8b17fba8a57a235b958917ad9d99e0",
+          "standard_text_source": "https://raw.githubusercontent.com/spdx/license-list-data/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/MIT.txt",
+          "copyright_notice_status": "not_supplied_by_upstream",
+          "note": "Standard MIT text is attached to the original MIT declaration; template placeholders are not package copyright attribution."
+        }
+      ],
+      "default_namespace_policy": "denied_EPERM_fail_closed",
+      "licenses": {
+        "Monty-LICENSE": "5841db47ee6e1f0becafe2d19ca43c08cbc6d2c0952822ccf88cbbf2bd0749bd",
+        "TYPESHED-LICENSE": "295f8538c94ae5c3043301cf7cff1c852dab6a786a8ddee471e061b40d5ecabe",
+        "Yuki-LICENSE": "9de2d1cf6a153bb7f8c11c5bc56cce753bf8b797728820c65b34a8ed5643e27e"
+      },
+      "bot_started": false,
+      "external_model_calls": 0,
+      "packaged_pi_license": false,
+      "migration_head": "0092",
+      "built_webui": true,
+      "verdict": "packaging_passed_container_isolation_unavailable",
+      "image_id": "sha256:c3b31ab58a4eee21c8e30ac17efe44f883977f5cbc2f0178957a03637d6a6906",
+      "architecture": "arm64",
+      "os": "linux",
+      "image_bytes": 764596693
+    },
+    {
+      "format": "yuki_monty_container_packaging_v1",
+      "role": "validation",
+      "uid": 10001,
+      "binding_version": "1.0.1",
+      "artifacts": {
+        "worker": {
+          "filename": "monty",
+          "sha256": "69f5f3bd51868db30dc1f2cdded97adb1b67222d00498af0cc4bed39b2ef10b5"
+        },
+        "binding": {
+          "filename": "pydantic_monty_client-1.0.1-cp312-cp312-manylinux_2_39_aarch64.whl",
+          "sha256": "d932dbbc7c193439464d11e69f9799b9790fe676a9eb24fe4820627691cb2cbf"
+        },
+        "launcher": {
+          "filename": "monty-isolated",
+          "sha256": "519550c8eac24439d671aaec0842170864215713d5b3db075c9df186f44c7904"
+        }
+      },
+      "locked_packages": 598,
+      "verified_registry_archives": 580,
+      "target_packages": 353,
+      "notice_texts_verified": 326,
+      "license_text_audit_complete": true,
+      "license_text_gaps": 0,
+      "upstream_notice_omissions": [
+        {
+          "package": "quote-use-0.8.4",
+          "declared_license": "MIT",
+          "archive_sha256": "9619db1197b497a36178cfc736dc96b271fe918875fbf1344c436a7e93d0321e",
+          "manifest_path": "quote-use-0.8.4/Cargo.toml.orig",
+          "manifest_license_field": "MIT",
+          "vcs_commit": "05096f346f8b17fba8a57a235b958917ad9d99e0",
+          "standard_text_source": "https://raw.githubusercontent.com/spdx/license-list-data/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/MIT.txt",
+          "copyright_notice_status": "not_supplied_by_upstream",
+          "note": "Standard MIT text is attached to the original MIT declaration; template placeholders are not package copyright attribution."
+        },
+        {
+          "package": "quote-use-macros-0.8.4",
+          "declared_license": "MIT",
+          "archive_sha256": "82ebfb7faafadc06a7ab141a6f67bcfb24cb8beb158c6fe933f2f035afa99f35",
+          "manifest_path": "quote-use-macros-0.8.4/Cargo.toml.orig",
+          "manifest_license_field": "MIT",
+          "vcs_commit": "05096f346f8b17fba8a57a235b958917ad9d99e0",
+          "standard_text_source": "https://raw.githubusercontent.com/spdx/license-list-data/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/MIT.txt",
+          "copyright_notice_status": "not_supplied_by_upstream",
+          "note": "Standard MIT text is attached to the original MIT declaration; template placeholders are not package copyright attribution."
+        }
+      ],
+      "default_namespace_policy": "denied_EPERM_fail_closed",
+      "licenses": {
+        "Monty-LICENSE": "5841db47ee6e1f0becafe2d19ca43c08cbc6d2c0952822ccf88cbbf2bd0749bd",
+        "TYPESHED-LICENSE": "295f8538c94ae5c3043301cf7cff1c852dab6a786a8ddee471e061b40d5ecabe",
+        "Yuki-LICENSE": "9de2d1cf6a153bb7f8c11c5bc56cce753bf8b797728820c65b34a8ed5643e27e"
+      },
+      "bot_started": false,
+      "external_model_calls": 0,
+      "packaged_pi_license": false,
+      "verdict": "packaging_passed_container_isolation_unavailable",
+      "image_id": "sha256:4e53351b5c5ac0fd124db2afd26d5e66fb083e5f1fa663869973a58feaf3bb61",
+      "architecture": "arm64",
+      "os": "linux",
+      "image_bytes": 200595993
+    }
+  ],
+  "actual_linux_audit": {
+    "file": "final-linux-notices.json.gz",
+    "raw_sha256": "7bf57ea40d86686315f790bfc28d8b78256147d71dccef32c64055e9c7d91f6c",
+    "all_326_notice_hashes_equal_to_darwin": true
+  },
+  "application_source_verification": {
+    "file": "final-image-sources.json.gz",
+    "raw_sha256": "3d318577c405eb0669e58c828e7b74261fbcca723470f6711d775bc09a8ee151",
+    "tracked_python_sources_verified": 697,
+    "source_map_sha256": "25fc335517ea1c7fb74ca00f9e47fc583d309fc2a38d9329c09dec1a25931b4c",
+    "pi_dependency_present": false
+  },
+  "build_logs": {
+    "validation-build-initial-oom": {
+      "file": "final-validation-build-initial-oom.log.gz",
+      "raw_sha256": "9114265ae75f7788efe70fbe781694620cb4a134ab8348ee36a248ea431e5655",
+      "exit_code": 101
+    },
+    "validation-build": {
+      "file": "final-validation-build.log.gz",
+      "raw_sha256": "0e408af628995707427ed1b8e555257c64f34dfa9f49d6e01bc724d5477066d6",
+      "exit_code": 0
+    },
+    "application-build": {
+      "file": "final-application-build.log.gz",
+      "raw_sha256": "27a44c8f57e3435a077e97770d854bb498a01caa3f675834e3dc3d86c4c72b87",
+      "exit_code": 0
+    }
+  },
+  "build_retry": {
+    "cause": "kernel confirmed global OOM killed rustc with 3492268 kB anon RSS",
+    "vm_memory_gib": 4,
+    "added_task_swap_gib": 4,
+    "same_dockerfile_and_build_command": true,
+    "no_compiler_policy_or_check_relaxed": true
+  },
+  "guest_kernel": "Linux 6.1.0-53-cloud-arm64 aarch64",
+  "base_image_digests": [
+    "yuki-application:final c3b31ab58a4e <none>",
+    "<none>:<none> c022805e8c29 <none>",
+    "<none>:<none> 4d3a499d8fb0 <none>",
+    "yuki-monty-validation:final 4e53351b5c5a <none>",
+    "<none>:<none> 72be7ac3cccf <none>",
+    "python:3.12-slim 04e0b4721883 sha256:02108f5d322dd89f1c9e552442c25acb0543dfdbc455693a5599624f20d9155d",
+    "node:24-alpine 0e3c736f1019 sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1",
+    "ghcr.io/astral-sh/uv:0.11.31 d3a151292096 sha256:ecd4de2f060c64bea0ff8ecb182ddf46ba3fcccdc8a60cfdbaf20d1a047d7437",
+    "rust:1.96.0-slim a326d8049f7d sha256:c37af730be4fd8104cbf9aedbd6ab259e51ca2d5437817a0f8680edf66ac6c28"
+  ],
+  "network": "none",
+  "root_filesystem": "read_only",
+  "capabilities": "all_dropped",
+  "no_new_privileges": true,
+  "default_container_codemode_enabled": false,
+  "container_sandbox_verdict": "unavailable; namespace denied EPERM, launcher refuses execution; packaging pass is not Linux sandbox pass",
+  "native_linux_isolation_evidence": "p09-linux-isolation.json; earlier native build, not proof of isolation for these new container bytes",
+  "published": false,
+  "deployed": false,
+  "bot_started": false,
+  "external_model_calls": 0,
+  "staging_tar_sha256": "8296d64e91a5a82538492802b19f1a21f0467f4d28493159ab493a80b91ade3f",
+  "staging_delta": {
+    "scripts/export_pi_codemode_acceptance.py": "869003d1fabe4decbd37b38b5a270ab4562db8324d379e20bb4ad0da29d99051"
+  }
+}
