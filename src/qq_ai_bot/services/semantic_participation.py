@@ -32,6 +32,7 @@ from yuki_participation.models import (
 from yuki_participation.observer import JevObserver
 from yuki_participation.session import ObservationSession
 
+from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.conversation.autonomy_binding import (
     AcceptedInitiative,
     AutonomyBinding,
@@ -464,9 +465,12 @@ class SemanticParticipationService:
             if cancelled:
                 raise asyncio.CancelledError
 
-    async def _binding(self, item: _Session) -> AutonomyBinding:
+    async def _binding(
+        self, item: _Session, *, runtime: RuntimeConfigSnapshot | None = None
+    ) -> AutonomyBinding:
         scene = item.scene
-        runtime = await self.app.runtime_config.snapshot(group_id=scene.group_id)
+        if runtime is None:
+            runtime = await self.app.runtime_config.snapshot(group_id=scene.group_id)
         policy = runtime.conversation_policy()
         prior = await self.repository.get_binding(scene.conversation_id, scene.generation)
         if prior is None:
@@ -615,7 +619,9 @@ class SemanticParticipationService:
             ),
         )
 
-    async def _hydrate(self, item: _Session, direct: dict[int, bool] | None = None) -> None:
+    async def _hydrate(
+        self, item: _Session, direct: dict[int, bool] | None = None
+    ) -> RuntimeConfigSnapshot | None:
         version, rows = await self.app.ledger.read_scope_context(
             item.scene.identity, limit=64, message_only=True
         )
@@ -623,7 +629,7 @@ class SemanticParticipationService:
             version.generation != item.scene.generation
             or version.conversation_id != item.scene.conversation_id
         ):
-            return
+            return None
         if not item.controller.state.human_activity_initialized:
             # Old snapshots only retain detailed events for about ten minutes.
             # Read hourly aggregates from this generation once, outside any write transaction;
@@ -713,7 +719,10 @@ class SemanticParticipationService:
         }
         from qq_ai_bot.services.participation_feedback import admission_unit_binding
 
-        runtime = await self.app.runtime_config.snapshot(group_id=item.scene.group_id)
+        runtime = cast(
+            RuntimeConfigSnapshot,
+            await self.app.runtime_config.snapshot(group_id=item.scene.group_id),
+        )
         observe_enabled = (
             item.scene.enabled and runtime.conversation_policy().semantic_participation_enabled
         )
@@ -763,6 +772,7 @@ class SemanticParticipationService:
                 and item.controller.participation_view(event, now).needs_observation
             ):
                 item.observation.request_observation(event.ref)
+        return runtime
 
     async def _source_current(self, item: _Session, ref: SourceRef) -> bool:
         return (await self._sources_current(item, (ref,)))[ref]
@@ -1390,9 +1400,11 @@ class SemanticParticipationService:
         from qq_ai_bot.services.participation_feedback import sync_scope_effects
 
         await sync_scope_effects(self, item)
-        await self._hydrate(item)
+        runtime = await self._hydrate(item)
         await self._validate_boundaries(item)
-        binding = await self._binding(item)
+        # Hydration and this local advancement use one preparation policy view.
+        # After observer/external work below, _binding reads current policy again.
+        binding = await self._binding(item, runtime=runtime)
         if item.observation is not None and scene.enabled and binding.external_enabled:
             if binding.master_enabled:
                 await self._seeds(item)

@@ -499,6 +499,46 @@ async def require_canonical_schema(database_url: str) -> None:
                 != _normalized_input_repair_index_sql(INPUT_REPAIR_INDEX_SQL)
             ):
                 raise CanonicalSchemaError("database abandoned input index is missing or changed")
+            social_index_name = "ix_chat_events_social_source_author"
+            social_index_sql = (
+                f"CREATE INDEX {social_index_name} ON chat_events (author_person_id, id) "
+                "WHERE direction = 'inbound' AND author_kind = 'person'"
+            )
+            social_index = (
+                await connection.execute(
+                    text("SELECT type,tbl_name,sql FROM sqlite_master WHERE name=:name"),
+                    {"name": social_index_name},
+                )
+            ).first()
+            social_shape = next(
+                (
+                    row
+                    for row in await connection.execute(text('PRAGMA index_list("chat_events")'))
+                    if row[1] == social_index_name
+                ),
+                None,
+            )
+            social_keys = tuple(
+                (row[2], row[3], row[4])
+                for row in await connection.execute(
+                    text(f'PRAGMA index_xinfo("{social_index_name}")')
+                )
+                if row[5] == 1
+            )
+            if (
+                social_index is None
+                or social_index[0] != "index"
+                or social_index[1] != "chat_events"
+                or social_index[2] is None
+                or social_shape is None
+                or social_shape[2] != 0
+                or social_shape[3] != "c"
+                or social_shape[4] != 1
+                or social_keys != (("author_person_id", 0, "BINARY"), ("id", 0, "BINARY"))
+                or _normalized_input_repair_index_sql(social_index[2])
+                != _normalized_input_repair_index_sql(social_index_sql)
+            ):
+                raise CanonicalSchemaError("database social source index is missing or changed")
             trigger_rows = await connection.execute(
                 text("SELECT name, sql FROM sqlite_master WHERE type='trigger'")
             )

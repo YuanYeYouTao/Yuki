@@ -568,8 +568,8 @@ async def test_real_upgrade_downgrade_preserves_original_work_and_inputs(tmp_pat
             table: db.execute(f"SELECT * FROM {table} ORDER BY id").fetchall()
             for table in ("runtime_work", "runtime_work_inputs")
         }
-    await asyncio.to_thread(command.upgrade, config, "head")
-    await require_canonical_schema(url)
+    # This regression owns revision 0094; later indexes have separate migration tests.
+    await asyncio.to_thread(command.upgrade, config, "0094")
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0094"
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []

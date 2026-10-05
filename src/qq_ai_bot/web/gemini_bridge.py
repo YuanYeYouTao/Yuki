@@ -192,9 +192,12 @@ class GeminiSearchBridge:
         sources = list(found.values())[: max(1, min(request.max_results, 5))]
         extract_failed = False
         if self.fallback is not None:
-            for index in range(min(len(sources), request.extract_max_results or 0, 3)):
+            fallback = self.fallback
+
+            async def extract_source(index: int) -> None:
+                nonlocal extract_failed
                 try:
-                    page = await self.fallback.extract(sources[index].url, request.query)
+                    page = await fallback.extract(sources[index].url, request.query)
                     sources[index] = replace(
                         sources[index],
                         snippet=page.snippet[:1000],
@@ -202,6 +205,34 @@ class GeminiSearchBridge:
                     )
                 except WebSearchError:
                     extract_failed = True
+
+            # At most three pages; Tavily keeps its existing global HTTP semaphore.
+            # Assign by original index so response order is independent of completion order.
+            extracts = [
+                asyncio.create_task(extract_source(index))
+                for index in range(min(len(sources), request.extract_max_results or 0, 3))
+            ]
+            gathered = asyncio.gather(*extracts)
+            try:
+                # Own child cancellation below; repeated caller cancellation must
+                # not interrupt a child's transport cleanup for a second time.
+                await asyncio.shield(gathered)
+            except BaseException:
+                # gather can raise while siblings are still on wire. Cancel and join
+                # every child before releasing the bridge slot, including repeated cancellation.
+                for child in extracts:
+                    if not child.done() and not child.cancelling():
+                        child.cancel()
+                joined = asyncio.gather(*extracts, return_exceptions=True)
+                while not joined.done():
+                    try:
+                        await asyncio.shield(joined)
+                    except asyncio.CancelledError:
+                        continue
+                joined.result()
+                if gathered.done() and not gathered.cancelled():
+                    gathered.exception()
+                raise
         return WebSearchResponse(
             query=request.query,
             sources=tuple(sources),

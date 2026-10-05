@@ -23,7 +23,6 @@ from qq_ai_bot.event_prompt import ChatEventPromptRenderer
 from qq_ai_bot.execution_trace.phases import collect_phase_metrics
 from qq_ai_bot.llm.base import LLMError
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.runtime.work_repository import WorkCapacityError
 from qq_ai_bot.services.context_assembler import AssembledContext
 
@@ -247,25 +246,18 @@ async def prepare_history(
         and context.projection_scope in {"", "main", "self_initiative"}
     ):
         ledger = EventLedgerRepository(repository.database)
-        after = previous.selected_summary_coverage
         through = max(context.prompt_raw_tail_end_event_id, context.prompt_effective_coverage)
-        missing_rows: list[EventRecord] = []
-        while after < through:
-            page = await ledger.list_scope_after(
-                version.scope,
-                after_event_id=after,
-                through_event_id=through,
-                limit=256,
-                message_only=True,
-            )
-            if not page:
-                break
-            missing_rows.extend(
-                row
-                for row in page
-                if row.id not in frozen_event_ids and row.id != context.current_event_id
-            )
-            after = page[-1].id
+        current_version, missing_rows = await ledger.read_scope_missing_history(
+            version,
+            after_event_id=previous.selected_summary_coverage,
+            through_event_id=through,
+            frozen_event_ids=frozen_event_ids,
+            current_event_id=context.current_event_id,
+        )
+        if current_version != version:
+            from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
+
+            raise HistorySourceChangedError(version)
         renderer = ChatEventPromptRenderer(
             missing_rows,
             bot_display_name=context.history_bot_display_name,
