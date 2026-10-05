@@ -23,14 +23,14 @@
 - [x] T06：无效 reflection 映射准备期剔除，全无效只读返回；writer 竞争复核保留。
 - [x] T07：prefix/items 准备复用，旧 snapshot 的 view/payload/stamp 绑定和 writer 最终 CAS 保留；manifest/chunk 存储重构未满足自然 WAL 写放大进入条件，本轮不实施。
 - [x] T08：先交付维护前置和串行恢复分段计量；跨 Conversation 并发恢复缺少自然队头阻塞证据，本轮不启用。
-- [x] T09：纯生成抢占属于独立产品策略，当前没有进入证据及明确策略决策，保留现行为。
+- [x] T09：PR242 已按后续用户授权实现普通私聊的旧轮抢占。无 accepted Work、无已开始本地效果、无 native dispatch 时精确取消原 task 并等待真实退出；效果保护持续到原 task 退出。群聊、Work 和已开始发送保持原策略；发送后解除保护未实施。
 - [x] T10：分页分组/ProtocolStore 锁粒度改造需实测条件，当前不满足，保留完整来源和原锁语义。
 - [x] T11：普通聊天无显式自动预取成本；不增加预取或新的恢复假设。
 - [x] 定向回归、重放与独立审查；仓库 Ruff、Linux mypy（699 源文件）、发布/schema 基线检查通过。
 
 - [ ] 新版本自然回复速度验收；健康检查与合成回放不能替代此项。
 
-仓库 CI、合并和上线按 PR 与实际容器 revision/StartedAt、0093 迁移回执单独记录，不用本地验证代替。
+PR241 交付原任务书的 0093 基线；后续 PR242 的全部 CI 已通过，已合并为 `00ff0dbd401d61f5433fd2b21cb5116124197894`。PR242 另加 0094（down_revision=0093）的 `ix_runtime_work_inputs_abandoned` partial index，仅覆盖 `state='pending' AND ready IS 0`，后台发现条件、writer 复核、原 Work 状态与预算保持不变。实际上线须核对容器 revision/StartedAt 与 0094 迁移回执；真实控制测试与自然速度验收分别记录，不用本地验证或 CI 代替。
 
 当前隔离证据：T02B alias+timezone 阶段从 12 SELECT 减至 10，删去普通准备独立 generation status 和 Runner 第二次 timezone 解析；不将父阶段与子阶段相加。T05 单连接池可在 probe 内另取连接，身份/版本变化拒绝、probe/CAS 前取消、提交确认丢失或提交后取消均不盲重试/反向删除，已接纳后仅 socket 断开仍可入账。T04 真实完整 ORM 候选查询在 187/2000/20000 items 合成 fixture 中由 SCAN 改为 covering SEARCH，VM 步数 4369/33377/321377 → 1441，完整结果及 LIMIT 前缀等价；这不是生产提速比例。T06 全无效准备为 2 SELECT、零 BEGIN IMMEDIATE/DML。
 
@@ -195,7 +195,7 @@ T01 的局部集合/batch、T03A 计时与 T04 索引先建立最小结果；T01
 
 ### T03B 推荐把可丢准备移入现有有界消费者
 
-现行 [execution-trace](https://github.com/YuanYeYouTao/Yuki/blob/a48b8d1387c62c2bcafda0e4faca056619311079/docs/architecture/execution-trace.md#L47-L60) 把逐条来源核验固定在生产者，这是可调整的模块分工。核心不变量是冻结原身份与隐私代次、只核验原来源、不回填已删除内容，以及不让可丢诊断改变业务成功。**推荐方案是修改该模块合同，复用同一个有界 DiagnosticWriter 完成冻结 ID 核验、编码和条件提交；不是将旧技术细节原样固化。** 本任务书只明确设计，仓库合同和实现尚未修改。
+原审计基线的 [execution-trace](https://github.com/YuanYeYouTao/Yuki/blob/a48b8d1387c62c2bcafda0e4faca056619311079/docs/architecture/execution-trace.md#L47-L60) 把逐条来源核验固定在生产者，这是可调整的模块分工。核心不变量是冻结原身份与隐私代次、只核验原来源、不回填已删除内容，以及不让可丢诊断改变业务成功。原推荐方案为复用同一个有界 DiagnosticWriter 完成冻结 ID 核验、编码和条件提交；PR241 已修改模块合同并交付该实现，后续按现行 execution-trace 合同核验。
 
 1. 调用端从可信上下文冻结原 source/turn/work/activation/execution、conversation/event ID、generation、原 privacy generation、事件时间及有界独立 payload；不携带 live ContextVar/session/control，不用 `create_task` 包住旧 append 后才冻结
 2. 复用已有单消费者和进程内队列，不新增永久表、第二诊断层或恢复器。消费者只核验被冻结 ID 的类型、存在、归属及原投递回执/出站事件依赖，只能接受或丢样；不能从当前上下文推导、补填新 owner，或消费时重新捕获 privacy generation
@@ -310,9 +310,9 @@ T01 的局部集合/batch、T03A 计时与 T04 索引先建立最小结果；T01
 
 ### T09 普通过期纯生成轮的受控抢占
 
-这是产品策略选择，先有锁等待和 superseded 剩余时间数据，再确认是否改变普通用户轮行为。约 3–5 人日。仅无已接纳 Work、无开始或未知副作用、无 native 工具的纯生成允许中止；其他情况继续原因果/回执合同。
+原审计将此列为待确认的产品策略。后续私聊锁等待证据和用户明确授权已满足进入条件，PR242 已实现普通 private、无已接纳 Work、无开始或未知副作用、无 native dispatch 的原 task 精确取消与真实 join；其他情况继续原因果/回执合同。只读记忆查询后的未发送模型请求也可被新普通私聊抢占，不按工具名称扩大效果权限。
 
-测试连续三条、同群不同 Person、dispatch 临界点、部分发送、native 工具未知、Work 已承诺任务、/stop、/new、privacy/shutdown。原 HTTP 费用/用量未知不记零，不重新发旧效果。以功能开关或独立策略提交回退，默认不因审计而自动开启。
+测试连续三条、同群不同 Person、dispatch 临界点、部分发送、native 工具未知、Work 已承诺任务、/stop、/new、privacy/shutdown。原 HTTP 费用/用量未知不记零，不重新发旧效果。当前实现没有独立功能开关；回退需撤回对应策略源码，不清除 journal、预算或发送回执。此次实施源于后续用户授权，不能推导成其他会话或发送后的任意取消。
 
 ### T10 更深读分页与 Protocol 锁粒度
 
