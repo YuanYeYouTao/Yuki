@@ -33,6 +33,8 @@ from scripts.verify_deepseek_codemode import read_credentials
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_OUTPUT = 8192
+SEGMENT_TOOLS: int | None = None
+REASONING_EFFORT = "low"
 RECORDS: list[dict[str, Any]] = []
 CREDENTIALS: dict[str, str] = {}
 OUTPUT: Path | None = None
@@ -40,6 +42,18 @@ STARTED = ""
 IN_PROGRESS: dict[str, Any] | None = None
 LEDGER: BudgetLedger | None = None
 TASKS = ("batch_ledger", "dependency_chain", "resumed_work")
+
+
+def observe_call(call: Any) -> dict[str, Any]:
+    """Instrumentation must not intercept malformed arguments before the Host."""
+    entry: dict[str, Any] = {"id": call.id, "name": call.function.name}
+    try:
+        entry["arguments"] = json.loads(call.function.arguments)
+    except (TypeError, ValueError):
+        entry.update(
+            arguments=None, arguments_raw=call.function.arguments, arguments_valid_json=False
+        )
+    return entry
 
 
 async def resumed_control(control: Any) -> Any:
@@ -265,7 +279,8 @@ def make_task(name: str, repeat: int) -> Task:
             "Deduplicate records by id across all files (duplicates are identical). Exclude void "
             "records. For each region A,B,C,D compute the unique ok record count and sum amount. "
             "Create batch.tsv, exactly four lines ordered A,B,C,D: region<TAB>count<TAB>sum, "
-            "without a header. Verify the saved file."
+            "without a header. Read batch.tsv back with workspace_read and verify its text before "
+            "completing. File size and write receipts alone do not satisfy this readback."
         )
         return Task(name, files, {"batch.tsv": expected}, instruction, 80, 25, tuple(files))
     if name not in {"dependency_chain", "resumed_work"}:
@@ -293,7 +308,9 @@ def make_task(name: str, repeat: int) -> Task:
         "Read start.txt for the first node path. Each node has value,left,right key=value lines. "
         "Choose left when value is even, otherwise right, and follow until END. The unchosen "
         "path is a decoy. Create chain.tsv with one path<TAB>value line for each visited node "
-        "in visit order, then TOTAL<TAB>sum. No header. Verify the saved report. "
+        "in visit order, then TOTAL<TAB>sum. No header. Read chain.tsv back with workspace_read "
+        "and verify its text before completing. File size and write receipts alone do not "
+        "satisfy this readback. "
         + (
             "After reading each chosen node, also create audit/00.txt, audit/01.txt, etc. "
             "in visit order, each containing that node value and a newline. Each audit file "
@@ -316,12 +333,14 @@ def write_report() -> None:
         "updated_at": datetime.now(UTC).isoformat(),
         "model": CREDENTIALS.get("model"),
         "baseline_commit": BASELINE,
-        "baseline_scope": "historic main iteration unchanged; common current invocation/code "
-        "helpers, not an unmodified deployed old application",
+        "baseline_scope": "historic direct iteration unchanged; historic code iteration has "
+        "two explicit yield/resume compatibility hooks; common current invocation/code helpers; "
+        "not an unmodified deployed old application",
         "protocol": "chat_completions",
         "fixed_declarations": 76,
         "max_output_tokens": MAX_OUTPUT,
-        "reasoning_effort": "low",
+        "segment_tools_override": SEGMENT_TOOLS,
+        "reasoning_effort": REASONING_EFFORT,
         "completion_definition": "independent oracle correct, all required inputs read, report "
         "verified, no repeated committed writes, and original Work durably completed",
         "stop_policy": "runtime pause/failure, or 10 consecutive activations with no new "
@@ -340,6 +359,10 @@ def write_report() -> None:
             for path in (
                 "src/qq_ai_bot/codemode/engine_monty.py",
                 "src/qq_ai_bot/runtime/work_control.py",
+                "src/qq_ai_bot/runtime/work_session.py",
+                "src/qq_ai_bot/services/turn_execution.py",
+                "src/qq_ai_bot/codemode/contract.py",
+                "scripts/benchmark_pi_codemode.py",
                 "tests/integration/test_codemode_runner.py",
             )
         },
@@ -381,6 +404,14 @@ async def compare_case(
     global IN_PROGRESS
     assert LEDGER is not None
     task = make_task(task_name, repeat)
+    if SEGMENT_TOOLS is not None:
+        task = replace(
+            task,
+            segment_tools=SEGMENT_TOOLS,
+            instruction=task.instruction.replace(
+                "five business calls", f"{SEGMENT_TOOLS} business calls"
+            ),
+        )
     workspace_path = (tmp_path / "synthetic-workspace").resolve()
     workspace_path.mkdir()
     files = FileWorkspace(workspace_path)
@@ -396,7 +427,7 @@ async def compare_case(
     runner_kind = type(original_runner)
     historic_sha = None
     if loop == "old":
-        runner_kind, historic_sha = historical_runner()
+        runner_kind, historic_sha = historical_runner(code_mode=mode == "code")
     contract = SimpleNamespace(revision=revision, script_api=project(definitions, revision))
     accepted = json.loads(
         await control.execute(
@@ -501,15 +532,34 @@ async def compare_case(
         # Only synthetic tool receipts are retained, never raw reasoning or headers.
         errors = []
         error_call_ids = []
+        observed = []
         for message in payload.get("messages", []):
+            receipts = []
             if message.get("role") == "tool":
+                receipts.append((message.get("tool_call_id"), message.get("content", "")))
+            elif message.get("role") == "user":
                 try:
-                    receipt = json.loads(message.get("content", ""))
+                    material = json.loads(message.get("content", ""))
+                    if (
+                        isinstance(material, dict)
+                        and material.get("kind") == "work_unobserved_tool_round"
+                    ):
+                        receipts.extend(
+                            (item["call_id"], item["result"]) for item in material["calls"]
+                        )
+                except (ValueError, TypeError):
+                    pass
+            for call_id, content in receipts:
+                observed.append(
+                    {"call_id": call_id, "sha256": hashlib.sha256(content.encode()).hexdigest()}
+                )
+                try:
+                    receipt = json.loads(content)
                     if isinstance(receipt, dict) and (
                         receipt.get("error") or not receipt.get("ok", True)
                     ):
                         errors.append(receipt)
-                        error_call_ids.append(message.get("tool_call_id"))
+                        error_call_ids.append(call_id)
                 except (ValueError, TypeError):
                     pass
         wires.append(
@@ -523,6 +573,7 @@ async def compare_case(
                 "tools_count": len(payload.get("tools", [])),
                 "receipt_errors": errors,
                 "receipt_error_call_ids": error_call_ids,
+                "observed_receipts": observed,
                 "started_seconds": time.perf_counter() - started,
             }
         )
@@ -552,10 +603,7 @@ async def compare_case(
             turns.append(
                 {
                     "status": result.status.value,
-                    "tool_calls": [
-                        {"name": c.function.name, "arguments": json.loads(c.function.arguments)}
-                        for c in result.tool_calls
-                    ],
+                    "tool_calls": [observe_call(c) for c in result.tool_calls],
                     "final_text": result.content if not result.tool_calls else None,
                 }
             )
@@ -575,10 +623,18 @@ async def compare_case(
         "workspace_read/workspace_write/workspace_list are authorized; never send messages, "
         "use memory, terminal, network or other business tools. "
         "Task_control lifecycle is available. "
-        "You may save a progress context_note with task_control(update) before a segment ends. "
+        "Working tool history retires at business segment boundaries; the valid context_note "
+        "and last unseen receipts survive, not earlier unpersisted working state. For segmented "
+        "tasks, save cumulative findings, necessary intermediate values, completed steps and "
+        "next steps via task_control(action='update', context_note=...) before spending the "
+        "last business call; merge a previous note and fresh receipts when resuming. Note calls "
+        "do not consume business allowance. Use version=1 and facts/unresolved/next_steps, "
+        "each containing text and valid refs as declared by task_control. "
         "Receipts contain data.text on reads and data.path/version on writes. CSV fields "
         "contain no quotes or commas; node files are key=value text. In Code Mode use "
-        "string methods and Python builtins; module imports except asyncio are unavailable. "
+        "string methods and Python builtins, or Monty built-in modules such as math. "
+        "Import asyncio explicitly before asyncio.gather. Tool receipts are dictionaries: "
+        "use r['ok'] and r['data'], never r.ok. Host Python packages are unavailable. "
         "All input files are under /workspace; outputs are new files. When verified, return "
         "TASK_DONE. First call task_control(action='complete') in its own tool batch after "
         "verifying all requested files. Keep your progress in context_note when needed. "
@@ -612,7 +668,7 @@ async def compare_case(
             max_retries=0,
             default_temperature=0.5,
             default_max_output_tokens=MAX_OUTPUT,
-            reasoning_effort=ReasoningEffort.LOW,
+            reasoning_effort=ReasoningEffort(REASONING_EFFORT),
             capabilities={ModelCapability.TOOLS, ModelCapability.REASONING},
         )
         executor = TaskModelExecutor(
@@ -770,7 +826,11 @@ async def compare_case(
             "task": task_name,
             "repeat": repeat,
             "input_sha256": task.digest(),
+            "instruction_sha256": hashlib.sha256(task.instruction.encode()).hexdigest(),
+            "segment_tools": task.segment_tools,
             "historic_source_sha256": historic_sha,
+            "historic_code_adapter": bool(getattr(runner_kind, "benchmark_code_adapter", False)),
+            "historic_adapter_sha256": getattr(runner_kind, "benchmark_adapter_sha256", None),
             "success": success,
             "artifact_acceptance": artifact_acceptance,
             "work_completed": row["state"] == "completed",
@@ -828,14 +888,18 @@ def main() -> int:
         help="explicit user authorization; records cost without quotas",
     )
     parser.add_argument("--max-output-tokens", type=int, choices=(8192, 32768), default=8192)
+    parser.add_argument("--segment-tools", type=int, choices=(5, 32), default=None)
+    parser.add_argument("--reasoning-effort", choices=("low", "high", "max"), default="low")
     parser.add_argument("--case", action="append", dest="selected_cases")
     parser.add_argument("--prior-report", type=Path, action="append", required=True)
     parser.add_argument("--repeats", type=int, choices=(1, 2), default=2)
     args = parser.parse_args()
     if not Path(os.environ.get("YUKI_MONTY_BINARY", "")).is_file():
         parser.error("a real Monty worker is required")
-    global LEDGER, OUTPUT, STARTED, MAX_OUTPUT
+    global LEDGER, OUTPUT, STARTED, MAX_OUTPUT, SEGMENT_TOOLS, REASONING_EFFORT
     MAX_OUTPUT = args.max_output_tokens
+    SEGMENT_TOOLS = args.segment_tools
+    REASONING_EFFORT = args.reasoning_effort
     LEDGER = prior_ledger(args.prior_report, unlimited=args.unlimited_cost)
     OUTPUT, STARTED = args.output, datetime.now(UTC).isoformat()
     if OUTPUT.exists():

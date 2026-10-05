@@ -26,6 +26,7 @@ from qq_ai_bot.model_runtime.models import (
 from qq_ai_bot.model_runtime.pool import ModelClientPool
 from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
 from qq_ai_bot.model_runtime.routes import ModelRouter
+from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_journal import WorkJournal, decode_transcript
 
 pytestmark = requires_worker
@@ -145,12 +146,32 @@ def wire_calls_and_results(payload, protocol):
     return calls, results
 
 
+def wire_work_receipts(value):
+    """Inspect the fresh-chain evidence as serialized on each native wire."""
+    if isinstance(value, dict):
+        return [receipt for item in value.values() for receipt in wire_work_receipts(item)]
+    if isinstance(value, list):
+        return [receipt for item in value for receipt in wire_work_receipts(item)]
+    if isinstance(value, str):
+        try:
+            material = json.loads(value)
+        except ValueError:
+            return []
+        if isinstance(material, dict) and material.get("kind") == "work_unobserved_tool_round":
+            return material["calls"]
+    return []
+
+
 @pytest.mark.parametrize("vendor,protocol", DIALECTS)
+@pytest.mark.parametrize("boundary", [False, True])
 async def test_code_children_never_become_provider_function_calls(
-    database, tmp_path, vendor, protocol
+    database, tmp_path, vendor, protocol, boundary
 ):
+    # Exact quantum settles the VM before the next model dispatch. Unlike an
+    # in-flight VM, its unseen portable receipt must survive a fresh chat chain.
+    prefix = "for i in range(5):\n    await yuki_lookup({'q': i})\n" if boundary else ""
     script = {
-        "code": "a = await yuki_lookup({'q': 1})\n"
+        "code": prefix + "a = await yuki_lookup({'q': 1})\n"
         "b = await yuki_lookup({'q': 2})\n"
         "w = await yuki_workspace_write({'path': 'x'})\n"
         "[a['data']['q'] + b['data']['q'], w['status']]"
@@ -216,17 +237,45 @@ async def test_code_children_never_become_provider_function_calls(
         # The dialect stays explicitly configured, independent of task contents.
         runtime = replace(runtime, canonical_conversation_id=control.lease.conversation_id)
         backend = Backend()
-        await chat.runtime.runner.run((ChatMessage("user", "compose"),), runtime, backend)
+        result = await chat.runtime.runner.run(
+            (ChatMessage("user", "creation-time chat"),),
+            # Exhaust model admission as well, so boundary cannot use the one
+            # closing request and must project its result on the next chain.
+            replace(runtime, max_model_requests=2) if boundary else runtime,
+            backend,
+        )
+        if boundary:
+            assert result.work_state == "queued"
+            fresh = WorkControl(
+                repo, control.lease, control.source_key, dict(control.source), control.validate
+            )
+            fresh.bind_context_access(control.context_access)
+            fresh.current = await repo.get(control.current["id"])
+            control = fresh
+            runtime = replace(runtime, work_control=fresh)
+            await chat.runtime.runner.run(
+                (ChatMessage("user", "current approved chat"),), runtime, backend
+            )
         assert len(captured) == 3
         payload = json.loads(captured[-1])
         names, results = wire_calls_and_results(payload, protocol)
-        assert names == ["task_control", "execute_code"]
-        assert [identity for identity, _ in results] == ["accept", "outer"]
-        body = json.loads(results[-1][1])
+        assert names == ([] if boundary else ["task_control", "execute_code"])
+        assert [identity for identity, _ in results] == ([] if boundary else ["accept", "outer"])
+        if boundary:
+            assert b"creation-time chat" not in captured[-1]
+            assert b"current approved chat" in captured[-1]
+            assert SIGNATURE.encode() not in captured[-1]
+            receipts = wire_work_receipts(payload)
+            assert len(receipts) == 1 and receipts[0]["call_id"] == "outer"
+            assert receipts[0]["tool"] == "execute_code"
+            body = json.loads(receipts[0]["result"])
+        else:
+            body = json.loads(results[-1][1])
         assert body["result"] == [3, "succeeded"]
-        assert [i["tool"] for i in body["operations"]] == ["lookup", "lookup", "workspace_write"]
-        assert [name for name, _ in backend.log] == ["lookup", "lookup", "workspace_write"]
-        assert (await repo.get(control.current["id"]))["tool_calls"] == 3
+        expected_tools = ["lookup"] * (7 if boundary else 2) + ["workspace_write"]
+        assert [i["tool"] for i in body["operations"]] == expected_tools
+        assert [name for name, _ in backend.log] == expected_tools
+        assert (await repo.get(control.current["id"]))["tool_calls"] == len(expected_tools)
         # A fresh reader loads the original private protocol checkpoint. Root
         # business reactivation intentionally creates a new chain after a paired
         # composition; it is not the byte-for-byte replay boundary tested here.
@@ -261,7 +310,7 @@ async def test_code_children_never_become_provider_function_calls(
             )
         )
         assert captured[-2] == captured[-1]
-        if vendor not in {"openai", "azure_openai"} or protocol == "responses":
+        if not boundary and (vendor not in {"openai", "azure_openai"} or protocol == "responses"):
             assert SIGNATURE.encode() in captured[2]
-        assert SIGNATURE not in results[-1][1]
-        assert len(backend.log) == 3  # Recovery reads the protocol, never repeats effects.
+        assert SIGNATURE not in json.dumps(body)
+        assert len(backend.log) == (8 if boundary else 3)  # Recovery never repeats effects.

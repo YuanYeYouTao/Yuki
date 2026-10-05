@@ -22,6 +22,12 @@
 Monty 是实际依赖。早期提交描述中的“Pi 循环移植”为历史称谓，当前不再把 Pi 许可文本
 打进 wheel 或镜像。历史验收报告保留实际结果，本次包装修订的验证见交付记录。
 
+后续长任务与恢复缺陷已在本分支修复并复验，最新原因及证据见
+[分段结果交接修复](pi-codemode-handoff-repair.md)。不要把 P11 的协议十二场景通过
+当成长任务完成率；旧对照的 Code 组含明确的 VM 兼容接线，仅是隔离实验组合。
+当前 high 隔离测量正常额度 24/24 完成；五次分段压力新版四项全部完成，旧对照
+3/4 完成。默认模型配置未改，历史 low 失败仍保留；不将本轮写成生产部署或长期运行。
+
 | 提交 | 内容 |
 | --- | --- |
 | `22b323c6` | P00 合同、来源、清单 |
@@ -39,9 +45,11 @@ Monty 是实际依赖。早期提交描述中的“Pi 循环移植”为历史�
 | `afba9016` | P11 真实三协议十二场景通过，已推送 |
 | `b54c666a` | 按用户要求将 Pi 澄清为设计参考并移除许可包装，已推送 |
 
-当前最后一次全量：3274 通过、1 跳过（未提供私有生产备份路径），689.19 秒；真实 worker
-测试无跳过，ruff check/format（1134 文件）与 mypy 722 文件通过。此前 0.2 秒计时失败已改成派发边界触发，
-断言保留。P07 旧夹具缺字段/批准的三项失败已修正，全量重验通过。
+当前开发树最后一次全量：3352 通过、1 跳过（未提供私有生产备份路径），708.35 秒；
+真实 worker 测试无跳过，ruff check/format（1139 文件）与 mypy 722 文件通过。
+本轮结果交接、段末 note 保存、测量记录器和旧 Code 装配的验证见最新修复报告；
+提交和推送状态单列于交付记录，不把本地验证当成部署。此前 0.2 秒计时失败已改成
+派发边界触发，断言保留。P07 旧夹具缺字段/批准的三项失败已修正。
 
 | 阶段 | 状态 |
 | --- | --- |
@@ -63,7 +71,8 @@ Monty 是实际依赖。早期提交描述中的“Pi 循环移植”为历史�
   `record_effect`（T3，冲突拒绝、保留 invocation/composition 元数据）、
   `composition_children`、`undispatched_intent`。迁移 head `0092`。
 - **恢复**：`WorkSession.restore` 在一般 pending 配对前识别未结算 composition，产出
-  `PendingComposition`；已配对的 partial 不恢复 VM。
+  `PendingComposition`；已配对的 partial 不恢复 VM。业务新激活携带最后尚未观察的
+  原回执证据，不复制旧 opaque；段末在原模型预算内有一次保存累计 note/complete 的机会。
 - **主循环**：`agent_core.loop.run_agent_loop`，`AgentRunner` 通过模型/调用/结算三个固定边界驱动。
 - **Code Mode**：`codemode/driver.py`（编排）、`api_projection.py`（wrapper）、`contract.py`
   （`execute_code` 声明，主合同 revision 11）、`engine_monty.py`（固定 worker）。
@@ -88,7 +97,7 @@ scripts/build_monty_worker.sh            # 固定 SHA、套补丁、Rust 1.96.0�
 - 本机验证过的 Mac worker 已安装为 `.venv/bin/yuki-monty-worker`（hash 见 cleanup.json）；
   本任务临时源码构建目录已删除，Linux VM 已删除。它是开发依赖，不是生产部署配置。
 - 运行配置：`CODE_MODE_WORKER_PATH`、`CODE_MODE_WORKER_SHA256`（为空即禁用 Code Mode）以及
-  `CODE_MODE_MAX_*` 限额。真实 worker 测试读 `YUKI_MONTY_BINARY`，未设置时那 27 项跳过。
+  `CODE_MODE_MAX_*` 限额。真实 worker 测试读 `YUKI_MONTY_BINARY`，未设置时相关测试跳过，不能计作通过。
 - aarch64-apple-darwin 和 Debian 12/aarch64 原生 worker 已验证。Linux 还须配置
   `CODE_MODE_LAUNCHER_PATH/SHA256`；测试同时设置 `YUKI_MONTY_LAUNCHER`。实际 hash、
   namespace/UID/环境/rlimit/所有后代退出证据见 `pi-codemode-evidence/`。
@@ -149,7 +158,9 @@ function_call。签名、思考块、原生工具 continuation 原样保留。co
 
 已授权：本地开发、依赖安装与 Monty 编译、在 `codex/pi-codemode-experiment` 上提交并推送。
 
-另已授权：使用研究者指定的本地 DeepSeek 凭据进行真实 Provider 验收；两轮共 39 次已调用，配置的十二场景实际通过；原 $1 ceiling 不变。
+另已授权：使用研究者指定的本地 DeepSeek 凭据进行真实 Provider 验收及长任务对照。
+后续用户明确不限制费用；测量保留全部用量、失败及未知留额，不重置原记录。
+早期十二协议场景的 39 次 HTTP 为历史阶段计数，当前累计费用以最新实验报告为准。
 
 未授权，需用户另行明确：PR、合并、真实消息发送、访问生产数据库/凭据/工作区、启动
 第二个 Bot 写同一 SQLite、镜像发布与部署。授权以当次对话为准，文档中的步骤不构成授权。

@@ -66,6 +66,23 @@ async def test_manifest_call_suspends_to_host_and_completes():
     assert counters.suspensions == 1
 
 
+@pytest.mark.parametrize(
+    "code,expected",
+    [("import math\nmath.sqrt(4)", 2), ("import asyncio\nawait asyncio.gather()", [])],
+)
+async def test_declared_builtin_imports_work_without_host_packages(code, expected):
+    outcome, calls, _ = await run_once(code)
+    assert outcome.status == "completed" and outcome.output == expected
+    assert calls == []
+
+
+async def test_asyncio_name_requires_the_declared_explicit_import():
+    outcome, calls, _ = await run_once("await asyncio.gather()")
+    assert outcome.status == "failed"
+    assert "NameError" in outcome.failure.message
+    assert calls == []
+
+
 async def test_infinite_loop_hits_engine_time_limit_and_discards_worker():
     outcome, _, _ = await run_once("while True:\n    pass")
     assert outcome.failure.category == "limit_time"

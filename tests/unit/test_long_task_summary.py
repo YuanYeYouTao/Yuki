@@ -65,6 +65,30 @@ def test_unknown_usage_is_retained_separately_from_known_cost():
     assert result["trials"][0]["unknown_usage_reserved_usd"] == 0.25
 
 
+@pytest.mark.parametrize("segment_tools", [None, 5, 32])
+def test_markdown_reports_actual_segment_configuration(segment_tools):
+    report = report_fixture()
+    report.update(segment_tools_override=segment_tools, reasoning_effort="high")
+    text = markdown(summarize(report))
+    if segment_tools is None:
+        assert "恢复任务 5 次，批量与依赖链 80 次" in text
+    else:
+        assert f"本轮统一分段额度：{segment_tools} 次" in text
+        assert "恢复任务 5 次，批量" not in text
+    assert "本轮 reasoning_effort：high" in text
+
+
+@pytest.mark.parametrize("field", ["instruction_sha256", "segment_tools"])
+def test_new_report_configuration_must_match_across_groups(field):
+    report = report_fixture()
+    for row in report["records"]:
+        row[field] = "same" if field == "instruction_sha256" else 32
+    assert summarize(report)["completed"] == 7
+    report["records"][0][field] = "different" if field == "instruction_sha256" else 5
+    with pytest.raises(ValueError, match="different task configuration"):
+        summarize(report)
+
+
 @pytest.mark.parametrize("field", ["correct_artifacts", "final_work_state", "stopped_for_stall"])
 def test_completed_claim_requires_artifacts_and_durable_completion(field):
     report = report_fixture()

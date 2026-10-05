@@ -123,6 +123,7 @@ class TurnState:
     coordinated: CoordinatedToolResult = field(default_factory=lambda: CoordinatedToolResult((), 0))
     observations: list[dict[str, Any]] = field(default_factory=list)
     opportunity: tuple[str, str] | None = None
+    segment_handoff_index: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -461,6 +462,42 @@ class TurnExecution:
             and self.state.control.requests_started >= self.runtime.max_model_requests
         ):
             return STOP
+        if (
+            self.state.control is not None
+            and self.state.control.current is not None
+            and self.runtime.max_tool_calls > 0
+            and self.state.control.tools_started >= self.runtime.max_tool_calls
+            and not self.state.provider_pause_replay
+        ):
+            # Keep the current working data for one final model dispatch. The
+            # same fixed declarations and zero remaining business allowance
+            # still apply; lifecycle/note calls never recharge that allowance.
+            if self.state.segment_handoff_index is not None:
+                return STOP
+            self.state.segment_handoff_index = request_index
+            self.state.transcript.append(
+                ChatMessage(
+                    "user",
+                    json.dumps(
+                        {
+                            "kind": "work_segment_handoff",
+                            "remaining_business_calls": 0,
+                            "instruction": (
+                                "This activation has exhausted its business tool allowance. "
+                                "You have one model request before the working transcript retires. "
+                                "If the goal is verified, call task_control(action='complete'). "
+                                "Otherwise call task_control(action='update', context_note=...) "
+                                "alone. Save cumulative findings, necessary intermediate values, "
+                                "completed "
+                                "steps and the next step, merging any previous context_note. Use "
+                                "version=1, facts/unresolved/next_steps with text and valid refs. "
+                                "No further business tool call can execute in this activation."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
         self.state.paid_staging = bool(
             self.state.control
             and self.state.control.session
@@ -1513,11 +1550,7 @@ class TurnExecution:
                 )
         if self.tools is not None and self.tools.did_use_web():
             self.state.web_was_used = True
-        if (
-            self.runtime.work_control is not None
-            and self.runtime.work_control.tools_started >= self.runtime.max_tool_calls
-        ):
-            return STOP
+        # begin() bounds the segment handoff to one admitted model request.
         return Continue()
 
     async def _code_yield(self, model_requests: int) -> AgentRunResult:

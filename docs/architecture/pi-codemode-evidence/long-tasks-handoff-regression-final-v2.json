@@ -1,0 +1,63 @@
+{
+  "worker_sha256": "af76448a14fe980c823f1c6092692f90a8ddc6341f236f17d6d47d72f49548e8",
+  "owned_temporary_root": "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-handoff-regression-final-v2-_b2_f3me",
+  "checks": [
+    {
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "ruff",
+        "check",
+        "src",
+        "tests",
+        "scripts",
+        "migrations"
+      ],
+      "exit_code": 0,
+      "seconds": 0.02396020805463195
+    },
+    {
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "ruff",
+        "format",
+        "--check",
+        "src",
+        "tests",
+        "scripts",
+        "migrations"
+      ],
+      "exit_code": 0,
+      "seconds": 0.023227832978591323
+    },
+    {
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "mypy"
+      ],
+      "exit_code": 0,
+      "seconds": 0.38861925015226007
+    },
+    {
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "pytest",
+        "-q",
+        "-p",
+        "no:warnings",
+        "tests",
+        "--basetemp",
+        "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-handoff-regression-final-v2-_b2_f3me/fixtures"
+      ],
+      "exit_code": 0,
+      "seconds": 696.0514764999971
+    }
+  ]
+}

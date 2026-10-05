@@ -308,9 +308,23 @@ async def test_rejected_candidate_keeps_original_paired_checkpoint(database, tmp
             tools=(ChatTool("large_fixed_contract", "x" * 120000, {"type": "object"}),),
         )
     error = ValueError if failure == "invalid_summary" else WorkCapacityError
+    # The business-resume guidance grew with explicit cumulative-note semantics;
+    # the default short summary can now genuinely shrink this small transcript.
+    # Keep testing rejection with a valid summary that retains the entire public
+    # request instead of assuming a particular guidance length cannot improve.
+    summary = (
+        " "
+        if failure == "invalid_summary"
+        else await session_summary(
+            session,
+            json.dumps(asdict(original), ensure_ascii=False)
+            if failure == "no_improvement"
+            else "Continue the original task.",
+        )
+    )
     with pytest.raises(error):
         await session.compact(
-            " " if failure == "invalid_summary" else await session_summary(session),
+            summary,
             target_tokens=20000,
             ceiling_tokens=20000,
             request_template=template,

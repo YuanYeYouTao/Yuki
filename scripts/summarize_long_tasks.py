@@ -26,6 +26,14 @@ def summarize(report: dict[str, Any]) -> dict[str, Any]:
             }
             if len(hashes) != 1:
                 raise ValueError("comparison groups did not receive identical data")
+            # New reports also expose the task wording and segment allowance.
+            # Preserve old evidence compatibility, but never mix new configs.
+            for field in ("instruction_sha256", "segment_tools"):
+                if any(field in row for row in selected) and (
+                    not all(field in row for row in selected)
+                    or len({row[field] for row in selected}) != 1
+                ):
+                    raise ValueError("comparison groups have different task configuration")
     hashes = {w["tools_sha256"] for r in records for w in r["wire"]}
     if len(hashes) > 1:
         raise ValueError("serialized tool contract changed across groups")
@@ -64,6 +72,7 @@ def summarize(report: dict[str, Any]) -> dict[str, Any]:
                 "unknown_usage_reserved_usd": sum(w["reserved_usd"] for w in unknown),
                 "segments": len(row["segments"]),
                 "code_used": row["code_used"],
+                "segment_tools": row.get("segment_tools"),
                 "repeated_committed_path_writes": row["duplicate_writes"],
                 "duplicate_operation_ids": row["duplicate_operation_ids"],
             }
@@ -167,6 +176,7 @@ def summarize(report: dict[str, Any]) -> dict[str, Any]:
                 "read_identity",
                 "receipt_errors_scope",
                 "runtime_source_sha256",
+                "segment_tools_override",
             )
         },
         "cost_basis": "public peak rates times observed wire usage; "
@@ -208,10 +218,20 @@ def markdown(summary: dict[str, Any]) -> str:
             "保留在 JSON 的 budget 和 run_contract 中。",
             "",
             "24 份 CSV 共 480 条记录需跨文件去重汇总；依赖链需要正确走完 18 层分支；"
-            "恢复任务包含 12 层分支、12 份审计文件，每五次业务调用结束一段。",
+            "恢复任务包含 12 层分支、12 份审计文件；分段额度见以下配置。",
             "",
         ]
     )
+    contract = summary["run_contract"]
+    segment_tools = contract.get("segment_tools_override")
+    lines.append(
+        f"本轮统一分段额度：{segment_tools} 次业务调用。"
+        if segment_tools is not None
+        else "沿用任务默认额度：恢复任务 5 次，批量与依赖链 80 次业务调用。"
+    )
+    if contract.get("reasoning_effort") is not None:
+        lines.append(f"本轮 reasoning_effort：{contract['reasoning_effort']}。")
+    lines.append("")
     return "\n".join(lines)
 
 

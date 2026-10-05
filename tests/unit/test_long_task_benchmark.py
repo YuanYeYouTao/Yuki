@@ -5,11 +5,11 @@ import json
 import httpx
 import pytest
 from scripts import benchmark_long_tasks as bench
-from tests.integration.test_codemode_provider_wire import answer
+from tests.integration.test_codemode_provider_wire import answer, wire_work_receipts
 from tests.integration.test_codemode_runner import call
 from tests.support.codemode_cases import requires_worker
 
-from qq_ai_bot.domain.messages import ChatResponse
+from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
 
 
 def test_budget_settles_usage_and_retains_unanswered_reservations():
@@ -57,6 +57,16 @@ def test_invalid_usage_cannot_refund_reservation():
     with pytest.raises(RuntimeError, match="exceeded conservative"):
         ledger.settle(identity, {"prompt_tokens": 10000, "completion_tokens": 1000})
     assert ledger.pending[identity] > reserve
+
+
+def test_observer_preserves_invalid_arguments_for_host_validation():
+    recorded = bench.observe_call(ToolCall("bad", ToolFunction("execute_code", "{")))
+    assert recorded["arguments"] is None
+    assert recorded["arguments_raw"] == "{"
+    assert recorded["arguments_valid_json"] is False
+    assert bench.observe_call(ToolCall("valid", ToolFunction("lookup", '{"q":1}')))[
+        "arguments"
+    ] == {"q": 1}
 
 
 def test_new_or_static_code_parents_are_not_resumed_program_progress():
@@ -174,17 +184,25 @@ async def test_resumed_benchmark_keeps_trusted_note_in_actual_model_material(dat
 
 @requires_worker
 @pytest.mark.parametrize(
-    "loop,mode,task,repeated_reads",
+    "loop,mode,task,repeated_reads,invalid_json,verify_report",
     [
-        ("new", "code", "batch_ledger", 0),
-        ("old", "code", "dependency_chain", 0),
-        ("new", "code", "resumed_work", 0),
-        ("old", "direct", "resumed_work", 0),
-        ("new", "code", "resumed_work", 70),
+        ("new", "code", "batch_ledger", 0, False, True),
+        ("old", "code", "dependency_chain", 0, False, True),
+        ("new", "code", "resumed_work", 0, False, True),
+        ("old", "code", "resumed_work", 0, False, True),
+        ("old", "direct", "resumed_work", 0, False, True),
+        ("new", "code", "resumed_work", 70, False, True),
+        ("new", "code", "batch_ledger", 0, True, True),
+        # Correct files and completed Work cannot substitute for the required
+        # successful report readback, on either assembly or tool mode.
+        ("new", "direct", "resumed_work", 0, False, False),
+        ("new", "code", "resumed_work", 0, False, False),
+        ("old", "direct", "resumed_work", 0, False, False),
+        ("old", "code", "resumed_work", 0, False, False),
     ],
 )
 async def test_unpaid_long_task_assembly(
-    database, tmp_path, monkeypatch, loop, mode, task, repeated_reads
+    database, tmp_path, monkeypatch, loop, mode, task, repeated_reads, invalid_json, verify_report
 ):
     monkeypatch.setattr(
         bench,
@@ -220,7 +238,9 @@ async def test_unpaid_long_task_assembly(
             "+'\\nTOTAL\\t'+str(sum(values))+'\\n'\n"
         )
         code += "await yuki_workspace_write({'path':'chain.tsv','text':out})\n"
-        code += "await yuki_workspace_read({'path':'chain.tsv'})\n'OK'"
+        if verify_report:
+            code += "await yuki_workspace_read({'path':'chain.tsv'})\n"
+        code += "'OK'"
         if task == "batch_ledger":
             code = "r = await yuki_workspace_read({'path':'manifest.txt'})\n"
             code += "rows = {}\nfor p in r['data']['text'].splitlines():\n"
@@ -258,13 +278,67 @@ async def test_unpaid_long_task_assembly(
             responses.append(call("workspace_read", {"path": path}, f"read-{index}"))
         for path, text in fixture.expected.items():
             responses.append(call("workspace_write", {"path": path, "text": text}, f"write-{path}"))
-        responses.append(call("workspace_read", {"path": "chain.tsv"}, "verify"))
+        if verify_report:
+            responses.append(call("workspace_read", {"path": "chain.tsv"}, "verify"))
         responses.append(call("task_control", {"action": "complete"}, "complete"))
         responses.append(ChatResponse("TASK_DONE", 0))
         steps = iter(responses)
 
+    if invalid_json:
+        # Malformed model arguments are ordinary Host refusals. Instrumentation
+        # must retain them and let the real loop present the refusal for repair.
+        steps = iter(
+            [
+                ChatResponse(
+                    "", 0, tool_calls=(ToolCall("invalid", ToolFunction("execute_code", "{")),)
+                ),
+                *steps,
+            ]
+        )
+
     def transport(request):
-        return httpx.Response(200, json=answer(next(steps), "chat_completions", 1))
+        messages = json.loads(request.content)["messages"]
+        if loop == "new" and any(
+            m["role"] == "user"
+            and isinstance(m.get("content"), str)
+            and m["content"].startswith("{")
+            and json.loads(m["content"]).get("kind") == "work_segment_handoff"
+            for m in messages
+        ):
+            # A scripted model must respect the zero-business closing request.
+            # Do not consume a planned write that the real Host will refuse.
+            return httpx.Response(
+                200,
+                json=answer(
+                    call(
+                        "task_control",
+                        {
+                            "action": "update",
+                            "context_note": {
+                                "version": 1,
+                                "facts": [],
+                                "unresolved": [],
+                                "next_steps": [
+                                    {
+                                        "text": "Continue the remaining scripted plan",
+                                        "refs": ["goal"],
+                                    }
+                                ],
+                            },
+                        },
+                        "handoff",
+                    ),
+                    "chat_completions",
+                    1,
+                ),
+            )
+        response = next(steps)
+        if mode == "code" and response.tool_calls[0].function.name == "task_control":
+            # An oracle completion cannot hide an orphan VM or a lost receipt.
+            receipts = {m["tool_call_id"]: m["content"] for m in messages if m.get("tool_call_id")}
+            receipts.update({r["call_id"]: r["result"] for r in wire_work_receipts(messages)})
+            assert json.loads(receipts["code"])["result"] == "OK"
+        return httpx.Response(200, json=answer(response, "chat_completions", 1))
 
     original = httpx.AsyncClient
 
@@ -275,12 +349,18 @@ async def test_unpaid_long_task_assembly(
     monkeypatch.setattr(httpx, "AsyncClient", client)
     await bench.compare_case(database, tmp_path, loop, mode, task, 0)
     result = bench.RECORDS[-1]
-    assert result["success"], result
+    assert result["success"] is verify_report, result
+    assert result["final_report_verified"] is verify_report
+    assert result["correct_artifacts"]
     assert result["work_completed"]
     assert result["completion_fraction"] == 1
     assert result["duplicate_operation_ids"] == 0
     assert result["duplicate_writes"] == 0
     assert result["request_shapes_fixed"]
+    if invalid_json:
+        assert result["model_turns"][0]["tool_calls"][0]["arguments_valid_json"] is False
+        assert "invalid" in result["wire"][1]["receipt_error_call_ids"]
+        assert not result["failure_details"]
     if task == "resumed_work":
         assert len(result["segments"]) > 1
         for previous, following in zip(result["segments"], result["segments"][1:], strict=False):
@@ -290,4 +370,4 @@ async def test_unpaid_long_task_assembly(
             # Code result and explicit completion; quiet completion needs no
             # extra purchased final response.
             assert result["physical_http"] == 2
-            assert result["business_calls"] == 27 + repeated_reads
+            assert result["business_calls"] == 26 + int(verify_report) + repeated_reads

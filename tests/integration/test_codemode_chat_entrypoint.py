@@ -6,6 +6,7 @@ import json
 import pytest
 from sqlalchemy import select
 from tests.conftest import MemorySender, build_harness, make_settings
+from tests.integration.test_work_result_handoff import observed_receipts
 from tests.support.codemode_cases import BINARY, requires_worker
 from tests.support.runtime_execution import make_work_resumer
 from tests.support.social_identity_cases import social_env
@@ -27,12 +28,30 @@ from qq_ai_bot.workspace.short_state import ShortState
 pytestmark = requires_worker
 
 
-@pytest.mark.parametrize("scenario", ["short", "normal", "refused", "cancelled", "resumed"])
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "short",
+        "normal",
+        "refused",
+        "cancelled",
+        "resumed",
+        "boundary",
+        "direct_boundary",
+        "boundary_inline",
+    ],
+)
 async def test_chat_code_requires_original_event_admission_and_resumes_same_work(
     database, tmp_path, scenario
 ):
     env = await social_env(database, tmp_path)
-    count = 36 if scenario == "resumed" else 1
+    # 36 tests a pending VM. Exactly 32 instead settles the outer result before
+    # yielding; the first resumed model must observe it before proposing complete.
+    count = (
+        32
+        if scenario in {"boundary", "direct_boundary", "boundary_inline"}
+        else (36 if scenario == "resumed" else 1)
+    )
     code = f"for i in range({count}):\n    await yuki_get_my_capabilities({{'mode': 'summary'}})"
     if scenario == "cancelled":
         code += "\nawait yuki_get_my_capabilities({'mode': 'summary'})"
@@ -59,11 +78,31 @@ async def test_chat_code_requires_original_event_admission_and_resumes_same_work
                 "accept",
             )
         if index == (1 if scenario == "refused" else 2):
+            if scenario == "direct_boundary":
+                return ChatResponse(
+                    "",
+                    0,
+                    tool_calls=tuple(
+                        ToolCall(
+                            f"read-{i}",
+                            ToolFunction(
+                                "update_short_state",
+                                json.dumps(
+                                    {"slot": 1, "text": f"value-{i}", "expected_revision": i}
+                                ),
+                            ),
+                        )
+                        for i in range(count)
+                    ),
+                )
             return tool("execute_code", {"code": code}, "outer")
-        paired = [m for m in request.messages if m.tool_call_id == "outer"]
-        assert len(paired) == 1
-        outputs.append(json.loads(paired[0].content))
-        if scenario in {"normal", "resumed"}:
+        paired = observed_receipts(request.messages)
+        if scenario == "direct_boundary":
+            assert len(paired) == count
+            assert all(json.loads(paired[f"read-{i}"])["ok"] for i in range(count))
+        else:
+            outputs.append(json.loads(paired["outer"]))
+        if scenario in {"normal", "resumed", "boundary", "direct_boundary", "boundary_inline"}:
             return tool("task_control", {"action": "complete"}, "complete")
         return "NO_REPLY"
 
@@ -74,11 +113,23 @@ async def test_chat_code_requires_original_event_admission_and_resumes_same_work
         enabled_groups_csv="20001",
         code_mode_worker_path=BINARY,
         code_mode_worker_sha256=hashlib.sha256(BINARY.read_bytes()).hexdigest(),
+        # Model admission may leave no closing request. boundary_inline also
+        # covers finishing at the normal 32-call quota within the activation.
+        agent_max_model_requests=2 if scenario in {"boundary", "direct_boundary"} else 24,
     )
     harness = build_harness(database, settings, provider)
     chat = harness.processor._chat
     chat._tools.social_service = env.service
-    chat.runtime.runner.main_contract = MainAgentContract(chat, ShortState(env.store))
+    short_state = ShortState(env.store)
+    writes = []
+    write = short_state.execute
+
+    async def record_write(arguments):
+        writes.append(json.loads(arguments))
+        return await write(arguments)
+
+    short_state.execute = record_write
+    chat.runtime.runner.main_contract = MainAgentContract(chat, short_state)
     chat.runtime.runner.code_mode_settings = settings
     inbound = InboundMessage(
         message_id="new-user-event",
@@ -125,8 +176,9 @@ async def test_chat_code_requires_original_event_admission_and_resumes_same_work
         assert all(
             event_id == source["trigger_event_id"] and actor == "10001" for event_id, actor in reads
         )
-        if scenario == "resumed":
-            assert row["state"] == "queued" and len(reads) == 32
+        if scenario in {"resumed", "boundary", "direct_boundary"}:
+            assert row["state"] == "queued"
+            assert len(writes if scenario == "direct_boundary" else reads) == 32
             resumer = make_work_resumer(
                 WorkRepository(database),
                 ledger=chat._ledger,
@@ -143,7 +195,10 @@ async def test_chat_code_requires_original_event_admission_and_resumes_same_work
             await resumer.resume(row)
             row = await WorkRepository(database).get(row["id"])
         assert row["state"] == ("cancelled" if scenario == "cancelled" else "completed")
-        assert len(reads) == count
+        assert len(writes if scenario == "direct_boundary" else reads) == count
         assert row["tool_calls"] == count
+        if scenario == "direct_boundary":
+            state = ShortState(env.store).snapshot()
+            assert state[0]["text"] == "value-31" and state[0]["revision"] == 32
     assert not sender.messages
     assert not any(action.startswith("send_") for action, _ in env.bot.calls)

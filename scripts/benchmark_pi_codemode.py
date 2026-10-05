@@ -27,8 +27,8 @@ ROOT = Path(__file__).resolve().parents[1]
 RECORDS: list[dict[str, Any]] = []
 
 
-def historical_runner() -> tuple[type, str]:
-    """No historic loop is copied into the installed application or permanent tests."""
+def historical_runner(*, code_mode: bool = False) -> tuple[type, str]:
+    """Historic iteration, with an explicit test-only Code yield/resume adapter."""
     from qq_ai_bot.services.agent_runner import AgentRunner
 
     result = subprocess.run(
@@ -38,12 +38,52 @@ def historical_runner() -> tuple[type, str]:
         check=True,
     )
     source = result.stdout
+    adapted = source.decode()
+    if code_mode:
+        # The old version predates Code Mode. Attaching the helper alone left
+        # snapshots orphaned: its iteration never resumed them or handled yield.
+        # Only these two test-only hooks change the baseline iteration.
+        restore_anchor = (
+            "            repeated_batch_count = int("
+            'runtime.work_control.session.progress.get("repeats", 0))'
+        )
+        restore_bridge = """\
+            pending_code = runtime.work_control.session.pending_compositions
+            if pending_code and await self._resume_compositions(
+                pending_code, transcript, tools, runtime, fixed_definitions
+            ):
+                return AgentRunResult(
+                    text="", tool_calls_used=0, model_requests=0,
+                    web_was_used=False, suppress_delivery=True, work_state="queued"
+                )
+"""
+        batch_anchor = "            batch, executed = coordinated.calls, coordinated.executed_count"
+        batch_bridge = """\
+            if any(
+                result == _CODE_COMPOSITION_YIELDED for _, result, _ in coordinated.calls
+            ):
+                runtime.work_control.yield_segment = True
+                runtime.work_control.ending = "queued"
+                return AgentRunResult(
+                    text="", tool_calls_used=calls_used, model_requests=request_index + 1,
+                    web_was_used=web_was_used, suppress_delivery=True, work_state="queued"
+                )
+"""
+        for anchor, bridge in ((restore_anchor, restore_bridge), (batch_anchor, batch_bridge)):
+            anchor = "\n" + anchor + "\n"
+            if adapted.count(anchor) != 1:
+                raise ValueError("historic_code_adapter_source_changed")
+            adapted = adapted.replace(anchor, "\n" + bridge + anchor.lstrip("\n"), 1)
     module = ModuleType("_yuki_benchmark_historic_runner")
+    from qq_ai_bot.services.agent_runner import CODE_COMPOSITION_YIELDED
+
+    module._CODE_COMPOSITION_YIELDED = CODE_COMPOSITION_YIELDED
     sys.modules[module.__name__] = module
-    exec(compile(source, f"git:{BASELINE}:agent_runner.py", "exec"), module.__dict__)
+    exec(compile(adapted, f"git:{BASELINE}:agent_runner.py", "exec"), module.__dict__)
     historic = module.AgentRunner
-    # Keep the historical main iteration unchanged. Both assemblies use exactly
-    # the same invocation/security/code kernel, isolating iteration from Code Mode.
+    historic.benchmark_adapter_sha256 = hashlib.sha256(adapted.encode()).hexdigest()
+    historic.benchmark_code_adapter = code_mode
+    # Common kernels, with the advertised hooks rather than the current Pi loop.
     for name in (
         "_execute_tool_batch",
         "_execute_tool_batch_impl",
@@ -122,7 +162,7 @@ async def compare_case(database: Any, tmp_path: Path, loop: str, mode: str, scen
     runner = chat.runtime.runner
     historic_sha = None
     if loop == "old":
-        kind, historic_sha = historical_runner()
+        kind, historic_sha = historical_runner(code_mode=mode == "code")
         old = kind(runner._models, runner._concurrency)
         old.code_mode_settings, old.main_contract = runner.code_mode_settings, runner.main_contract
         runner = old
@@ -242,6 +282,10 @@ async def compare_case(database: Any, tmp_path: Path, loop: str, mode: str, scen
                 "billable_cost": None,
                 "transport_cost": 0,
                 "historic_source_sha256": historic_sha,
+                "historic_code_adapter": bool(
+                    getattr(type(runner), "benchmark_code_adapter", False)
+                ),
+                "historic_adapter_sha256": getattr(type(runner), "benchmark_adapter_sha256", None),
             }
         )
     await repo.release(control.lease)
