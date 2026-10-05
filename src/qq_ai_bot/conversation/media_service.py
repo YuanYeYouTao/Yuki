@@ -131,6 +131,49 @@ def _aware(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
+@dataclass(frozen=True, slots=True)
+class _CacheFileFacts:
+    head: bytes
+    digest: str
+    byte_size: int
+    token: tuple[int, int, int, int, int]
+
+
+def _cache_file_facts(path: Path, max_bytes: int) -> _CacheFileFacts:
+    """Hash downloaded bytes with a fixed read budget, before opening a writer."""
+    initial = path.lstat()
+    if not stat.S_ISREG(initial.st_mode) or not 0 < initial.st_size <= max_bytes:
+        raise ConversationMediaError("attachment_invalid")
+    token = _file_token(initial)
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(descriptor, "rb") as stream:
+        if _file_token(os.fstat(stream.fileno())) != token:
+            raise ConversationMediaError("attachment_changed")
+        digest = hashlib.sha256()
+        head = b""
+        byte_size = 0
+        while chunk := stream.read(64 * 1024):
+            byte_size += len(chunk)
+            if byte_size > max_bytes:
+                raise ConversationMediaError("attachment_invalid")
+            if len(head) < 12:
+                head += chunk[: 12 - len(head)]
+            digest.update(chunk)
+        if (
+            byte_size != initial.st_size
+            or _file_token(os.fstat(stream.fileno())) != token
+            or _file_token(path.lstat()) != token
+        ):
+            raise ConversationMediaError("attachment_changed")
+    return _CacheFileFacts(head, digest.hexdigest(), byte_size, token)
+
+
+def _publish_cache_file(temporary: Path, final: Path, facts: _CacheFileFacts) -> None:
+    if _file_token(temporary.lstat()) != facts.token:
+        raise ConversationMediaError("attachment_changed")
+    os.replace(temporary, final)
+
+
 class ConversationMediaService:
     def __init__(
         self,
@@ -261,27 +304,25 @@ class ConversationMediaService:
                 await self.resolver.download_attachment(
                     reference, temporary, max_download_bytes=_MAX_FILE
                 )
-            blob = await asyncio.to_thread(temporary.read_bytes)
-            if not blob or len(blob) > _MAX_FILE:
-                raise ConversationMediaError("attachment_invalid")
+            facts = await asyncio.to_thread(_cache_file_facts, temporary, _MAX_FILE)
             if item.kind == "image":
-                if blob.startswith(b"\xff\xd8\xff"):
+                if facts.head.startswith(b"\xff\xd8\xff"):
                     extension = ".jpg"
-                elif blob.startswith(b"\x89PNG"):
+                elif facts.head.startswith(b"\x89PNG"):
                     extension = ".png"
-                elif blob.startswith(b"GIF8"):
+                elif facts.head.startswith(b"GIF8"):
                     extension = ".gif"
-                elif blob.startswith(b"RIFF") and blob[8:12] == b"WEBP":
+                elif facts.head.startswith(b"RIFF") and facts.head[8:12] == b"WEBP":
                     extension = ".webp"
                 else:
                     raise ConversationMediaError("attachment_type_invalid")
             elif item.kind == "video":
-                if blob[4:8] != b"ftyp":
+                if facts.head[4:8] != b"ftyp":
                     raise ConversationMediaError("attachment_type_invalid")
                 extension = ".mp4"
             else:
                 extension = ".bin"
-            digest = hashlib.sha256(blob).hexdigest()
+            digest = facts.digest
             final_name = f"{index}-{digest}{extension}"
             final = directory / final_name
             async with self._lock:
@@ -307,11 +348,11 @@ class ConversationMediaService:
                 occupied = await asyncio.to_thread(occupied_bytes, self.root)
                 local = await asyncio.to_thread(occupied_bytes, self.root / item.conversation_id)
                 if (
-                    occupied + len(blob) > _GLOBAL_BUDGET
-                    or local + len(blob) > _CONVERSATION_BUDGET
+                    occupied + facts.byte_size > _GLOBAL_BUDGET
+                    or local + facts.byte_size > _CONVERSATION_BUDGET
                 ):
                     raise ConversationMediaError("cache_budget_exhausted")
-                os.replace(temporary, final)
+                await asyncio.to_thread(_publish_cache_file, temporary, final, facts)
                 now = datetime.now(UTC)
                 async with self.database.sessions() as session:
                     live = await session.get(ConversationMediaItemModel, (event_id, index))
