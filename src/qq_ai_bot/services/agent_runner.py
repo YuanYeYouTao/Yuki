@@ -571,11 +571,63 @@ class AgentRunner:
                     suppress_delivery=True,
                 )
         deferred_paid_compaction = False
+        caller_completion_checked = False
+
+        async def revalidate_caller_completion() -> bool:
+            control = runtime.work_control
+            if (
+                control is None
+                or control.current is None
+                or control.ending != "completed"
+                or control.source.get("delivery_contract") != "return_to_caller"
+            ):
+                return False
+            if await control.pending():
+                control.ending = None
+                if control.session is not None:
+                    control.session.progress.pop("caller_completion_pending_result", None)
+                return False
+            proposed = (
+                control.session.progress.get("caller_completion_pending_result", {})
+                if control.session is not None
+                else {}
+            )
+            receipt = await control.execute(
+                "task_control",
+                {
+                    "action": "complete",
+                    "artifact_ids": proposed.get("artifact_ids", [])
+                    if isinstance(proposed, dict)
+                    else [],
+                },
+                "caller-result-revalidate",
+            )
+            if json.loads(receipt).get("ok") is not True:
+                control.ending = None
+                if control.session is not None:
+                    control.session.progress.pop("caller_completion_pending_result", None)
+                return False
+            return True
+
+        async def caller_has_confirmed_delivery() -> bool:
+            if not await revalidate_caller_completion():
+                return False
+            control = runtime.work_control
+            assert control is not None
+            # A fresh backend has no turn-local send count. Only a confirmed
+            # original receipt permits an empty internal result.
+            return any(
+                fact.get("ok") is True
+                and fact.get("delivered_message") is True
+                and not fact.get("pending")
+                and not fact.get("uncertain")
+                for fact in await control.effect_evidence()
+            )
 
         async def take_boundary_inputs(
             request_index: int, boundary: ContextBoundary | None
         ) -> AgentRunResult | None:
-            nonlocal input_feedback_watermark, pending_stage_feedback
+            nonlocal input_feedback_watermark, pending_stage_feedback, caller_completion_checked
             control = runtime.work_control
             assert control is not None
             try:
@@ -609,6 +661,38 @@ class AgentRunner:
                 )
             for message in added:
                 transcript.append(message)
+            if control.session is not None:
+                proposed = control.session.progress.get("caller_completion_pending_result")
+                if added:
+                    control.session.progress.pop("caller_completion_pending_result", None)
+                elif (
+                    not caller_completion_checked
+                    and isinstance(proposed, dict)
+                    and proposed.get("action") == "complete"
+                    and control.source.get("delivery_contract") == "return_to_caller"
+                    and control.ending is None
+                ):
+                    # The previous segment verified completion, but still owed
+                    # its caller a model result. Recheck current authority and
+                    # receipts; the saved proposal is never completion authority.
+                    receipt = await control.execute(
+                        "task_control",
+                        {"action": "complete", "artifact_ids": proposed.get("artifact_ids", [])},
+                        "caller-completion-revalidate",
+                    )
+                    if json.loads(receipt).get("ok") is True:
+                        transcript.append(
+                            ChatMessage(
+                                role="system",
+                                content=(
+                                    "原 Work 的完成条件已按当前来源与真实回执重新核验；"
+                                    "现在仅返回调用方需要的内部结果，不重复已完成的操作。"
+                                ),
+                            )
+                        )
+                    else:
+                        control.session.progress.pop("caller_completion_pending_result", None)
+                caller_completion_checked = True
             input_feedback_watermark = await append_input_feedback(
                 control,
                 transcript,
@@ -1024,6 +1108,7 @@ class AgentRunner:
                     input_feedback_watermark: int = input_feedback_watermark,
                     stage_feedback_batch: str | None = stage_feedback_batch,
                     boundary: ContextBoundary | None = boundary,
+                    has_native_effects: bool = bool(request.native_tools),
                 ) -> ChatResponse:
                     prepared = False
                     # A capacity compaction can replace this candidate with a
@@ -1116,6 +1201,12 @@ class AgentRunner:
                         elif selected_boundary is not None:
                             await selected_boundary.commit()
                             observed_event_ids.update(selected_boundary.event_ids)
+                        if has_native_effects:
+                            # MainAgentBackend owns the ordinary private turn
+                            # token; other SDK backends do not use its preemption.
+                            protect_native = getattr(tools, "protect_native_dispatch", None)
+                            if callable(protect_native):
+                                await protect_native(runtime)
                         prepared = True
 
                     with model_dispatch_guard(prepare_dispatch):
@@ -1166,11 +1257,24 @@ class AgentRunner:
                 )
                 raise
             except LLMEmptyResponseError:
+                if (
+                    control is not None
+                    and control.session is not None
+                    and control.source.get("delivery_contract") == "return_to_caller"
+                    and "caller_completion_pending_result" in control.session.progress
+                    and not await revalidate_caller_completion()
+                ):
+                    control.ending = None
+                    control.session.progress.pop("caller_completion_pending_result", None)
+                    await control.session.save("paired")
+                    continue
                 has_visible_effects = bool(
                     tools is not None
                     and callable(getattr(tools, "has_visible_effects", None))
                     and tools.has_visible_effects()  # type: ignore[attr-defined]
                 )
+                if not has_visible_effects:
+                    has_visible_effects = await caller_has_confirmed_delivery()
                 if has_visible_effects and (
                     control is None or control.current is None or control.ending == "completed"
                 ):
@@ -1348,6 +1452,27 @@ class AgentRunner:
                         )
                     )
                     continue
+                if (
+                    control is not None
+                    and control.session is not None
+                    and control.ending == "completed"
+                    and control.source.get("delivery_contract") == "return_to_caller"
+                    and "caller_completion_pending_result" in control.session.progress
+                    and not await revalidate_caller_completion()
+                ):
+                    if response.continuation is None and not assistant_recorded:
+                        transcript.append(assistant_message)
+                    transcript.append(
+                        ChatMessage(
+                            role="system",
+                            content=(
+                                "原完成条件已变化或原执行回执仍未决，不能宣告完成。"
+                                "保留已有结果，按真实来源与回执接续，不重复已完成操作。"
+                            ),
+                        )
+                    )
+                    await control.session.save("paired")
+                    continue
                 # The final body is internal; the main backend can reject an
                 # unsent user-facing answer without implicitly delivering it.
                 if "[提及" in content:
@@ -1398,6 +1523,8 @@ class AgentRunner:
                     and callable(getattr(tools, "has_visible_effects", None))
                     and tools.has_visible_effects()  # type: ignore[attr-defined]
                 )
+                if not content.strip() and not has_visible_effects:
+                    has_visible_effects = await caller_has_confirmed_delivery()
                 if not content.strip() and not has_visible_effects:
                     allow_silence = getattr(tools, "allow_silent_final", None)
                     if callable(allow_silence) and allow_silence(runtime):
@@ -1607,6 +1734,27 @@ class AgentRunner:
                 public_results.append(public_result)
             response_observation["results"] = public_results
             if runtime.work_control is not None and runtime.work_control.session is not None:
+                if runtime.work_control.ending != "completed":
+                    runtime.work_control.session.progress.pop(
+                        "caller_completion_pending_result", None
+                    )
+                if (
+                    runtime.work_control.ending == "completed"
+                    and runtime.work_control.source.get("delivery_contract") == "return_to_caller"
+                ):
+                    for call, result, _ in batch:
+                        if (
+                            call.function.name == "task_control"
+                            and json.loads(result).get("ok") is True
+                        ):
+                            arguments = json.loads(call.function.arguments)
+                            if arguments.get("action") == "complete":
+                                runtime.work_control.session.progress[
+                                    "caller_completion_pending_result"
+                                ] = {
+                                    "action": "complete",
+                                    "artifact_ids": arguments.get("artifact_ids", []),
+                                }
                 batch_hash = hashlib.sha256(
                     json.dumps(
                         [

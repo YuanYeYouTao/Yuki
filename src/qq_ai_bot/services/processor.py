@@ -813,6 +813,13 @@ class MessageProcessor:
                 and direct_match is None
                 and self._chat.work_is_active(coordinator_key)
             ),
+            preempt_private=(
+                message.scope_type is ScopeType.PRIVATE
+                and direct_turn
+                and decision.command is None
+                and direct_match is None
+                and not self._chat.work_is_active(coordinator_key)
+            ),
         )
         has_visual_input = VisionService.has_visual_input(message) or (
             self._native_images is not None
@@ -1391,23 +1398,28 @@ class MessageProcessor:
         )
         result: ProcessResult
         try:
-            sent_count = await self._chat.handle_turn(
-                message,
-                identity,
-                profile,
-                content,
-                sender,
-                runtime_snapshot=runtime_snapshot,
-                visual_observation=visual.observation,
-                native_images=visual.images,
-                attachment_text="\n\n".join(
-                    part for part in (visual.attachment_text, audio.context) if part
-                ),
-                visual_input_present=has_visual_input,
-                visual_failure=visual.failed,
-                turn_token=turn_token,
-                turn_snapshot=turn_snapshot,
-            )
+            async with AsyncExitStack() as stages:
+                if message.scope_type is ScopeType.PRIVATE:
+                    await stages.enter_async_context(
+                        self._turn_coordinator.track(turn_token, "admission")
+                    )
+                sent_count = await self._chat.handle_turn(
+                    message,
+                    identity,
+                    profile,
+                    content,
+                    sender,
+                    runtime_snapshot=runtime_snapshot,
+                    visual_observation=visual.observation,
+                    native_images=visual.images,
+                    attachment_text="\n\n".join(
+                        part for part in (visual.attachment_text, audio.context) if part
+                    ),
+                    visual_input_present=has_visual_input,
+                    visual_failure=visual.failed,
+                    turn_token=turn_token,
+                    turn_snapshot=turn_snapshot,
+                )
         except (TurnInterruptedError, TurnSupersededError, WorkConflict):
             result = ProcessResult(True, reason="turn_interrupted")
         except (WorkActivationHandled, WorkRecoveryDeferred):
