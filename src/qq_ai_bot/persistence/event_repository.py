@@ -547,6 +547,92 @@ class EventLedgerRepository:
             )
         return tuple(_event_record(row) for row in rows)
 
+    async def read_scope_missing_history(
+        self,
+        expected: ConversationReadVersion,
+        *,
+        after_event_id: int,
+        through_event_id: int,
+        frozen_event_ids: frozenset[int],
+        current_event_id: int | None,
+    ) -> tuple[ConversationReadVersion, tuple[EventRecord, ...]]:
+        """Discover every eligible ID, loading only missing bodies in one snapshot.
+
+        The exclusion set only avoids repeated body work. It never proves that
+        the range contains no other events or replaces publication source CAS.
+        A changed version returns no bodies so the caller can reject its plan.
+        """
+        from qq_ai_bot.conversation.canonical_db_models import (
+            CanonicalConversationModel,
+            ConversationLegacyAliasModel,
+        )
+
+        async with self._database.sessions() as session:
+            await session.execute(text("BEGIN"))
+            row = (
+                await session.execute(
+                    select(
+                        CanonicalConversationModel.id,
+                        CanonicalConversationModel.generation,
+                        CanonicalConversationModel.starts_after_event_id,
+                        CanonicalConversationModel.prompt_source_revision,
+                    )
+                    .join(
+                        ConversationLegacyAliasModel,
+                        ConversationLegacyAliasModel.conversation_id
+                        == CanonicalConversationModel.id,
+                    )
+                    .where(ConversationLegacyAliasModel.scope_key == expected.scope.key)
+                    .limit(1)
+                )
+            ).one_or_none()
+            version = (
+                ConversationReadVersion(expected.scope, *row)
+                if row is not None
+                else ConversationReadVersion(expected.scope, None, 0, 0)
+            )
+            if version != expected or version.conversation_id is None:
+                return version, ()
+            lower = max(after_event_id, version.starts_after_event_id)
+            conditions = (
+                ChatEventModel.canonical_conversation_id == version.conversation_id,
+                keeper_event_clause(),
+                ChatEventModel.event_kind == "message",
+                ChatEventModel.id > lower,
+                ChatEventModel.id <= through_event_id,
+            )
+            after = lower
+            records: list[EventRecord] = []
+            while after < through_event_id:
+                identities = (
+                    await session.scalars(
+                        select(ChatEventModel.id)
+                        .where(*conditions, ChatEventModel.id > after)
+                        .order_by(ChatEventModel.id)
+                        .limit(256)
+                    )
+                ).all()
+                if not identities:
+                    break
+                missing = [
+                    identity
+                    for identity in identities
+                    if identity not in frozen_event_ids and identity != current_event_id
+                ]
+                if missing:
+                    rows = (
+                        await session.scalars(
+                            select(ChatEventModel)
+                            .where(*conditions, ChatEventModel.id.in_(missing))
+                            .order_by(ChatEventModel.id)
+                            .limit(256)
+                        )
+                    ).all()
+                    records.extend(_event_record(item) for item in rows)
+                # An excluded-only page must still advance to the next unseen ID.
+                after = identities[-1]
+            return version, tuple(records)
+
     async def count_scope_range(
         self,
         scope: ConversationScope,

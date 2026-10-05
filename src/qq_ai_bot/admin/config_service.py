@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.admin.audit import AdminAuditService, AuditSubject, add_audit_event, event_from_model
@@ -133,6 +133,7 @@ class RuntimeConfigRepository:
             RuntimeConfigOverrideModel.scope_type == ConfigScopeType.GLOBAL.value
         ]
         async with self._database.sessions() as session:
+            await session.execute(text("BEGIN"))
             for owner_id, model, kind, column in (
                 (
                     scope.person_id,
@@ -183,34 +184,46 @@ class RuntimeConfigRepository:
         group_id: str | None,
         session: AsyncSession | None = None,
     ) -> tuple[RuntimeConfigOverrideRecord, ...]:
+        async with optional_session(self._database, session, write=False) as active:
+            records, _, _ = await self._read_relevant(active, user_id=user_id, group_id=group_id)
+            return records
+
+    async def read_relevant_snapshot(
+        self, *, user_id: str | None, group_id: str | None
+    ) -> tuple[tuple[RuntimeConfigOverrideRecord, ...], str | None, str | None]:
+        """Resolve owners and their overrides once in this preparation's read view."""
+        async with self._database.sessions() as session:
+            await session.execute(text("BEGIN"))
+            return await self._read_relevant(session, user_id=user_id, group_id=group_id)
+
+    async def _read_relevant(
+        self, active: AsyncSession, *, user_id: str | None, group_id: str | None
+    ) -> tuple[tuple[RuntimeConfigOverrideRecord, ...], str | None, str | None]:
         conditions: list[Any] = [
             RuntimeConfigOverrideModel.scope_type == ConfigScopeType.GLOBAL.value
         ]
-        async with optional_session(self._database, session, write=False) as active:
-            if user_id:
-                person_id = await resolve_live_person_id(active, user_id)
+        person_id = await resolve_live_person_id(active, user_id) if user_id else None
+        space_id = await resolve_live_space_id(active, group_id) if group_id else None
+        for owner_id, kind, column in (
+            (person_id, ConfigScopeType.USER, RuntimeConfigOverrideModel.canonical_person_id),
+            (space_id, ConfigScopeType.GROUP, RuntimeConfigOverrideModel.canonical_space_id),
+        ):
+            if owner_id is not None:
                 conditions.append(
-                    (RuntimeConfigOverrideModel.scope_type == ConfigScopeType.USER.value)
-                    & (RuntimeConfigOverrideModel.canonical_person_id == person_id)
+                    (RuntimeConfigOverrideModel.scope_type == kind.value) & (column == owner_id)
                 )
-            if group_id:
-                space_id = await resolve_live_space_id(active, group_id)
-                conditions.append(
-                    (RuntimeConfigOverrideModel.scope_type == ConfigScopeType.GROUP.value)
-                    & (RuntimeConfigOverrideModel.canonical_space_id == space_id)
+        rows = (
+            await active.scalars(
+                select(RuntimeConfigOverrideModel)
+                .where(or_(*conditions))
+                .order_by(
+                    RuntimeConfigOverrideModel.config_key,
+                    RuntimeConfigOverrideModel.scope_type,
+                    RuntimeConfigOverrideModel.id,
                 )
-            rows = (
-                await active.scalars(
-                    select(RuntimeConfigOverrideModel)
-                    .where(or_(*conditions))
-                    .order_by(
-                        RuntimeConfigOverrideModel.config_key,
-                        RuntimeConfigOverrideModel.scope_type,
-                        RuntimeConfigOverrideModel.id,
-                    )
-                )
-            ).all()
-            return tuple(_record(row) for row in rows)
+            )
+        ).all()
+        return tuple(_record(row) for row in rows), person_id, space_id
 
     async def get(
         self,
@@ -1415,8 +1428,9 @@ class RuntimeConfigService:
             records = await self._repository.list_memory_scope(memory_scope)
             person_id, space_id = memory_scope.person_id, memory_scope.space_id
         else:
-            records = await self._repository.list_relevant(user_id=user_id, group_id=group_id)
-            person_id, space_id = await self._owner_match(user_id=user_id, group_id=group_id)
+            records, person_id, space_id = await self._repository.read_relevant_snapshot(
+                user_id=user_id, group_id=group_id
+            )
 
         def value(key: str) -> ConfigValue:
             spec = self.registry.get(key)
