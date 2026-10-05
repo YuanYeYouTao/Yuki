@@ -9,6 +9,9 @@ import httpx
 import pytest
 from sqlalchemy import select, update
 from tests.conftest import build_harness, make_settings
+
+# P10: explicit Invocation fixture contract; existing assertions are retained.
+from tests.support.agent_backend import StubAgentBackend
 from tests.support.runtime_wire import install_wire
 from tests.support.social_identity_cases import social_env
 
@@ -528,7 +531,7 @@ async def test_runner_resumes_gemini_work_on_deepseek_without_old_send_or_native
         )
         reads = 0
 
-        class Backend:
+        class Backend(StubAgentBackend):
             def definitions(self, runtime, **kwargs):
                 return common_tools
 
@@ -541,7 +544,7 @@ async def test_runner_resumes_gemini_work_on_deepseek_without_old_send_or_native
             def is_side_effecting(self, *args):
                 return False
 
-            async def execute(self, *args):
+            async def execute_call(self, invocation):
                 nonlocal reads
                 reads += 1
                 return '{"ok":true,"data":{"read":"current"}}'
@@ -1004,7 +1007,7 @@ async def test_no_progress_recovery_keeps_tools_settings_and_local_execution_fen
         )
     )
 
-    class Backend:
+    class Backend(StubAgentBackend):
         def definitions(self, runtime, **kwargs):
             return fixed
 
@@ -1017,7 +1020,7 @@ async def test_no_progress_recovery_keeps_tools_settings_and_local_execution_fen
         def is_side_effecting(self, *args):
             return False
 
-        async def execute(self, *args):
+        async def execute_call(self, invocation):
             executions.append("read")
             return '{"ok":true,"unchanged":true}'
 
@@ -1085,9 +1088,9 @@ async def test_compaction_is_local_fence_before_any_tool_execution(
     )
     harness = build_harness(database, make_settings(database.url), provider)
     chat = harness.processor._chat
-    backend = SimpleNamespace(
+    backend = StubAgentBackend(
         definitions=lambda *args, **kwargs: fixed,
-        execute=AsyncMock(side_effect=AssertionError("compaction must not execute tools")),
+        execute_call=AsyncMock(side_effect=AssertionError("compaction must not execute tools")),
     )
     runtime = AgentRuntime(
         origin=TurnOrigin.USER_MESSAGE,
@@ -1107,17 +1110,21 @@ async def test_compaction_is_local_fence_before_any_tool_execution(
         work_control=control,
         compaction_brief=task if with_anchor else None,
     )
-    monkeypatch.setattr(
-        "qq_ai_bot.services.agent_runner.estimate_request_tokens",
-        lambda request: 1_000_000 if request.tools else 8000,
-    )
+
+    def measured(request):
+        return 1_000_000 if request.tools else 8000
+
+    # P10 split turn preparation from Work summary admission. Apply the same
+    # synthetic capacity pressure to both owners; keep every fence assertion.
+    monkeypatch.setattr("qq_ai_bot.services.agent_runner.estimate_request_tokens", measured)
+    monkeypatch.setattr("qq_ai_bot.services.turn_execution.estimate_request_tokens", measured)
     # Run owns session creation; the legacy no-anchor case must fail before dispatch.
     result = await chat.runtime.runner.run((ChatMessage("system", "fixed"), task), runtime, backend)
     assert result.work_state == "suspended"
     assert result.outcome.failure.code == (
         "work_compaction_incomplete" if with_anchor else "JournalUnavailable"
     )
-    backend.execute.assert_not_awaited()
+    backend.execute_call.assert_not_awaited()
     assert len(provider.requests) == (1 if with_anchor else 0)
     if with_anchor:
         assert provider.requests[0].tools == ()

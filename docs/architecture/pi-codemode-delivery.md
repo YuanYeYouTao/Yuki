@@ -375,6 +375,49 @@ VM `yuki-p09-20261005` 及本任务临时构建/下载缓存将在完成全部�
 下一依赖：P10 显式回合状态、兼容删除、
 四组计量与全矩阵；真实 DeepSeek 已授权，按 P10 前置条件尚未运行。生产验证待授权。
 
+## P10：完整实现与离线验证通过，提交前证据已保存
+
+P09 已提交并推送 `85a35aa92ace8b4b54dcfb95ad35b5014e2b5cb3`，远端精确 SHA 已核验。
+生产 `AgentRunner._run`、Callbacks bag/union、`begin_batch` 调用、工具
+`execute(name,args,runtime)` 临时 adapter、Runner/Turn/Coordinator 动态 hook/model fallback、
+Worker `__getattr__` 已删除。原测试 Provider 在 Runner 外显式规范化。默认 backend 生命周期
+权限拒绝，Main/Worker 显式核验；测试夹具显式声明假权限，coordinator 只接受原 Invocation。
+
+每次激活的 38 项状态归 `TurnState`；`TurnExecution` 实现模型、调用、结算三个固定边界，
+调用唯一 `agent_core.loop.run_agent_loop`。请求拆为准备、持久派发、响应观察；主候选、普通
+摘要、Work 摘要各有 admission 对象。预算/CAS 只在派发提交，HTTP 重试共享原 reservation，
+辅助页不覆盖主 journal。摘要分页和工具批次不是第二主循环。
+结构证据：`pi-codemode-evidence/p10-retirement.json`。
+
+验证：最初状态拆分 39 通过/10.19 秒；Callbacks/begin_batch 删除后 61 通过/24.14 秒；准备/
+观察拆分 126 通过/47.89 秒；typed fixture 重验 116 通过/46.12 秒；wire/诊断重验 100 通过/
+5.99 秒；异常所有权 fixture 5 通过/1.65 秒。原生 Linux root-owned launcher 的核心、差异、
+composition/control/resource/process-crash **61 通过，22.97 秒，零跳过**。ruff/mypy 通过，
+722 个源文件。首轮全量 3228 通过、18 失败、1 跳过/755.46 秒：17 项是旧 fixture 接口/补丁
+目标未迁移，1 项是迁移时误改诊断字段（已恢复，无最终 diff）。原断言保留，失败项定向
+重验通过，最终完整复验 **3246 通过、1 跳过，737.40 秒**；唯一跳过仍是未提供私有生产备份。真实 Monty 没有跳过。
+
+四组固定任务比较 **12/12 通过，5.70 秒**：旧循环按 b4fdef7d 固定源码临时加载，主迭代
+不改；共享 Invocation/Code kernel，分离循环差异与组合效应。历史循环不进入生产，也不是
+永久 CI 依赖。fanout：direct 4 次 HTTP、code 3 次；incomplete：direct 5 次、code 4 次；
+拒绝任务各 4 次、零业务派发，原 Work 提议 failed，未宣称任务成功。每个成功任务真实
+业务计数均 3，paired checkpoint/counter 可读，无越权或重复。原始次数、首个有用产物、
+总时间在 `p10-comparison.json`；fake planning 无 token/cache/billing，记 null/unknown。
+样本未显示新循环自身节省请求；本地 code 时间更长，不能宣称线上加速。建议保留直接工具，
+不把 Code Mode 设为默认，不推进生产切换。
+
+fixture 合同更新：`StubAgentBackend` 是固定测试接口；原 execute 辅助迁为
+`execute_call(Invocation)`，读取原 context.runtime；计数/结果/拒绝断言不变。compaction 容量
+补丁覆盖新模块；异常所有权在 `TurnExecution.activate` 注入同一 ExceptionGroup，原来源/
+恢复断言不变；Core Callbacks 移至 tests/support。完整 JUnit 保存为 `p10-full-results.xml.gz`，
+验收矩阵附有实际通过节点及 JUnit hash：89 项离线通过，X11 许可项 partial。
+`p10-tool-coverage.json` 给出 76 个固定声明的 schema、binding、wrapper/拒绝路径映射；
+Linux 61 项证据在 `p10-linux.json`。P00 清单保留历史 not_run，不改历史快照。
+最终 ruff check/format 通过（1133 文件），mypy 722 源文件通过；git diff --check 通过。
+
+真实 DeepSeek 脚本的 12 项隔离装配模拟测试通过，**付费调用尚未运行**；P10 完整复验通过
+后再开始。专用 VM/临时缓存保留至所有所需验证结束，再按授权删除。
+
 ## 验证记录（2026-10-04）
 
 ```sh
@@ -398,7 +441,7 @@ WebUI 前端资源未构建（`npm ci && npm run build`，产物已 gitignore）
 ## 后续依赖
 
 P06–P08 的离线实现及全量验证完成；继续 P09 迁移、worker 运维和回退。
-P09 迁移/资源/完整备份、原生 Linux 隔离及 45 项定向测试已验证，最终全量及两个镜像装配通过，P10 未开始；真实 DeepSeek Provider 调用已授权、尚未运行；P11 的真实消息、生产访问、
+P09 迁移/资源/完整备份、原生 Linux 隔离及 45 项定向测试已验证，最终全量及两个镜像装配通过，P10 完整实现及离线复验通过，89/90 矩阵项通过、X11 许可项部分通过；真实 DeepSeek Provider 调用已授权、尚未运行；P11 的真实消息、生产访问、
 镜像发布与部署待明确授权。
 Monty Python binding 为本地构建 wheel，未进 `uv.lock`，`uv sync` 后需重跑
 `scripts/build_monty_worker.sh`；P09 共用分发已在 Darwin/Linux 构建并安装；两个镜像装配与离线包装探针通过，容器 Code Mode 默认仍不启用。

@@ -2,11 +2,13 @@
 
 import json
 from dataclasses import replace
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
+
+# P10: fixed typed backend fixture, original assertions retained.
+from tests.support.agent_backend import StubAgentBackend
 from tests.support.work_compaction import summary_json
 from tests.unit.test_work_compaction_capacity import (
     _grow,
@@ -145,9 +147,8 @@ async def test_tool_pair_and_paid_retirement_share_writer_and_recover_original_e
 
     monkeypatch.setattr(WorkSession, "save", fail_retirement)
     execute = AsyncMock(return_value='{"ok":true,"executed":true,"data":"Original receipt"}')
-    backend = SimpleNamespace(
-        begin_batch=lambda *_: None,
-        execute=execute,
+    backend = StubAgentBackend(
+        execute_call=execute,
         is_side_effecting=lambda *_: False,
         parallel_safe=lambda *_: False,
         finalize=lambda content, _: content,

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from contextlib import AbstractContextManager
 
 from qq_ai_bot.domain.messages import ChatRequest, ChatResponse
+from qq_ai_bot.execution_trace.recorder import TraceRecorder
 from qq_ai_bot.llm.base import LLMProvider
 from qq_ai_bot.memory.embedding.models import (
     EmbeddingBatchResult,
@@ -19,6 +21,7 @@ from qq_ai_bot.model_runtime.models import (
     ModelCapability,
     ModelExecutionPriority,
     ModelProtocol,
+    ModelSearchMode,
     ModelTask,
     StructuredOutputMode,
 )
@@ -114,6 +117,19 @@ class CountingModelExecutor:
 
     def capabilities(self, task: ModelTask) -> frozenset[ModelCapability]:
         return self._delegate.capabilities(task)
+
+    def profile_revision(self, task: ModelTask) -> str:
+        return self._delegate.profile_revision(task)
+
+    def search_mode(self, task: ModelTask) -> ModelSearchMode | None:
+        return self._delegate.search_mode(task)
+
+    def pin(self) -> AbstractContextManager[None]:
+        return self._delegate.pin()
+
+    @property
+    def traces(self) -> TraceRecorder | None:
+        return self._delegate.traces
 
     def count(self, task: ModelTask) -> int:
         return int(self._counts[task])

@@ -6,6 +6,9 @@ from itertools import pairwise
 
 import pytest
 from tests.conftest import build_harness, make_settings
+
+# P10: explicit Invocation fixture contract; existing assertions are retained.
+from tests.support.agent_backend import StubAgentBackend
 from tests.support.runtime_wire import install_wire
 
 from qq_ai_bot.automation.models import TurnOrigin
@@ -100,7 +103,7 @@ async def test_receipt_continues_original_wire_chain(database, protocol, recover
     provider.complete = receive
     executed = []
 
-    class Backend:
+    class Backend(StubAgentBackend):
         def definitions(self, runtime, **kwargs):
             return (ChatTool("work", "work", {"type": "object"}),)
 
@@ -113,7 +116,8 @@ async def test_receipt_continues_original_wire_chain(database, protocol, recover
         def is_side_effecting(self, *args):
             return True
 
-        async def execute(self, name, arguments, runtime):
+        async def execute_call(self, invocation):
+            arguments = invocation.call.function.arguments
             executed.append(json.loads(arguments))
             return json.dumps(
                 {

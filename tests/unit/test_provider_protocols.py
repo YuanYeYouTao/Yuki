@@ -4,13 +4,15 @@ import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 from pydantic import ValidationError
 from tests.conftest import build_harness, make_settings
+
+# P10: explicit backend/Invocation fixture; original behavioral assertions retained.
+from tests.support.agent_backend import StubAgentBackend
 
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
 from qq_ai_bot.application.modules.model_runtime import ModelRuntimeModule
@@ -564,9 +566,9 @@ async def test_truncated_tool_call_recovers_without_executing(database, kind, em
         chat = harness.processor._chat
         tools = request().tools
         execute = AsyncMock(side_effect=AssertionError("truncated calls must not execute"))
-        backend = SimpleNamespace(
+        backend = StubAgentBackend(
             definitions=lambda *args, **kwargs: tools,
-            execute=execute,
+            execute_call=execute,
             finalize=lambda text, runtime: text,
         )
         runtime = AgentRuntime(

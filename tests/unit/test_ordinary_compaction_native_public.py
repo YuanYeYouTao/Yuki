@@ -1,12 +1,14 @@
 """Native ordinary tails retain public facts and deterministic delivery receipts."""
 
 import json
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 from tests.conftest import build_harness, make_settings
+
+# P10: explicit backend/Invocation fixture; original behavioral assertions retained.
+from tests.support.agent_backend import StubAgentBackend
 
 from qq_ai_bot.domain.messages import ChatMessage, ChatTool
 from qq_ai_bot.llm.fake import FakeLLMProvider
@@ -177,7 +179,8 @@ async def test_native_public_mirror_and_receipts_survive_empty_summary_without_w
             pool=ModelClientPool(injected_profiles={profile.id: provider}),
         )
 
-        async def execute(name, arguments, runtime):
+        async def execute(invocation):
+            arguments = invocation.call.function.arguments
             identity = json.loads(arguments)["text"]
             return json.dumps(
                 {
@@ -190,10 +193,9 @@ async def test_native_public_mirror_and_receipts_survive_empty_summary_without_w
                 }
             )
 
-        backend = SimpleNamespace(
+        backend = StubAgentBackend(
             definitions=lambda *args, **kwargs: fixed,
-            execute=AsyncMock(side_effect=execute),
-            begin_batch=lambda *args: None,
+            execute_call=AsyncMock(side_effect=execute),
             is_side_effecting=lambda *args: True,
             parallel_safe=lambda *args: False,
             exhausted=lambda *args: "",
@@ -217,7 +219,7 @@ async def test_native_public_mirror_and_receipts_survive_empty_summary_without_w
         )
         result = await runner.run(initial, runtime, backend)
     assert result.model_requests == len(requests) == 3
-    assert backend.execute.await_count == 2 and runtime.work_control is None
+    assert backend.execute_call.await_count == 2 and runtime.work_control is None
     assert len(summary_sources) == 1
     records = {item["ref"]: json.loads(item["text"]) for item in summary_sources[0]["records"]}
     mirror = records["observation:0"]

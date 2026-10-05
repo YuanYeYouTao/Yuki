@@ -223,7 +223,8 @@ async def run_short_state_cases(database, tmp_path, context):
         def is_side_effecting(self, name, arguments_json, runtime):
             return False
 
-        async def execute(self, name, arguments_json, runtime):
+        async def execute_call(self, invocation):
+            name = invocation.call.function.name
             assert name == "get_code_run"
             self.polls += 1
             return json.dumps(
@@ -408,7 +409,7 @@ async def run_short_state_cases(database, tmp_path, context):
     class UndeclaredBackend(ShortStateOnlyBackend):
         attempts = 0
 
-        async def execute(self, name, arguments_json, runtime):
+        async def execute_call(self, invocation):
             self.attempts += 1
             return '{"ok":true}'
 

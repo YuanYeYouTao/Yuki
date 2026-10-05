@@ -31,6 +31,12 @@ class CoordinatedToolBackend(Protocol):
 
     def parallel_safe(self, name: str, runtime: Any) -> bool: ...
 
+    def is_side_effecting(self, name: str, arguments: str, runtime: Any) -> bool:
+        return True
+
+    def counts_toward_limit(self, name: str, runtime: Any) -> bool:
+        return True
+
 
 @dataclass(frozen=True, slots=True)
 class CoordinatedToolResult:
@@ -68,8 +74,7 @@ class ToolInvocationCoordinator:
             )
 
         def counts_toward_limit(call: ToolCall) -> bool:
-            check = getattr(backend, "counts_toward_limit", None)
-            return not callable(check) or bool(check(call.function.name, runtime))
+            return backend.counts_toward_limit(call.function.name, runtime)
 
         overflow_ids: set[str] = set()
         rejected_ids: set[str] = set()
@@ -122,23 +127,10 @@ class ToolInvocationCoordinator:
             nonlocal counted_executions
 
             async def invoke() -> str:
-                explicit = getattr(backend, "execute_call", None)
-                if callable(explicit):
-                    return str(await explicit(invocations[call.id]))
-                # Transitional adapter for existing custom/test backends. Main and
-                # Worker backends use the explicit interface; retire this in P10.
-                legacy = getattr(backend, "execute", None)
-                if not callable(legacy):
-                    raise TypeError("missing_invocation_backend")
-                return str(await legacy(call.function.name, call.function.arguments, runtime))
+                return await backend.execute_call(invocations[call.id])
 
-            check_effect = getattr(backend, "is_side_effecting", None)
-            side_effecting = not callable(check_effect) or bool(
-                check_effect(
-                    call.function.name,
-                    call.function.arguments,
-                    runtime,
-                )
+            side_effecting = backend.is_side_effecting(
+                call.function.name, call.function.arguments, runtime
             )
             results[call.id] = await service.invoke(
                 invocations[call.id], invoke, side_effecting=side_effecting
@@ -156,8 +148,7 @@ class ToolInvocationCoordinator:
             # Delivery must finish before a subsequent read-safe stretch can start.
             if call.function.name == "send_message":
                 return False
-            check = getattr(backend, "parallel_safe", None)
-            return bool(callable(check) and check(call.function.name, runtime))
+            return backend.parallel_safe(call.function.name, runtime)
 
         index = 0
         while index < len(calls):

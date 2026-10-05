@@ -49,6 +49,8 @@ async def test_processor_reports_real_capacity_stop_without_replay_or_new_work(
         return tokens
 
     monkeypatch.setattr("qq_ai_bot.services.agent_runner.estimate_request_tokens", measured)
+    # P10 moved main request preparation; retain pressure on both admissions.
+    monkeypatch.setattr("qq_ai_bot.services.turn_execution.estimate_request_tokens", measured)
 
     def transport(request):
         # Actual HTTP transport sees only requests admitted by the real guard.

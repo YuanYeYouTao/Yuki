@@ -49,23 +49,31 @@ Pi 完整 SDK、pi-ai Provider、durable/chord、CLI/TUI/RPC 不进入本交付�
 | partial 不执行工具 | `test_agent_core_loop.py::test_incomplete_frames_through_loop_never_execute` |
 | 核心不依赖平台/数据库 | `test_agent_core_loop.py::test_core_has_no_platform_or_database_dependencies` |
 
-Pi 上游自带测试未在本机运行（需要 npm 依赖安装，未授权），不宣称上游测试通过。
+Pi 上游自带 TypeScript 测试未运行；本轮核验 Python 移植、原行为黄金样本与实际应用装配，
+不宣称上游测试通过。本地依赖安装/编译已获授权。
 
-## P03 后 Runner 仍保留的职责
+## P10 后的生产调用与责任边界
 
-`AgentRunner._run` 不再自己推进循环：迭代、turn 顺序、截断不执行、`agent_end`
-均由 `run_agent_loop` 拥有。Runner 以 `Callbacks` 绑定三个边界，以下内容留在边界闭包中：
+`AgentRunner._run`、生产 Callbacks bag/union、`begin_batch`、工具 legacy execute adapter、
+Runner/Turn/Coordinator 的 duck-typed fallback、Worker 动态 `__getattr__` 已删除。
+所有主入口仍经 MainAgentTurnService→Runner→TurnExecution→`run_agent_loop`。
+生产没有旧/新循环选择 flag，没有备用 model loop。
 
-- `_begin`/`_steer`/`_request`（模型边界）：辅助请求与段预算、公开观察边界、Work 输入、
-  声明与 native 合并、Work/普通 compaction、`dispatch` 与持久 `dispatched` 存档、空响应有界重试。
-  这些依赖 TaskModelExecutor、WorkSession 与 ContextBoundary，核心不得导入。
-- `_execute_tools`（调用边界）：原 `_execute_tool_batch`、Coordinator、InvocationService。
-- `_settle_*`/`_finish_tool_turn`/`_exhausted`（回合结算）：提及占位、未支持终答、交互退出、
-  隐式 complete 校验、证据与 Work 存档、重复批次检测。
+- **唯一核心**：迭代、turn 顺序、完整响应工具顺序、截断不执行和 `agent_end`；不依赖 Work、
+  SQLite、QQ、长期记忆或发送器。模型/调用/结算由三个固定 typed protocol 表达，不是可注册 hooks。
+- **TurnExecution**：声明/来源/Work 与普通输入、恢复检查点、响应观察和业务结算；`TurnState`
+  38 项状态归一次激活。原请求的准备、派发和观察是独立方法。
+- **Admission**：主请求 `_PrimaryDispatch`、普通摘要 `_OrdinarySummaryDispatch`、Work 页
+  `_WorkSummaryDispatch` 各持有原候选/计量状态，HTTP 重试复用 paid reservation；辅助页不覆盖主 journal。
+- **调用**：Coordinator→InvocationService→明确 `execute_call(Invocation)`；Code Host 用同一
+  原身份、授权、T1/T2/T3、控制和回执路径。Worker 有固定 forwarders 与独立权限/声明子集。
+- **测试兼容**：Core Callbacks 只在 tests/support；Fake Provider 在 Runner 外显式规范化。
+  原异常/容量 fixture 迁到新边界，原断言保留。
 
-原单一作用域的跨步变量（当前 AST 核对为 31 个）由闭包 `nonlocal` 共享；P10 收敛为显式 turn state 时
-需再拆分，并删除 `begin_batch` 兼容调用（P10）。差分黄金样本
-`tests/fixtures/agent_core/runner_golden.json` 取自移植前 `b4fdef7d` 的 Runner 循环。
+差分黄金样本 `tests/fixtures/agent_core/runner_golden.json` 取自移植前 `b4fdef7d`，未重生成。
+P10 的四组比较临时读取同一固定历史 SHA，主迭代不改，两组共享 Invocation/Code kernel，
+不把旧 loop 放进生产或作为永久 CI 依赖。结构原始证据在
+`pi-codemode-evidence/p10-retirement.json`，四组实际计量在 `p10-comparison.json`。
 
 ## P09 固定分发与许可证据（2026-10-05）
 

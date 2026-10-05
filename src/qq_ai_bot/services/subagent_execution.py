@@ -7,7 +7,7 @@ import hashlib
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from contextlib import ExitStack
+from contextlib import AbstractContextManager, ExitStack
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
@@ -20,7 +20,13 @@ from qq_ai_bot.capabilities.invocation import Invocation
 from qq_ai_bot.codemode.api_projection import ScriptApi, project
 from qq_ai_bot.codemode.contract import CODE_API_REVISION
 from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import ChatMessage, ChatTool, InboundMessage, SenderIdentity
+from qq_ai_bot.domain.messages import (
+    ChatMessage,
+    ChatResponse,
+    ChatTool,
+    InboundMessage,
+    SenderIdentity,
+)
 from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.runtime.activation_bindings import ActiveWorkBindings
@@ -34,7 +40,7 @@ from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import work
 from qq_ai_bot.sandbox.client import SandboxClient
 from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
-from qq_ai_bot.services.agent_runner import AgentRunner, AgentToolBackend
+from qq_ai_bot.services.agent_runner import AgentRunner, AgentRuntime, AgentToolBackend
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.execution_sources import SelfTaskSource, recover_execution_source
 from qq_ai_bot.services.invocation_context import InvocationContextFactory
@@ -58,12 +64,70 @@ class SubagentExecutionDependencies:
     web_capabilities: Callable[[RuntimeConfigSnapshot], frozenset[str]]
 
 
-class WorkerBackend:
-    def __init__(self, delegate: Any, names: frozenset[str]) -> None:
+class WorkerBackend(AgentToolBackend):
+    def __init__(self, delegate: AgentToolBackend, names: frozenset[str]) -> None:
         self.delegate, self.names = delegate, names
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.delegate, name)
+    def definitions(self, runtime: AgentRuntime, *, web_was_used: bool) -> tuple[ChatTool, ...]:
+        return tuple(
+            t
+            for t in self.delegate.definitions(runtime, web_was_used=web_was_used)
+            if t.name in self.names
+        )
+
+    async def prepare(self, runtime: AgentRuntime) -> None:
+        await self.delegate.prepare(runtime)
+
+    def refresh_catalog(self, runtime: AgentRuntime, *, web_was_used: bool) -> None:
+        self.delegate.refresh_catalog(runtime, web_was_used=web_was_used)
+
+    def parallel_safe(self, name: str, runtime: AgentRuntime) -> bool:
+        return self.delegate.parallel_safe(name, runtime)
+
+    def is_side_effecting(self, name: str, arguments_json: str, runtime: AgentRuntime) -> bool:
+        return self.delegate.is_side_effecting(name, arguments_json, runtime)
+
+    def counts_toward_limit(self, name: str, runtime: AgentRuntime) -> bool:
+        return self.delegate.counts_toward_limit(name, runtime)
+
+    def finalize(self, content: str, runtime: AgentRuntime) -> str:
+        return self.delegate.finalize(content, runtime)
+
+    def exhausted(self, runtime: AgentRuntime) -> str:
+        return self.delegate.exhausted(runtime)
+
+    def record_failure_usage(self, *, tool_calls: int, model_requests: int) -> None:
+        self.delegate.record_failure_usage(tool_calls=tool_calls, model_requests=model_requests)
+
+    def pin_web_provider(self) -> AbstractContextManager[None]:
+        return self.delegate.pin_web_provider()
+
+    async def archive_code_result(self, text: str) -> str | None:
+        return await self.delegate.archive_code_result(text)
+
+    async def confirm_memory_prompt_exposure(self) -> None:
+        await self.delegate.confirm_memory_prompt_exposure()
+
+    def consume_provider_chain_restart(self) -> bool:
+        return self.delegate.consume_provider_chain_restart()
+
+    def mark_native_web_used(self) -> None:
+        self.delegate.mark_native_web_used()
+
+    def did_use_web(self) -> bool:
+        return self.delegate.did_use_web()
+
+    async def observe_response(self, response: ChatResponse, runtime: AgentRuntime) -> None:
+        await self.delegate.observe_response(response, runtime)
+
+    def response_feedback(self, content: str, runtime: AgentRuntime) -> str | None:
+        return self.delegate.response_feedback(content, runtime)
+
+    def has_visible_effects(self) -> bool:
+        return self.delegate.has_visible_effects()
+
+    def allow_silent_final(self, runtime: AgentRuntime) -> bool:
+        return self.delegate.allow_silent_final(runtime)
 
     def work_control_allowed(self, name: str) -> bool:
         return name in self.names

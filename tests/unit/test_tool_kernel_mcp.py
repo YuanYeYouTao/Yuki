@@ -13,6 +13,9 @@ from typing import Any
 import httpx
 import pytest
 
+# P10: explicit Invocation fixture contract; existing assertions are retained.
+from tests.support.agent_backend import StubAgentBackend
+
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities import (
     CapabilityDescriptor,
@@ -295,7 +298,7 @@ async def test_catalog_selection_schema_budget_and_binding_are_provider_neutral(
 
 
 @dataclass(slots=True)
-class _BatchBackend:
+class _BatchBackend(StubAgentBackend):
     active: int = 0
     maximum_active: int = 0
     completed: list[str] = field(default_factory=list)
@@ -304,7 +307,10 @@ class _BatchBackend:
         del runtime
         return name.startswith("read")
 
-    async def execute(self, name: str, arguments: str, runtime: object) -> str:
+    async def execute_call(self, invocation):
+        name = invocation.call.function.name
+        arguments = invocation.call.function.arguments
+        runtime = invocation.context.runtime
         del arguments, runtime
         self.active += 1
         self.maximum_active = max(self.maximum_active, self.active)

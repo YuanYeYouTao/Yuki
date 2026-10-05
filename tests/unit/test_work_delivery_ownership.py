@@ -7,6 +7,9 @@ from itertools import pairwise
 import pytest
 from sqlalchemy import select
 from tests.conftest import build_harness, make_settings
+
+# P10: explicit Invocation fixture contract; existing assertions are retained.
+from tests.support.agent_backend import StubAgentBackend
 from tests.support.runtime_wire import install_wire
 from tests.support.social_identity_cases import social_env
 from tests.unit.test_runtime_work import _persisted_tool_receipt
@@ -30,7 +33,7 @@ def call(name, args, identity):
     )
 
 
-class DeliveryBackend:
+class DeliveryBackend(StubAgentBackend):
     def __init__(self, env):
         self.env = env
         self.owners = []
@@ -49,7 +52,10 @@ class DeliveryBackend:
     def is_side_effecting(self, *args):
         return True
 
-    async def execute(self, name, arguments, runtime):
+    async def execute_call(self, invocation):
+        name = invocation.call.function.name
+        arguments = invocation.call.function.arguments
+        runtime = invocation.context.runtime
         control = runtime.work_control
         self.owners.append(control.current["id"])
         result = await self.env.service.execute(

@@ -6,6 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
+# P10: explicit Invocation fixture contract; existing assertions are retained.
+from tests.support.agent_backend import StubAgentBackend
+
 from qq_ai_bot.capabilities.coordinator import ToolInvocationCoordinator
 from qq_ai_bot.capabilities.invocation import (
     Invocation,
@@ -17,7 +20,7 @@ from qq_ai_bot.capabilities.invocation import (
 from qq_ai_bot.domain.messages import ToolCall, ToolFunction
 
 
-class IdentityBackend:
+class IdentityBackend(StubAgentBackend):
     def __init__(self):
         self.started = []
         self.completed = []

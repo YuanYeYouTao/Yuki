@@ -11,12 +11,16 @@ import httpx
 import pytest
 from tests.fakes import FakeWebSearchProvider
 
+# P10: explicit Invocation fixture contract; existing assertions are retained.
+from tests.support.agent_backend import StubAgentBackend
+
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
 from qq_ai_bot.application.modules.web import HotWebSearchProvider, WebModule
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.messages import ReasoningEffort
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.llm.gemini import GeminiProvider
+from qq_ai_bot.model_runtime.executor import LegacyTaskModelExecutor
 from qq_ai_bot.model_runtime.models import (
     ModelCapability,
     ModelProfile,
@@ -500,9 +504,9 @@ async def test_agent_runner_pins_web_backend_through_tool_execution(monkeypatch)
         response=WebSearchResponse("query", (SOURCE,), "new", 0, provider="new")
     )
     hot = HotWebSearchProvider(old)
-    runner = AgentRunner(FakeLLMProvider(), ConcurrencyManager(2))
+    runner = AgentRunner(LegacyTaskModelExecutor(FakeLLMProvider()), ConcurrencyManager(2))
 
-    class Backend:
+    class Backend(StubAgentBackend):
         def pin_web_provider(self):
             return hot.pin()
 

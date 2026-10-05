@@ -23,7 +23,6 @@ from qq_ai_bot.agent_core.events import EventStream
 from qq_ai_bot.agent_core.model_boundary import (
     RETRY,
     STOP,
-    Callbacks,
     InvocationBoundary,
     LoopSignal,
     ModelBoundary,
@@ -69,9 +68,9 @@ def fail_truncated_calls(
 async def run_agent_loop(
     *,
     max_requests: int,
-    model: ModelBoundary | Callbacks,
-    invocation: InvocationBoundary | Callbacks,
-    settlement: TurnSettlement | Callbacks,
+    model: ModelBoundary,
+    invocation: InvocationBoundary,
+    settlement: TurnSettlement,
     events: EventStream | None = None,
 ) -> object:
     """Pi ``runAgentLoop``/``runAgentLoopContinue`` + ``runLoop``.

@@ -9,6 +9,9 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import select
 from tests.conftest import build_harness, make_settings
+
+# P10: fixed typed backend fixture, original assertions retained.
+from tests.support.agent_backend import StubAgentBackend
 from tests.support.social_identity_cases import social_env
 from tests.support.work_compaction import session_summary, summary_json
 
@@ -243,16 +246,15 @@ async def test_native_public_call_and_result_are_paired_after_compaction_and_res
     )
     runner, runtime = await _runtime(database, control, initial, provider)
     definition = ChatTool("read_probe", "Read evidence", {"type": "object"})
-    backend = SimpleNamespace(
+    backend = StubAgentBackend(
         definitions=lambda *args, **kwargs: (definition,),
-        execute=AsyncMock(return_value=output),
-        begin_batch=lambda *args: None,
+        execute_call=AsyncMock(return_value=output),
         is_side_effecting=lambda *args: False,
         parallel_safe=lambda *args: False,
         exhausted=lambda *args: "",
     )
     await runner.run(initial, runtime, backend)
-    backend.execute.assert_awaited_once()
+    backend.execute_call.assert_awaited_once()
     session = control.session
     effect_key = session.call_key(call.id)
     _grow(session.transcript)
@@ -286,7 +288,7 @@ async def test_native_public_call_and_result_are_paired_after_compaction_and_res
     material = json.loads(restored.transcript.request().messages[-1].content)
     assert material["execution_evidence"][0]["effect_key"] == effect_key
     assert await restored.journal.effect_result(effect_key) == output
-    backend.execute.assert_awaited_once()
+    backend.execute_call.assert_awaited_once()
     await control.repository.release(control.lease)
 
 
@@ -341,6 +343,8 @@ async def test_auxiliary_output_reservation_rejects_source_before_dispatch(datab
     capacity = ModelCapacity(context_tokens=20000, output_tokens=4096)
     executor = SimpleNamespace(
         capacity=lambda _: capacity,
+        # P10's explicit capacity projection replaces the duck-typed fallback.
+        capacity_request=lambda _task, request: request,
         execute=AsyncMock(),
         structured_output_mode=lambda _: StructuredOutputMode.TEXT_JSON,
     )
@@ -395,6 +399,7 @@ async def test_tool_dense_source_compacts_without_duplicate_outputs(database, tm
     auxiliary = AsyncMock(side_effect=summarize)
     runner._models = SimpleNamespace(
         capacity=lambda _: ModelCapacity(),
+        capacity_request=lambda _task, request: request,
         execute=auxiliary,
         structured_output_mode=lambda _: StructuredOutputMode.TEXT_JSON,
     )

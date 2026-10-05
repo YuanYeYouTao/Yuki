@@ -1,10 +1,12 @@
 """Initial preparation and dispatch use the same authorized tool declarations."""
 
 from dataclasses import replace
-from types import SimpleNamespace
 
 import pytest
 from tests.conftest import build_harness, make_settings
+
+# P10: explicit backend/Invocation fixture; all behavioral assertions retained.
+from tests.support.agent_backend import StubAgentBackend
 from tests.unit.test_context_observation_sources import add_clue, context_for
 from tests.unit.test_history_dispatch_ownership import _scene
 
@@ -102,7 +104,7 @@ async def test_initial_prepared_tool_cost_matches_actual_first_runner_request(
         max_model_requests=2,
         fixed_tools=declarations,
     )
-    result = await runner.run(messages, runtime, SimpleNamespace(finalize=lambda text, _: text))
+    result = await runner.run(messages, runtime, StubAgentBackend(finalize=lambda text, _: text))
     assert result.text == "done" and len(provider.requests) == 1
     actual = provider.requests[0]
     assert actual.tools == prepared.tools and actual.native_tools == prepared.native_tools

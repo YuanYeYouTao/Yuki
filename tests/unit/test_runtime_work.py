@@ -7,6 +7,9 @@ from itertools import pairwise
 
 import pytest
 from sqlalchemy import select, update
+
+# P10: explicit Invocation fixture contract; existing assertions are retained.
+from tests.support.agent_backend import StubAgentBackend
 from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.runtime.work_control import WorkControl
@@ -470,7 +473,7 @@ async def test_agent_loop_speaks_then_executes_and_proposes_finish(
 
     provider.complete = complete
 
-    class Backend:
+    class Backend(StubAgentBackend):
         def definitions(self, runtime, **kwargs):
             return tuple(
                 sorted(
@@ -491,7 +494,8 @@ async def test_agent_loop_speaks_then_executes_and_proposes_finish(
         def is_side_effecting(self, *args):
             return True
 
-        async def execute(self, name, arguments, runtime):
+        async def execute_call(self, invocation):
+            name = invocation.call.function.name
             assert name == "render_fixture"
             observed.append("render")
             return json.dumps({"ok": True, "data": {"artifact_id": "png", "exit_code": 0}})

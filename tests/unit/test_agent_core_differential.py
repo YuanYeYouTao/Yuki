@@ -13,6 +13,9 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 from tests.conftest import build_harness, make_settings
+
+# P10: explicit Invocation fixture contract; existing assertions are retained.
+from tests.support.agent_backend import StubAgentBackend
 from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.automation.models import TurnOrigin
@@ -90,7 +93,7 @@ def request_view(request):
     }
 
 
-class Backend:
+class Backend(StubAgentBackend):
     def __init__(self):
         self.executed = []
 
@@ -106,7 +109,9 @@ class Backend:
     def is_side_effecting(self, name, arguments, runtime):
         return name != "read"
 
-    async def execute(self, name, arguments, runtime):
+    async def execute_call(self, invocation):
+        name = invocation.call.function.name
+        arguments = invocation.call.function.arguments
         self.executed.append((name, arguments))
         return json.dumps({"ok": True, "data": {"tool": name, "arguments": arguments}})
 
@@ -206,7 +211,8 @@ async def run_work_scenario(database, tmp_path):
         def is_side_effecting(self, name, arguments, runtime):
             return True
 
-        async def execute(self, name, arguments, runtime):
+        async def execute_call(self, invocation):
+            name = invocation.call.function.name
             executed.append(name)
             return json.dumps({"ok": True, "data": {"artifact_id": "png", "exit_code": 0}})
 

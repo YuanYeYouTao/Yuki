@@ -12,7 +12,7 @@ the original InvocationService) and turn settlement. No hook registry exists.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, replace
 from typing import Literal, Protocol
 
@@ -75,28 +75,6 @@ class TurnSettlement(Protocol):
     ) -> TurnDecision | LoopSignal: ...
 
     async def exhausted(self) -> object: ...
-
-
-@dataclass(frozen=True, slots=True)
-class Callbacks:
-    """Bind the three boundaries from closures owned by one caller (the Runner).
-
-    This is a fixed set of named responsibilities, not an extensible registry.
-    """
-
-    begin: Callable[[int], Awaitable[LoopSignal | None]]
-    steer: Callable[[int], Awaitable[End | None]]
-    request: Callable[[int], Awaitable[RequestResult]]
-    execute_tools: Callable[[int, ChatResponse], Awaitable[ToolBatchOutcome]]
-    settle_truncated: Callable[
-        [int, ChatResponse, tuple[ToolCallOutcome, ...]], Awaitable[TurnDecision]
-    ]
-    settle_final: Callable[[int, ChatResponse], Awaitable[TurnDecision]]
-    stop_before_tools: Callable[[int, ChatResponse], Awaitable[End | None]]
-    finish_tool_turn: Callable[
-        [int, ChatResponse, ToolBatchOutcome], Awaitable[TurnDecision | LoopSignal]
-    ]
-    exhausted: Callable[[], Awaitable[object]]
 
 
 # --- Synthetic frames (tests and boundary contracts only) -------------------

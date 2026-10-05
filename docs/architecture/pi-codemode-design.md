@@ -84,7 +84,8 @@ Provider 覆盖沿现有 Chat 15 个 vendor、Responses、Claude、Gemini 与显
 
 P01 删除可变 `_batch` 作为身份来源；P02 统一原子 admission；P03 移植 Pi 控制流；
 P04/P05 接入手动 Monty 驱动和完整工具；P06–P09 完成领域、入口、协议、迁移与隔离；
-P10 删除旧生产循环和临时接口。参照来源与差异见 [provenance](pi-port-provenance.md)。
+P10 已删除生产 _run/Callbacks、临时 execute/begin_batch 与动态 fallback；
+显式 TurnState/TurnExecution 驱动唯一核心。完整复验状态见交付记录。参照来源与差异见 [provenance](pi-port-provenance.md)。
 
 离线验收不能代替真实外部或生产验收。已有新子 effect 后，不认识它的旧 binary 不能接管
 Work；回退保留新消息、文件、预算和回执，使用兼容 reader 收拢，不能恢复旧数据库覆盖事实。

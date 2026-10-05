@@ -10,7 +10,7 @@ import time
 import weakref
 from collections import OrderedDict
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
 from typing import Any, Protocol
@@ -257,6 +257,15 @@ class ModelExecutor(Protocol):
 
     def capacity_request(self, task: ModelTask, request: ChatRequest) -> ChatRequest: ...
 
+    def profile_revision(self, task: ModelTask) -> str: ...
+
+    def search_mode(self, task: ModelTask) -> ModelSearchMode | None: ...
+
+    def pin(self) -> AbstractContextManager[None]: ...
+
+    @property
+    def traces(self) -> TraceRecorder | None: ...
+
 
 class LegacyTaskModelExecutor:
     """Adapt an injected test provider without leaking it into business services."""
@@ -316,6 +325,17 @@ class LegacyTaskModelExecutor:
     def capacity(self, task: ModelTask) -> ModelCapacity:
         del task
         return ModelCapacity()
+
+    traces: TraceRecorder | None = None
+
+    def profile_revision(self, task: ModelTask) -> str:
+        return "legacy"
+
+    def search_mode(self, task: ModelTask) -> ModelSearchMode | None:
+        return None
+
+    def pin(self) -> AbstractContextManager[None]:
+        return nullcontext()
 
 
 def require_model_executor(

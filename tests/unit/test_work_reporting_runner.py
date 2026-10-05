@@ -8,6 +8,9 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 from tests.conftest import build_harness, make_settings
+
+# P10: explicit Invocation fixture contract; existing assertions are retained.
+from tests.support.agent_backend import StubAgentBackend
 from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.automation.models import TurnOrigin
@@ -80,7 +83,7 @@ async def case(database, tmp_path, responses, *, reporting="interactive", send_s
     chat = harness.processor._chat
     observed = []
 
-    class Backend:
+    class Backend(StubAgentBackend):
         def definitions(self, runtime, **kwargs):
             return (
                 *work_control_tools(),
@@ -99,7 +102,9 @@ async def case(database, tmp_path, responses, *, reporting="interactive", send_s
         def is_side_effecting(self, name, arguments, runtime):
             return name != "read_fixture"
 
-        async def execute(self, name, arguments, runtime):
+        async def execute_call(self, invocation):
+            name = invocation.call.function.name
+            arguments = invocation.call.function.arguments
             observed.append(name)
             if name == "send_message":
                 target = json.loads(arguments).get("target", {"kind": "space", "id": env.space})
@@ -355,10 +360,11 @@ async def test_stage_and_new_input_share_one_nonblocking_opportunity(database, t
     )
     async with database.sessions() as reader:
         event_id = await reader.scalar(select(ChatEventModel.id))
-    original_execute = test_case.backend.execute
+    original_execute = test_case.backend.execute_call
 
-    async def execute(name, arguments, runtime):
-        result = await original_execute(name, arguments, runtime)
+    async def execute(invocation):
+        name = invocation.call.function.name
+        result = await original_execute(invocation)
         if name == "read_fixture":
             identity = await test_case.repository.enqueue(
                 test_case.control.lease.conversation_id,
@@ -372,7 +378,7 @@ async def test_stage_and_new_input_share_one_nonblocking_opportunity(database, t
             await test_case.repository.prepare_input(identity, {"text": "问题找到了吗？"})
         return result
 
-    test_case.backend.execute = execute
+    test_case.backend.execute_call = execute
     result = await run(test_case)
     assert result.work_state == "completed"
     opportunities = [
@@ -629,10 +635,12 @@ async def test_only_actual_related_send_suppresses_stage_opportunity(database, t
     )
     test_case.provider._responder = lambda _: next(scripted)
     if delivery in {"failed", "unknown"}:
-        original_execute = test_case.backend.execute
+        original_execute = test_case.backend.execute_call
 
-        async def execute(name, arguments, runtime):
-            result = await original_execute(name, arguments, runtime)
+        async def execute(invocation):
+            name = invocation.call.function.name
+            arguments = invocation.call.function.arguments
+            result = await original_execute(invocation)
             if name == "send_message" and json.loads(arguments).get("text") == "阶段结果":
                 return json.dumps(
                     {
@@ -645,7 +653,7 @@ async def test_only_actual_related_send_suppresses_stage_opportunity(database, t
                 )
             return result
 
-        test_case.backend.execute = execute
+        test_case.backend.execute_call = execute
     result = await run(test_case)
     assert (result.work_state == "completed") == (delivery not in {"failed", "unknown"})
     stage = [

@@ -4,6 +4,7 @@ import asyncio
 import json
 
 import pytest
+from tests.support.agent_boundaries import Callbacks
 
 from qq_ai_bot.agent_core import (
     RETRY,
@@ -18,7 +19,7 @@ from qq_ai_bot.agent_core import (
     reduce,
     run_agent_loop,
 )
-from qq_ai_bot.agent_core.model_boundary import Callbacks, Frame, collect_response
+from qq_ai_bot.agent_core.model_boundary import Frame, collect_response
 from qq_ai_bot.domain.messages import ChatResponse, ModelResponseStatus, ToolCall, ToolFunction
 
 

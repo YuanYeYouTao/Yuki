@@ -29,6 +29,7 @@
 | `5414065f` | P06 领域回执与来源权限闭合，已推送 |
 | `b49e4da6` | P07 全部入口接线，已推送 |
 | `bab3448a` | P08 wire、私有续接与父子轨迹，已推送 |
+| `85a35aa9` | P09 迁移/资源/完整备份、Linux 原生隔离及两个镜像装配，已推送 |
 
 P08 最后一次全量：3207 通过、1 跳过（未提供私有生产备份路径），707.09 秒；真实 worker
 测试无跳过，ruff check/format 与 mypy 720 文件通过。此前 0.2 秒计时失败已改成派发边界触发，
@@ -41,7 +42,7 @@ P08 最后一次全量：3207 通过、1 跳过（未提供私有生产备份路
 | P07 全部入口接线 | 离线实现及全量验证完成 |
 | P08 Provider/上下文/轨迹 | 离线实现及全量验证完成；前端 89 项通过 |
 | P09 迁移、worker 运维、回退演练 | 本地迁移/完整 Manager 备份、原生 Linux 隔离与 45 项定向测试通过；最终全量 3246 通过/1 跳过；应用与验证镜像装配通过（默认容器 Code Mode 不启用） |
-| P10 整体验收与旧循环删除 | 未开始 |
+| P10 整体验收与旧循环删除 | 完整实现及离线复验通过，提交准备中：旧 _run/Callbacks/execute/动态 fallback 已退休；四组 12/12、Linux 61 项、全量 3246/1 跳过；89 项离线通过、X11 许可项部分通过 |
 | P11 真实外部验收 | DeepSeek Provider 调用已授权，尚未运行；其余外部范围待授权 |
 
 ## 已存在、后续阶段直接复用的部件
@@ -100,9 +101,8 @@ YUKI_MONTY_BINARY=<worker 路径> uv run --frozen pytest -q -p no:warnings tests
 
 - `test_automation_timeout_certainty.py` 的 transport deadline 在 P06 改为由实际派发边界
   触发真实 asyncio Timeout，不依赖准备阶段的 0.2 秒剩余期限；原未知及不重发断言保留。
-- `AgentRunner` 中仍有 31 个跨步骤共享的 `nonlocal` 变量，应收敛为显式回合状态（P05 已合并，
-  可以做；会大面积改 `agent_runner.py`，避免与 P07/P08 同时动这个文件）。
-- `begin_batch` 兼容调用仍在 `agent_runner.py`，P10 删除。
+- P10 已将 38 项回合状态收敛到 `TurnState`，请求派发由独立 admission 拥有；
+  生产旧循环、Callbacks bag、begin_batch 和 execute 兼容已删除。结构报告在 `p10-retirement.json`。
 - 持久 worker 的 `execute_code` 已使用独立固定子集，P07 全量验证通过。
 - `update_short_state` 已纳入 P06 直接/子调用授权一致性对照。
 - Provider 仍采用完整 response 接口；合成 frame 已验证，未向 Yuki 暴露真实供应商 token delta。P11 核验实际配置的工具、续接、截断与断连，不把 complete 宣称为 streaming。

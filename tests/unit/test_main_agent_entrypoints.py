@@ -7,6 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 from tests.conftest import build_harness, make_settings
+
+# P10: explicit Invocation fixture contract; existing assertions are retained.
+from tests.support.agent_backend import StubAgentBackend
 from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.automation.models import TurnOrigin
@@ -36,7 +39,7 @@ async def test_send_message_bypasses_work_admission_without_reclassifying_mutati
         async def pending(self):
             return True
 
-    class Backend:
+    class Backend(StubAgentBackend):
         def begin_batch(self, calls, runtime):
             pass
 
@@ -46,7 +49,8 @@ async def test_send_message_bypasses_work_admission_without_reclassifying_mutati
         def parallel_safe(self, name, runtime):
             return False
 
-        async def execute(self, name, arguments, runtime):
+        async def execute_call(self, invocation):
+            name = invocation.call.function.name
             executed.append(name)
             return json.dumps({"ok": True})
 

@@ -5,6 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 from tests.conftest import build_harness, make_settings
+
+# P10: explicit Invocation fixture contract; existing assertions are retained.
+from tests.support.agent_backend import StubAgentBackend
 from tests.support.codemode_cases import BINARY, TOOLS, requires_worker
 from tests.support.social_identity_cases import social_env
 
@@ -25,7 +28,7 @@ def call(name, args, identity):
     )
 
 
-class Backend:
+class Backend(StubAgentBackend):
     """Minimal explicit-invocation backend with an independent downstream log."""
 
     def __init__(self):

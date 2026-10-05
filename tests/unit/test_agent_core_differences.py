@@ -60,7 +60,9 @@ class Concurrency(Backend):
         self.peak = 0
         self.timeline = []
 
-    async def execute(self, name, arguments, runtime):
+    async def execute_call(self, invocation):
+        name = invocation.call.function.name
+        arguments = invocation.call.function.arguments
         self.active += 1
         self.peak = max(self.peak, self.active)
         self.timeline.append(("start", name, arguments))
@@ -148,7 +150,7 @@ async def test_business_failure_receipt_reaches_model_unflattened(database, rece
     body = json.dumps(receipt)
 
     class Failing(Backend):
-        async def execute(self, name, arguments, runtime):
+        async def execute_call(self, invocation):
             return body
 
     runtime = runtime_for(chat, await chat._runtime_config.snapshot())
@@ -163,7 +165,7 @@ async def test_host_exceptions_go_to_their_owner_not_into_a_tool_result(database
     chat = build_harness(database, make_settings(database.url), provider).processor._chat
 
     class Broken(Backend):
-        async def execute(self, name, arguments, runtime):
+        async def execute_call(self, invocation):
             raise ConnectionResetError("storage")
 
     runtime = runtime_for(chat, await chat._runtime_config.snapshot())

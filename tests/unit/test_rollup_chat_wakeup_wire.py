@@ -173,7 +173,11 @@ async def test_parallel_source_change_preserves_retry_owner_and_other_failures(
     async def fail(*_args):
         raise group
 
-    monkeypatch.setattr(runner, "_run", fail)
+    from qq_ai_bot.services.turn_execution import TurnExecution
+
+    # P10 retires _run; inject the same error at the typed activation boundary.
+    # The exception identity, source version and original Work recovery assertions remain.
+    monkeypatch.setattr(TurnExecution, "activate", fail)
     control = (
         SimpleNamespace(
             current={"id": "original-work"},

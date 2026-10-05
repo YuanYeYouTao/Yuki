@@ -2,12 +2,14 @@
 
 import asyncio
 import json
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import delete, insert, select
 from tests.conftest import build_harness, make_settings
+
+# P10: fixed typed backend fixture, original assertions retained.
+from tests.support.agent_backend import StubAgentBackend
 from tests.unit.test_work_protocol_continuity import _control
 
 from qq_ai_bot.domain.messages import ChatImage, ChatMessage
@@ -99,7 +101,7 @@ async def test_runner_unready_input_releases_activation_without_provider_request
             chat.runtime.runner.run(
                 (ChatMessage("user", "original task"),),
                 runtime,
-                SimpleNamespace(definitions=lambda *_args, **_kwargs: work_control_tools()),
+                StubAgentBackend(definitions=lambda *_args, **_kwargs: work_control_tools()),
             ),
             timeout=0.5,
         )
