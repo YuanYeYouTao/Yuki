@@ -55,7 +55,9 @@ def test_workspace_expiry_revision_quota_and_file_integrity(
 
 
 @pytest.mark.asyncio
-async def test_published_image_inspection_is_bounded_and_charges_model(tmp_path: Path) -> None:
+async def test_published_image_inspection_is_bounded_without_auxiliary_model(
+    tmp_path: Path,
+) -> None:
     import io
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
@@ -64,7 +66,6 @@ async def test_published_image_inspection_is_bounded_and_charges_model(tmp_path:
 
     from qq_ai_bot.runtime.work_activation import current_work_control
     from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
-    from qq_ai_bot.vision.models import VisualObservation
     from qq_ai_bot.workspace.inspect import WorkspaceInspector
 
     store = WorkspaceStore(tmp_path / "artifacts")
@@ -78,19 +79,19 @@ async def test_published_image_inspection_is_bounded_and_charges_model(tmp_path:
     with pytest.raises(WorkspaceError, match="artifact_too_large"):
         store.read_bytes(identity, max_bytes=1)
     assert store.read_bytes(identity)[1] == content.getvalue()
-    provider = SimpleNamespace(
-        analyze=AsyncMock(return_value=VisualObservation(items=(), overall_description="红色图片"))
-    )
-    inspector = WorkspaceInspector(store, ImagePreprocessor(), provider)
+    inspector = WorkspaceInspector(store, ImagePreprocessor())
     control = SimpleNamespace(validate=AsyncMock(), reserve_request=AsyncMock())
     token = current_work_control.set(control)
     try:
         result = await inspector(identity, "图片是什么颜色？")
-        assert result["observation"]["overall_description"] == "红色图片"
-        control.reserve_request.assert_awaited_once_with(auxiliary=True)
+        assert result.images and result.images[0].source == "workspace"
+        assert result.images[0].artifact_id == identity
+        assert result["status"] == "prepared_for_main_agent"
+        assert "data:image" not in str(result)
+        await inspector.validate_artifact(result.images[0])
+        control.reserve_request.assert_not_awaited()
         mutable = store.write("draft.png", content.getvalue())
         with pytest.raises(WorkspaceError, match="inspection_requires_published_artifact"):
             await inspector(mutable["artifact_id"], "检查草稿")
-        provider.analyze.assert_awaited_once()
     finally:
         current_work_control.reset(token)

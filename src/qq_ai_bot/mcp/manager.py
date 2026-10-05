@@ -28,6 +28,7 @@ from qq_ai_bot.mcp.models import (
 from qq_ai_bot.mcp.repository import MCPRepository
 from qq_ai_bot.mcp.result_normalizer import normalize_mcp_result
 from qq_ai_bot.persistence.unit_of_work import state_revision
+from qq_ai_bot.services.native_media import NativeMediaPreparer
 
 
 class MCPRevisionConflict(RuntimeError):
@@ -57,6 +58,7 @@ class MCPManager:
         max_parallel_calls: int,
         repository: MCPRepository,
         connection_factory: MCPConnectionFactory = SDKMCPConnection,
+        media_preparer: NativeMediaPreparer | None = None,
     ) -> None:
         if metadata_cache_ttl_seconds <= 0 or max_parallel_calls <= 0:
             raise ValueError("MCP cache TTL and parallel call count must be positive")
@@ -68,6 +70,7 @@ class MCPManager:
         self._request_timeout = request_timeout_seconds
         self._repository = repository
         self._factory = connection_factory
+        self.media_preparer = media_preparer
         self._config = LoadedMCPConfig({}, {}, False)
         self._connections: dict[str, MCPConnection] = {}
         self._tools: dict[str, tuple[MCPToolMetadata, ...]] = {}
@@ -332,7 +335,13 @@ class MCPManager:
                 tool_name = current.remote_tool_name
                 connection = await self._ensure_connection(server_id, config)
                 raw = await connection.call_tool(tool_name, arguments)
-                result = normalize_mcp_result(raw, server_id=server_id, tool_name=tool_name)
+                result = await asyncio.to_thread(
+                    normalize_mcp_result,
+                    raw,
+                    server_id=server_id,
+                    tool_name=tool_name,
+                    media_preparer=self.media_preparer,
+                )
                 return result
             except asyncio.CancelledError:
                 cancelled = True

@@ -26,6 +26,25 @@ WebUI 成功保存模型连接与任务路由后，新任务立即使用新配�
 
 这里的支持指适配器与 Yuki 执行合同通过离线协议回放，不代表任意同名模型都支持这些功能，
 也不代表各家服务已完成真实 API 或 QQ 验收。Profile 的能力声明必须符合实际模型。
+
+主 Agent 当前/引用图片、历史 `inspect_conversation_attachment`、工作区 `workspace_inspect`
+和获准 MCP 工具图片共用原主模型图片输入。历史/工作区工具只准备像素，不再调用独立
+Qwen；DeepSeek 使用这些工具也走自身已声明的 `image_input`，并非固定先读取视觉摘要。
+本次采用各协议已有的用户图片编码：整批文字工具回执配对后追加 Host 媒体观察，保留原
+call_id、工具顺序、签名和 opaque continuation。不自动尝试多模态 functionResponse 或
+function_call_output.output[]，也不在上游拒绝图片后切换 Qwen。没有图片能力明确未读。
+
+`user` 图片观察属于 Agent 已选取资料的协议承载，不产生新用户事件或额外授权。主请求
+继续使用原 pinned Profile 和原预算；图片准备没有第二次视觉模型请求。配置图片能力仅
+说明声明，不能证明实际端点可读取。五类适配器的 HTTP payload 可离线回放；本次真实
+Gemini/DeepSeek API 图片验收与生产速度验收尚未完成。插件自有 handle 与 SDK MCP 显式选图
+桥接已按其 owner/委托合同做本地验证，不从通用编码推定真实上游已验收。
+
+独立视觉连接仍服务后台表情分类、表情发送候选选择和 SDK 显式 `VISION_ANALYZE`；它不再
+作为普通主 Agent 当前/引用图片缺少原生能力时的隐式回退。ASR 仍可能借用 Qwen URL/key，
+且借用不依赖 `vision_enabled`。保留这些消费者期间不能删除共享密钥或声称可整体关闭
+独立视觉配置。详见[聊天媒体](chat-media-workspace.md)。
+
 原生搜索不能假装为客户端函数；Claude 搜索结果以 server tool 回执和引用记录，Gemini
 Google Search 的工具调用、结果和 thought signature 按原样保存在私有续跑状态中。
 Gemini 的 Google Search 与函数工具同请求在当前 Cloud Code 代理路由上返回 400，

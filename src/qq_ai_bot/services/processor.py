@@ -136,11 +136,7 @@ from qq_ai_bot.services.user_profiles import (
     UserProfileService,
     sanitize_profile_name,
 )
-from qq_ai_bot.services.vision_service import (
-    VisionProcessingError,
-    VisionService,
-    compact_visual_summary,
-)
+from qq_ai_bot.services.vision_service import VisionService
 from qq_ai_bot.speech.preference_service import VoicePreferenceService
 from qq_ai_bot.vision.models import VisualObservation
 from yuki_plugin_sdk.events import EventName
@@ -1569,7 +1565,7 @@ class MessageProcessor:
             self._native_images is not None and has_video
         ):
             return VisualTurnState()
-        if self._native_images is not None and (self._native_images.images_enabled or has_video):
+        if self._native_images is not None:
             gateway = (
                 cast(OneBotMediaGateway, sender)
                 if callable(getattr(sender, "call_api", None))
@@ -1613,57 +1609,17 @@ class MessageProcessor:
                         else ""
                     ),
                 )
-        if self._vision is None or not self._settings.vision_enabled:
-            return VisualTurnState(failed=True, error_code="not_configured")
-
-        resolved_source_event_id = source_event_id
-        if (
-            not any(attachment.kind.value == "image" for attachment in message.attachments)
-            and message.reply_to_event_id is not None
-            and message.conversation_id is not None
-        ):
-            replied_event = await self._ledger.get_reply_event(
-                message.reply_to_event_id,
-                conversation_id=message.conversation_id,
-                current_generation_only=True,
-            )
-            if replied_event is not None:
-                resolved_source_event_id = replied_event.id
-        gateway = (
-            cast(OneBotMediaGateway, sender)
-            if callable(getattr(sender, "call_api", None))
-            else None
+        # Reading an attachment belongs to the pinned primary model. Auxiliary
+        # vision remains available to its explicit SDK/background consumers,
+        # but cannot silently substitute a second model in an ordinary turn.
+        return VisualTurnState(
+            failed=True,
+            error_code="image_capability_unavailable",
+            attachment_text=(
+                "[图片未读取：image_capability_unavailable。当前主模型不支持图片输入；"
+                "不能声称已经查看或根据附件猜测。]"
+            ),
         )
-        try:
-            observation = await self._vision.analyze(
-                message,
-                question=question,
-                runtime=runtime.vision,
-                gateway=gateway,
-                source_event_id=resolved_source_event_id,
-                conversation_key=conversation_key,
-            )
-            await self._ledger.set_visual_summary(
-                resolved_source_event_id,
-                compact_visual_summary(observation),
-            )
-            return VisualTurnState(observation=observation)
-        except VisionProcessingError as exc:
-            logger.warning(
-                "vision_turn_failed event_key=%s error_category=%s",
-                event_key,
-                exc.code,
-            )
-            return VisualTurnState(failed=True, error_code=exc.code)
-        except Exception as exc:
-            # Optional visual failures must not escape the OneBot event handler.
-            # Exception text can contain signed media URLs, so only log its type.
-            logger.error(
-                "vision_turn_failed event_key=%s error_category=unexpected_%s",
-                event_key,
-                type(exc).__name__,
-            )
-            return VisualTurnState(failed=True, error_code="internal_error")
 
     async def _observe_group_metadata(
         self,

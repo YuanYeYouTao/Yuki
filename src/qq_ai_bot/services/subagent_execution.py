@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import func, select
 
@@ -71,7 +71,7 @@ class WorkerBackend:
     async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str:
         if name not in self.names:
             return '{"ok":false,"error":"worker_tool_not_declared"}'
-        return str(await self.delegate.execute(name, arguments_json, runtime))
+        return cast(str, await self.delegate.execute(name, arguments_json, runtime))
 
 
 class SubagentExecution:

@@ -28,7 +28,7 @@ async def _cache(database, tmp_path, count=1):
         content="attachment",
     )
     service = ConversationMediaService(
-        database, tmp_path / "media", AsyncMock(), ImagePreprocessor(), None
+        database, tmp_path / "media", AsyncMock(), ImagePreprocessor()
     )
     directory = service.root / source.canonical_conversation_id / str(source.id)
     directory.mkdir(parents=True)

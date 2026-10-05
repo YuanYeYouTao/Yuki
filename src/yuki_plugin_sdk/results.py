@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import Field, model_validator
 
-from yuki_plugin_sdk.models import JsonValue, StrictModel
+from yuki_plugin_sdk.models import JsonValue, MediaArtifactHandle, StrictModel
 
 
 class PluginResult(StrictModel):
@@ -12,6 +12,10 @@ class PluginResult(StrictModel):
     data: dict[str, JsonValue] = Field(default_factory=dict)
     error_code: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_.-]{0,63}$")
     detail: str = Field(default="", max_length=1_000)
+    # Explicit selection of owned Host handles, never pixels or a bearer read grant.
+    media_artifacts: tuple[MediaArtifactHandle, ...] = Field(
+        default=(), max_length=16, exclude_if=lambda value: not value
+    )
 
     @model_validator(mode="after")
     def _consistent(self) -> PluginResult:

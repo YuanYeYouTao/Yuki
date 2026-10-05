@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 from typing import Any
 from uuid import uuid4
 
 from qq_ai_bot.conversation.media_service import ConversationMediaError, ConversationMediaService
+from qq_ai_bot.domain.messages import ChatImage
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.sandbox.client import SandboxClient
 from qq_ai_bot.services.media_resolver import MediaResolver
+from qq_ai_bot.workspace.inspect import WorkspaceInspector
 from qq_ai_bot.workspace.store import WorkspaceError, WorkspaceStore
 from qq_ai_bot.workspace.tools import workspace_tools as workspace_tools
 
@@ -25,7 +28,7 @@ class WorkspaceService:
         self.store, self.resolver = store, resolver
         self.database = database
         self.sandbox: SandboxClient | None = None
-        self.visual_inspector: Any = None
+        self.visual_inspector: WorkspaceInspector | None = None
         self.conversation_media: ConversationMediaService | None = None
         self._task: asyncio.Task[None] | None = None
 
@@ -66,8 +69,38 @@ class WorkspaceService:
         if name == "workspace_inspect":
             if self.visual_inspector is None:
                 raise WorkspaceError("visual_inspection_unavailable")
-            return dict(
-                await self.visual_inspector(str(args["artifact_id"]), str(args["question"]))
+            if bool(args.get("artifact_id")) == bool(args.get("path")):
+                raise WorkspaceError("choose_path_or_artifact_id")
+            vision = (
+                runtime.runtime_config.vision
+                if runtime is not None and runtime.runtime_config
+                else None
+            )
+            if args.get("artifact_id"):
+                return await self.visual_inspector(
+                    str(args["artifact_id"]), str(args["question"]), runtime=vision
+                )
+            if self.sandbox is None:
+                raise WorkspaceError("environment_unavailable")
+            metadata = await self.sandbox.execute(
+                "workspace_media_read",
+                {
+                    "path": str(args["path"]),
+                    "expected_version": args.get("expected_version"),
+                },
+                request_id=request_id or str(uuid4()),
+            )
+            if metadata.get("error"):
+                raise WorkspaceError(str(metadata["error"]))
+            encoded = metadata.pop("base64", "")
+            if not isinstance(encoded, str) or len(encoded) > (20 * 1024 * 1024 + 2) // 3 * 4:
+                raise WorkspaceError("workspace_media_too_large")
+            try:
+                data = base64.b64decode(encoded, validate=True)
+            except ValueError as exc:
+                raise WorkspaceError("workspace_media_invalid") from exc
+            return await self.visual_inspector(
+                None, str(args["question"]), runtime=vision, file_metadata=metadata, data=data
             )
         if name in {"inspect_conversation_attachment", "save_conversation_attachment_to_workspace"}:
             media = self.conversation_media
@@ -83,7 +116,12 @@ class WorkspaceService:
                     gateway=runtime.gateway,
                 )
                 if name == "inspect_conversation_attachment":
-                    return await media.inspect(item, path, str(args["question"]))
+                    return await media.inspect(
+                        item,
+                        path,
+                        str(args["question"]),
+                        runtime=runtime.runtime_config.vision if runtime.runtime_config else None,
+                    )
                 if self.sandbox is None:
                     raise WorkspaceError("environment_unavailable")
                 destination = str(args["destination"])
@@ -159,6 +197,43 @@ class WorkspaceService:
                 self.store.delete, str(args["artifact_id"]), int(args["expected_revision"])
             )
         raise WorkspaceError("unknown_tool")
+
+    async def validate_images(self, images: tuple[ChatImage, ...]) -> None:
+        """Execution-time authority and current source versions, without fetching pixels."""
+        if any(image.source == "history" for image in images):
+            if self.conversation_media is None:
+                raise WorkspaceError("event_attachment_unavailable")
+            try:
+                await self.conversation_media.validate_images(images)
+            except ConversationMediaError as exc:
+                raise WorkspaceError(str(exc)) from exc
+        validated: set[tuple[str | None, str | None, str | None]] = set()
+        for image in images:
+            if image.source != "workspace":
+                continue
+            if image.content_hash != image.version:
+                raise WorkspaceError("workspace_media_version_changed")
+            dependency = (image.artifact_id, image.workspace_path, image.version)
+            if dependency in validated:
+                continue
+            validated.add(dependency)
+            if image.artifact_id:
+                if self.visual_inspector is None:
+                    raise WorkspaceError("visual_inspection_unavailable")
+                await self.visual_inspector.validate_artifact(image)
+            elif image.workspace_path and image.version and self.sandbox:
+                result = await self.sandbox.execute(
+                    "workspace_media_validate",
+                    {
+                        "path": image.workspace_path,
+                        "expected_version": image.version,
+                    },
+                    request_id=str(uuid4()),
+                )
+                if result.get("error") or result.get("version") != image.version:
+                    raise WorkspaceError("workspace_media_version_changed")
+            else:
+                raise WorkspaceError("workspace_source_missing")
 
     async def _checkout(
         self, metadata: dict[str, Any], request_id: str, previous_version: str | None = None

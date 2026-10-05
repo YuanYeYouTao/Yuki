@@ -10,17 +10,21 @@ from typing import Protocol, cast
 
 from pydantic import BaseModel, ValidationError
 
-from qq_ai_bot.domain.messages import ChatTool
+from qq_ai_bot.capabilities.media import MediaResultText
+from qq_ai_bot.domain.messages import ChatImage, ChatTool
 from qq_ai_bot.plugin_host.audit import PluginAuditService
 from qq_ai_bot.plugin_host.extension_registry import (
     ExtensionKind,
     ExtensionRegistry,
     RegisteredExtension,
 )
+from qq_ai_bot.plugin_host.facades import HostPluginContext
 from qq_ai_bot.plugin_host.repository import PluginInstallationRepository
 from qq_ai_bot.services.agent_tools import ToolRuntime
+from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.models import PermissionLevel, RetryPolicy, RiskClass
 from yuki_plugin_sdk.namespace import default_plugin_namespace
+from yuki_plugin_sdk.permissions import PluginPermission
 from yuki_plugin_sdk.registrar import ToolRegistration
 from yuki_plugin_sdk.results import PluginResult
 
@@ -140,12 +144,41 @@ class PluginCapabilityAdapter:
             dispatched = False
             try:
                 async with asyncio.timeout(registration.metadata.timeout_seconds):
-                    async with self._scope(item.plugin_id, runtime, web_was_used=web_was_used):
+                    async with self._scope(
+                        item.plugin_id, runtime, web_was_used=web_was_used
+                    ) as context:
                         dispatched = True
                         raw_result = await registration.handler(arguments)
-                result = _validated_result(raw_result, registration.output_model)
+                        result = _validated_result(raw_result, registration.output_model)
+                        images: tuple[ChatImage, ...] = ()
+                        if result.ok and result.media_artifacts:
+                            try:
+                                await self._media_available(
+                                    item, registration, runtime, web_was_used, context
+                                )
+                                assert isinstance(context, HostPluginContext)
+                                context._authorize_tool_media(item.canonical_name)
+                                assert item.model_name is not None
+                                images = await context._prepare_selected_media(
+                                    result.media_artifacts, tool_name=item.model_name
+                                )
+                            except Exception as exc:
+                                # Preserve the already accepted plugin effect; an
+                                # unreadable selected image never retries its handler.
+                                result = result.model_copy(
+                                    update={
+                                        "data": {
+                                            **result.data,
+                                            "media_read": False,
+                                            "media_error": type(exc).__name__,
+                                        }
+                                    }
+                                )
                 await self._record(item, runtime, result.ok, result.error_code)
-                return json.dumps(result.model_dump(mode="json"), ensure_ascii=False)
+                text = json.dumps(
+                    result.model_dump(mode="json", exclude={"media_artifacts"}), ensure_ascii=False
+                )
+                return MediaResultText(text, images) if images else text
             except Exception as exc:
                 if isinstance(exc, (TimeoutError, OSError)) and attempt + 1 < attempts:
                     continue
@@ -168,6 +201,50 @@ class PluginCapabilityAdapter:
                     )
                 return _error("plugin_tool_failed", type(exc).__name__)
         raise AssertionError("plugin tool retry loop must terminate")
+
+    async def validate_images(
+        self, images: tuple[ChatImage, ...], runtime: ToolRuntime, *, web_was_used: bool
+    ) -> None:
+        """Reauthorize original plugin selection before every actual model dispatch."""
+        groups: dict[tuple[str, str], list[ChatImage]] = {}
+        for image in images:
+            if not image.plugin_id or not image.plugin_tool_name or not image.plugin_media_handle:
+                raise PluginPermissionError("plugin media source is incomplete")
+            groups.setdefault((image.plugin_id, image.plugin_tool_name), []).append(image)
+        for (plugin_id, name), selected in groups.items():
+            item = self._registry.resolve_model_name(name)
+            if item is None or item.kind is not ExtensionKind.TOOL or item.plugin_id != plugin_id:
+                raise PluginPermissionError("selected media tool is missing or foreign")
+            registration = cast(ToolRegistration, item.registration)
+            async with self._scope(plugin_id, runtime, web_was_used=web_was_used) as context:
+                await self._media_available(item, registration, runtime, web_was_used, context)
+                assert isinstance(context, HostPluginContext)
+                context._authorize_tool_media(item.canonical_name)
+                await context._validate_selected_media(tuple(selected))
+
+    async def _media_available(
+        self,
+        item: RegisteredExtension,
+        registration: ToolRegistration,
+        runtime: ToolRuntime,
+        web_was_used: bool,
+        context: object,
+    ) -> None:
+        installation = await self._installations.get(item.plugin_id)
+        if (
+            not isinstance(context, HostPluginContext)
+            or installation is None
+            or not await self._available(item, registration, runtime, web_was_used)
+            or PluginPermission.TOOL_REGISTER.value not in installation.approved_permissions
+            or not {
+                PluginPermission.MEDIA_ARTIFACT_CREATE.value,
+                PluginPermission.MCP_CALL.value,
+            }.intersection(installation.approved_permissions)
+            or installation.manifest_hash != context._services.approval_revision
+            or frozenset(installation.approved_permissions)
+            != frozenset(permission.value for permission in context._approved_permissions)
+        ):
+            raise PluginPermissionError("plugin media selection is no longer authorized")
 
     async def _available(
         self,
@@ -210,9 +287,9 @@ class PluginCapabilityAdapter:
         runtime: ToolRuntime,
         *,
         web_was_used: bool,
-    ) -> AsyncIterator[None]:
+    ) -> AsyncIterator[object]:
         if self._invocation_scope is None:
-            yield
+            yield None
             return
         scope = self._invocation_scope(
             plugin_id,
@@ -223,9 +300,9 @@ class PluginCapabilityAdapter:
         leave = getattr(scope, "__aexit__", None)
         if not callable(enter) or not callable(leave):
             raise RuntimeError("plugin invocation scope must be an async context manager")
-        await enter()
+        context = await enter()
         try:
-            yield
+            yield context
         finally:
             await leave(None, None, None)
 

@@ -9,6 +9,7 @@ import os
 import tempfile
 import uuid
 from collections.abc import Iterator
+from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from itertools import islice
 from pathlib import Path
@@ -18,6 +19,7 @@ from sqlalchemy import and_, delete, func, insert, literal, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.capabilities.media import PreparedMediaData
 from qq_ai_bot.conversation.autonomy_db_models import InitiativeRunModel
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.conversation.correlation import (
@@ -25,6 +27,7 @@ from qq_ai_bot.conversation.correlation import (
     require_live_conversation,
     stamp_conversation_correlation,
 )
+from qq_ai_bot.domain.messages import ChatImage
 from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
@@ -50,6 +53,7 @@ from qq_ai_bot.persistence.unit_of_work import next_updated_at
 from qq_ai_bot.runtime.observability import claim_runtime_turn_id
 
 _MAX_STRUCTURED_ARTIFACT_BYTES = 4 * 1024 * 1024
+_PRIVATE_MEDIA_TYPE = "application/x-yuki-prepared-images"
 _MAX_JSON_PATH_PARTS = 32
 _MAX_JSON_QUERY_CHARACTERS = 256
 _MAX_JSON_SCAN_NODES = 50_000
@@ -619,14 +623,18 @@ class ToolArtifactRepository:
         retention_seconds: int,
         max_artifact_bytes: int = 64 * 1024 * 1024,
         max_total_bytes: int = 512 * 1024 * 1024,
+        max_media_bytes: int = 6_291_456,
+        max_media_frames: int = 16,
     ) -> None:
-        if retention_seconds <= 0:
+        if retention_seconds <= 0 or max_media_bytes <= 0 or max_media_frames <= 0:
             raise ValueError("artifact retention must be positive")
         self._database = database
         self._root = root
         self._retention = retention_seconds
         self._max_artifact_bytes = max_artifact_bytes
         self._max_total_bytes = max_total_bytes
+        self._max_media_bytes = max_media_bytes
+        self._max_media_frames = max_media_frames
         self._storage_lock = asyncio.Lock()
         self._orphan_iterator: Iterator[Path] | None = None
         # One application-owned store is also used for durable Work receipts.
@@ -871,6 +879,59 @@ class ToolArtifactRepository:
         finally:
             Path(temporary).unlink(missing_ok=True)
 
+    @staticmethod
+    def _read_bounded(path: Path, maximum: int) -> bytes:
+        with path.open("rb") as stream:
+            return stream.read(maximum + 1)
+
+    async def write_media_artifact(
+        self,
+        *,
+        provider_id: str,
+        tool_name: str,
+        images: tuple[ChatImage, ...],
+        access: ArtifactAccess | None,
+        retention_seconds: int | None = None,
+    ) -> str:
+        """Archive authorized pixels privately under the existing artifact owner."""
+        if access is None:
+            raise ValueError("artifact_source_incomplete")
+        if (
+            not images
+            or len(images) > self._max_media_frames
+            or sum(len(i.data_url) for i in images) > self._max_media_bytes
+        ):
+            raise ValueError("artifact_media_capacity")
+        content = json.dumps({"images": [asdict(image) for image in images]}, ensure_ascii=False)
+        if len(content.encode()) > self._max_media_bytes + 65536:
+            raise ValueError("artifact_media_capacity")
+        return await self.write_artifact(
+            provider_id=provider_id,
+            tool_name=tool_name,
+            content=content,
+            media_type=_PRIVATE_MEDIA_TYPE,
+            retention_seconds=retention_seconds,
+            access=access,
+        )
+
+    async def validate_media(self, images: tuple[ChatImage, ...], access: ArtifactAccess) -> None:
+        """Recheck the original handle's owner, expiry and bytes before dispatch."""
+        for handle in dict.fromkeys(
+            image.tool_handle for image in images if image.source == "tool"
+        ):
+            if not handle:
+                raise ValueError("artifact_source_incomplete")
+            prepared = await self.read(handle, operation="image", access=access)
+            if not isinstance(prepared, PreparedMediaData):
+                raise ValueError("artifact_media_source_changed")
+            valid = {image.data_url for image in prepared.images}
+            if any(
+                image.data_url not in valid
+                for image in images
+                if image.source == "tool" and image.tool_handle == handle
+            ):
+                raise ValueError("artifact_media_source_changed")
+
     async def read(
         self,
         handle_id: str,
@@ -908,18 +969,26 @@ class ToolArtifactRepository:
             tool_name = row.tool_name
             byte_size = row.byte_size
             digest = row.sha256
+            media_type = row.media_type
+        if media_type == _PRIVATE_MEDIA_TYPE and access is None:
+            return _artifact_error("artifact_not_authorized", "图片 Artifact 需要原读取授权")
         file_path = (self._root / relative).resolve()
         root = self._root.resolve()
         if root not in file_path.parents:
             return None
-        if operation != "text" and byte_size > _MAX_STRUCTURED_ARTIFACT_BYTES:
+        allowed_bytes = (
+            self._max_media_bytes + 65536
+            if media_type == _PRIVATE_MEDIA_TYPE
+            else _MAX_STRUCTURED_ARTIFACT_BYTES
+        )
+        if operation != "text" and byte_size > allowed_bytes:
             return _artifact_error(
                 "artifact_too_large",
                 "Artifact 超过结构化读取的安全大小上限",
                 byte_size=byte_size,
             )
         try:
-            raw = await asyncio.to_thread(file_path.read_bytes)
+            raw = await asyncio.to_thread(self._read_bounded, file_path, byte_size)
             if len(raw) != byte_size or (digest and hashlib.sha256(raw).hexdigest() != digest):
                 return _artifact_error("artifact_corrupt", "Artifact 完整性校验失败")
             content = raw.decode("utf-8")
@@ -927,6 +996,51 @@ class ToolArtifactRepository:
             return _artifact_error("artifact_corrupt", "Artifact 不是有效 UTF-8")
         except OSError:
             return _artifact_error("artifact_missing", "Artifact 正文缺失，执行回执仍然有效")
+        if media_type == _PRIVATE_MEDIA_TYPE:
+            if access is None:
+                return _artifact_error("artifact_not_authorized", "图片 Artifact 需要原读取授权")
+            try:
+                decoded_media = json.loads(content)
+                prepared_images = tuple(
+                    replace(ChatImage(**item), source="tool", tool_handle=handle_id)
+                    for item in decoded_media["images"]
+                )
+                if not prepared_images or len(prepared_images) > self._max_media_frames:
+                    raise ValueError("invalid media count")
+            except (ValueError, TypeError, KeyError, RecursionError):
+                return _artifact_error("artifact_corrupt", "图片 Artifact 完整性校验失败")
+            manifest = {
+                "handle": handle_id,
+                "mode": "image",
+                "image_count": len(prepared_images),
+                "available_operations": ["inspect", "image"],
+                "provider_id": provider_id,
+                "tool_name": tool_name,
+            }
+            # Text and JSON readers can only see this manifest. Never expose
+            # the archive encoding through generic get/search/text operations.
+            if operation != "image":
+                return manifest
+            # Forget/reset may race the file read; recheck after I/O as well.
+            async with self._database.sessions() as session:
+                current = await session.get(ToolArtifactModel, handle_id)
+                if (
+                    current is None
+                    or current.deleting
+                    or not await self._authorized(session, current, access)
+                    or (
+                        _as_utc(current.expires_at) <= datetime.now(UTC)
+                        and not await session.scalar(
+                            select(ToolArtifactModel.handle_id).where(
+                                ToolArtifactModel.handle_id == handle_id, self._protected()
+                            )
+                        )
+                    )
+                ):
+                    return _artifact_error("artifact_not_authorized", "图片 Artifact 来源已失效")
+            return PreparedMediaData(manifest, prepared_images)
+        if operation == "image":
+            return _artifact_error("artifact_not_image", "该 Artifact 没有原生图片结果")
         if operation == "text":
             return _read_text_artifact(
                 handle_id,
@@ -938,7 +1052,7 @@ class ToolArtifactRepository:
         if operation not in {"inspect", "get", "search"}:
             return _artifact_error(
                 "artifact_operation_invalid",
-                "Artifact operation 必须是 inspect、get、search 或 text",
+                "Artifact operation 必须是 inspect、get、search、text 或 image",
             )
         try:
             decoded = json.loads(content)

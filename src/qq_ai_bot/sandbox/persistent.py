@@ -767,6 +767,43 @@ class PersistentManager(Manager):
             )
         if method == "workspace_read":
             return self.files.read(path, offset=args.get("offset", 0))
+        if method in {"workspace_media_read", "workspace_media_validate"}:
+            # Private Host/Manager operations, never tool declarations. Read
+            # from a safely opened workspace FD, outside any SQLite writer.
+            limit = 20 * 1024 * 1024
+            with self.files.open_file(path) as fd:
+                before = os.fstat(fd)
+                if before.st_size > limit:
+                    raise WorkspaceError("workspace_media_too_large")
+                current, info = self.files.fingerprint(fd)
+                if version is not None and current != version:
+                    raise WorkspaceError("version_conflict")
+                result = {
+                    "path": "/workspace/" + "/".join(self.files.parts(path)),
+                    "version": current,
+                    "size": info.st_size,
+                }
+                if method == "workspace_media_read":
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    chunks = []
+                    remaining = limit + 1
+                    while remaining:
+                        chunk = os.read(fd, min(65536, remaining))
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                        remaining -= len(chunk)
+                    data = b"".join(chunks)
+                    after = os.fstat(fd)
+                    if (
+                        len(data) != info.st_size
+                        or hashlib.sha256(data).hexdigest() != current
+                        or (info.st_mtime_ns, info.st_ctime_ns)
+                        != (after.st_mtime_ns, after.st_ctime_ns)
+                    ):
+                        raise WorkspaceError("file_changed_during_read")
+                    result["base64"] = base64.b64encode(data).decode("ascii")
+                return result
         if method == "workspace_write":
             return self.files.write(path, args["text"].encode(), expected_version=version)
         if method == "workspace_upload":
@@ -812,7 +849,13 @@ class PersistentManager(Manager):
     async def file_request(
         self, method: str, args: dict[str, Any], request_id: str
     ) -> dict[str, Any]:
-        read = method in {"workspace_list", "workspace_read", "workspace_search"}
+        read = method in {
+            "workspace_list",
+            "workspace_read",
+            "workspace_search",
+            "workspace_media_read",
+            "workspace_media_validate",
+        }
         async with self.file_lock:
             args = dict(args)
             if method == "workspace_checkout":

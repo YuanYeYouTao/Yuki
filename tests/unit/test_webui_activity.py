@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import event, insert
 from tests.unit.test_canonical_ingress import _Bot, _message, _stack
 from tests.unit.test_control_plane_foundation import context
-from tests.unit.test_conversation_media import _Provider, _Resolver
+from tests.unit.test_conversation_media import _Resolver
 
 from qq_ai_bot.control_plane import ControlQueryError, ControlQueryService, PageRequest
 from qq_ai_bot.control_plane.query_types import ChatHistoryFilter, ExecutionTraceFilter
@@ -527,9 +527,7 @@ async def test_media_download_uses_existing_scope_expiry_and_reset_fences(databa
     other = await resolver.pre_admit(bot, _message(message_id="other", user_id="1002"))
     await uow.append_inbound(other.message, other)
     source = _Resolver()
-    media = ConversationMediaService(
-        database, tmp_path / "media", source, ImagePreprocessor(), _Provider()
-    )
+    media = ConversationMediaService(database, tmp_path / "media", source, ImagePreprocessor())
     service = ControlQueryService(ControlQueryAdapter(database, conversation_media=media))
     ctx = context("control.chat.content.read")
     conversation = ConversationId.parse(admitted.conversation_id)

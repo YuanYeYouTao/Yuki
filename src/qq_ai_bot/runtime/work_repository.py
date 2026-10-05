@@ -15,6 +15,7 @@ from sqlalchemy import and_, case, delete, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.admin.models import WorkStorageRuntimeConfig
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
     CanonicalConversationRollupEmergencyOverlayModel,
@@ -1972,7 +1973,16 @@ class WorkRepository:
                     .values(receipt_json=next_json, updated=time.time())
                 )
 
-    async def record_effect(self, key: str, state: str, receipt: dict[str, Any]) -> None:
+    async def record_effect(
+        self,
+        key: str,
+        state: str,
+        receipt: dict[str, Any],
+        *,
+        prepared_protocol: tuple[dict[str, Any], ...] = (),
+        protocol_policy: WorkStorageRuntimeConfig | None = None,
+        media_source: tuple[str, int, int] | None = None,
+    ) -> None:
         # A late receipt must survive cancellation. It records an already-issued
         # effect, never authorizes another one, so no current lease is required.
         if state not in {"accepted", "failed", "unknown"}:
@@ -2017,6 +2027,38 @@ class WorkRepository:
                 }
         serialized = bounded_json(receipt)
         async with self.database.sessions() as session, session.begin():
+            if prepared_protocol or media_source is not None:
+                # File preparation completed before this writer. A private
+                # image receipt must not recreate erased media on a late return.
+                if media_source is not None:
+                    from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
+
+                    conversation_id, generation, privacy_generation = media_source
+                    source = await session.get(CanonicalConversationModel, conversation_id)
+                    privacy = (
+                        await session.scalar(
+                            select(ExecutionTraceStateModel.privacy_generation).where(
+                                ExecutionTraceStateModel.id == 1
+                            )
+                        )
+                        or 0
+                    )
+                    if (
+                        source is None
+                        or source.generation != generation
+                        or privacy != privacy_generation
+                    ):
+                        raise WorkConflict("work_effect_media_source_changed")
+                identity = await session.scalar(
+                    select(effects.c.work_id).where(effects.c.effect_key == key)
+                )
+                if identity is None:
+                    raise WorkConflict("work_effect_missing")
+                from qq_ai_bot.runtime.protocol_store import ProtocolStore
+
+                await ProtocolStore(self.database, policy=protocol_policy).publish_refs(
+                    session, identity, prepared_protocol
+                )
             row = (
                 await session.execute(
                     update(effects)

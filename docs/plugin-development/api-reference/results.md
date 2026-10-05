@@ -8,10 +8,11 @@ class PluginResult(StrictModel):
     data: dict[str, JsonValue] = {}
     error_code: str | None = None
     detail: str = ""  # <=1000
+    media_artifacts: tuple[MediaArtifactHandle, ...] = ()  # <=16；明确选择本插件拥有的图片
 
 
 class ToolResult(PluginResult):
-    pass
+    mutation_committed: bool | None = None
 
 
 class CommandResult(PluginResult):
@@ -25,6 +26,12 @@ PluginResult(ok=False, error_code="weather.rate_limited", detail="稍后再试")
 ```
 
 `data` 必须是 JSON 值，工具结果被 Host 当作不可信模型上下文。
+
+`media_artifacts` 只选择真实 Host 句柄，不提供 Base64 或任意路径；空字段不改变既有序列化。
+主 Agent 插件工具边界只在本次调用的原批准、owner 和委托下读取并准备这些图片，整批文字
+回执配对后再附给原主模型。`data` 内同名字段、跨插件句柄或自己拼出的句柄不能授予读取权。
+公开 tool JSON 不包含该字段或像素；准备失败保留 handler 的真实效果回执，并注明
+`data.media_read=false` 与错误类别，不能因此重跑已经发生的修改。
 
 ## CurrentMessage
 

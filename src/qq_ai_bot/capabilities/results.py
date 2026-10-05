@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, field, fields, replace
 from typing import Any, Protocol
 
+from qq_ai_bot.capabilities.media import MediaResultText, result_images
 from qq_ai_bot.capabilities.models import CapabilityDescriptor, CapabilityEffect
+from qq_ai_bot.domain.messages import ChatImage
 from qq_ai_bot.mcp.artifact_access import ArtifactAccess
 
 
@@ -39,9 +41,11 @@ class ToolExecutionResult:
     metadata: dict[str, Any] | None = None
     evidence_state: dict[str, Any] | None = None
     memory_grounding_policy: str | None = None
+    images: tuple[ChatImage, ...] = field(default=(), repr=False)
 
     def model_payload(self) -> dict[str, Any]:
-        payload = asdict(self)
+        # Do not even copy pixels while building a public textual projection.
+        payload = {f.name: getattr(self, f.name) for f in fields(self) if f.name != "images"}
         if not self.uncertain:
             payload.pop("uncertain")
         return {key: value for key, value in payload.items() if value not in (None, (), "")}
@@ -122,7 +126,50 @@ class ToolResultBudgeter:
                 control = current_work_control.get()
                 if control is not None:
                     self._artifacts = control.repository.database.work_result_store
+        media_handle = None
+        archive_images = getattr(self._artifacts, "write_media_artifact", None)
+        if result.ok and result.images and result.provider_id not in {"core", "artifacts"}:
+            try:
+                if not callable(archive_images):
+                    raise ValueError("media_artifact_unavailable")
+                access = (
+                    self._artifact_access_resolver()
+                    if self._artifact_access_resolver
+                    else self._artifact_access
+                )
+                media_handle = await archive_images(
+                    provider_id=result.provider_id,
+                    tool_name=result.tool_name,
+                    images=result.images,
+                    access=access,
+                    retention_seconds=self._artifact_retention_seconds,
+                )
+            except Exception:
+                # A screenshot/publication failure cannot erase an already
+                # successful remote mutation. Report unread pixels separately.
+                result = replace(
+                    result,
+                    images=(),
+                    metadata={
+                        **(result.metadata or {}),
+                        "media_read": False,
+                        "media_error": "media_artifact_unavailable",
+                    },
+                )
+            else:
+                result = replace(
+                    result,
+                    images=tuple(
+                        replace(image, source="tool", tool_handle=media_handle)
+                        for image in result.images
+                    ),
+                )
+            if capture is not None:
+                capture.outcome = result
+                capture.artifact_handle = media_handle
         payload = result.model_payload()
+        if media_handle:
+            payload["media_artifact_handle"] = media_handle
         text = json.dumps(payload, ensure_ascii=False, default=str)
         item_overflow = (
             self._item_limit is not None and _largest_collection(payload) > self._item_limit
@@ -146,7 +193,10 @@ class ToolResultBudgeter:
             and not byte_overflow
             and not external_research
         ):
-            return BudgetedToolResult(text=text)
+            return BudgetedToolResult(
+                text=MediaResultText(text, result.images if result.ok else ()),
+                artifact_id=media_handle,
+            )
         # The summary/artifact is not the original evidence payload. Never
         # advertise references to content which the following request cannot see.
         payload.pop("evidence_state", None)
@@ -188,6 +238,8 @@ class ToolResultBudgeter:
             summary["original_characters"] = len(text)
         progress = _workspace_progress(result)
         summary.update(_execution_envelope(result))
+        if media_handle:
+            summary["media_artifact_handle"] = media_handle
         if progress:
             summary["progress"] = progress
         rendered = json.dumps(summary, ensure_ascii=False, default=str)
@@ -199,6 +251,7 @@ class ToolResultBudgeter:
                 "truncated": True,
                 "original_characters": len(text),
                 "artifact_handle": artifact_id,
+                "media_artifact_handle": media_handle,
                 "public_message": result.public_message[:1000] if result.public_message else None,
                 "retryable": result.retryable,
                 "mutation_committed": result.mutation_committed,
@@ -215,7 +268,7 @@ class ToolResultBudgeter:
                 ensure_ascii=False,
             )
         return BudgetedToolResult(
-            text=rendered,
+            text=MediaResultText(rendered, result.images if result.ok else ()),
             artifact_id=artifact_id,
             truncated=True,
         )
@@ -291,6 +344,7 @@ def normalize_legacy_result(
     """Convert old string/dict tool results into the kernel result contract."""
 
     payload: object = value
+    images = result_images(value)
     if isinstance(value, str):
         try:
             payload = json.loads(value)
@@ -349,6 +403,7 @@ def normalize_legacy_result(
         data = raw.pop("data", raw if raw else None)
         return ToolExecutionResult(
             ok=ok,
+            images=images if ok else (),
             data=data,
             error_code=str(error) if error is not None else None,
             public_message=str(public) if public is not None else None,

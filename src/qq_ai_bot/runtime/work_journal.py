@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert
 
+from qq_ai_bot.capabilities.media import MediaResultText, result_images
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.domain.messages import (
     ChatImage,
@@ -208,12 +209,29 @@ class WorkJournal:
                         or len(call["id"]) > 128
                         or not isinstance(call.get("name"), str)
                         or not call["name"]
+                        or (
+                            "readonly_result_key" in call
+                            and (
+                                not isinstance(call["readonly_result_key"], str)
+                                or not 1 <= len(call["readonly_result_key"]) <= 1024
+                            )
+                        )
                         for call in raw_pending
                     )
                 ):
                     raise JournalUnavailable("work_journal_corrupt")
                 pending_calls = tuple(
-                    {"id": call["id"], "name": call["name"]} for call in raw_pending
+                    {
+                        "id": call["id"],
+                        "name": call["name"],
+                        "arguments": call.get("arguments", ""),
+                        **(
+                            {"readonly_result_key": call["readonly_result_key"]}
+                            if "readonly_result_key" in call
+                            else {}
+                        ),
+                    }
+                    for call in raw_pending
                 )
             progress = payload["metadata"].get("progress", {})
             portable_search = (
@@ -519,12 +537,26 @@ class WorkJournal:
                 .mappings()
                 .first()
             )
-            if row is not None and row["state"] == "accepted":
-                value = json.loads(row["receipt_json"])
-                if isinstance(value.get("result"), str):
-                    return str(value["result"])
-                if value.get("transport_accepted"):
-                    return json.dumps({"ok": True, "receipt": value, "replay_forbidden": True})
+        if row is not None and row["state"] == "accepted":
+            value = json.loads(row["receipt_json"])
+            if isinstance(value.get("result"), str):
+                media_ref = value.get("media_result_ref")
+                if media_ref is not None:
+                    if not isinstance(media_ref, str):
+                        raise JournalUnavailable("work_effect_media_corrupt")
+                    try:
+                        payload = await self.objects.get(media_ref)
+                        blobs = {
+                            digest: await self.objects.get_bytes(digest)
+                            for digest in references(payload)
+                        }
+                        images = tuple(ChatImage(**image) for image in hydrate(payload, blobs))
+                    except (OSError, ValueError, KeyError, TypeError) as exc:
+                        raise JournalUnavailable("work_effect_media_missing") from exc
+                    return MediaResultText(value["result"], images)
+                return str(value["result"])
+            if value.get("transport_accepted"):
+                return json.dumps({"ok": True, "receipt": value, "replay_forbidden": True})
         if row is None or (
             row["state"] == "failed"
             and json.loads(row["receipt_json"]).get("error") == "never_dispatched"
@@ -570,6 +602,47 @@ class WorkJournal:
             },
             ensure_ascii=False,
         )
+
+    async def record_effect(
+        self,
+        key: str,
+        state: str,
+        receipt: dict[str, Any],
+        *,
+        media_source: tuple[str, int, int] | None = None,
+    ) -> None:
+        """Publish immutable pixels with the existing receipt, before its writer."""
+        images = result_images(receipt.get("result"))
+        if not images:
+            await self.repository.record_effect(key, state, receipt)
+            return
+        async with self.repository.database.sessions() as reader:
+            work_id = await reader.scalar(
+                select(effects.c.work_id).where(effects.c.effect_key == key)
+            )
+        if work_id is None:
+            raise WorkConflict("work_effect_missing")
+        await self.objects.refresh_policy()
+        blobs: dict[str, bytes] = {}
+        prepared = externalize([asdict(image) for image in images], blobs)
+        for digest, content in blobs.items():
+            if await self.objects.put_bytes(content) != digest:
+                raise JournalUnavailable("work_effect_media_corrupt")
+        media_ref = await self.objects.put(prepared)
+        private_receipt = {
+            **receipt,
+            "result": str(receipt["result"]),
+            "media_result_ref": media_ref,
+        }
+        async with self.objects.publication(work_id) as prepared_protocol:
+            await self.repository.record_effect(
+                key,
+                state,
+                private_receipt,
+                prepared_protocol=prepared_protocol,
+                protocol_policy=self.objects.policy,
+                media_source=media_source,
+            )
 
     async def effect_state(self, key: str) -> str | None:
         """Read the original effect state without dispatching or changing it."""

@@ -856,16 +856,20 @@ async def test_group_mention_without_text_starts_a_natural_chat_turn(database: D
 
 
 @pytest.mark.asyncio
-async def test_unsupported_message_degrades_without_calling_llm(database: Database) -> None:
+async def test_unsupported_image_is_explicitly_unread_in_primary_context(
+    database: Database,
+) -> None:
     provider = FakeLLMProvider(lambda _request: ChatResponse("", 0))
     harness = build_harness(database, make_settings(database.url), provider)
     sender = MemorySender()
     result = await harness.processor.handle(
         inbound("", message_id="image", unsupported=True), sender
     )
-    assert result.reason == "vision_not_configured"
-    assert "暂时没有识别成功" in sender.messages[0].text
-    assert not provider.requests
+    assert result.reason == "chat"
+    assert len(provider.requests) == 1
+    assert not provider.requests[0].messages[-1].images
+    assert "image_capability_unavailable" in provider.requests[0].messages[-1].content
+    assert "不能声称已经查看" in provider.requests[0].messages[-1].content
 
 
 @pytest.mark.asyncio
