@@ -5978,16 +5978,16 @@
       "verdict": "partial",
       "evidence": [
         "THIRD_PARTY_NOTICES.md",
-        "vendor/pi/LICENSE",
+        "docs/architecture/pi-codemode-evidence/pi-design-reference.json: Pi is a design reference; current wheel contains no Pi license or Pi package dependency; current Dockerfile recipes omit Pi license COPY (updated images not rebuilt).",
         "vendor/monty/LICENSE",
         "vendor/monty/TYPESHED-LICENSE",
         "vendor/monty/THIRD_PARTY_NOTICES.json: 598 verified locked archives; Darwin target 352 packages; 321 full notice texts; 8 text gaps explicitly retained, including 2 built dependencies",
         "scripts/build_monty_distribution.sh: fixed SHA/patch/compiler/wheel and actual artifact hashes; repeated native bytes identical",
-        "Built Yuki wheel contains full original Pi license; Linux native distribution built/installed and target audit saved (353 target packages, 321 full texts, same 8 gaps); both application and validation images built; exact-hash/notice/license/import probes passed; application normal migrations reach 0092 and built WebUI present; no image publication.",
+        "Historical P09/P10 Yuki wheel and images included the Pi reference license; those immutable reports describe the previous packaging. Linux native distribution built/installed and target audit saved (353 target packages, 321 full texts, same 8 gaps); prior application and validation image probes passed; application normal migrations reached 0092 and built WebUI was present; no image publication.",
         "docs/architecture/pi-codemode-evidence/p09-linux-distribution.json: exact built worker/launcher/wheel hashes and all locked packages with target membership; full license texts verified identical to the shared source audit.",
         "docs/architecture/pi-codemode-evidence/p09-container-packaging.json; scripts/verify_monty_packaging.py. Default container namespace denial remains fail-closed; no publication/deployment."
       ],
-      "scope": "8 upstream license texts unresolved; image publication/deployment unperformed",
+      "scope": "8 Monty dependency license texts unresolved; Pi is a design reference rather than a dependency; updated container builds not run; image publication/deployment unperformed",
       "p10_observed_nodes": [],
       "p10_junit_sha256": "a36377fcfb9b156ee22fd56823fb4eaee5e124f8bc488f19ba77162602ba4174"
     },

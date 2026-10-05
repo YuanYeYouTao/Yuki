@@ -1,11 +1,6 @@
-# Portions ported from Pi (https://github.com/earendil-works/pi) at
-# 200387122ca450d6387f033949423114a270b96c, packages/agent/src/agent-loop.ts
-# (``streamAssistantResponse``, ``AgentLoopConfig`` request/turn callbacks).
-# MIT License, Copyright (c) 2025 Mario Zechner.
 """The three narrow interfaces the loop drives, plus synthetic frame assembly.
 
-Pi exposes an open hook bag (``prepareNextTurn``, ``beforeToolCall``, ...).
-Yuki deliberately has exactly three owners: the model boundary (request
+Yuki has exactly three owners: the model boundary (request
 preparation, inputs, dispatch), the invocation boundary (one tool batch through
 the original InvocationService) and turn settlement. No hook registry exists.
 """
@@ -50,10 +45,10 @@ class ModelBoundary(Protocol):
         """Per-request admission (budgets, public observation boundary)."""
 
     async def steer(self, index: int) -> End | None:
-        """Pi ``getSteeringMessages``: durable Work inputs before the next request."""
+        """Consume durable Work inputs before the next request."""
 
     async def request(self, index: int) -> RequestResult:
-        """Pi ``prepareRequest`` + ``streamAssistantResponse``: one complete response."""
+        """Prepare and dispatch one request, returning its complete response."""
 
 
 class InvocationBoundary(Protocol):
@@ -85,7 +80,7 @@ class TurnSettlement(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class Frame:
-    """Pi ``AssistantMessageEvent`` subset, as an immutable partial snapshot."""
+    """An immutable synthetic response fragment for boundary tests."""
 
     type: Literal["start", "text_delta", "toolcall_delta", "done", "error"]
     text: str = ""
@@ -97,7 +92,7 @@ class Frame:
 async def collect_response(
     frames: AsyncIterator[Frame], emit: Callable[[AgentEvent], None]
 ) -> ChatResponse:
-    """Port of ``streamAssistantResponse``: only a ``done`` frame completes.
+    """Assemble synthetic fragments; only a ``done`` frame completes a response.
 
     A stream that ends early or with ``error`` yields an INCOMPLETE response,
     which the loop never executes. Emitted payloads are frozen copies, so a

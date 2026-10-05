@@ -1,12 +1,6 @@
-# Portions ported from Pi (https://github.com/earendil-works/pi) at
-# 200387122ca450d6387f033949423114a270b96c, packages/agent/src/types.ts.
-# MIT License, Copyright (c) 2025 Mario Zechner. See NOTICE in
-# docs/architecture/pi-port-provenance.md for the full license text.
-"""Adopted Pi agent types, re-expressed over Yuki's own message model.
+"""Yuki's immutable execution records over its own message model.
 
-Source symbols: ``AgentEvent``, ``AgentTurnDecision``, ``AgentToolCallOutcome``.
-Pi's ``AgentMessage``/``AssistantMessage`` are not copied: Yuki keeps its
-provider types (``ChatResponse``/``ToolCall``) so private signatures and opaque
+Provider messages retain their original types so private signatures and opaque
 continuations are never rewritten into another JSON shape.
 """
 
@@ -20,11 +14,11 @@ from qq_ai_bot.domain.messages import ChatMessage, ChatResponse, ModelResponseSt
 
 
 class StopReason(StrEnum):
-    """Pi ``AssistantMessage.stopReason`` subset that changes loop control."""
+    """Response states that determine Yuki's next execution step."""
 
     STOP = "stop"
     TOOL_USE = "toolUse"
-    # Pi "length": output cut off, so every tool call may carry truncated arguments.
+    # Output cut off: every call may carry incomplete arguments.
     LENGTH = "length"
 
 
@@ -36,10 +30,10 @@ def stop_reason(response: ChatResponse) -> StopReason:
 
 @dataclass(frozen=True, slots=True)
 class ToolCallOutcome:
-    """Pi ``AgentToolCallOutcome``: the ordered receipt for one original call.
+    """The ordered receipt for one original Yuki tool call.
 
     ``result`` is the original typed receipt string; errors are never flattened
-    into an exception (Pi ``createErrorToolResult`` keeps them in-band too).
+    into an exception.
     """
 
     call: ToolCall
@@ -49,25 +43,25 @@ class ToolCallOutcome:
 
 @dataclass(frozen=True, slots=True)
 class ToolBatchOutcome:
-    """Pi ``ExecutedToolCallBatch`` plus Yuki's Host execution count."""
+    """Ordered Host receipts and admission counts for one tool batch."""
 
     outcomes: tuple[ToolCallOutcome, ...]
     executed_count: int = 0
     reused_count: int = 0
-    # Pi ``shouldTerminateToolBatch``: every result asked the loop to stop.
+    # Every result asked the loop to stop.
     terminate: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class Continue:
-    """Pi ``{action: "continue"}``: run one more provider request."""
+    """Run one more provider request with the settled context."""
 
     reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)
 class End:
-    """Pi ``{action: "end"}`` carrying the settlement's typed final value."""
+    """End the activation with the settlement's typed final value."""
 
     value: object = None
 
@@ -77,7 +71,7 @@ TurnDecision = Continue | End
 
 @dataclass(frozen=True, slots=True)
 class AgentEvent:
-    """Pi ``AgentEvent`` union, as one frozen record per transition.
+    """One frozen record per Yuki execution transition.
 
     Payloads are snapshots (tuples of frozen messages) so a listener can never
     observe a later mutation of loop state; see ``events.EventStream``.

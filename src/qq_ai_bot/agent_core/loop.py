@@ -1,15 +1,9 @@
-# Portions ported from Pi (https://github.com/earendil-works/pi) at
-# 200387122ca450d6387f033949423114a270b96c, packages/agent/src/agent-loop.ts:
-# ``runAgentLoop`` / ``runAgentLoopContinue`` (L102-L151), ``runLoop``
-# (L163-L327), ``failToolCallsFromTruncatedMessage`` (L478-L503) and
-# ``shouldTerminateToolBatch`` (L689-L691).
-# MIT License, Copyright (c) 2025 Mario Zechner.
 """The single production model loop.
 
-Semantics kept from Pi: one turn is one complete assistant response plus its
-tool results; tool results always lead to another request; steering input is
-taken before each request; a truncated ("length") response fails every tool
-call in-band instead of executing it; ``agent_end`` is always the last event.
+One turn is one complete assistant response plus its tool results. Pending
+inputs are consumed before each request, incomplete calls receive unexecuted
+receipts, and every exit emits ``agent_end``. These are Yuki's tested execution
+contracts; the design reference is recorded separately from dependencies.
 
 Yuki-specific owners stay outside this module (see ``model_boundary``): it
 imports no platform, database, Provider or Work code.
@@ -53,7 +47,7 @@ TRUNCATED_CALL_RECEIPT = json.dumps(
 def fail_truncated_calls(
     response: ChatResponse, events: EventStream
 ) -> tuple[ToolCallOutcome, ...]:
-    """Pi ``failToolCallsFromTruncatedMessage``: nothing is dispatched."""
+    """Produce original-call receipts without dispatching incomplete arguments."""
     outcomes = []
     for call in response.tool_calls:
         events.emit(AgentEvent("tool_execution_start", call=call))
@@ -73,23 +67,21 @@ async def run_agent_loop(
     settlement: TurnSettlement,
     events: EventStream | None = None,
 ) -> object:
-    """Pi ``runAgentLoop``/``runAgentLoopContinue`` + ``runLoop``.
+    """Drive Yuki's request, invocation and settlement owners within a budget.
 
-    Pi's continue entry differs only in not adding a prompt; Yuki's context is
-    already composed (or restored from the Work journal) by the model boundary,
-    so both entries collapse into this one. The return value is the settlement's
-    typed result for whichever decision ended the run.
+    The model boundary has already composed or restored the request context.
+    Ordinary and resumed execution therefore share this entry. The return
+    value belongs to the settlement that ends the activation.
     """
     stream = events if events is not None else EventStream()
     stream.emit(AgentEvent("agent_start"))
     try:
-        # Pi has an unbounded ``while (true)``. Yuki bounds the run by the
-        # request budget; the boundary may stop earlier on its own limits.
+        # Admission may stop before this activation's request budget is spent.
         for index in range(max_requests):
             if await model.begin(index) is STOP:
                 break
             stream.emit(AgentEvent("turn_start", index=index))
-            # Pi: pending steering messages are appended before the request.
+            # Consume accepted inputs before dispatching the next request.
             steered = await model.steer(index)
             if steered is not None:
                 return steered.value
@@ -132,8 +124,7 @@ async def run_agent_loop(
                                 executed=outcome.executed,
                             )
                         )
-                    # Pi ``shouldTerminateToolBatch``: an all-terminate batch
-                    # still settles, but does not force another request.
+                    # A terminating batch settles its receipts before exiting.
                     decision = await settlement.finish_tool_turn(index, response, batch)
                     if batch.terminate and not isinstance(decision, End):
                         decision = STOP
@@ -151,7 +142,7 @@ async def run_agent_loop(
             if isinstance(decision, End):
                 return decision.value
             # ``Continue``: tool results, recovery feedback or follow-up input
-            # are already in the context; Pi always runs one more request.
+            # are already in the context for the next request.
         return await settlement.exhausted()
     finally:
         # Synchronous: also runs when the task is cancelled mid-turn.

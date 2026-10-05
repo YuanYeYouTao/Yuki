@@ -1,5 +1,3 @@
-# Test fixture from Yuki's former Pi boundary binding.
-# Pi port: MIT License, Copyright (c) 2025 Mario Zechner.
 """Scripted core boundary fixture; absent from the production executable graph."""
 
 from collections.abc import Awaitable, Callable

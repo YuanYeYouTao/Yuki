@@ -116,7 +116,10 @@ The dedicated validation image is `deploy/codemode/Dockerfile.validation`;
 both that image and the application image were built. Their offline packaging probes
 verified the fixed artifact hashes, binding import, original licenses and notices;
 the application also migrated a new temporary DB normally through 0092 and verified
-its bundled Pi license and built WebUI. See
+its built WebUI. That historical build also bundled the Pi reference license;
+the current packaging contract includes Yuki, Monty and typeshed licenses, with
+Pi recorded only as a design reference. The updated container recipes have not
+been rebuilt since this clarification. See
 [the packaging evidence](../architecture/pi-codemode-evidence/p09-container-packaging.json).
 Run `scripts/verify_monty_packaging.py application|validation` inside those
 network-disabled, read-only containers as UID 10001, with a private /tmp tmpfs

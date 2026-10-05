@@ -67,6 +67,9 @@ report = {
     "bot_started": False,
     "external_model_calls": 0,
 }
+assert {"Yuki-LICENSE", "Monty-LICENSE", "TYPESHED-LICENSE"} <= report["licenses"].keys()
+# Pi is a design reference. Its SDK/source is not part of this distribution.
+assert "Pi-LICENSE" not in report["licenses"]
 if role == "application":
     from importlib.resources import files
 
@@ -81,8 +84,7 @@ if role == "application":
         artifacts["launcher"]["sha256"],
     )
     worker.verify()
-    pi = files("qq_ai_bot.agent_core").joinpath("Pi-LICENSE.txt").read_bytes()
-    assert hashlib.sha256(pi).hexdigest() == report["licenses"]["Pi-LICENSE"]
+    assert not files("qq_ai_bot.agent_core").joinpath("Pi-LICENSE.txt").is_file()
     with tempfile.TemporaryDirectory(prefix="yuki-packaging-") as temporary:
         database_path = Path(temporary) / "qq_ai_bot.db"
         env = dict(os.environ, DATABASE_URL=f"sqlite+aiosqlite:///{database_path}")
@@ -98,6 +100,6 @@ if role == "application":
             assert not db.execute("PRAGMA foreign_key_check").fetchall()
     assets = files("qq_ai_bot.webui").joinpath("assets")
     assert assets.joinpath("index.html").is_file()
-    report.update(migration_head=revision, packaged_pi_license=True, built_webui=True)
+    report.update(migration_head=revision, packaged_pi_license=False, built_webui=True)
 report["verdict"] = "packaging_passed_container_isolation_unavailable"
 print(json.dumps(report, indent=2))

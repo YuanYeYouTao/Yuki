@@ -1,10 +1,8 @@
-# Pi / Monty notices for the Code Mode experiment
+# Third-party notices for the Code Mode experiment
 
-Yuki's original [LICENSE](LICENSE) is retained. The Python Pi port retains
-Pi's MIT copyright headers and the complete [Pi license](vendor/pi/LICENSE).
-The built Yuki wheel includes that license at `qq_ai_bot/agent_core/Pi-LICENSE.txt`.
-Ported symbols and intentional differences are listed in
-[the provenance record](docs/architecture/pi-port-provenance.md).
+Yuki's original [LICENSE](LICENSE) is retained. This record covers third-party
+components used by the Code Mode distribution. Design references are documented
+separately in [the architecture record](docs/architecture/pi-port-provenance.md).
 
 Monty is built from `3f9d6ef413fb951e5b80113b7088d535bd028fcb` with the recorded
 string-cache iterator patch. Its [original MIT license](vendor/monty/LICENSE)
@@ -41,7 +39,7 @@ The reproducible source/build procedure is
 were identical on the repeated local build; wheel packaging timestamps can
 change its archive hash, so each build records its own wheel hash.
 
-Both Dockerfiles retain the generated target audit and separate Yuki, Pi,
+Both Dockerfiles retain the generated target audit and separate Yuki,
 Monty, and typeshed licenses. Compilation and audit use separate build layers;
 transient public downloads retry a bounded number of times, and exhausted
 transport failures fail the audit rather than becoming missing-license records.

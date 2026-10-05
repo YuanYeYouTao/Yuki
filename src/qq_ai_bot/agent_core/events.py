@@ -1,11 +1,7 @@
-# Portions ported from Pi (https://github.com/earendil-works/pi) at
-# 200387122ca450d6387f033949423114a270b96c, packages/ai/src/utils/event-stream.ts
-# and packages/agent/src/agent.ts (listener fan-out in processEvents).
-# MIT License, Copyright (c) 2025 Mario Zechner.
 """Bounded, non-blocking event projection.
 
-Pi awaits every listener inside the loop. Yuki's durable receipts must never wait
-on diagnostics, so events go into a bounded queue: when it is full the oldest
+Yuki's durable receipts must never wait on diagnostics. Events go into a
+bounded queue: when it is full the oldest
 diagnostic is dropped and counted (never the loop's own state). A failing
 listener is isolated and cannot interrupt the turn.
 """

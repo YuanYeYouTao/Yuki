@@ -1,7 +1,7 @@
-# Portions ported from Pi (https://github.com/earendil-works/pi) at
-# 200387122ca450d6387f033949423114a270b96c, packages/agent/src.
-# MIT License, Copyright (c) 2025 Mario Zechner.
-"""Python semantic port of the Pi agent core; see docs/architecture/pi-port-provenance.md."""
+"""Yuki's model loop and typed execution boundaries.
+
+Design references are recorded in docs/architecture/pi-port-provenance.md.
+"""
 
 from qq_ai_bot.agent_core.events import EventStream
 from qq_ai_bot.agent_core.loop import TRUNCATED_CALL_RECEIPT, run_agent_loop

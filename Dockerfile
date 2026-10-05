@@ -34,7 +34,6 @@ COPY --from=uv /uv /uvx /bin/
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --no-install-project
 COPY src ./src
-COPY vendor/pi/LICENSE ./vendor/pi/LICENSE
 COPY --from=webui /app/src/qq_ai_bot/webui/assets ./src/qq_ai_bot/webui/assets
 RUN uv sync --frozen --no-dev --no-editable
 # uv sync removes packages outside uv.lock. Install the wheel from the pinned
@@ -58,7 +57,6 @@ COPY --from=monty /build/distribution/monty-isolated /opt/yuki-monty/monty-isola
 COPY --from=monty /build/distribution/artifacts.json /opt/yuki-monty/artifacts.json
 COPY --from=monty /build/distribution/THIRD_PARTY_NOTICES.json /opt/yuki-monty/THIRD_PARTY_NOTICES.json
 COPY LICENSE /opt/yuki-monty/licenses/Yuki-LICENSE
-COPY vendor/pi/LICENSE /opt/yuki-monty/licenses/Pi-LICENSE
 COPY vendor/monty/LICENSE /opt/yuki-monty/licenses/Monty-LICENSE
 COPY vendor/monty/TYPESHED-LICENSE /opt/yuki-monty/licenses/TYPESHED-LICENSE
 COPY --chown=bot:bot alembic.ini ./

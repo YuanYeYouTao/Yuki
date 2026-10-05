@@ -1,11 +1,12 @@
-# Pi 内核与 Code Mode 实施合同
+# Yuki Agent 核心与 Code Mode 实施合同
 
 基线：`8204b28ebc8939213dae60dbab94ab1c16d1263a`。本页规定正在实施的目标，
 运行状态见 [交付记录](pi-codemode-delivery.md)，不将设计当作功能验收。
 
 ## 目标和现有事实源
 
-采用固定 Pi core 的 Python 语义移植作为唯一模型循环；`AgentRunner` 最终仅保留兼容门面。
+参考 Pi 的轮次与事件思路，在 Yuki 自有合同下实现唯一 Python 模型循环；
+Pi 不加入安装、运行或构建依赖，`AgentRunner` 最终仅保留兼容门面。
 Code Mode 使用固定 Monty 原生 Rust 子进程与手动挂起接口，生成语言为受限 Python。
 保留现有 Provider、`YukiRuntime`、来源、领域授权、Work、根预算及 Social/Manager 回执。
 短聊和单次发送继续使用直接工具；`execute_code` 必须已有原已接纳 Work。
@@ -82,7 +83,7 @@ Provider 覆盖沿现有 Chat 15 个 vendor、Responses、Claude、Gemini 与显
 
 ## 删除和切换边界
 
-P01 删除可变 `_batch` 作为身份来源；P02 统一原子 admission；P03 移植 Pi 控制流；
+P01 删除可变 `_batch` 作为身份来源；P02 统一原子 admission；P03 按参考行为实现 Yuki 核心；
 P04/P05 接入手动 Monty 驱动和完整工具；P06–P09 完成领域、入口、协议、迁移与隔离；
 P10 已删除生产 _run/Callbacks、临时 execute/begin_batch 与动态 fallback；
 显式 TurnState/TurnExecution 驱动唯一核心。完整复验状态见交付记录。参照来源与差异见 [provenance](pi-port-provenance.md)。

@@ -1,4 +1,4 @@
-"""Pi loop semantics on the ported core, with fake boundaries only."""
+"""Yuki's loop contract with scripted execution boundaries."""
 
 import asyncio
 import json
@@ -106,7 +106,7 @@ async def test_tool_results_always_lead_to_another_request_then_final():
         steer_at={1},
     )
     assert await run(script) == "done"
-    # Pi runLoop: steering is taken after tool results, before the next request.
+    # Accepted inputs follow tool results and precede the next request.
     assert script.log == [
         ("begin", 0),
         ("request", 0),
@@ -129,7 +129,7 @@ async def test_truncated_response_fails_every_call_in_band_without_dispatch():
     script = Script([truncated, ChatResponse("recovered", 0)])
     events = EventStream()
     assert await run(script, events=events) == "recovered"
-    # Even a call whose arguments happen to parse is never executed (Pi "length").
+    # Even a call whose arguments happen to parse is never executed if truncated.
     assert ("execute", ("t1",)) not in script.log
     assert ("truncated", (("t1", False), ("t2", False))) in script.log
     receipts = [e.result for e in events if e.type == "tool_execution_end"]

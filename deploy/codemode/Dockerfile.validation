@@ -29,7 +29,6 @@ COPY --from=monty /build/distribution/wheels /opt/yuki-monty/wheels
 COPY --from=monty /build/distribution/THIRD_PARTY_NOTICES.json /opt/yuki-monty/THIRD_PARTY_NOTICES.json
 COPY --from=monty /build/distribution/artifacts.json /opt/yuki-monty/artifacts.json
 COPY LICENSE /opt/yuki-monty/licenses/Yuki-LICENSE
-COPY vendor/pi/LICENSE /opt/yuki-monty/licenses/Pi-LICENSE
 COPY vendor/monty/LICENSE /opt/yuki-monty/licenses/Monty-LICENSE
 COPY vendor/monty/TYPESHED-LICENSE /opt/yuki-monty/licenses/TYPESHED-LICENSE
 COPY scripts/verify_monty_isolation.py /opt/yuki-monty/verify_monty_isolation.py

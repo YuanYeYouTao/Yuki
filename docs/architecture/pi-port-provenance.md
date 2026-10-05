@@ -1,30 +1,37 @@
-# Pi 与 Monty 固定来源
+# 设计参考与 Monty 依赖来源
 
-取得日期：2026-10-04。以下源码已用 Git 按精确 SHA 获取；尚未完成的移植不标已实现。
+取得日期：2026-10-04；参考关系于 2026-10-05 按用户要求澄清。Pi 只作为设计思路和行为
+对照的参考，不作为安装、运行或构建依赖。Yuki 的 Python 核心使用自有消息模型、固定
+执行边界、持久回执及预算机制；Monty 则是实际构建、加载和执行的第三方组件。
 
-| 项目 | 固定 SHA | 许可 |
+| 项目 | 固定 SHA | 关系 |
 | --- | --- | --- |
-| Yuki | `8204b28ebc8939213dae60dbab94ab1c16d1263a` | 保留原项目许可 |
-| Pi | `200387122ca450d6387f033949423114a270b96c` | MIT，Copyright 2025 Mario Zechner |
-| Monty | `3f9d6ef413fb951e5b80113b7088d535bd028fcb` | MIT，Copyright Pydantic Services Inc.；598 个锁定依赖已逐归档校验；typeshed 原 Apache 2.0 许可已保留，8 个完整 notice 缺口仍记录在审计中 |
+| Yuki | `8204b28ebc8939213dae60dbab94ab1c16d1263a` | 本项目基线；保留原项目许可 |
+| Pi | `200387122ca450d6387f033949423114a270b96c` | 设计参考与行为对照；不加入依赖清单或制品 |
+| Monty | `3f9d6ef413fb951e5b80113b7088d535bd028fcb` | 实际依赖，MIT，Copyright Pydantic Services Inc.；598 个锁定依赖已逐归档校验；typeshed 原 Apache 2.0 许可已保留，8 个完整 notice 缺口仍记录在审计中 |
+
+早期记录中的“语义移植”统一改为“参考行为、在 Yuki 合同下实现”。当前没有 Pi SDK、
+TypeScript 源文件或 Pi 的依赖链进入运行环境。下表保留查阅对象以便复核思路，不将
+行为相似或名称对应当成包依赖。历史构建曾包含 Pi 许可文本，原证据仍保留；当前
+wheel 和 Dockerfile 已取消这项打包配置。本次改动不改变模型循环的可执行逻辑。
 
 旧参照 `755f7250e0ac465e57e748ea2e6583d1a76353b0` 是当前基线祖先，实际相差 65 提交。
 旧文件较短不表示较新，也不能据旧包缺失删除当前 `DurableInvocations` 所有者。
 
-## 源符号与目标责任
+## 参考行为与现行实现
 
-| 固定源 | 采用符号/结构 | 目标 | 当前状态 |
+| 固定参考 | 参考行为 / 实际接口 | 目标 | 当前状态 |
 | --- | --- | --- | --- |
-| Pi `packages/agent/src/agent-loop.ts` L102-L327 | `runAgentLoop/runAgentLoopContinue/runLoop` → `run_agent_loop` | `agent_core/loop.py` | 已移植；`test_agent_core_loop.py`、`test_agent_core_differential.py` |
-| 同上 L381-L470 | `streamAssistantResponse` → `collect_response`（合成 frame）；真实请求仍由 Runner `_request` 经 TaskModelExecutor | `agent_core/model_boundary.py` | 已移植（仅合成 frame）；`test_partial_frames_are_frozen_and_only_done_completes` |
-| 同上 L478-L503、L689-L691 | `failToolCallsFromTruncatedMessage` → `fail_truncated_calls`；`shouldTerminateToolBatch` → `ToolBatchOutcome.terminate`；prepare/execute/finalize 保留原 Coordinator＋InvocationService | `agent_core/loop.py`、`InvocationBoundary` | 已移植；`test_truncated_response_fails_every_call_in_band_without_dispatch` |
-| Pi `packages/agent/src/agent.ts` L565-L611 | `processEvents` → `state.reduce`；listener fan-out → `EventStream`（有界、不阻塞） | `agent_core/state.py`、`events.py` | 已移植；`test_event_order_and_state_reduction`、`test_event_backpressure_drops_diagnostics_never_execution` |
-| Pi `packages/agent/src/types.ts` L147、L514-L529 | `AgentTurnDecision` → `Continue/End`；`AgentEvent`；`AgentToolCallOutcome` → `ToolCallOutcome` | `agent_core/types.py` | 已移植 |
+| Pi `packages/agent/src/agent-loop.ts` L102-L327 | 响应、工具结果和下一请求的轮次顺序；Yuki 用三个固定执行边界与请求预算实现 | `agent_core/loop.py` | 已实现；`test_agent_core_loop.py`、`test_agent_core_differential.py` |
+| 同上 L381-L470 | 完整 / 不完整响应的区分；Yuki `collect_response` 仅组装合成 frame，真实请求仍经 TaskModelExecutor | `agent_core/model_boundary.py` | 已实现（仅合成 frame）；`test_partial_frames_are_frozen_and_only_done_completes` |
+| 同上 L478-L503、L689-L691 | 截断调用不执行、批次结算后决定继续；实际回执和派发仍由 Coordinator＋InvocationService 持有 | `agent_core/loop.py`、`InvocationBoundary` | 已实现；`test_truncated_response_fails_every_call_in_band_without_dispatch` |
+| Pi `packages/agent/src/agent.ts` L565-L611 | 事件投影思路；Yuki 使用不可变状态和有界同步队列，不采用 Pi 的可变 Agent 实例与异步流 | `agent_core/state.py`、`events.py` | 已实现；`test_event_order_and_state_reduction`、`test_event_backpressure_drops_diagnostics_never_execution` |
+| Pi `packages/agent/src/types.ts` L147、L514-L529 | 继续 / 结束和轮次事件的思路；Yuki 使用自有 dataclass、ChatResponse 和 ToolCall | `agent_core/types.py` | 已实现 |
 | Monty `crates/monty-python`（`pydantic-monty-client` 1.0.1） | AsyncMonty、Function/NameLookup/FutureSnapshot、手动 resume、dump/load_snapshot | `codemode/engine_monty.py` | 已接入，真实 worker 验证 |
 | Monty `crates/monty-pool/src/worker.rs:185-194` | 原生 subprocess：`env_clear`、piped stdio、`kill_on_drop` | 经绑定使用，不另实现传输 | 已验证（worker-only 构建） |
 
-Pi 完整 SDK、pi-ai Provider、durable/chord、CLI/TUI/RPC 不进入本交付。
-实际移植文件必须带原 MIT 许可和署名，并在本页记录目标符号、源范围与语义测试。
+Pi SDK、pi-ai Provider、durable/chord、CLI/TUI/RPC 均不进入本交付。
+实际 Monty 依赖及其传递依赖的来源、许可和缺口继续按原审计保留。
 
 ## 刻意差异
 
@@ -49,7 +56,7 @@ Pi 完整 SDK、pi-ai Provider、durable/chord、CLI/TUI/RPC 不进入本交付�
 | partial 不执行工具 | `test_agent_core_loop.py::test_incomplete_frames_through_loop_never_execute` |
 | 核心不依赖平台/数据库 | `test_agent_core_loop.py::test_core_has_no_platform_or_database_dependencies` |
 
-Pi 上游自带 TypeScript 测试未运行；本轮核验 Python 移植、原行为黄金样本与实际应用装配，
+Pi 上游自带 TypeScript 测试未运行；本轮核验 Yuki Python 实现、原行为黄金样本与实际应用装配，
 不宣称上游测试通过。本地依赖安装/编译已获授权。
 
 ## P10 后的生产调用与责任边界
@@ -70,7 +77,7 @@ Runner/Turn/Coordinator 的 duck-typed fallback、Worker 动态 `__getattr__` �
 - **测试兼容**：Core Callbacks 只在 tests/support；Fake Provider 在 Runner 外显式规范化。
   原异常/容量 fixture 迁到新边界，原断言保留。
 
-差分黄金样本 `tests/fixtures/agent_core/runner_golden.json` 取自移植前 `b4fdef7d`，未重生成。
+差分黄金样本 `tests/fixtures/agent_core/runner_golden.json` 取自核心拆分前 `b4fdef7d`，未重生成。
 P10 的四组比较临时读取同一固定历史 SHA，主迭代不改，两组共享 Invocation/Code kernel，
 不把旧 loop 放进生产或作为永久 CI 依赖。结构原始证据在
 `pi-codemode-evidence/p10-retirement.json`，四组实际计量在 `p10-comparison.json`。
@@ -84,8 +91,9 @@ worker-only runtime 与 CPython 3.12 binding；固定 Rust 1.96.0 / maturin 1.9.
 本轮 wheel SHA256 为 `5f77cfbcf15ca0e0bb405d6d586aeb98aacbbcfc10555ba0b882c1b73868aa6f`；
 wheel 包装时间可改变归档哈希，不能据 worker 相同宣称 wheel 逐字节可复现。
 
-完整许可在 `vendor/pi/LICENSE`、`vendor/monty/LICENSE` 和
-`vendor/monty/TYPESHED-LICENSE`；构建后的 Yuki wheel 已核对含原 Pi 许可全文。
+实际第三方组件完整许可在 `vendor/monty/LICENSE` 和 `vendor/monty/TYPESHED-LICENSE`。
+P09 的历史构建也曾打包 Pi 许可文本并核对全文；这是该次构建的实测事实，当前参考关系
+澄清后不再将这份文本作为 Yuki wheel 或镜像的必需内容，旧报告不覆盖更新后的制品。
 `vendor/monty/THIRD_PARTY_NOTICES.json` 是 Darwin 实际 worker/wheel 对应的审计：
 598 个锁定包逐 `.crate` 校验 Cargo checksum，352 个当前 normal/build 目标依赖，
 321 份去重完整 notice；不将锁内所有包冒充镜像实际依赖。原 SPDX 选择表达式保留，

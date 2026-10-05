@@ -2,6 +2,10 @@
 
 始于 2026-10-04，最后更新 2026-10-05；目标与不变量见 [设计合同](pi-codemode-design.md)，接手说明见 [交接](pi-codemode-handoff.md)。
 
+当前来源定位：Pi 仅为设计参考，Yuki Python 核心按自有合同实现；Monty 是实际依赖。
+此前“Pi 移植”称谓和 Pi 许可随包检查属于历史记录，当前标注及包装已修正，详见文末
+“Pi 参考关系澄清”。历史实测结果未改写成更新后制品的通过证据。
+
 ## 授权与 Git
 
 - 本地实现和隔离测试已授权；本地依赖安装及指定 Monty 编译已单独授权。
@@ -530,3 +534,43 @@ P09 迁移/资源/完整备份、原生 Linux 隔离及 45 项定向测试已验
 镜像发布与部署待明确授权。
 Monty Python binding 为本地构建 wheel，未进 `uv.lock`，`uv sync` 后需重跑
 `scripts/build_monty_worker.sh`；P09 共用分发已在 Darwin/Linux 构建并安装；两个镜像装配与离线包装探针通过，容器 Code Mode 默认仍不启用。
+
+## Pi 参考关系澄清（2026-10-05）
+
+按用户明确的“只参考思路”要求，将 Pi 从源码移植 / 第三方制品标注改为设计参考。
+核对固定参考源码后，当前 Python 核心使用 Yuki 自有 ChatResponse/ToolCall、三个固定
+执行边界、不可变事件状态及有界同步队列；没有安装或加载 Pi SDK、TypeScript 源码或其
+依赖链。来源页保留参考行为及差异，第三方 notices 仅记录实际使用的组件。
+
+- 去除 `agent_core/` 和测试边界夹具的 Pi 移植署名与误导性说明；实际模型循环、协议、
+  授权和回执逻辑未修改。七个模块去除 docstring 后的可执行 AST hash 与改前逐项相同。
+- 删除未使用的 `vendor/pi/LICENSE`，取消 wheel force-include 及两份 Dockerfile 的
+  Pi 许可 COPY；Yuki、Monty、typeshed 许可及 Monty 完整审计保持原记录。
+- 包装核验按当前合同更新：原“Pi 许可证必须存在 / hash 一致”改为验证实际三份许可
+  存在、Pi 许可不随包，并保留原 worker、binding、隔离拒绝、迁移和 WebUI 检查。
+  这是参考关系澄清带来的包装合同变更；未删除或放宽业务行为测试。
+- 更新现行设计、交接、运维和来源记录。P09/P10 历史 wheel / 镜像报告保留原实测内容；
+  不用它们证明本轮 Dockerfile 的新版本已经构建。
+
+本轮实际验证：
+
+```sh
+uv run --frozen ruff check src tests scripts migrations          # 通过
+uv run --frozen ruff format --check src tests scripts migrations # 1134 文件通过
+uv run --frozen mypy                                            # 722 文件通过
+YUKI_MONTY_BINARY=.venv/bin/yuki-monty-worker uv run --frozen pytest -q -p no:warnings \
+  tests/unit/test_agent_core_loop.py tests/unit/test_agent_core_differences.py \
+  tests/unit/test_agent_core_differential.py                     # 26 通过，0 跳过，2.64 秒
+uv build --offline --python .venv/bin/python --wheel --out-dir <临时目录> # 构建及归档核验通过
+```
+
+新 wheel 不含 Pi 许可文件，核心源码逐字节与当前文件一致，WebUI assets 存在，依赖
+metadata 不含 Pi。wheel SHA、AST 对照和命令结果见
+`pi-codemode-evidence/pi-design-reference.json`。构建核验首次误用不支持的 `uv build --frozen`，
+第二次默认解释器选择了不可用的 Python 3.7.17；改用现有 3.12 后成功，失败记录未省略。
+临时输出随核验删除，Monty binding 和 native worker 保留，未重建 VM，未调用付费 API。
+
+本轮全量测试：未运行（本轮只改说明、来源标注和包装元数据，核心可执行逻辑未变）；
+更新后 Linux 镜像构建与容器探针：未运行。原全量 3258 通过 / 1 跳过为此前实测结果。
+Monty 八份依赖许可文本缺口仍为 partial，本次不将它改成通过。下一依赖：若要交付更新后
+镜像，需按当前 Dockerfile 重建并运行原包装探针；发布、部署仍待授权。

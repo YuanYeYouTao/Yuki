@@ -1,7 +1,3 @@
-# Portions ported from Pi (https://github.com/earendil-works/pi) at
-# 200387122ca450d6387f033949423114a270b96c, packages/agent/src/agent.ts
-# (``Agent.processEvents``) and types.ts (``AgentState``).
-# MIT License, Copyright (c) 2025 Mario Zechner.
 """Pure event reduction: a derived view, never a durable source of truth.
 
 Work inputs, journal and effects remain authoritative; this state only answers
@@ -27,7 +23,7 @@ class AgentState:
 
 
 def reduce(state: AgentState, event: AgentEvent) -> AgentState:
-    """Pi ``processEvents`` transitions, over Yuki's event record."""
+    """Project a Yuki execution event onto the immutable diagnostic state."""
     match event.type:
         case "agent_start":
             return replace(state, running=True)

@@ -1,0 +1,181 @@
+{
+  "format": "yuki_pi_design_reference_clarification_v1",
+  "baseline_sha": "afba9016d19c9128c0c8fa9f7adf08da5b160acf",
+  "date": "2026-10-05",
+  "classification": {
+    "pi": "design_reference_only",
+    "monty": "built_and_loaded_third_party_component",
+    "user_instruction": "Pi 仅参考思路，不列为依赖"
+  },
+  "source_review": {
+    "pi_reference_sha": "200387122ca450d6387f033949423114a270b96c",
+    "reference_url": "https://github.com/earendil-works/pi/tree/200387122ca450d6387f033949423114a270b96c",
+    "observations": [
+      "Yuki loop uses a bounded request index and three typed owners; Pi's AgentContext, mutable config, nested unbounded loops and open hooks are not installed or invoked.",
+      "Yuki frames and records use its own ChatResponse and ToolCall types and immutable Python dataclasses.",
+      "Yuki state is a derived immutable projection; the Pi Agent object's mutable state and lifecycle are not reused.",
+      "Yuki EventStream is a bounded synchronous deque with diagnostic dropping; Pi's async iterator, waiter queues and final-result promises are not reused."
+    ]
+  },
+  "executable_ast_comparison": {
+    "method": "Python ast.dump(include_attributes=False), excluding only module/class/function docstrings; comments are excluded by the parser",
+    "unchanged": true,
+    "files": [
+      {
+        "path": "src/qq_ai_bot/agent_core/__init__.py",
+        "before": {
+          "source_sha256": "68c4b00991154a708a3c044e97d2e72a270bf29e21ef9c314877485e6e646b54",
+          "executable_ast_sha256": "25226268843ab3300ef131bb8e966073ba795ce562e6f6cee7378631a4e665ae"
+        },
+        "after": {
+          "source_sha256": "992a24329a60d39be4be859cef1038c82f4308c60a44f5b4592988d64062d118",
+          "executable_ast_sha256": "25226268843ab3300ef131bb8e966073ba795ce562e6f6cee7378631a4e665ae"
+        }
+      },
+      {
+        "path": "src/qq_ai_bot/agent_core/events.py",
+        "before": {
+          "source_sha256": "8792551561478a4df98482894fcc1740cd951849b2a7737b3a76a92bb53fdbb9",
+          "executable_ast_sha256": "53f5d4b5a9890fe9a6211ac9a4b3bf35a164a8ea5238c6aa64870794250631b6"
+        },
+        "after": {
+          "source_sha256": "8471d1717249bb87d806afc9bd254be3d1e1182adab6b58973bebdce09d2ef62",
+          "executable_ast_sha256": "53f5d4b5a9890fe9a6211ac9a4b3bf35a164a8ea5238c6aa64870794250631b6"
+        }
+      },
+      {
+        "path": "src/qq_ai_bot/agent_core/loop.py",
+        "before": {
+          "source_sha256": "ae70d4ddb208aa81163efa6e186757b4e8b962be7e59dc2c84afb914e34a3b1d",
+          "executable_ast_sha256": "85bd931aad57f01bbae25c286c8de32ce8fab60557c7678ab180fed05f2e98e6"
+        },
+        "after": {
+          "source_sha256": "e6721cf982c3cba0f29855453cdc12e2d109f3114ef30fafed78db82db9775de",
+          "executable_ast_sha256": "85bd931aad57f01bbae25c286c8de32ce8fab60557c7678ab180fed05f2e98e6"
+        }
+      },
+      {
+        "path": "src/qq_ai_bot/agent_core/model_boundary.py",
+        "before": {
+          "source_sha256": "7cad2e1bf064f88b39c50817b4ac9a22bc7071eeb524fd61cde4ef8d67eb5f94",
+          "executable_ast_sha256": "b6e42430c398942e7f1e72d6f0a19b7a3d15e9a662d6f040a0ecca2ae6bfb3e0"
+        },
+        "after": {
+          "source_sha256": "aebfdc6580365ba3c9bb4b0a16fe6b09d518e9b379edfce2c4ddf2c3874d7202",
+          "executable_ast_sha256": "b6e42430c398942e7f1e72d6f0a19b7a3d15e9a662d6f040a0ecca2ae6bfb3e0"
+        }
+      },
+      {
+        "path": "src/qq_ai_bot/agent_core/state.py",
+        "before": {
+          "source_sha256": "d2a5efd28b610b56c80f339783c8806be23255427a7940303ca93e95d5c367f9",
+          "executable_ast_sha256": "cf28dd2a50c6e4651d37faf74bda6a009ff014f406d2b9409bc9a6a72ed66f08"
+        },
+        "after": {
+          "source_sha256": "8d2c8a6468dd114c132268ca0021f320c21bdf57da51f98a2aec311e7a1e00f8",
+          "executable_ast_sha256": "cf28dd2a50c6e4651d37faf74bda6a009ff014f406d2b9409bc9a6a72ed66f08"
+        }
+      },
+      {
+        "path": "src/qq_ai_bot/agent_core/types.py",
+        "before": {
+          "source_sha256": "f492d9c4671002f517b498eddc83f24c7c50ddcc554663a5b6d226f24a872be6",
+          "executable_ast_sha256": "48d0734095cf5b95e0a5676c84f343d3031b8e94b25a491df1911677f8b13525"
+        },
+        "after": {
+          "source_sha256": "e90f589b1bef08ab3d8622912a5975ef4aa1838abcd50181b623d5aec26f36db",
+          "executable_ast_sha256": "48d0734095cf5b95e0a5676c84f343d3031b8e94b25a491df1911677f8b13525"
+        }
+      },
+      {
+        "path": "tests/support/agent_boundaries.py",
+        "before": {
+          "source_sha256": "67679051c42917e8bf41aeeda200b3fcaef47ee4200913872e5eb13c7c7bacf9",
+          "executable_ast_sha256": "7fffa793c817eeceed6c8d68da0cbde7e64b9af06404dbcea4d1279f4a8ce4d5"
+        },
+        "after": {
+          "source_sha256": "8fa63e9f991f60ff1f9fddb8fff2db1f6ab9dcbf28a4bca6d9ef7d08a136a8eb",
+          "executable_ast_sha256": "7fffa793c817eeceed6c8d68da0cbde7e64b9af06404dbcea4d1279f4a8ce4d5"
+        }
+      }
+    ]
+  },
+  "packaging": {
+    "build_command": "uv build --offline --python .venv/bin/python --wheel --out-dir <task-owned temporary directory>",
+    "wheel": {
+      "file": "qq_ai_bot-3.9.0-py3-none-any.whl",
+      "sha256": "f6cf705b5f9b7f3278c0a288cc27bbf06a3f033ee6ba960d28d3888f5e32f865",
+      "bytes": 15026053,
+      "packaged_pi_license": false,
+      "packaged_core_source_verified": true,
+      "built_webui": true,
+      "requirements": [
+        "aiosqlite<1,>=0.20",
+        "alembic<2,>=1.14",
+        "defusedxml<1,>=0.7",
+        "httpx<1,>=0.27",
+        "jsonschema<5,>=4.23",
+        "mcp<2,>=1.28",
+        "nonebot-adapter-onebot<3,>=2.4",
+        "nonebot2[fastapi]<3,>=2.4",
+        "packaging<27,>=24",
+        "pillow<13,>=11",
+        "pydantic-settings<3,>=2.7",
+        "pypdf<7,>=6",
+        "sqlalchemy[asyncio]<3,>=2.0.36",
+        "tenacity<10,>=9",
+        "tomlkit<1,>=0.13",
+        "tzdata>=2025.2",
+        "yuki-semantic-participation @ https://github.com/YuanYeYouTao/Yuki-Semantic-Participation/archive/68bf033c37a524a2d377d2f67eaa25ce779c9e90.tar.gz",
+        "mypy<2,>=1.13; extra == 'dev'",
+        "pytest-asyncio<1,>=0.24; extra == 'dev'",
+        "pytest<9,>=8.3; extra == 'dev'",
+        "ruff<1,>=0.8; extra == 'dev'",
+        "types-defusedxml<1,>=0.7; extra == 'dev'",
+        "types-jsonschema<5,>=4.23; extra == 'dev'"
+      ],
+      "temporary_output_deleted_on_exit": true
+    },
+    "monty_binding_preserved": true,
+    "native_worker_preserved": true,
+    "current_container_recipes_checked": true,
+    "current_container_rebuild": "not_run",
+    "historical_container_evidence": "p09-container-packaging.json; previous recipes, not verification of the updated recipes",
+    "failed_build_attempts": [
+      {
+        "command": "uv build --frozen --wheel --out-dir <temporary>",
+        "result": "CLI rejected --frozen; no artifact produced"
+      },
+      {
+        "command": "uv build --offline --wheel --out-dir <temporary>",
+        "result": "default interpreter resolution selected unavailable Python 3.7.17; fixed by explicitly selecting the existing Python 3.12 environment"
+      }
+    ]
+  },
+  "validation": {
+    "ruff_check": "passed",
+    "ruff_format_check": {
+      "verdict": "passed",
+      "files": 1134
+    },
+    "mypy": {
+      "verdict": "passed",
+      "files": 722
+    },
+    "core_tests": {
+      "command": "YUKI_MONTY_BINARY=.venv/bin/yuki-monty-worker uv run --frozen pytest -q -p no:warnings tests/unit/test_agent_core_loop.py tests/unit/test_agent_core_differences.py tests/unit/test_agent_core_differential.py",
+      "passed": 26,
+      "failed": 0,
+      "skipped": 0,
+      "seconds": 2.64
+    },
+    "full_suite": "not_rerun_for_comments_and_packaging_metadata_change",
+    "paid_api_calls": 0,
+    "vm_recreated": false
+  },
+  "license_audit": {
+    "monty_text_gaps": 8,
+    "verdict": "partial",
+    "existing_monty_audit_unchanged": true
+  }
+}
