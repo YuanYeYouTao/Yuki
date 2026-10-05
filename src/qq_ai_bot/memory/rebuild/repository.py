@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import exists, func, select, update
+from sqlalchemy import exists, func, select, text, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -167,7 +167,25 @@ class MemoryRebuildRepository:
 
     async def pause_after_restart(self) -> int:
         now = datetime.now(UTC)
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.sessions() as reader:
+            # Both absence probes must describe one WAL snapshot. An empty
+            # rebuild subsystem has no restart effects and needs no writer.
+            await reader.execute(text("BEGIN"))
+            run = await reader.scalar(
+                select(MemoryRebuildRunModel.id)
+                .where(MemoryRebuildRunModel.status.in_(EXECUTING_STATUSES))
+                .limit(1)
+            )
+            item = await reader.scalar(
+                select(MemoryRebuildItemModel.id)
+                .where(MemoryRebuildItemModel.status == MemoryRebuildItemStatus.EXTRACTING.value)
+                .limit(1)
+            )
+        if run is None and item is None:
+            return 0
+        # Discovery is not mutation authority: recheck all three original state
+        # predicates under one short writer and keep restart pausing atomic.
+        async with self.database.immediate_session() as session:
             extraction = await session.execute(
                 update(MemoryRebuildRunModel)
                 .where(MemoryRebuildRunModel.status == MemoryRebuildRunStatus.EXTRACTING.value)
