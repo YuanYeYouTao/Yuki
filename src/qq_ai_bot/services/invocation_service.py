@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from qq_ai_bot.capabilities.invocation import Invocation, child_operation_id
 from qq_ai_bot.domain.messages import ToolCall
@@ -58,7 +58,8 @@ class InvocationService:
         ):
             # A child is keyed by its parent and Host admission ordinal only.
             raise ValueError("invocation_journal_identity_conflict")
-        return str(
+        return cast(
+            str,
             await session.execute(
                 invocation.call,
                 execute,
@@ -67,5 +68,5 @@ class InvocationService:
                 allow_pending=invocation.call.function.name == "send_message"
                 and identity.parent_operation_id is None,
                 invocation=invocation,
-            )
+            ),
         )

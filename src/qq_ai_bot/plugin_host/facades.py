@@ -32,7 +32,7 @@ from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.control_plane.principal import ControlPrincipal
 from qq_ai_bot.conversation.scope import runtime_conversation_key
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.domain.messages import InboundMessage
+from qq_ai_bot.domain.messages import ChatImage, InboundMessage
 from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.emoji.collector import EmojiCollector
 from qq_ai_bot.emoji.lifecycle import EmojiLifecycleService
@@ -91,6 +91,7 @@ from qq_ai_bot.services.agent_runner import (
     AgentRuntime,
 )
 from qq_ai_bot.services.media_resolver import OneBotMediaGateway
+from qq_ai_bot.services.native_media import NativeMediaPreparer
 from qq_ai_bot.services.renderer import sanitize_model_output
 from qq_ai_bot.services.vision_service import VisionProcessingError, VisionService
 from qq_ai_bot.social.models import OperationStatus, SocialReceipt
@@ -336,6 +337,7 @@ class PluginFacadeServices:
     notifications: PluginNotificationRepository | None = None
     notification_wake: Callable[[], None] | None = None
     media_artifacts: PluginMediaArtifactStore | None = None
+    native_media: NativeMediaPreparer | None = None
     media_storage_mb: int = 10
     agent_capabilities: frozenset[str] = field(default_factory=frozenset)
 
@@ -654,6 +656,77 @@ class HostPluginContext:
         if required and invocation is None:
             raise PluginPermissionError("plugin facade requires a trusted invocation")
         return invocation
+
+    async def _prepare_selected_media(
+        self, handles: tuple[MediaArtifactHandle, ...], *, tool_name: str
+    ) -> tuple[ChatImage, ...]:
+        """Host bridge for an explicitly returned SDK handle under this invocation."""
+        _permission, invocation = self._require_any(
+            (PluginPermission.MEDIA_ARTIFACT_CREATE, PluginPermission.MCP_CALL)
+        )
+        assert invocation is not None
+        store = _require_service(self._services.media_artifacts, "plugin media artifacts")
+        preparer = _require_service(self._services.native_media, "native media")
+        images: list[ChatImage] = []
+        for handle in dict.fromkeys(handles):
+            original, data = await store.read_owned(
+                plugin_id=self.plugin_id, handle_id=handle.handle_id
+            )
+            if (
+                original.sha256 != handle.sha256
+                or original.byte_size != handle.byte_size
+                or original.content_type != handle.content_type
+                or _aware_media(original.expires_at) != _aware_media(handle.expires_at)
+            ):
+                raise PluginPermissionError("selected media artifact version does not match")
+            prepared = await asyncio.to_thread(preparer.prepare_image, data, source="tool")
+            images.extend(
+                replace(
+                    image,
+                    plugin_id=self.plugin_id,
+                    plugin_media_handle=original.handle_id,
+                    plugin_tool_name=tool_name,
+                    plugin_approval_revision=self._services.approval_revision,
+                    content_hash=original.sha256,
+                    expires_at=_aware_media(original.expires_at).isoformat(),
+                )
+                for image in prepared
+            )
+            preparer.check_budget(tuple(images))
+        await self._validate_selected_media(tuple(images))
+        return tuple(images)
+
+    async def _validate_selected_media(self, images: tuple[ChatImage, ...]) -> None:
+        """Recheck the original owned dependency, never an archived derivative alone."""
+        self._require_any((PluginPermission.MEDIA_ARTIFACT_CREATE, PluginPermission.MCP_CALL))
+        store = _require_service(self._services.media_artifacts, "plugin media artifacts")
+        versions = {}
+        for image in images:
+            if image.plugin_id != self.plugin_id or not image.plugin_media_handle:
+                raise PluginPermissionError("selected media belongs to another plugin")
+            if image.plugin_media_handle not in versions:
+                original, _data = await store.read_owned(
+                    plugin_id=self.plugin_id, handle_id=image.plugin_media_handle
+                )
+                versions[image.plugin_media_handle] = original
+            original = versions[image.plugin_media_handle]
+            if (
+                original.sha256 != image.content_hash
+                or _aware_media(original.expires_at).isoformat() != image.expires_at
+                or image.plugin_approval_revision != self._services.approval_revision
+            ):
+                raise PluginPermissionError("selected media artifact version does not match")
+
+    def _authorize_tool_media(self, canonical_name: str) -> None:
+        _permission, invocation = self._require_any(
+            (PluginPermission.MEDIA_ARTIFACT_CREATE, PluginPermission.MCP_CALL)
+        )
+        assert invocation is not None
+        if (
+            invocation.origin is TurnOrigin.SCHEDULED_AUTOMATION
+            and canonical_name not in invocation.allowed_capabilities
+        ):
+            raise PluginPermissionError("selected media tool was not delegated")
 
     def _require(
         self,
@@ -1872,9 +1945,48 @@ class _MCPFacade:
             bot_user_id=invocation.bot_user_id,
             ingress_presence_id=invocation.presence_id,
         )
+        media_artifacts: tuple[MediaArtifactHandle, ...] = ()
+        payload = {"result": _safe_json(result.model_payload())}
+        if result.ok and result.images:
+            # Keep original MCP_CALL authority: this creates no general file-read
+            # grant, and pixels only enter the main Agent if explicitly returned.
+            try:
+                self._host._require(PluginPermission.MCP_CALL)
+                preparer = _require_service(self._host._services.native_media, "native media")
+                preparer.check_budget(result.images)
+                store = _require_service(
+                    self._host._services.media_artifacts, "plugin media artifacts"
+                )
+                handles: list[MediaArtifactHandle] = []
+                for index, image in enumerate(result.images):
+                    header, encoded = image.data_url.split(",", 1)
+                    if header not in {"data:image/png;base64", "data:image/jpeg;base64"}:
+                        raise ValueError("unsupported prepared image")
+                    handles.append(
+                        await store.create(
+                            plugin_id=self._host.plugin_id,
+                            data=base64.b64decode(encoded, validate=True),
+                            content_type=header[5:-7],
+                            filename=f"mcp-result-{index}.png"
+                            if "png" in header
+                            else f"mcp-result-{index}.jpg",
+                            ttl_seconds=3600,
+                            expires_at_cap=datetime.fromisoformat(image.expires_at)
+                            if image.expires_at
+                            else None,
+                            storage_mb=self._host._services.media_storage_mb,
+                        )
+                    )
+                media_artifacts = tuple(handles)
+            except Exception as exc:
+                # The remote effect already happened; media publication failure
+                # must not change its receipt into a retryable failed operation.
+                payload["media_error"] = type(exc).__name__
+                payload["media_read"] = False
         return PluginResult(
             ok=result.ok,
-            data={"result": _safe_json(result.model_payload())},
+            data=payload,
+            media_artifacts=media_artifacts,
             error_code=result.error_code,
             detail=result.public_message or "",
         )
@@ -3600,6 +3712,10 @@ def _require_service[T](value: T | None, name: str) -> T:
     if value is None:
         raise FeatureUnavailableError(f"{name} service is unavailable")
     return value
+
+
+def _aware_media(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def _assert_plugin_context_contract(context: HostPluginContext) -> PluginContext:

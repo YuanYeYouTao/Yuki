@@ -20,8 +20,8 @@ from qq_ai_bot.services.media_resolver import (
     MediaResolver,
     OneBotMediaGateway,
 )
+from qq_ai_bot.services.native_media import NativeMediaPreparer
 from qq_ai_bot.services.video_frames import _run as run_parser
-from qq_ai_bot.services.video_frames import sample_video
 from qq_ai_bot.services.vision_rate_limit import VisionRateLimiter
 from qq_ai_bot.services.vision_service import VisionProcessingError
 from qq_ai_bot.vision.models import MediaReference
@@ -46,7 +46,7 @@ class AttachmentInputService:
         images_enabled: bool | Callable[[], bool] = True,
     ) -> None:
         self._resolver = resolver
-        self._preprocessor = preprocessor
+        self._preparer = NativeMediaPreparer(preprocessor, max_bytes=max_bytes)
         self._semaphore = asyncio.Semaphore(concurrency)
         self._pending_limit = pending_limit
         self._pending = 0
@@ -140,12 +140,11 @@ class AttachmentInputService:
                                         "frame_budget", "本轮图片帧预算不足"
                                     )
                                 images.extend(
-                                    await sample_video(
+                                    await self._preparer.prepare_video(
                                         path,
                                         source=reference.source,
-                                        maximum=min(remaining, runtime.video_max_frames),
-                                        max_duration_seconds=runtime.video_max_duration_seconds,
-                                        sample_interval_seconds=runtime.video_sample_interval_seconds,
+                                        runtime=runtime,
+                                        max_frames=remaining,
                                     )
                                 )
                             elif header.startswith((b"\xff\xd8\xff", b"\x89PNG", b"GIF8")) or (
@@ -163,7 +162,7 @@ class AttachmentInputService:
 
                                 data = path.read_bytes()
                                 prepared = await asyncio.to_thread(
-                                    self._preprocessor.prepare,
+                                    self._preparer.prepare_image,
                                     DownloadedMedia(
                                         content=data,
                                         content_type=None,
@@ -173,10 +172,7 @@ class AttachmentInputService:
                                     source=reference.source,
                                     max_frames=remaining,
                                 )
-                                images.extend(
-                                    ChatImage(data_url=f.data_url, source=reference.source)
-                                    for f in prepared.frames
-                                )
+                                images.extend(prepared)
                             else:
                                 if text_remaining <= 0:
                                     documents.append("[后续附件未读取：本轮文本预算已用完]")
@@ -238,12 +234,11 @@ class AttachmentInputService:
                             await self._resolver.download_attachment(
                                 reference, path, max_download_bytes=runtime.video_max_download_bytes
                             )
-                            video_frames = await sample_video(
+                            video_frames = await self._preparer.prepare_video(
                                 path,
                                 source=reference.source,
-                                maximum=min(remaining, runtime.video_max_frames),
-                                max_duration_seconds=runtime.video_max_duration_seconds,
-                                sample_interval_seconds=runtime.video_sample_interval_seconds,
+                                runtime=runtime,
+                                max_frames=remaining,
                             )
                         size += sum(len(frame.data_url) for frame in video_frames)
                         if size > self._max_bytes:
@@ -255,16 +250,16 @@ class AttachmentInputService:
                         return
                     downloaded = await self._resolver.resolve(reference, gateway)
                     prepared = await asyncio.to_thread(
-                        self._preprocessor.prepare,
+                        self._preparer.prepare_image,
                         downloaded,
                         source=reference.source,
                         max_frames=remaining,
                     )
-                    for frame in prepared.frames:
+                    for frame in prepared:
                         size += len(frame.data_url)
                         if size > self._max_bytes:
                             raise VisionProcessingError("too_large", "处理后图片超过本轮预算")
-                        images.append(ChatImage(data_url=frame.data_url, source=reference.source))
+                        images.append(frame)
 
                 first_failure: (
                     VisionProcessingError | MediaResolutionError | ImagePreprocessingError | None

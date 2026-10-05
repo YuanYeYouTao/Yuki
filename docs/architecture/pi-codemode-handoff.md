@@ -1,6 +1,6 @@
 # Pi 与 Code Mode 交接说明
 
-2026-10-05。接手后续阶段的开发者先读本页，再读下列依据。本页只写接手需要的状态、
+2026-10-06。接手后续阶段的开发者先读本页，再读下列依据。本页只写接手需要的状态、
 环境和约束；逐阶段证据见 [交付记录](pi-codemode-delivery.md)。
 
 ## 依据与阅读顺序
@@ -17,8 +17,15 @@
 ## 当前状态
 
 分支 `codex/pi-codemode-experiment`，原基线 main `8204b28e`。本轮按用户要求将
-main `de9d0e3a` 接入测试分支，保留新循环与主线修复；状态与验证见
+main `3ca36510`（包含 `f2d06f12`、前轮 `de9d0e3a`）接入测试分支，保留新循环与主线修复；状态与验证见
 [main 兼容修复记录](pi-codemode-main-compatibility.md)。没有创建 PR、合回 main 或部署。
+
+最新联合复验：**4022 通过、1 跳过，960.10 秒**，ruff check/format（1201 文件）和
+mypy（726 源文件）通过，真实 Monty worker 无跳过。唯一跳过仍为未提供私有生产
+备份。main 原生图片、只读回执恢复与现有 typed Invocation / Code Mode 已兼容，
+主合同 version `12`；失败及中止原始记录、最终源码 hash 和安装器补充验证均保留。
+真实供应商图片、工具及原回执续接已通过；未发送 QQ 消息。Windows 安装器在
+`deploy/windows/`，目标 Windows 的实际运行检查由部署现场执行。
 
 来源定位已按用户要求澄清：Pi 仅为设计参考，Yuki 的 Python 核心围绕自有合同实现；
 Monty 是实际依赖。早期提交描述中的“Pi 循环移植”为历史称谓，当前不再把 Pi 许可文本
@@ -83,7 +90,7 @@ Monty 是实际依赖。早期提交描述中的“Pi 循环移植”为历史�
   原回执证据，不复制旧 opaque；段末在原模型预算内有一次保存累计 note/complete 的机会。
 - **主循环**：`agent_core.loop.run_agent_loop`，`AgentRunner` 通过模型/调用/结算三个固定边界驱动。
 - **Code Mode**：`codemode/driver.py`（编排）、`api_projection.py`（wrapper）、`contract.py`
-  （`execute_code` 声明，主合同 revision 11）、`engine_monty.py`（固定 worker）。
+  （`execute_code` 声明，主合同 version 12）、`engine_monty.py`（固定 worker）。
 - **测试夹具**：`tests/unit/test_tool_effect_audit.py::active_work`、
   `tests/unit/test_work_effect_results.py::owned_session`、
   `tests/integration/test_invocation_crash_windows.py::{prepared,facts}`、

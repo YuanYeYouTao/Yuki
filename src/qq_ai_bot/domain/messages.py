@@ -253,11 +253,27 @@ class ChatImage:
     data_url: str = field(repr=False)
     source: str = "current"
     video_timestamp_seconds: float | None = None
+    # Host-only source dependencies retained in private checkpoints. Adapters
+    # encode pixels, never these authorization identities.
+    conversation_id: str | None = None
+    generation: int | None = None
+    source_event_id: int | None = None
+    attachment_index: int | None = None
+    content_hash: str | None = None
+    expires_at: str | None = None
+    artifact_id: str | None = None
+    workspace_path: str | None = None
+    version: str | None = None
+    tool_handle: str | None = None
+    plugin_id: str | None = None
+    plugin_media_handle: str | None = None
+    plugin_tool_name: str | None = None
+    plugin_approval_revision: str | None = None
 
     def __post_init__(self) -> None:
         if not self.data_url.startswith(("data:image/jpeg;base64,", "data:image/png;base64,")):
             raise ValueError("chat image must be a prepared inline image")
-        if self.source not in {"current", "reply"}:
+        if self.source not in {"current", "reply", "history", "workspace", "tool"}:
             raise ValueError("invalid image source")
 
 

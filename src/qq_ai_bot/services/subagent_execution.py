@@ -21,6 +21,7 @@ from qq_ai_bot.codemode.api_projection import ScriptApi, project
 from qq_ai_bot.codemode.contract import CODE_API_REVISION
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import (
+    ChatImage,
     ChatMessage,
     ChatResponse,
     ChatTool,
@@ -28,6 +29,7 @@ from qq_ai_bot.domain.messages import (
     SenderIdentity,
 )
 from qq_ai_bot.domain.tool_actor import ToolActor
+from qq_ai_bot.llm.base import LLMError
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.runtime.activation_bindings import ActiveWorkBindings
 from qq_ai_bot.runtime.origin import TurnOrigin
@@ -67,6 +69,16 @@ class SubagentExecutionDependencies:
 class WorkerBackend(AgentToolBackend):
     def __init__(self, delegate: AgentToolBackend, names: frozenset[str]) -> None:
         self.delegate, self.names = delegate, names
+
+    @property
+    def media_max_bytes(self) -> int:
+        return int(getattr(self.delegate, "media_max_bytes", 16_777_216))
+
+    async def validate_images(self, images: tuple[ChatImage, ...], runtime: AgentRuntime) -> None:
+        validator = getattr(self.delegate, "validate_images", None)
+        if not callable(validator):
+            raise LLMError("tool_media_source_validator_unavailable")
+        await validator(images, runtime)
 
     def definitions(self, runtime: AgentRuntime, *, web_was_used: bool) -> tuple[ChatTool, ...]:
         return tuple(
@@ -140,7 +152,7 @@ class WorkerBackend(AgentToolBackend):
     async def execute_call(self, invocation: Invocation) -> str:
         if invocation.call.function.name not in self.names:
             return '{"ok":false,"error":"worker_tool_not_declared"}'
-        return str(await self.delegate.execute_call(invocation))
+        return await self.delegate.execute_call(invocation)
 
 
 class SubagentExecution:

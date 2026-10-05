@@ -32,6 +32,7 @@ from qq_ai_bot.capabilities.invocation import (
     TrustedInvocationContext,
     child_operation_id,
 )
+from qq_ai_bot.capabilities.media import MediaResultText, result_images
 from qq_ai_bot.codemode.api_projection import ScriptApi, ToolReceiptView, receipt_view
 from qq_ai_bot.codemode.contract import (
     ADMISSION_CLOSING_ERRORS,
@@ -147,6 +148,7 @@ class _Stop(Exception):
 class _State:
     parent_key: str
     revision: int
+    media_source: tuple[str, int, int] | None = None
     children: dict[tuple[int, int], _Child] = field(default_factory=dict)
     side_effect_done: bool = False
 
@@ -241,6 +243,7 @@ class CodeModeDriver:
             return _refusal("code_engine_unavailable")
         store = control.session.journal.objects
         code_ref = await store.put({"code": code, "inputs": inputs})
+        _, media_privacy = await self._live_source()
         prepared = await repository.prepare_effect(
             control.lease,
             control.current["id"],
@@ -248,6 +251,7 @@ class CodeModeDriver:
             "code_composition",
             composition={
                 "version": 1,
+                "media_privacy_generation": media_privacy,
                 "script_id": uuid4().hex,
                 "code_ref": code_ref,
                 "api_revision": self.host.api.digest(),
@@ -268,7 +272,9 @@ class CodeModeDriver:
         )
         if not prepared:
             return await control.session.journal.effect_result(key)
-        state = _State(key, 0)
+        state = _State(
+            key, 0, (control.lease.conversation_id, control.lease.generation, media_privacy)
+        )
         return await self._drive(state, start=(code, inputs))
 
     async def _resume(self) -> str:
@@ -282,7 +288,16 @@ class CodeModeDriver:
         if row["state"] in {"accepted", "failed"}:
             return await control.session.journal.effect_result(key)
         composition = json.loads(row["receipt_json"]).get("composition", {})
-        state = _State(key, int(composition.get("snapshot_revision", 0)))
+        media_privacy = composition.get(
+            "media_privacy_generation", composition.get("privacy_generation")
+        )
+        state = _State(
+            key,
+            int(composition.get("snapshot_revision", 0)),
+            (control.lease.conversation_id, control.lease.generation, media_privacy)
+            if isinstance(media_privacy, int)
+            else None,
+        )
         await self._load_children(state)
         if self.host.worker is None:
             return await self._settle(state, stop=_Stop(STOP_SNAPSHOT, "code_engine_unavailable"))
@@ -816,7 +831,19 @@ class CodeModeDriver:
             body["stdout"] = body["stdout"][-1000:]
             body["stdout_truncated"] = True
             result = json.dumps(body, ensure_ascii=False, default=str)
-        await control.repository.record_effect(
+        images = tuple(
+            dict.fromkeys(
+                image
+                for child in sorted(state.children.values(), key=lambda item: item.ordinal)
+                for image in result_images(child.receipt)
+            )
+        )
+        if images:
+            if state.media_source is None:
+                raise WorkConflict("code_media_source_missing")
+            result = MediaResultText(result, images)
+        assert control.session is not None
+        await control.session.journal.record_effect(
             state.parent_key,
             "accepted",
             {
@@ -831,6 +858,7 @@ class CodeModeDriver:
                     "stop_reason": body.get("stop_reason"),
                 },
             },
+            media_source=state.media_source,
         )
         return result
 

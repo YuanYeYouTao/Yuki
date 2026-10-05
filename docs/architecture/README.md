@@ -39,6 +39,11 @@ Yuki 正在逐层解耦：永久主体、内部事件和工作身份由核心持
 后续发现恢复测试缺少读取身份及停止观察器误判，原恢复率需按该缺口解读；
 [分别修复后的恢复重测](pi-codemode-recovery-retest.md)保留诊断轮、最终八次测量与费用。
 
+Agent 自主选取历史附件、工作区与工具图片后交给原主模型的设计和缺口清单见
+[原生多模态媒体统一任务书](native-multimodal-media-taskbook-2026-10-05.md)。
+运行链路已接入原主模型；测试分支的 typed Invocation、Code Mode 与恢复兼容核验见
+[main 兼容记录](pi-codemode-main-compatibility.md)，本地回放与实际 Provider 验收分别记录。
+
 本轮延迟修复范围与逐项核对见[回复延迟修复任务书](yuki-latency-fix-taskbook-20261004.md)。
 已完成源码、条件未满足的后续项、验证、合并部署与自然回复验收分别记录；现行规则仍以共同开发约束和模块合同为准。
 

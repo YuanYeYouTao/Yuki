@@ -73,6 +73,7 @@ from qq_ai_bot.services.autonomous_groups import AutonomousGroupService
 from qq_ai_bot.services.command_service import CommandService
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.effect_gate import ConversationEffectGate
+from qq_ai_bot.services.native_media import NativeMediaPreparer
 from qq_ai_bot.services.plugin_events import publish_notification
 from qq_ai_bot.services.processor import MessageProcessor
 from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
@@ -313,16 +314,17 @@ class ApplicationContainer:
             settings.conversation_media_cache_directory,
             self.media_resolver,
             self.image_preprocessor,
-            self.vision_provider,
+            max_prepared_bytes=settings.vision_max_prepared_bytes,
         )
         self.workspace_service.conversation_media = self.conversation_media
         self.agent_tools.workspace_service = self.workspace_service
-        if self.vision_provider is not None:
-            from qq_ai_bot.workspace.inspect import WorkspaceInspector
+        from qq_ai_bot.workspace.inspect import WorkspaceInspector
 
-            self.workspace_service.visual_inspector = WorkspaceInspector(
-                self.workspace_service.store, self.image_preprocessor, self.vision_provider
-            )
+        self.workspace_service.visual_inspector = WorkspaceInspector(
+            self.workspace_service.store,
+            self.image_preprocessor,
+            max_prepared_bytes=settings.vision_max_prepared_bytes,
+        )
         from qq_ai_bot.sandbox.client import SandboxClient
         from qq_ai_bot.sandbox.completion_receiver import CompletionReceiver
         from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
@@ -857,6 +859,10 @@ class ApplicationContainer:
                 notifications=self.plugin_notification_repository,
                 notification_wake=self._wake_plugin_notifications,
                 media_artifacts=self.plugin_media_artifacts,
+                native_media=NativeMediaPreparer(
+                    self.image_preprocessor,
+                    max_bytes=self.settings.vision_max_prepared_bytes,
+                ),
                 media_storage_mb=manifest.limits.storage_mb,
             ),
         )

@@ -6,7 +6,7 @@ serialized; the entries after it are an ordered delta, never regrouped by role.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
@@ -91,9 +91,39 @@ class TurnTranscript:
 
     def append_result(self, call_id: str, result: str) -> None:
         if self.continuation is None:
-            self.append(ChatMessage(role="tool", content=result, tool_call_id=call_id))
+            self.append(ChatMessage(role="tool", content=str(result), tool_call_id=call_id))
         else:
-            self._entries.append(FunctionCallOutput(call_id=call_id, output=result))
+            self._entries.append(FunctionCallOutput(call_id=call_id, output=str(result)))
+
+    def append_tool_media(self, results: Sequence[tuple[str, str]]) -> None:
+        """After *all* paired receipts, append Host observations in call order.
+
+        The user role transports pixels on existing protocols; it does not mint
+        an inbound event, principal or new authorization.
+        """
+        from qq_ai_bot.capabilities.media import result_images
+
+        seen = {
+            image
+            for entry in self.portable_entries()
+            if isinstance(entry, ChatMessage)
+            for image in entry.images
+        }
+        for call_id, result in results:
+            images = tuple(image for image in result_images(result) if image not in seen)
+            if not images:
+                continue
+            seen.update(images)
+            self.append(
+                ChatMessage(
+                    role="user",
+                    content=(
+                        f"[Host 工具媒体观察：call_id={call_id}；"
+                        "像素来自 Agent 已选且获准读取的资料，属于工具结果。]"
+                    ),
+                    images=images,
+                )
+            )
 
     def request(self) -> TranscriptRequest:
         checkpoints = [

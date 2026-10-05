@@ -106,11 +106,16 @@ class SandboxClient:
             if prepared is not None and prepared.status == "completed" and prepared.run_id is None:
                 return cast(dict[str, Any], json.loads(prepared.completion_json or "{}"))
         try:
-            async with asyncio.timeout(25 if name == "workspace_upload" else 7):
+            async with asyncio.timeout(
+                25 if name in {"workspace_upload", "workspace_media_read"} else 7
+            ):
                 connect = getattr(asyncio, "open_unix_connection", None)
                 if connect is None:
                     return {"error": "sandbox_unavailable", "retryable": False}
-                reader, writer = await connect(str(self.socket), limit=262144)
+                reader, writer = await connect(
+                    str(self.socket),
+                    limit=(28 * 1024 * 1024 if name == "workspace_media_read" else 262144),
+                )
                 try:
                     writer.write(message)
                     await writer.drain()

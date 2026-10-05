@@ -26,6 +26,7 @@ from qq_ai_bot.capabilities.coordinator import (
     CoordinatedToolResult,
 )
 from qq_ai_bot.domain.messages import (
+    ChatImage,
     ChatMessage,
     ChatRequest,
     ChatResponse,
@@ -179,6 +180,7 @@ class _OrdinarySummaryDispatch:
 class _PrimaryDispatch:
     """One admitted model request; retries share its original reservation/CAS."""
 
+    runner: AgentRunner
     runtime: AgentRuntime
     execute: Callable[[], Awaitable[ChatResponse]]
     sequence: TranscriptRequest
@@ -187,6 +189,7 @@ class _PrimaryDispatch:
     boundary: ContextBoundary | None
     observed_event_ids: set[int]
     tools: AgentToolBackend | None = None
+    selected_media: tuple[ChatImage, ...] = ()
     has_native_effects: bool = False
     prepared: bool = field(default=False, init=False)
     selected_boundary: ContextBoundary | None = field(default=None, init=False)
@@ -211,6 +214,10 @@ class _PrimaryDispatch:
     async def admit(self) -> None:
         if self.prepared:
             return
+        self.runner._check_request_media_budget(self.selected_media, self.runtime, self.tools)
+        await self.runner._validate_tool_media(
+            self.tools, self.runtime, self.sequence, self.selected_media
+        )
         # The executor invokes this only after real admission.
         # HTTP retries must not reserve this logical request again.
         if self.runtime.before_model_request is not None:
@@ -671,6 +678,13 @@ class TurnExecution:
             )
 
             dispatch = _PrimaryDispatch(
+                runner=self.runner,
+                selected_media=tuple(
+                    image
+                    for message in self.state.transcript.portable_entries()
+                    if isinstance(message, ChatMessage)
+                    for image in message.images
+                ),
                 runtime=self.runtime,
                 execute=execute,
                 sequence=candidate.sequence,
@@ -1412,8 +1426,6 @@ class TurnExecution:
                     reasoning_content=response.reasoning_content,
                 )
             )
-        if self.runtime.work_control is not None and self.runtime.work_control.session is not None:
-            await self.runtime.work_control.session.save("response", response.tool_calls)
         tooling = self.runtime.runtime_config.tooling
         self.state.coordinated = await self.runner._execute_tool_batch(
             response.tool_calls,
@@ -1436,6 +1448,12 @@ class TurnExecution:
             declared_names=frozenset(t.name for t in self.state.definitions),
             chain_id=self.state.transcript.chain_id,
             request_sequence=request_index + 1,
+        )
+        self.state.coordinated = replace(
+            self.state.coordinated,
+            calls=self.runner._budget_tool_media(
+                self.state.coordinated.calls, self.state.transcript, self.runtime, self.tools
+            ),
         )
         batch, executed = self.state.coordinated.calls, self.state.coordinated.executed_count
         self.state.calls_used += executed
@@ -1510,6 +1528,9 @@ class TurnExecution:
                     side_effecting=self.runner._is_side_effecting(self.tools, call, self.runtime),
                     arguments=call.function.arguments,
                 )
+        self.state.transcript.append_tool_media(
+            tuple((call.id, result) for call, result, _ in batch)
+        )
         from qq_ai_bot.capabilities.results import normalize_legacy_result
         from qq_ai_bot.runtime.effect_outcomes import execution_evidence
 

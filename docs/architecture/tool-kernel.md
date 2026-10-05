@@ -52,7 +52,7 @@ flowchart LR
 
 ## 代码组合 `execute_code`
 
-冻结声明额外包含固定的 `execute_code`（合同 version 11，`yuki.codemode.api.v1`）。
+冻结声明额外包含固定的 `execute_code`（合同 version 12，`yuki.codemode.api.v1`）。
 脚本里的 `await yuki_<工具名>({参数})` 是同一 canonical 工具的调用语法，由
 `codemode/api_projection.py` 从冻结声明确定性投影：参数 schema 为原件，名称编码可逆，
 不增加别名、目录查询或权限；`execute_code` 自身不投影，未知名称在沙箱内即 NameError。
@@ -98,6 +98,29 @@ Monty 内置模块（例如 asyncio、math）可用，宿主 Python 包、文件
 较小的分批程序。已执行子调用仍按原身份保留回执，未派发子调用结算为未执行，不能把
 资源拒绝变成整个 Work 的裸异常暂停。直接 `task_control` 的所有 action（含 get/list）
 必须独占一个工具批次，固定说明与执行检查保持一致。
+
+工具图片通过 Host 私有 `ToolExecutionResult.images` 交给 Runner，文字 `model_payload()`
+不复制像素。预算后的 `MediaResultText` 携带图片而仍以字符串保存公开回执。历史/工作区
+来源由真实事件或冻结文件版本授权；MCP 图片先归档到原执行有权读取的私有工具 artifact，
+归档失败报告图片未读，不能抹去已经发生的外部修改。`read_tool_artifact` 的 `image` 操作
+仅在原 handle 的读取授权内返回像素，通用文字/JSON 操作不开放原始 Base64。
+
+Runner 按原 call 顺序配齐整批回执，再追加有 call_id 的 Host 原生媒体观察；并行完成先后
+不改变输入顺序。同批别名、缓存命中与 Work 断点恢复保留原媒体，而不是共享图片队列。
+下一实际派发前核验来源仍有效；重读工具声明或内容 hash 不代替权限。图片累计容量按原
+主请求检查，能力/容量不足返回明确未读，不调用额外视觉模型或改变已冻结工具清单。
+工作区新增 path 与媒体语义变更会改变主合同 revision，部署时旧链不能沿用旧声明继续。
+
+只读同批别名与跨批缓存复用在代表调用执行前，将确切原 effect/call_key 关系保存到原 response
+的 pending 检查点。恢复仅跟随同 Work、同原链、参数签名一致且明确只读的 accepted 回执，
+保留原别名 call_id 配对及媒体；不新增效果、预算或重读。代表调用尚未 accepted 时，未知或
+未派发状态仍如实保留，不能把缺失回执当成复用成功。缓存索引是本次激活中的派生引用，
+不是另一个执行账本；签名仅核对参数，不替代原内部执行 ID 和来源授权。
+
+插件自有媒体 handle 和 SDK MCP 返回值仍服从其独立委托/owner 边界，通用图片通道不授予
+任意跨插件读取权。SDK MCP 返回 owned handle，插件工具须在本次显式返回
+`media_artifacts` 才交给主 Agent；Host 按真实插件/工具和原 manifest、委托、TTL/hash 核验。
+私有副本不能绕过原句柄删除、过期或插件禁用。图片未读不改变已接受的外部效果回执。
 
 ## 代码定位
 

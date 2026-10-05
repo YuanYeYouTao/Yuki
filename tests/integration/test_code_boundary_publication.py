@@ -198,3 +198,25 @@ async def test_composition_parent_is_not_an_unresolved_business_leaf(database, t
     )
     # A started leaf with no outcome is uncertain; the parent alone never is.
     assert await repository.has_unresolved_effects(owner.control.lease, binding.work_id)
+
+
+async def test_boundary_cannot_replace_original_media_privacy_version(database, tmp_path):
+    owner, binding = await composed(database, tmp_path)
+    store = owner.journal.objects
+    snapshot_ref = await store.put_code_snapshot(binding, b"vm-state")
+    # Legacy parents have no version: a later checkpoint cannot invent one.
+    with pytest.raises(WorkConflict, match="code_composition_binding_conflict"):
+        await owner.control.repository.publish_code_boundary(
+            owner.control.lease,
+            binding.work_id,
+            PARENT,
+            expected_revision=0,
+            composition={"snapshot_ref": snapshot_ref, "media_privacy_generation": 1},
+            child=child(binding.work_id),
+            store=store,
+            binding=binding,
+            side_effecting=False,
+        )
+    found, owned, tools = await rows(database, binding.work_id)
+    assert set(found) == {PARENT} and not owned and tools == 0
+    assert json.loads(found[PARENT]["receipt_json"])["composition"]["snapshot_revision"] == 0

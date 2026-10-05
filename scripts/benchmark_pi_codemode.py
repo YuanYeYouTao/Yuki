@@ -88,6 +88,8 @@ def historical_runner(*, code_mode: bool = False) -> tuple[type, str]:
         "_execute_tool_batch",
         "_execute_tool_batch_impl",
         "_resume_compositions",
+        # The current resume kernel budgets selected media before pairing.
+        "_budget_tool_media",
         "_code_host",
         "_execute_code_batch",
         "_run_code_call",

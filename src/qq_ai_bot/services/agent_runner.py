@@ -21,8 +21,10 @@ from qq_ai_bot.capabilities.coordinator import (
     ToolInvocationCoordinator,
 )
 from qq_ai_bot.capabilities.invocation import Invocation
+from qq_ai_bot.capabilities.media import result_images
 from qq_ai_bot.codemode.contract import EXECUTE_CODE_NAME
 from qq_ai_bot.domain.messages import (
+    ChatImage,
     ChatMessage,
     ChatRequest,
     ChatResponse,
@@ -42,7 +44,7 @@ from qq_ai_bot.llm.base import (
 from qq_ai_bot.model_runtime.capacity import estimate_request_tokens
 from qq_ai_bot.model_runtime.dispatch_guard import model_dispatch_guard
 from qq_ai_bot.model_runtime.executor import ModelExecutor
-from qq_ai_bot.model_runtime.models import ModelExecutionPriority, ModelTask
+from qq_ai_bot.model_runtime.models import ModelCapability, ModelExecutionPriority, ModelTask
 from qq_ai_bot.model_runtime.structured import (
     tool_free_json_format,
     tool_free_structured_output_mode,
@@ -56,6 +58,7 @@ from qq_ai_bot.services.context_boundary import ContextBoundaryReader
 from qq_ai_bot.services.invocation_service import BatchPlan
 from qq_ai_bot.services.native_tool_binder import NativeToolBinder
 from qq_ai_bot.services.turn_transcript import (
+    TranscriptRequest,
     TurnTranscript,
 )
 from qq_ai_bot.services.work_reporting import (
@@ -530,6 +533,90 @@ class AgentRunner:
         finally:
             current_receipts.reset(token)
 
+    @staticmethod
+    async def _validate_tool_media(
+        tools: AgentToolBackend | None,
+        runtime: AgentRuntime,
+        sequence: TranscriptRequest,
+        selected_media: tuple[ChatImage, ...] = (),
+    ) -> None:
+        images = tuple(
+            image for image in selected_media if image.source in {"history", "workspace", "tool"}
+        ) or tuple(
+            image
+            for message in (*sequence.messages, *sequence.items)
+            if isinstance(message, ChatMessage)
+            for image in message.images
+            if image.source in {"history", "workspace", "tool"}
+        )
+        # Older pixels may already live in an opaque continuation. The portable
+        # dependency set is validated by the backend separately below.
+        validator = getattr(tools, "validate_images", None)
+        if images:
+            if not callable(validator):
+                raise LLMError("tool_media_source_validator_unavailable")
+            await validator(images, runtime)
+
+    @staticmethod
+    def _check_request_media_budget(
+        images: tuple[ChatImage, ...],
+        runtime: AgentRuntime,
+        tools: AgentToolBackend | None,
+    ) -> None:
+        if len(images) > runtime.runtime_config.vision.max_frames_per_turn or sum(
+            len(image.data_url) for image in images
+        ) > getattr(tools, "media_max_bytes", 16_777_216):
+            raise WorkCapacityError("media_request_budget_exceeded")
+
+    def _budget_tool_media(
+        self,
+        batch: tuple[tuple[ToolCall, str, bool], ...],
+        transcript: TurnTranscript,
+        runtime: AgentRuntime,
+        tools: AgentToolBackend | None,
+    ) -> tuple[tuple[ToolCall, str, bool], ...]:
+        existing = {
+            image
+            for message in transcript.portable_entries()
+            if isinstance(message, ChatMessage)
+            for image in message.images
+        }
+        limit = getattr(tools, "media_max_bytes", 16_777_216)
+        frames = runtime.runtime_config.vision.max_frames_per_turn
+        size = sum(len(image.data_url) for image in existing)
+        count = len(existing)
+        output = []
+        for call, result, executed in batch:
+            images = result_images(result)
+            if images:
+                fresh = set(images) - existing
+                error = None
+                if ModelCapability.IMAGE_INPUT not in self._models.capabilities(self._task):
+                    error = "image_capability_unavailable"
+                elif (
+                    count + len(fresh) > frames
+                    or size + sum(len(image.data_url) for image in fresh) > limit
+                ):
+                    error = "media_request_budget_exceeded"
+                if error:
+                    outcome = json.loads(result)
+                    if isinstance(outcome, dict) and (
+                        outcome.get("mutation_committed") is True
+                        or (
+                            call.function.name == EXECUTE_CODE_NAME
+                            and outcome.get("executed") is True
+                        )
+                    ):
+                        result = json.dumps({**outcome, "media_read": False, "media_error": error})
+                    else:
+                        result = json.dumps({"ok": False, "error": error, "read": False})
+                else:
+                    existing.update(fresh)
+                    count += len(fresh)
+                    size += sum(len(image.data_url) for image in fresh)
+            output.append((call, result, executed))
+        return tuple(output)
+
     async def _execute_tool_batch(
         self,
         calls: tuple[ToolCall, ...],
@@ -665,7 +752,11 @@ class AgentRunner:
                     control.yield_segment = True
                     control.ending = "queued"
                     return True
+            result = self._budget_tool_media(((call, result, True),), transcript, runtime, tools)[
+                0
+            ][1]
             transcript.append_result(item.call_id, result)
+            transcript.append_tool_media(((item.call_id, result),))
             control.observe_result(
                 call.function.name, result, True, arguments=call.function.arguments
             )
@@ -779,7 +870,7 @@ class AgentRunner:
                 return json.dumps({"ok": False, "executed": False, "error": "tool_not_declared"})
 
             async def invoke() -> str:
-                return str(await tools.execute_call(invocation))
+                return await tools.execute_call(invocation)
 
             return await service.invoke(invocation, invoke, side_effecting=side_effecting)
 
@@ -862,15 +953,24 @@ class AgentRunner:
     ) -> CoordinatedToolResult:
         """Preserve original IDs; only explicitly safe read results may be reused."""
 
+        control = runtime.work_control
+        session = getattr(control, "session", None)
+
+        async def save_response() -> None:
+            if session is not None:
+                session.pending_readonly_keys = {}
+                await session.save("response", calls)
+
         if BatchPlan.prepare(calls).conflicting_ids:
+            await save_response()
             result = json.dumps(
                 {"ok": False, "executed": False, "error": "duplicate_provider_call_id"}
             )
             return CoordinatedToolResult(tuple((call, result, False) for call in calls), 0)
 
-        control = runtime.work_control
         code_calls = [call for call in calls if call.function.name == EXECUTE_CODE_NAME]
         if code_calls:
+            await save_response()
             return await self._execute_code_batch(
                 calls,
                 tools,
@@ -883,6 +983,7 @@ class AgentRunner:
             )
         control_calls = [call for call in calls if call.function.name in WORK_CONTROL_NAMES]
         if control_calls:
+            await save_response()
             if len(calls) != 1:
                 result = json.dumps({"ok": False, "error": "work_control_requires_single_call"})
                 return CoordinatedToolResult(
@@ -947,6 +1048,17 @@ class AgentRunner:
                 if not side_effecting and call.function.name in cacheable_names
                 else None
             )
+            if (
+                cached is not None
+                and session is not None
+                and control is not None
+                and control.current is not None
+            ):
+                original_key = session.readonly_result_keys.get(signature)
+                if original_key is None or not original_key.startswith(
+                    session.call_key("").rsplit(":", 2)[0] + ":"
+                ):
+                    cached = None
             if cached is not None:
                 reused_by_id[call.id] = cached
                 continue
@@ -971,6 +1083,7 @@ class AgentRunner:
                     call for call in conflicting if call.function.name != "send_message"
                 ]
                 if non_delivery_conflicts:
+                    await save_response()
                     violation = json.dumps(
                         {
                             "ok": False,
@@ -997,6 +1110,19 @@ class AgentRunner:
                 unique_calls = [
                     call for call in unique_calls if call.function.name != "send_message"
                 ]
+        if session is not None:
+            session.pending_readonly_keys = {
+                call.id: session.readonly_result_keys[signatures[call.id]]
+                for call in calls
+                if call.id in reused_by_id and signatures[call.id] in session.readonly_result_keys
+            }
+            session.pending_readonly_keys.update(
+                {
+                    alias: session.call_key(representative)
+                    for alias, representative in aliases.items()
+                }
+            )
+            await session.save("response", calls)
         coordinated = await self._tool_coordinator.execute_batch(
             tuple(unique_calls),
             tools,
@@ -1047,11 +1173,15 @@ class AgentRunner:
             signature = signatures[call.id]
             if self._successful_side_effect(tools, call, result, runtime):
                 reusable_results.clear()
+                if session is not None:
+                    session.readonly_result_keys.clear()
             elif (
                 not self._is_side_effecting(tools, call, runtime)
                 and call.function.name in cacheable_names
             ):
                 reusable_results[signature] = result
+                if session is not None:
+                    session.readonly_result_keys[signature] = session.call_key(call.id)
 
         return CoordinatedToolResult(
             calls=tuple(ordered),

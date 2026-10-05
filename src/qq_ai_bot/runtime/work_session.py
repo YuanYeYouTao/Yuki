@@ -96,6 +96,10 @@ class WorkSession:
         self.source_revision = 0
         self.source_guard: WorkSourceGuard | None = None
         self.pending: list[dict[str, Any]] = []
+        # Derived activation-local index into original durable readonly effects.
+        # Only this response's exact reuse links live in its pending checkpoint.
+        self.readonly_result_keys: dict[tuple[str, str], str] = {}
+        self.pending_readonly_keys: dict[str, str] = {}
         self.event_ids: list[int] = []
         self.source_keys: list[str] = []
         self.input_ids: list[int] = []
@@ -228,7 +232,9 @@ class WorkSession:
             # effects until their original receipt has been investigated.
             pending_audit: list[dict[str, Any]] = []
             for call in loaded.pending_calls:
-                key = f"{loaded.previous_chain}:{loaded.pending_sequence}:{call['id']}"
+                key = await self._pending_result_key(
+                    call, f"{loaded.previous_chain}:{loaded.pending_sequence}:{call['id']}"
+                )
                 state = await self.journal.effect_state(key)
                 result = await self.journal.effect_result(key)
                 try:
@@ -316,6 +322,7 @@ class WorkSession:
             # An unsettled code composition is not an ordinary unknown: its
             # original owner resumes the same program, then pairs exactly once.
             self.pending_compositions = []
+            recovered_results = []
             for call in value["pending"]:
                 # Code Mode needs an admitted Work; turn-local calls keep the generic path.
                 composition = (
@@ -335,11 +342,14 @@ class WorkSession:
                         )
                     )
                     continue
-                result = await self.journal.effect_result(self.call_key(call["id"]))
+                key = await self._pending_result_key(call, self.call_key(call["id"]))
+                result = await self.journal.effect_result(key)
                 self.transcript.append_result(call["id"], result)
+                recovered_results.append((call["id"], result))
                 control.observe_result(
                     call["name"], result, True, arguments=call.get("arguments", "{}")
                 )
+            self.transcript.append_tool_media(tuple(recovered_results))
             retired_paid = row["phase"] == "response" and bool(
                 self.progress.get("compaction_staging")
             )
@@ -370,7 +380,24 @@ class WorkSession:
                 # the creation-time chat or opaque provider continuation.
                 unobserved_round = self._unobserved_tool_round()
                 previous_chain = self.transcript.chain_id
+                # Preserve only Host-selected pixels still needed by the Work.
+                # A legal business chain does not replay old calls, opaque state,
+                # incoming images or the retired conversation text. Source/byte
+                # admission is checked again on the actual next dispatch.
+                selected_media = tuple(
+                    message
+                    for message in self.transcript.portable_entries()
+                    if isinstance(message, ChatMessage)
+                    and message.role == "user"
+                    and (message.content or "").startswith("[Host 工具媒体观察：call_id=")
+                    and message.images
+                    and all(
+                        image.source in {"history", "workspace", "tool"} for image in message.images
+                    )
+                )
                 self.transcript = initial
+                for message in selected_media:
+                    self.transcript.append(message)
                 self.compaction_anchor = TurnTranscript(initial.request().messages)
                 for message in unobserved_round:
                     self.transcript.append(message)
@@ -1340,6 +1367,72 @@ class WorkSession:
             return call_id
         return self.call_key(call_id)
 
+    async def _pending_result_key(self, call: dict[str, Any], original: str) -> str:
+        """Follow only a Host-persisted readonly link owned by this original Work."""
+        key = call.get("readonly_result_key")
+        if key is None:
+            return original
+        if not isinstance(key, str) or not 1 <= len(key) <= 1024:
+            raise JournalUnavailable("work_readonly_reuse_corrupt")
+        try:
+            chain, sequence, identity = key.rsplit(":", 2)
+            current_chain, current_sequence, _ = original.rsplit(":", 2)
+            if (
+                chain != current_chain
+                or not 0 <= int(sequence) <= int(current_sequence)
+                or not identity
+            ):
+                raise ValueError("invalid readonly source")
+        except ValueError as exc:
+            raise JournalUnavailable("work_readonly_reuse_corrupt") from exc
+        from qq_ai_bot.runtime.work_schema_v1 import effects
+
+        assert self.control.current is not None
+        async with self.control.repository.database.sessions() as reader:
+            row = (
+                (
+                    await reader.execute(
+                        select(effects).where(
+                            effects.c.effect_key == key,
+                            effects.c.work_id == self.control.current["id"],
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        # A crash before the representative dispatched is still not permission
+        # to run it, nor evidence that this alias succeeded.
+        if row is None:
+            return original
+        if row["state"] != "accepted":
+            return original
+        receipt = json.loads(row["receipt_json"])
+        outcome = receipt.get("outcome", {})
+        if (
+            not isinstance(outcome, dict)
+            or outcome.get("side_effecting") is not False
+            or outcome.get("tool") != call["name"]
+            or outcome.get("readonly_call_signature")
+            != self._readonly_signature(call["name"], call.get("arguments", ""))
+        ):
+            raise JournalUnavailable("work_readonly_reuse_corrupt")
+        return key
+
+    @staticmethod
+    def _readonly_signature(name: str, arguments: str) -> str:
+        try:
+            value = json.loads(arguments)
+        except ValueError:
+            normalized = arguments.strip()
+        else:
+            normalized = json.dumps(
+                value, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+            )
+        return hashlib.sha256(
+            json.dumps([name, normalized], ensure_ascii=False).encode()
+        ).hexdigest()
+
     async def save(
         self,
         phase: str,
@@ -1390,7 +1483,16 @@ class WorkSession:
         assert self.transcript is not None
         self.handoff_work_id = self.control.handoff_work_id or self.handoff_work_id
         self.pending = [
-            {"id": call.id, "name": call.function.name, "arguments": call.function.arguments}
+            {
+                "id": call.id,
+                "name": call.function.name,
+                "arguments": call.function.arguments,
+                **(
+                    {"readonly_result_key": self.pending_readonly_keys[call.id]}
+                    if phase == "response" and call.id in self.pending_readonly_keys
+                    else {}
+                ),
+            }
             for call in calls
         ]
         try:
@@ -1561,6 +1663,15 @@ class WorkSession:
                 "pending": False,
                 "uncertain": False,
                 "executed": False,
+                **(
+                    {
+                        "readonly_call_signature": self._readonly_signature(
+                            call.function.name, call.function.arguments
+                        )
+                    }
+                    if not side_effecting
+                    else {}
+                ),
                 **({"work_report": report, "report_target": report_target} if report else {}),
             },
         ):
@@ -1583,7 +1694,7 @@ class WorkSession:
             control.current["tool_calls"] += 1
             control.tools_started += 1
         except WorkBudgetExceeded:
-            await control.repository.record_effect(
+            await self.journal.record_effect(
                 key,
                 "accepted",
                 {
@@ -1622,7 +1733,7 @@ class WorkSession:
         except BaseException as exc:
             try:
                 if capture.outcome is None:
-                    await control.repository.record_effect(
+                    await self.journal.record_effect(
                         key,
                         "unknown",
                         {
@@ -1649,6 +1760,10 @@ class WorkSession:
                         side_effecting=side_effecting,
                         arguments=call.function.arguments,
                     )
+                    if not side_effecting:
+                        evidence["readonly_call_signature"] = self._readonly_signature(
+                            call.function.name, call.function.arguments
+                        )
                     if report:
                         evidence.update(work_report=report)
                         if evidence.get("report_target") is None:
@@ -1662,14 +1777,17 @@ class WorkSession:
                         },
                         ensure_ascii=False,
                     )
-                    await control.repository.record_effect(
+                    from qq_ai_bot.capabilities.media import MediaResultText
+
+                    await self.journal.record_effect(
                         key,
                         "accepted",
                         {
-                            "result": fallback,
+                            "result": MediaResultText(fallback, capture.outcome.images),
                             "outcome": evidence,
                             "artifact_handle": capture.artifact_handle,
                         },
+                        media_source=audit_source,
                     )
             except Exception as secondary:
                 exc.add_note(f"effect receipt persistence deferred: {type(secondary).__name__}")
@@ -1691,11 +1809,15 @@ class WorkSession:
             side_effecting=side_effecting,
             arguments=call.function.arguments,
         )
+        if not side_effecting:
+            evidence["readonly_call_signature"] = self._readonly_signature(
+                call.function.name, call.function.arguments
+            )
         if report:
             evidence.update(work_report=report)
             if evidence.get("report_target") is None:
                 evidence["report_target"] = report_target
-        await control.repository.record_effect(
+        await self.journal.record_effect(
             key,
             "accepted",
             {
@@ -1703,6 +1825,7 @@ class WorkSession:
                 "outcome": evidence,
                 "artifact_handle": capture.artifact_handle,
             },
+            media_source=audit_source,
         )
         if (
             capture.outcome.provider_id == "core"

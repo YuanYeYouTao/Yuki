@@ -3199,11 +3199,14 @@ class AgentToolService:
         else:
             payload = {"ok": True, "data": data}
         rendered = json.dumps(payload, ensure_ascii=False, default=str)
+        from qq_ai_bot.capabilities.media import MediaResultText, result_images
+
+        images = result_images(data) if not error else ()
         limit = self._runtime().agent.tool_result_max_characters
         # File/terminal responses are already bounded by their transport. Preserve
         # the original value for the shared budgeter and its pageable artifacts.
         if defer_budget or len(rendered) <= limit:
-            return rendered
+            return MediaResultText(rendered, images) if images else rendered
         return json.dumps(
             {
                 "ok": False,

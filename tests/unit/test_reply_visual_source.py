@@ -1,8 +1,7 @@
-"""A quoted image cannot choose its ledger owner through a QQ message ID."""
+"""Quoted images cannot revive the implicit auxiliary vision/summary path."""
 
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -16,12 +15,12 @@ from qq_ai_bot.domain.messages import (
     MessageAttachment,
     SenderIdentity,
 )
-from qq_ai_bot.services import processor as processor_module
 from qq_ai_bot.services.processor import MessageProcessor
 
 
 @pytest.mark.asyncio
-async def test_quoted_image_uses_resolved_internal_reference(monkeypatch) -> None:
+@pytest.mark.parametrize("reference", [77, None])
+async def test_quoted_image_without_native_support_never_calls_auxiliary_vision(reference) -> None:
     processor = object.__new__(MessageProcessor)
     processor._native_images = None
     processor._settings = SimpleNamespace(vision_enabled=True)
@@ -32,7 +31,6 @@ async def test_quoted_image_uses_resolved_internal_reference(monkeypatch) -> Non
         set_visual_summary=AsyncMock(),
     )
     processor._ledger = ledger
-    monkeypatch.setattr(processor_module, "compact_visual_summary", lambda _value: "summary")
     message = InboundMessage(
         message_id="current-platform",
         event_type="message",
@@ -45,7 +43,7 @@ async def test_quoted_image_uses_resolved_internal_reference(monkeypatch) -> Non
             MessageAttachment(kind=AttachmentKind.IMAGE, label="image", source="reply"),
         ),
         reply_to_message_id="colliding-platform-id",
-        reply_to_event_id=77,
+        reply_to_event_id=reference,
         conversation_id="conversation-1",
         received_at=datetime.now(UTC),
     )
@@ -58,16 +56,9 @@ async def test_quoted_image_uses_resolved_internal_reference(monkeypatch) -> Non
         runtime=SimpleNamespace(vision=object()),
     )
     result = await processor._analyze_visual_input(message=message, **arguments)
-    assert result.observation is observation
-    ledger.get_reply_event.assert_awaited_once_with(
-        77, conversation_id="conversation-1", current_generation_only=True
-    )
-    assert processor._vision.analyze.await_args.kwargs["source_event_id"] == 77
-    ledger.set_visual_summary.assert_awaited_once_with(77, "summary")
-
-    ledger.get_reply_event.reset_mock()
-    ledger.set_visual_summary.reset_mock()
-    old_record = replace(message, reply_to_event_id=None)
-    await processor._analyze_visual_input(message=old_record, **arguments)
+    assert result.observation is None and result.failed
+    assert result.error_code == "image_capability_unavailable"
+    assert "未读取" in result.attachment_text
+    processor._vision.analyze.assert_not_awaited()
     ledger.get_reply_event.assert_not_awaited()
-    ledger.set_visual_summary.assert_awaited_once_with(99, "summary")
+    ledger.set_visual_summary.assert_not_awaited()

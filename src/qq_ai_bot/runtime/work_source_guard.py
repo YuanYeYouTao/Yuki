@@ -73,6 +73,23 @@ class WorkSourceGuard:
             version.generation,
         ):
             return False
+        from qq_ai_bot.services.turn_transcript import dispatch_request
+
+        dispatch = dispatch_request()
+        selected_images = tuple(
+            image
+            for message in ((*dispatch.messages, *dispatch.items) if dispatch else ())
+            for image in getattr(message, "images", ())
+            if image.source_event_id is not None
+        )
+        if any(
+            image.conversation_id != version.conversation_id
+            or image.generation != version.generation
+            for image in selected_images
+        ):
+            return False
+        image_event_ids = {image.source_event_id for image in selected_images}
+        event_ids = event_ids | frozenset(image_event_ids)
         # aiosqlite's legacy transaction mode does not BEGIN for SELECT. Establish
         # one real read snapshot, without reserving the writer during scans/hashing.
         with model_detail("source_guard_read"):
@@ -107,6 +124,16 @@ class WorkSourceGuard:
                 ).all()
                 if {row.id for row in rows} != set(version.visible_event_ids):
                     return False
+                if any(
+                    row.id in image_event_ids
+                    and (
+                        row.suppression_status != "keeper"
+                        or row.direction != "inbound"
+                        or row.id <= version.starts_after_event_id
+                    )
+                    for row in rows
+                ):
+                    return False
                 additional = dict(self.additional_events)
                 added_ids = set(additional)
                 added_ids.update(event_ids - set(version.visible_event_ids))
@@ -126,6 +153,12 @@ class WorkSourceGuard:
                     if {row.id for row in extra} != added_ids:
                         return False
                     for row in extra:
+                        if row.id in image_event_ids and (
+                            row.suppression_status != "keeper"
+                            or row.direction != "inbound"
+                            or row.id <= version.starts_after_event_id
+                        ):
+                            return False
                         digest = hashlib.sha256(repr(row).encode()).hexdigest()
                         if (
                             row.id in self.additional_events

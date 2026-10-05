@@ -16,6 +16,7 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.admin.models import WorkStorageRuntimeConfig
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
     CanonicalConversationRollupEmergencyOverlayModel,
@@ -1882,6 +1883,7 @@ class WorkRepository:
             raise WorkConflict("code_checkpoint_conflict")
         for field in (
             "script_id",
+            "media_privacy_generation",
             "code_ref",
             "inputs_ref",
             "api_revision",
@@ -2354,8 +2356,18 @@ class WorkRepository:
                     .values(receipt_json=next_json, updated=time.time())
                 )
 
-    async def record_effect(self, key: str, state: str, receipt: dict[str, Any]) -> None:
-        # Late settlement records the original dispatch; it grants no new lease.
+    async def record_effect(
+        self,
+        key: str,
+        state: str,
+        receipt: dict[str, Any],
+        *,
+        prepared_protocol: tuple[dict[str, Any], ...] = (),
+        protocol_policy: WorkStorageRuntimeConfig | None = None,
+        media_source: tuple[str, int, int] | None = None,
+    ) -> None:
+        # A late receipt must survive cancellation. It records an already-issued
+        # effect, never authorizes another one, so no current lease is required.
         if state not in {"accepted", "failed", "unknown"}:
             raise ValueError("invalid_work_effect_state")
         for _attempt in range(4):
@@ -2419,6 +2431,25 @@ class WorkRepository:
                 candidate["invocation"] = {**metadata, "revision": metadata["revision"] + 1}
             serialized = bounded_json(candidate)
             async with self.database.immediate_session() as writer:
+                if media_source is not None:
+                    from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
+
+                    conversation_id, generation, privacy_generation = media_source
+                    source = await writer.get(CanonicalConversationModel, conversation_id)
+                    privacy = (
+                        await writer.scalar(
+                            select(ExecutionTraceStateModel.privacy_generation).where(
+                                ExecutionTraceStateModel.id == 1
+                            )
+                        )
+                        or 0
+                    )
+                    if (
+                        source is None
+                        or source.generation != generation
+                        or privacy != privacy_generation
+                    ):
+                        raise WorkConflict("work_effect_media_source_changed")
                 changed = await writer.scalar(
                     update(effects)
                     .where(
@@ -2429,6 +2460,12 @@ class WorkRepository:
                     .values(state=state, receipt_json=serialized, updated=time.time())
                     .returning(effects.c.effect_key)
                 )
+                if changed is not None and prepared_protocol:
+                    from qq_ai_bot.runtime.protocol_store import ProtocolStore
+
+                    await ProtocolStore(self.database, policy=protocol_policy).publish_refs(
+                        writer, existing["work_id"], prepared_protocol
+                    )
             if changed is not None:
                 return
         raise WorkConflict("work_effect_receipt_conflict")

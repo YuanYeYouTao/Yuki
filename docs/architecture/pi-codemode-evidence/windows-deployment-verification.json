@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "verified_at": "2026-10-05T16:08:09.745453+00:00",
+  "source_hashes": {
+    "deploy/windows/Deploy-Yuki.ps1": "021ad06b46954bf07396dface9834bff494a62f8225fd3f2316727db89b88b65",
+    "deploy/windows/Deploy.cmd": "1274fc7fdf4440e092cbd13a61e5f420dc6472d0b5fd9cbad766f0ad304574c5",
+    "deploy/windows/README.md": "a7acb2cf63fc70c44128797fe5589089654295b61eb2328e7274e308db33d3c9",
+    "deploy/windows/Start-Yuki.cmd": "f36afd88fb6f60ee952d815d035dab724d0958d28ccc42ef78521303a6949333",
+    "deploy/windows/Stop-Yuki.cmd": "3ee8daaec2627fafbe507b6bb1fcf71f9db224d26a0ad25ad72cfb2ffc196da4",
+    "deploy/windows/bootstrap.sh": "0459268cb4e1f0c1a5f608e5bc016140eee253927132ae7558de177ea304c370",
+    "deploy/windows/deployment.py": "c4b4cfaf66f1251fc85e2582494c0f46432b611e954e1d105c97846a6062623a",
+    "deploy/windows/gateway.compose.yaml": "c0d28225a7acffafb853803421a661116979206390c205443e8f5befc64f64d2",
+    "deploy/windows/yuki.service": "4b9d6feb4079a29ac1be8b577ed5f3003c81f88046da593c86f5bcc5941eb585",
+    "scripts/build_windows_private_bundle.py": "02059e856add6e52978b51c4816535cf25b61f07be63706b2cd33dee7ef088e6",
+    "tests/unit/test_windows_private_deployment.py": "1d870934c8db64da4ebc5e67afaaef882208fad67cf181486768e042a7a77957"
+  },
+  "checks": [
+    {
+      "name": "private package and configuration regressions",
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "pytest",
+        "-q",
+        "-p",
+        "no:warnings",
+        "tests/unit/test_windows_private_deployment.py"
+      ],
+      "exit_code": 0,
+      "passed": 14,
+      "seconds": 0.26
+    },
+    {
+      "name": "bootstrap Bash syntax",
+      "command": [
+        "bash",
+        "-n",
+        "deploy/windows/bootstrap.sh"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "NapCat Docker Compose configuration",
+      "command": [
+        "docker",
+        "compose",
+        "-f",
+        "<temporary fixture compose.yaml>",
+        "config",
+        "--quiet"
+      ],
+      "exit_code": 0,
+      "fixture": "same source compose and temporary synthetic gateway .env; no Docker daemon or container started"
+    },
+    {
+      "name": "PowerShell behavior",
+      "runtime": "portable PowerShell 7.6.6 on macOS; PSNativeCommandArgumentPassing=Legacy",
+      "exit_code": 0,
+      "cases": [
+        "parse final script",
+        "atomic state replacement",
+        "interrupted file copy cleanup",
+        "retry completes missing files",
+        "preserve and reject operator payload edits",
+        "eight exact native argument vectors including spaces Chinese quotes empty and trailing backslash",
+        "actual Bash embedded quotes and literal dollar argument",
+        "WSL version supported unsupported missing and throwing fallbacks",
+        "failed native command rejects"
+      ],
+      "test_source": "windows-powershell-behavior.ps1.gz",
+      "test_source_sha256": "8d99c1735069f23eeaec3539ed0f9426a6d3b59dd0f4761872c883bd5541c664",
+      "log": "windows-powershell-check.log.gz",
+      "log_sha256": "dd9dc2a1978f03ba79890e790a958ec4b2fee6e19e78bb908caa7a819da55a35"
+    },
+    {
+      "name": "actual installer API probe",
+      "report": "windows-deployment-provider-probe.json",
+      "status": "passed",
+      "requests": 2,
+      "image_input": true,
+      "original_tool_continuation": true
+    }
+  ],
+  "target_windows_runtime": "未运行；WSL import, target native Linux build/isolation, target migrations, systemd, Docker gateway, Windows localhost and QQ QR login require the target installer checks",
+  "production_or_real_qq_messages": "未运行"
+}

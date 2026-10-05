@@ -81,8 +81,8 @@ class MainAgentContract:
             revision = hashlib.sha256(
                 json.dumps(
                     {
-                        # 11: adds the fixed execute_code composition entry.
-                        "version": 11,
+                        # 12: Code Mode plus original-chain native media sources.
+                        "version": 12,
                         "code_api": CODE_API_REVISION,
                         "tools": [
                             {
