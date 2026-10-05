@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any, Protocol
 
 from sqlalchemy import func, or_, select
 
+from qq_ai_bot.persistence.sqlite_diagnostics import TimingSummary
 from qq_ai_bot.runtime.subagent_schema import children
 from qq_ai_bot.runtime.work_recovery_schema import deliveries, recovery
 from qq_ai_bot.runtime.work_repository import WorkRepository
@@ -43,6 +46,28 @@ class WorkScheduler:
         self._last_error: str | None = None
         self._last_wait_error: str | None = None
         self._last_reclaim = 0.0
+        self._phase_timings = {
+            name: TimingSummary()
+            for name in (
+                "repair_inputs",
+                "wake_rollups",
+                "reclaim",
+                "protocol_cleanup",
+                "selection",
+                "serial_resumer",
+            )
+        }
+
+    @contextmanager
+    def _timed(self, phase: str) -> Iterator[None]:
+        started = time.perf_counter()
+        try:
+            yield
+        finally:
+            seconds = time.perf_counter() - started
+            self._phase_timings[phase].record(seconds)
+            if seconds >= 1:
+                logger.info("work_scheduler_phase phase=%s seconds=%.6f", phase, seconds)
 
     @property
     def running(self) -> bool:
@@ -92,6 +117,9 @@ class WorkScheduler:
             "wait_running": self._wait_worker is not None and not self._wait_worker.done(),
             "last_error_category": self._last_error,
             "wait_error_category": self._last_wait_error,
+            "phase_timings": {
+                name: timing.snapshot() for name, timing in self._phase_timings.items()
+            },
         }
 
     async def _loop(self) -> None:
@@ -160,53 +188,62 @@ class WorkScheduler:
     async def drain_once(self) -> None:
         from qq_ai_bot.runtime.execution_receipts import PROCESS_ID
 
-        await self.repository.repair_abandoned_inputs(PROCESS_ID)
-        await self.repository.wake_context_rollups()
+        with self._timed("repair_inputs"):
+            await self.repository.repair_abandoned_inputs(PROCESS_ID)
+        with self._timed("wake_rollups"):
+            await self.repository.wake_context_rollups()
         if time.monotonic() - self._last_reclaim > 600:
-            await self.repository.reclaim_terminal()
+            with self._timed("reclaim"):
+                await self.repository.reclaim_terminal()
             from qq_ai_bot.runtime.protocol_store import ProtocolStore
 
-            await ProtocolStore(self.repository.database).cleanup()
+            with self._timed("protocol_cleanup"):
+                await ProtocolStore(self.repository.database).cleanup()
             self._last_reclaim = time.monotonic()
-        async with self.repository.database.sessions() as session:
-            rows = (
-                (
-                    await session.execute(
-                        select(work)
-                        .outerjoin(
-                            scope,
-                            scope.c.conversation_id == work.c.conversation_id,
-                        )
-                        .outerjoin(recovery, recovery.c.work_id == work.c.id)
-                        .where(
-                            or_(
-                                work.c.state.in_(("queued", "running")),
-                                (work.c.state == "suspended")
-                                & work.c.id.in_(
-                                    select(deliveries.c.work_id).where(
-                                        deliveries.c.kind == "notice",
-                                        deliveries.c.state.in_(("planned", "blocked")),
-                                    )
+        with self._timed("selection"):
+            async with self.repository.database.sessions() as session:
+                rows = (
+                    (
+                        await session.execute(
+                            select(work)
+                            .outerjoin(
+                                scope,
+                                scope.c.conversation_id == work.c.conversation_id,
+                            )
+                            .outerjoin(recovery, recovery.c.work_id == work.c.id)
+                            .where(
+                                or_(
+                                    work.c.state.in_(("queued", "running")),
+                                    (work.c.state == "suspended")
+                                    & work.c.id.in_(
+                                        select(deliveries.c.work_id).where(
+                                            deliveries.c.kind == "notice",
+                                            deliveries.c.state.in_(("planned", "blocked")),
+                                        )
+                                    ),
                                 ),
-                            ),
-                            or_(
-                                func.json_extract(work.c.source_json, "$.owner")
-                                == "plugin_invocation",
-                                func.json_extract(work.c.source_json, "$.origin").in_(
-                                    ("user_message", "autonomous_group", "self_initiative")
+                                or_(
+                                    func.json_extract(work.c.source_json, "$.owner")
+                                    == "plugin_invocation",
+                                    func.json_extract(work.c.source_json, "$.origin").in_(
+                                        ("user_message", "autonomous_group", "self_initiative")
+                                    ),
                                 ),
-                            ),
-                            work.c.id.not_in(select(children.c.work_id)),
-                            or_(scope.c.owner.is_(None), scope.c.lease_until <= time.time()),
-                            or_(recovery.c.work_id.is_(None), recovery.c.not_before <= time.time()),
+                                work.c.id.not_in(select(children.c.work_id)),
+                                or_(scope.c.owner.is_(None), scope.c.lease_until <= time.time()),
+                                or_(
+                                    recovery.c.work_id.is_(None),
+                                    recovery.c.not_before <= time.time(),
+                                ),
+                            )
+                            .order_by(work.c.updated)
+                            .limit(8)
                         )
-                        .order_by(work.c.updated)
-                        .limit(8)
                     )
+                    .mappings()
+                    .all()
                 )
-                .mappings()
-                .all()
-            )
         for row in rows:
-            await self.resumer.resume(dict(row))
+            with self._timed("serial_resumer"):
+                await self.resumer.resume(dict(row))
             self._last_error = self.resumer.last_error

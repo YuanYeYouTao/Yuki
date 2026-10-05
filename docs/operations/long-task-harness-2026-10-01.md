@@ -18,7 +18,7 @@
 | 进度和 steer | 原 send_message 报告合同与模型委派指引；同源唯一 queued Work 追加；waiting_external 仍按原条件 | 入站/分段间隙/source 权限/多候选/等待回归；不添加阶段状态机或定时报告器 |
 | 动态资料减肥 | 有界 SQL 最近/可续接 Work 摘录；完整 goal/wait 按 get 查询；关系风格只常驻一份 | 16 个大目标目录、完整目标/等待回查、原活动目标与来源守卫 |
 | Gemini continuation | 私有 native tail 留在原 Work；已提交获准公开历史前缀不整体重建 | 实际主入口→HTTP serializer 七请求、SQLite 重开、同 actor 下一轮与换 actor；静态字段和 parts 前缀检查 |
-| 代理服务器核查 | 有效 tunnel/路由、三请求 UUID 和最终上游序列化关联、usage 分层核对、countTokens/显式缓存限制 | [代理逐跳审计](provider-compaction-audit-2026-10-01.md)；无必要 AGM 补丁或保温调用 |
+| 请求与计量核查 | 按原执行身份核对请求、前缀和 usage；缺失计量保持未知 | [请求核查](provider-compaction-audit-2026-10-01.md)；不添加保温调用 |
 | 成本与热配置 | 独立聊天/Work 水位、完整输入窗口政策与模型硬容量；协议存储全局热政策；现有 WebUI 目录 | [成本模拟](context-cost-simulation-2026-10-01.md)、可复现脚本、跨 scope 校验和真实管理权限测试 |
 
 参数初值为聊天 96,000 / 0.90 / 0.60，Work 128,000 / 0.90 / 0.50；它们是热配置政策。
@@ -79,7 +79,7 @@ PR #216 已合并为 `ea446d64edf8a428df5a760d6dcedb49ba13a086`；合并树与�
 新 Bot ID `3e8150ec0ddd408f6912870167939c6c23ad7b680b6bd5acff47f40743cfceda`，
 SnowLuma ID `9e7a1a89696eae3922e4b40daee295edebc0fb60e18c7c9bf5a15efe7a1c8b85`
 保持原值。新 Bot healthy、零重启；livez/healthz、OneBot、Work/等待、子代理、
-自动化和插件 worker 正常。Manager 与 AGM tunnel 服务 active，持久环境容器 running，
+自动化和插件 worker 正常。Manager 服务 active，持久环境容器 running，
 原挂载保留，WebUI `/ui/` HTTP 200。
 
 实际配置读取确认聊天 96000/.90/.60、Work 128000/.90/.50、摘要输出 8192、

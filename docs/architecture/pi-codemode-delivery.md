@@ -828,3 +828,50 @@ format、722 源文件 mypy 通过，worker 无跳过。唯一跳过仍是未提
 最终回报。未创建 PR、未合并、未部署。四个全量自有临时数据库根目录
 已删除，删除目录的 du 计量合计约 17.56 GiB（不是瞬时磁盘净释放量），付费夹具已
 自动清理，本轮未新建 VM，worker/binding 保留。
+
+
+## 2026-10-05：与 main 的兼容整合
+
+实验起点 `3d1d9838`，整合 main `de9d0e3a`；范围是测试分支兼容修复，main 不写入。
+[完整修复记录](pi-codemode-main-compatibility.md)列出实际冲突、迁移和验证。
+
+- 保留实验分支单一新循环、原 Monty VM、调用身份、已确认效果、根预算和未观察结果
+  交接。接入 main 的只读来源/配置/历史优化、缓存和有界 GC、空记忆重建及 Gemini
+  提取并行。原生工具保护与调用方收尾移到 TurnExecution，旧 `_run` 不恢复。
+- main `0092`—`0095` 原文保留；实验调用索引接为 `0096`，补齐旧实验 `0092` 缺少的
+  main 维护索引。真实两个旧分支 producer 的正常升级、启动、事实与回执完整性、
+  重复升级和 downgrade 护栏通过；不 stamp、不改写原任务/预算/回执。
+- 新增真实 worker 的三激活发送/内部结果组合回归，确认同一 Work、累计预算及重复
+  调用不重发。新增迁移核验的字符串归一缺陷由实际 SQLite 反例复现，已修正；错误
+  标识符、Unicode 标识符、JSON 路径、唯一性、谓词及列形状漂移均在 DDL 前拒绝。
+- 原迁移链 head 断言更新到 0096 并注释；main 的 0095 自有 DDL 验收固定到 0095，
+  保留原全库事实、schema 差异、downgrade 不变断言，并另验当前 head 启动与事实。
+  没有删掉或放宽成功、未知围栏、预算或不重发的检查。
+
+定向检查分别 53/70/2 项通过；head 夹具修正后 78 项通过；空内部结果兜底条件与 main
+精确对齐后 17 项通过；最终迁移联合检查 87 项通过（28.22 秒）。首次完整检查
+3919 通过、1 失败、1 跳过，868.45 秒；唯一失败是旧夹具把当前 head 写死为 0095。
+两个主动中止轮分别 361/2715 项通过、1 跳过，128.15/566.01 秒，不算完整通过。
+新增核验程序缺陷的两个拒绝反例先实际失败，再修正生产核验；失败/中止原记录保留。
+
+最终命令：
+
+```sh
+uv run --frozen ruff check src tests scripts migrations
+uv run --frozen ruff format --check src tests scripts migrations
+uv run --frozen mypy
+YUKI_MONTY_BINARY=$PWD/.venv/bin/yuki-monty-worker uv run --frozen pytest -q -p no:warnings tests
+```
+
+pytest 自有 basetemp 仅用于夹具清理。最终 **3926 通过 / 1 跳过，813.13 秒**；
+format 1188 文件及 mypy 724 源文件通过，真实 worker 无跳过。唯一跳过仍为私有生产
+备份路径未提供。当前代码 hash 与验证源一致，日志及 SHA 见
+[最终完整证据](pi-codemode-evidence/main-compatibility-accepted.json)。
+
+四个自有全量临时根目录已删除，du 分配量合计约 19.287 GiB；不是瞬时磁盘净释放量。
+worker/binding 保留，未动共享 pytest 临时根或用户数据。本轮未新建 VM、未跑付费
+API 或真实 QQ；Docker 包装探针更新 head，但未重新装配/验收镜像，不冒充部署。
+以前的长任务费用与完成率保持历史记录，不当作本次对最新 main 的性能比较。
+
+源码和证据随本轮测试分支提交；实际提交号、推送及祖先/远端核对见最终回报。
+下一依赖：后续合回 main、发布和部署须另授权；私有备份用例缺数据、本轮未运行。

@@ -188,14 +188,13 @@ OCI revision 为完整 merge SHA。安装后的包版本与 15 个关键源码�
 最终源码的只读容量构造重新核验，结果与上表一致；机器证据为
 `incident-1331-replay-final.json`。仍为签名等长替代的容量核对，没有真实 HTTP 或 QQ 重放。
 
-更多上线前实际首请求和 AGM 核查、未知计量及后续适配建议见
-[协议与缓存核查](gemini-agm-cache-audit-2026-10-02.md)。
+上线前的计量与请求证据只覆盖所列窗口；未知用量不能外推为零或完整上游账单。
 
 ## Bot 部署与留存核验
 
 部署脚本从实际 Bot labels 取得 35 份 Compose 文件，核对原 `ops-8ca2e17` 完整 OCI revision、
 归档 SHA、已安装版本、架构和证据 helper SHA，检查备份所需空间及余量。
-只停止并替换 Bot；未重启 SnowLuma/AGM，也没有切换路由、扩大窗口或恢复旧数据库。
+只停止并替换 Bot；未重启 SnowLuma 或上游代理，也没有切换路由、扩大窗口或恢复旧数据库。
 失败回退使用原 image 的固定 tag，仅回退代码，保留当前数据。
 
 实际停写备份为
@@ -213,7 +212,6 @@ running、healthy、restart 0；线上 15 个源码文件 hash 与测试源一�
 
 SnowLuma 原 ID
 `9e7a1a89696eae3922e4b40daee295edebc0fb60e18c7c9bf5a15efe7a1c8b85` 保持 running/0 restart；
-AGM 原 `gemini-request-correlation-v4.8.4` image 保持 healthy/0 restart。
 原有 `memory_consistency_healthy=false` 仍存在，不把这项既有问题写成本轮已解决；
 本轮没有扩展为 Memory 修复。
 

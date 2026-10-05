@@ -143,6 +143,18 @@ canonical Conversation 时同样在模型调用前阻断。
 查询不补写工具结果、解除未知效果围栏或改变 Social 执行语义。
 这证明传输事实，不证明内容在语义上已完成目标；不按措辞猜测进度或最终回答。
 
+同步 `return_to_caller` 调用在显式 complete 成功后仍取得调用方所需的真实内部模型结果，
+不将工具提议或内部正文补发到 QQ。单段额度先耗尽时，原 complete 参数保留在原 journal
+的 progress 中，工作排队等待结果；下一段收到新输入即撤销提议，否则重新核验当前来源、
+权限和原回执后恢复完成条件；取得内部模型结果后再次复核，正文非空也不能越过新未决
+回执。模型期间出现新输入时，空响应异常同样交回 paired/queued，不向调用方报告 completed
+或保存成功结果。这个提议不授予执行或交付权限，也不增加或重置预算。
+完成条件已复核且原 Work 有 confirmed 消息发送事实时，内部最终结果可以为空；仅存
+sent_messages 计数或缺失、失败、未知回执不能取得此资格。无已确认发送的同步调用仍须
+返回实际内部结果，不能凭 complete 提议把空模型响应当作成功。
+这些边界由 `services/turn_execution.py` 的类型化循环实施，与 `execute_code` 的原 VM
+续接共存；恢复未决 composition 后仍按原来源重新核验完成提议，不回到旧 `_run`。
+
 历史脚本保留原 run/step、script_hash、工作 ID、预算与游标。旧模型正文尾发不再执行：
 可以定位原工作及目标且已有完整成功证据时，记录跳过该尾步；未知则停在 uncertain，
 无确认或结构变形则 blocked，要求更新任务。尚未派发的旧 `yuki.generate + 发送` 脚本
@@ -228,6 +240,12 @@ gate 内只复核 turn snapshot、read version 或原 Work source guard 并提�
 `prepare_context` 负责依原 Work 停放、结算、恢复或采用现行 extractive fallback。
 没有已接纳 Work 的准备继续使用前台路径，不为准备另造 Work 或获取执行租约。
 
+普通聊天先只读检查同一内部 source key、actor 与交接边界是否有可选 Work；没有候选时
+上下文准备不领取再释放空租约。只读结果仅用于安排准备，正式激活仍重新读取候选、
+取得租约并执行原来源与状态核验，准备期间新增、取消或改向的 Work 不复用旧预检授权。
+已占用或过时代际的作用域领取、失效租约的续期和释放可只读拒绝；真实变更仍使用原
+writer 与执行时的 owner/fence/generation/期限条件，不以锁外读取代替 CAS。
+
 尚无模型 journal 的原 Work 遇到 required rollup 时，在原 checkpoint 中记录准备水位与
 原期限，交给既有 canonical rollup job，随即按原 `waiting_external` 结算并释放 activation。
 WorkScheduler 每轮先只读发现至多 32 个已完成、失败或到期的准备，再在短写事务复核并
@@ -238,8 +256,10 @@ WorkScheduler 每轮先只读发现至多 32 个已完成、失败或到期的�
 协议，不无谓准备最终不会派发的新群史。完整配对的业务恢复使用当前获准聊天与轻量
 任务材料；整理只在完整往返安全点建立新输入，来源冲突保留明确链边界。
 
-来源核验须覆盖实际提交的事件、观察、摘要版本和读取范围。只读快照准备结束后核验原
-执行租约，短写事务复查 generation、owner、来源依赖和隐私代次；失败不推进指纹或选取记录。
+来源核验须覆盖实际提交的事件、观察、摘要版本和读取范围。只读快照准备结束后，在同一
+新的显式读快照核验原执行租约、SQL 执行时的期限、generation、owner、来源 revision 和
+隐私代次；纯检查不通过无变化 UPDATE 占用 writer。读结果不是写入授权，真实 journal、
+投影发布和效果仍保留各自短写事务中的执行时围栏与来源 CAS；失败不推进指纹或选取记录。
 未决协议恢复核原检查点，已配对业务续跑核当前合法视图；后台仅发布新摘要不意味着已选
 旧快照失效，真实编辑、删除或权限变化仍拒绝。跨激活恢复按原实际选取的依赖核验，
 不以未观察事件或后台派生摘要的标量变化单独拒绝。缺持久 guard 的旧 journal 保留严格
@@ -252,6 +272,15 @@ Work。steer 与普通观察按原事件顺序呈现一次，输入消费仍沿�
 页游标和引用；只有完整配对的业务恢复重新选择当前聊天。
 真实 Work 的 projection CAS、来源依赖和 dispatched journal 同事务
 发布，文件读取、散列及 JSON 编码在 writer 之前完成。
+
+选取准备在显式读快照中确定本次缺失的 `(view_key, source_key)`，writer 只插新增项。
+同 epoch 的既有冻结片段保持不变，显式容量或合同 epoch 边界仍保留原 first-selection
+来源和覆盖口径；owner、scope、generation、事件身份冲突不能用忽略重复插入隐藏。
+只有首次选中的摘要转移 parent artifact refs，写时批量核验真实 parent handles 已由
+对应摘要保留，空集不删除；后续 journal 失败与 projection、selection、refs 一起回滚。
+历史观察先读作用域 metadata 和完整来源闭包，再读取实际有效的正文；合法未选新
+work-note 仍进入下一请求，未选 snapshot/摘要候选不能充当已观察覆盖。
+metadata 分页限制单次读取，当前 JSON 来源图的总访问量仍可能随历史增长。
 
 普通 journal 保存因来源标量版本变化而失败时，最多在 writer 之外用原入口授权与来源
 guard 重新核验一次，再重备同一数据库保存；无原 guard 或真实来源变化保持拒绝。
@@ -302,6 +331,20 @@ paired 检查点。真实主请求超预算且整理不能使其装窗时，暂�
 保存；新增引用与 journal 在原租约的短事务一起提交。活动 Work 保留引用，归档与隐私清理
 释放拥有者；GC 先取得无拥有者删除围栏，再在 writer 外删文件。对象资源配额和请求 token
 容量分开；存储压力不能触发模型摘要。备份必须包含 DB 和协议/工具证据目录并核验引用。
+
+Work 输入准备恢复使用 pending 且 ready 为 false 的部分索引发现有界候选；空轮询
+不读取已消费或取消输入的历史页，也不申请 writer。准备 owner 不同或超过原 120 秒
+时限的判定不变，unknown owner 的 SQL NULL 语义不变；取得 writer 后按原 ID、
+state、ready、owner 和时限复核，保留原输入、Work 与累计预算。
+
+Protocol GC 分 deleting 恢复与普通过期两个索引分支，先取有界 metadata 页再批读真实 refs；
+owned 页也推进原进程内游标，固定 cutoff 和同排序高水位，次轮回访新插入及状态变化。
+短 writer 重新核对原 metadata、期限和无拥有者条件并提交 deleting 屏障；文件锁只保护
+实际文件查证/删除，释放后批量确认仍 deleting 且无拥有者的 metadata。GC 不持 writer
+等待文件锁；publication 保留文件核验至原 journal/ref 提交的保护和 deleting 全集合检查。
+文件线程在调用方取消后须真正收尾才释放原保护。普通不可变检查点条目可在原 chain
+复用有界 digest/size 缓存，opaque 与会改变媒体外置的条目仍按原协议准备；缓存不代替
+发布前真实文件身份/完整性核验。文件缺失重新准备，变化重新查证，损坏拒绝发布。
 
 热配置 `context.window_tokens` / `context.work_window_tokens` 初始为 96000 / 128000；
 普通历史整理使用独立 `context.compaction_window_tokens`，初始 90000；初始历史预算、
@@ -356,6 +399,21 @@ attribution 等最佳努力任务仍可被前台抢占，`REQUIRED` 压缩按前
 `ConcurrencyManager` 只保留会话互斥和排队/执行中的取消登记。Runner 在实际请求
 接纳后复核来源、登记一次逻辑请求预算和 dispatched 检查点；HTTP 重试不重复预留
 这笔预算，额外真实请求沿原 transport accounting 计费。
+
+普通私聊的新用户输入可抢占尚未接纳 Work、尚未开始本地效果且尚未派发原生工具的旧轮。
+入口在 Coordinator guard 内捕获原 token 登记的 task，推进输入版本后只取消该原 task，
+并在 guard 外等待它真正退出；不得延迟按 conversation key 重新找当前请求来取消。
+准备和生成嵌套登记共享原 task 的保护，发送/修改开始与原生工具请求派发前标记的保护
+一直保留到该 task 最后退出，不因连续新输入更新 version 而清除。新入口自身取消时仍
+收拢原任务，不能二次取消正在完成的 transport、线程或回执清理；会话互斥和 Provider
+名额沿各自真实 finally 释放。已接受 Work 继续接入原 Work 输入；群聊和显式停止仍沿原策略。
+已开始的分段发送保存完整计划和真实配对回执，不以首条成功提前终止 Runner。原 HTTP
+取消可能已经发生上游计费或原生效果，未知不当零、不盲重发、不退还原预算；新的内部
+事件须通过正常来源与权限接纳形成新的请求。此策略允许新私聊输入替代旧轮尚未发送的
+回答，不能据此承诺新轮必定完整回答旧问题。原生保护由 MainAgentBackend 的原 token
+实施；无普通私聊入口的 SDK backend 不获得该抢占状态。
+主请求的派发 admission 在真实原生工具请求启动前调用该保护；不依赖已退休的旧循环。
+
 自动化 claim 使用每次唯一所有者并续期，提交时再次核验；忙任务延迟接纳，不创建新 run。
 Work、工作者与自动化的续租任务由原激活 task 监督。续租返回失效、非瞬态数据库错误
 或计量失败会停止该激活，并交回原 Work/run 的恢复；不新建执行身份、不清空预算或 journal。
@@ -472,15 +530,30 @@ SELF 工具证据以 event/run 二选一归属，
 
 模型调用统计是观测数据，不是执行预算或副作用回执。统计写入抛出数据库异常时，
 保留 Provider 已返回的结果；模型请求失败时，统计异常不能覆盖原始模型异常。
-成功请求之后的统计身份校验错误或编程错误仍会抛出。任务取消照常传播，不承诺
+成功请求之后的可丢统计身份校验或编程错误同样只记固定类别和缺样，保留成功响应、
+不重跑模型；实际 dispatch 身份/权限、预算、journal 与效果回执失败仍按原合同阻断。
+任务取消及 SystemExit/KeyboardInterrupt 照常传播，不承诺
 取消或进程终止时仍能交还、持久化已经收到的 Provider 响应。
 
-生产统计由调用任务先盖入可信身份和时间，再提交到共享有界诊断队列；模型返回和
-并发名额释放不等待统计写锁。数据库聚合只代表已经落盘的样本，队列中仍可能有待写记录，
+生产统计由调用任务冻结原可信身份、时间和 trace 根已捕获的 privacy generation，
+有界快照入原共享队列；来源 SQL、编码与 writer 都由同一个空 Context 消费者处理。
+没有原 trace/privacy 来源的直接 queued record 丢样，不在模型成功后重新捕获删除代次。
+同步 writer=None 的独立调用保留原即时 API。模型返回和并发名额释放不等待可丢准备或写锁。数据库聚合只代表已经落盘的样本，队列中仍可能有待写记录，
 不能宣称完整命中率。入队拒绝、异步写入失败及关闭丢弃通过内容无关日志和诊断 health
 报告 coverage_incomplete；报错可能发生在真实提交后，不把失败次数当作确定缺失数，也不重试
 结果未知的 INSERT。容量、隐私删除围栏及生命周期见 [执行过程查看](execution-trace.md)。
 预算、授权、请求检查点和工具回执仍按原持久化合同失败关闭。
+
+ModelInvocation latency_seconds 的新成功/失败样本统一从完成路由/归一化后、进入
+Provider 调用等待前计到调用及结果准备完成，含 Provider slot 等待、guard、重试和响应处理；
+成功样本不再直接使用协议自身的 complete latency。ChatResponse.latency_seconds 保留各协议
+原兼容定义。完整 logical call 与 cancellation 通过 version=1 的 model_phases 观测，旧统计
+没有分段/版本时不可推断新阶段；取消仍不新增虚假的成功统计。互斥/嵌套计量见
+[执行过程查看](execution-trace.md)。
+
+WorkScheduler 仍按原顺序执行 repair_inputs/wake_rollups/reclaim/protocol_cleanup/selection，
+之后逐个 serial_resumer；health.phase_timings 的固定分桶和慢阶段数值日志分别计量这些
+区间，不改变调度并发、maintenance 次序或已承诺 Work 生命周期。等待驱动仍独立。
 
 尚未接纳工作的普通聊天，对原本发送运维反馈的 Provider、校验及其他内部异常分支
 复用 RuntimeFailure 分类，区分数据库繁忙、内部错误、认证/请求配置问题和 Provider

@@ -20,9 +20,9 @@ from qq_ai_bot.conversation.projections import (
 )
 from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
+from qq_ai_bot.execution_trace.phases import collect_phase_metrics
 from qq_ai_bot.llm.base import LLMError
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.runtime.work_repository import WorkCapacityError
 from qq_ai_bot.services.context_assembler import AssembledContext
 
@@ -43,6 +43,7 @@ class PreparedHistory:
     read_scope: str = ""
     committed: ProjectionSnapshot | None = None
     committed_input: list[dict[str, Any]] | None = None
+    previous_item_count: int | None = None
 
     async def prepare_commit(
         self, fragments: FrozenFragments, *, current_snapshot: dict[str, Any] | None = None
@@ -75,6 +76,12 @@ class PreparedHistory:
                 and len(fragments.items) == len(self.fragments.items) + 1
                 and list(fragments.items[:-1]) == list(self.fragments.items)
                 else None
+            ),
+            previous_snapshot=previous,
+            previous_item_count=(
+                (len(self.committed_input) if self.committed_input is not None else None)
+                if self.committed is not None
+                else self.previous_item_count
             ),
         )
 
@@ -145,7 +152,9 @@ async def prepare_history(
         else ()
     )
     reason = None
+    previous_item_count = None
     frozen = FrozenFragments.load([])
+    frozen_event_ids: frozenset[int] = frozenset()
     if previous is None:
         reason = await repository.invalidation_reason(view_key) or "bootstrap"
     elif previous.contract_revision != contract_revision:
@@ -153,23 +162,30 @@ async def prepare_history(
     elif previous.context_key != context_key:
         reason = "read_scope_changed"
     else:
-        frozen = FrozenFragments.load(previous.items())
+        previous_items = previous.items()
+        previous_item_count = len(previous_items)
+        frozen = FrozenFragments.load(previous_items)
+        del previous_items
+        frozen_event_ids = frozen.event_ids
         if not {identity for identity, _ in frozen.observation_sources} <= {
             row.id for row in observations
         }:
             reason = "source_changed"
             frozen = FrozenFragments.load([])
-        elif not frozen.event_ids <= context.visible_event_ids and (
+            frozen_event_ids = frozenset()
+        elif not frozen_event_ids <= context.visible_event_ids and (
             previous.selected_summary_text is None
             or context.projection_scope not in {"", "main", "self_initiative"}
         ):
             reason = "capacity"
             frozen = FrozenFragments.load([])
-        elif context.current_event_id in frozen.event_ids:
+            frozen_event_ids = frozenset()
+        elif context.current_event_id in frozen_event_ids:
             # A deliberate repeat of an event is a new attempt, not an append of
             # the same trigger. Preserve that distinction in the epoch reason.
             reason = "source_changed"
             frozen = FrozenFragments.load([])
+            frozen_event_ids = frozenset()
     if (
         not frozen.items
         and actor_id
@@ -184,6 +200,8 @@ async def prepare_history(
             generation=version.generation,
             actor_id=actor_id,
             read_scope=read_scope,
+            visible_event_ids=context.visible_event_ids,
+            allowed_observation_ids=frozenset(row.id for row in observations),
         )
         allowed_observations = {row.id for row in observations}
         selected = [
@@ -216,6 +234,8 @@ async def prepare_history(
                 unique.append(item)
             seen.update(ids)
         frozen = FrozenFragments.load(unique)
+        frozen_event_ids = frozen.event_ids
+    collect_phase_metrics(F=len(frozen.items), E=len(frozen_event_ids), K=len(observations))
     selected_context = context
     # Preserve a selected summary while it and all chat fit. New derived rows
     # must not silently replace the prefix or omit newly covered unseen chat.
@@ -226,25 +246,18 @@ async def prepare_history(
         and context.projection_scope in {"", "main", "self_initiative"}
     ):
         ledger = EventLedgerRepository(repository.database)
-        after = previous.selected_summary_coverage
         through = max(context.prompt_raw_tail_end_event_id, context.prompt_effective_coverage)
-        missing_rows: list[EventRecord] = []
-        while after < through:
-            page = await ledger.list_scope_after(
-                version.scope,
-                after_event_id=after,
-                through_event_id=through,
-                limit=256,
-                message_only=True,
-            )
-            if not page:
-                break
-            missing_rows.extend(
-                row
-                for row in page
-                if row.id not in frozen.event_ids and row.id != context.current_event_id
-            )
-            after = page[-1].id
+        current_version, missing_rows = await ledger.read_scope_missing_history(
+            version,
+            after_event_id=previous.selected_summary_coverage,
+            through_event_id=through,
+            frozen_event_ids=frozen_event_ids,
+            current_event_id=context.current_event_id,
+        )
+        if current_version != version:
+            from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
+
+            raise HistorySourceChangedError(version)
         renderer = ChatEventPromptRenderer(
             missing_rows,
             bot_display_name=context.history_bot_display_name,
@@ -269,27 +282,27 @@ async def prepare_history(
     extended = frozen.extend_history(
         selected_context.history_fragments, selected_context.history_event_fragments
     )
-    for observation in observations:
-        extended = extended.append_observation(
-            observation.id, observation.version, observation.message()
-        )
+    observation_messages = tuple((row.id, row.version, row.message()) for row in observations)
+    extended = extended.append_observations(observation_messages)
     fresh = FrozenFragments.load([]).extend_history(
         context.history_fragments, context.history_event_fragments
     )
     # Canonical event coverage never proves private clues were summarized.
-    for observation in observations:
-        fresh = fresh.append_observation(observation.id, observation.version, observation.message())
+    fresh = fresh.append_observations(observation_messages)
+    collect_phase_metrics(candidate_count=2)
+    extended_messages = extended.messages()
     fits = (
-        context_fits(replace(selected_context, history_messages=extended.messages()))
+        context_fits(replace(selected_context, history_messages=extended_messages))
         if context_fits is not None
-        else history_fits(extended.messages())
+        else history_fits(extended_messages)
     )
     hard_fits = (
-        context_hard_fits(replace(selected_context, history_messages=extended.messages()))
+        context_hard_fits(replace(selected_context, history_messages=extended_messages))
         if context_hard_fits is not None
         else fits
     )
     original_fragments, original_context, original_reason = extended, selected_context, reason
+    original_messages = extended_messages
     ready_rollup = (
         previous is not None
         and context.prompt_effective_coverage > previous.selected_summary_coverage
@@ -302,13 +315,14 @@ async def prepare_history(
         reason = "capacity" if not hard_fits else "rollup_ready"
         extended = fresh
         selected_context = context
+        extended_messages = extended.messages()
     fits = (
-        context_fits(replace(selected_context, history_messages=extended.messages()))
+        context_fits(replace(selected_context, history_messages=extended_messages))
         if context_fits is not None
-        else history_fits(extended.messages())
+        else history_fits(extended_messages)
     )
     hard_fits = (
-        context_hard_fits(replace(selected_context, history_messages=extended.messages()))
+        context_hard_fits(replace(selected_context, history_messages=extended_messages))
         if context_hard_fits is not None
         else fits
     )
@@ -336,7 +350,7 @@ async def prepare_history(
                 )
             except (ObservationSummaryError, WorkCapacityError, LLMError) as exc:
                 if context_hard_fits is None or not context_hard_fits(
-                    replace(original_context, history_messages=original_fragments.messages())
+                    replace(original_context, history_messages=original_messages)
                 ):
                     raise
                 logger.info("observation_summary_deferred category=%s", type(exc).__name__)
@@ -344,6 +358,7 @@ async def prepare_history(
         # the dispatch CAS admits it and transfers its artifact ownership.
         candidate = extended
         if summary is not None:
+            collect_phase_metrics(candidate_count=1)
             candidate_items: list[dict[str, Any]] = []
             # A compiled A can own both a chat event and its dynamic snapshot.
             # Summarizing the snapshot cannot silently cover the original chat.
@@ -392,32 +407,37 @@ async def prepare_history(
             candidate = FrozenFragments.load(candidate_items).append_observation(
                 summary.id, summary.version, summary.message()
             )
+        candidate_messages = (
+            candidate.messages() if candidate is not extended else extended_messages
+        )
         candidate_fits = (
-            context_fits(replace(selected_context, history_messages=candidate.messages()))
+            context_fits(replace(selected_context, history_messages=candidate_messages))
             if context_fits is not None
-            else history_fits(candidate.messages())
+            else history_fits(candidate_messages)
         )
         if not hard_fits and context_hard_fits is not None:
             # Required recovery needs to fit the real request, not a smaller
             # maintenance target. Optional ready summaries still use that target.
             candidate_fits = context_hard_fits(
-                replace(selected_context, history_messages=candidate.messages())
+                replace(selected_context, history_messages=candidate_messages)
             )
         if summary is not None and candidate_fits:
             extended, reason = candidate, "capacity"
+            extended_messages = candidate_messages
         elif context_hard_fits is not None and context_hard_fits(
-            replace(original_context, history_messages=original_fragments.messages())
+            replace(original_context, history_messages=original_messages)
         ):
             extended, selected_context, reason = (
                 original_fragments,
                 original_context,
                 original_reason,
             )
+            extended_messages = original_messages
     # The original assembler has already selected a bounded history. Its rollup
     # is compiled separately, before these event fragments, in every epoch.
     selected_context = replace(
         selected_context,
-        history_messages=extended.messages(),
+        history_messages=extended_messages,
         read_version=replace(
             version,
             visible_event_ids=tuple(
@@ -443,4 +463,5 @@ async def prepare_history(
         reason=reason,
         actor_id=actor_id,
         read_scope=read_scope,
+        previous_item_count=previous_item_count,
     )

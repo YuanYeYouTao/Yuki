@@ -783,18 +783,11 @@ async def test_real_chat_entry_progress_delivery_and_work_completion(
     if not steer:
         from sqlalchemy.exc import OperationalError
 
-        original_release = WorkRepository.release
-
         async def locked_release(self, lease):
             async with database.sessions() as session:
                 state = await session.scalar(
                     select(work.c.state).where(work.c.conversation_id == lease.conversation_id)
                 )
-            if state is None:
-                # FIRST prepares context without holding the empty activation.
-                release_stages.append("prepare")
-                await original_release(self, lease)
-                return
             assert state == "completed"
             release_stages.append("completed")
             raise OperationalError(
@@ -823,12 +816,12 @@ async def test_real_chat_entry_progress_delivery_and_work_completion(
     assert state.snapshot()[0]["text"] == "runtime-check"
     assert all(request.tools == provider.requests[0].tools for request in provider.requests)
     if not steer:
-        assert release_stages == ["prepare", "completed"]
+        assert release_stages == ["completed"]
         assert "work_cleanup_deferred stage=release category=OperationalError" in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_real_chat_entry_empty_activation_release_failure_blocks_dispatch(
+async def test_real_chat_entry_empty_activation_release_failure_preserves_dispatched_result(
     database, monkeypatch, caplog
 ):
     from dataclasses import replace
@@ -838,11 +831,12 @@ async def test_real_chat_entry_empty_activation_release_failure_blocks_dispatch(
     from tests.unit.test_commands_and_chat import inbound
 
     from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
+    from qq_ai_bot.domain.messages import ChatResponse
     from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence
     from qq_ai_bot.llm.fake import FakeLLMProvider
     from qq_ai_bot.runtime.work_schema_v1 import work
 
-    provider = FakeLLMProvider(lambda request: "must not dispatch")
+    provider = FakeLLMProvider(lambda request: ChatResponse(content="", latency_seconds=0))
     harness = build_harness(
         database, make_settings(database.url, runtime_work_enabled=True), provider
     )
@@ -873,11 +867,11 @@ async def test_real_chat_entry_empty_activation_release_failure_blocks_dispatch(
     repository = WorkRepository(database)
     try:
         result = await asyncio.wait_for(harness.processor.handle(message, sender), 10)
-        assert result.reason == "turn_interrupted", result
+        assert result.reason == "chat", result
         assert len(released) == 1
         assert await repository.valid(released[0])
         assert await repository.acquire(released[0].conversation_id, released[0].generation) is None
-        assert not provider.requests
+        assert provider.requests
         assert sender.calls == 0
         assert not sender.messages
         async with database.sessions() as session:

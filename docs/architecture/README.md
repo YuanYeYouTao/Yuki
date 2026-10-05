@@ -23,6 +23,7 @@ Yuki 正在逐层解耦：永久主体、内部事件和工作身份由核心持
 | [Memory](memory-v2.md) | 记忆范围、证据与权限 |
 | [Tool Kernel](tool-kernel.md) | 固定主声明、目录查询与执行授权 |
 | [Pi 与 Code Mode 交接](pi-codemode-handoff.md) | 实验分支当前状态、环境准备、已知问题与 P06–P11 接手要点 |
+| [Code Mode 与 main 兼容](pi-codemode-main-compatibility.md) | 主线修复接入新循环、两边旧数据库正常升级及联合验证 |
 | [Pi / Code Mode 运维](../operations/pi-codemode-operations.md) | 原数据兼容矩阵、固定 worker 分发、私有对象备份与切换/回退门 |
 | [MCP 架构](../mcp/architecture.md) | 外部工具、固定清单和执行授权 |
 | [插件架构](../plugin-development/architecture.md) | SDK、Host 与隔离插件会话 |
@@ -37,6 +38,9 @@ Yuki 正在逐层解耦：永久主体、内部事件和工作身份由核心持
 包含四组隔离装配的 24 次测量、未完成样本和原始记录；不是生产入口或小时/天尺度验收。
 后续发现恢复测试缺少读取身份及停止观察器误判，原恢复率需按该缺口解读；
 [分别修复后的恢复重测](pi-codemode-recovery-retest.md)保留诊断轮、最终八次测量与费用。
+
+本轮延迟修复范围与逐项核对见[回复延迟修复任务书](yuki-latency-fix-taskbook-20261004.md)。
+已完成源码、条件未满足的后续项、验证、合并部署与自然回复验收分别记录；现行规则仍以共同开发约束和模块合同为准。
 
 设计基线：[SELF 主体、自动化与 Work 信号等待任务书](Yuki-SELF主体自动化与Work信号等待任务书-2026-09-24.md)。
 实现已进入当前开发分支；合并与上线状态以实际 PR 和部署记录为准。
@@ -80,8 +84,6 @@ V6 迁移链为 `0065`（关系历史索引）→ `0066`（autonomy 接纳）→
 [2026-10-02 核查记录](../operations/compact-capacity-accounting-2026-10-02.md)。
 前台回复与 SQLite 写锁本轮实现及验证状态见
 [2026-10-03 交付记录](../operations/foreground-rollup-sqlite-contention-2026-10-03.md)。
-实际 Gemini 前缀、AGM 计量与网关方言建议见
-[协议与缓存核查](../operations/gemini-agm-cache-audit-2026-10-02.md)。
 
 搜索桥使用连接预算、摘要等待及输出预算的放宽设计见
 [2026-10-02 策略调整](../operations/search-compaction-limits-2026-10-02.md)。
@@ -95,3 +97,11 @@ V6 迁移链为 `0065`（关系历史索引）→ `0066`（autonomy 接纳）→
 基于 `3d9e273` 的代码核查和隔离 SQLite 竞态复现，规定实际容量内先回复、后台整理及明确采用边界，
 并修复 Rollup 提交快照、周期空写和锁内准备。PR #229 已合并为 `b8adc49`，Bot-only 部署及重试证据见
 [交付记录](../operations/foreground-rollup-sqlite-contention-2026-10-03.md)；自然聊天延迟、摘要质量与缓存改善仍须分别观察。
+
+本轮修复规格：[数据库回复延迟任务书](database-reply-latency-taskbook-2026-10-04.md)。
+包含参与反馈批读与公平对账、Protocol GC 和回复投影的数据库优化；用户已授权实施。
+验证、提交、合并、部署与自然聊天效果见[交付记录](../operations/database-reply-latency-2026-10-04.md)，
+按各自实际证据分别记录。
+
+前轮上线后仍有回复长尾，本次自然流量检查与后续空写、租约和短期状态修复见
+[2026-10-04 后续交付记录](../operations/database-reply-latency-followup-2026-10-04.md)。

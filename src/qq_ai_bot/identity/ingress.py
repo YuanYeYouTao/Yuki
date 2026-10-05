@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
@@ -13,6 +15,7 @@ from qq_ai_bot.conversation.hydrate import HydratedConversation, ensure_canonica
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.domain.messages import InboundMessage
+from qq_ai_bot.gateway.models import ConnectionSnapshot
 from qq_ai_bot.gateway.registry import GatewayConnectionRegistry, RegistryClosed
 from qq_ai_bot.identity.canonical_repository import (
     create_person_binding,
@@ -50,6 +53,17 @@ class IngressPreAdmit:
     author_presence_id: str | None
     provider: str
     handle_external_account_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ColdIngressRecovery:
+    """Only the original ingress fences; never a durable route or admission."""
+
+    connection: ConnectionSnapshot
+    presence_revision: int
+    space_binding_id: str
+    space_id: str
+    binding_revision: int
 
 
 def overlay_yuki_signals(
@@ -103,23 +117,68 @@ class CanonicalIngressResolver:
     async def pre_admit(
         self, bot: object | None, message: InboundMessage
     ) -> IngressPreAdmit | None:
-        """Resolve one inbound event inside the canonical transaction."""
+        """Keep hot admission in one session; release it before cold probes."""
 
+        started = time.perf_counter()
         async with self._database.sessions() as session, session.begin():
-            return await self._admit(session, bot, message)
+            result = await self._admit(session, bot, message)
+        initial_read_seconds = time.perf_counter() - started
+        if isinstance(result, IngressPreAdmit):
+            logging.getLogger(__name__).info(
+                "ingress_preparation path=local initial_read_seconds=%.6f outcome=%s",
+                initial_read_seconds,
+                "dropped" if result.dropped else "admitted",
+            )
+            return result
+        recovery_started = time.perf_counter()
+        fence = await self._router.evaluate_ingest(
+            space_binding_id=result.space_binding_id,
+            event_presence_id=result.connection.presence_id or "",
+            expected_connection=result.connection,
+            expected_presence_revision=result.presence_revision,
+            expected_binding=(result.space_id, result.binding_revision),
+        )
+        if fence != "ok":
+            logging.getLogger(__name__).info(
+                "ingress_preparation path=cold initial_read_seconds=%.6f "
+                "recovery_seconds=%.6f outcome=dropped",
+                initial_read_seconds,
+                time.perf_counter() - recovery_started,
+            )
+            return _drop(fence, message)
+        # Recovery may have committed even if its acknowledgement was lost.
+        # Propagate uncertainty; never retry or undo that route here.
+        recovery_seconds = time.perf_counter() - recovery_started
+        recheck_started = time.perf_counter()
+        async with self._database.sessions() as session, session.begin():
+            admitted = await self._admit(session, bot, message, recovered=result)
+            assert isinstance(admitted, IngressPreAdmit)
+        logging.getLogger(__name__).info(
+            "ingress_preparation path=cold initial_read_seconds=%.6f recovery_seconds=%.6f "
+            "recheck_seconds=%.6f outcome=%s",
+            initial_read_seconds,
+            recovery_seconds,
+            time.perf_counter() - recheck_started,
+            "dropped" if admitted.dropped else "admitted",
+        )
+        return admitted
 
     async def _admit(
         self,
         session: AsyncSession,
         bot: object | None,
         message: InboundMessage,
-    ) -> IngressPreAdmit:
+        *,
+        recovered: _ColdIngressRecovery | None = None,
+    ) -> IngressPreAdmit | _ColdIngressRecovery:
         if bot is None:
             return _drop("no_ingress_connection", message)
         try:
             connection = self._registry.resolve_by_handle(bot)
         except RegistryClosed as exc:
             return _drop(exc.category, message)
+        if recovered is not None and connection.snapshot != recovered.connection:
+            return _drop("ingress_connection_changed", message)
         if connection.snapshot.presence_id is None:
             presence = await find_presence(
                 session, external_id(connection.snapshot.external_account_id)
@@ -142,6 +201,8 @@ class CanonicalIngressResolver:
                 or presence.external_account_id != connection.snapshot.external_account_id
             ):
                 return _drop("no_presence", message)
+        if recovered is not None and presence.revision != recovered.presence_revision:
+            return _drop("no_presence", message)
         handle_account = connection.snapshot.external_account_id
         handle_provider = connection.snapshot.provider
         message_account = external_id(message.bot_user_id) if message.bot_user_id else ""
@@ -165,12 +226,40 @@ class CanonicalIngressResolver:
             binding = await find_space_binding(session, external_id(overlay.group_id))
             if binding is None or binding.status != "active":
                 return _drop("no_space_binding", overlay)
+            if recovered is not None and (
+                binding.id,
+                binding.space_id,
+                binding.revision,
+            ) != (
+                recovered.space_binding_id,
+                recovered.space_id,
+                recovered.binding_revision,
+            ):
+                return _drop("no_space_binding", overlay)
             space_binding_id = binding.id
             space_id = binding.space_id
-            fence = await self._router.evaluate_ingest(
+            fence = await self._router.authenticated_ingest_status_in_session(
+                session,
                 space_binding_id=binding.id,
                 event_presence_id=presence_id,
+                connection=connection,
             )
+            if fence is None:
+                if recovered is not None:
+                    return _drop("not_ingest", overlay)
+                try:
+                    frozen_connection = self._registry.resolve_by_handle(bot).snapshot
+                except RegistryClosed as exc:
+                    return _drop(exc.category, overlay)
+                if frozen_connection != replace(connection.snapshot, presence_id=presence_id):
+                    return _drop("ingress_connection_changed", overlay)
+                return _ColdIngressRecovery(
+                    connection=frozen_connection,
+                    presence_revision=presence.revision,
+                    space_binding_id=binding.id,
+                    space_id=binding.space_id,
+                    binding_revision=binding.revision,
+                )
             if fence != "ok":
                 return _drop(fence, overlay)
         else:

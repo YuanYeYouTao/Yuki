@@ -24,6 +24,55 @@ current_work_control: ContextVar[WorkControl | None] = ContextVar(
 )
 
 
+def _select_work_candidate(
+    candidates: list[dict[str, Any]],
+    source_key: str,
+    source: dict[str, Any],
+    *,
+    work_id: str | None = None,
+) -> dict[str, Any] | None:
+    for candidate in sorted(candidates, key=lambda item: item["source_key"] != source_key):
+        if work_id is not None and candidate["id"] != work_id:
+            continue
+        if work_id is None and candidate["source_key"] != source_key:
+            continue
+        if work_id is None and json.loads(candidate["checkpoint_json"]).get("handoff_work_id"):
+            # Explicit execution wakeups retain their ID; later messages cannot
+            # select the owner that already handed its source to another Work.
+            continue
+        previous = json.loads(candidate["source_json"])
+        if all(
+            previous.get(key) == source.get(key)
+            for key in (
+                "actor_user_id",
+                "origin",
+                "plugin_id",
+                "delegation_id",
+                "execution_boundary",
+                "principal_kind",
+                "initiative_run_id",
+            )
+        ):
+            return candidate
+    return None
+
+
+async def work_candidate_available(
+    repository: WorkRepository,
+    conversation_id: str,
+    generation: int,
+    source_key: str,
+    source: dict[str, Any],
+) -> bool:
+    """Read-only preparation hint; activation must reload under its own lease."""
+    return (
+        _select_work_candidate(
+            await repository.active(conversation_id, generation), source_key, source
+        )
+        is not None
+    )
+
+
 @asynccontextmanager
 async def activate_work(
     repository: WorkRepository,
@@ -51,34 +100,12 @@ async def activate_work(
         ):
             # Authority is reconstructed by the caller, not copied out of a prior work.
             # A different actor cannot silently take over the original actor's goal.
-            candidates = await repository.active(conversation_id, generation)
-            candidates.sort(key=lambda candidate: candidate["source_key"] != source_key)
-            for candidate in candidates:
-                if work_id is not None and candidate["id"] != work_id:
-                    continue
-                if work_id is None and candidate["source_key"] != source_key:
-                    continue
-                if work_id is None and json.loads(candidate["checkpoint_json"]).get(
-                    "handoff_work_id"
-                ):
-                    # A later message cannot select the old owner ahead of the work
-                    # it just registered. Explicit execution wakeups retain its ID.
-                    continue
-                previous = json.loads(candidate["source_json"])
-                if all(
-                    previous.get(key) == source.get(key)
-                    for key in (
-                        "actor_user_id",
-                        "origin",
-                        "plugin_id",
-                        "delegation_id",
-                        "execution_boundary",
-                        "principal_kind",
-                        "initiative_run_id",
-                    )
-                ):
-                    control.current = candidate
-                    break
+            control.current = _select_work_candidate(
+                await repository.active(conversation_id, generation),
+                source_key,
+                source,
+                work_id=work_id,
+            )
             if not resume_execution:
                 # A stale scheduler candidate must not recover a newer queued
                 # execution as though the notice itself were business work.

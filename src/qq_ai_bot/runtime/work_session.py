@@ -30,6 +30,7 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
+from qq_ai_bot.execution_trace.phases import model_detail
 from qq_ai_bot.model_runtime.capacity import estimate_request_tokens, estimate_text_tokens
 from qq_ai_bot.runtime.work_journal import (
     JournalUnavailable,
@@ -140,11 +141,19 @@ class WorkSession:
     ) -> TurnTranscript:
         control = self.control
         self.public_event_ids = set(visible_event_ids)
-        async with control.repository.database.sessions() as session:
-            source = await session.get(CanonicalConversationModel, control.lease.conversation_id)
-            if source is None or source.generation != control.lease.generation:
-                raise WorkConflict("work_source_generation_changed")
-            self.source_revision = source.prompt_source_revision
+        with model_detail("work_restore_source_read"):
+            async with control.repository.database.sessions() as session:
+                source = (
+                    await session.execute(
+                        select(
+                            CanonicalConversationModel.generation,
+                            CanonicalConversationModel.prompt_source_revision,
+                        ).where(CanonicalConversationModel.id == control.lease.conversation_id)
+                    )
+                ).one_or_none()
+                if source is None or source.generation != control.lease.generation:
+                    raise WorkConflict("work_source_generation_changed")
+                self.source_revision = source.prompt_source_revision
         loaded = (
             await self.journal.load(
                 control.lease, control.current["id"], self.contract, source_control=control

@@ -121,6 +121,31 @@ class WorkRepository:
         owner = str(uuid4())
         from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 
+        # A busy scope or obsolete generation has no state to change. Inspect
+        # them without joining the SQLite writer queue; this is only a rejection
+        # fast path, never permission to acquire a lease.
+        async with self.database.sessions() as reader:
+            observed = (
+                await reader.execute(
+                    select(
+                        CanonicalConversationModel.generation,
+                        scope.c.generation.label("scope_generation"),
+                        (scope.c.lease_until > (func.julianday("now") - 2440587.5) * 86400).label(
+                            "occupied"
+                        ),
+                    )
+                    .outerjoin(scope, scope.c.conversation_id == CanonicalConversationModel.id)
+                    .where(CanonicalConversationModel.id == conversation_id)
+                )
+            ).first()
+        if (
+            observed is None
+            or observed.generation != generation
+            or (observed.scope_generation is not None and observed.scope_generation != generation)
+            or observed.occupied
+        ):
+            return None
+
         async with self.database.immediate_session() as session:
             now = time.time()
             actual_generation = await session.scalar(
@@ -163,6 +188,8 @@ class WorkRepository:
     async def renew(self, lease: WorkLease, *, seconds: float = 60) -> bool:
         if not 1 <= seconds <= 300:
             raise ValueError("invalid_work_lease_duration")
+        if not await self.valid(lease):
+            return False
         async with self.database.sessions() as session, session.begin():
             return (
                 await session.execute(
@@ -182,6 +209,11 @@ class WorkRepository:
         return float(value) if value is not None else None
 
     async def release(self, lease: WorkLease) -> None:
+        # Expiry/cancellation/replacement already removed this activation's
+        # authority. Its cleanup must not wait on a writer for a zero-row UPDATE.
+        # A live lease still uses the full fence at SQL execution after waiting.
+        if not await self.valid(lease):
+            return
         async with self.database.sessions() as session, session.begin():
             await session.execute(
                 update(self._lease_table(lease))
@@ -196,6 +228,20 @@ class WorkRepository:
                     select(self._lease_table(lease).c.fence).where(self._fence(lease))
                 )
             ).first() is not None
+
+    async def _assert_lease_readonly(self, session: AsyncSession, lease: WorkLease) -> None:
+        """Check the original lease in a read snapshot, without authorizing a write.
+
+        The caller owns the snapshot. Actual mutations must still use
+        ``_assert_lease`` in their writer transaction, including SQL-time expiry.
+        """
+        row = (
+            await session.execute(
+                select(self._lease_table(lease).c.fence).where(self._fence(lease))
+            )
+        ).first()
+        if row is None:
+            raise WorkConflict("work_activation_obsolete")
 
     async def _assert_lease(self, session: Any, lease: WorkLease) -> None:
         # A write obtains SQLite's transaction writer reservation, preventing a

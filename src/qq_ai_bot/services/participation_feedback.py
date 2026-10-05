@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 from yuki_participation.models import Effect, Feedback, Scope, SourceRef
+from yuki_participation.participation import ParticipationCheckpoint
 from yuki_participation.self_report import SelfReport
 
 from qq_ai_bot.conversation.autonomy_binding import AcceptedInitiative, AutonomyOwner
@@ -50,25 +55,51 @@ async def _ordinary_bindings(
     repository = OrdinaryAdmissionRepository(service.database)
     prepared: dict[str, tuple[OrdinaryAdmission, UnitBinding]] = {}
     prefix = f"{item.scene.conversation_id}:event:"
+    turns = {}
     for turn in dict.fromkeys(row.source_turn_id for row in rows):
         event_id = turn.removeprefix(prefix) if turn.startswith(prefix) else ""
         if not event_id.isdecimal() or int(event_id) < 1:
             continue
-        admission = await repository.current(
-            int(event_id),
-            conversation_id=item.scene.conversation_id,
-            generation=item.scene.generation,
+        turns[int(event_id)] = turn
+    if not turns:
+        return prepared
+    async with service.database.sessions() as session:
+        await session.execute(text("BEGIN"))
+        admissions: list[OrdinaryAdmission] = []
+        ids = tuple(turns)
+        for start in range(0, len(ids), 128):
+            admissions.extend(
+                await repository.current_admissions(
+                    item.scene.conversation_id,
+                    item.scene.generation,
+                    ids[start : start + 128],
+                    session=session,
+                )
+            )
+        bindings = [(admission, admission_unit_binding(admission)) for admission in admissions]
+        refs = tuple(ref for _, binding in bindings if binding is not None for ref in binding.basis)
+        versions = cast(
+            dict[str, Any], item.controller.state.host_checkpoint.get("source_versions", {})
         )
-        if admission is None or admission.binding is None:
-            continue
-        binding = admission_unit_binding(admission)
-        if binding is None:
-            continue
-        for ref in binding.basis:
-            if not await service._source_current(item, ref):
-                break
-        else:
-            prepared[turn] = admission, binding
+        retained = ParticipationCheckpoint.model_validate(
+            item.controller.state.host_checkpoint.get("participation_v1", {})
+        )
+        known = {ref for unit in retained.units.values() for ref in unit.binding.basis}
+        known.update(event.ref for event in item.controller.state.events.values())
+        for boundary in item.controller.state.boundaries.values():
+            known.update((boundary.source, *boundary.dependencies, *boundary.release_dependencies))
+            if boundary.released_by is not None:
+                known.add(boundary.released_by)
+        verifiable = tuple(ref for ref in refs if ref.event_id in versions or ref in known)
+        # An admission alone cannot establish a controller source version. Before
+        # cold hydration leave this association unknown; invalidating an unseen
+        # ref would poison its first real event.
+        valid = (
+            await service._sources_current(item, verifiable, session=session) if verifiable else {}
+        )
+        for admission, binding in bindings:
+            if binding is not None and all(valid.get(ref, False) for ref in binding.basis):
+                prepared[turns[admission.event_id]] = admission, binding
     return prepared
 
 
@@ -181,6 +212,35 @@ async def sync_scope_effects(service: SemanticParticipationService, item: _Sessi
         dict[str, str], item.controller.state.host_checkpoint.setdefault("outbound_threads", {})
     )
     by_id = {row.id: row for row in current}
+    output_ids = tuple({row.event_id for row in current if row.event_id is not None})
+    valid_outputs: set[int] = set()
+    anchor_refs = tuple(
+        observed.ref
+        for identity in output_ids
+        if (observed := item.controller.state.events.get(f"event:{identity}")) is not None
+        and observed.kind == "self"
+    )
+    valid_anchors: dict[SourceRef, bool] = {}
+    if output_ids and ordinary:
+        async with service.database.sessions() as session:
+            await session.execute(text("BEGIN"))
+            for start in range(0, len(output_ids), 128):
+                valid_outputs.update(
+                    await session.scalars(
+                        select(ChatEventModel.id).where(
+                            ChatEventModel.id.in_(output_ids[start : start + 128]),
+                            ChatEventModel.canonical_conversation_id == item.scene.conversation_id,
+                            ChatEventModel.author_kind == "yuki",
+                            ChatEventModel.direction == "outbound",
+                            ChatEventModel.suppression_status == "keeper",
+                        )
+                    )
+                )
+            valid_anchors = (
+                await service._sources_current(item, anchor_refs, session=session)
+                if anchor_refs
+                else {}
+            )
     for row in current:
         if row.status != "succeeded" or row.event_id is None or row.action not in _SEND_ACTIONS:
             continue
@@ -207,16 +267,7 @@ async def sync_scope_effects(service: SemanticParticipationService, item: _Sessi
             # The receipt is the send fact; the original admission is the unit
             # fact. Neither later context nor a model-supplied ID can replace it.
             observed = item.controller.state.events.get(key)
-            async with service.database.sessions() as session:
-                event = await session.get(ChatEventModel, row.event_id)
-                valid_output = (
-                    event is not None
-                    and event.canonical_conversation_id == item.scene.conversation_id
-                    and event.author_kind == "yuki"
-                    and event.direction == "outbound"
-                    and event.suppression_status == "keeper"
-                )
-            if not valid_output:
+            if row.event_id not in valid_outputs:
                 continue
             # Controller revisions are source versions, not content hashes.
             # Before hydration the receipt can establish expression, but cannot
@@ -225,7 +276,7 @@ async def sync_scope_effects(service: SemanticParticipationService, item: _Sessi
                 observed.ref
                 if observed is not None
                 and observed.kind == "self"
-                and await service._source_current(item, observed.ref)
+                and valid_anchors.get(observed.ref, False)
                 else None
             )
             if item.controller.observe_unit_expression(
@@ -249,183 +300,353 @@ async def sync_scope_effects(service: SemanticParticipationService, item: _Sessi
             item.controller.observe_committed_effect(run_ref, effect)
 
 
-async def _feedback_rows(
-    service: SemanticParticipationService, run_id: str
-) -> list[InitiativeFeedbackModel]:
-    async with service.database.sessions() as session:
-        return list(
-            await session.scalars(
-                select(InitiativeFeedbackModel)
-                .where(
-                    InitiativeFeedbackModel.run_id == run_id,
-                )
-                .order_by(InitiativeFeedbackModel.sequence)
+@dataclass
+class _RunFacts:
+    run: AcceptedInitiative
+    task: Any
+    actual: dict[str, Effect]
+    model_refs: set[str]
+    durable: list[InitiativeFeedbackModel]
+    checkpoint: str | None
+
+    def pending(self) -> tuple[str, list[str]]:
+        outcome = self.run.state
+        if self.run.state in _ACTIVE and self.task:
+            state = self.task["state"]
+            outcome = (
+                ("completed" if self.actual else "no_reply")
+                if state == "completed"
+                else "interrupted"
+                if state in {"failed", "cancelled", "suspended", "waiting_user"}
+                else "running"
             )
-        )
+        known = {
+            ref for row in self.durable for ref in json.loads(row.payload_json).get("effects", ())
+        }
+        unseen = sorted((set(self.actual) | self.model_refs) - known)
+        return outcome, unseen
+
+    def changed(self) -> bool:
+        outcome, unseen = self.pending()
+        return bool(unseen or not self.durable or self.durable[-1].outcome != outcome)
 
 
-async def reconcile_run(service: SemanticParticipationService, run: AcceptedInitiative) -> None:
-    """Durable Host feedback precedes replay into the rebuildable controller snapshot."""
-    # Re-read the outbox row: an earlier page/tick may have committed its terminal state.
-    run = await service.repository.get_run(run.run_id) or run
-    task = await service.work.by_source(f"initiative:{run.run_id}")
-    if task is None and run.state in _ACTIVE:
-        await service._dispatch(run)
-        return
-    async with service.database.sessions() as session:
-        social = list(
+async def _read_facts(
+    service: SemanticParticipationService,
+    ids: tuple[str, ...],
+    session: AsyncSession,
+    *,
+    errors: list[Exception] | None = None,
+) -> list[_RunFacts]:
+    """Exact receipts/counters in one explicit snapshot; no implicit evidence LIMIT."""
+    runs = await service.repository.get_runs(ids, session=session, errors=errors)
+    turns = {f"{run.conversation_id}:initiative:{run.run_id}": run.run_id for run in runs}
+    tasks = (
+        (
+            await session.execute(
+                select(
+                    work.c.id,
+                    work.c.source_key,
+                    work.c.state,
+                    work.c.model_requests,
+                    work.c.conversation_id,
+                    work.c.generation,
+                ).where(work.c.source_key.in_(f"initiative:{run.run_id}" for run in runs))
+            )
+        )
+        .mappings()
+        .all()
+    )
+    by_source = {task["source_key"]: task for task in tasks}
+    social_query = select(SocialOperationModel).options(
+        load_only(
+            SocialOperationModel.id,
+            SocialOperationModel.source_turn_id,
+            SocialOperationModel.tool_call_id,
+            SocialOperationModel.status,
+            SocialOperationModel.action,
+            SocialOperationModel.updated_at,
+            SocialOperationModel.target_kind,
+            SocialOperationModel.target_id,
+        )
+    )
+    social = list(
+        await session.scalars(social_query.where(SocialOperationModel.source_turn_id.in_(turns)))
+    )
+    parents = tuple(f"social-caption:{row.id}" for row in social)
+    captions: list[SocialOperationModel] = []
+    for start in range(0, len(parents), 128):
+        captions.extend(
             await session.scalars(
-                select(SocialOperationModel).where(
-                    SocialOperationModel.source_turn_id
-                    == f"{run.conversation_id}:initiative:{run.run_id}",
+                social_query.where(
+                    SocialOperationModel.source_turn_id.in_(parents[start : start + 128])
                 )
             )
         )
-        if social:
-            social.extend(
-                await session.scalars(
-                    select(SocialOperationModel).where(
-                        SocialOperationModel.source_turn_id.in_(
-                            f"social-caption:{row.id}" for row in social
-                        ),
-                    )
-                )
-            )
-        tools = list(
-            await session.scalars(
-                select(MemoryToolReceiptModel)
-                .where(
-                    MemoryToolReceiptModel.initiative_run_id == run.run_id,
-                    MemoryToolReceiptModel.trigger_event_id.is_(None),
-                )
-                .order_by(MemoryToolReceiptModel.id)
+    parent_turn = {f"social-caption:{row.id}": row.source_turn_id for row in social}
+    social_by_run: dict[str, list[SocialOperationModel]] = {run.run_id: [] for run in runs}
+    for row in (*social, *captions):
+        social_by_run[turns[parent_turn.get(row.source_turn_id, row.source_turn_id)]].append(row)
+    tools = (
+        await session.execute(
+            select(
+                MemoryToolReceiptModel.id,
+                MemoryToolReceiptModel.initiative_run_id,
+                MemoryToolReceiptModel.created_at,
+            ).where(
+                MemoryToolReceiptModel.initiative_run_id.in_(ids),
+                MemoryToolReceiptModel.trigger_event_id.is_(None),
             )
         )
-        checkpoint = (
-            await session.scalar(
-                select(journal.c.payload_json).where(
-                    journal.c.work_id == task["id"],
-                )
-            )
-            if task
-            else None
+    ).all()
+    durable = list(
+        await session.scalars(
+            select(InitiativeFeedbackModel)
+            .where(InitiativeFeedbackModel.run_id.in_(ids))
+            .order_by(InitiativeFeedbackModel.sequence)
         )
-        charged_work = (
-            (
+    )
+    task_ids = tuple(task["id"] for task in tasks)
+    charged = (
+        (
+            await session.execute(
+                select(
+                    children.c.root_id,
+                    work.c.id,
+                    work.c.model_requests,
+                    work.c.conversation_id,
+                    work.c.generation,
+                )
+                .join(work, work.c.id == children.c.work_id)
+                .where(children.c.root_id.in_(task_ids))
+            )
+        )
+        .mappings()
+        .all()
+        if task_ids
+        else []
+    )
+    replay_ids = tuple(
+        task["id"]
+        for task in tasks
+        if (task["conversation_id"], task["generation"]) in service._sessions
+    )
+    checkpoints: dict[str, str] = (
+        {
+            identity: payload
+            for identity, payload in (
                 await session.execute(
-                    select(work.c.id, work.c.model_requests).where(
-                        work.c.conversation_id == run.conversation_id,
-                        work.c.generation == run.generation,
-                        work.c.id.in_(
-                            select(children.c.work_id).where(children.c.root_id == task["id"])
-                        ),
+                    select(journal.c.work_id, journal.c.payload_json).where(
+                        journal.c.work_id.in_(replay_ids)
                     )
                 )
             ).all()
-            if task
-            else []
-        )
-    actual = {key: effect for key, (_, effect) in _logical_social_effects(social).items()}
-    actual.update(
-        {
-            f"tool:{row.id}": Effect(
-                effect_id=f"tool:{row.id}", kind="tool", at=_timestamp(row.created_at)
-            )
-            for row in tools
         }
+        if replay_ids
+        else {}
     )
-    # Root/worker counters are disjoint charges. The shared budget already sums
-    # these, including internal summary charges, so adding it would double-count.
-    counts = [(task["id"], task["model_requests"]), *charged_work] if task else []
-    model_refs = {
-        f"work-model:{identity}:{ordinal}"
-        for identity, count in counts
-        for ordinal in range(1, int(count) + 1)
-    }
-    outcome = run.state
-    if run.state in _ACTIVE and task:
-        if task["state"] == "completed":
-            outcome = "completed" if actual else "no_reply"
-        elif task["state"] in {"failed", "cancelled", "suspended", "waiting_user"}:
-            outcome = "interrupted"
-        else:
-            outcome = "running"
-    durable = await _feedback_rows(service, run.run_id)
-    known = {ref for row in durable for ref in json.loads(row.payload_json).get("effects", ())}
-    unseen = sorted((set(actual) | model_refs) - known)
-    latest = durable[-1] if durable else None
-    # Append bounded pages of NEW receipts, not the same cumulative payload every tick.
-    # All 120 charged requests retain independent stable ordinals, even across a crash.
-    batches = [unseen[start : start + 64] for start in range(0, len(unseen), 64)]
-    if not batches and (latest is None or latest.outcome != outcome):
-        batches = [[]]
-    for batch in batches:
-        target_refs = tuple(
-            sorted(
+    result = []
+    for run in runs:
+        try:
+            task = by_source.get(f"initiative:{run.run_id}")
+            actual = {
+                key: effect
+                for key, (_, effect) in _logical_social_effects(social_by_run[run.run_id]).items()
+            }
+            actual.update(
                 {
-                    run.space_id if target == "group" else target
-                    for ref in batch
-                    if ref in actual
-                    for target in actual[ref].actual_targets
+                    f"tool:{identity}": Effect(
+                        effect_id=f"tool:{identity}", kind="tool", at=_timestamp(created)
+                    )
+                    for identity, run_id, created in tools
+                    if run_id == run.run_id
                 }
             )
-        )
-        run = await service.repository.record_feedback(
-            run.run_id,
-            sequence=run.feedback_sequence + 1,
-            outcome=outcome,
-            effect_refs=tuple(batch),
-            actual_target_refs=target_refs,
-            considered_sources=run.sources,
-        )
-    if batches:
-        durable = await _feedback_rows(service, run.run_id)
+            counts = [(task["id"], task["model_requests"])] if task else []
+            counts.extend(
+                (row["id"], row["model_requests"])
+                for row in charged
+                if task
+                and row["root_id"] == task["id"]
+                and row["conversation_id"] == run.conversation_id
+                and row["generation"] == run.generation
+            )
+            model_refs = {
+                f"work-model:{identity}:{ordinal}"
+                for identity, count in counts
+                for ordinal in range(1, int(count) + 1)
+            }
+            result.append(
+                _RunFacts(
+                    run,
+                    task,
+                    actual,
+                    model_refs,
+                    [row for row in durable if row.run_id == run.run_id],
+                    checkpoints.get(task["id"]) if task else None,
+                )
+            )
+        except (ValueError, TypeError, KeyError) as exc:
+            if errors is None:
+                raise
+            errors.append(exc)
+    return result
+
+
+async def _commit_pending(service: SemanticParticipationService, run_id: str) -> _RunFacts | None:
+    # Each <=64-ref feedback page is its own atomic transaction, as before.
+    # Hot producers cannot monopolize a tick; remaining refs stay in factual tables.
+    for _ in range(4):
+        for attempt in range(3):
+            try:
+                async with service.database.sessions() as session:
+                    await session.execute(text("BEGIN"))
+                    facts = await _read_facts(service, (run_id,), session)
+                    if not facts:
+                        return None
+                    fact = facts[0]
+                    if not fact.changed():
+                        return fact
+                    outcome, unseen = fact.pending()
+                    batch = unseen[:64]
+                    targets = tuple(
+                        sorted(
+                            {
+                                fact.run.space_id if target == "group" else target
+                                for ref in batch
+                                if ref in fact.actual
+                                for target in fact.actual[ref].actual_targets
+                            }
+                        )
+                    )
+                    await service.repository.record_feedback(
+                        run_id,
+                        sequence=fact.run.feedback_sequence + 1,
+                        outcome=outcome,
+                        effect_refs=tuple(batch),
+                        actual_target_refs=targets,
+                        considered_sources=fact.run.sources,
+                        session=session,
+                    )
+                    await session.commit()
+                break
+            except OperationalError as exc:
+                if getattr(exc.orig, "sqlite_errorcode", None) != 517 or attempt == 2:
+                    raise
+    async with service.database.sessions() as session:
+        await session.execute(text("BEGIN"))
+        facts = await _read_facts(service, (run_id,), session)
+        return facts[0] if facts else None
+
+
+async def reconcile_page(
+    service: SemanticParticipationService, runs: tuple[AcceptedInitiative | str, ...]
+) -> None:
+    """Read unchanged rows together; durable feedback precedes one save per controller."""
+    if not runs:
+        return
+    facts = []
+    failures: list[Exception] = []
+    # Bound parameters and snapshot lifetime even for the active outbox's 128 entries.
+    for start in range(0, len(runs), 16):
+        async with service.database.sessions() as session:
+            await session.execute(text("BEGIN"))
+            facts.extend(
+                await _read_facts(
+                    service,
+                    tuple(
+                        run if isinstance(run, str) else run.run_id
+                        for run in runs[start : start + 16]
+                    ),
+                    session,
+                    errors=failures,
+                )
+            )
+    prepared = []
+    for fact in facts:
+        try:
+            if fact.task is None and fact.run.state in _ACTIVE:
+                await service._dispatch(fact.run)
+                continue
+            committed = await _commit_pending(service, fact.run.run_id) if fact.changed() else fact
+            if committed is not None:
+                prepared.append(committed)
+        except Exception as exc:
+            failures.append(exc)
+    async with service._session_lock:
+        items = {}
+        for fact in prepared:
+            run = fact.run
+            item = service._sessions.get((run.conversation_id, run.generation))
+            if item is not None:
+                try:
+                    _replay(item, fact)
+                except Exception as exc:
+                    failures.append(exc)
+                items[(run.conversation_id, run.generation)] = item
+        for item in items.values():
+            try:
+                await service._save(item)
+            except Exception as exc:
+                failures.append(exc)
+    if failures:
+        raise failures[0]
+
+
+async def reconcile_run(service: SemanticParticipationService, run: AcceptedInitiative) -> None:
+    await reconcile_page(service, (run,))
+
+
+def _replay(item: _Session, fact: _RunFacts) -> None:
+    run, actual, durable, checkpoint = fact.run, fact.actual, fact.durable, fact.checkpoint
     # Receipt I/O is complete. Keep the same cached controller through replay and
     # asynchronous checkpoint; eviction must not restore an older revision meanwhile.
-    async with service._session_lock:
-        item = service._sessions.get((run.conversation_id, run.generation))
-        if item is None:
-            return  # Original-generation results never wake a newer generation.
-        for row in durable:
-            payload = json.loads(row.payload_json)
-            effects = tuple(
-                actual[ref]
-                if ref in actual
-                else Effect(effect_id=ref, kind="compute", at=_timestamp(row.created_at))
-                for ref in payload.get("effects", ())
-                if ref in actual or _charged_ref(ref)
-            )
-            if run.owner is AutonomyOwner.SEMANTIC:
-                # Admission's local accepted receipt uses 1; durable Host pages start at 2.
-                item.controller.observe_run_feedback(
-                    Feedback(
-                        run_ref=run.run_id,
-                        proposal_id=run.proposal_id,
-                        sequence=row.sequence + 1,
-                        outcome="accepted"
-                        if row.outcome == "running"
-                        else "interrupted"
-                        if row.outcome == "failed"
-                        else row.outcome,
-                        at=_timestamp(row.created_at),
-                        effects=effects,
-                    )
+    for row in durable:
+        payload = json.loads(row.payload_json)
+        effects = tuple(
+            actual[ref]
+            if ref in actual
+            else Effect(effect_id=ref, kind="compute", at=_timestamp(row.created_at))
+            for ref in payload.get("effects", ())
+            if ref in actual or _charged_ref(ref)
+        )
+        if run.owner is AutonomyOwner.SEMANTIC:
+            # Admission's local accepted receipt uses 1; durable Host pages start at 2.
+            proposal_missing = run.proposal_id not in item.controller.state.proposals
+            applied = item.controller.observe_run_feedback(
+                Feedback(
+                    run_ref=run.run_id,
+                    proposal_id=run.proposal_id,
+                    sequence=row.sequence + 1,
+                    outcome="accepted"
+                    if row.outcome == "running"
+                    else "interrupted"
+                    if row.outcome == "failed"
+                    else row.outcome,
+                    at=_timestamp(row.created_at),
+                    effects=effects,
                 )
-            else:
+            )
+            if proposal_missing and not applied:
+                # A cold/pruned snapshot may have no original proposal. Host
+                # receipts still restore their real charges/effects under the
+                # original run, without inventing admission or a new proposal.
                 for effect in effects:
                     item.controller.observe_committed_effect(run.run_id, effect)
-        if checkpoint:
-            try:
-                progress = json.loads(checkpoint).get("metadata", {}).get("progress", {})
-                reports = progress.get("self_reports", ())
-            except (ValueError, TypeError, AttributeError):
-                reports = ()
-            if isinstance(reports, (list, tuple)):
-                for raw in reports[-32:]:
-                    try:
-                        report = SelfReport.model_validate(raw)
-                    except (ValidationError, TypeError):
-                        continue
-                    if report.run_ref == run.run_id:
-                        item.controller.observe_self_report(report)
-        await service._save(item)
+        else:
+            for effect in effects:
+                item.controller.observe_committed_effect(run.run_id, effect)
+    if checkpoint:
+        try:
+            progress = json.loads(checkpoint).get("metadata", {}).get("progress", {})
+            reports = progress.get("self_reports", ())
+        except (ValueError, TypeError, AttributeError):
+            reports = ()
+        if isinstance(reports, (list, tuple)):
+            for raw in reports[-32:]:
+                try:
+                    report = SelfReport.model_validate(raw)
+                except (ValidationError, TypeError):
+                    continue
+                if report.run_ref == run.run_id:
+                    item.controller.observe_self_report(report)

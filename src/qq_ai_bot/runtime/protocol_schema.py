@@ -13,6 +13,7 @@ objects = sa.Table(
     sa.Column("deleting", sa.Boolean, nullable=False, server_default="0"),
     sa.CheckConstraint("byte_size >= 0", name="ck_protocol_object_bytes"),
     sa.Index("ix_protocol_objects_gc", "deleting", "prepared_at"),
+    sa.Index("ix_protocol_objects_gc_cursor", "deleting", "prepared_at", "sha256"),
 )
 refs = sa.Table(
     "runtime_protocol_refs",

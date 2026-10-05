@@ -113,7 +113,7 @@ if role == "application":
             raise AssertionError(migration.stderr.decode())
         with sqlite3.connect(database_path) as db:
             revision = db.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert revision == "0092"
+            assert revision == "0096"
             assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
             assert not db.execute("PRAGMA foreign_key_check").fetchall()
     assets = files("qq_ai_bot.webui").joinpath("assets")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import html
 import json
@@ -34,6 +35,7 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
+from qq_ai_bot.execution_trace.phases import current_model_phases, model_detail
 from qq_ai_bot.execution_trace.recorder import record_http_response, trace_span
 from qq_ai_bot.llm.base import (
     LLMConfigurationError,
@@ -94,11 +96,17 @@ class DeepSeekResponsesProvider(LLMProvider):
     async def complete(self, request: ChatRequest) -> ChatResponse:
         if not self._api_key or not request.model:
             raise LLMConfigurationError("LLM is not configured")
-        payload = self._build_payload(request)
+        with model_detail("payload_preparation"):
+            payload = self._build_payload(request)
         started = time.perf_counter()
         # Native search can already have incurred provider-side work. Avoid replaying
         # it after an ambiguous response; local-function-only calls retain bounded retries.
         attempts = 1 if request.native_tools else self._max_retries + 1
+
+        async def retry_sleep(seconds: float) -> None:
+            with model_detail("retry_backoff"):
+                await asyncio.sleep(seconds)
+
         try:
             async for attempt in AsyncRetrying(
                 stop=stop_after_attempt(attempts),
@@ -107,6 +115,7 @@ class DeepSeekResponsesProvider(LLMProvider):
                     (httpx.ConnectError, httpx.TimeoutException, RetryableProviderError)
                 ),
                 reraise=True,
+                sleep=retry_sleep,
             ):
                 with attempt:
                     from qq_ai_bot.runtime.observability import current_runtime_turn_correlation
@@ -114,19 +123,21 @@ class DeepSeekResponsesProvider(LLMProvider):
 
                     work = current_work_control.get()
                     if work is not None and attempt.retry_state.attempt_number > 1:
-                        await work.reserve_request(auxiliary=True)
+                        with model_detail("retry_budget_preparation"):
+                            await work.reserve_request(auxiliary=True)
                     correlation = current_runtime_turn_correlation()
                     logger.info(
                         "model_transport_attempt protocol=responses correlation_id=%s attempt=%d",
                         correlation.turn_id if correlation else "unbound",
                         attempt.retry_state.attempt_number,
                     )
-                    self._wire_observer.observe(
-                        payload,
-                        "responses",
-                        chain_id=request.request_chain_id,
-                        provider=self.provider_name,
-                    )
+                    with model_detail("wire_observation"):
+                        self._wire_observer.observe(
+                            payload,
+                            "responses",
+                            chain_id=request.request_chain_id,
+                            provider=self.provider_name,
+                        )
                     from qq_ai_bot.model_runtime.request_accounting import (
                         after_provider_request,
                         before_provider_request,
@@ -134,7 +145,8 @@ class DeepSeekResponsesProvider(LLMProvider):
 
                     account = before_provider_request.get()
                     if account is not None:
-                        await account()
+                        with model_detail("request_accounting_preparation"):
+                            await account()
                     finish = after_provider_request.get()
                     try:
                         response = await self._post(payload)
@@ -167,13 +179,14 @@ class DeepSeekResponsesProvider(LLMProvider):
         if counter is not None:
             counter.reported_usage(reported_usage.get("total_tokens"))
         try:
-            parsed = self._parse_response(
-                response,
-                self._request_continuation(request),
-                function_outputs=(),
-                allowed_tool_names=frozenset(tool.name for tool in request.tools),
-                latency=latency,
-            )
+            with model_detail("provider_response_preparation"):
+                parsed = self._parse_response(
+                    response,
+                    self._request_continuation(request),
+                    function_outputs=(),
+                    allowed_tool_names=frozenset(tool.name for tool in request.tools),
+                    latency=latency,
+                )
         except LLMError as exc:
             if reported_usage:
                 exc.diagnostics = {**exc.diagnostics, "usage": reported_usage}
@@ -370,16 +383,21 @@ class DeepSeekResponsesProvider(LLMProvider):
         async with trace_span(
             "provider", {"protocol": "responses", "body": payload, "dispatch": "prepared"}
         ):
-            await check_model_dispatch()
+            with model_detail("attempt_dispatch_preparation"):
+                await check_model_dispatch()
             counter = current_provider_attempts.get()
             if counter is not None:
                 counter.dispatched()
-            response = await self._client.post(
-                "/responses",
-                headers={**self._headers, "Authorization": f"Bearer {self._api_key}"},
-                json=payload,
-                timeout=self._timeout,
-            )
+            phases = current_model_phases.get()
+            if phases is not None:
+                phases.attempts += 1
+            with model_detail("transport"):
+                response = await self._client.post(
+                    "/responses",
+                    headers={**self._headers, "Authorization": f"Bearer {self._api_key}"},
+                    json=payload,
+                    timeout=self._timeout,
+                )
             await record_http_response(response)
             try:
                 check_provider_response(response)

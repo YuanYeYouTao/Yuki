@@ -23,6 +23,9 @@ from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 
 ROOT = Path(__file__).resolve().parents[2]
+# The unified head follows main 0092–0095. Invocation facts move to 0096;
+# historical upgrade, receipt preservation and old-producer refusal assertions
+# remain unchanged apart from the expected target revision.
 BASELINES = (
     ("755f7250e0ac465e57e748ea2e6583d1a76353b0", "0081"),
     ("8204b28ebc8939213dae60dbab94ab1c16d1263a", "0091"),
@@ -103,7 +106,7 @@ async def test_complete_legacy_chain_preserves_all_original_domain_records(
     await asyncio.to_thread(command.upgrade, Config(str(ROOT / "alembic.ini")), "head")
     assert facts(path, columns)[1] == before
     with sqlite3.connect(path) as db:
-        assert db.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0092"
+        assert db.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0096"
         assert db.execute("SELECT model_limit,tool_limit FROM runtime_work_budgets").fetchone() == (
             7,
             9,
@@ -161,7 +164,7 @@ async def test_new_children_after_historical_upgrade_block_real_downgrade(tmp_pa
             capture_output=True,
         )
         assert old_producer.returncode != 0
-        assert "0092" in old_producer.stderr and "locate revision" in old_producer.stderr
+        assert "0096" in old_producer.stderr and "locate revision" in old_producer.stderr
         with pytest.raises(RuntimeError, match="versioned invocation facts exist"):
             await asyncio.to_thread(command.downgrade, config, "0091")
         with sqlite3.connect(path) as db:
@@ -172,6 +175,6 @@ async def test_new_children_after_historical_upgrade_block_real_downgrade(tmp_pa
                 ).fetchall()
                 == before
             )
-            assert db.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0092"
+            assert db.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0096"
     finally:
         await database.close()

@@ -42,6 +42,8 @@ class Database:
         self._protocol_store_path: Path | None = None
         self._protocol_storage_lock: asyncio.Lock | None = None
         self._protocol_gc_iterator: Iterator[Path] | None = None
+        self._protocol_gc_lock: asyncio.Lock | None = None
+        self._protocol_gc_scans: dict[bool, Any] = {}
         self._ensure_sqlite_parent(url)
         self.engine: AsyncEngine = create_async_engine(url, pool_pre_ping=True)
         self.sqlite_diagnostics: SQLiteDiagnostics | None = None

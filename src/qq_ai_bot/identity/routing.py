@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -16,6 +19,7 @@ from qq_ai_bot.conversation.canonical_db_models import (
     SpaceActiveRouteModel,
     SpaceBindingIngestRouteModel,
 )
+from qq_ai_bot.gateway.models import ConnectionSnapshot
 from qq_ai_bot.gateway.registry import (
     ConnectionResolution,
     GatewayConnectionRegistry,
@@ -440,12 +444,18 @@ class PresenceRouter:
         *,
         space_binding_id: str,
         event_presence_id: str,
+        expected_connection: ConnectionSnapshot | None = None,
+        expected_presence_revision: int | None = None,
+        expected_binding: tuple[str, int] | None = None,
     ) -> str:
         """Return 'ok', 'paused', or 'not_ingest' without touching policy."""
 
         status = await self._provision_ingest_route(
             space_binding_id,
             event_presence_id=event_presence_id,
+            expected_connection=expected_connection,
+            expected_presence_revision=expected_presence_revision,
+            expected_binding=expected_binding,
         )
         if status == "conflict":
             return await self._ingest_read_status(
@@ -698,6 +708,67 @@ class PresenceRouter:
                 session, space_binding_id=space_binding_id, event_presence_id=event_presence_id
             )
 
+    async def authenticated_ingest_status_in_session(
+        self,
+        session: AsyncSession,
+        *,
+        space_binding_id: str,
+        event_presence_id: str,
+        connection: ConnectionResolution,
+    ) -> str | None:
+        """Reuse a same-Presence pin only for an authenticated inbound handle.
+
+        None leaves cold provisioning and unhealthy-pin recovery to the original
+        membership/CAS path. This read does not authorize the eventual ledger write.
+        """
+        route = await session.get(SpaceBindingIngestRouteModel, space_binding_id)
+        if route is None:
+            return None
+        if route.paused:
+            return "paused"
+        if route.ingest_presence_id != event_presence_id:
+            return None
+        status = await self.ingest_status_in_session(
+            session,
+            space_binding_id=space_binding_id,
+            event_presence_id=event_presence_id,
+            require_connected=False,
+        )
+        if status != "ok":
+            return None
+        presence = await session.get(PresenceModel, event_presence_id)
+        binding = await session.get(SpaceBindingModel, space_binding_id)
+        assert presence is not None and binding is not None
+        original = connection.snapshot
+        if (
+            presence.platform != original.platform
+            or presence.external_account_id != original.external_account_id
+            or binding.platform != original.platform
+        ):
+            return "not_ingest"
+        try:
+            current = self._registry.resolve_by_handle(connection.bot)
+        except RegistryClosed:
+            return "paused"
+        if (
+            current.snapshot.connection_id != original.connection_id
+            or current.snapshot.generation != original.generation
+            or current.snapshot.gateway_instance_id != original.gateway_instance_id
+            or current.snapshot.platform != original.platform
+            or current.snapshot.external_account_id != original.external_account_id
+            or current.snapshot.presence_id != event_presence_id
+        ):
+            return "not_ingest"
+        try:
+            active = self._registry.resolve_active(event_presence_id)
+            require_capability(active, "send_group")
+            require_capability(active, "group_member_probe")
+        except RegistryClosed:
+            return None
+        if active.snapshot != current.snapshot or active.bot is not connection.bot:
+            return "not_ingest"
+        return "ok"
+
     async def ingest_status_in_session(
         self,
         session: AsyncSession,
@@ -937,28 +1008,76 @@ class PresenceRouter:
         space_binding_id: str,
         *,
         event_presence_id: str | None,
+        expected_connection: ConnectionSnapshot | None = None,
+        expected_presence_revision: int | None = None,
+        expected_binding: tuple[str, int] | None = None,
     ) -> str:
         async with self._database.sessions() as session:
             binding = await session.get(SpaceBindingModel, space_binding_id)
             if binding is None:
                 return "not_ingest"
+            binding_version = (binding.space_id, binding.revision)
+            if expected_binding is not None and binding_version != expected_binding:
+                return "not_ingest"
             route = await session.get(SpaceBindingIngestRouteModel, space_binding_id)
             observed = None if route is None else _observe_ingest(route)
             space_id = binding.space_id
-        if observed is not None and route is not None:
-            if observed.paused:
-                return "paused"
-            if await self._ingest_pin_healthy(route, binding):
-                if event_presence_id is None or event_presence_id == observed.ingest_presence_id:
-                    return "ok"
-                return "not_ingest"
-        candidates = await self._space_candidates(space_id, ingest=True)
+        # Bound preparation/probes, not the route's physical commit lifecycle.
+        probe_started = time.perf_counter()
+        async with asyncio.timeout(10):
+            if observed is not None and route is not None:
+                if observed.paused:
+                    return "paused"
+                if await self._ingest_pin_healthy(route, binding):
+                    if (
+                        event_presence_id is None
+                        or event_presence_id == observed.ingest_presence_id
+                    ):
+                        return "ok"
+                    return "not_ingest"
+            candidates = await self._space_candidates(space_id, ingest=True)
+        logging.getLogger(__name__).info(
+            "ingress_probe preparation_seconds=%.6f candidate_count=%d",
+            time.perf_counter() - probe_started,
+            len(candidates),
+        )
         unique = [
             item for item in _unique_candidates(candidates) if item.binding_id == space_binding_id
         ]
         now = datetime.now(UTC)
         await self._await_cas_hold()
         async with self._database.immediate_session() as session:
+            current_binding = await session.get(SpaceBindingModel, space_binding_id)
+            if (
+                current_binding is None
+                or current_binding.status != "active"
+                or (current_binding.space_id, current_binding.revision) != binding_version
+            ):
+                return "conflict"
+            if expected_connection is not None:
+                try:
+                    live = self._registry.resolve_active(event_presence_id or "")
+                except RegistryClosed:
+                    return "conflict"
+                if live.snapshot != expected_connection:
+                    return "conflict"
+                original_presence = await session.get(
+                    PresenceModel, expected_connection.presence_id
+                )
+                if (
+                    original_presence is None
+                    or original_presence.revision != expected_presence_revision
+                ):
+                    return "conflict"
+            for candidate in unique:
+                candidate_presence = await session.get(PresenceModel, candidate.presence_id)
+                if (
+                    candidate_presence is None
+                    or not candidate_presence.enabled
+                    or not candidate_presence.ingest_eligible
+                    or candidate_presence.platform != current_binding.platform
+                ):
+                    return "conflict"
             current = await session.get(SpaceBindingIngestRouteModel, space_binding_id)
             if not _ingest_matches(current, observed):
                 return "conflict"

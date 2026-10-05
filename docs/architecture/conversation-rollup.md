@@ -14,6 +14,16 @@ Rollup 是 canonical Conversation 的可重建 Prompt 投影。`chat_events` 始
 MemoryPartitionKey 使用 SELF、PERSON、GROUP 或 PERSON_GROUP owner，不得用 Conversation UUID
 代替。
 
+普通上下文的 expected turn 在 `load_prompt_snapshot` 显式 `BEGIN` 建立的一致快照内，
+先校验 scope id、generation、runtime key 和 transport key，再读取摘要和历史正文。
+协议恢复单独使用只含身份的 scope state 读取；准备后的 read-version/source/privacy 与
+实际 dispatch CAS 继续独立执行。不能以先前展示资料快照替代授权或取消末端围栏。
+
+普通 Person 的 alias 与 timezone 在本次准备中只解析一次 live canonical owner，返回
+不含 ORM/session 的 immutable 展示 DTO。Runner 复用本轮 timezone 并重新取 clock，
+下一轮重新读取偏好；SELF 与 actorless 不借用该 DTO。Relationship 仍使用既有
+get_or_create，保留首次合法写入，不新增展示资料的统一 revision 或变更重试协议。
+
 ## 持久状态
 
 每个 canonical Conversation 至多有：
@@ -106,7 +116,7 @@ Gemini 适配器转换为 `generationConfig.responseMimeType=application/json` �
 Responses/Chat/Claude 使用各自既有 schema 格式。有效 Profile 必须支持 structured output，
 不支持时由既有执行器明确拒绝，不能改能力声明或隐式换路由。Provider 的结构约束不替代
 本地有界/合法来源校验；代理源码保留该格式也不等于实际上游已验收其支持。
-2026-10-01 的一次无 QQ、无工具微小能力请求通过当前 Gemini 3.8/AGM 路由接受
+2026-10-01 的一次无 QQ、无工具微小能力请求通过当时的 Gemini 3.8/上游代理路由接受
 `responseMimeType`/`responseJsonSchema` 并返回可校验 JSON；它只确认结构输出能力，
 不构成群史摘要质量、长窗口容量或缓存改善验收。
 历史自由文本 checkpoint 继续作为标注“来源引用未验证”的不可信叙述读取；下一次成功

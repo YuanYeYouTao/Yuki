@@ -1,0 +1,100 @@
+{
+  "schema": 1,
+  "scope": "main compatibility on experiment branch, final after owned migration fixture correction",
+  "started_at": "2026-10-05T13:36:13.207696+00:00",
+  "experimental_parent": "3d1d983828207049cb5e0806ad01b5008c841591",
+  "main_parent": "de9d0e3ae1d682ec6411df4d628db4ba061a5fd8",
+  "worker_sha256": "af76448a14fe980c823f1c6092692f90a8ddc6341f236f17d6d47d72f49548e8",
+  "temporary_root": "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-main-compatibility-final-3cql_0sa",
+  "status": "interrupted",
+  "prior_report": "main-compatibility-regression.json",
+  "checks": [
+    {
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "ruff",
+        "check",
+        "src",
+        "tests",
+        "scripts",
+        "migrations"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.06,
+      "log": "main-compatibility-final-check-0.log.gz",
+      "log_sha256": "7162964741fdb747d7ab27df2d1a1b64fa0636c4b7fe50ea8493de14cb62cbd4",
+      "tail": [
+        "All checks passed!"
+      ]
+    },
+    {
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "ruff",
+        "format",
+        "--check",
+        "src",
+        "tests",
+        "scripts",
+        "migrations"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.02,
+      "log": "main-compatibility-final-check-1.log.gz",
+      "log_sha256": "4a4dec6502acc882244db7c96fdff6fbf91f0aad6408871f3c77e27654a33ae7",
+      "tail": [
+        "1188 files already formatted"
+      ]
+    },
+    {
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "mypy"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.41,
+      "log": "main-compatibility-final-check-2.log.gz",
+      "log_sha256": "84e0a968e1f26a7cfcfbeb3fccc9b34f095e0360e34697116d67db8be47f1678",
+      "tail": [
+        "pyproject.toml: note: unused section(s): module = ['nonebot_adapter_onebot.*']",
+        "Success: no issues found in 724 source files"
+      ]
+    },
+    {
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "pytest",
+        "-q",
+        "-p",
+        "no:warnings",
+        "tests",
+        "--basetemp",
+        "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-main-compatibility-final-3cql_0sa/pytest"
+      ],
+      "exit_code": 2,
+      "elapsed_seconds": 131.61,
+      "log": "main-compatibility-final-check-3.log.gz",
+      "log_sha256": "718016f452078e7737d0004aa28ad004291d58da7cc6963fd97b2bc92da4ac75",
+      "tail": [
+        "........................................................................ [  9%]",
+        "..",
+        "=========================== short test summary info ============================",
+        "SKIPPED [1] tests/integration/test_legacy_profile_backup_replay.py:122: private production backup paths not provided",
+        "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! KeyboardInterrupt !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+        "/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/src/qq_ai_bot/automation/service.py:271: KeyboardInterrupt",
+        "(to show a full traceback on KeyboardInterrupt use --full-trace)",
+        "361 passed, 1 skipped in 128.15s (0:02:08)"
+      ]
+    }
+  ],
+  "finished_at": "2026-10-05T13:38:25.325535+00:00",
+  "interruption_reason": "Intentional SIGINT of owned pytest after final upstream parity review: restrict confirmed delivery fallback to empty internal results as main does. No observed failed test before interruption."
+}

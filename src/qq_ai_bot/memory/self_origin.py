@@ -16,6 +16,7 @@ from qq_ai_bot.memory.partition import (
     MemoryPartitionResolutionError,
     format_canonical_memory_partition,
 )
+from qq_ai_bot.persistence.unit_of_work import optional_session
 
 if TYPE_CHECKING:
     from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFact
@@ -318,6 +319,7 @@ async def read_self_seed_candidates(
     canonical_conversation_id: str,
     limit: int = 8,
     fact_ids: tuple[int, ...] | None = None,
+    session: AsyncSession | None = None,
 ) -> tuple[MemoryFact, ...]:
     """Bounded priority/exact-ID lookup for source verification, not polling fairness.
 
@@ -328,7 +330,7 @@ async def read_self_seed_candidates(
     from qq_ai_bot.persistence.models import MemoryFactModel as f
 
     bound = max(1, min(32, limit))
-    async with database.sessions() as session:
+    async with optional_session(database, session, write=False) as session:
         space_id = await _seed_space_id(session, canonical_conversation_id)
         if space_id is None:
             return ()

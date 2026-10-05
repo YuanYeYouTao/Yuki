@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
 
-from sqlalchemy import String, case, cast, delete, func, or_, select, update
+from sqlalchemy import String, case, cast, delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.sql.elements import ColumnElement
@@ -89,7 +89,17 @@ from qq_ai_bot.plugin_host.db_models import (
     PluginStateModel,
 )
 from qq_ai_bot.runtime.observability import hash_conversation_key
+from qq_ai_bot.services.canonical_owners import resolve_live_person_id
 from qq_ai_bot.speech.db_models import PersonSpeechPreferenceModel, SpeechGenerationModel
+
+
+@dataclass(frozen=True, slots=True)
+class PersonPromptMetadata:
+    """Display-only metadata frozen for one preparation, never an authority grant."""
+
+    person_id: str
+    aliases: tuple[str, ...]
+    timezone: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -390,6 +400,35 @@ class PeopleRepository:
     async def aliases(self, user_id: str, *, limit: int = 20) -> tuple[str, ...]:
         async with self._database.sessions() as session:
             return await load_canonical_aliases(session, user_id, limit=limit)
+
+    async def prompt_metadata(
+        self,
+        user_id: str,
+        *,
+        default_timezone: str,
+        expected_person_id: str | None = None,
+    ) -> PersonPromptMetadata:
+        """Resolve a live actor once and read aliases/timezone in one WAL snapshot."""
+
+        async with self._database.sessions() as session, session.begin():
+            await session.execute(text("BEGIN"))
+            person_id = await resolve_live_person_id(session, user_id)
+            if expected_person_id is not None and person_id != expected_person_id:
+                raise CanonicalIdentityError("canonical_owner_mismatch")
+            aliases = (
+                await session.scalars(
+                    select(PersonAliasModel.alias)
+                    .where(PersonAliasModel.canonical_person_id == person_id)
+                    .order_by(PersonAliasModel.last_seen_at.desc(), PersonAliasModel.id.desc())
+                    .limit(20)
+                )
+            ).all()
+            timezone = await session.get(PersonTimeSettingModel, person_id)
+            return PersonPromptMetadata(
+                person_id=person_id,
+                aliases=tuple(dict.fromkeys(str(value) for value in aliases)),
+                timezone=timezone.timezone if timezone is not None else default_timezone,
+            )
 
     async def membership_count(self, user_id: str) -> int:
         async with self._database.sessions() as session:
@@ -1166,10 +1205,10 @@ class GroupSettingsRepository:
         *,
         name: str = "",
     ) -> GroupSetting:
-        """Create an observed group without overwriting an existing access switch."""
+        """Observe a current group without overwriting its access switch."""
 
         now = datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             return await observe_canonical_space(session, group_id, name=name, now=now)
 
 

@@ -11,15 +11,23 @@ authorized acceptance work. Current evidence is in
 
 | Reader / producer | Stored facts | Permitted behavior and evidence |
 | --- | --- | --- |
-| Historical `755f7250`, head `0081` | Its own original records | Produce an isolated legitimate fixture, then run every normal migration through `0092` |
+| Historical `755f7250`, head `0081` | Its own original records | Produce an isolated legitimate fixture, then run every normal migration through `0096` |
 | Historical `8204b28e`, head `0091` | Its own original records | Same normal upgrade; original Work, journal, finite root budget, Social unknown, Manager IDs, plugin grants and automation cursor remain |
-| New reader / producer, head `0092` | Legacy rows without invocation metadata | Read the original journal and original domain receipts; missing dispatch evidence stays legacy, never fabricated |
+| Historical experiment `3d1d9838`, head `0092` | Its own invocation indexes and original facts | Normal upgrade to `0096`; validate existing shapes and add the missing main `0092` indexes without rewriting facts or stamping |
+| Historical main `de9d0e3a`, head `0095` | Its own maintenance indexes and original facts | Normal upgrade to the same `0096` head; retain original IDs, receipts and cumulative budgets |
+| New reader / producer, head `0096` | Legacy rows without invocation metadata | Read the original journal and original domain receipts; missing dispatch evidence stays legacy, never fabricated |
 | New reader / producer | Versioned child intent / effect | Continue only the original owner, operation, generation, receipt and remaining budget |
-| Old producer | Head `0092` with new child facts | Refused: its actual `init-db` cannot locate `0092`; the new downgrade guard refuses loss of versioned original invocation facts |
+| Old producer | Head `0096` with new child facts | Refused: its actual `init-db` cannot locate `0096`; the new downgrade guard refuses loss of versioned original invocation facts |
 | New reader, changed worker or API | Old pending composition | Settle the original outer call as partial; do not load an incompatible VM or replay its business calls |
 | New reader, lowered VM limits | Old pending dump with larger or absent recorded policy | Settle `code_engine_resource_policy_changed`, retaining original bytes, counters and child results |
 | New reader, paired partial / completed | Already paired outer result | Read/reconcile only; never resume that VM or append another outer result |
 | New reader, privacy deletion / interrupted GC | Old bytes without a live authorized reference | Refuse snapshot/artifact reads and finish GC; copying the bytes back grants no ownership |
+
+The historical experiment and main used different additive migrations named `0092`.
+The invocation migration now follows unchanged main revisions `0092`–`0095` as
+`0096`. Both actual historical producers are tested; see the
+[main compatibility record](../architecture/pi-codemode-main-compatibility.md).
+Earlier packaging and P09 reports below retain the revision they actually tested.
 
 Executable evidence: `tests/integration/test_pi_migration_chains.py`,
 `test_codemode_resource_policy.py`, `test_codemode_backup_recovery.py`,
@@ -182,7 +190,7 @@ No private production backup was supplied or inspected.
 3. Take the consistent restricted backup above. Run the normal Alembic upgrade
    using the new distribution's `qq-ai-bot-cli init-db`, with the approved
    database configuration. Do not stamp past earlier revisions. Verify head
-   `0092`, original facts, references and finite budgets before resuming.
+   `0096`, original facts, references and finite budgets before resuming.
 4. Replace only the approved Bot distribution/configuration. Verify worker
    hashes and unprivileged isolation. Start one Bot; observe original Work
    continuation and existing health checks. Do not warm it by manufacturing

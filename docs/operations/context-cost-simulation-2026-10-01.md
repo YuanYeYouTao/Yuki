@@ -9,17 +9,12 @@
 - Gemini 输入 min/median/p95/max：17,366 / 31,374 / 43,472 / 54,592 tokens。缓存字段缺失 227 条，明确等于 0 的记录为 0。已知缓存样本的输入加权命中比例 85.13%；将未知全部按 miss 计算的保守下界 73.86%，不是观测到的真实 miss 比例。
 - 同一 runtime_turn 的成功请求中有 432 个多请求回合，最多 24 次请求。正输入增量 722 个，median/p95/max 为 601 / 1883 / 9181 tokens。它包含工具结果和当前真实序列变化，不是正文字符增量，也不包含可证明的无限 Work。
 - 现有 Conversation compaction 54 次，已记录输入合计 354,619、输出合计 38,990 tokens；它是群聊 Rollup，不能当作 Work 执行摘要的质量或输出大小实测。
-- AGM 当前只读 `request_logs` 最近 2000 条，模型都为 `gemini-3.8-flash`，mapped model 为 `gemini-3.8-flash-tiered`，协议 Gemini。缓存字段 NULL 781 条，明确 0 条为 0。另取 token_usage 最近 2000 条，缓存没有 NULL、810 条为 0；两个表不能逐条直接视为同一窗口，不能据此把 810 条全部认定为缓存未命中。
-
-额外读取 20 条 AGM 请求的 JSON 结构，只输出字段集合、contents/tools 数量和 cache usage 数字：客户端是 Gemini native `contents/systemInstruction/tools`；上游增加 model/requestId/sessionId/safetySettings，样本中的 toolConfig 未保留。没有显式 cachedContent 引用或 cache_control。缓存已知时响应出现匹配的 cachedContentTokenCount；缺失样本没有该字段。这证明 usage 缺失与 0 必须区分，不能保证代理的全部请求都采用某一种缓存策略。
-
-AGM 当前公开源码 token_stats 将 cached_tokens 保存为 NOT NULL 数值，统计层不表达 unknown；这是公开实现参考，不冒充当前部署二进制的逐行源码证明。[官方仓库](https://github.com/lbjlaq/Antigravity-Manager/blob/main/src-tauri/src/modules/token_stats.rs)
 
 ## 价格与公式
 
 2026-10-01 核对 Google 官方 Gemini 3.8 Flash Standard：截至 2026-12-31，input/cached input/output 为 $0.75/$0.075/$3.75 每百万 tokens，output 包含 thinking。2027-01-01 起对应价格翻倍。[官方价格](https://ai.google.dev/gemini-api/docs/pricing)
 
-实际路径是 AGM 的 tiered 上游，不是已确认的 Gemini Developer API 付费路径；本报告不把公开价格乘积当实际订阅额度或账单。用 input 单价归一化为 1，cached 单价为 0.1，output 为 5；另外扫 cached 单价 0.25/0.5/1、命中比例 0.5/0，以及辅助摘要命中 0/0.5。Google 官方说明隐式缓存不保证节省，不能把当前命中率当永久承诺。[官方缓存说明](https://ai.google.dev/gemini-api/docs/generate-content/caching)
+实际配置连接不是已确认的 Gemini Developer API 付费路径；本报告不把公开价格乘积当实际订阅额度或账单。用 input 单价归一化为 1，cached 单价为 0.1，output 为 5；另外扫 cached 单价 0.25/0.5/1、命中比例 0.5/0，以及辅助摘要命中 0/0.5。Google 官方说明隐式缓存不保证节省，不能把当前命中率当永久承诺。[官方缓存说明](https://ai.google.dev/gemini-api/docs/generate-content/caching)
 
 ```
 相对成本 = [非缓存业务输入 + cached_price × 缓存业务输入
@@ -138,7 +133,6 @@ AGM 当前公开源码 token_stats 将 cached_tokens 保存为 NOT NULL 数值�
 ```powershell
 uv run python scripts/context_cost_simulation.py `
   --yuki .cache/context-cost-yuki-usage.json `
-  --agm .cache/context-cost-agm-usage.json `
   --output .cache/context-cost-grid.json `
   --estimate-ratios 1 1.25 1.5 1.8 2
 ```

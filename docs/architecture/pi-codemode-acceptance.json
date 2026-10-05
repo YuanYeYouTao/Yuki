@@ -4817,7 +4817,8 @@
       ],
       "verdict": "passed",
       "evidence": [
-        "tests/integration/test_pi_migration_chains.py: actual archived 755/0081 and 820/0091 producers, complete normal upgrades to 0092, original finite budgets and domain facts retained"
+        "Historical P09: tests/integration/test_pi_migration_chains.py: actual archived 755/0081 and 820/0091 producers, complete normal upgrades to 0092, original finite budgets and domain facts retained",
+        "Main compatibility: test_pi_migration_chains.py now targets 0096; test_main_merge_migration_compatibility.py verifies actual 3d1d9838/0092 experiment and de9d0e3a/0095 main producers upgrade without rewriting original receipts, Work or budgets"
       ],
       "scope": "offline implementation and isolated downstreams; external status is separate",
       "p10_observed_nodes": [
@@ -5007,7 +5008,8 @@
       ],
       "verdict": "passed",
       "evidence": [
-        "tests/integration/test_pi_migration_chains.py: new child fact; actual old init-db rejects 0092; downgrade refuses versioned original facts without changing original effects/head"
+        "Historical P09: tests/integration/test_pi_migration_chains.py: new child fact; actual old init-db rejects 0092; downgrade refuses versioned original facts without changing original effects/head",
+        "Main compatibility: actual old init-db rejects 0096; downgrade 0095 refuses versioned original invocation facts, while unversioned main fixtures retain all original facts across downgrade and re-upgrade"
       ],
       "scope": "offline implementation and isolated downstreams; external status is separate",
       "p10_observed_nodes": [

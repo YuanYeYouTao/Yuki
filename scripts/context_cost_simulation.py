@@ -170,7 +170,6 @@ def simulate(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--yuki", type=Path, required=True)
-    parser.add_argument("--agm", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--estimate-ratios", nargs="+", type=float, default=ESTIMATE_RATIOS)
     parser.add_argument("--input-margin-tokens", type=int, default=0)
@@ -179,7 +178,6 @@ def main() -> None:
     parser.add_argument("--output-reserve-tokens", type=int, default=4096)
     args = parser.parse_args()
     yuki = json.loads(args.yuki.read_text(encoding="utf-8-sig"))
-    agm = json.loads(args.agm.read_text(encoding="utf-8-sig"))
     summary = stats(yuki["rows"])
     # Policy assumptions, not measurements of fixed-prefix or semantic quality.
     prefix = 12_000
@@ -275,12 +273,6 @@ def main() -> None:
         "collected_at": yuki["collected_at"],
         "measurement": {
             key: value for key, value in summary.items() if key not in {"growth", "inputs"}
-        },
-        "agm": {
-            "request_rows": len(agm["requests"]),
-            "request_cache_missing": sum(r["cached_tokens"] is None for r in agm["requests"]),
-            "request_cache_explicit_zero": sum(r["cached_tokens"] == 0 for r in agm["requests"]),
-            "token_stats_cache_zero": sum(r["cached_tokens"] == 0 for r in agm["usage"]),
         },
         "assumptions": {
             "fixed_prefix_tokens": prefix,

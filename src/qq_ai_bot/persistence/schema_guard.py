@@ -23,6 +23,26 @@ def canonical_schema_revision(root: Path | None = None) -> str:
     return heads[0]
 
 
+def _normalized_input_repair_index_sql(sql: str) -> str:
+    """Preserve partial-index literals, including SQLite doubled-quote escapes."""
+    result: list[str] = []
+    position = 0
+    literal = False
+    while position < len(sql):
+        character = sql[position]
+        if character == "'":
+            result.append(character)
+            if literal and position + 1 < len(sql) and sql[position + 1] == "'":
+                result.append("'")
+                position += 2
+                continue
+            literal = not literal
+        elif literal or (character != '"' and not character.isspace()):
+            result.append(character)
+        position += 1
+    return "".join(result)
+
+
 _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
     "ordinary_turn_admissions": frozenset(
         {
@@ -389,6 +409,24 @@ async def require_canonical_schema(database_url: str) -> None:
                     ("status", "id"),
                     "maintenance",
                 ),
+                (
+                    "ix_social_operation_scope_updated",
+                    "social_operation_receipts",
+                    ("source_conversation_id", "updated_at"),
+                    "reply maintenance",
+                ),
+                (
+                    "ix_protocol_objects_gc_cursor",
+                    "runtime_protocol_objects",
+                    ("deleting", "prepared_at", "sha256"),
+                    "reply maintenance",
+                ),
+                (
+                    "ix_evidence_compaction_items_fact_before_status",
+                    "memory_evidence_compaction_items",
+                    ("fact_id", "evidence_before", "status"),
+                    "evidence compaction",
+                ),
             ):
                 retained = (
                     await connection.execute(
@@ -419,6 +457,88 @@ async def require_canonical_schema(database_url: str) -> None:
                     raise CanonicalSchemaError(
                         f"database {error_category} index is missing or changed"
                     )
+            from qq_ai_bot.runtime.work_query_schema import (
+                INPUT_REPAIR_INDEX_NAME,
+                INPUT_REPAIR_INDEX_SQL,
+            )
+
+            repair_index = (
+                await connection.execute(
+                    text("SELECT type,tbl_name,sql FROM sqlite_master WHERE name=:name"),
+                    {"name": INPUT_REPAIR_INDEX_NAME},
+                )
+            ).first()
+            repair_shape = next(
+                (
+                    row
+                    for row in await connection.execute(
+                        text('PRAGMA index_list("runtime_work_inputs")')
+                    )
+                    if row[1] == INPUT_REPAIR_INDEX_NAME
+                ),
+                None,
+            )
+            repair_keys = tuple(
+                (row[2], row[3], row[4])
+                for row in await connection.execute(
+                    text(f'PRAGMA index_xinfo("{INPUT_REPAIR_INDEX_NAME}")')
+                )
+                if row[5] == 1
+            )
+            if (
+                repair_index is None
+                or repair_index[0] != "index"
+                or repair_index[1] != "runtime_work_inputs"
+                or repair_index[2] is None
+                or repair_shape is None
+                or repair_shape[2] != 0
+                or repair_shape[3] != "c"
+                or repair_shape[4] != 1
+                or repair_keys != (("id", 0, "BINARY"),)
+                or _normalized_input_repair_index_sql(repair_index[2])
+                != _normalized_input_repair_index_sql(INPUT_REPAIR_INDEX_SQL)
+            ):
+                raise CanonicalSchemaError("database abandoned input index is missing or changed")
+            social_index_name = "ix_chat_events_social_source_author"
+            social_index_sql = (
+                f"CREATE INDEX {social_index_name} ON chat_events (author_person_id, id) "
+                "WHERE direction = 'inbound' AND author_kind = 'person'"
+            )
+            social_index = (
+                await connection.execute(
+                    text("SELECT type,tbl_name,sql FROM sqlite_master WHERE name=:name"),
+                    {"name": social_index_name},
+                )
+            ).first()
+            social_shape = next(
+                (
+                    row
+                    for row in await connection.execute(text('PRAGMA index_list("chat_events")'))
+                    if row[1] == social_index_name
+                ),
+                None,
+            )
+            social_keys = tuple(
+                (row[2], row[3], row[4])
+                for row in await connection.execute(
+                    text(f'PRAGMA index_xinfo("{social_index_name}")')
+                )
+                if row[5] == 1
+            )
+            if (
+                social_index is None
+                or social_index[0] != "index"
+                or social_index[1] != "chat_events"
+                or social_index[2] is None
+                or social_shape is None
+                or social_shape[2] != 0
+                or social_shape[3] != "c"
+                or social_shape[4] != 1
+                or social_keys != (("author_person_id", 0, "BINARY"), ("id", 0, "BINARY"))
+                or _normalized_input_repair_index_sql(social_index[2])
+                != _normalized_input_repair_index_sql(social_index_sql)
+            ):
+                raise CanonicalSchemaError("database social source index is missing or changed")
             trigger_rows = await connection.execute(
                 text("SELECT name, sql FROM sqlite_master WHERE type='trigger'")
             )

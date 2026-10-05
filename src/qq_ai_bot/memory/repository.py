@@ -73,6 +73,10 @@ logger = logging.getLogger(__name__)
 _Result = TypeVar("_Result")
 
 
+class EvidenceSnapshotRetryExhausted(OperationalError):
+    """Three operation-level native 517 failures, each with a confirmed rollback."""
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedEvidenceCopy:
     identity: tuple[object, ...]
@@ -478,13 +482,38 @@ class MemoryFactRepository:
     ) -> _Result:
         """Run only a pure database mutation; post-commit work belongs to its caller."""
         for attempt in range(3):
+            operation_failure: OperationalError | None = None
             try:
                 async with self.transaction(read_snapshot=True) as session:
-                    result = await operation(session)
+                    try:
+                        result = await operation(session)
+                        # ORM callbacks may defer their first DML until commit.
+                        # Flush belongs to the pure operation, while physical
+                        # commit acknowledgement remains outside this boundary.
+                        await session.flush()
+                    except OperationalError as exc:
+                        operation_failure = exc
+                        raise
                 return result
             except OperationalError as exc:
-                if getattr(exc.orig, "sqlite_errorcode", None) != 517 or attempt == 2:
+                # The identical operation error survives only after the context
+                # successfully rolls back. Commit/cleanup errors prove neither
+                # a safe retry nor absence of durable effects.
+                original = exc.orig
+                if (
+                    exc is not operation_failure
+                    or original is None
+                    or getattr(original, "sqlite_errorcode", None) != 517
+                ):
                     raise
+                if attempt == 2:
+                    raise EvidenceSnapshotRetryExhausted(
+                        exc.statement,
+                        exc.params,
+                        original,
+                        hide_parameters=exc.hide_parameters,
+                        connection_invalidated=exc.connection_invalidated,
+                    ) from exc
         raise AssertionError("unreachable evidence snapshot retry")
 
     async def count_active_for_create(self, fact: MemoryFactCreate) -> int:

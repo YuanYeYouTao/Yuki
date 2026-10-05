@@ -56,8 +56,8 @@ async def test_projection_rechecks_revision_after_prefix_preparation(
     repository, arguments = await _projection(database, tmp_path)
     original = repository._prepare_prefix
 
-    async def invalidate_after_prepare(view_key, payload):
-        prepared = await original(view_key, payload)
+    async def invalidate_after_prepare(view_key, items, **kwargs):
+        prepared = await original(view_key, items, **kwargs)
         await repository.invalidate_view(view_key, reason="capacity")
         return prepared
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from abc import abstractmethod
 from typing import Any
@@ -15,6 +16,7 @@ from tenacity import (
 )
 
 from qq_ai_bot.domain.messages import ChatRequest, ChatResponse
+from qq_ai_bot.execution_trace.phases import current_model_phases, model_detail
 from qq_ai_bot.execution_trace.recorder import record_http_response, trace_span
 from qq_ai_bot.llm.base import (
     LLMConfigurationError,
@@ -93,27 +95,33 @@ class JSONHTTPProvider(LLMProvider):
     async def _post(self, request: ChatRequest) -> httpx.Response:
         from qq_ai_bot.model_runtime.dispatch_guard import check_model_dispatch
 
-        payload = self._build_payload(request)
-        self._wire_observer.observe(
-            payload,
-            self.protocol,
-            chain_id=request.request_chain_id,
-            provider=self.provider_name,
-        )
+        with model_detail("payload_preparation"):
+            payload = self._build_payload(request)
+            self._wire_observer.observe(
+                payload,
+                self.protocol,
+                chain_id=request.request_chain_id,
+                provider=self.provider_name,
+            )
         async with trace_span(
             "provider", {"protocol": self.protocol, "body": payload, "dispatch": "prepared"}
         ):
             # Keep the real permission/budget fence immediately before HTTP dispatch.
-            await check_model_dispatch()
+            with model_detail("attempt_dispatch_preparation"):
+                await check_model_dispatch()
             attempts = current_provider_attempts.get()
             if attempts is not None:
                 attempts.dispatched()
-            response = await self._client.post(
-                self._path(request),
-                headers=self._request_headers(),
-                json=payload,
-                timeout=self._timeout,
-            )
+            phases = current_model_phases.get()
+            if phases is not None:
+                phases.attempts += 1
+            with model_detail("transport"):
+                response = await self._client.post(
+                    self._path(request),
+                    headers=self._request_headers(),
+                    json=payload,
+                    timeout=self._timeout,
+                )
             await record_http_response(response)
             try:
                 check_provider_response(response)
@@ -143,17 +151,24 @@ class JSONHTTPProvider(LLMProvider):
         started = time.perf_counter()
         # Provider-executed tools have no local receipt for uncertain transport outcomes.
         attempts = 1 if request.native_tools else self._max_retries + 1
+
+        async def retry_sleep(seconds: float) -> None:
+            with model_detail("retry_backoff"):
+                await asyncio.sleep(seconds)
+
         try:
             async for attempt in AsyncRetrying(
                 stop=stop_after_attempt(attempts),
                 wait=wait_random_exponential(multiplier=0.25, max=2),
                 retry=retry_if_exception_type((httpx.TransportError, RetryableProviderError)),
                 reraise=True,
+                sleep=retry_sleep,
             ):
                 with attempt:
                     work = current_work_control.get()
                     if work is not None and attempt.retry_state.attempt_number > 1:
-                        await work.reserve_request(auxiliary=True)
+                        with model_detail("retry_budget_preparation"):
+                            await work.reserve_request(auxiliary=True)
                     response = await self._post(request)
         except httpx.TimeoutException as exc:
             raise LLMTimeoutError("LLM request timed out") from exc
@@ -164,7 +179,8 @@ class JSONHTTPProvider(LLMProvider):
             ) from exc
         counter = current_provider_attempts.get()
         try:
-            parsed = self._parse(response, request)
+            with model_detail("provider_response_preparation"):
+                parsed = self._parse(response, request)
         except LLMError as exc:
             usage = exc.diagnostics.get("usage")
             if counter is not None and isinstance(usage, dict):

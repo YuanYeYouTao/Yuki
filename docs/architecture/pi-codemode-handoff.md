@@ -16,7 +16,9 @@
 
 ## 当前状态
 
-分支 `codex/pi-codemode-experiment`，基线 main `8204b28e`，已推送到远端。PR、合并、部署均未做。
+分支 `codex/pi-codemode-experiment`，原基线 main `8204b28e`。本轮按用户要求将
+main `de9d0e3a` 接入测试分支，保留新循环与主线修复；状态与验证见
+[main 兼容修复记录](pi-codemode-main-compatibility.md)。没有创建 PR、合回 main 或部署。
 
 来源定位已按用户要求澄清：Pi 仅为设计参考，Yuki 的 Python 核心围绕自有合同实现；
 Monty 是实际依赖。早期提交描述中的“Pi 循环移植”为历史称谓，当前不再把 Pi 许可文本
@@ -27,6 +29,11 @@ Monty 是实际依赖。早期提交描述中的“Pi 循环移植”为历史�
 当成长任务完成率；旧对照的 Code 组含明确的 VM 兼容接线，仅是隔离实验组合。
 当前 high 隔离测量正常额度 24/24 完成；五次分段压力新版四项全部完成，旧对照
 3/4 完成。默认模型配置未改，历史 low 失败仍保留；不将本轮写成生产部署或长期运行。
+
+随后 main 兼容修复最终全量 **3926 通过、1 跳过，813.13 秒**，ruff check/format
+（1188 文件）及 mypy（724 源文件）通过，真实 worker 无跳过。两边旧数据库正常升级
+至 `0096`，调用方跨段收尾与原 VM 续接的联合验证通过。首次旧夹具失败、两次主动
+中止及新增索引核验缺陷的反例均保留；详见上述兼容修复记录。未增加付费 API 对照。
 
 | 提交 | 内容 |
 | --- | --- |
@@ -45,7 +52,7 @@ Monty 是实际依赖。早期提交描述中的“Pi 循环移植”为历史�
 | `afba9016` | P11 真实三协议十二场景通过，已推送 |
 | `b54c666a` | 按用户要求将 Pi 澄清为设计参考并移除许可包装，已推送 |
 
-当前开发树最后一次全量：3352 通过、1 跳过（未提供私有生产备份路径），708.35 秒；
+分段修复阶段最后一次全量：3352 通过、1 跳过（未提供私有生产备份路径），708.35 秒；
 真实 worker 测试无跳过，ruff check/format（1139 文件）与 mypy 722 文件通过。
 本轮结果交接、段末 note 保存、测量记录器和旧 Code 装配的验证见最新修复报告；
 提交和推送状态单列于交付记录，不把本地验证当成部署。此前 0.2 秒计时失败已改成
@@ -69,7 +76,8 @@ Monty 是实际依赖。早期提交描述中的“Pi 循环移植”为历史�
 - **持久化**：`WorkRepository.prepare_effect`（T0/T1 意图）、`publish_code_boundary`（T1）、
   `admit_dispatch`（T2，预算与 `dispatch_started` 同事务；`charge=False` 用于生命周期控制）、
   `record_effect`（T3，冲突拒绝、保留 invocation/composition 元数据）、
-  `composition_children`、`undispatched_intent`。迁移 head `0092`。
+  `composition_children`、`undispatched_intent`。当前迁移 head `0096`；原测试分支 `0092`
+  与 main `0095` 都按正常 Alembic 链升级，不 stamp 或改写原任务/预算/回执。
 - **恢复**：`WorkSession.restore` 在一般 pending 配对前识别未结算 composition，产出
   `PendingComposition`；已配对的 partial 不恢复 VM。业务新激活携带最后尚未观察的
   原回执证据，不复制旧 opaque；段末在原模型预算内有一次保存累计 note/complete 的机会。
@@ -164,3 +172,5 @@ function_call。签名、思考块、原生工具 continuation 原样保留。co
 
 未授权，需用户另行明确：PR、合并、真实消息发送、访问生产数据库/凭据/工作区、启动
 第二个 Bot 写同一 SQLite、镜像发布与部署。授权以当次对话为准，文档中的步骤不构成授权。
+
+2026-10-05 的兼容修复请求包含将 main 接入测试分支的本地整合；合回 main 仍未授权。

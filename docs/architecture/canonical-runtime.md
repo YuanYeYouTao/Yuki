@@ -61,6 +61,17 @@ Rollup source projection 会显示有界因果标签，平台正文不被改写�
 Agent 和 Memory 之前丢弃。事件触发的即时回复优先复用本次 ingress 连接，主动发送才读取持久路由。
 已由接入层验证的群消息（包括 `/ai new`）在写入时复核持久 ingest 路由与 Presence；
 处理期间原 WebSocket 断开不撤销已收到的消息，路由暂停或改绑仍拒绝写入。
+真实已认证入站连接对应既存、未暂停的同 Presence ingest pin 时，在当前入站会话内只读核验
+Binding、Presence、Registry 当前连接代次与能力，无需再次远端查询自身群成员资格。
+此结果不授予写权限；账本首次写入仍执行原持久路由围栏。冷路由、其他 Presence 的路由恢复、
+主动发送与显式恢复继续使用实时成员探针及原 CAS，不缓存成员资格或引入隐式接管。
+
+冷 ingest 恢复只保留短生命周期计划：原 authenticated connection 快照、Presence revision 和
+SpaceBinding owner/revision。外层数据库会话结束后才执行成员探针及恢复；准备/探测阶段总计
+10 秒 deadline 不包围物理提交。路由写入的新事务核验这些版本及原 route CAS，完成后 fresh
+admission 再确认原连接与 pin。探测或 CAS 前取消不安装路由；提交确认未知直接传播，不盲重试
+或反向删除可能已提交的路由。数值日志分别报告初读、探测准备、恢复和 fresh recheck，
+恢复包含 CAS，不能将其耗时称作纯数据库锁等待。
 
 群内超管的精确 `/ai on` 使用独立的确定性控制入口，不是绕过 ingest 的聊天事件：QQ adapter
 验证真实事件连接与管理员 Binding，恢复服务保留健康接入 pin，否则仅接受唯一通过实时成员
@@ -140,6 +151,11 @@ QQ 消息证明伪造成 Web 请求。分页使用 opaque cursor；mutation 使�
 bot、账号和群为键缓存 known 标记，最多 256 项、60 秒，命中不续期；该缓存不保存
 名字或身份权威。明确入站资料优先，网络异常不产生成功空值。异步资料返回后的写入
 核对原 Person，遗忘并重建同一 QQ Binding 后不能写入迟到的旧资料。
+
+普通人物观察在原事务维护群 Binding 的 last-seen。额外群名刷新仅在取得非空群名时
+写入，不因刷新冷却、空返回或没有解析器再占 writer；真正刷新在短 writer 中读取当前
+Space/Binding，不改变启用开关。可选展示资料的数据库写入失败记录类别后继续处理，
+后续可信身份、ingest 路由和账本写入的拒绝仍按原合同执行。
 
 人物遗忘保留一整个隐私事务，包含 Work、投影失效、trace 隐私代次、领域删除与脱敏。
 Rebuild selection 在锁外一次准备全部 Binding 别名，写入前核原 Person、别名和完整

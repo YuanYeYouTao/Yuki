@@ -813,6 +813,13 @@ class MessageProcessor:
                 and direct_match is None
                 and self._chat.work_is_active(coordinator_key)
             ),
+            preempt_private=(
+                message.scope_type is ScopeType.PRIVATE
+                and direct_turn
+                and decision.command is None
+                and direct_match is None
+                and not self._chat.work_is_active(coordinator_key)
+            ),
         )
         has_visual_input = VisionService.has_visual_input(message) or (
             self._native_images is not None
@@ -1391,23 +1398,28 @@ class MessageProcessor:
         )
         result: ProcessResult
         try:
-            sent_count = await self._chat.handle_turn(
-                message,
-                identity,
-                profile,
-                content,
-                sender,
-                runtime_snapshot=runtime_snapshot,
-                visual_observation=visual.observation,
-                native_images=visual.images,
-                attachment_text="\n\n".join(
-                    part for part in (visual.attachment_text, audio.context) if part
-                ),
-                visual_input_present=has_visual_input,
-                visual_failure=visual.failed,
-                turn_token=turn_token,
-                turn_snapshot=turn_snapshot,
-            )
+            async with AsyncExitStack() as stages:
+                if message.scope_type is ScopeType.PRIVATE:
+                    await stages.enter_async_context(
+                        self._turn_coordinator.track(turn_token, "admission")
+                    )
+                sent_count = await self._chat.handle_turn(
+                    message,
+                    identity,
+                    profile,
+                    content,
+                    sender,
+                    runtime_snapshot=runtime_snapshot,
+                    visual_observation=visual.observation,
+                    native_images=visual.images,
+                    attachment_text="\n\n".join(
+                        part for part in (visual.attachment_text, audio.context) if part
+                    ),
+                    visual_input_present=has_visual_input,
+                    visual_failure=visual.failed,
+                    turn_token=turn_token,
+                    turn_snapshot=turn_snapshot,
+                )
         except (TurnInterruptedError, TurnSupersededError, WorkConflict):
             result = ProcessResult(True, reason="turn_interrupted")
         except (WorkActivationHandled, WorkRecoveryDeferred):
@@ -1682,10 +1694,17 @@ class MessageProcessor:
                     "group_name_resolve_failed exception_category=%s",
                     type(exc).__name__,
                 )
-        await self._groups.observe(
-            message.group_id,
-            name=group_name,
-        )
+        # Ordinary person observation already updates the group's last-seen
+        # timestamp. This optional refresh only publishes a real group name;
+        # cached, unavailable or empty metadata must not add a second writer.
+        if not group_name:
+            return
+        try:
+            await self._groups.observe(message.group_id, name=group_name)
+        except SQLAlchemyError as exc:
+            # Display metadata does not authorize ingress. The authenticated
+            # route, identity and ledger fences below still apply normally.
+            logger.warning("group_metadata_write_failed exception_category=%s", type(exc).__name__)
 
     async def _effective_group_policy(self, group_id: str | None) -> EffectiveGroupPolicy | None:
         if group_id is None:

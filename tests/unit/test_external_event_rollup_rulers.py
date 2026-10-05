@@ -688,9 +688,17 @@ async def _assemble_private_turn(
     service: ConversationRollupService,
 ) -> object:
     people = MagicMock()
-    people.aliases = AsyncMock(return_value=[])
+    from qq_ai_bot.persistence.people_repository import PersonPromptMetadata
+
+    people.prompt_metadata = AsyncMock(
+        return_value=PersonPromptMetadata("synthetic-person", (), settings.default_timezone)
+    )
     time_service = MagicMock()
     time_service.current = AsyncMock(
+        return_value=TimeContext(utc=_NOW, local=_NOW, timezone=settings.default_timezone)
+    )
+    time_service.default_timezone = settings.default_timezone
+    time_service.current_in_timezone = MagicMock(
         return_value=TimeContext(utc=_NOW, local=_NOW, timezone=settings.default_timezone)
     )
     assembler = ContextAssembler(

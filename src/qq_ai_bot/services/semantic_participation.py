@@ -17,7 +17,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 from yuki_participation.controller import Controller, State
 from yuki_participation.models import (
     CandidateKind,
@@ -31,6 +32,7 @@ from yuki_participation.models import (
 from yuki_participation.observer import JevObserver
 from yuki_participation.session import ObservationSession
 
+from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.conversation.autonomy_binding import (
     AcceptedInitiative,
     AutonomyBinding,
@@ -142,6 +144,8 @@ class SemanticParticipationService:
         self._dirty_overflows = 0
         self._last_discovery_at = 0.0
         self._discovery_cursor = 0
+        self._terminal_cursor = ""
+        self._terminal_ceiling: str | None = None
         self._model_config_path = (
             model_config_path or app.settings.semantic_participation_model_config_file
         )
@@ -461,9 +465,12 @@ class SemanticParticipationService:
             if cancelled:
                 raise asyncio.CancelledError
 
-    async def _binding(self, item: _Session) -> AutonomyBinding:
+    async def _binding(
+        self, item: _Session, *, runtime: RuntimeConfigSnapshot | None = None
+    ) -> AutonomyBinding:
         scene = item.scene
-        runtime = await self.app.runtime_config.snapshot(group_id=scene.group_id)
+        if runtime is None:
+            runtime = await self.app.runtime_config.snapshot(group_id=scene.group_id)
         policy = runtime.conversation_policy()
         prior = await self.repository.get_binding(scene.conversation_id, scene.generation)
         if prior is None:
@@ -612,7 +619,9 @@ class SemanticParticipationService:
             ),
         )
 
-    async def _hydrate(self, item: _Session, direct: dict[int, bool] | None = None) -> None:
+    async def _hydrate(
+        self, item: _Session, direct: dict[int, bool] | None = None
+    ) -> RuntimeConfigSnapshot | None:
         version, rows = await self.app.ledger.read_scope_context(
             item.scene.identity, limit=64, message_only=True
         )
@@ -620,7 +629,7 @@ class SemanticParticipationService:
             version.generation != item.scene.generation
             or version.conversation_id != item.scene.conversation_id
         ):
-            return
+            return None
         if not item.controller.state.human_activity_initialized:
             # Old snapshots only retain detailed events for about ten minutes.
             # Read hourly aggregates from this generation once, outside any write transaction;
@@ -710,9 +719,36 @@ class SemanticParticipationService:
         }
         from qq_ai_bot.services.participation_feedback import admission_unit_binding
 
-        runtime = await self.app.runtime_config.snapshot(group_id=item.scene.group_id)
+        runtime = cast(
+            RuntimeConfigSnapshot,
+            await self.app.runtime_config.snapshot(group_id=item.scene.group_id),
+        )
         observe_enabled = (
             item.scene.enabled and runtime.conversation_policy().semantic_participation_enabled
+        )
+        units = {
+            identity: admission_unit_binding(admission)
+            for identity, admission in current_admissions.items()
+        }
+        # Establish this page's source versions before validating frozen units.
+        # Project/observe in the original event order below: later quoted SELF
+        # events must still see units established by earlier human inputs.
+        basis_keys = {
+            ref.event_id for unit in units.values() if unit is not None for ref in unit.basis
+        }
+        versions = cast(
+            dict[str, Any], item.controller.state.host_checkpoint.get("source_versions", {})
+        )
+        for row in rows:
+            key = f"event:{row.id}"
+            if (
+                key in basis_keys
+                and key not in versions
+                and timestamp(row.occurred_at) >= now - 600
+            ):
+                self._event(row, item)
+        basis_valid = await self._sources_current(
+            item, tuple(ref for unit in units.values() if unit is not None for ref in unit.basis)
         )
         for row in rows:
             if timestamp(row.occurred_at) < now - 600:
@@ -721,11 +757,8 @@ class SemanticParticipationService:
             if event is None:
                 continue
             fresh = item.controller.observe_committed_event(event)
-            admission = current_admissions.get(row.id)
-            unit = admission_unit_binding(admission) if admission is not None else None
-            if unit is not None and all(
-                [await self._source_current(item, ref) for ref in unit.basis]
-            ):
+            unit = units.get(row.id)
+            if unit is not None and all(basis_valid[ref] for ref in unit.basis):
                 item.controller.observe_unit_input(unit, event.ref)
             if row.id in recovered:
                 item.controller.state.consumed[event.ref.event_id] = event.ref.revision
@@ -739,43 +772,63 @@ class SemanticParticipationService:
                 and item.controller.participation_view(event, now).needs_observation
             ):
                 item.observation.request_observation(event.ref)
+        return runtime
 
     async def _source_current(self, item: _Session, ref: SourceRef) -> bool:
-        kind, _, identity = ref.event_id.partition(":")
-        if not identity.isdecimal():
-            return False
-        if kind == "memory":
+        return (await self._sources_current(item, (ref,)))[ref]
+
+    async def _sources_current(
+        self, item: _Session, refs: tuple[SourceRef, ...], *, session: AsyncSession | None = None
+    ) -> dict[SourceRef, bool]:
+        """Freeze only this verification phase, never authorization across awaits/ticks."""
+        if not refs:
+            return {}
+        if session is None:
+            async with self.database.sessions() as owned:
+                await owned.execute(text("BEGIN"))
+                return await self._sources_current(item, refs, session=owned)
+        identities: dict[str, set[int]] = {"event": set(), "memory": set()}
+        for ref in refs:
+            kind, _, identity = ref.event_id.partition(":")
+            if kind in identities and identity.isdecimal():
+                identities[kind].add(int(identity))
+        digests: dict[str, str] = {}
+        conversation = await session.get(CanonicalConversationModel, item.scene.conversation_id)
+        current_generation = (
+            conversation is not None and conversation.generation == item.scene.generation
+        )
+        event_ids = tuple(identities["event"])
+        for start in range(0, len(event_ids) if current_generation else 0, 128):
+            rows = await session.scalars(
+                select(ChatEventModel).where(
+                    ChatEventModel.id.in_(event_ids[start : start + 128]),
+                    ChatEventModel.canonical_conversation_id == item.scene.conversation_id,
+                    ChatEventModel.id > (conversation.starts_after_event_id if conversation else 0),
+                    keeper_event_clause(),
+                )
+            )
+            digests.update({f"event:{row.id}": str(source_revision(row)) for row in rows})
+        fact_ids = tuple(identities["memory"])
+        for start in range(0, len(fact_ids) if current_generation else 0, 32):
             facts = await read_self_seed_candidates(
                 self.database,
                 canonical_conversation_id=item.scene.conversation_id,
                 limit=32,
-                fact_ids=(int(identity),),
+                fact_ids=fact_ids[start : start + 32],
+                session=session,
             )
-            fact = next((fact for fact in facts if fact.id == int(identity)), None)
-            valid = bool(
-                fact
-                and cast(
-                    dict[str, Any], item.controller.state.host_checkpoint.get("source_versions", {})
-                ).get(ref.event_id)
-                == [ref.revision, memory_revision(fact)]
-            )
-            if not valid:
-                item.controller.observe_source_change(ref)
-            return valid
-        if kind != "event":
-            return False
-        row = await self.app.ledger.get_event(int(identity))
-        valid = bool(
-            row
-            and row.canonical_conversation_id == item.scene.conversation_id
-            and row.suppression_status in {None, "keeper"}
-            and cast(
-                dict[str, Any], item.controller.state.host_checkpoint.get("source_versions", {})
-            ).get(ref.event_id)
-            == [ref.revision, str(source_revision(row))]
+            digests.update({f"memory:{fact.id}": memory_revision(fact) for fact in facts})
+        versions = cast(
+            dict[str, Any], item.controller.state.host_checkpoint.get("source_versions", {})
         )
-        if not valid:
-            item.controller.observe_source_change(ref)
+        valid = {
+            ref: ref.event_id in digests
+            and versions.get(ref.event_id) == [ref.revision, digests[ref.event_id]]
+            for ref in refs
+        }
+        for ref, current in valid.items():
+            if not current:
+                item.controller.observe_source_change(ref)
         return valid
 
     async def _validate_boundaries(self, item: _Session) -> None:
@@ -784,8 +837,7 @@ class SemanticParticipationService:
             refs.update((boundary.source, *boundary.dependencies, *boundary.release_dependencies))
             if boundary.released_by is not None:
                 refs.add(boundary.released_by)
-        for ref in refs:
-            await self._source_current(item, ref)
+        await self._sources_current(item, tuple(refs))
 
     async def _seeds(self, item: _Session) -> None:
         if item.observation is None or time.time() - item.seed_checked_at < 60:
@@ -937,8 +989,8 @@ class SemanticParticipationService:
         except ValueError:
             frozen_sources = {}
             valid = False
-        for ref in refs:
-            valid = await self._source_current(item, ref) and valid
+        source_valid = await self._sources_current(item, tuple(refs))
+        valid = all(source_valid.values()) and valid
         try:
             valid = valid and all(
                 self._source(item, ref) == source for ref, source in frozen_sources.items()
@@ -1236,6 +1288,28 @@ class SemanticParticipationService:
 
         await reconcile_run(self, run)
 
+    async def _reconcile_outbox(self) -> None:
+        from qq_ai_bot.services.participation_feedback import reconcile_page
+
+        # Active recovery keeps its original priority. Terminal history gets one
+        # 16-ID page per tick (2s base interval), not an unchanged 128-run tail.
+        # A failed row is retried next sweep; advancing still lets later rows run.
+        active = await self.repository.list_active()
+        terminal, ceiling, cursor = await self.repository.terminal_page(
+            after=self._terminal_cursor, ceiling=self._terminal_ceiling, limit=16
+        )
+        self._terminal_ceiling = ceiling
+        self._terminal_cursor = cursor
+        if not cursor or cursor == ceiling:
+            self._terminal_cursor = ""
+            self._terminal_ceiling = None
+        for page in (active, terminal):
+            try:
+                await reconcile_page(self, page)
+            except Exception as exc:
+                self._failures += 1
+                logger.warning("participation_reconcile_failed category=%s", type(exc).__name__)
+
     async def tick(self) -> None:
         self._refresh_model_parameters()
         # One tick owns all references it will advance, including semaphore waiters.
@@ -1313,12 +1387,7 @@ class SemanticParticipationService:
                         raise result
                     self._failures += 1
                     logger.warning("participation_scope_failed category=%s", type(result).__name__)
-            for run in (*await self.repository.list_active(), *await self.repository.list_recent()):
-                try:
-                    await self._reconcile(run)
-                except Exception as exc:
-                    self._failures += 1
-                    logger.warning("participation_reconcile_failed category=%s", type(exc).__name__)
+            await self._reconcile_outbox()
         finally:
             for item in pinned.values():
                 item.pins -= 1
@@ -1331,9 +1400,11 @@ class SemanticParticipationService:
         from qq_ai_bot.services.participation_feedback import sync_scope_effects
 
         await sync_scope_effects(self, item)
-        await self._hydrate(item)
+        runtime = await self._hydrate(item)
         await self._validate_boundaries(item)
-        binding = await self._binding(item)
+        # Hydration and this local advancement use one preparation policy view.
+        # After observer/external work below, _binding reads current policy again.
+        binding = await self._binding(item, runtime=runtime)
         if item.observation is not None and scene.enabled and binding.external_enabled:
             if binding.master_enabled:
                 await self._seeds(item)
@@ -1349,8 +1420,10 @@ class SemanticParticipationService:
 
         if scene.enabled and binding.external_enabled:
             await promote_invitations(self, item)
-        for candidate in tuple(item.controller.state.candidates.values()):
-            await self._source_current(item, candidate.event.ref)
+        await self._sources_current(
+            item,
+            tuple(candidate.event.ref for candidate in item.controller.state.candidates.values()),
+        )
         pending = item.controller.state.proposals.get(item.controller.state.pending or "")
         if pending is not None:
             # A persisted proposal may already have been accepted before a crash. Query before

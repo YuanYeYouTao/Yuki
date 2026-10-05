@@ -131,6 +131,12 @@ class ChatEventModel(Base):
             "author_person_id",
             "id",
         ),
+        Index(
+            "ix_chat_events_social_source_author",
+            "author_person_id",
+            "id",
+            sqlite_where=text("direction = 'inbound' AND author_kind = 'person'"),
+        ),
         Index("ix_chat_events_canonical_conversation_id", "canonical_conversation_id"),
         Index("ix_chat_events_caused_by_event_id", "caused_by_event_id"),
         Index("ix_chat_events_reply_to_event_id", "reply_to_event_id"),

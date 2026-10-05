@@ -81,7 +81,7 @@ code fence（4033 字符、原 JSON 解析失败）。实现随后只解包整�
 不搜索子串、不修坏字段、不追加修复模型。最后一轮 Work 输出虽已解包（2617 字符），
 仍缺 version/completed/pending/failures/artifacts，directive 缺 text/refs，且有未知字段和
 next_steps 类型错误；原 strict schema 拒绝，Work model_requests=2、tool_calls=0，未发布伪摘要。
-请求向配置 endpoint 传入了 schema，但 AGM 最终上游 schema 未观测，不能据此归责 AGM 或 Provider。
+请求向配置 endpoint 传入了 schema，但最终上游 schema 未观测，不能据此归责上游代理或 Provider。
 
 `ordinary-c06` 则完成实际 `compact_ordinary`：一个付费摘要、四个主请求、created_works=0，
 显式退出旧工作尾部并新建模型链。摘要整个 fence 解包后通过 strict schema；
@@ -98,7 +98,7 @@ cached 已知 21、缺失 21、显式零 0；已知输入 460539、cached 363540
 ## DeepSeek 同场景对比
 
 `manual-cache-deepseek-20261003.json`，UTC 19:09:17→19:09:30，另一个独立 namespace。
-使用现有合法 legacy 配置经官方 Profile loader 解析：`deepseek-flash` / Chat Completions / 
+使用现有合法 legacy 配置经官方 Profile loader 解析：`deepseek-flash` / Chat Completions /
 FUNCTION_TOOL，原 API 直连；8192、temperature 0.7、reasoning low、timeout 120、重试上限 2。
 完整 64 tools 与 Gemini manifest hash 相同，场景 C01/C02/C06、12000 字符、1 预热+3 测量、间隔 0。
 模型、服务路线和 timeout 不同，不能把结果归因为一种 Provider 的普遍优势。
@@ -248,16 +248,9 @@ usage 为 input=188、output=23453、total=23641，cached 缺失；不能计为�
 离线新增格式选择只在 Gemini、声明结构化能力、原模式为 FUNCTION_TOOL 的无工具辅助
 请求中使用 JSON_SCHEMA；显式 TEXT_JSON 和其他协议保留原模式，Main 原工具合同及
 Profile revision 不变。15 项新离线回归通过，连同原模式、pending 输入恢复和手动脚本
-离线验证共 45 项通过。该证据不证明当前 AGM 执行完整 schema。
+离线验证共 45 项通过。该证据不证明上游实际执行完整 schema。
 官方 Google 文档支持原生 schema，但明确有 schema 子集、复杂度及语义校验限制。
 [官方结构化输出说明](https://ai.google.dev/gemini-api/docs/generate-content/structured-output?hl=en)。
-
-本地 AGM 官方源码 `6e8b982` 的原生 Gemini wrapper 克隆请求，未找到
-`responseJsonSchema` 到 `responseSchema` 的映射；OpenAI 路径则清洗 `$defs/$ref` 后
-写入 `responseSchema`。这构成网关方言兼容候选；没有最终上游 wire，不能确定本次
-哪个环节忽略了 schema，也没有修改 AGM 或用删字段重试。
-[Gemini wrapper](https://github.com/lbjlaq/Antigravity-Manager/blob/6e8b982aee7e3d3d53501825431142eea9a3f9ab/src-tauri/src/proxy/mappers/gemini/wrapper.rs#L40)、
-[OpenAI schema 映射](https://github.com/lbjlaq/Antigravity-Manager/blob/6e8b982aee7e3d3d53501825431142eea9a3f9ab/src-tauri/src/proxy/mappers/openai/request.rs#L1038)。
 
 包括本次共 108 物理调用：Gemini 66、DeepSeek Chat 22、DeepSeek Responses 20；
 reported input=2631939、output=219917、total=2851856，旧 HTTP400 usage 未知仍保留。
@@ -265,8 +258,8 @@ reported input=2631939、output=219917、total=2851856，旧 HTTP400 usage 未�
 
 ## 显式 schema 方言对照与 Runner 恢复
 
-根据上述源码差异，另做一次独立 `responseSchema` 方言对照，实验重试为 0，
-没有改变生产 catalog。报告 `.cache/manual-cache-gemini-agm-response-schema-20261003.json`，
+为核查 schema 方言兼容，另做一次独立 `responseSchema` 对照，实验重试为 0，
+没有改变生产 catalog，私有实验报告保留在忽略目录。
 UTC 21:01:29→21:01:46，namespace `b97cbc85b4dd4140b55093216c3719a2`。
 它保留完整原 `CompactionSummary` 及本地引用校验；仅在 wire 展开 `$defs/$ref`，
 采用 `type/description/properties/required/items/enum/title` 子集，删除的协议字段路径逐项记录。
@@ -305,5 +298,5 @@ reported input=2640045、output=235217、total=2875262，旧 HTTP400 usage 未�
 真实 serializer 和持久机制的证据与完整 Main 编排、隐私负例、重启恢复等离线组合分开。
 手动 C06 直接调用整理 helper，失败状态不等于生产 Runner 已暂停工作。完整原请求仍
 hard-fit 时 Runner 保留原配对序列继续，真实 hard 超限另行停止；该分支有离线回归。
-AGM 转发后的最终上游 payload 未观测时保留未知；自然群聊、计费与模型语义质量另验。
+上游代理转发后的最终 payload 未观测时保留未知；自然群聊、计费与模型语义质量另验。
 没有常驻付费测试、自动启动或固定缓存命中率承诺。

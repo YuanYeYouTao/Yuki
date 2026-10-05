@@ -1,0 +1,77 @@
+{
+  "schema": 1,
+  "common_base": "8204b28ebc8939213dae60dbab94ab1c16d1263a",
+  "experimental_parent": "3d1d983828207049cb5e0806ad01b5008c841591",
+  "main_parent": "de9d0e3ae1d682ec6411df4d628db4ba061a5fd8",
+  "overlapping_paths": [
+    "README.en.md",
+    "README.md",
+    "docs/architecture/README.md",
+    "docs/architecture/development-contract.md",
+    "docs/architecture/work-context-and-chat-continuation-taskbook.md",
+    "docs/releases/v3.9.0.md",
+    "docs/upgrade-3.9.0.md",
+    "src/qq_ai_bot/model_runtime/executor.py",
+    "src/qq_ai_bot/runtime/protocol_store.py",
+    "src/qq_ai_bot/runtime/work_journal.py",
+    "src/qq_ai_bot/runtime/work_repository.py",
+    "src/qq_ai_bot/runtime/work_session.py",
+    "src/qq_ai_bot/services/agent_runner.py",
+    "src/qq_ai_bot/services/agent_tools.py",
+    "src/qq_ai_bot/services/chat.py",
+    "src/qq_ai_bot/services/main_agent_backend.py",
+    "tests/unit/test_runtime_work.py"
+  ],
+  "incoming_exclusive_paths": 126,
+  "incoming_exclusive_modified_paths": [
+    "docs/architecture/main-agent-runtime.md"
+  ],
+  "retired_runner_unchanged": true,
+  "dependencies_and_lock_unchanged": true,
+  "upstream_migrations_unchanged": true,
+  "retained_upstream_markdown_hard_breaks": [
+    "docs/architecture/yuki-latency-fix-taskbook-20261004.md:3: trailing whitespace.",
+    "docs/architecture/yuki-latency-fix-taskbook-20261004.md:4: trailing whitespace.",
+    "docs/architecture/yuki-latency-fix-taskbook-20261004.md:5: trailing whitespace.",
+    "docs/architecture/yuki-latency-fix-taskbook-20261004.md:6: trailing whitespace."
+  ],
+  "source_sha256": {
+    "src/qq_ai_bot/services/agent_runner.py": "bcfb0de33c366231a36825fefbe979e6a30d987edb30519eaedc9680267f9f26",
+    "pyproject.toml": "9ef9c2b713f3940326dba60f99b62d1068d3b90576ed3ed5ce998b226b7c353a",
+    "uv.lock": "ab4f901989d4c212b901cd44462b0de7e79b1064e8af549c1d8d48073ca55847",
+    "migrations/versions/0092_reply_maintenance_read_indexes.py": "0e9827d87038ad86ebfef0d332b5b52faa1003624f1dc39e694e6fb73ec0923b",
+    "migrations/versions/0093_evidence_compaction_candidate_index.py": "04e89c15e33528129ed25a46c2ec4cd20a7fa9414616839882c44466c68ad35b",
+    "migrations/versions/0094_work_abandoned_input_index.py": "4279fa126daa52205e2f0a3bdd4fbbceaf5c7a91e99c9863fa53199fc356ef7c",
+    "migrations/versions/0095_social_source_lookup_index.py": "f899d31ca67dade44872a788404fa2a12e47e3d13a9179a345ecbd26ffaf5512",
+    "src/qq_ai_bot/services/turn_execution.py": "0ca4d43eed7b964f137045a672cff24d40cf6aec7528a884ab52474e6224b6a7",
+    "src/qq_ai_bot/runtime/protocol_store.py": "ae183d4b8904330429f9faf60962494db5b8480eb63d59c8c77331e8a8033c2f",
+    "src/qq_ai_bot/runtime/work_session.py": "8ea17ac75624530050bb414e998e8e7af2b2b43369404d783eeaf43930eea747",
+    "migrations/versions/0096_invocation_effect_indexes.py": "ae613b0db09bded368f43070b536ef2434786c6065e3ae2371871ad5fa21c591",
+    "tests/integration/test_main_merge_migration_compatibility.py": "fa93e81adec20f88bd1eb6239c32cfdaa8b9a558dd9c265444e379936c371ecb",
+    "tests/unit/test_migration_0096.py": "51e7d33d082d1dfd429674ec7293eeff902bdbfe7921f8510be6a67df43560d4",
+    "tests/integration/test_codemode_caller_completion.py": "b8e9b373153f557a525f38daf70486b407a14e8431a74fa7a59d700dbe654532"
+  },
+  "final_incoming_exclusive_modified_paths": [
+    "docs/architecture/main-agent-runtime.md",
+    "tests/unit/test_social_source_lookup_index.py"
+  ],
+  "final_source_sha256": {
+    "src/qq_ai_bot/services/agent_runner.py": "bcfb0de33c366231a36825fefbe979e6a30d987edb30519eaedc9680267f9f26",
+    "pyproject.toml": "9ef9c2b713f3940326dba60f99b62d1068d3b90576ed3ed5ce998b226b7c353a",
+    "uv.lock": "ab4f901989d4c212b901cd44462b0de7e79b1064e8af549c1d8d48073ca55847",
+    "migrations/versions/0092_reply_maintenance_read_indexes.py": "0e9827d87038ad86ebfef0d332b5b52faa1003624f1dc39e694e6fb73ec0923b",
+    "migrations/versions/0093_evidence_compaction_candidate_index.py": "04e89c15e33528129ed25a46c2ec4cd20a7fa9414616839882c44466c68ad35b",
+    "migrations/versions/0094_work_abandoned_input_index.py": "4279fa126daa52205e2f0a3bdd4fbbceaf5c7a91e99c9863fa53199fc356ef7c",
+    "migrations/versions/0095_social_source_lookup_index.py": "f899d31ca67dade44872a788404fa2a12e47e3d13a9179a345ecbd26ffaf5512",
+    "src/qq_ai_bot/services/turn_execution.py": "0587fbdea97bf9c327b48ef80e008e178f462ad23d9a6ba334b370bbf353882b",
+    "src/qq_ai_bot/runtime/protocol_store.py": "ae183d4b8904330429f9faf60962494db5b8480eb63d59c8c77331e8a8033c2f",
+    "src/qq_ai_bot/runtime/work_session.py": "8ea17ac75624530050bb414e998e8e7af2b2b43369404d783eeaf43930eea747",
+    "migrations/versions/0096_invocation_effect_indexes.py": "2964458e5156005ffbde3a80c813c67f419b954887f504fb20acb88dd8484ae4",
+    "tests/integration/test_main_merge_migration_compatibility.py": "fa93e81adec20f88bd1eb6239c32cfdaa8b9a558dd9c265444e379936c371ecb",
+    "tests/unit/test_migration_0096.py": "54fc7d3343d752851faa4d5583b9d0d2ccb115282c7f2eece5728d4fe684255a",
+    "tests/integration/test_codemode_caller_completion.py": "b8e9b373153f557a525f38daf70486b407a14e8431a74fa7a59d700dbe654532",
+    "tests/unit/test_social_source_lookup_index.py": "49e645de19fa8d7ed9dff28e8d56e1f41066ae3088bfae2860316a4707e7b0d1"
+  },
+  "fixture_correction": "0095 owned DDL and full schema downgrade assertions retained; current head startup separately verifies 0096 and original facts",
+  "final_delivery_fallback": "Confirmed delivery lookup only for empty final content, exactly matching main behavior; exception recovery still verifies original delivery."
+}
