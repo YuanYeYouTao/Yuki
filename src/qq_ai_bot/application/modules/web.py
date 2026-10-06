@@ -144,7 +144,7 @@ class TaskRoutedWebSearchProvider:
 
     def __init__(
         self,
-        default: WebSearchProvider,
+        default: WebSearchProvider | None,
         bridges: Mapping[ModelTask, WebSearchProvider],
     ) -> None:
         self.default = default
@@ -152,7 +152,10 @@ class TaskRoutedWebSearchProvider:
 
     def _selected(self) -> WebSearchProvider:
         task = current_web_model_task.get()
-        return self.bridges.get(task, self.default) if task is not None else self.default
+        selected = self.bridges.get(task, self.default) if task is not None else self.default
+        if selected is None:
+            raise WebSearchError("search_unavailable", "当前模型未配置可用的联网搜索后端")
+        return selected
 
     async def search(self, request: WebSearchRequest) -> WebSearchResponse:
         return await self._selected().search(request)
@@ -161,7 +164,9 @@ class TaskRoutedWebSearchProvider:
         return await self._selected().extract(url, query)
 
     async def close(self) -> None:
-        unique = {id(item): item for item in (self.default, *self.bridges.values())}
+        unique = {
+            id(item): item for item in (self.default, *self.bridges.values()) if item is not None
+        }
         errors = await asyncio.gather(
             *(provider.close() for provider in unique.values()), return_exceptions=True
         )
@@ -200,6 +205,8 @@ class WebModule:
         require_explicit: bool,
     ) -> WebSearchProvider | None:
         settings = self._settings
+        if settings.mode is WebMode.DISABLED:
+            return None
         bridge_profiles: dict[ModelTask, ModelProfile] = {}
         if catalog is not None:
             for task, route in catalog.routes.items():
@@ -209,10 +216,6 @@ class WebModule:
                     and getattr(profile, "search_mode", None) is ModelSearchMode.BRIDGE
                 ):
                     bridge_profiles[task] = profile
-        if bridge_profiles and settings.mode not in {WebMode.TAVILY, WebMode.BOTH}:
-            raise ValueError("Gemini bridge requires an external web mode")
-        if settings.mode not in {WebMode.TAVILY, WebMode.BOTH}:
-            return None
         if bridge_profiles:
             if clients is None:
                 raise ValueError("Gemini bridge requires a configured model connection")
@@ -224,17 +227,17 @@ class WebModule:
                     and profile.default_max_output_tokens > profile.max_output_tokens_limit
                 ):
                     raise ValueError("search default exceeds configured provider output limit")
-                if not settings.tavily_api_key:
-                    raise ValueError("Gemini bridge requires Tavily for page reading and fallback")
                 if not clients.api_key_for(profile):
                     raise ValueError("Selected Gemini connection has no API key")
         default = self._default_provider(catalog, clients, require_explicit=require_explicit)
-        if default is None or not bridge_profiles:
+        if not bridge_profiles and settings.mode is not WebMode.NATIVE:
             return default
-        assert clients is not None
+        if bridge_profiles:
+            assert clients is not None
         by_profile: dict[str, GeminiSearchBridge] = {}
         bridges: dict[ModelTask, GeminiSearchBridge] = {}
         for task, profile in bridge_profiles.items():
+            assert clients is not None
             bridge = by_profile.get(profile.id)
             if bridge is None:
                 bridge = self._gemini_bridge(profile, clients)
@@ -246,8 +249,6 @@ class WebModule:
         settings = self._settings
         if profile.protocol is not ModelProtocol.GEMINI:
             raise ValueError("the separate native search bridge requires Gemini protocol")
-        if not settings.tavily_api_key:
-            raise ValueError("Gemini bridge requires Tavily for page reading and fallback")
         key = clients.api_key_for(profile)
         if not key:
             raise ValueError("Selected Gemini connection has no API key")
@@ -263,8 +264,9 @@ class WebModule:
                 headers=profile.headers,
             ),
             state=BridgeState(settings.web_search_bridge_state_path),
-            fallback=self._tavily(),
+            fallback=self._tavily() if settings.tavily_api_key else None,
             invocations=self._invocations,
+            summary_max_characters=settings.web_tool_result_max_characters,
         )
 
     def _default_provider(
@@ -277,12 +279,18 @@ class WebModule:
         settings = self._settings
         if settings.web_search_backend == "tavily":
             if not settings.tavily_api_key:
+                if settings.mode is WebMode.NATIVE:
+                    return None
                 raise ValueError("Tavily search credentials are required")
             return self._tavily()
         if catalog is None or clients is None:
             raise ValueError("DeepSeek search requires a configured model connection")
         connection = catalog.search_connection
-        if connection is None and not require_explicit:
+        if (
+            connection is None
+            and not require_explicit
+            and settings.mode in {WebMode.TAVILY, WebMode.BOTH}
+        ):
             # Legacy startup only: prior versions attached search to the chat route.
             connection = catalog.routes[ModelTask.CHAT_AGENT].profile_id
         if connection is None:

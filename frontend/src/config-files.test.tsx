@@ -450,7 +450,8 @@ it("offers a Gemini 3.8 Flash separate search bridge with its verified input cap
     "https://generativelanguage.googleapis.com/v1beta",
   );
   const search = screen.getByRole("combobox", { name: "此连接的联网搜索" });
-  expect(search).toHaveValue("external");
+  expect(search).toHaveValue("bridge");
+  await userEvent.selectOptions(search, "external");
   await userEvent.selectOptions(search, "bridge");
   expect(search).toHaveValue("bridge");
   expect(
@@ -521,7 +522,7 @@ it("offers Claude native search as a per-connection choice", async () => {
   );
   await userEvent.click(screen.getByRole("button", { name: "添加模型连接" }));
   const search = screen.getByRole("combobox", { name: "此连接的联网搜索" });
-  expect(search).toHaveValue("external");
+  expect(search).toHaveValue("native");
   expect(
     screen.queryByRole("option", { name: "原生搜索与外部搜索" }),
   ).not.toBeInTheDocument();
@@ -642,3 +643,129 @@ it("requires explicit default draft to repair invalid hot parameters", async () 
     document: { pressure_bias: 0.2 },
   });
 });
+
+it.each([
+  ["gemini", "gemini", "bridge", false],
+  ["openai", "responses", "native", true],
+  ["anthropic", "anthropic_messages", "native", true],
+  ["deepseek", "responses", "external", false],
+  ["openai_compatible", "chat_completions", "external", false],
+])(
+  "saves fresh %s connections with an honest search default",
+  async (provider, protocol, mode, nativeCapability) => {
+    file({
+      file_id: "model_profiles",
+      revision: 0,
+      valid: true,
+      profile_schema: { properties: {} },
+      tasks: ["chat_agent"],
+      document: { schema_version: 3, profiles: {}, routes: {} },
+    });
+    const act = vi.fn();
+    render(<ConfigFile fileId="model_profiles" props={{ ...props, act }} />);
+    const user = userEvent.setup();
+    await user.selectOptions(
+      await screen.findByRole("combobox", { name: "新连接供应商" }),
+      String(provider),
+    );
+    await user.click(screen.getByRole("button", { name: "添加模型连接" }));
+    expect(
+      screen.getByRole("combobox", { name: "此连接的联网搜索" }),
+    ).toHaveValue(mode);
+    await user.clear(screen.getByRole("textbox", { name: "模型 ID" }));
+    await user.type(
+      screen.getByRole("textbox", { name: "模型 ID" }),
+      "test-model",
+    );
+    if (provider === "openai_compatible") {
+      await user.type(
+        screen.getByRole("textbox", { name: "API Base URL" }),
+        "https://model.example.test/v1",
+      );
+    }
+    await user.type(screen.getByLabelText(/^API Key/), "synthetic-test-key");
+    await user.click(screen.getByRole("button", { name: "检查并保存" }));
+    const spec = (act.mock.calls[0][0] as Intent).payload.spec as {
+      document: {
+        profiles: Record<
+          string,
+          { protocol: string; search_mode: string; capabilities: string[] }
+        >;
+      };
+    };
+    const profile = Object.values(spec.document.profiles)[0];
+    expect(profile.protocol).toBe(protocol);
+    expect(profile.search_mode).toBe(mode);
+    expect(profile.capabilities.includes("native_web_search")).toBe(
+      nativeCapability,
+    );
+  },
+);
+
+it.each(["external", "native", undefined, null])(
+  "preserves existing search %s through protocol and provider edits",
+  async (mode) => {
+    const original = {
+      provider: "openai",
+      protocol: "responses",
+      model: "existing",
+      api_key_env: "KEY",
+      base_url: "https://api.openai.com/v1",
+      capabilities: [
+        "reasoning",
+        "tools",
+        "structured_output",
+        ...(mode === "native" ? ["native_web_search"] : []),
+      ],
+      ...(mode === undefined ? {} : { search_mode: mode }),
+    };
+    file({
+      file_id: "model_profiles",
+      revision: 5,
+      valid: true,
+      profile_schema: { properties: {} },
+      tasks: ["chat_agent"],
+      document: {
+        schema_version: 3,
+        profiles: { main: original },
+        routes: { chat_agent: "main" },
+      },
+    });
+    const act = vi.fn();
+    render(<ConfigFile fileId="model_profiles" props={{ ...props, act }} />);
+    const user = userEvent.setup();
+    await user.selectOptions(
+      await screen.findByRole("combobox", { name: "接口协议" }),
+      "chat_completions",
+    );
+    await user.click(screen.getByRole("button", { name: "检查并保存" }));
+    const first = (
+      (act.mock.calls[0][0] as Intent).payload.spec as {
+        document: { profiles: Record<string, typeof original> };
+      }
+    ).document.profiles.main;
+    expect(first.search_mode).toBe(mode);
+    expect(first.capabilities).toEqual(original.capabilities);
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "供应商" }),
+      "anthropic",
+    );
+    await user.type(
+      screen.getByRole("textbox", { name: "模型 ID" }),
+      "test-claude",
+    );
+    await user.type(screen.getByLabelText(/^API Key/), "synthetic-test-key");
+    await user.click(screen.getByRole("button", { name: "检查并保存" }));
+    const second = (
+      (act.mock.calls[1][0] as Intent).payload.spec as {
+        document: { profiles: Record<string, typeof original> };
+      }
+    ).document.profiles.main;
+    expect(second.protocol).toBe("anthropic_messages");
+    expect(second.search_mode).toBe(mode);
+    expect(Object.hasOwn(second, "search_mode")).toBe(mode !== undefined);
+    expect(second.capabilities.includes("native_web_search")).toBe(
+      mode === "native",
+    );
+  },
+);

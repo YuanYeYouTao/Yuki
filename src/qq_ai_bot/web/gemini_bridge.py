@@ -49,7 +49,10 @@ class GeminiSearchBridge:
         state: BridgeState,
         fallback: WebSearchProvider | None = None,
         invocations: ModelInvocationRepository | None = None,
+        summary_max_characters: int = 16000,
     ) -> None:
+        if summary_max_characters < 1:
+            raise ValueError("search summary limit must be positive")
         if (
             profile.max_output_tokens_limit is not None
             and profile.default_max_output_tokens > profile.max_output_tokens_limit
@@ -60,15 +63,17 @@ class GeminiSearchBridge:
         self.state = state
         self.fallback = fallback
         self.invocations = invocations
+        self.summary_max_characters = summary_max_characters
         self.slot = asyncio.Lock()
         self._namespace = hashlib.sha256(
             json.dumps(
                 {
-                    "version": 2,
+                    "version": 3,
                     "profile": profile.id,
                     "model": profile.model,
                     "base_url": profile.base_url,
                     "max_output": profile.default_max_output_tokens,
+                    "summary_max_characters": summary_max_characters,
                     "reasoning_effort": profile.reasoning_effort,
                     "wire_options": str(profile.wire_options),
                     "credential": credential,
@@ -252,6 +257,7 @@ class GeminiSearchBridge:
             prompt_tokens=response.prompt_tokens,
             completion_tokens=response.completion_tokens,
             cached_prompt_tokens=response.cached_prompt_tokens,
+            provider_summary=response.content[: self.summary_max_characters].strip() or None,
         )
 
     async def _record(

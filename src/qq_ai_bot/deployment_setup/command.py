@@ -32,6 +32,7 @@ from qq_ai_bot.deployment_setup.service import (
     load_plugin_setup_states,
     missing_mcp_environment,
     model_profiles_use_flash,
+    preserve_model_search_settings,
     require_migrated_model_profiles,
     sanitize_mcp_document,
     selected_gateway_providers,
@@ -39,7 +40,8 @@ from qq_ai_bot.deployment_setup.service import (
     verify_health,
 )
 from qq_ai_bot.deployment_setup.terminal import BackRequested, QuitRequested, TerminalUI
-from qq_ai_bot.llm.vendor_policy import CHAT_VENDORS, RESPONSES_VENDORS
+from qq_ai_bot.llm.vendor_policy import CHAT_VENDORS, RESPONSES_VENDORS, supports_native_search
+from qq_ai_bot.model_runtime.models import ModelSearchMode
 from qq_ai_bot.plugin_host.discovery import PluginDiscovery
 from yuki_plugin_sdk.api import PLUGIN_API_VERSION
 
@@ -86,6 +88,7 @@ class _SetupDraft:
     pending_plugins: tuple[str, ...] | None = None
     write_mcp: bool = False
     rescue_changed: bool = False
+    initial: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +189,7 @@ def _configure(paths: SetupPaths, ui: TerminalUI) -> int:
         protocol=infer_main_protocol(paths.model_profiles, environment),
         flash_enabled=model_profiles_use_flash(paths.model_profiles),
         mcp_document=mcp_document,
+        initial=initial,
     )
     draft.environment["YUKI_VERSION"] = __version__
     draft.environment["MODEL_PROFILES_FILE"] = "webui-config/model_profiles.toml"
@@ -443,17 +447,49 @@ def _page_embedding(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> No
 def _page_web(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
     del paths
     environment = draft.environment
-    ui.info("Web 搜索可关闭、使用主模型原生搜索，或使用 Tavily。")
+    ui.info("模型搜索无需 Tavily 密钥；也可以关闭联网或选择 Tavily。模型和服务须支持所选方式。")
     web_choices = [("disabled", "关闭"), ("tavily", "Tavily")]
-    if draft.protocol == "responses":
-        web_choices.insert(1, ("native", "模型原生搜索"))
-    current = environment.get("WEB_MODE", "disabled").casefold()
+    provider = environment.get("LLM_PROVIDER", "").casefold()
+    model_search = (
+        provider == "deepseek"
+        or draft.protocol == "gemini"
+        or supports_native_search(provider, draft.protocol, None, has_functions=True)
+    )
+    if model_search:
+        web_choices.insert(1, ("native", "模型搜索（无需 Tavily 密钥）"))
+    current = environment.get("WEB_MODE", "").casefold()
+    if current == "native_with_tavily_fallback":
+        current = "both"
+    if current == "both":
+        web_choices.append(("both", "保留模型与外部搜索"))
+    if current == "native" and not draft.initial and not model_search:
+        web_choices.insert(1, ("native", "保留已配置模型搜索"))
+    if not current:
+        current = (
+            ("tavily" if _as_bool(environment["WEB_ENABLED"]) else "disabled")
+            if "WEB_ENABLED" in environment
+            else "native"
+        )
     if current not in {item[0] for item in web_choices}:
         current = "disabled"
     web_mode = ui.choose("Web 搜索方式", tuple(web_choices), default=current)
     environment["WEB_MODE"] = web_mode
-    environment["WEB_ENABLED"] = "false"
+    environment["WEB_ENABLED"] = _bool_text(web_mode != "disabled")
+    if draft.initial and web_mode == "native":
+        if provider == "deepseek":
+            environment["WEB_SEARCH_BACKEND"] = "deepseek_anthropic"
+            ui.info("将明确使用主连接的密钥请求官方 DeepSeek 独立搜索；主对话仍用原协议。")
+        elif draft.protocol == "gemini":
+            environment["WEB_SEARCH_BACKEND"] = "tavily"
+            ui.info("Gemini 将使用独立搜索桥，不把 Google Search 和函数声明混入同一个请求。")
+        else:
+            environment["WEB_SEARCH_BACKEND"] = "tavily"
+            ui.info("将声明 native_web_search；请确认所选模型及接入服务支持原生联网。")
+    elif not model_search and draft.initial:
+        ui.info("此主连接没有可用的默认模型搜索；选择 Tavily 需密钥，或换用支持搜索的模型连接。")
     if web_mode == "tavily":
+        if draft.initial:
+            environment["WEB_SEARCH_BACKEND"] = "tavily"
         environment["TAVILY_API_KEY"] = _ask_required_secret(
             ui,
             "Tavily API Key",
@@ -628,7 +664,15 @@ def _review_and_commit(
             main_protocol=draft.protocol,
             flash_enabled=draft.flash_enabled,
             main_provider=draft.environment.get("LLM_PROVIDER"),
+            main_search_mode=_new_main_search_mode(draft) if initial else None,
+            search_connection=initial
+            and draft.environment.get("WEB_MODE") == "native"
+            and draft.environment.get("LLM_PROVIDER", "").casefold() == "deepseek",
         )
+        if not initial:
+            profiles = preserve_model_search_settings(
+                profiles, paths.model_profiles.read_text(encoding="utf-8")
+            )
     else:
         try:
             profiles = paths.model_profiles.read_text(encoding="utf-8")
@@ -672,6 +716,16 @@ def _review_and_commit(
         "qq-ai-bot-cli setup environment-check"
     )
     return 0
+
+
+def _new_main_search_mode(draft: _SetupDraft) -> ModelSearchMode:
+    if draft.environment.get("WEB_MODE") != "native":
+        return ModelSearchMode.EXTERNAL
+    if draft.protocol == "gemini":
+        return ModelSearchMode.BRIDGE
+    if draft.environment.get("LLM_PROVIDER", "").casefold() == "deepseek":
+        return ModelSearchMode.EXTERNAL
+    return ModelSearchMode.NATIVE
 
 
 def _select_sections(ui: TerminalUI, draft: _SetupDraft) -> tuple[str, ...]:
