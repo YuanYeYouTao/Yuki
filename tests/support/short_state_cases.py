@@ -72,15 +72,20 @@ async def run_short_state_cases(database, tmp_path, context):
     contract = MainAgentContract(chat, state)
     chat.runtime.runner.main_contract = contract
     chat._tools.short_state = state
-    declared = await contract.definitions()
+    # The new deployment has a compact model view and an unchanged full
+    # execution catalog. Compare actual requests to the former, not the latter.
+    complete = await contract.definitions()
+    declared = await contract.model_definitions()
     assert "request_tools" not in {tool.name for tool in declared}
     revision = contract.revision
     assert len(revision) == 64
-    copied = await contract.definitions()
+    copied = await contract.model_definitions()
     copied[0].parameters["injected"] = True
-    assert await contract.definitions() == declared
+    assert await contract.model_definitions() == declared
     assert contract.revision == revision
-    assert {"update_short_state", "call_onebot_api", "send_message"} <= {t.name for t in declared}
+    assert {"update_short_state", "send_message", "lookup_tools"} <= {t.name for t in declared}
+    assert "call_onebot_api" not in {t.name for t in declared}
+    assert "call_onebot_api" in {t.name for t in complete}
     config = await chat._runtime_config.snapshot()
     runtime = AgentRuntime(
         origin=TurnOrigin.USER_MESSAGE,
@@ -120,7 +125,7 @@ async def run_short_state_cases(database, tmp_path, context):
         )
         await chat.runtime.main_turns.run(await state.inject(initial), scoped, backend)
         assert provider.requests[-1].tools == declared
-        assert await contract.definitions() == declared
+        assert await contract.model_definitions() == declared
         # Global state has no person/group/origin ACL, including actorless and read-only turns.
         call = ToolCall(
             id="state",

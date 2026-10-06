@@ -1,6 +1,5 @@
 """Capacity replacement preserves original input and paired execution facts."""
 
-import hashlib
 import json
 from dataclasses import asdict, replace
 from types import SimpleNamespace
@@ -136,22 +135,12 @@ async def _runtime(database, control, initial, provider, *, contract_workspace=N
 
 
 async def _seed_runner_contract(runner, runtime, session, initial):
+    # Capacity fixtures deliberately carry the complete execution declaration
+    # to stress fixed-input pressure. Seed the real recovery contract, including
+    # its full API revision, rather than duplicating the old hash formula.
     definitions = await runner.main_contract.definitions()
     runtime = replace(runtime, fixed_tools=definitions)
-    revision = getattr(runner._models, "profile_revision", None)
-    session.contract = hashlib.sha256(
-        json.dumps(
-            [
-                repr(definitions),
-                asdict(runtime.runtime_config.llm),
-                asdict(runtime.runtime_config.web),
-                revision(runner._task) if callable(revision) else "legacy",
-                [(item.role, item.content) for item in initial if item.role == "system"],
-            ],
-            sort_keys=True,
-            default=str,
-        ).encode()
-    ).hexdigest()
+    session.contract = runner.work_contract(runtime.runtime_config, initial, definitions)
     await session.save("paired")
     sequence = session.transcript.request()
     request = ChatRequest(

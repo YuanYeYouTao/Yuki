@@ -382,15 +382,27 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
 
             return ChatResponse(summary_json(request.messages[-1].content), 0)
         if name == "batch":
+            # Specialized terminal calls are now Code Mode-only. Keep the
+            # original 40 downstream operations, root budget and resume oracle;
+            # only their model calling syntax changes under the new contract.
             return ChatResponse(
                 "",
                 0,
-                tool_calls=tuple(
+                tool_calls=(
                     ToolCall(
-                        f"exec-{index}",
-                        ToolFunction("terminal_exec", json.dumps({"command": f"printf {index}"})),
-                    )
-                    for index in range(40)
+                        "exec-batch",
+                        ToolFunction(
+                            "execute_code",
+                            json.dumps(
+                                {
+                                    "code": "for i in range(40):\n"
+                                    "    r = await yuki_terminal_exec("
+                                    "{'command': 'printf ' + str(i)})\n"
+                                    "    assert r['ok']\n'OK'"
+                                }
+                            ),
+                        ),
+                    ),
                 ),
             )
         return (
@@ -413,8 +425,25 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
         web_enabled=True,
         web_mode="native",
     )
+    if scenario == "business":
+        import hashlib
+
+        from tests.support.codemode_cases import BINARY, BINDING
+
+        if not BINDING or not BINARY.is_file():
+            pytest.skip("tiered terminal business requires the pinned Monty worker/binding")
+        settings = settings.model_copy(
+            update={
+                "code_mode_worker_path": BINARY,
+                "code_mode_worker_sha256": hashlib.sha256(BINARY.read_bytes()).hexdigest(),
+            }
+        )
     harness = build_harness(database, settings, provider)
     chat = harness.processor._chat
+    if scenario == "business":
+        # The test assembly does not configure the runner's native engine;
+        # bind the same explicitly pinned settings as real worker entry tests.
+        chat.runtime.runner.code_mode_settings = settings
     from qq_ai_bot.mcp.repository import ToolArtifactRepository
 
     chat._tool_artifacts = ToolArtifactRepository(
@@ -486,9 +515,15 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
     main_wire = wire[1:] if scenario == "compaction" else wire
     first_tools = main_requests[0].tools
     names = {t.name for t in first_tools}
+    from qq_ai_bot.codemode.tool_visibility import DIRECT_TOOL_NAMES
     from qq_ai_bot.runtime.subagent_tools import WORKER_REQUIRED_NAMES
 
-    assert names == WORKER_REQUIRED_NAMES
+    # Only the Provider projection shrinks; the complete worker API retains
+    # exactly the original worker allowlist (with read-only discovery added).
+    assert names == WORKER_REQUIRED_NAMES & DIRECT_TOOL_NAMES
+    assert {t.name for t in executor.definitions} == WORKER_REQUIRED_NAMES
+    assert "yuki_terminal_exec" in executor.script_api.names
+    assert "terminal_exec" not in names
     assert "subagent_message" in names and "search_memory" in names
     assert not names & {"send_group_message", "memory_change", "subagent_start", "report_progress"}
     await workers.message(lease, parent["id"], identity, "continue", "Check again")

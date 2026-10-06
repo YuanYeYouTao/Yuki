@@ -17,7 +17,8 @@ legacy/semantic 自主机会均以正式 SELF 来源进入这条执行链；
 
 所有主入口共用的静态 `CORE_CONTRACT` 注入持续 Work 的默认 Code Mode 编排策略。
 已知多步流程在脚本内读取、核验和聚合，只把必要结果交回模型；需要解释新证据时再交回
-模型决策。短聊、单次简单工具及生命周期控制保持直接调用。工作者使用同一策略，具体
+模型决策。基础工具包括联网搜索与网页读取，短聊、基础单次操作及生命周期控制可直接
+调用；专用工具按需查询原 schema 后通过 Code Mode 使用。工作者使用同一分层，具体
 执行、pending 等待、原 VM 续跑与授权仍遵守 [Tool Kernel 合同](tool-kernel.md)。
 
 模型侧每项业务只有一个公开名称和参数合同。冻结清单只来自主工具注册表，不追加 DSL、MCP
@@ -86,7 +87,7 @@ generation、Space、Presence 与群传输目标。目标成员和资料来源�
 每次模型请求、工具执行和发送准备仍复核原 run 与场景权限。SELF 自动化还固定创建时
 Conversation/generation、Space、Presence 和群绑定；场景失效即阻止执行。当前 SELF 社交工具只允许
 当前群发送、通讯录、历史和成员读取；不支持自动结构化 @、私人目标、撤回或戳人。
-完整声明不随主体改动，执行处拒绝不获准的能力；详见 [语义参与接入](semantic-participation.md)。
+固定直调声明与完整执行 API 均不随主体改动，执行处拒绝不获准的能力；详见 [语义参与接入](semantic-participation.md)。
 
 模型侧只用 `send_message` 发送可见内容：省略 target 时发到当前群或私聊，显式 target 可指定
 其他人或群，后端选择私聊或群聊路由。语音、表情、附件、引用、提及均由同一工具的参数表达；
@@ -337,7 +338,7 @@ effect 修复交付记录，unknown 不获重发资格。
 来源安全取得要求时保留具体记录及执行事实，不能猜进度、清预算或新建替代任务。
 
 协议检查点保留 opaque Responses item 的字段顺序；媒体外置及恢复不改变实际序列化
-请求。主执行的新链继续使用完整固定工具声明与设置，禁止依赖 DeepSeek 的 tool_choice
+请求。主执行的新链继续使用固定基础工具声明与设置，禁止依赖 DeepSeek 的 tool_choice
 控制执行。no-progress 的最后一次恢复响应不会执行本地函数工具。容量摘要使用同一连接的
 独立无工具请求，不携带 native tools 或原 opaque continuation，不覆盖主链的 dispatched/
 paired 检查点。真实主请求超预算且整理不能使其装窗时，暂停原 Work 并保留事实。

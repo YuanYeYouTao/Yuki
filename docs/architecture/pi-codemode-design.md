@@ -11,7 +11,8 @@ Code Mode 使用固定 Monty 原生 Rust 子进程与手动挂起接口，生成
 保留现有 Provider、`YukiRuntime`、来源、领域授权、Work、根预算及 Social/Manager 回执。
 短聊和单次发送继续使用直接工具；`execute_code` 必须已有原已接纳 Work。
 
-完整冻结声明与 Python wrapper 从同一 descriptor 投影。目录查询、脚本、结果和快照
+完整冻结执行清单与 Python wrapper 从同一 descriptor 投影；模型直接声明是固定的基础
+工具视图，包含联网，其余工具按需查询原 schema 后通过 Code Mode 调用。目录查询、脚本、结果和快照
 均不能授予权限。主、child 和独立插件计算仍保留各自原合同；无工具计算不开放 bridge。
 Provider 原生工具仍由 Provider 执行，不虚构本地逐次授权回调。
 

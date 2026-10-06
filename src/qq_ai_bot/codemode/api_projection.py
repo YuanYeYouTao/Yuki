@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from qq_ai_bot.codemode.contract import CODE_API_REVISION, EXECUTE_CODE_NAME
+from qq_ai_bot.codemode.tool_visibility import TOOL_LOOKUP_NAME
 from qq_ai_bot.domain.messages import ChatTool
 
 WRAPPER_PREFIX = "yuki_"
@@ -21,7 +22,7 @@ _IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]*")
 
 # Never projected: recursion into composition, and the lifecycle surfaces a
 # script reaches only through the Host control gate (see ``control_kind``).
-NEVER_PROJECTED = frozenset({EXECUTE_CODE_NAME})
+NEVER_PROJECTED = frozenset({EXECUTE_CODE_NAME, TOOL_LOOKUP_NAME})
 
 
 def encode_wrapper_name(tool_name: str) -> str:
@@ -54,6 +55,7 @@ class ScriptApi:
     api_revision: str
     wrappers: dict[str, str]  # wrapper -> canonical tool name
     schemas: dict[str, dict[str, object]]  # canonical tool name -> original schema
+    descriptions: dict[str, str]  # frozen discovery text, never an execution grant
 
     @property
     def names(self) -> frozenset[str]:
@@ -75,6 +77,7 @@ class ScriptApi:
 def project(tools: tuple[ChatTool, ...], manifest_revision: str) -> ScriptApi:
     wrappers: dict[str, str] = {}
     schemas: dict[str, dict[str, object]] = {}
+    descriptions: dict[str, str] = {}
     for tool in tools:
         if tool.name in NEVER_PROJECTED:
             continue
@@ -84,7 +87,8 @@ def project(tools: tuple[ChatTool, ...], manifest_revision: str) -> ScriptApi:
         wrappers[wrapper] = tool.name
         # The original object, unchanged: no coercion, defaults or renaming.
         schemas[tool.name] = tool.parameters
-    return ScriptApi(manifest_revision, CODE_API_REVISION, wrappers, schemas)
+        descriptions[tool.name] = tool.description
+    return ScriptApi(manifest_revision, CODE_API_REVISION, wrappers, schemas, descriptions)
 
 
 @dataclass(frozen=True, slots=True)

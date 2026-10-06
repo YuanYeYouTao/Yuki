@@ -405,11 +405,22 @@ def write_report() -> None:
             "helpers; not an unmodified deployed old application"
         ),
         "protocol": "chat_completions",
-        "fixed_declarations": 76,
+        "fixed_declarations": next(
+            iter(
+                {
+                    w["tools_count"]
+                    for r in RECORDS
+                    for w in r.get("wire", [])
+                    if w.get("purpose", "main") == "main"
+                }
+            ),
+            None,
+        ),
         "max_output_tokens": MAX_OUTPUT,
         "segment_tools_override": SEGMENT_TOOLS,
         "reasoning_effort": REASONING_EFFORT,
         "default_code_policy": DEFAULT_CODE_POLICY,
+        "model_tool_exposure": "tiered" if DEFAULT_CODE_POLICY else "full historical control",
         "context_measurement": "UTF-8 serialized messages and tool receipt characters per "
         "physical request; measured separately from the fixed tool declarations and provider "
         "reported prompt tokens; no raw reasoning retained",
@@ -501,6 +512,11 @@ async def compare_case(
     # The P00 inventory is historical evidence, not the current tool contract.
     inventory = await export_inventory()
     definitions = tuple(ChatTool(**row) for row in inventory["frozen_definitions"])
+    public_definitions = definitions
+    if DEFAULT_CODE_POLICY:
+        from qq_ai_bot.codemode.tool_visibility import model_definitions
+
+        public_definitions = model_definitions(definitions)
     revision = inventory["manifest_revision"]
     chat, _, control, runtime, repo = await runner_env(database, tmp_path, iter(()))
     original_runner = chat.runtime.runner
@@ -805,7 +821,7 @@ async def compare_case(
             current_runtime = replace(
                 runtime,
                 work_control=control,
-                fixed_tools=definitions,
+                fixed_tools=public_definitions,
                 runtime_config=config,
                 max_tool_calls=task.segment_tools,
                 max_model_requests=60,

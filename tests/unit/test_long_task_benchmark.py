@@ -487,6 +487,16 @@ async def test_unpaid_long_task_assembly(
                 receipts.update({r["call_id"]: r["result"] for r in wire_work_receipts(messages)})
                 assert json.loads(receipts["code"])["result"] == "OK"
         body = answer(response, "chat_completions", 1)
+        # This transport is unpaid. Return explicit synthetic usage so the
+        # real ledger settles each mock reservation; previously omitted usage
+        # accumulated as unknown exposure near the paid ceiling after 31 calls.
+        # Unknown-response reservation protection has separate budget tests.
+        body["usage"] = {
+            "prompt_tokens": 1,
+            "completion_tokens": 1,
+            "total_tokens": 2,
+            "prompt_tokens_details": {"cached_tokens": 0},
+        }
         if large_reasoning and response.tool_calls[0].function.name == "execute_code":
             body["choices"][0]["message"]["reasoning_content"] = (
                 "synthetic private reasoning " * 6000

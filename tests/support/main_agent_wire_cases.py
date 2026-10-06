@@ -208,10 +208,14 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
         chat.runtime.runner.main_contract = contract
         handlers.main_contract = contract
         chat._tools.short_state = state
-        manifest = await contract.definitions()
-        python_tool = next(t for t in manifest if t.name == "run_python")
+        # Specialized tools retain their exact execution schemas, but leave
+        # the Provider's fixed declarations under the tiered contract.
+        complete = await contract.definitions()
+        manifest = await contract.model_definitions()
+        python_tool = next(t for t in complete if t.name == "run_python")
         assert python_tool.description == sandbox_tools()[0].description
         assert python_tool.parameters == sandbox_tools()[0].parameters
+        assert "run_python" not in {t.name for t in manifest}
         denied_name = "call_onebot_api"
         assert len(manifest) > 10
 
@@ -579,7 +583,9 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
         assert json.loads(outputs[0])["ok"] is True
         if name in {"automation-generate", "sdk-generate"}:
             denied = json.loads(outputs[-1])
-            assert denied["ok"] is False and denied["error"] == "capability_not_allowed", denied
+            # A forged direct call is rejected at the declaration boundary;
+            # execution authorization remains independently covered below it.
+            assert denied["ok"] is False and denied["error"] == "tool_not_declared", denied
         sequence_key = "input" if protocol is ModelProtocol.RESPONSES else "messages"
         for previous, following in pairwise(chain):
             assert following[sequence_key][: len(previous[sequence_key])] == previous[sequence_key]

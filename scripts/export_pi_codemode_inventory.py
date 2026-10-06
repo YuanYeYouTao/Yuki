@@ -14,6 +14,7 @@ from typing import Any
 from qq_ai_bot.admin.capabilities import CapabilityRegistry
 from qq_ai_bot.automation.tools import AutomationToolService
 from qq_ai_bot.capabilities.catalog import UnifiedToolCatalog
+from qq_ai_bot.codemode.tool_visibility import TOOL_LOOKUP_NAME
 from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.runtime.subagent_tools import subagent_tools
@@ -29,6 +30,7 @@ _CONTROL_BINDINGS = {
 }
 _CONTROL_BINDINGS[STATE_TOOL.name] = "qq_ai_bot.workspace.short_state.ShortState.execute"
 _CONTROL_BINDINGS["execute_code"] = "qq_ai_bot.codemode.driver.CodeModeDriver.run"
+_CONTROL_BINDINGS[TOOL_LOOKUP_NAME] = "qq_ai_bot.codemode.tool_visibility.lookup_tools"
 
 
 def inventory_rows(
@@ -128,6 +130,7 @@ async def export_inventory() -> dict[str, Any]:
                 "catalog_revision": catalog.revision,
                 "tools": inventory_rows(tools, catalog),
                 "frozen_definitions": [asdict(tool) for tool in tools],
+                "model_definitions": [asdict(tool) for tool in await contract.model_definitions()],
                 "external_inventory": {
                     "mcp": "deployment-dependent; synthetic binding tests required",
                     "plugin": "deployment-dependent; synthetic binding tests required",

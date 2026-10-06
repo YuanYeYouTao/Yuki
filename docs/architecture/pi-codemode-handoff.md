@@ -1,6 +1,6 @@
 # Pi 与 Code Mode 交接说明
 
-2026-10-06。接手后续阶段的开发者先读本页，再读下列依据。本页只写接手需要的状态、
+2026-10-07。接手后续阶段的开发者先读本页，再读下列依据。本页只写接手需要的状态、
 环境和约束；逐阶段证据见 [交付记录](pi-codemode-delivery.md)。
 
 ## 依据与阅读顺序
@@ -11,19 +11,26 @@
    `04_给Codex的执行提示词.md`。前三份是完整范围与验收依据，04 是执行约束。
 3. 本仓库：[设计合同](pi-codemode-design.md)、[来源与刻意差异](pi-port-provenance.md)、
    [交付记录](pi-codemode-delivery.md)、[Tool Kernel](tool-kernel.md) 的 `execute_code` 节。
-4. 覆盖清单：`pi-codemode-capability-inventory.json`（76 个工具）、
-   `pi-codemode-acceptance.json`（验收项映射）。
+4. 原阶段覆盖清单：`pi-codemode-capability-inventory.json`（当时 76 个工具）、
+   `pi-codemode-acceptance.json`（验收项映射）；当前分层装配见交付记录。
 
 ## 当前状态
 
-最新本地工作为 [#256 默认 Code Mode 编排](pi-codemode-delivery.md)：主 Agent 和工作者
+最新工作为[工具分层与联网直调](pi-codemode-delivery.md)：基础聊天、记忆读写、历史、
+工作区、任务/原执行控制和联网保持直接调用，其余工具经按需目录与 Code Mode 使用。
+模型直调视图与完整执行 API 分开冻结；主合同 version 13、工作者 version 3，API v1 和
+Monty 1.0.1 不变。隐藏 schema 变化同样改变恢复合同，权限及已提交回执不放宽。
+本轮验证、实测与推送状态见交付记录。启动时没有配置有效 native worker 时，隐藏能力
+会明确报告 Code Mode 不可用；聊天与基础联网仍可直接使用。
+
+此前 [#256 默认 Code Mode 编排](pi-codemode-delivery.md) 已随 `08317aae` 按用户授权推送：主 Agent 和工作者
 共享确定性多步策略，数据分支留在脚本，语义判断、单步目标和生命周期控制保留直接调用。
 脚本摘要与 stdout 均避免全量原文；未派发步骤的降级仍受原权限和效果围栏约束。
 修正后的真实 DeepSeek high 对照六项全部通过，三种代码组均由模型自行规划和选择脚本；
 [结果明细](pi-codemode-evidence/issue-256-final-summary.md)包括 token、上下文、请求和费用。
 较早的顺序、选择及测试配置反例全部保留。测试配置遗漏 structured_output 导致的暂停
 已通过原程序离线重现并修正装配，生产路由、VM 和回执逻辑未改。
-本轮全量检查结果与提交状态见交付记录；本轮没有推送、合并或部署。
+该轮全量检查结果见交付记录；未合并 main 或部署。
 
 分支 `codex/pi-codemode-experiment`，原基线 main `8204b28e`。本轮按用户要求将
 main `f508f649`（包括前轮 `3ca36510` 及新 #251—#254）接入测试分支，保留新循环与主线修复；状态与验证见
@@ -109,7 +116,8 @@ Monty 是实际依赖。早期提交描述中的“Pi 循环移植”为历史�
   原回执证据，不复制旧 opaque；段末在原模型预算内有一次保存累计 note/complete 的机会。
 - **主循环**：`agent_core.loop.run_agent_loop`，`AgentRunner` 通过模型/调用/结算三个固定边界驱动。
 - **Code Mode**：`codemode/driver.py`（编排）、`api_projection.py`（wrapper）、`contract.py`
-  （`execute_code` 声明，主合同 version 12）、`engine_monty.py`（固定 worker）。
+  （`execute_code` 声明，主合同 version 13）、`tool_visibility.py`（固定直调视图与目录）、
+  `engine_monty.py`（固定 worker）。
 - **测试夹具**：`tests/unit/test_tool_effect_audit.py::active_work`、
   `tests/unit/test_work_effect_results.py::owned_session`、
   `tests/integration/test_invocation_crash_windows.py::{prepared,facts}`、

@@ -248,11 +248,18 @@ class AgentRunner:
         runtime: RuntimeConfigSnapshot,
         system_messages: tuple[ChatMessage, ...],
         definitions: tuple[ChatTool, ...] | None,
+        *,
+        script_api: ScriptApi | None = None,
     ) -> str:
         return hashlib.sha256(
             json.dumps(
                 [
                     repr(definitions),
+                    script_api.manifest_revision
+                    if script_api is not None
+                    else self.main_contract.revision
+                    if self.main_contract is not None
+                    else "",
                     asdict(runtime.llm),
                     asdict(runtime.web),
                     self._models.profile_revision(self._task),
@@ -866,7 +873,9 @@ class AgentRunner:
 
         async def execute_business(invocation: Invocation, side_effecting: bool) -> str:
             call = invocation.call
-            if call.function.name not in declared_names:
+            # Children use the full frozen execution API, independently of the
+            # compact Provider declaration. Worker APIs are already restricted.
+            if call.function.name not in api.schemas:
                 return json.dumps({"ok": False, "executed": False, "error": "tool_not_declared"})
 
             async def invoke() -> str:
@@ -875,7 +884,9 @@ class AgentRunner:
             return await service.invoke(invocation, invoke, side_effecting=side_effecting)
 
         async def execute_control(call: ToolCall, key: str) -> tuple[str, bool]:
-            return await self._execute_control_call(call, tools, runtime, declared_names, key)
+            return await self._execute_control_call(
+                call, tools, runtime, frozenset(api.schemas), key
+            )
 
         async def before_dispatch(call: ToolCall) -> str | None:
             return await before_work_tool(control, call)
@@ -966,6 +977,29 @@ class AgentRunner:
             result = json.dumps(
                 {"ok": False, "executed": False, "error": "duplicate_provider_call_id"}
             )
+            return CoordinatedToolResult(tuple((call, result, False) for call in calls), 0)
+
+        from qq_ai_bot.codemode.tool_visibility import TOOL_LOOKUP_NAME, lookup_tools
+
+        if any(call.function.name == TOOL_LOOKUP_NAME for call in calls):
+            await save_response()
+            if len(calls) != 1:
+                result = json.dumps({"ok": False, "error": "tool_lookup_requires_own_batch"})
+            elif calls[0].function.name not in declared_names:
+                result = json.dumps({"ok": False, "error": "tool_not_declared"})
+            else:
+                api = runtime.script_api
+                if api is None and self.main_contract is not None:
+                    # Never substitute the main catalog for a worker scope.
+                    if control is None or control.lease.work_id is None:
+                        api = self.main_contract.script_api
+                result = (
+                    lookup_tools(api, calls[0].function.arguments, declared_names=declared_names)
+                    if api is not None
+                    else json.dumps({"ok": False, "error": "tool_catalog_unavailable"})
+                )
+            # Frozen metadata creates no business effect or execution charge;
+            # its paired result still persists in the ordinary Work journal.
             return CoordinatedToolResult(tuple((call, result, False) for call in calls), 0)
 
         code_calls = [call for call in calls if call.function.name == EXECUTE_CODE_NAME]
@@ -1254,6 +1288,10 @@ class AgentRunner:
         call: ToolCall,
         runtime: AgentRuntime,
     ) -> bool:
+        from qq_ai_bot.codemode.tool_visibility import TOOL_LOOKUP_NAME
+
+        if call.function.name == TOOL_LOOKUP_NAME:
+            return False
         if tools is None:
             return False
         return tools.is_side_effecting(call.function.name, call.function.arguments, runtime)

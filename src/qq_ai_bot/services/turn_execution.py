@@ -313,7 +313,7 @@ class TurnExecution:
         if self.runtime.fixed_tools is not None:
             self.state.fixed_definitions = self.runtime.fixed_tools
         elif self.runner.main_contract is not None:
-            self.state.fixed_definitions = await self.runner.main_contract.definitions()
+            self.state.fixed_definitions = await self.runner.main_contract.model_definitions()
             if not self.runtime.dynamic_context_prepared:
                 raise LLMError("main_agent_composition_required")
             if self.tools is None:
@@ -323,7 +323,10 @@ class TurnExecution:
             from qq_ai_bot.runtime.work_session import WorkSession
 
             contract = self.runner.work_contract(
-                self.runtime.runtime_config, self.initial_messages, self.state.fixed_definitions
+                self.runtime.runtime_config,
+                self.initial_messages,
+                self.state.fixed_definitions,
+                script_api=self.runtime.script_api,
             )
             self.runtime.work_control.session = WorkSession(self.runtime.work_control, contract)
             self.state.transcript = await self.runtime.work_control.session.restore(

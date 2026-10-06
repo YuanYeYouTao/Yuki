@@ -10,6 +10,7 @@ from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
 from qq_ai_bot.codemode.contract import CODE_API_REVISION
+from qq_ai_bot.codemode.tool_visibility import DIRECT_TOOL_NAMES, LOOKUP_TOOLS, model_definitions
 from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.runtime.work_control import work_control_tools
 from qq_ai_bot.services.agent_tools import ToolRuntime
@@ -37,11 +38,13 @@ class MainAgentContract:
             "frozen": self._tools is not None,
             "revision": self.revision,
             "tool_count": len(names),
+            "model_tool_count": len(names & DIRECT_TOOL_NAMES),
             "persistent_environment_tools_complete": (SANDBOX_TOOLS | WORKSPACE_TOOLS) <= names,
             "netease_tools_present": any("netease" in name.casefold() for name in names),
         }
 
     async def definitions(self) -> tuple[ChatTool, ...]:
+        """Full execution contract; the Provider uses model_definitions instead."""
         async with self._lock:
             if self._tools is not None:
                 return deepcopy(self._tools)
@@ -74,6 +77,7 @@ class MainAgentContract:
 
             # Code composition is calling syntax over this same frozen manifest.
             tools.append(EXECUTE_CODE_TOOL)
+            tools.append(LOOKUP_TOOLS)
             names = [tool.name for tool in tools]
             if len(names) != len(set(names)):
                 raise ValueError("duplicate Main Agent manifest tool")
@@ -81,9 +85,10 @@ class MainAgentContract:
             revision = hashlib.sha256(
                 json.dumps(
                     {
-                        # 12: Code Mode plus original-chain native media sources.
-                        "version": 12,
+                        # 13: fixed direct view, discovery and full execution API.
+                        "version": 13,
                         "code_api": CODE_API_REVISION,
+                        "direct_names": sorted(DIRECT_TOOL_NAMES),
                         "tools": [
                             {
                                 "name": t.name,
@@ -108,3 +113,6 @@ class MainAgentContract:
                 "main_agent_manifest_frozen tools=%d revision=%s", len(self._tools), self.revision
             )
             return deepcopy(self._tools)
+
+    async def model_definitions(self) -> tuple[ChatTool, ...]:
+        return model_definitions(await self.definitions())

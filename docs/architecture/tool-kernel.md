@@ -8,10 +8,14 @@ Tool Kernel 分开管理工具目录、固定声明与执行授权。主 Agent �
 
 `ToolProvider` 提供 `CapabilityDescriptor`，其中的 `ToolBinding` 连接实际实现。
 `UnifiedToolCatalog` 负责目录，`MainAgentContract.definitions()` 在部署初始化时收集
-主工具注册表、已安装插件和已启用 MCP 工具，加入工作控制、子任务与 short_state 工具后，
+主工具注册表、已安装插件和已启用 MCP 工具，加入工作控制、子任务、short_state 与只读目录后，
 按名称排序并冻结完整名称、说明和参数 schema。重名声明直接报错。
 
-主 Agent 的普通聊天、主动触发、自动化、插件主调用和持久续跑复用这份声明。
+`definitions()` 保留完整执行清单；`model_definitions()` 返回固定基础直调视图，包含聊天、
+任务及原执行查询/取消、记忆读写与历史、基础工作区、时间读取、联网搜索/网页读取、`execute_code` 和
+`lookup_tools`。终端、环境管理、自动化、管理及外部集成保留在完整执行 API 中，
+不直接声明给模型。基础工具也可在脚本内组合。主 Agent 的普通聊天、主动触发、自动化、
+插件主调用和持久续跑复用同一固定直调视图。
 它不是按每条消息或每个用户生成的白名单。工具合同变更需重启并开启明确的新链。
 `get_chat_history_around` 只以必填的内部 `event_id` 定位当前会话账本；缺少编号或传入
 平台消息号会收到错误回执。声明变更随部署生成新的合同 revision，不沿用旧请求链。
@@ -20,9 +24,12 @@ Provider 原生工具还有独立的协议和配置合同，不能只检查函�
 `get_*_memories` 列表名只在执行层兼容历史回执。插件只获 Person 或 Group 读权限时
 仍可使用 `search_memory`，后端按该次批准的 scope 限制候选和显式目标。
 
-主 Agent 直接收到启动时冻结的完整工具声明；目录元数据用于装配和运维，
-不再向模型提供额外的目录查询工具。Capability Runtime 的执行集合不是模型声明的真源，
-也不能在请求链中添加 schema 或扩大权限。
+`lookup_tools(query=...)` 搜索名称/说明或分页列出简短目录；`name` 精确读取单项原参数
+schema、脚本调用名及本轮直调可见性。搜索不返回全部 schema，详情不会注册新工具。
+查询只读启动时冻结的 API，不加载插件或 MCP，不接触业务资源或取得执行授权；工作者
+只能查询自己的完整执行子集。查询结果按原 call_id 配对保存，但不计业务效果或业务调用
+额度；查询自身仍受模型请求、输入容量及原 Work journal 合同约束。
+Capability Runtime 的执行集合不是模型声明的真源，也不能在请求链中添加 schema 或扩大权限。
 
 ## 调用与效果
 
@@ -33,8 +40,11 @@ Provider 原生工具还有独立的协议和配置合同，不能只检查函�
 ```mermaid
 flowchart LR
   P[Core / Plugin / MCP Provider] --> D[UnifiedToolCatalog]
-  D --> F[MainAgentContract 固定声明]
-  F --> A[AgentRunner]
+  D --> F[MainAgentContract 完整执行清单]
+  F --> V[固定基础直调声明]
+  F --> S[完整 ScriptApi / 按需目录]
+  V --> A[AgentRunner]
+  S --> A
   A --> E[MainAgentBackend 执行授权]
   E --> I[ToolInvocationCoordinator]
   I --> B[ToolBinding]
@@ -52,10 +62,14 @@ flowchart LR
 
 ## 代码组合 `execute_code`
 
-冻结声明额外包含固定的 `execute_code`（合同 version 12，`yuki.codemode.api.v1`）。
+冻结清单包含固定的 `execute_code` 和 `lookup_tools`（主合同 version 13，`yuki.codemode.api.v1`）。
 脚本里的 `await yuki_<工具名>({参数})` 是同一 canonical 工具的调用语法，由
 `codemode/api_projection.py` 从冻结声明确定性投影：参数 schema 为原件，名称编码可逆，
-不增加别名、目录查询或权限；`execute_code` 自身不投影，未知名称在沙箱内即 NameError。
+不增加业务别名或权限；`execute_code` 和只读目录自身不投影，未知名称在沙箱内即 NameError。
+模型只能直接调用当前直调视图中的工具；Code Mode 子调用按完整 API 核验名称和原 schema，
+再进入同一执行后端。目录结果不使隐藏工具获得直接调用资格。完整执行清单、直调政策和
+工作者子集都纳入 revision；隐藏工具 schema 变更同样改变恢复合同，旧链不暗改。
+未配置或不可用的 native worker 如实返回不可用，隐藏能力不能借此改走未声明的直接工具。
 
 `execute_code` 要求已接纳的 Work，否则返回 `accept_work_before_execution`；短聊与单次
 发送仍走直接工具。外层调用是 `kind=code_composition` 父 effect，不计业务工具次数；每个
@@ -75,7 +89,7 @@ pending 保留原 run_id，使用现有等待和恢复，不在脚本里忙轮�
 gather 超过宿主队列。指引不硬编码当前部署的可调队列或并发数量。
 有依赖或副作用顺序的步骤逐步 await，不用并发预读或统一后写绕开顺序要求；
 stdout 同样是模型可见结果，不打印全量中间原文。Code Mode 不可用或程序失败时如实
-报告，只允许当前授权下确认未派发的剩余步骤改用直接工具；权限拒绝、未知或 pending
+报告，只允许当前授权且本轮已声明的工具接续确认未派发的剩余步骤；权限拒绝、未知或 pending
 效果不能通过切换工具绕过或重做。
 数值判断、字段分支和下一路径选择按已知规则在脚本内执行；数据依赖不是语义判断。
 单步例外指目标本身是独立单步，不能把多步目标拆小；其他工具失败也不证明 Code Mode

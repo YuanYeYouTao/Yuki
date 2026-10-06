@@ -4,7 +4,7 @@ import pytest
 from scripts.benchmark_long_tasks import orchestration_guidance
 from scripts.export_pi_codemode_inventory import export_inventory
 
-from qq_ai_bot.codemode.api_projection import project
+from qq_ai_bot.codemode.api_projection import NEVER_PROJECTED, project
 from qq_ai_bot.codemode.contract import CODE_MODE_POLICY, EXECUTE_CODE_TOOL
 from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.prompting.contracts import CORE_CONTRACT
@@ -37,7 +37,8 @@ def test_direct_call_exceptions_remain_explicit(exception):
     assert "可在原权限内直接调用工具" in CODE_MODE_POLICY
     # Engine availability is not execution authority: explicitly allow only
     # undispatched work, retaining authorization and unresolved-effect refusals.
-    assert "确认未派发的剩余步骤可用当前授权下的直接工具接续" in CODE_MODE_POLICY
+    # The tiered contract cannot promote a hidden tool through fallback.
+    assert "确认未派发的剩余步骤可用当前授权且本轮已声明的直接工具接续" in CODE_MODE_POLICY
     assert "绕过权限或效果围栏的拒绝" in CODE_MODE_POLICY
     assert "pending/unknown 仍须原链恢复" in CODE_MODE_POLICY
 
@@ -51,9 +52,9 @@ async def test_default_policy_reaches_frozen_manifest_without_replacing_direct_t
     assert {"workspace_read", "workspace_write", "send_message", "task_control"} <= declared.keys()
     api = project(tools, inventory["manifest_revision"])
     for name, tool in declared.items():
-        if name != "execute_code":
+        if name not in NEVER_PROJECTED:
             assert api.schemas[name] == tool.parameters
-    assert set(api.wrappers.values()) == declared.keys() - {"execute_code"}
+    assert set(api.wrappers.values()) == declared.keys() - NEVER_PROJECTED
 
 
 def test_real_acceptance_supplies_policy_without_a_program_or_forced_single_call():

@@ -299,7 +299,8 @@ async def test_real_ordinary_send_paid_compaction_continues_without_work_or_rese
     assert (main_calls[-1].request_chain_id != main_calls[0].request_chain_id) == (mode == "valid")
     assert main_calls[-1].messages[: len(main_calls[0].messages)] == main_calls[0].messages
     assert main_calls[-1].tools == main_calls[0].tools
-    assert main_calls[0].tools == await chat.runtime.runner.main_contract.definitions()
+    # Ordinary compaction preserves the new fixed direct view, not the full API.
+    assert main_calls[0].tools == await chat.runtime.runner.main_contract.model_definitions()
     if mode == "valid":
         capsule = json.loads(
             next(

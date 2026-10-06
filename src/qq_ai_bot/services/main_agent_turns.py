@@ -111,7 +111,7 @@ class MainAgentTurnService:
         if contract is None:
             return None
         return self._runner.work_contract(
-            runtime, self._composer.static_messages(), await contract.definitions()
+            runtime, self._composer.static_messages(), await contract.model_definitions()
         )
 
     async def compose(
@@ -162,7 +162,7 @@ class MainAgentTurnService:
                 or context.read_version.conversation_id is None
             ):
                 return composition
-            definitions = await contract.definitions()
+            definitions = await contract.model_definitions()
             definitions, native_definitions = self._runner.prepare_request_tools(
                 definitions,
                 runtime_config=runtime,

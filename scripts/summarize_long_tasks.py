@@ -232,6 +232,7 @@ def summarize(report: dict[str, Any]) -> dict[str, Any]:
                 "runtime_source_sha256",
                 "segment_tools_override",
                 "default_code_policy",
+                "model_tool_exposure",
                 "cost_estimate_basis",
                 "context_measurement",
             )

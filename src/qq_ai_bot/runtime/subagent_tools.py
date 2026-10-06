@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from qq_ai_bot.codemode.contract import CODE_MODE_POLICY, EXECUTE_CODE_NAME
+from qq_ai_bot.codemode.tool_visibility import TOOL_LOOKUP_NAME
 from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.runtime.subagent_repository import SubagentRepository
 from qq_ai_bot.sandbox.environment_tools import SANDBOX_TOOLS, tool
@@ -36,6 +37,7 @@ WORKER_NAMES = (
     | frozenset(
         {
             EXECUTE_CODE_NAME,
+            TOOL_LOOKUP_NAME,
             "task_control",
             "subagent_message",
             "read_tool_artifact",

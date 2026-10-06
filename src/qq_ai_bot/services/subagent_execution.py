@@ -19,6 +19,7 @@ from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.capabilities.invocation import Invocation
 from qq_ai_bot.codemode.api_projection import ScriptApi, project
 from qq_ai_bot.codemode.contract import CODE_API_REVISION
+from qq_ai_bot.codemode.tool_visibility import DIRECT_TOOL_NAMES, model_definitions
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import (
     ChatImage,
@@ -182,8 +183,9 @@ class SubagentExecution:
         revision = hashlib.sha256(
             json.dumps(
                 {
-                    "worker_contract": 2,
+                    "worker_contract": 3,
                     "code_api": CODE_API_REVISION,
+                    "direct_names": sorted(DIRECT_TOOL_NAMES),
                     "tools": [asdict(tool) for tool in self.definitions],
                 },
                 ensure_ascii=False,
@@ -438,7 +440,7 @@ class SubagentExecution:
                             before_model_request=validate,
                             dynamic_context_prepared=True,
                             work_control=control,
-                            fixed_tools=self.definitions,
+                            fixed_tools=model_definitions(self.definitions),
                             script_api=self.script_api,
                             compaction_brief=brief_message,
                         ),
