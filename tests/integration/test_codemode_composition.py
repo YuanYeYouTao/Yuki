@@ -16,6 +16,35 @@ def ops(body):
     return [(item["tool"], item["status"]) for item in body["operations"]]
 
 
+async def test_filtered_summary_omits_child_bodies_but_keeps_original_receipts(database, tmp_path):
+    env = await environment(database, tmp_path, max_parallel=2)
+    marker = "original-child-evidence-" * 400
+    env.domain.replies["lookup"] = lambda args: {
+        "ok": True,
+        "data": {"rows": [{"id": args["q"], "amount": args["q"] * 10}], "raw": marker},
+    }
+    body, outer = await run_code(
+        env,
+        """
+import asyncio
+receipts = await asyncio.gather(*[yuki_lookup({'q': q}) for q in [1, 2, 3]])
+rows = [row for r in receipts if r['ok'] for row in r['data']['rows'] if row['amount'] >= 20]
+{'ids': [row['id'] for row in rows], 'total': sum(row['amount'] for row in rows),
+ 'evidence': [r['operation_id'] for r in receipts]}
+""",
+    )
+    assert body["result"]["ids"] == [2, 3] and body["result"]["total"] == 50
+    assert "original-child-evidence-" not in json.dumps(body)
+    rows, tools, root = await effect_rows(database, env.control.current["id"])
+    assert tools == root == 3
+    children = [row for key, row in rows.items() if key != outer.identity.operation_id]
+    assert len(children) == 3 and all(
+        marker in json.loads(row["receipt_json"])["result"] for row in children
+    )
+    assert len(json.dumps(body)) < min(len(row["receipt_json"]) for row in children) // 4
+    assert env.domain.peak <= 2
+
+
 async def test_mixed_script_preserves_order_barriers_and_bounded_parallel(database, tmp_path):
     env = await environment(database, tmp_path, max_parallel=2)
     code = """

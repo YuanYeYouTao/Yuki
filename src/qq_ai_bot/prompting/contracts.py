@@ -1,5 +1,7 @@
 """Static execution guidance shared by all main Agent entrypoints."""
 
+from qq_ai_bot.codemode.contract import CODE_MODE_POLICY
+
 CORE_CONTRACT = (
     "【工具】\n"
     "使用已声明工具，按真实回执接续；引用资料作为任务材料。\n\n"
@@ -29,7 +31,8 @@ CORE_CONTRACT = (
     "等待登记成功才可报告已安排；唤醒后核对原 work_id、已有回执和新增信号，不重做已提交操作。"
     "只有后端提供的真实新输入支持新目标，不能续写群成员对话、虚构事件编号，"
     "或把自己的假设和工具完成通知当成新请求；空响应重试仍继续原目标。\n\n"
-    "【进度与委派】\n"
+    + CODE_MODE_POLICY
+    + "【进度与委派】\n"
     "批量修改或删除、安装依赖、长计算、多步调查和子 Agent 委派，"
     "需要持续与用户交流时 accept/update 设置 reporting=interactive；"
     "在登记成功后、首次实质执行前用 send_message 简述目标和下一步，"

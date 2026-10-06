@@ -11,6 +11,7 @@ from typing import Any
 
 def summarize(report: dict[str, Any]) -> dict[str, Any]:
     records = report["records"]
+    loops = ("new",) if report.get("default_code_policy") else ("old", "new")
     keys = {(r["task"], r["repeat"], r["loop"], r["mode"]) for r in records}
     if not records or len(keys) != len(records) or report.get("in_progress"):
         raise ValueError("duplicate or unfinished benchmark collection")
@@ -18,7 +19,7 @@ def summarize(report: dict[str, Any]) -> dict[str, Any]:
         for repeat in {r["repeat"] for r in records if r["task"] == task}:
             selected = [r for r in records if r["task"] == task and r["repeat"] == repeat]
             if {(r["loop"], r["mode"]) for r in selected} != {
-                (loop, mode) for loop in ("old", "new") for mode in ("direct", "code")
+                (loop, mode) for loop in loops for mode in ("direct", "code")
             }:
                 raise ValueError("comparison dataset is missing a group")
             hashes = {
@@ -34,7 +35,17 @@ def summarize(report: dict[str, Any]) -> dict[str, Any]:
                     or len({row[field] for row in selected}) != 1
                 ):
                     raise ValueError("comparison groups have different task configuration")
-    hashes = {w["tools_sha256"] for r in records for w in r["wire"]}
+    # Work compaction is a separately paid, tool-free chain; it does not change
+    # the main chain's declarations. Retain its cost/time in every total below.
+    if any(
+        w.get("purpose") == "work_compaction" and w.get("tools_count") != 0
+        for r in records
+        for w in r["wire"]
+    ):
+        raise ValueError("compaction request changed the tool-free contract")
+    hashes = {
+        w["tools_sha256"] for r in records for w in r["wire"] if w.get("purpose", "main") == "main"
+    }
     if len(hashes) > 1:
         raise ValueError("serialized tool contract changed across groups")
     groups, trials = [], []
@@ -43,14 +54,38 @@ def summarize(report: dict[str, Any]) -> dict[str, Any]:
             not row["correct_artifacts"]
             or row["final_work_state"] != "completed"
             or row["stopped_for_stall"]
+            or row.get("audit_order_verified") is False
         ):
             raise ValueError("completion claim contradicts recorded evidence")
+        if (
+            report.get("default_code_policy")
+            and row["mode"] == "code"
+            and row["success"]
+            and not row["code_used"]
+        ):
+            raise ValueError("default-policy acceptance did not use Code Mode")
         known_cost = sum(w.get("estimated_peak_usd", 0) for w in row["wire"])
         unknown = [w for w in row["wire"] if "estimated_peak_usd" not in w]
         tokens = {
             key: sum(w.get("tokens", {}).get(key, 0) for w in row["wire"])
             for key in ("input", "cached", "output")
         }
+        goal_completed = row.get("goal_completed")
+        if goal_completed is None:
+            # Older evidence bundled tool-mode compliance into success. Infer
+            # completion only when every independent acceptance fact is present;
+            # otherwise keep the older, conservative recorded conclusion.
+            facts = ("all_inputs_read", "final_report_verified", "audit_order_verified")
+            goal_completed = (
+                row["correct_artifacts"]
+                and row["final_work_state"] == "completed"
+                and not row["stopped_for_stall"]
+                and not row["duplicate_writes"]
+                and row.get("error_category") is None
+                and all(row[field] for field in facts)
+                if all(field in row for field in facts)
+                else row["success"]
+            )
         trials.append(
             {
                 "task": row["task"],
@@ -58,6 +93,7 @@ def summarize(report: dict[str, Any]) -> dict[str, Any]:
                 "loop": row["loop"],
                 "mode": row["mode"],
                 "completed": row["success"],
+                "goal_completed": goal_completed,
                 "completion_fraction": row["completion_fraction"],
                 "correct_artifacts": row["correct_artifacts"],
                 "work_state": row["final_work_state"],
@@ -66,6 +102,17 @@ def summarize(report: dict[str, Any]) -> dict[str, Any]:
                 "seconds_spent": row["total_seconds"],
                 "first_correct_artifact_seconds": row["first_correct_artifact_seconds"],
                 "physical_requests": row["physical_http"],
+                "logical_requests": row.get("logical_models"),
+                "context": {
+                    "total_message_bytes": sum(w.get("message_bytes", 0) for w in row["wire"]),
+                    "peak_message_bytes": max(
+                        (w.get("message_bytes", 0) for w in row["wire"]), default=0
+                    ),
+                    "total_tool_receipt_characters": sum(
+                        w.get("tool_receipt_characters", 0) for w in row["wire"]
+                    ),
+                    "measured": all("message_bytes" in w for w in row["wire"]),
+                },
                 "tokens": tokens,
                 "known_usage_peak_usd": known_cost,
                 "unknown_usage_calls": len(unknown),
@@ -75,10 +122,11 @@ def summarize(report: dict[str, Any]) -> dict[str, Any]:
                 "segment_tools": row.get("segment_tools"),
                 "repeated_committed_path_writes": row["duplicate_writes"],
                 "duplicate_operation_ids": row["duplicate_operation_ids"],
+                "audit_order_verified": row.get("audit_order_verified"),
             }
         )
     for task in sorted({r["task"] for r in trials}):
-        for loop in ("old", "new"):
+        for loop in loops:
             for mode in ("direct", "code"):
                 selected = [
                     r for r in trials if (r["task"], r["loop"], r["mode"]) == (task, loop, mode)
@@ -125,7 +173,7 @@ def summarize(report: dict[str, Any]) -> dict[str, Any]:
     for trial in trials:
         if trial["loop"] != "new" or trial["mode"] != "code" or not trial["completed"]:
             continue
-        for loop in ("old", "new"):
+        for loop in loops:
             base = next(
                 (
                     r
@@ -147,6 +195,10 @@ def summarize(report: dict[str, Any]) -> dict[str, Any]:
                     "time_ratio_code_over_direct": trial["seconds_spent"] / base["seconds_spent"],
                     "direct_requests": base["physical_requests"],
                     "code_requests": trial["physical_requests"],
+                    "direct_tokens": base["tokens"],
+                    "code_tokens": trial["tokens"],
+                    "direct_context": base["context"],
+                    "code_context": trial["context"],
                     "direct_peak_usd": base["known_usage_peak_usd"],
                     "code_peak_usd": trial["known_usage_peak_usd"],
                 }
@@ -154,6 +206,7 @@ def summarize(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "attempted": len(trials),
         "completed": sum(r["completed"] for r in trials),
+        "goal_completed": sum(r["goal_completed"] for r in trials),
         "all_groups_same_input": True,
         "all_groups_same_serialized_tools": True,
         "groups": groups,
@@ -169,6 +222,7 @@ def summarize(report: dict[str, Any]) -> dict[str, Any]:
                 "max_output_tokens",
                 "reasoning_effort",
                 "completion_definition",
+                "acceptance_definition",
                 "stop_policy",
                 "business_scope",
                 "recovery_scope",
@@ -177,6 +231,9 @@ def summarize(report: dict[str, Any]) -> dict[str, Any]:
                 "receipt_errors_scope",
                 "runtime_source_sha256",
                 "segment_tools_override",
+                "default_code_policy",
+                "cost_estimate_basis",
+                "context_measurement",
             )
         },
         "cost_basis": "public peak rates times observed wire usage; "
@@ -208,9 +265,15 @@ def markdown(summary: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "代码组允许混用直接工具；direct 组允许批量直接调用。旧循环使用固定历史"
-            "主迭代及共同的新 Invocation/Code Mode 内核，仅作为隔离装配；不是原封不动的"
-            "旧版部署。工具被限制为临时工作区读、列举、写和生命周期控制，没有终端、"
+            "代码组允许混用直接工具；direct 组允许批量直接调用。"
+            + (
+                "本轮只比较相同当前运行时的直接调用对照与共享默认编排指引；模型自行规划，"
+                "未提供程序。"
+                if summary["run_contract"].get("default_code_policy")
+                else "旧循环使用固定历史主迭代及共同的新 Invocation/Code Mode 内核，仅作为"
+                "隔离装配；不是原封不动的旧版部署。"
+            )
+            + "工具被限制为临时工作区读、列举、写和生命周期控制，没有终端、"
             "生产数据库、真实发送。恢复是同一进程中的新激活，不是进程崩溃。",
             "",
             "费用按 [DeepSeek 官方峰值费率](https://api-docs.deepseek.com/quick_start/pricing/)"
@@ -232,6 +295,40 @@ def markdown(summary: dict[str, Any]) -> str:
     if contract.get("reasoning_effort") is not None:
         lines.append(f"本轮 reasoning_effort：{contract['reasoning_effort']}。")
     lines.append("")
+    if contract.get("default_code_policy"):
+        lines.extend(
+            [
+                f"目标完成：{summary['goal_completed']}/{summary['attempted']}；"
+                f"目标及工具编排联合验收：{summary['completed']}/{summary['attempted']}。",
+                "代码组联合验收还要求模型自行选择 execute_code；文件正确与编排合规分开统计。",
+                "",
+            ]
+        )
+        lines.extend(
+            [
+                "|任务/重复|模式|物理/逻辑请求|输入/缓存 token|输出 token|"
+                "消息累计/峰值字节|工具回执累计字符|",
+                "|---|---|---|---|---|---|---|",
+            ]
+        )
+        for trial in summary["trials"]:
+            context, tokens = trial["context"], trial["tokens"]
+            lines.append(
+                f"|{trial['task']}/{trial['repeat']}|{trial['mode']}|"
+                f"{trial['physical_requests']}/{trial['logical_requests']}|"
+                f"{tokens['input']}/{tokens['cached']}|{tokens['output']}|"
+                f"{context['total_message_bytes']}/{context['peak_message_bytes']}|"
+                f"{context['total_tool_receipt_characters']}|"
+            )
+        lines.extend(
+            [
+                "",
+                "消息字节是每次 HTTP 请求的 messages 序列化大小，不含固定工具声明；"
+                "累计值包含重复发送的历史。token 来自 Provider 用量，字节不等于 token。"
+                "工具回执字符只统计 role=tool 的正文；跨段 Host 注入证据计入消息字节。",
+                "",
+            ]
+        )
     return "\n".join(lines)
 
 

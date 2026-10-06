@@ -8,6 +8,7 @@ from scripts import benchmark_long_tasks as bench
 from tests.integration.test_codemode_provider_wire import answer, wire_work_receipts
 from tests.integration.test_codemode_runner import call
 from tests.support.codemode_cases import requires_worker
+from tests.support.work_compaction import summary_json
 
 from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
 
@@ -32,6 +33,15 @@ def test_budget_settles_usage_and_retains_unanswered_reservations():
     with pytest.raises(RuntimeError, match="cumulative paid ceiling"):
         ledger.admit(1000, 4096)
     assert ledger.physical_calls == 2
+
+
+def test_auxiliary_output_uses_its_existing_bound_and_the_same_ledger():
+    ledger = bench.BudgetLedger()
+    identity, reserve = ledger.admit(100, 16384, maximum_output=16384)
+    assert ledger.pending[identity] == reserve
+    with pytest.raises(RuntimeError, match="size/output limit"):
+        ledger.admit(100, 16385, maximum_output=16384)
+    assert ledger.physical_calls == 1
 
 
 @pytest.mark.parametrize(
@@ -144,6 +154,88 @@ def test_repeat_is_same_within_groups_and_different_across_repeats(task):
         )
 
 
+@pytest.mark.parametrize("violation", ["none", "delayed", "before_read", "missing", "repeated"])
+def test_audit_oracle_requires_per_node_order_even_when_final_files_are_correct(violation):
+    task = bench.make_task("resumed_work", 0)
+    operations = []
+    for index, path in enumerate(task.required_reads[1:]):
+        operations.extend(
+            [
+                {"ok": True, "name": "workspace_read", "arguments": {"path": path}},
+                {
+                    "ok": True,
+                    "name": "workspace_write",
+                    "arguments": {
+                        "path": f"/workspace/audit/{index:02d}.txt",
+                        "text": task.expected[f"audit/{index:02d}.txt"],
+                    },
+                },
+            ]
+        )
+    if violation == "delayed":
+        operations = operations[::2] + operations[1::2]
+    elif violation == "before_read":
+        operations[0], operations[1] = operations[1], operations[0]
+    elif violation == "missing":
+        operations.pop(1)
+    elif violation == "repeated":
+        operations.insert(2, operations[1])
+    operations.append({"ok": True, "name": "workspace_write", "arguments": {"path": "chain.tsv"}})
+    assert bench.audit_order_verified(task, operations) is (violation == "none")
+
+
+@pytest.mark.parametrize(
+    "default_policy,completed,collection_exit,expected_exit",
+    [(True, True, 0, 0), (True, False, 0, 1), (True, None, 0, 1), (True, True, 2, 2)],
+)
+def test_default_policy_cli_cannot_hide_failed_or_missing_model_acceptance(
+    tmp_path, monkeypatch, default_policy, completed, collection_exit, expected_exit
+):
+    import sys
+
+    # No provider or worker executes here: collect a synthetic acceptance record
+    # after replacing both credential loading and pytest collection.
+    worker = tmp_path / "unused-worker"
+    worker.write_text("synthetic")
+    prior = tmp_path / "prior.json"
+    prior.write_text('{"records": []}')
+    output = tmp_path / "output.json"
+    args = [
+        "benchmark",
+        "--credentials",
+        str(tmp_path / "unused-credentials.md"),
+        "--output",
+        str(output),
+        "--authorize-paid",
+        "--prior-report",
+        str(prior),
+        "--default-code-policy",
+    ]
+    monkeypatch.setattr(sys, "argv", args)
+    monkeypatch.setenv("YUKI_MONTY_BINARY", str(worker))
+    monkeypatch.setattr(
+        bench, "read_credentials", lambda _path: {"model": "deepseek-flash", "api_key": "fake"}
+    )
+    monkeypatch.setattr(bench.pytest, "main", lambda _args: collection_exit)
+    monkeypatch.setattr(bench.logging, "disable", lambda _level: None)
+    monkeypatch.setattr(bench, "CREDENTIALS", {})
+    monkeypatch.setattr(bench, "RECORDS", [] if completed is None else [{"success": completed}])
+    monkeypatch.setattr(bench, "IN_PROGRESS", None)
+    for field in (
+        "LEDGER",
+        "OUTPUT",
+        "STARTED",
+        "MAX_OUTPUT",
+        "SEGMENT_TOOLS",
+        "REASONING_EFFORT",
+        "DEFAULT_CODE_POLICY",
+    ):
+        monkeypatch.setattr(bench, field, getattr(bench, field))
+    assert bench.main() == expected_exit
+    assert json.loads(output.read_text())["default_code_policy"] is default_policy
+    assert bench.CREDENTIALS == {}
+
+
 @requires_worker
 async def test_resumed_benchmark_keeps_trusted_note_in_actual_model_material(database, tmp_path):
     from tests.integration.test_codemode_runner import ACCEPT, runner_env
@@ -184,25 +276,35 @@ async def test_resumed_benchmark_keeps_trusted_note_in_actual_model_material(dat
 
 @requires_worker
 @pytest.mark.parametrize(
-    "loop,mode,task,repeated_reads,invalid_json,verify_report",
+    "loop,mode,task,repeated_reads,invalid_json,verify_report,large_reasoning",
     [
-        ("new", "code", "batch_ledger", 0, False, True),
-        ("old", "code", "dependency_chain", 0, False, True),
-        ("new", "code", "resumed_work", 0, False, True),
-        ("old", "code", "resumed_work", 0, False, True),
-        ("old", "direct", "resumed_work", 0, False, True),
-        ("new", "code", "resumed_work", 70, False, True),
-        ("new", "code", "batch_ledger", 0, True, True),
+        ("new", "code", "batch_ledger", 0, False, True, False),
+        ("old", "code", "dependency_chain", 0, False, True, False),
+        ("new", "code", "resumed_work", 0, False, True, False),
+        ("new", "code", "resumed_work", 0, False, True, True),
+        ("old", "code", "resumed_work", 0, False, True, False),
+        ("old", "direct", "resumed_work", 0, False, True, False),
+        ("new", "code", "resumed_work", 70, False, True, False),
+        ("new", "code", "batch_ledger", 0, True, True, False),
         # Correct files and completed Work cannot substitute for the required
         # successful report readback, on either assembly or tool mode.
-        ("new", "direct", "resumed_work", 0, False, False),
-        ("new", "code", "resumed_work", 0, False, False),
-        ("old", "direct", "resumed_work", 0, False, False),
-        ("old", "code", "resumed_work", 0, False, False),
+        ("new", "direct", "resumed_work", 0, False, False, False),
+        ("new", "code", "resumed_work", 0, False, False, False),
+        ("old", "direct", "resumed_work", 0, False, False, False),
+        ("old", "code", "resumed_work", 0, False, False, False),
     ],
 )
 async def test_unpaid_long_task_assembly(
-    database, tmp_path, monkeypatch, loop, mode, task, repeated_reads, invalid_json, verify_report
+    database,
+    tmp_path,
+    monkeypatch,
+    loop,
+    mode,
+    task,
+    repeated_reads,
+    invalid_json,
+    verify_report,
+    large_reasoning,
 ):
     monkeypatch.setattr(
         bench,
@@ -276,7 +378,20 @@ async def test_unpaid_long_task_assembly(
         responses = []
         for index, path in enumerate(fixture.required_reads):
             responses.append(call("workspace_read", {"path": path}, f"read-{index}"))
+            if task == "resumed_work" and index:
+                # Match the existing task's per-node audit order. The old
+                # fixture delayed all audits until after the chain was read.
+                audit_path = f"audit/{index - 1:02d}.txt"
+                responses.append(
+                    call(
+                        "workspace_write",
+                        {"path": audit_path, "text": fixture.expected[audit_path]},
+                        f"write-{audit_path}",
+                    )
+                )
         for path, text in fixture.expected.items():
+            if task == "resumed_work" and path.startswith("audit/"):
+                continue
             responses.append(call("workspace_write", {"path": path, "text": text}, f"write-{path}"))
         if verify_report:
             responses.append(call("workspace_read", {"path": "chain.tsv"}, "verify"))
@@ -296,8 +411,20 @@ async def test_unpaid_long_task_assembly(
             ]
         )
 
+    compaction_sources = []
+
     def transport(request):
-        messages = json.loads(request.content)["messages"]
+        payload = json.loads(request.content)
+        messages = payload["messages"]
+        if not payload.get("tools"):
+            # An actual structured, separately paid compaction request must
+            # survive the same profile/route admission as production.
+            source = messages[-1]["content"]
+            compaction_sources.append(source)
+            assert "synthetic private reasoning" not in source
+            return httpx.Response(
+                200, json=answer(ChatResponse(summary_json(source), 1), "chat_completions", 1)
+            )
         if loop == "new" and any(
             m["role"] == "user"
             and isinstance(m.get("content"), str)
@@ -335,10 +462,36 @@ async def test_unpaid_long_task_assembly(
         response = next(steps)
         if mode == "code" and response.tool_calls[0].function.name == "task_control":
             # An oracle completion cannot hide an orphan VM or a lost receipt.
-            receipts = {m["tool_call_id"]: m["content"] for m in messages if m.get("tool_call_id")}
-            receipts.update({r["call_id"]: r["result"] for r in wire_work_receipts(messages)})
-            assert json.loads(receipts["code"])["result"] == "OK"
-        return httpx.Response(200, json=answer(response, "chat_completions", 1))
+            if large_reasoning:
+                # At this explicit compaction boundary the paired raw round is
+                # retired. Require the original result in its authorized public
+                # summary source and check its durable owner below instead.
+                records = [
+                    record
+                    for source in compaction_sources
+                    for record in json.loads(source)["records"]
+                ]
+                receipts = [
+                    record["content"] for record in records if record.get("tool_call_id") == "code"
+                ] + [record["output"] for record in records if record.get("call_id") == "code"]
+                receipts.extend(
+                    row["result"] for row in wire_work_receipts(records) if row["call_id"] == "code"
+                )
+                assert any(json.loads(receipt)["result"] == "OK" for receipt in receipts), [
+                    list(record) for record in records
+                ]
+            else:
+                receipts = {
+                    m["tool_call_id"]: m["content"] for m in messages if m.get("tool_call_id")
+                }
+                receipts.update({r["call_id"]: r["result"] for r in wire_work_receipts(messages)})
+                assert json.loads(receipts["code"])["result"] == "OK"
+        body = answer(response, "chat_completions", 1)
+        if large_reasoning and response.tool_calls[0].function.name == "execute_code":
+            body["choices"][0]["message"]["reasoning_content"] = (
+                "synthetic private reasoning " * 6000
+            )
+        return httpx.Response(200, json=body)
 
     original = httpx.AsyncClient
 
@@ -350,6 +503,7 @@ async def test_unpaid_long_task_assembly(
     await bench.compare_case(database, tmp_path, loop, mode, task, 0)
     result = bench.RECORDS[-1]
     assert result["success"] is verify_report, result
+    assert result["goal_completed"] is verify_report
     assert result["final_report_verified"] is verify_report
     assert result["correct_artifacts"]
     assert result["work_completed"]
@@ -357,6 +511,17 @@ async def test_unpaid_long_task_assembly(
     assert result["duplicate_operation_ids"] == 0
     assert result["duplicate_writes"] == 0
     assert result["request_shapes_fixed"]
+    assert result["audit_order_verified"]
+    for wire in result["wire"]:
+        assert 0 < wire["message_bytes"] < wire["request_bytes"]
+        assert wire["tool_receipt_characters"] >= 0
+    if large_reasoning:
+        # The first main observation happens after compaction. Its receipt was
+        # present in the auxiliary public source, not a role=tool HTTP message;
+        # serialized message bytes still count that source and its paid usage.
+        assert all(wire["tool_receipt_characters"] == 0 for wire in result["wire"])
+    else:
+        assert any(wire["tool_receipt_characters"] > 0 for wire in result["wire"])
     if invalid_json:
         assert result["model_turns"][0]["tool_calls"][0]["arguments_valid_json"] is False
         assert "invalid" in result["wire"][1]["receipt_error_call_ids"]
@@ -369,5 +534,32 @@ async def test_unpaid_long_task_assembly(
         if mode == "code":
             # Code result and explicit completion; quiet completion needs no
             # extra purchased final response.
-            assert result["physical_http"] == 2
+            assert result["physical_http"] == 2 + len(compaction_sources)
             assert result["business_calls"] == 26 + int(verify_report) + repeated_reads
+    if large_reasoning:
+        from sqlalchemy import select
+
+        from qq_ai_bot.runtime.work_schema_v1 import effects
+
+        assert compaction_sources
+        assert result["logical_models"] == result["physical_http"]
+        assert len([w for w in result["wire"] if w["purpose"] == "main"]) == 2
+        assert all(
+            w["tools_count"] == 0 for w in result["wire"] if w["purpose"] == "work_compaction"
+        )
+        async with database.sessions() as reader:
+            parents = (
+                (
+                    await reader.execute(
+                        select(effects).where(
+                            effects.c.work_id == result["work_id"],
+                            effects.c.kind == "code_composition",
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        assert len(parents) == 1 and parents[0]["state"] == "accepted"
+        original = json.loads(parents[0]["receipt_json"])["result"]
+        assert json.loads(original)["result"] == "OK"

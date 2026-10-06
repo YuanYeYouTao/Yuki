@@ -35,6 +35,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MAX_OUTPUT = 8192
 SEGMENT_TOOLS: int | None = None
 REASONING_EFFORT = "low"
+DEFAULT_CODE_POLICY = False
 RECORDS: list[dict[str, Any]] = []
 CREDENTIALS: dict[str, str] = {}
 OUTPUT: Path | None = None
@@ -42,6 +43,33 @@ STARTED = ""
 IN_PROGRESS: dict[str, Any] | None = None
 LEDGER: BudgetLedger | None = None
 TASKS = ("batch_ledger", "dependency_chain", "resumed_work")
+
+
+def orchestration_guidance(mode: str, *, default_policy: bool = False) -> str:
+    """Default-policy acceptance supplies the real contract, never a canned program."""
+    from qq_ai_bot.prompting.contracts import CORE_CONTRACT
+
+    prefix = CORE_CONTRACT + "\n\n" if default_policy else ""
+    if mode == "direct":
+        return prefix + (
+            ("Experimental direct-call control: " if default_policy else "")
+            + "Use direct workspace_read/workspace_write/workspace_list calls only; never "
+            "execute_code. You may batch independent direct calls in one response."
+        )
+    if mode != "code":
+        raise ValueError("unknown orchestration mode")
+    return (
+        prefix
+        + (
+            "Follow the shared default orchestration strategy for this accepted Work. "
+            "Choose your own approach and program; direct calls remain available "
+            "for its exceptions. "
+            if default_policy
+            else "Code Mode is enabled: execute_code is available for loops and aggregation. "
+            "Choose your own approach and program; direct workspace calls are also allowed. "
+        )
+        + "Use await yuki_workspace_read/write with the same schemas and receipt data.text."
+    )
 
 
 def observe_call(call: Any) -> dict[str, Any]:
@@ -157,8 +185,11 @@ class BudgetLedger:
     pending: dict[int, float] = field(default_factory=dict)
     prior_reports: list[dict[str, Any]] = field(default_factory=list)
 
-    def admit(self, byte_count: int, output_limit: int) -> tuple[int, float]:
-        if not byte_count > 0 or not 1 <= output_limit <= MAX_OUTPUT:
+    def admit(
+        self, byte_count: int, output_limit: int, *, maximum_output: int | None = None
+    ) -> tuple[int, float]:
+        bound = MAX_OUTPUT if maximum_output is None else maximum_output
+        if not byte_count > 0 or not 1 <= output_limit <= bound:
             raise RuntimeError("paid request size/output limit reached")
         reserve = (byte_count * 0.30 + output_limit * 1.20) / 1e6
         exposure = self.prior_usd + self.charged_usd + sum(self.pending.values()) + reserve
@@ -313,7 +344,8 @@ def make_task(name: str, repeat: int) -> Task:
         "satisfy this readback. "
         + (
             "After reading each chosen node, also create audit/00.txt, audit/01.txt, etc. "
-            "in visit order, each containing that node value and a newline. Each audit file "
+            "immediately before reading the next node or writing chain.tsv, in visit order, "
+            "each containing that node value and a newline. Each audit file "
             "must be written exactly once. The host segments work after five business calls; "
             "continue the original Work when it resumes."
             if audit
@@ -325,6 +357,37 @@ def make_task(name: str, repeat: int) -> Task:
     )
 
 
+def audit_order_verified(task: Task, business: list[dict[str, Any]]) -> bool:
+    """Audit each node before following it; correct final files alone cannot prove order."""
+    if task.name != "resumed_work":
+        return True
+    reads, writes = {}, {}
+    for index, call in enumerate(business):
+        if not call.get("ok"):
+            continue
+        path = call["arguments"].get("path", "").removeprefix("/workspace/")
+        if call["name"] == "workspace_read":
+            reads.setdefault(path, index)
+        elif call["name"] == "workspace_write":
+            writes.setdefault(path, []).append(index)
+    nodes = task.required_reads[1:]
+    for index, path in enumerate(nodes):
+        audit = writes.get(f"audit/{index:02d}.txt", [])
+        following = (
+            reads.get(nodes[index + 1])
+            if index + 1 < len(nodes)
+            else next(iter(writes.get("chain.tsv", [])), None)
+        )
+        if (
+            path not in reads
+            or len(audit) != 1
+            or following is None
+            or not reads[path] < audit[0] < following
+        ):
+            return False
+    return True
+
+
 def write_report() -> None:
     if OUTPUT is None or LEDGER is None:
         return
@@ -333,16 +396,33 @@ def write_report() -> None:
         "updated_at": datetime.now(UTC).isoformat(),
         "model": CREDENTIALS.get("model"),
         "baseline_commit": BASELINE,
-        "baseline_scope": "historic direct iteration unchanged; historic code iteration has "
-        "two explicit yield/resume compatibility hooks; common current invocation/code helpers; "
-        "not an unmodified deployed old application",
+        "baseline_scope": (
+            "same current runtime, frozen declarations and synthetic inputs; experimental "
+            "direct-call control compared with shared default orchestration guidance"
+            if DEFAULT_CODE_POLICY
+            else "historic direct iteration unchanged; historic code iteration has "
+            "two explicit yield/resume compatibility hooks; common current invocation/code "
+            "helpers; not an unmodified deployed old application"
+        ),
         "protocol": "chat_completions",
         "fixed_declarations": 76,
         "max_output_tokens": MAX_OUTPUT,
         "segment_tools_override": SEGMENT_TOOLS,
         "reasoning_effort": REASONING_EFFORT,
+        "default_code_policy": DEFAULT_CODE_POLICY,
+        "context_measurement": "UTF-8 serialized messages and tool receipt characters per "
+        "physical request; measured separately from the fixed tool declarations and provider "
+        "reported prompt tokens; no raw reasoning retained",
+        "cost_estimate_basis": "Common Peak Flash tariff verified at "
+        "https://api-docs.deepseek.com/quick_start/pricing/ on 2026-10-06; "
+        "not a provider invoice or the actual time-of-day tariff. Token counts and elapsed "
+        "time are observed separately.",
         "completion_definition": "independent oracle correct, all required inputs read, report "
-        "verified, no repeated committed writes, and original Work durably completed",
+        "verified, per-node audits committed before following the next node or writing the "
+        "final chain, no repeated committed writes, and original Work durably completed",
+        "acceptance_definition": "success additionally requires the assigned tool mode; "
+        "default-policy code trials must actually choose execute_code. goal_completed "
+        "records task completion separately from orchestration acceptance",
         "stop_policy": "runtime pause/failure, or 10 consecutive activations with no new "
         "successful read/write path, semantic context note or same original code "
         "snapshot advancing across activations; no task time ceiling",
@@ -526,7 +606,13 @@ async def compare_case(
 
     async def request_hook(request):
         payload = json.loads(request.content)
-        identity, reserve = LEDGER.admit(len(request.content), payload.get("max_tokens", 0))
+        purpose = "main" if payload.get("tools") else "work_compaction"
+        # The existing compaction window has its own output contract. Reserve
+        # all its usage without mistaking the primary CLI limit for that limit.
+        bound = MAX_OUTPUT if purpose == "main" else config.context.compaction_output_tokens
+        identity, reserve = LEDGER.admit(
+            len(request.content), payload.get("max_tokens", 0), maximum_output=bound
+        )
         request.extensions["benchmark_ledger_id"] = identity
         tools = json.dumps(payload.get("tools", []), sort_keys=True).encode()
         # Only synthetic tool receipts are retained, never raw reasoning or headers.
@@ -566,11 +652,21 @@ async def compare_case(
             {
                 "ledger_id": identity,
                 "request_bytes": len(request.content),
+                "message_bytes": len(
+                    json.dumps(payload.get("messages", []), ensure_ascii=False).encode()
+                ),
+                "tool_receipt_characters": sum(
+                    len(message.get("content") or "")
+                    for message in payload.get("messages", [])
+                    if message.get("role") == "tool"
+                ),
                 "bytes": len(request.content),
                 "output_limit": payload.get("max_tokens", 0),
+                "output_limit_bound": bound,
                 "reserved_usd": reserve,
                 "tools_sha256": hashlib.sha256(tools).hexdigest(),
                 "tools_count": len(payload.get("tools", [])),
+                "purpose": purpose,
                 "receipt_errors": errors,
                 "receipt_error_call_ids": error_call_ids,
                 "observed_receipts": observed,
@@ -610,14 +706,7 @@ async def compare_case(
             return result
 
     base = CREDENTIALS["base_url (openai)"].rstrip("/") + "/"
-    mode_instruction = (
-        "Use direct workspace_read/workspace_write/workspace_list calls only; never execute_code. "
-        "You may batch independent direct calls in one response."
-        if mode == "direct"
-        else "Code Mode is enabled: execute_code is available for loops and aggregation. "
-        "Choose your own approach and program; direct workspace calls are also allowed. "
-        "Use await yuki_workspace_read/write with the same schemas and receipt data.text."
-    )
+    mode_instruction = orchestration_guidance(mode, default_policy=DEFAULT_CODE_POLICY)
     instruction = (
         "This is an isolated long-task benchmark. Work already accepted. Only temporary "
         "workspace_read/workspace_write/workspace_list are authorized; never send messages, "
@@ -669,7 +758,13 @@ async def compare_case(
             default_temperature=0.5,
             default_max_output_tokens=MAX_OUTPUT,
             reasoning_effort=ReasoningEffort(REASONING_EFFORT),
-            capabilities={ModelCapability.TOOLS, ModelCapability.REASONING},
+            # Long reasoning can trigger the real Work compactor. Its tool-free
+            # JSON request needs the same supported capability as production.
+            capabilities={
+                ModelCapability.TOOLS,
+                ModelCapability.REASONING,
+                ModelCapability.STRUCTURED_OUTPUT,
+            },
         )
         executor = TaskModelExecutor(
             router=ModelRouter(
@@ -800,17 +895,19 @@ async def compare_case(
     direct_business = any(
         c["name"] in {"workspace_read", "workspace_write"} for t in turns for c in t["tool_calls"]
     )
-    mode_followed = True if mode == "code" else not mode_used
+    mode_followed = (not DEFAULT_CODE_POLICY or mode_used) if mode == "code" else not mode_used
+    audit_order = audit_order_verified(task, business)
     artifact_acceptance = (
         correct
         and duplicate_writes == 0
         and all_inputs_read
         and final_report_verified
-        and mode_followed
+        and audit_order
         and error is None
     )
     row = await repo.get(control.current["id"])
-    success = artifact_acceptance and row["state"] == "completed" and not stopped_for_stall
+    goal_completed = artifact_acceptance and row["state"] == "completed" and not stopped_for_stall
+    success = goal_completed and mode_followed
     semantic_total = sum(len(text.strip().splitlines()) for text in task.expected.values())
     semantic_correct = sum(
         expected_line == actual_line
@@ -824,6 +921,7 @@ async def compare_case(
             "loop": loop,
             "mode": mode,
             "task": task_name,
+            "work_id": row["id"],
             "repeat": repeat,
             "input_sha256": task.digest(),
             "instruction_sha256": hashlib.sha256(task.instruction.encode()).hexdigest(),
@@ -832,6 +930,7 @@ async def compare_case(
             "historic_code_adapter": bool(getattr(runner_kind, "benchmark_code_adapter", False)),
             "historic_adapter_sha256": getattr(runner_kind, "benchmark_adapter_sha256", None),
             "success": success,
+            "goal_completed": goal_completed,
             "artifact_acceptance": artifact_acceptance,
             "work_completed": row["state"] == "completed",
             "stopped_for_stall": stopped_for_stall,
@@ -842,6 +941,7 @@ async def compare_case(
             "correct_artifacts": correct,
             "all_inputs_read": all_inputs_read,
             "final_report_verified": final_report_verified,
+            "audit_order_verified": audit_order,
             "mode_followed": mode_followed,
             "code_used": mode_used,
             "direct_business_used": direct_business,
@@ -863,7 +963,10 @@ async def compare_case(
             "model_turns": turns,
             "wire": wires,
             "business_log": business,
-            "request_shapes_fixed": len({w["tools_sha256"] for w in wires}) <= 1,
+            "request_shapes_fixed": len(
+                {w["tools_sha256"] for w in wires if w["purpose"] == "main"}
+            )
+            <= 1,
         }
     )
     IN_PROGRESS = None
@@ -890,16 +993,22 @@ def main() -> int:
     parser.add_argument("--max-output-tokens", type=int, choices=(8192, 32768), default=8192)
     parser.add_argument("--segment-tools", type=int, choices=(5, 32), default=None)
     parser.add_argument("--reasoning-effort", choices=("low", "high", "max"), default="low")
+    parser.add_argument(
+        "--default-code-policy",
+        action="store_true",
+        help="compare current direct control with shared guidance; require real Code Mode choice",
+    )
     parser.add_argument("--case", action="append", dest="selected_cases")
     parser.add_argument("--prior-report", type=Path, action="append", required=True)
     parser.add_argument("--repeats", type=int, choices=(1, 2), default=2)
     args = parser.parse_args()
     if not Path(os.environ.get("YUKI_MONTY_BINARY", "")).is_file():
         parser.error("a real Monty worker is required")
-    global LEDGER, OUTPUT, STARTED, MAX_OUTPUT, SEGMENT_TOOLS, REASONING_EFFORT
+    global LEDGER, OUTPUT, STARTED, MAX_OUTPUT, SEGMENT_TOOLS, REASONING_EFFORT, DEFAULT_CODE_POLICY
     MAX_OUTPUT = args.max_output_tokens
     SEGMENT_TOOLS = args.segment_tools
     REASONING_EFFORT = args.reasoning_effort
+    DEFAULT_CODE_POLICY = args.default_code_policy
     LEDGER = prior_ledger(args.prior_report, unlimited=args.unlimited_cost)
     OUTPUT, STARTED = args.output, datetime.now(UTC).isoformat()
     if OUTPUT.exists():
@@ -912,7 +1021,7 @@ def main() -> int:
         (loop, mode, task, repeat)
         for repeat in range(args.repeats)
         for task in TASKS
-        for loop in ("old", "new")
+        for loop in (("new",) if DEFAULT_CODE_POLICY else ("old", "new"))
         for mode in ("direct", "code")
     ]
     random.Random(20261005).shuffle(order)
@@ -950,7 +1059,12 @@ def main() -> int:
                 ]
             )
         write_report()
-        return int(result)
+        # A passed harness collection is not model-task acceptance. Default
+        # policy verification must fail the CLI when its independent oracle fails.
+        rejected = DEFAULT_CODE_POLICY and (
+            not RECORDS or any(not row["success"] for row in RECORDS)
+        )
+        return int(result) or int(rejected)
     finally:
         CREDENTIALS.clear()
 

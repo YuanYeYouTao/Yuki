@@ -65,6 +65,72 @@ def test_unknown_usage_is_retained_separately_from_known_cost():
     assert result["trials"][0]["unknown_usage_reserved_usd"] == 0.25
 
 
+def test_tool_free_compaction_is_counted_without_changing_the_main_contract():
+    report = report_fixture()
+    report["records"][0]["wire"].append(
+        {
+            "purpose": "work_compaction",
+            "tools_count": 0,
+            "tools_sha256": "tool-free-separate-chain",
+            "estimated_peak_usd": 0.05,
+            "tokens": {"input": 200, "cached": 0, "output": 20},
+        }
+    )
+    result = summarize(report)
+    assert result["all_groups_same_serialized_tools"]
+    assert result["trials"][0]["known_usage_peak_usd"] == pytest.approx(0.15)
+    assert result["trials"][0]["tokens"] == {"input": 300, "cached": 50, "output": 30}
+    report["records"][0]["wire"][-1]["tools_count"] = 76
+    with pytest.raises(ValueError, match="tool-free contract"):
+        summarize(report)
+
+
+def test_default_policy_uses_complete_current_pairs_and_observed_context():
+    report = report_fixture()
+    report["default_code_policy"] = True
+    report["records"] = [r for r in report["records"] if r["loop"] == "new"]
+    for row in report["records"]:
+        row["logical_models"] = 2
+        row["wire"][0].update(message_bytes=300, tool_receipt_characters=40)
+    result = summarize(report)
+    assert (result["completed"], result["attempted"]) == (4, 4)
+    assert len(result["completed_same_input_pairs"]) == 2
+    assert result["trials"][0]["logical_requests"] == 2
+    assert result["trials"][0]["context"] == {
+        "total_message_bytes": 300,
+        "peak_message_bytes": 300,
+        "total_tool_receipt_characters": 40,
+        "measured": True,
+    }
+    assert "相同当前运行时" in markdown(result)
+    report["records"].pop()
+    with pytest.raises(ValueError, match="missing a group"):
+        summarize(report)
+
+
+def test_default_policy_cannot_claim_acceptance_without_actual_code_choice():
+    report = report_fixture()
+    report["default_code_policy"] = True
+    report["records"] = [r for r in report["records"] if r["loop"] == "new"]
+    report["records"][1]["code_used"] = False
+    with pytest.raises(ValueError, match="did not use Code Mode"):
+        summarize(report)
+
+
+def test_goal_completion_and_orchestration_acceptance_remain_separate():
+    report = report_fixture()
+    report["default_code_policy"] = True
+    report["records"] = [r for r in report["records"] if r["loop"] == "new"]
+    row = report["records"][1]
+    row.update(success=False, code_used=False)
+    row.update(all_inputs_read=True, final_report_verified=True, audit_order_verified=True)
+    result = summarize(report)
+    assert (result["goal_completed"], result["completed"]) == (4, 3)
+    assert result["trials"][1]["goal_completed"]
+    row["audit_order_verified"] = False
+    assert summarize(report)["goal_completed"] == 3
+
+
 @pytest.mark.parametrize("segment_tools", [None, 5, 32])
 def test_markdown_reports_actual_segment_configuration(segment_tools):
     report = report_fixture()
