@@ -1227,11 +1227,13 @@ class WorkSession:
         key = call.get("readonly_result_key")
         if key is None:
             return original
-        if not isinstance(key, str) or not 1 <= len(key) <= 1024:
+        if not isinstance(key, str) or not key:
             raise JournalUnavailable("work_readonly_reuse_corrupt")
         try:
-            chain, sequence, identity = key.rsplit(":", 2)
-            current_chain, current_sequence, _ = original.rsplit(":", 2)
+            # Only the Host chain and sequence are structured. Provider call IDs
+            # are opaque and may contain delimiters themselves.
+            chain, sequence, identity = key.split(":", 2)
+            current_chain, current_sequence, _ = original.split(":", 2)
             if (
                 chain != current_chain
                 or not 0 <= int(sequence) <= int(current_sequence)
@@ -1676,9 +1678,11 @@ def _decode_compaction_anchor(value: object) -> TurnTranscript | None:
             raise ValueError("invalid anchor transcript")
         anchor = decode_transcript(value)
         messages = anchor.request().messages
-        if messages[-1].role != "user" or any(
-            message.role not in {"system", "developer", "user", "assistant"}
-            for message in messages[:-1]
+        # The anchor also retains Host-selected public conversation deltas.
+        # Their real chronological order may end with an assistant message;
+        # the original Work/source, not the last speaker, owns the task.
+        if any(
+            message.role not in {"system", "developer", "user", "assistant"} for message in messages
         ):
             raise ValueError("invalid anchor roles")
         if any(

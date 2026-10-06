@@ -1501,7 +1501,7 @@ class AgentRunner:
                         ChatMessage(
                             role="system",
                             content=(
-                                "上一段回复尚未发送；有新的用户输入到达，请先处理新增内容再继续。"
+                                "上一段回复尚未发送；有新的输入或执行信号到达，请先处理再继续。"
                             ),
                         )
                     )

@@ -16,6 +16,19 @@ from qq_ai_bot.llm.base import (
     LLMUnavailableError,
 )
 
+_JOURNAL_FAILURE_CODES = frozenset(
+    {
+        "work_journal_missing",
+        "work_journal_corrupt",
+        "work_journal_media_missing",
+        "work_compaction_anchor_unavailable",
+        "work_compaction_anchor_corrupt",
+        "work_readonly_reuse_corrupt",
+        "work_effect_media_corrupt",
+        "work_effect_media_missing",
+    }
+)
+
 
 class ContextBoundaryChanged(LLMInvalidRequestError):
     """Reassemble at the explicit source boundary while preserving work and receipts."""
@@ -123,7 +136,14 @@ def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFa
     if isinstance(exc, ContextBoundaryChanged):
         return RuntimeFailure("context_boundary_changed", "context", True)
     from qq_ai_bot.prompting.compiler import PromptCapacityError
+    from qq_ai_bot.runtime.work_journal import JournalUnavailable
     from qq_ai_bot.runtime.work_repository import WorkCapacityError, WorkConflict
+
+    if isinstance(exc, JournalUnavailable):
+        code = str(exc)
+        return RuntimeFailure(
+            code if code in _JOURNAL_FAILURE_CODES else "work_journal_unavailable", "journal"
+        )
 
     if isinstance(exc, PromptCapacityError):
         return RuntimeFailure(

@@ -1115,7 +1115,7 @@ async def test_native_checkpoint_replays_exact_http_after_sqlite_restart(
     [
         [],
         {"items": []},
-        encode_transcript(TurnTranscript((ChatMessage("assistant", "not a task"),))),
+        encode_transcript(TurnTranscript((ChatMessage("invalid", "invalid role"),))),
         encode_transcript(TurnTranscript((ChatMessage("user", {"not": "text"}),))),
         {
             "items": [{"kind": "message", "value": {"role": ["user"]}}],
@@ -1408,7 +1408,7 @@ async def test_compaction_is_local_fence_before_any_tool_execution(
     result = await chat.runtime.runner.run((ChatMessage("system", "fixed"), task), runtime, backend)
     assert result.work_state == "suspended"
     assert result.outcome.failure.code == (
-        "work_compaction_incomplete" if with_anchor else "JournalUnavailable"
+        "work_compaction_incomplete" if with_anchor else "work_compaction_anchor_unavailable"
     )
     backend.execute.assert_not_awaited()
     assert len(provider.requests) == (1 if with_anchor else 0)

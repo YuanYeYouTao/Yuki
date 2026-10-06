@@ -345,7 +345,9 @@ class SubagentRepository:
                     )
                 )
 
-    async def related(self, root_id: str, identity: str) -> dict[str, Any]:
+    async def related(
+        self, root_id: str, identity: str, *, include_checkpoint: bool = False
+    ) -> dict[str, Any]:
         async with self.database.sessions() as session:
             row = (
                 (
@@ -356,6 +358,11 @@ class SubagentRepository:
                             work.c.goal,
                             work.c.model_requests,
                             work.c.tool_calls,
+                            *(
+                                (work.c.revision, work.c.checkpoint_json)
+                                if include_checkpoint
+                                else ()
+                            ),
                         )
                         .join(work, children.c.work_id == work.c.id)
                         .where(children.c.root_id == root_id, children.c.work_id == identity)
@@ -366,7 +373,23 @@ class SubagentRepository:
             )
             if row is None:
                 raise ValueError("subagent_not_owned")
-            return dict(row)
+            result = dict(row)
+            if not include_checkpoint:
+                return result
+            receipt = json.loads(row["result_json"])
+            if receipt and row["archived_at"] is None:
+                # Keep the checkpoint in its original Work, not a second bounded
+                # result blob. Only the notified version describes this result;
+                # resumed work must not relabel a newer checkpoint as its old one.
+                if row["notified_revision"] == row["revision"]:
+                    receipt["checkpoint"] = json.loads(row["checkpoint_json"])
+                    receipt["checkpoint_revision"] = row["revision"]
+                else:
+                    receipt.pop("checkpoint", None)
+                    receipt["checkpoint_status"] = "unavailable_for_result_revision"
+                result["result_json"] = json.dumps(receipt, ensure_ascii=False, allow_nan=False)
+            result.pop("checkpoint_json", None)
+            return result
 
     async def list(
         self, root_id: str, *, limit: int | None = None, cursor: str | None = None
@@ -522,7 +545,6 @@ class SubagentRepository:
                 "child_id": lease.work_id,
                 "state": row["state"],
                 "text": result.encode("utf-8")[:12000].decode("utf-8", errors="ignore"),
-                "checkpoint": json.loads(row["checkpoint_json"]),
             }
             saved = await session.scalar(
                 select(journal.c.payload_json).where(journal.c.work_id == lease.work_id)
