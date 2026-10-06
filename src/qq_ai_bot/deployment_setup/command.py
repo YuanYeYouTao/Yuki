@@ -57,6 +57,8 @@ _SECTIONS = (
 )
 _PERSISTENT_DIRECTORIES = (
     "data",
+    "workspace",
+    "social-transfer",
     "data/setup",
     "data/speech/cache",
     "data/speech/genie_data",
@@ -99,7 +101,7 @@ def add_setup_parser(
     setup.add_argument(
         "setup_action",
         nargs="?",
-        choices=("configure", "validate", "apply-pending", "verify"),
+        choices=("configure", "validate", "apply-pending", "verify", "environment-check"),
         default="configure",
     )
     setup.add_argument("--deployment-root", type=Path, default=Path.cwd())
@@ -113,6 +115,15 @@ def run_setup_command(args: argparse.Namespace) -> int:
     ui = TerminalUI(no_color=bool(args.no_color))
     try:
         action = str(args.setup_action)
+        if action == "environment-check":
+            from qq_ai_bot.deployment_setup.environment_check import check_environment
+
+            settings = Settings()
+            result = asyncio.run(
+                check_environment(settings.sandbox_socket, settings.workspace_directory)
+            )
+            ui.line(json.dumps(result, ensure_ascii=False))
+            return 0 if result["ok"] else 1
         if action == "configure":
             with _working_directory(paths.root):
                 return _configure(paths, ui)
@@ -653,7 +664,13 @@ def _review_and_commit(
     if backup is not None:
         ui.info(f"原配置已备份到 {backup.relative_to(paths.root)}")
     ui.success("配置写入完成")
-    ui.info("下一步由安装脚本应用容器动作并执行健康检查")
+    ui.info("安装脚本只保存配置；请按升级指南启动服务和核验数据库。")
+    ui.warning("路径文件工具和终端还需要 Linux 宿主的持久环境 Manager，默认 Compose 不安装它。")
+    ui.info("按 docs/operations/persistent-environment.md 准备宿主依赖并连接当前部署目录。")
+    ui.info(
+        "启动 Bot 后检查：docker compose exec --user 10001:10001 bot "
+        "qq-ai-bot-cli setup environment-check"
+    )
     return 0
 
 

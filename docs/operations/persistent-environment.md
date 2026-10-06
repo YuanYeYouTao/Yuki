@@ -95,6 +95,46 @@ authority. New capabilities do not silently upgrade existing delegation grants.
 
 ## Deployment and rollback
 
+The default Compose already persists `./workspace:/app/workspace`. This is the
+shared artifact/short-state store, not the writable terminal directory. Manager
+owns `/var/lib/yuki-sandbox/home/workspace`; the environment sees that directory
+as `/workspace` through its existing `/home/yuki` mount. Do not add another
+writable workspace volume or mount Bot data/Docker control into the environment.
+
+The configuration-only installer does not install the host Manager. Path file
+tools and terminals remain unavailable until the Linux Docker host has Python
+3.12, the verified runsc runtime, the existing environment image and dedicated
+egress/network guard, and the bounded home/runtime filesystems. Docker Desktop
+alone does not provide this host/systemd setup. A healthy Bot is not proof that
+these dependencies are connected.
+
+After preparing those prerequisites and installing the Manager source/venv below,
+explicitly connect the artifact store to the deployment root on that Linux host:
+
+```sh
+sudo /opt/yuki-sandbox/deploy/sandbox/install-manager.sh --deployment-root /absolute/deployment/path
+docker compose exec --user 10001:10001 bot qq-ai-bot-cli setup environment-check
+```
+
+The root must be the directory whose Compose mounts `./workspace`; using the same
+directory gives Bot and Manager one artifact store. The installer records only
+`YUKI_MANAGER_WORKSPACE_STORE` in `/etc/yuki-sandbox/deployment.env`, preserves
+other settings and refuses to replace an already configured store. No argument
+preserves that file or the legacy `/opt/yuki-qqbot/workspace` default. It does not
+guess complex quoted/continued old values: only its whole double-quoted format
+or a simple absolute literal path is supported, with `#` kept as a path character.
+Unsupported values are refused; other EnvironmentFile bytes remain unchanged. It does not
+move persistent home, change an existing container mount, or silently switch an
+active Manager to another store. Such a migration requires separate planning.
+
+`environment-check` requires the actual Bot UID 10001, verifies write access to
+the artifact-store directory and reads the existing `environment_status` and a
+one-item `workspace_list` response. It reports nonzero status for a missing socket,
+wrong UID, unready environment or unavailable file interface. It does not create
+containers, run code, call a model, send QQ messages or open the Bot database.
+It checks connected read capabilities; it does not claim a fresh terminal/package
+installation has been executed. Existing deployment overrides remain authoritative.
+
 Build `Dockerfile.environment` and the Bot image locally for linux/amd64. Transfer
 and verify/load images on the server; never build there or restart Docker/SnowLuma.
 Install Manager source under `/opt/yuki-sandbox/src` and websockets 15.0.1 into its

@@ -286,6 +286,22 @@ class GatewayConnectionRegistry:
         with self._lock:
             return any(item.healthy and item.bot is not None for item in self._by_id.values())
 
+    def connected_presence_ids(self, platform: str) -> tuple[str, ...]:
+        """Finite live connection identities for route preparation, not ownership."""
+        with self._lock:
+            return tuple(
+                sorted(
+                    {
+                        item.presence_id
+                        for item in self._by_id.values()
+                        if item.healthy
+                        and item.bot is not None
+                        and item.platform == platform
+                        and item.presence_id is not None
+                    }
+                )
+            )
+
     def has_unique_account(self, platform: str, external_account_id: str) -> bool:
         try:
             self.resolve_account(platform, external_account_id)

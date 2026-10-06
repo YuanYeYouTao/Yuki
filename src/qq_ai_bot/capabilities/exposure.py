@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from qq_ai_bot.capabilities.catalog import UnifiedToolCatalog, UnifiedToolCatalogEntry
 from qq_ai_bot.capabilities.models import CapabilityEffect
+from qq_ai_bot.capabilities.policy import is_memory_feedback_send
 from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.runtime.contracts import CapabilityExposureSnapshot, MemoryCapabilityView
 
@@ -141,6 +142,10 @@ def _restrict_exclusive_write(
         namespace = entry.descriptor.namespace_id
         effect = entry.descriptor.effect
         if namespace == exclusive:
+            allowed.add(name)
+        elif is_memory_feedback_send(entry.descriptor):
+            # Policy already checked the current user origin and send authority.
+            # Execution still restricts this exception to current-chat plain text.
             allowed.add(name)
         elif namespace in eager and effect is not CapabilityEffect.WRITE_STATE:
             allowed.add(name)
