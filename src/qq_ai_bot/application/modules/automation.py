@@ -19,13 +19,10 @@ from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.automation.tools import AutomationToolService
 from qq_ai_bot.automation.worker import AutomationWorker
-from qq_ai_bot.capabilities.results import ToolArtifactWriter, ToolResultBudgeter
 from qq_ai_bot.config import Settings
 from qq_ai_bot.emoji.repository import EmojiRepository
 from qq_ai_bot.emoji.storage import EmojiStorage
 from qq_ai_bot.identity.routing import PresenceRouter
-from qq_ai_bot.mcp.automation import MCPAutomationBridge
-from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import (
@@ -48,7 +45,6 @@ class AutomationBundle:
     tools: AutomationToolService
     executor: AutomationExecutor
     worker: AutomationWorker
-    mcp_bridge: MCPAutomationBridge
 
 
 class AutomationModule:
@@ -69,8 +65,6 @@ class AutomationModule:
         emoji_repository: EmojiRepository,
         emoji_storage: EmojiStorage,
         speech: SpeechService,
-        mcp_manager: MCPManager,
-        mcp_artifacts: ToolArtifactWriter,
         presence_router: PresenceRouter,
     ) -> None:
         self._settings = settings
@@ -87,8 +81,6 @@ class AutomationModule:
         self._emoji_repository = emoji_repository
         self._emoji_storage = emoji_storage
         self._speech = speech
-        self._mcp_manager = mcp_manager
-        self._mcp_artifacts = mcp_artifacts
         self._presence_router = presence_router
 
     def build(self) -> AutomationBundle:
@@ -115,19 +107,6 @@ class AutomationModule:
             gateway_factory=gateway_factory,
         )
         registry = build_capability_registry(handlers.mapping())
-        mcp_bridge = MCPAutomationBridge(
-            manager=self._mcp_manager,
-            registry=registry,
-            result_budgeter=ToolResultBudgeter(
-                max_characters=(
-                    self._settings.mcp_result_token_budget * 4
-                    if self._settings.mcp_result_token_budget is not None
-                    else self._settings.agent_tool_result_max_characters
-                ),
-                artifacts=self._mcp_artifacts,
-                artifact_retention_seconds=self._settings.mcp_artifact_retention_seconds,
-            ),
-        )
         service = AutomationService(
             settings=self._settings,
             repository=repository,
@@ -158,7 +137,6 @@ class AutomationModule:
             tools,
             executor,
             worker,
-            mcp_bridge,
         )
 
     @staticmethod
@@ -166,12 +144,6 @@ class AutomationModule:
         bundle: AutomationBundle,
         lifecycle: LifecycleRegistry,
     ) -> None:
-        lifecycle.register(
-            "mcp_automation_bridge",
-            start=bundle.mcp_bridge.start,
-            close=bundle.mcp_bridge.close,
-            health=bundle.mcp_bridge.health,
-        )
         lifecycle.register(
             "automation_worker",
             start=bundle.worker.start,

@@ -20,7 +20,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
 两个安装器默认安装 `3.8.1`。引导配置会询问主模型、可选 Flash/Embedding/Web/Vision、QQ
-Provider、MCP、Plugin、Automation 与 Speech。密钥输入不回显，程序不会在线试用 API key。
+Provider、Plugin、Automation 与 Speech。密钥输入不回显，程序不会在线试用 API key。
 
 日常运维：
 
@@ -189,7 +189,7 @@ Gateway。3.8 尚未提供管理 HTTP API、登录或前端。
 
 高风险边界：
 
-- 不开放任意 OneBot action、MCP 任意调用、plugin arbitrary run 或 raw SQL。
+- 不开放任意 OneBot action、plugin arbitrary run 或 raw SQL。
 - `SUPERUSERS`、数据库 URL、token、Cookie 和 API key 不可读回。
 - `/healthz` 只返回公开瘦健康载荷。
 - 管理审计、路由和内容查询必须经过对应 Capability。
@@ -197,9 +197,9 @@ Gateway。3.8 尚未提供管理 HTTP API、登录或前端。
 在 QQ 中使用 `/ai help` 与 `/ai capabilities` 查看当前可用命令和能力；实际结果以当前
 Principal、会话和运行配置为准。
 
-## Plugin API 3.0
+## Plugin API 3.1
 
-当前 Host 只接受精确声明 Plugin API `3.0` 的插件。插件可以使用固定 primary `conversation_key`，也可读取可选的
+当前 Host 只接受精确声明 Plugin API `3.1` 的插件。插件可以使用固定 primary `conversation_key`，也可读取可选的
 person、space、conversation 和 presence ID。插件不能自报超级管理员，也不能绕过
 Control Plane、Capability 或 Gateway Registry。
 
@@ -218,9 +218,8 @@ Web、Memory read 和 history read 仍可使用。
 - [权限与安全](plugin-development/security.md)
 - [从旧 Plugin API 迁移](plugin-development/api-3.0-migration.md)
 
-## MCP、Emoji、Vision 与 Speech
+## Emoji、Vision 与 Speech
 
-- MCP 支持 stdio 与 Streamable HTTP；配置见 [MCP 文档](mcp/architecture.md)。
 - Emoji 资产有独立生命周期、审核和作用域；见 [Emoji 文档](emoji-system/architecture.md)。
 - Vision 是可选 Provider，失败时不会把任意外部 URL 当作可信媒体。
 - Speech 使用独立 Genie-TTS Worker；默认关闭，见 [Speech 文档](speech/architecture.md)。
@@ -276,7 +275,7 @@ docker compose logs --tail 200 bot
 
 ### 回复很慢
 
-分别检查 Gateway 延迟、模型首 token、工具循环、Web/MCP 调用、Rollup backlog、Memory worker
+分别检查 Gateway 延迟、模型首 token、工具循环、Web/插件调用、Rollup backlog、Memory worker
 和发送回执。不要只根据最终回复时间判断网络不稳定。管理健康可提供分类状态，但不包含 secret
 或模型 reasoning。
 

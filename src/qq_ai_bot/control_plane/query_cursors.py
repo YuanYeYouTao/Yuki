@@ -47,7 +47,6 @@ CANONICAL_RESOURCE_KINDS: Final[frozenset[QueryResourceKind]] = frozenset(
         QueryResourceKind.PLUGIN_OUTBOX,
         QueryResourceKind.PLUGIN_BACKGROUND,
         QueryResourceKind.PARTICIPATION_FEEDBACK,
-        QueryResourceKind.MCP,
         QueryResourceKind.EMOJI,
         QueryResourceKind.SPEECH,
         QueryResourceKind.CHAT_EVENT,

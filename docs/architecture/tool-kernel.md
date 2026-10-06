@@ -8,7 +8,7 @@ Tool Kernel 分开管理工具目录、固定声明与执行授权。主 Agent �
 
 `ToolProvider` 提供 `CapabilityDescriptor`，其中的 `ToolBinding` 连接实际实现。
 `UnifiedToolCatalog` 负责目录，`MainAgentContract.definitions()` 在部署初始化时收集
-主工具注册表、已安装插件和已启用 MCP 工具，加入工作控制、子任务与 short_state 工具后，
+主工具注册表和已安装插件，加入工作控制、子任务与 short_state 工具后，
 按名称排序并冻结完整名称、说明和参数 schema。重名声明直接报错。
 
 主 Agent 的普通聊天、主动触发、自动化、插件主调用和持久续跑复用这份声明。
@@ -27,12 +27,12 @@ Provider 原生工具还有独立的协议和配置合同，不能只检查函�
 ## 调用与效果
 
 执行时由后端依据真实 actor、来源、当前权限、委托、工具状态与工作预算核验。
-目录可见或 schema 已声明不等于可以执行；插件批准和 MCP 启停仍可阻止调用，
+目录可见或 schema 已声明不等于可以执行；插件批准和工具运行状态仍可阻止调用，
 不需要为了拒绝执行而修改模型已提交的前缀。
 
 ```mermaid
 flowchart LR
-  P[Core / Plugin / MCP Provider] --> D[UnifiedToolCatalog]
+  P[Core / Plugin Provider] --> D[UnifiedToolCatalog]
   D --> F[MainAgentContract 固定声明]
   F --> A[AgentRunner]
   A --> E[MainAgentBackend 执行授权]
@@ -48,11 +48,11 @@ flowchart LR
 
 结果预算器保留必要 ID、URL、状态与错误，较大的完整结果可保存为 artifact。
 `mutation_committed` 与投递成功、失败、未知状态按真实回执解释；它们不是自然语言
-“已经完成”的替代品。工作区、MCP 结果等 artifact 的保留期由各自存储合同决定。
+“已经完成”的替代品。工作区、工具结果等 artifact 的保留期由各自存储合同决定。
 
 工具图片通过 Host 私有 `ToolExecutionResult.images` 交给 Runner，文字 `model_payload()`
 不复制像素。预算后的 `MediaResultText` 携带图片而仍以字符串保存公开回执。历史/工作区
-来源由真实事件或冻结文件版本授权；MCP 图片先归档到原执行有权读取的私有工具 artifact，
+来源由真实事件或冻结文件版本授权；工具图片先归档到原执行有权读取的私有工具 artifact，
 归档失败报告图片未读，不能抹去已经发生的外部修改。`read_tool_artifact` 的 `image` 操作
 仅在原 handle 的读取授权内返回像素，通用文字/JSON 操作不开放原始 Base64。
 
@@ -68,8 +68,8 @@ Runner 按原 call 顺序配齐整批回执，再追加有 call_id 的 Host 原�
 未派发状态仍如实保留，不能把缺失回执当成复用成功。缓存索引是本次激活中的派生引用，
 不是另一个执行账本；签名仅核对参数，不替代原内部执行 ID 和来源授权。
 
-插件自有媒体 handle 和 SDK MCP 返回值仍服从其独立委托/owner 边界，通用图片通道不授予
-任意跨插件读取权。SDK MCP 返回 owned handle，插件工具须在本次显式返回
+插件自有媒体 handle 仍服从其独立委托/owner 边界，通用图片通道不授予
+任意跨插件读取权。插件工具须在本次显式返回
 `media_artifacts` 才交给主 Agent；Host 按真实插件/工具和原 manifest、委托、TTL/hash 核验。
 私有副本不能绕过原句柄删除、过期或插件禁用。图片未读不改变已接受的外部效果回执。
 
@@ -89,7 +89,7 @@ Runner 按原 call 顺序配齐整批回执，再追加有 call_id 的 Host 原�
 - `services/agent_runner.py`：真实请求历史、预算、工具循环与 continuation。
 - `services/main_agent_backend.py`：执行授权、工具回执与业务效果围栏。
 - `capabilities/`：descriptor、catalog、policy、binding、协调器和结果预算。
-- `mcp/`、`plugin_host/`：各来源的注册和执行适配；不建立第二套 Yuki 主循环。
+- `tool_results/`、`plugin_host/`：共享结果存储与插件执行适配；不建立第二套 Yuki 主循环。
 
 
 持久 Work 在结果预算之前从类型化执行结果保存 `ok/status/run_id/pending/uncertain/error_code`
@@ -110,3 +110,5 @@ Runner 按原 call 顺序配齐整批回执，再追加有 call_id 的 Host 原�
 活动 Work 及仍活动 root 的 child 结果不受显示缓存 TTL 清理；终态至少保留七天，
 隐私删除释放其拥有的结果。清理先标记删除围栏、再删除文件、最后清理元数据，可恢复中断。
 工作区不可变文本分页使用字节偏移，跨 UTF-8 字符边界保留完整字符。
+
+主合同版本 12 明确退出 MCP 声明，即使旧部署没有启用 MCP 工具也建立新的合同边界。旧任务复用原 journal、预算及效果回执，不重派原调用。

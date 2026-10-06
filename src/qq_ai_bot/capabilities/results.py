@@ -10,7 +10,7 @@ from typing import Any, Protocol
 from qq_ai_bot.capabilities.media import MediaResultText, result_images
 from qq_ai_bot.capabilities.models import CapabilityDescriptor, CapabilityEffect
 from qq_ai_bot.domain.messages import ChatImage
-from qq_ai_bot.mcp.artifact_access import ArtifactAccess
+from qq_ai_bot.tool_results.access import ArtifactAccess
 
 
 @dataclass(frozen=True, slots=True)

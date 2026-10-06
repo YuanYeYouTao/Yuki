@@ -48,13 +48,6 @@ async def control_runtime_health(app: ApplicationContainer) -> tuple[ComponentHe
             None,
             stamp,
         ),
-        ComponentHealthView(
-            "mcp",
-            app.settings.mcp_enabled,
-            app.mcp_manager.health().connected_servers > 0,
-            None,
-            stamp,
-        ),
         ComponentHealthView("gateway", None, app.onebot_connected(), None, stamp),
         ComponentHealthView(
             "memory_maintenance",

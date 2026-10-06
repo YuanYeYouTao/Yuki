@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from qq_ai_bot.mcp.repository import ToolArtifactRepository
+from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
 
 
 def age(path):

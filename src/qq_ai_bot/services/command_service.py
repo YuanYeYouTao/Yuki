@@ -23,7 +23,6 @@ from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, OutboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.emoji.admin import EmojiAdminService
-from qq_ai_bot.mcp.admin import MCPCommandHandler
 from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.model_runtime.repository import ModelInvocationRepository
@@ -89,7 +88,6 @@ class CommandService:
         emoji_admin: EmojiAdminService | None = None,
         speech_admin: SpeechAdminService | None = None,
         model_invocations: ModelInvocationRepository | None = None,
-        mcp_commands: MCPCommandHandler | None = None,
         memory_rebuild: MemoryRebuildService | None = None,
     ) -> None:
         self._settings = settings
@@ -108,7 +106,6 @@ class CommandService:
         self._emoji_admin = emoji_admin
         self._speech_admin = speech_admin
         self._model_invocations = model_invocations
-        self._mcp_commands = mcp_commands
         self._memory_rebuild = memory_rebuild
         self._control = ControlAccess(people._database, superuser_ids=settings.superusers)
         self._profile_commands = ProfileCommandHandler(
@@ -183,8 +180,6 @@ class CommandService:
             return operation not in {"", "list", "show", "stats", "doctor"}
         if command is CommandName.VOICE:
             return operation in {"use", "reload", "cache", "test"}
-        if command is CommandName.MCP:
-            return operation in {"refresh", "reconnect", "enable", "disable", "doctor"}
         return False
 
     async def execute(
@@ -267,17 +262,6 @@ class CommandService:
                         group_id=message.group_id,
                     )
                 )
-            mcp_health = self._mcp_commands.health() if self._mcp_commands is not None else None
-            mcp_last_call = (
-                mcp_health.last_call_at.isoformat()
-                if mcp_health is not None and mcp_health.last_call_at is not None
-                else "无"
-            )
-            mcp_last_error = (
-                mcp_health.last_error_category
-                if mcp_health is not None and mcp_health.last_error_category is not None
-                else "无"
-            )
             rollup_lines = render_rollup_status_lines(rollup_status, scope_key=conversation_key)
             text = (
                 f"OneBot 连接：{'已连接' if self._onebot_connected() else '未连接'}\n"
@@ -310,12 +294,6 @@ class CommandService:
                 f"最近语音生成：{speech_status.get('last_generation_at') or '无'}\n"
                 f"最近语音耗时："
                 f"{speech_status.get('last_generation_latency_seconds') or '无'}\n"
-                f"MCP：{'已启用' if mcp_health and mcp_health.enabled else '未启用'}\n"
-                f"MCP Server：{mcp_health.configured_servers if mcp_health else 0}\n"
-                f"MCP 已连接：{mcp_health.connected_servers if mcp_health else 0}\n"
-                f"MCP 缓存工具：{mcp_health.cached_tools if mcp_health else 0}\n"
-                f"MCP 最近调用：{mcp_last_call}\n"
-                f"MCP 最近错误：{mcp_last_error}\n"
                 f"服务版本：{__version__}"
             )
         elif command is CommandName.STOP:
@@ -514,14 +492,6 @@ class CommandService:
                 if not recent_errors:
                     lines.append("- 无")
                 text = "\n".join(lines)
-        elif command is CommandName.MCP:
-            if self._mcp_commands is None:
-                text = "MCP 子系统尚未初始化"
-            else:
-                text = await self._mcp_commands.execute(
-                    argument,
-                    is_superuser=is_superuser,
-                )
         else:
             text = "未知命令，请使用 /ai help 查看帮助。"
 
@@ -560,7 +530,6 @@ class CommandService:
             "/ai emoji stats|cleanup|doctor|import\n"
             "/ai voice status|profiles|show|use|styles|test|reload|cache cleanup\n"
             "/ai model stats（超级管理员）\n"
-            "/ai mcp list|show|status|tools|search|refresh|reconnect|enable|disable|doctor\n"
             "/ai on|off（超级管理员，当前群；on 可恢复暂停的群路由）\n"
             "/ai group <群号> on|off（超级管理员）\n"
             "/ai private <QQ号> on|off（超级管理员；阻止/恢复私聊）\n"

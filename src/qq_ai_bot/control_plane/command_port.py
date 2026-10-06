@@ -196,13 +196,6 @@ class ControlCommandPort(Protocol):
         command: ControlCommand,
     ) -> ControlResult: ...
 
-    async def mutate_mcp(
-        self,
-        principal: ControlPrincipal,
-        target: object,
-        command: ControlCommand,
-    ) -> ControlResult: ...
-
     async def mutate_emoji(
         self,
         principal: ControlPrincipal,

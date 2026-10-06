@@ -90,13 +90,13 @@ execd 端口不公开，防火墙仅允许回应宿主已发起的控制连接�
 所有主 Agent 入口、自动化和续跑采用相同完整工具声明，发送和委托边界继续保留，
 已有自动化授权不会自动增加新能力。
 
-部署在本地构建并校验传输，服务器只加载镜像。先保存启动状态，禁用网易云 MCP、
-旧音乐签名和闲置硬件服务，保留 RSS、QQ、代理、Docker 与运维服务。
+部署在本地构建并校验传输，服务器只加载镜像。先保存启动状态，保留 QQ、代理、Docker 与运维服务，
+不改变与本轮升级无关的服务开关。
 只暂停 Bot 和 Manager 做数据库、配置、artifact 和回执的一致性备份；初始化文件系统，
 运行 migrate-only 并逐文件校验，再更新 Manager 与仅 Bot 的 Compose 服务。
 保留全部已有 Compose 覆盖配置，不重启 SnowLuma 或 Docker。
-上线检查 healthz、OneBot、RSS、完成/续跑 worker、工具声明及真实 gVisor 行为。
-网易云必须同时关闭配置文件与 mcp_server_states 中的持久开关；后者优先于文件配置。
+上线检查 healthz、OneBot、完成/续跑 worker、工具声明及真实 gVisor 行为。
+现有 MCP 已退役；新 head `0096` 删除专属缓存表，不能用旧镜像直接回退，参见 [升级说明](../upgrade-3.9.0.md)。
 
 回退替换代码/镜像和 unit，保留新家目录、运行记录和消息数据库。
 只回退 Bot 时可让持久环境继续运行；旧 python-v1 清理不会选择 persistent-v1 容器。

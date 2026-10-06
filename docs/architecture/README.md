@@ -22,7 +22,7 @@ Yuki 正在逐层解耦：永久主体、内部事件和工作身份由核心持
 | [自主参与连续决策模型](autonomous-participation-model.md) | 连续状态与回执决定自主 SELF 思考时机；参数与合成回放验收边界 |
 | [Memory](memory-v2.md) | 记忆范围、证据与权限 |
 | [Tool Kernel](tool-kernel.md) | 固定主声明、目录查询与执行授权 |
-| [MCP 架构](../mcp/architecture.md) | 外部工具、固定清单和执行授权 |
+| [工具结果](tool-results.md) | 结果预算、共享 artifact 与来源证据 |
 | [插件架构](../plugin-development/architecture.md) | SDK、Host 与隔离插件会话 |
 | [持久环境](../operations/persistent-environment.zh-CN.md) | 工作区、终端、Manager、文件交付和恢复 |
 | [搜索适配器](../deepseek-search-bridge.md) | 临时协议适配和真实失败兜底 |
@@ -60,7 +60,7 @@ Agent 自主选取历史附件、工作区与工具图片后交给原主模型�
 
 当前模式的错误反馈、执行事实、恢复及非阻断汇报修复见
 [Harness 修复任务书](harness-feedback-and-codemode-compatibility-taskbook-2026-10-06.md)。
-MCP 重构和 Code Mode 移植延后；本轮复用原 journal/效果回执，数据库防回归与实际交付分别核验。
+Code Mode 移植延后；本轮复用原 journal/效果回执，数据库防回归与实际交付分别核验。
 
 本轮实现任务书：[共享持久 Runtime 主干重构](persistent-runtime-refactor-taskbook.md)。
 现行执行与恢复规则仍以主 Agent 合同和共同架构约束为准；任务书中的阶段验收不能替代实际 CI 与部署证据。

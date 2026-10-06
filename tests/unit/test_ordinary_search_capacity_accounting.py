@@ -20,11 +20,11 @@ from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import ChatResponse
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.llm.gemini import GeminiProvider
-from qq_ai_bot.mcp.artifact_access import ArtifactAccess
-from qq_ai_bot.mcp.repository import ToolArtifactRepository
 from qq_ai_bot.model_runtime.capacity import estimate_request_tokens, estimate_text_tokens
 from qq_ai_bot.persistence.models import ChatEventModel, WebSearchRunModel, WebSearchSourceModel
 from qq_ai_bot.runtime.work_schema_v1 import work
+from qq_ai_bot.tool_results.access import ArtifactAccess
+from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
 from qq_ai_bot.web.models import WebSearchResponse, WebSearchSource
 
 

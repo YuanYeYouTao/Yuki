@@ -33,7 +33,6 @@ class MainAgentContract:
             "revision": self.revision,
             "tool_count": len(names),
             "persistent_environment_tools_complete": (SANDBOX_TOOLS | WORKSPACE_TOOLS) <= names,
-            "netease_tools_present": any("netease" in name.casefold() for name in names),
         }
 
     async def definitions(self) -> tuple[ChatTool, ...]:
@@ -49,12 +48,6 @@ class MainAgentContract:
                 declaration_only=True,
                 runtime_config=config,
             )
-            for provider in self.chat._external_tool_providers:
-                prepare = getattr(provider, "prepare_manifest", None)
-                if callable(prepare):
-                    await prepare(declaration)
-                else:
-                    await provider.refresh(force=False)
             registry = self.chat._build_tool_registry(declaration, web_was_used=False)
             tools = [
                 entry.descriptor.as_chat_tool(description=entry.descriptor.description)
@@ -72,7 +65,7 @@ class MainAgentContract:
             revision = hashlib.sha256(
                 json.dumps(
                     {
-                        "version": 11,
+                        "version": 12,
                         "tools": [
                             {
                                 "name": t.name,

@@ -12,13 +12,13 @@ from tests.support.social_identity_cases import social_env
 from qq_ai_bot.capabilities.results import ToolExecutionResult, ToolResultBudgeter
 from qq_ai_bot.conversation.observation_models import ContextObservationModel
 from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
-from qq_ai_bot.mcp.artifact_access import ArtifactAccess, access_from_runtime
-from qq_ai_bot.mcp.artifact_schema import artifact_refs
-from qq_ai_bot.mcp.repository import ToolArtifactRepository
 from qq_ai_bot.persistence.models import ToolArtifactModel
 from qq_ai_bot.runtime.work_context_note import publish_pending_note, visible_context_note
 from qq_ai_bot.runtime.work_control import WorkControl, work_control_tools
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
+from qq_ai_bot.tool_results.access import ArtifactAccess, access_from_runtime
+from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+from qq_ai_bot.tool_results.schema import artifact_refs
 
 
 @pytest.mark.parametrize("different", ["plugin", "memory", "contract"])

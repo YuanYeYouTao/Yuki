@@ -29,7 +29,6 @@ from qq_ai_bot.domain.messages import ChatMessage, ChatTool, ToolCall, ToolFunct
 from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
 from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_space
 from qq_ai_bot.identity.db_models import SpaceBindingModel
-from qq_ai_bot.mcp.repository import MCPRepository
 from qq_ai_bot.memory.partition import MemoryPartitionResolutionError
 from qq_ai_bot.persistence.diagnostic_writer import DiagnosticWriter
 from qq_ai_bot.persistence.models import ChatEventModel, MemoryToolReceiptModel, ToolInvocationModel
@@ -45,6 +44,7 @@ from qq_ai_bot.services.chat import ChatService
 from qq_ai_bot.services.main_agent_backend import MainAgentBackend
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 from qq_ai_bot.social.db_models import SocialOperationModel
+from qq_ai_bot.tool_results.recorder import ToolInvocationRepository
 
 
 async def active_work(database, tmp_path):
@@ -78,7 +78,7 @@ async def active_work(database, tmp_path):
 
 
 async def invoke_audit(recorder, runtime, call_key, result='{"ok":true}'):
-    await ChatService._record_mcp_invocation(
+    await ChatService._record_tool_invocation(
         SimpleNamespace(_tool_invocations=recorder),
         runtime=runtime,
         provider_id="social",
@@ -103,7 +103,7 @@ async def test_social_success_and_original_work_call_survive_telemetry_failure(
     writer = DiagnosticWriter() if queued else None
     if writer is not None:
         await writer.start()
-    recorder = MCPRepository(database, writer=writer)
+    recorder = ToolInvocationRepository(database, writer=writer)
     audit_calls = []
 
     async def fail_telemetry(*_args):
@@ -249,7 +249,7 @@ async def test_deferred_audit_cannot_refill_person_erased_before_accepted(
         runtime = replace(runtime, trigger_event_id=None)
     writer = DiagnosticWriter()
     await writer.start()
-    recorder = MCPRepository(database, writer=writer)
+    recorder = ToolInvocationRepository(database, writer=writer)
     call = ToolCall("original-erased-call", ToolFunction("send_message", "{}"))
     original = work.control.repository.record_effect
     dispatched = 0
@@ -286,7 +286,7 @@ async def test_group_binding_move_cannot_reassign_original_event_receipt(
     database, tmp_path, monkeypatch, after_prepare
 ):
     env, work, runtime = await active_work(database, tmp_path)
-    recorder = MCPRepository(database)
+    recorder = ToolInvocationRepository(database)
     call = ToolCall("original-owner-call", ToolFunction("send_message", "{}"))
     sessions = database.sessions
     destination = None
@@ -361,7 +361,7 @@ async def test_group_binding_move_cannot_reassign_original_event_receipt(
 async def test_tool_telemetry_queue_freezes_origin_and_rejects_privacy_erasure(database, tmp_path):
     env = await social_env(database, tmp_path)
     writer = DiagnosticWriter()
-    recorder = MCPRepository(database, writer=writer)
+    recorder = ToolInvocationRepository(database, writer=writer)
     await writer.start()
     release = asyncio.Event()
     assert writer.submit("blocked", 0, release.wait)
@@ -441,7 +441,7 @@ async def test_event_receipt_source_rechecked_atomically_after_read_prepare(
 
     monkeypatch.setattr(database, "sessions", changed_after_prepare)
     with pytest.raises(MemoryPartitionResolutionError, match="tool_receipt_source_changed"):
-        await MCPRepository(database).record_invocation(
+        await ToolInvocationRepository(database).record_invocation(
             conversation_key="source",
             provider_id="core",
             tool_name="terminal_exec",

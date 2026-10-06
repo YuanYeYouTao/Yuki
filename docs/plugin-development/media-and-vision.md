@@ -1,6 +1,6 @@
 # 媒体与视觉
 
-插件对主聊天媒体的读取限于当前真实消息投影，不能要求 Host 下载任意 URL 或主动回溯任意历史图片。插件自己拥有的产物和获准 MCP 图片另按下述显式工具结果合同处理。
+插件对主聊天媒体的读取限于当前真实消息投影，不能要求 Host 下载任意 URL 或主动回溯任意历史图片。插件自己拥有的产物按下述显式工具结果合同处理。
 
 ```python
 segments = await ctx.media.get_current()
@@ -13,18 +13,18 @@ if observation is None:
 
 ## 明确选择工具图片给主 Agent
 
-插件工具可返回自己以 `media.artifact.create` 创建的 `MediaArtifactHandle`，或以原
-`mcp.call` 批准取得的 MCP 图片句柄：
+插件工具在获准 `media.artifact.create` 后创建自己拥有的 `MediaArtifactHandle`，
+并在本次结果中明确返回选中的句柄：
 
 ```python
-receipt = await ctx.mcp.call("screenshots", "capture", {})
-return ToolResult(data={"capture_ok": receipt.ok}, media_artifacts=receipt.media_artifacts)
+handle = await ctx.media.create_artifact(
+    data=image_bytes, content_type="image/png", filename="capture.png"
+)
+return ToolResult(data={"capture_ok": True}, media_artifacts=(handle,))
 ```
 
-SDK MCP 的结果只保留为本插件拥有的有界句柄，调用本身不会把图片排到下一次主回复；
-只有插件工具本次明确返回 `PluginResult`/`ToolResult.media_artifacts` 才接入主模型原生输入。
-不需要另授 `media.artifact.create` 才能保留已授权 MCP 调用的图片，但该委托不变成任意文件
-读取权。主模型缺少图片能力或容量不足时明确未读，不调用辅助 Qwen。
+只有本次明确返回的 `PluginResult`/`ToolResult.media_artifacts` 才接入主模型原生输入；
+创建句柄不会排入下一次主回复。主模型缺少图片能力或容量不足时明确未读，不调用辅助视觉模型。
 
 Host 在实际模型派发前复核原插件仍启用、批准和 manifest 未变、实际工具与精确自动化
 委托仍合法，以及原句柄 owner、TTL、文件可用性和内容 hash。私有归档副本不能延长原句柄

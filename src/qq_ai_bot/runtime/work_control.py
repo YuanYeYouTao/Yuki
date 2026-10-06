@@ -10,9 +10,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from qq_ai_bot.domain.messages import ChatMessage, ChatTool
-from qq_ai_bot.mcp.artifact_access import ArtifactAccess
 from qq_ai_bot.runtime.activation_outcome import ActivationOutcome
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkLease, WorkRepository
+from qq_ai_bot.tool_results.access import ArtifactAccess
 
 if TYPE_CHECKING:
     from qq_ai_bot.runtime.work_session import WorkSession

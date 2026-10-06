@@ -34,7 +34,6 @@ from qq_ai_bot.admin.models import (
     EffectiveConfigValue,
     EmojiRuntimeConfig,
     LLMRuntimeConfig,
-    MCPRuntimeConfig,
     MemoryRetrievalRuntimeConfig,
     PluginRuntimeConfig,
     RelationshipRuntimeConfig,
@@ -1660,29 +1659,6 @@ class RuntimeConfigService:
                 total_max_bytes=int(cast(int, value("storage.protocol_total_max_bytes"))),
                 object_max_bytes=int(cast(int, value("storage.protocol_object_max_bytes"))),
                 disk_reserve_bytes=int(cast(int, value("storage.protocol_disk_reserve_bytes"))),
-            ),
-            mcp=MCPRuntimeConfig(
-                enabled=bool(value("mcp.enabled")),
-                gateway_enabled=bool(value("mcp.gateway_enabled")),
-                metadata_cache_ttl_seconds=int(cast(int, value("mcp.metadata_cache_ttl_seconds"))),
-                connect_timeout_seconds=float(
-                    cast(float | int, value("mcp.connect_timeout_seconds"))
-                ),
-                request_timeout_seconds=float(
-                    cast(float | int, value("mcp.request_timeout_seconds"))
-                ),
-                result_token_budget=(
-                    int(cast(int, value("mcp.result_token_budget")))
-                    if value("mcp.result_token_budget") is not None
-                    else None
-                ),
-                result_item_limit=(
-                    int(cast(int, value("mcp.result_item_limit")))
-                    if value("mcp.result_item_limit") is not None
-                    else None
-                ),
-                max_parallel_calls=int(cast(int, value("mcp.max_parallel_calls"))),
-                artifact_retention_seconds=int(cast(int, value("mcp.artifact_retention_seconds"))),
             ),
             web=WebRuntimeConfig(
                 mode=self._settings.web.mode.value,

@@ -60,7 +60,6 @@ from qq_ai_bot.control_plane.query_types import (
     IdentityBindingView,
     IdentityResolution,
     ManagementHealthView,
-    McpServerView,
     MemoryEvidenceView,
     MemoryFactView,
     MemoryHealthView,
@@ -122,7 +121,6 @@ from qq_ai_bot.identity.db_models import (
     SpaceBindingModel,
 )
 from qq_ai_bot.identity.errors import CanonicalIdentityError
-from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.memory.audit import MemoryAuditService
 from qq_ai_bot.memory.dream.db_models import MemoryDreamRunModel
 from qq_ai_bot.memory.embedding.health import MemoryEmbeddingHealthService
@@ -140,8 +138,6 @@ from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     AdminOperationEventModel,
     AutomationModel,
-    MCPServerStateModel,
-    MCPToolCacheModel,
     MemoryJobModel,
     MemoryRebuildRunModel,
     RuntimeConfigOverrideModel,
@@ -586,7 +582,6 @@ class ControlQueryAdapter:
         workspace_service: WorkspaceService | None = None,
         runtime_config: RuntimeConfigService | None = None,
         embeddings: MemoryEmbeddingRuntime | None = None,
-        mcp_manager: MCPManager | None = None,
         connection_registry: object | None = None,
         plugins: PluginManager | None = None,
         workspace: WorkspaceStore | None = None,
@@ -636,7 +631,6 @@ class ControlQueryAdapter:
         self._config = runtime_config
         self._embeddings = embeddings
         self._registry = runtime_config.registry if runtime_config is not None else ConfigRegistry()
-        self._mcp = mcp_manager
         self._connections = connection_registry
         self._plugins = plugins
         self._runtime_health = runtime_health
@@ -2331,70 +2325,6 @@ class ControlQueryAdapter:
             raise ControlQueryError(Problem(ProblemCode.OPERATION_UNAVAILABLE)) from None
         except Exception:
             raise ControlQueryError(Problem(ProblemCode.STATE_MISMATCH)) from None
-
-    async def list_mcp_servers(self, request: PageRequest) -> Page[McpServerView]:
-        snapshot_at = _now()
-        async with self._reader() as session:
-            epoch, _revision = await self._runtime(session)
-            _phase, key = self._cursor_state(request, QueryResourceKind.MCP, epoch=epoch)
-            tool_counts = {
-                str(server_id): int(count)
-                for server_id, count in await session.execute(
-                    select(MCPToolCacheModel.server_id, func.count()).group_by(
-                        MCPToolCacheModel.server_id
-                    )
-                )
-            }
-            revisions = {
-                str(row.server_id): state_revision(row.updated_at)
-                for row in await session.scalars(select(MCPServerStateModel))
-            }
-            if self._mcp is not None:
-                statuses = await self._mcp.statuses(session=session)
-                items = [
-                    McpServerView(
-                        server_id=item.server_id,
-                        revision=revisions.get(item.server_id, 0),
-                        enabled=bool(item.enabled),
-                        healthy=bool(item.connected),
-                        tool_count=int(item.configured_tools or tool_counts.get(item.server_id, 0)),
-                    )
-                    for item in statuses
-                ]
-            else:
-                rows = list(
-                    await session.scalars(
-                        select(MCPServerStateModel).order_by(MCPServerStateModel.server_id.asc())
-                    )
-                )
-                items = [
-                    McpServerView(
-                        server_id=str(row.server_id),
-                        revision=revisions[str(row.server_id)],
-                        enabled=bool(row.enabled),
-                        healthy=str(row.status) == "connected",
-                        tool_count=tool_counts.get(str(row.server_id), 0),
-                    )
-                    for row in rows
-                ]
-        items = sorted(items, key=lambda item: item.server_id)
-        if key is not None:
-            items = [item for item in items if item.server_id > key]
-        total = len(items)
-        start = (request.number - 1) * request.limit if request.number else 0
-        window = items[start : start + request.limit + 1]
-        more = len(window) == request.limit + 1
-        if more:
-            window = window[:-1]
-        return self._page(
-            window,
-            kind=QueryResourceKind.MCP,
-            phase=QueryCursorPhase.CANONICAL,
-            next_key=window[-1].server_id if more else None,
-            snapshot_at=snapshot_at,
-            total=total,
-            number=request.number,
-        )
 
     async def list_emoji_assets(
         self,

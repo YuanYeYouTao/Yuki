@@ -564,7 +564,7 @@ def test_bound_hash_includes_operation_target_and_revision() -> None:
 def test_no_c11_command_is_legacy_equivalent() -> None:
     assert set(_METHODS) == set(_METHOD_CAPABILITY)
     assert is_protocol_capability("web_search") is True
-    assert is_protocol_capability("mcp.web_search") is True
+    assert is_protocol_capability("mcp.web_search") is False
 
 
 @pytest.mark.asyncio

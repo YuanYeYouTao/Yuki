@@ -28,6 +28,7 @@ from qq_ai_bot.memory.quality.report import write_reports
 from qq_ai_bot.memory.quality.runner import MemoryQualityRunner
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.schema_guard import canonical_schema_revision
+from yuki_plugin_sdk.api import PLUGIN_API_VERSION
 
 
 class MemoryReleaseCheck:
@@ -207,12 +208,12 @@ class MemoryReleaseCheck:
                 compatible = bool(requires) and SpecifierSet(requires).contains(__version__)
             except InvalidSpecifier:
                 compatible = False
-            if raw.get("plugin_api") != "3.0" or not compatible:
+            if raw.get("plugin_api") != PLUGIN_API_VERSION or not compatible:
                 incompatible.append(path.parent.name)
         return self._item(
             "plugin_api_compatibility",
             not incompatible,
-            f"{len(manifests)} manifests declare Plugin API 3.0 compatibility"
+            f"{len(manifests)} manifests declare Plugin API {PLUGIN_API_VERSION} compatibility"
             if not incompatible
             else f"incompatible manifests: {','.join(sorted(incompatible))}",
         )

@@ -10,13 +10,13 @@ from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.capabilities.results import ToolExecutionResult, ToolResultBudgeter
 from qq_ai_bot.domain.messages import ChatMessage, ToolCall, ToolFunction
-from qq_ai_bot.mcp.repository import ToolArtifactRepository
 from qq_ai_bot.persistence.models import ToolArtifactModel
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import effects, work
 from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.services.turn_transcript import TurnTranscript
+from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
 from qq_ai_bot.workspace.store import WorkspaceStore
 
 

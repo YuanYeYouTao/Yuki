@@ -27,7 +27,6 @@ from qq_ai_bot.control_plane.query_types import (
     ExecutionTraceView,
     IdentityBindingView,
     ManagementHealthView,
-    McpServerView,
     MemoryEvidenceView,
     MemoryFactView,
     MemoryHealthView,
@@ -656,11 +655,6 @@ class ControlQueryService:
         authorized = _require_context(context)
         _require_capability(authorized, method_capability("read_plugin_runtime"))
         return await self._port.read_plugin_runtime(plugin_id)
-
-    async def list_mcp_servers(self, context: object, request: PageRequest) -> Page[McpServerView]:
-        authorized = _require_context(context)
-        _require_capability(authorized, method_capability("list_mcp_servers"))
-        return await self._port.list_mcp_servers(request)
 
     async def list_emoji_assets(
         self, context: object, request: PageRequest

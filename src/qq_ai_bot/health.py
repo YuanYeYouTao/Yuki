@@ -43,13 +43,6 @@ class HealthPayload(TypedDict):
     speech_default_profile_loaded: bool
     speech_can_send_record: bool
     speech_queue_depth: int
-    mcp_enabled: bool
-    mcp_configured_servers: int
-    mcp_connected_servers: int
-    mcp_cached_tools: int
-    mcp_automation_tools: int
-    mcp_automation_missing_tools: int
-    mcp_active_calls: int
     memory_embedding_enabled: bool
     memory_embedding_configured: bool
     memory_embedding_coverage: float
@@ -82,7 +75,6 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
     emoji_counts = await container.emoji_repository.counts()
     speech_health = await container.speech.health()
     speech_metrics = await container.speech.metrics()
-    mcp_health = container.mcp_manager.health()
     embedding_health = await container.memory_embeddings.health()
     memory_health = await container.memory_audit.health()
     rebuild_health = await container.persistence.memory_rebuilds.health(
@@ -136,13 +128,6 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
         ),
         speech_can_send_record=container.onebot_connected(),
         speech_queue_depth=speech_metrics.queue_depth,
-        mcp_enabled=mcp_health.enabled,
-        mcp_configured_servers=mcp_health.configured_servers,
-        mcp_connected_servers=mcp_health.connected_servers,
-        mcp_cached_tools=mcp_health.cached_tools,
-        mcp_automation_tools=container.mcp_automation_bridge.registered_tool_count,
-        mcp_automation_missing_tools=container.mcp_automation_bridge.missing_tool_count,
-        mcp_active_calls=mcp_health.active_calls,
         memory_embedding_enabled=embedding_health.enabled,
         memory_embedding_configured=embedding_health.provider_configured,
         memory_embedding_coverage=embedding_health.coverage_ratio,

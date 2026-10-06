@@ -3,7 +3,7 @@
 All Yuki Main Agent entrypoints share a sorted function-tool manifest, frozen after
 plugin startup and before background turns for the running deployment. Normal/private/group turns, plugin wakeups,
 plugin generation, scheduled generation and scheduled Agent runs use the same
-schemas, including retry/finalization requests. Core, installed plugin and MCP definitions are collected without an event identity;
+schemas, including retry/finalization requests. Core and installed plugin definitions are collected without an event identity;
 work control and short-state definitions are added by the same Main Agent contract. Execution still
 checks the real origin, target, current permission and delegated grant. Scheduled Main Agent calls use the ordinary social/workspace/sandbox tool names;
 explicit DSL capability names are not appended to that manifest.

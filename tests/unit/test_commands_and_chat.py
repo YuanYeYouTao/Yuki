@@ -265,7 +265,7 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     )
     admin_text = admin_sender.messages[0].text
     assert "当前权限：超级管理员" in admin_text
-    assert "可修改运行时配置参数：242 项" in admin_text
+    assert "可修改运行时配置参数：233 项" in admin_text
     for key in (
         "context.window_tokens",
         "context.work_window_tokens",

@@ -637,7 +637,7 @@ class WorkRepository:
     ) -> dict[str, Any]:
         """CAS an optional note without altering task state, waiting or budget."""
         from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
-        from qq_ai_bot.mcp.repository import ToolArtifactRepository
+        from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
 
         encoded = bounded_json(note, 1024 * 1024)
         handles = tuple(note["artifact_handles"])
@@ -693,7 +693,7 @@ class WorkRepository:
             if row is None:
                 raise WorkConflict("work_context_note_obsolete")
             await ToolArtifactRepository.add_refs(session, "work_note", identity, handles)
-            from qq_ai_bot.mcp.artifact_schema import artifact_refs
+            from qq_ai_bot.tool_results.schema import artifact_refs
 
             await session.execute(
                 delete(artifact_refs).where(
@@ -1519,8 +1519,8 @@ class WorkRepository:
             ContextObservationModel,
             ContextSelectionModel,
         )
-        from qq_ai_bot.mcp.artifact_schema import artifact_refs
         from qq_ai_bot.runtime.protocol_schema import refs as protocol_refs
+        from qq_ai_bot.tool_results.schema import artifact_refs
 
         identities = select(work.c.id).where(work.c.conversation_id == conversation_id)
         observation_ids = select(ContextObservationModel.id).where(

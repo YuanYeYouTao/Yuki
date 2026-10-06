@@ -17,7 +17,7 @@ from qq_ai_bot.control_plane.tokens import MAX_CAPABILITY_ID_LENGTH
 
 _CAPABILITY_TOKEN = re.compile(r"\A[a-z][a-z0-9_]*(?:[.:][a-z][a-z0-9_]*)*\Z")
 _SEGMENT_SPLIT = re.compile(r"[.:]+")
-_LEGAL_FIXED_MCP_TOOLS: Final[frozenset[str]] = frozenset({"web_search", "mcp.web_search"})
+_LEGAL_FIXED_TOOLS: Final[frozenset[str]] = frozenset({"web_search"})
 _SECRET_VERBS: Final[frozenset[str]] = frozenset({"read", "write", "get", "set", "value", "reveal"})
 _SQL_VERBS: Final[frozenset[str]] = frozenset({"sql", "query", "execute", "raw"})
 _INVOCATION_VERBS: Final[frozenset[str]] = frozenset(
@@ -70,7 +70,7 @@ class CatalogSourceKind(StrEnum):
     CONFIG_CATALOG = "config_registry"
     PLUGIN_METADATA = "plugin_metadata"
     AUTOMATION_METADATA = "automation_metadata"
-    MCP_FIXED_TOOLSET = "mcp_fixed_toolset"
+    FIXED_TOOLSET = "fixed_toolset"
 
 
 _READ_SENSITIVITY: Final[frozenset[CapabilitySensitivity]] = frozenset(
@@ -92,7 +92,7 @@ _SOURCE_NAMESPACES: Final[dict[CatalogSourceKind, frozenset[str]]] = {
     CatalogSourceKind.CONFIG_CATALOG: frozenset({"config"}),
     CatalogSourceKind.PLUGIN_METADATA: frozenset(),
     CatalogSourceKind.AUTOMATION_METADATA: _REVIEWED_CATALOG_NAMESPACES,
-    CatalogSourceKind.MCP_FIXED_TOOLSET: frozenset(),
+    CatalogSourceKind.FIXED_TOOLSET: frozenset(),
 }
 _REVIEWED_DESCRIPTOR_SOURCES: Final[frozenset[CatalogSourceKind]] = frozenset(
     {
@@ -153,7 +153,7 @@ def is_forbidden_control_capability(capability_id: str) -> bool:
     """Intrinsic danger only. Unapproved management stays reject-by-protocol."""
 
     token = capability_id.strip().casefold()
-    if token in _LEGAL_FIXED_MCP_TOOLS:
+    if token in _LEGAL_FIXED_TOOLS:
         return False
     parts = capability_segments(token)
     if not parts:
@@ -177,10 +177,10 @@ def is_forbidden_control_capability(capability_id: str) -> bool:
 
 
 def is_protocol_capability(capability_id: str) -> bool:
-    """Grantable only when listed on the reviewed table or the fixed MCP pair."""
+    """Grantable only when listed on the reviewed table or the fixed toolset."""
 
     token = capability_id.strip().casefold()
-    if token in _LEGAL_FIXED_MCP_TOOLS:
+    if token in _LEGAL_FIXED_TOOLS:
         return True
     return token in CONTROL_CAPABILITY_IDS
 
@@ -623,18 +623,6 @@ CONTROL_CAPABILITY_DESCRIPTORS: Final[tuple[ControlCapabilityDescriptor, ...]] =
         mutating=True,
     ),
     _descriptor(
-        "control.mcp.read",
-        CapabilityFamily.CONTROL,
-        CapabilitySensitivity.METADATA_READ,
-        mutating=False,
-    ),
-    _descriptor(
-        "control.mcp.mutate",
-        CapabilityFamily.CONTROL,
-        CapabilitySensitivity.MUTATE,
-        mutating=True,
-    ),
-    _descriptor(
         "control.emoji.read",
         CapabilityFamily.CONTROL,
         CapabilitySensitivity.METADATA_READ,
@@ -691,8 +679,8 @@ def project_source_capability_id(
         return None
     if is_forbidden_control_capability(token):
         return None
-    if token in _LEGAL_FIXED_MCP_TOOLS:
-        return token if source_kind is CatalogSourceKind.MCP_FIXED_TOOLSET else None
+    if token in _LEGAL_FIXED_TOOLS:
+        return token if source_kind is CatalogSourceKind.FIXED_TOOLSET else None
     if token in CONTROL_CAPABILITY_IDS:
         return token if source_kind in _REVIEWED_DESCRIPTOR_SOURCES else None
     parts = capability_segments(token)

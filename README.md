@@ -1,4 +1,4 @@
-<!-- release-baseline: version=3.9.0 schema=0095 -->
+<!-- release-baseline: version=3.9.0 schema=0096 -->
 
 中文（默认） · [English](README.en.md)
 
@@ -35,7 +35,7 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 | 长期聊天与记忆 | 在群聊、私聊中持续交流，查询旧事，明确要求记住、纠正或删除事实 |
 | 图片、语音和附件 | 发送图片、语音、视频或文档；同一会话内可不引用原附件继续追问 |
 | QQ 社交操作 | 查询成员、结构化 @、发送群消息或私聊、撤回自己的消息；目标与权限由后端校验 |
-| 搜索与扩展 | 使用配置好的联网工具、MCP 服务和插件处理外部信息 |
+| 搜索与扩展 | 使用配置好的联网工具和插件处理外部信息 |
 | 持久工作环境 | 保存项目与文件，运行 Python、Node.js 或 Shell，安装依赖并交付结果 |
 | 后台任务与自动化 | 启动作业后继续聊天，随后查询进度；按已授予的权限执行定时任务和续跑 |
 | 语音与表情 | 可选 Genie-TTS 语音发送，以及表情包检索、分类和发送 |
@@ -123,7 +123,7 @@ docker compose up -d
 
 ## 升级与日常维护
 
-当前源码使用 Plugin API **3.0**，数据库目标由随包 Alembic 单一 head 决定；应用版本号不能替代数据库版本检查。3.8.2 发布包的历史目标为 0055。较旧的数据库必须先满足迁移前提，不能通过 `stamp` 跳过迁移。旧插件的 `llm.generate` / `agent.run` 已统一到主入口，依赖旧独立生成语义的插件需要适配。
+当前源码使用 Plugin API **3.1**，数据库目标由随包 Alembic 单一 head 决定；应用版本号不能替代数据库版本检查。3.8.2 发布包的历史目标为 0055。较旧的数据库必须先满足迁移前提，不能通过 `stamp` 跳过迁移。旧插件的 `llm.generate` / `agent.run` 已统一到主入口，依赖旧独立生成语义的插件需要适配。
 
 升级前保存一致的数据库、配置、插件及文件备份；持久环境还需保存家目录与运行回执。暂停写入只涉及 Bot 和相关 Manager，不需要关闭整个 Docker 或 QQ 网关。回退时应先保全升级后的新消息、文件和回执，详见 [3.8.4 升级指南](docs/upgrade-3.8.4.md)。
 
@@ -169,8 +169,8 @@ uv run pytest
 | [开发约束](docs/architecture/development-contract.md) | 事件 ID、解耦边界、固定工具、续跑和事务原则 |
 | [Rollup](docs/architecture/conversation-rollup.md) | 长会话的历史压缩 |
 | [Memory](docs/architecture/memory-v2.md) | 记忆提取、检索和权限 |
-| [Plugin API 3.0](docs/plugin-development/index.md) | 插件开发与能力边界 |
-| [MCP](docs/mcp/architecture.md) | 外部工具接入 |
+| [Plugin API 3.1](docs/plugin-development/index.md) | 插件开发与能力边界 |
+| [工具结果](docs/architecture/tool-results.md) | 结果预算、媒体与持久回执 |
 | [语音发送](docs/speech/operations.md) | Genie-TTS 部署与运维 |
 | [版本化发布](docs/operations/versioned-docker-release.md) | 镜像、下载包与发布流程 |
 | [CHANGELOG](CHANGELOG.md) | 历史变更 |

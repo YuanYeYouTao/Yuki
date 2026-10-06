@@ -1,4 +1,4 @@
-"""Conversation Runtime and Plugin API 3.0 runtime configuration declarations."""
+"""Conversation Runtime and Plugin API 3.1 runtime configuration declarations."""
 
 from __future__ import annotations
 

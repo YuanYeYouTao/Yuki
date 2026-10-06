@@ -30,11 +30,9 @@ from qq_ai_bot.deployment_setup.service import (
     discover_speech_profiles,
     infer_main_protocol,
     load_plugin_setup_states,
-    missing_mcp_environment,
     model_profiles_use_flash,
     preserve_model_search_settings,
     require_migrated_model_profiles,
-    sanitize_mcp_document,
     selected_gateway_providers,
     validate_configuration,
     verify_health,
@@ -51,7 +49,6 @@ _SECTIONS = (
     "embedding",
     "web",
     "vision",
-    "mcp",
     "plugin",
     "automation",
     "speech",
@@ -84,10 +81,7 @@ class _SetupDraft:
     environment: dict[str, str]
     protocol: str
     flash_enabled: bool
-    mcp_document: dict[str, object]
     pending_plugins: tuple[str, ...] | None = None
-    write_mcp: bool = False
-    rescue_changed: bool = False
     initial: bool = False
 
 
@@ -183,17 +177,14 @@ def _configure(paths: SetupPaths, ui: TerminalUI) -> int:
     document = EnvironmentDocument.load(paths)
     environment = document.values()
     initial = not paths.env.is_file()
-    mcp_document, mcp_error = _read_mcp_for_setup(paths.mcp)
     draft = _SetupDraft(
         environment=environment,
         protocol=infer_main_protocol(paths.model_profiles, environment),
         flash_enabled=model_profiles_use_flash(paths.model_profiles),
-        mcp_document=mcp_document,
         initial=initial,
     )
     draft.environment["YUKI_VERSION"] = __version__
     draft.environment["MODEL_PROFILES_FILE"] = "webui-config/model_profiles.toml"
-    draft.environment["MCP_CONFIG_PATH"] = ".mcp.json"
     draft.environment["ONEBOT_ACCESS_TOKEN"] = _token_or_existing(
         draft.environment.get("ONEBOT_ACCESS_TOKEN", "")
     )
@@ -205,10 +196,6 @@ def _configure(paths: SetupPaths, ui: TerminalUI) -> int:
     )
 
     forced_sections: set[str] = set()
-    if mcp_error is not None:
-        _rescue_broken_mcp(ui, draft, mcp_error)
-        if draft.write_mcp and _as_bool(draft.environment.get("MCP_ENABLED", "false")):
-            forced_sections.add("mcp")
 
     if not initial:
         try:
@@ -226,7 +213,7 @@ def _configure(paths: SetupPaths, ui: TerminalUI) -> int:
             sections = tuple(
                 section for section in _SECTIONS if section in set(sections).union(forced_sections)
             )
-            if not sections and not draft.rescue_changed:
+            if not sections:
                 ui.disabled("未选择任何配置区块，未写入配置")
                 return 2
         result, draft = _run_page_state_machine(
@@ -257,7 +244,6 @@ def _run_page_state_machine(
         "embedding": "Embedding",
         "web": "Web 搜索",
         "vision": "Vision",
-        "mcp": "MCP",
         "plugin": "Plugin",
         "automation": "Automation",
         "speech": "Speech",
@@ -269,7 +255,6 @@ def _run_page_state_machine(
         "embedding": _page_embedding,
         "web": _page_web,
         "vision": _page_vision,
-        "mcp": _page_mcp,
         "plugin": _page_plugin,
         "automation": _page_automation,
         "speech": _page_speech,
@@ -526,28 +511,6 @@ def _page_vision(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
     _require_http_url("Vision Base URL", environment["VISION_BASE_URL"])
 
 
-def _page_mcp(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
-    environment = draft.environment
-    ui.info("MCP 连接外部工具；Docker 引导版仅支持 Streamable HTTP。")
-    ui.info("启用后至少配置一个未禁用 Server；配置过程中可输入 :back 或 :quit。")
-    enabled = ui.confirm(
-        "启用 MCP？",
-        default=_as_bool(environment.get("MCP_ENABLED", "false")),
-    )
-    environment["MCP_ENABLED"] = _bool_text(enabled)
-    draft.write_mcp = True
-    if enabled:
-        draft.mcp_document = _configure_mcp(
-            ui,
-            paths,
-            environment,
-            draft.mcp_document,
-            allow_keep=not draft.rescue_changed,
-        )
-    elif not paths.mcp.is_file() or draft.rescue_changed:
-        draft.mcp_document = {"mcpServers": {}}
-
-
 def _page_plugin(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
     environment = draft.environment
     ui.info("插件是本地可信代码；必须逐个查看权限并批准。")
@@ -683,10 +646,8 @@ def _review_and_commit(
     configuration = SetupConfiguration(
         environment=draft.environment,
         model_profiles=profiles,
-        mcp_document=draft.mcp_document,
         pending_plugins=draft.pending_plugins,
         write_model_profiles=write_model_profiles,
-        write_mcp=initial or draft.write_mcp or not paths.mcp.is_file(),
     )
     validate_configuration(paths, configuration)
     ui.success("Settings、模型路由和本地配置合同有效")
@@ -696,7 +657,6 @@ def _review_and_commit(
         draft.environment,
         draft.protocol,
         draft.flash_enabled,
-        mcp_document=draft.mcp_document,
         pending_plugins=draft.pending_plugins,
     )
     if not ui.confirm("确认写入以上配置？", default=False):
@@ -742,7 +702,6 @@ def _select_sections(ui: TerminalUI, draft: _SetupDraft) -> tuple[str, ...]:
         "vision": _feature_label(
             "Vision", _as_bool(draft.environment.get("VISION_ENABLED", "false"))
         ),
-        "mcp": _feature_label("MCP", _as_bool(draft.environment.get("MCP_ENABLED", "false"))),
         "plugin": _feature_label(
             "Plugin", _as_bool(draft.environment.get("PLUGIN_SYSTEM_ENABLED", "false"))
         ),
@@ -760,40 +719,6 @@ def _select_sections(ui: TerminalUI, draft: _SetupDraft) -> tuple[str, ...]:
     )
 
 
-def _rescue_broken_mcp(ui: TerminalUI, draft: _SetupDraft, error: str) -> None:
-    while True:
-        ui.title("检测到损坏的 MCP 配置")
-        ui.warning(error)
-        ui.navigation_hint()
-        try:
-            action = ui.choose(
-                "请选择救援方式",
-                (
-                    ("repair", "进入 MCP 页面重新创建或导入"),
-                    ("reset", "重置为空配置并关闭 MCP"),
-                    ("disable", "关闭 MCP，但保留原文件供人工修复"),
-                ),
-                default="disable",
-            )
-        except BackRequested:
-            ui.warning("当前已经是配置救援起点")
-            continue
-        if action == "repair":
-            draft.mcp_document = {"mcpServers": {}}
-            draft.environment["MCP_ENABLED"] = "true"
-            draft.write_mcp = True
-        elif action == "reset":
-            draft.mcp_document = {"mcpServers": {}}
-            draft.environment["MCP_ENABLED"] = "false"
-            draft.write_mcp = True
-        else:
-            draft.mcp_document = {"mcpServers": {}}
-            draft.environment["MCP_ENABLED"] = "false"
-            draft.write_mcp = False
-        draft.rescue_changed = True
-        return
-
-
 def _feature_label(name: str, enabled: bool) -> str:
     return f"{name}（{'开启' if enabled else '关闭'}）"
 
@@ -802,84 +727,6 @@ def _require_http_url(label: str, value: str) -> None:
     parsed = urlsplit(value)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise SetupValidationError(f"{label} 必须是绝对 HTTP(S) 地址")
-
-
-def _configure_mcp(
-    ui: TerminalUI,
-    paths: SetupPaths,
-    environment: dict[str, str],
-    current: dict[str, object],
-    *,
-    allow_keep: bool = True,
-) -> dict[str, object]:
-    choices: list[tuple[str, str]] = [("create", "创建 HTTP Server"), ("import", "导入 .mcp.json")]
-    if paths.mcp.is_file() and allow_keep and _mcp_has_enabled_server(current):
-        choices.insert(0, ("keep", "保留并重新验证现有配置"))
-    action = ui.choose("MCP 配置方式", tuple(choices), default=choices[0][0])
-    if action == "keep":
-        document: object = current
-    elif action == "import":
-        ui.info("导入文件必须位于当前部署目录或其已挂载子目录中。")
-        source = Path(ui.ask("导入文件路径", required=True)).expanduser()
-        if not source.is_absolute():
-            source = paths.root / source
-        try:
-            source.resolve().relative_to(paths.root.resolve())
-        except ValueError as exc:
-            raise SetupValidationError("MCP 导入文件必须位于当前部署目录内") from exc
-        try:
-            document = json.loads(source.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise SetupValidationError("无法读取 MCP 配置") from exc
-    else:
-        servers: dict[str, object] = {}
-        while True:
-            server_id = ui.ask("Server ID", required=True)
-            if server_id in servers:
-                raise SetupValidationError("MCP Server ID 重复")
-            url = ui.ask("Streamable HTTP URL", required=True)
-            parsed = urlsplit(url)
-            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-                raise SetupValidationError("MCP URL 必须是绝对 HTTP(S) 地址")
-            server: dict[str, object] = {"url": url, "lifecycle": "lazy"}
-            if ui.confirm("该 Server 需要认证 Header？", default=False):
-                header = ui.ask("Header 名称", default="Authorization", required=True)
-                secret = ui.ask_secret(f"{header} 值")
-                if not secret:
-                    raise SetupValidationError("认证 Header 值不能为空")
-                server["headers"] = {header: secret}
-            servers[server_id] = server
-            ui.success(f"已暂存 MCP Server：{server_id}")
-            next_action = ui.choose(
-                "下一步",
-                (
-                    ("finish", "完成 MCP 配置并继续"),
-                    ("add", "添加另一个 MCP Server"),
-                ),
-                default="finish",
-            )
-            if next_action == "finish":
-                break
-            ui.info("开始添加另一个 MCP Server；也可输入 :back 或 :quit。")
-        document = {"mcpServers": servers}
-    sanitized = sanitize_mcp_document(document, environment)
-    for name in missing_mcp_environment(sanitized, environment):
-        secret = ui.ask_secret(f"MCP 环境变量 {name}")
-        if not secret:
-            raise SetupValidationError(f"MCP 环境变量 {name} 不能为空")
-        environment[name] = secret
-    return sanitized
-
-
-def _mcp_has_enabled_server(document: dict[str, object]) -> bool:
-    servers = document.get("mcpServers")
-    return bool(
-        isinstance(servers, dict)
-        and any(
-            isinstance(server, dict) and not bool(server.get("disabled", False))
-            for server in servers.values()
-        )
-    )
 
 
 def _select_plugins(
@@ -966,37 +813,14 @@ def _load_current_configuration(
         profiles = paths.model_profiles.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
         raise SetupValidationError("无法读取 webui-config/model_profiles.toml") from exc
-    mcp_document, mcp_error = _read_mcp_for_setup(paths.mcp)
-    if mcp_error is not None and _as_bool(environment.get("MCP_ENABLED", "false")):
-        raise SetupValidationError(mcp_error)
     return (
         SetupConfiguration(
             environment=environment,
             model_profiles=profiles,
-            mcp_document=mcp_document,
             pending_plugins=None,
         ),
         document,
     )
-
-
-def _read_mcp(path: Path) -> dict[str, object]:
-    if not path.is_file():
-        return {"mcpServers": {}}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise SetupValidationError("现有 .mcp.json 无效") from exc
-    if not isinstance(payload, dict):
-        raise SetupValidationError("现有 .mcp.json 根节点必须是对象")
-    return {str(key): value for key, value in payload.items()}
-
-
-def _read_mcp_for_setup(path: Path) -> tuple[dict[str, object], str | None]:
-    try:
-        return _read_mcp(path), None
-    except SetupValidationError as exc:
-        return {"mcpServers": {}}, str(exc)
 
 
 def _render_summary(
@@ -1005,7 +829,6 @@ def _render_summary(
     protocol: str,
     flash_enabled: bool,
     *,
-    mcp_document: dict[str, object],
     pending_plugins: tuple[str, ...] | None,
 ) -> None:
     masked_qq = environment["SUPERUSERS"][-4:].rjust(len(environment["SUPERUSERS"]), "*")
@@ -1029,7 +852,6 @@ def _render_summary(
         "Embedding": _as_bool(environment.get("MEMORY_EMBEDDING_ENABLED", "false")),
         "Web": environment.get("WEB_MODE", "disabled") != "disabled",
         "Vision": _as_bool(environment.get("VISION_ENABLED", "false")),
-        "MCP": _as_bool(environment.get("MCP_ENABLED", "false")),
         "Plugin": _as_bool(environment.get("PLUGIN_SYSTEM_ENABLED", "false")),
         "Automation": _as_bool(environment.get("AUTOMATION_ENABLED", "false")),
         "Speech": _as_bool(environment.get("SPEECH_ENABLED", "false")),
@@ -1037,12 +859,6 @@ def _render_summary(
     for name, enabled in states.items():
         (ui.success if enabled else ui.disabled)(f"{name}：{'开启' if enabled else '关闭'}")
     ui.line(f"Web 模式：{environment.get('WEB_MODE', 'disabled')}")
-    if states["MCP"]:
-        raw_servers = mcp_document.get("mcpServers", {})
-        server_ids = (
-            tuple(str(item) for item in raw_servers) if isinstance(raw_servers, dict) else ()
-        )
-        ui.line(f"MCP Server：{', '.join(server_ids) if server_ids else '未配置'}")
     if pending_plugins is not None:
         ui.line("Plugin 待应用：" + (", ".join(pending_plugins) if pending_plugins else "全部关闭"))
     if states["Automation"]:
@@ -1068,7 +884,6 @@ def _render_health(
         ("memory_embedding_enabled", "Embedding"),
         ("web_configured", "Web"),
         ("vision_configured", "Vision"),
-        ("mcp_enabled", "MCP"),
         ("plugin_system_enabled", "Plugin"),
         ("automation_enabled", "Automation"),
         ("speech_enabled", "Speech"),

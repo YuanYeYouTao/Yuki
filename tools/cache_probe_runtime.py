@@ -95,7 +95,7 @@ class WorkDriver:
             if not await self.repository.valid(self.lease):
                 raise ValueError("synthetic_work_lease_obsolete")
 
-        from qq_ai_bot.mcp.artifact_access import access_from_source
+        from qq_ai_bot.tool_results.access import access_from_source
 
         control = WorkControl(self.repository, self.lease, key, source, validate)
         control.bind_context_access(access_from_source(self.lease.conversation_id, 1, source))
@@ -116,7 +116,7 @@ class WorkDriver:
             self.source_event_ids.append(row.id)
             self.prefix = (*self.prefix, ChatMessage("user", f"event:{row.id} {row.content}"))
             from qq_ai_bot.conversation.observations import ContextObservationRepository
-            from qq_ai_bot.mcp.artifact_access import access_from_source
+            from qq_ai_bot.tool_results.access import access_from_source
 
             # Fixture authority is fixed by the real source actor, never model fields.
             grant = access_from_source(self.lease.conversation_id, 1, self.controls[0].source)

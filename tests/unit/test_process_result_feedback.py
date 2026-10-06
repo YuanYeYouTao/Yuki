@@ -6,8 +6,8 @@ import pytest
 from tests.unit.test_work_effect_results import execute, owned_session
 
 from qq_ai_bot.capabilities.results import ToolResultBudgeter, normalize_legacy_result
-from qq_ai_bot.mcp.repository import ToolArtifactRepository
 from qq_ai_bot.runtime.effect_outcomes import execution_evidence
+from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
 
 
 @pytest.mark.parametrize("budget,archive", [(24000, False), (600, False), (600, True), (64, True)])

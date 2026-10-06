@@ -192,7 +192,7 @@ def test_production_and_development_compose_are_separated() -> None:
     assert "ghcr.io/yuanyeyoutao/yuki-genie-tts-worker:${YUKI_VERSION:?missing}" in production
     assert production.count("platform: linux/amd64") == 3
     assert production.count("pull_policy: missing") == 2
-    assert "./.mcp.json:/app/.mcp.json:ro" in production
+    assert ".mcp.json" not in production
     assert 'profiles: ["napcat"]' in production
     assert 'profiles: ["snowluma"]' in production
     assert "motricseven7/snowluma:latest" in production
@@ -239,7 +239,7 @@ def test_release_smoke_uses_non_model_genie_import_sentinels(tmp_path: Path) -> 
     assert sentinels[speaker_sentinel] == "offline-file-sentinel"
     assert hubert_sentinel.read_text(encoding="utf-8") == "offline-directory"
     assert speaker_sentinel.read_text(encoding="utf-8") == "offline-file-sentinel"
-    assert (tmp_path / ".mcp.json").read_text(encoding="utf-8") == '{"mcpServers": {}}\n'
+    assert not (tmp_path / ".mcp.json").exists()
     assert "PLUGIN_SYSTEM_ENABLED=true" in (tmp_path / ".env").read_text(encoding="utf-8")
 
 

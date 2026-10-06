@@ -483,7 +483,7 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
     )
     harness = build_harness(database, settings, provider)
     chat = harness.processor._chat
-    from qq_ai_bot.mcp.repository import ToolArtifactRepository
+    from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
 
     chat._tool_artifacts = ToolArtifactRepository(
         database, tmp_path / "tool-results", retention_seconds=86400

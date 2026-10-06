@@ -17,7 +17,6 @@ from qq_ai_bot.control_plane.query_types import ComponentHealthView
 from qq_ai_bot.conversation.media_service import ConversationMediaService
 from qq_ai_bot.execution_trace.recorder import TraceRecorder
 from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
-from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
 from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
@@ -51,7 +50,6 @@ class ControlPlaneModule:
         database: Database,
         runtime_config: RuntimeConfigService,
         connections: GatewayConnectionRegistry,
-        mcp: MCPManager,
         automation: AutomationService,
         memories: MemoryFactService,
         maintenance: MemoryMaintenanceWorker,
@@ -79,7 +77,6 @@ class ControlPlaneModule:
             settings=settings,
             config_files=config_files,
             runtime_config=runtime_config,
-            mcp_manager=mcp,
             automation=automation,
             memories=memories,
             maintenance=maintenance,
@@ -97,7 +94,6 @@ class ControlPlaneModule:
                     config_files=config_files,
                     runtime_config=runtime_config,
                     embeddings=embeddings,
-                    mcp_manager=mcp,
                     connection_registry=connections,
                     plugins=plugins,
                     workspace=workspace,

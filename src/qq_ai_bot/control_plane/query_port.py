@@ -24,7 +24,6 @@ from qq_ai_bot.control_plane.query_types import (
     ExecutionTraceView,
     IdentityBindingView,
     ManagementHealthView,
-    McpServerView,
     MemoryEvidenceView,
     MemoryFactView,
     MemoryHealthView,
@@ -275,8 +274,6 @@ class ControlQueryPort(Protocol):
     async def read_plugin_approval(self, plugin_id: str) -> ActivityView: ...
 
     async def read_plugin_runtime(self, plugin_id: str) -> PluginRuntimeView: ...
-
-    async def list_mcp_servers(self, request: PageRequest) -> Page[McpServerView]: ...
 
     async def list_emoji_assets(
         self,
