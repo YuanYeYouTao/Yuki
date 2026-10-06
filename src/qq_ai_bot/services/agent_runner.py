@@ -1448,12 +1448,65 @@ class AgentRunner:
                 observations.append(response_observation)
                 continuation_tools = definitions
                 continuation_native_tools = native_definitions
-            if response.incomplete_reason == "duplicate_tool_call_id" or (
+            native_empty = (
                 (response.native_tool_events or native_definitions)
                 and not response.content.strip()
                 and not response.tool_calls
                 and not provider_pause_replay
+            )
+            if (
+                native_empty
+                and response.status is ModelResponseStatus.COMPLETED
+                and response.incomplete_reason != "duplicate_tool_call_id"
+                and (control is None or control.current is None or control.ending == "completed")
+                and (
+                    not response.native_tool_events
+                    or (
+                        control is not None
+                        and control.current is not None
+                        and control.ending == "completed"
+                    )
+                )
             ):
+                # Preserve the ordinary empty-final boundary after a real send.
+                # A progress report cannot complete an accepted Work, and a
+                # truncated/blocked response cannot borrow this closing rule.
+                delivered = bool(
+                    tools is not None
+                    and callable(getattr(tools, "has_visible_effects", None))
+                    and tools.has_visible_effects()  # type: ignore[attr-defined]
+                )
+                try:
+                    if (
+                        delivered
+                        and control is not None
+                        and control.current is not None
+                        and control.source.get("delivery_contract") == "return_to_caller"
+                    ):
+                        delivered = await revalidate_caller_completion()
+                    elif not delivered:
+                        delivered = await caller_has_confirmed_delivery()
+                    if delivered and control is not None and control.session is not None:
+                        await control.session.save("paired")
+                except Exception as exc:
+                    self._record_failure_usage(
+                        tools, tool_calls=calls_used, model_requests=request_index + 1
+                    )
+                    raise LLMNativeToolError(
+                        "provider-native closing checkpoint could not be confirmed",
+                        diagnostics={"checkpoint_saved": False},
+                    ) from exc
+                if delivered:
+                    return AgentRunResult(
+                        text="",
+                        tool_calls_used=calls_used,
+                        model_requests=request_index + 1,
+                        web_was_used=web_was_used,
+                        native_tool_events=tuple(native_events),
+                        citations=tuple(citations),
+                        response_status=response.status,
+                    )
+            if response.incomplete_reason == "duplicate_tool_call_id" or native_empty:
                 # These are paid responses with retained protocol evidence, not
                 # confirmed effect-free empty generations. Only a supported
                 # pause may automatically continue a server tool. A generic

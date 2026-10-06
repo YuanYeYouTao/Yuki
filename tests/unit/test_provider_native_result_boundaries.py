@@ -3,23 +3,32 @@
 import json
 import sqlite3
 from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
-from tests.conftest import build_harness, make_settings
+from tests.conftest import MemorySender, build_harness, make_settings
+from tests.integration.test_automation_unified_delivery import setup_run
+from tests.integration.test_web_search_chat import install_native_response_wire, native_response
+from tests.support.fixed_contract_fixture import bind_main_contract
 from tests.support.social_identity_cases import social_env
 
+from qq_ai_bot.automation.models import RunStatus
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import (
     ChatMessage,
     ChatRequest,
     ChatTool,
+    InboundMessage,
     ModelResponseStatus,
     NativeToolDefinition,
     NativeToolStatus,
     NativeToolType,
     ProviderContinuation,
+    SenderIdentity,
     ToolCall,
     ToolFunction,
 )
@@ -31,6 +40,7 @@ from qq_ai_bot.llm.gemini import GeminiProvider
 from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
 from qq_ai_bot.llm.openai_responses import OpenAIResponsesProvider
 from qq_ai_bot.llm.vendor_policy import ChatWireOptions
+from qq_ai_bot.model_runtime.db_models import ModelInvocationModel
 from qq_ai_bot.model_runtime.executor import TaskModelExecutor
 from qq_ai_bot.model_runtime.models import (
     ModelCapability,
@@ -42,14 +52,17 @@ from qq_ai_bot.model_runtime.models import (
 )
 from qq_ai_bot.model_runtime.pool import ModelClientPool
 from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
+from qq_ai_bot.model_runtime.repository import ModelInvocationRepository
 from qq_ai_bot.model_runtime.routes import ModelRouter
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_journal import decode_transcript, encode_transcript
 from qq_ai_bot.runtime.work_repository import WorkRepository
+from qq_ai_bot.runtime.work_schema_v1 import work
 from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.services.agent_runner import AgentRuntime
 from qq_ai_bot.services.turn_transcript import TurnTranscript
+from qq_ai_bot.web.models import WebMode
 
 KINDS = [
     AnthropicMessagesProvider,
@@ -57,6 +70,279 @@ KINDS = [
     OpenAIResponsesProvider,
     DeepSeekResponsesProvider,
 ]
+
+
+@pytest.mark.parametrize(
+    "work_mode", ["disabled", "neutral", "unfinished", "failed", "unknown", "write", "incomplete"]
+)
+@pytest.mark.parametrize("native_event", [False, True])
+async def test_confirmed_send_native_empty_tail_stops_without_failure_or_paid_replay(
+    database, tmp_path, work_mode, native_event
+):
+    env = await social_env(database, tmp_path)
+    harness = build_harness(
+        database,
+        make_settings(
+            database.url,
+            enabled_groups_csv="20001",
+            runtime_work_enabled=work_mode != "disabled",
+            web_enabled=True,
+            web_mode=WebMode.BOTH,
+            tavily_api_key="test-placeholder",
+        ),
+        FakeLLMProvider(),
+    )
+    chat = harness.processor._chat
+    chat._tools.social_service = env.service
+    env.service.runtime_config = chat._runtime_config
+    bind_main_contract(harness, tmp_path)
+    outputs = []
+    if work_mode in {"unfinished", "write"}:
+        outputs.append(
+            native_response(
+                {
+                    "type": "function_call",
+                    "id": "fc-accept",
+                    "call_id": "accept",
+                    "name": "task_control",
+                    "arguments": json.dumps(
+                        {
+                            "action": "accept",
+                            "goal": "finish later",
+                            "output_kind": "answer",
+                            "reporting": "quiet",
+                        }
+                    ),
+                }
+            )
+        )
+    send_args = {"text": "已确认送达的消息" if not native_event else "开始查询，稍后给结果。"}
+    if work_mode == "failed":
+        send_args["text"] = ""
+    if work_mode == "unfinished":
+        send_args["work_report"] = {"kind": "progress"}
+    outputs.append(
+        native_response(
+            {
+                "type": "function_call",
+                "id": "fc-send",
+                "call_id": "original-send",
+                "name": "update_short_state" if work_mode == "write" else "send_message",
+                "arguments": json.dumps(
+                    {"slot": 1, "text": "write survived", "expected_revision": 0}
+                    if work_mode == "write"
+                    else send_args
+                ),
+            }
+        )
+    )
+    outputs.append(
+        native_response(
+            {
+                "type": "reasoning",
+                "id": "tail-reason",
+                "summary": [],
+                "encrypted_content": "retained-tail",
+            },
+            *(
+                [
+                    {
+                        "type": "web_search_call",
+                        "id": "tail-native",
+                        "status": "failed" if work_mode == "disabled" else "in_progress",
+                        "action": {"type": "search", "query": "unconfirmed"},
+                    }
+                ]
+                if native_event
+                else []
+            ),
+        )
+    )
+    if work_mode == "incomplete":
+        outputs[-1]["status"] = "incomplete"
+        outputs[-1]["incomplete_details"] = {"reason": "max_output_tokens"}
+    if work_mode == "unknown":
+        original_gateway = env.bot.call_api
+
+        async def interrupted_send(action, **params):
+            response = await original_gateway(action, **params)
+            if action.startswith("send_"):
+                raise RuntimeError("fixture unknown send outcome")
+            return response
+
+        env.bot.call_api = interrupted_send
+    client, wire = install_native_response_wire(harness, outputs)
+    chat.runtime.runner._models._invocations = ModelInvocationRepository(database)
+    sender = MemorySender()
+    try:
+        result = await harness.processor.handle(
+            InboundMessage(
+                message_id="native-after-send",
+                event_type="message:test",
+                scope_type=ScopeType.GROUP,
+                sender=SenderIdentity("10001"),
+                text="回复我",
+                bot_user_id="80001",
+                group_id="20001",
+                mentions_bot=True,
+                conversation_id=env.context.conversation_id,
+                legacy_conversation_key=ConversationScope.group("80001", "20001").key,
+                person_id=env.person,
+                space_id=env.space,
+                presence_id=env.presence,
+            ),
+            sender,
+        )
+    finally:
+        await client.aclose()
+    assert len(wire) == len(outputs)
+    assert all(payload["tools"] == wire[0]["tools"] for payload in wire)
+    assert any(tool["type"] == "web_search" for tool in wire[0]["tools"])
+    assert len([action for action, _ in env.bot.calls if action.startswith("send_")]) == (
+        0 if work_mode in {"failed", "write"} else 1
+    )
+    async with database.sessions() as reader:
+        invocations = list(await reader.scalars(select(ModelInvocationModel).limit(5)))
+        rows = list(await reader.execute(select(work.c.state, work.c.model_requests).limit(2)))
+    assert len(invocations) == len(outputs)
+    assert sum(row.physical_request_count for row in invocations) == len(outputs)
+    assert sum(row.total_tokens for row in invocations) == len(outputs) * 13
+    if work_mode == "write":
+        write_receipts = [
+            item for item in wire[-1]["input"] if item.get("type") == "function_call_output"
+        ]
+        assert json.loads(write_receipts[-1]["output"])["ok"] is True, write_receipts[-1]
+    if work_mode in {"unfinished", "write"}:
+        assert rows == [("suspended", 3)]
+        assert not sender.messages
+        if work_mode == "write":
+            assert chat.runtime.runner.main_contract.state.snapshot()[0]["text"] == "write survived"
+    elif native_event or work_mode in {"failed", "unknown", "write", "incomplete"}:
+        assert result.reason == "llm_failure" and result.sent_messages == 1
+        assert len(sender.messages) == 1
+        assert "模型未能完成" in sender.messages[0].text
+        assert not rows
+    else:
+        assert result.reason == "chat" and result.sent_messages == 1
+        assert not sender.messages
+        assert not rows
+
+
+@pytest.mark.parametrize("native_event", [False, True])
+@pytest.mark.parametrize("checkpoint_failure", [False, True])
+async def test_completed_caller_native_empty_keeps_real_delivery_and_paid_private_state(
+    database, tmp_path, monkeypatch, native_event, checkpoint_failure
+):
+    case = await setup_run(database, tmp_path, delivery="current_group")
+    case.executor._settings.web_enabled = True
+    case.executor._settings.web_mode = WebMode.BOTH
+    case.executor._settings.tavily_api_key = "test-placeholder"
+    case.executor._settings.__dict__.pop("web", None)
+    handler = case.executor._registry.require("yuki.agent").handler.__self__
+    chat = handler.main_contract.chat
+    original_run = handler.main_turns.run
+
+    async def authorized_native_caller(messages, runtime, backend, **kwargs):
+        # This caller fixture explicitly grants web at the original trusted
+        # boundary. The default automation producer does not declare native
+        # search, and production authority/routing is unchanged by this test.
+        return await original_run(
+            messages, replace(runtime, allowed_capabilities=frozenset({"web"})), backend, **kwargs
+        )
+
+    monkeypatch.setattr(handler.main_turns, "run", authorized_native_caller)
+    outputs = [
+        native_response(
+            {
+                "type": "function_call",
+                "id": "fc-complete",
+                "call_id": "completion-proposal",
+                "name": "task_control",
+                "arguments": '{"action":"complete"}',
+            }
+        ),
+        native_response(
+            {
+                "type": "function_call",
+                "id": "fc-send",
+                "call_id": "confirmed-send",
+                "name": "send_message",
+                "arguments": '{"text":"已确认交付。"}',
+            }
+        ),
+        native_response(
+            {
+                "type": "reasoning",
+                "id": "paid-tail",
+                "summary": [],
+                "encrypted_content": "retained-paid-tail",
+            },
+            *(
+                [
+                    {
+                        "type": "web_search_call",
+                        "id": "tail-native",
+                        "status": "in_progress",
+                        "action": {"type": "search", "query": "not confirmed"},
+                    }
+                ]
+                if native_event
+                else []
+            ),
+        ),
+    ]
+    client, wire = install_native_response_wire(
+        SimpleNamespace(processor=SimpleNamespace(_chat=chat)), outputs
+    )
+    chat.runtime.runner._models._invocations = ModelInvocationRepository(database)
+    if checkpoint_failure:
+        original_save = WorkSession.save
+
+        async def fail_tail_checkpoint(self, phase, *args, **kwargs):
+            observations = self.progress.get("model_observations", [])
+            if phase == "paired" and observations and not observations[-1].get("tool_calls"):
+                error = sqlite3.OperationalError("database is locked")
+                error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+                raise OperationalError("INSERT", {}, error)
+            return await original_save(self, phase, *args, **kwargs)
+
+        monkeypatch.setattr(WorkSession, "save", fail_tail_checkpoint)
+    try:
+        result = await case.executor.execute(case.row, case.run)
+    finally:
+        await client.aclose()
+    assert len(wire) == 3 and all(payload["tools"] == wire[0]["tools"] for payload in wire)
+    assert any(tool["type"] == "web_search" for tool in wire[0]["tools"])
+    assert len([action for action, _ in case.env.bot.calls if action.startswith("send_")]) == 1
+    async with database.sessions() as reader:
+        saved = (
+            await reader.execute(select(work.c.state, work.c.model_requests, work.c.id).limit(1))
+        ).one()
+        invocations = list(await reader.scalars(select(ModelInvocationModel).limit(4)))
+    assert saved.model_requests == 3
+    assert len(invocations) == 3 and sum(row.total_tokens for row in invocations) == 39
+    assert sum(row.physical_request_count for row in invocations) == 3
+    if checkpoint_failure:
+        assert saved.state == "suspended" and result.status is not RunStatus.SUCCEEDED
+    else:
+        assert saved.state == "completed" and result.status is RunStatus.SUCCEEDED
+        # The completed Work keeps the actual private tail and the provider's
+        # unresolved native status; a delivered business result is not proof
+        # that this later server search succeeded.
+        from qq_ai_bot.runtime.protocol_store import ProtocolStore
+        from qq_ai_bot.runtime.work_schema_v1 import journal
+
+        async with database.sessions() as reader:
+            record = await reader.scalar(
+                select(journal.c.payload_json).where(journal.c.work_id == saved.id).limit(1)
+            )
+        assert record is not None
+        # The journal may externalize private protocol objects. Its direct
+        # payload and immutable protocol records together remain authoritative.
+        private = await ProtocolStore(database).hydrate(json.loads(record))
+        assert "retained-paid-tail" in str(private)
+        if native_event:
+            assert "in_progress" in str(private)
 
 
 def empty_native_reply(kind):
