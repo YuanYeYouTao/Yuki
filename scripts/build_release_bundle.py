@@ -81,6 +81,8 @@ def select_bundle_files(files: Iterable[str], version: str) -> dict[str, str]:
             upgrade_guide,
             snowluma_guide,
             model_profile_migration,
+            "docs/operations/persistent-environment.md",
+            "docs/operations/persistent-environment.zh-CN.md",
         }
     )
     missing = sorted(required - tracked)
