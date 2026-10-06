@@ -75,6 +75,16 @@ Runner 按原 call 顺序配齐整批回执，再追加有 call_id 的 Host 原�
 
 ## 代码定位
 
+参数拒绝从本次冻结 schema 提供有界字段路径、校验类别和期望摘要，不回显参数值、
+未知字段名或原异常正文；保持原严格校验。确定派发前拒绝标记 `executed=false`、
+`mutation_committed=false`，实际执行次数与原 admission/已付尝试预算分别计量，不笼统退款。
+这些反馈在本次调用内生成，不为格式化结果重新查来源、取得 writer 或写错误账本。
+
+终端结果的顶层 `ok` 表示调用/查询成功，`process` 保留原进程状态、退出码、pending 和
+已知成功/失败；短结果、artifact/最小摘要和原持久效果回执保持同一事实。工具成功取得
+失败进程的结果不证明任务成功；非零退出也不证明此前没有写文件或其他局部效果。
+未知和运行中不猜成功，成功探测不代替实际测试验收。
+
 - `services/main_agent_contract.py`：冻结主 Agent 声明与合同 revision。
 - `services/agent_runner.py`：真实请求历史、预算、工具循环与 continuation。
 - `services/main_agent_backend.py`：执行授权、工具回执与业务效果围栏。

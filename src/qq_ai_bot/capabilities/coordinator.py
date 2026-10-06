@@ -54,7 +54,12 @@ class ToolInvocationCoordinator:
             raise ValueError("tool call budgets must be non-negative and parallelism positive")
         if backend is None:
             unavailable = json.dumps(
-                {"ok": False, "error": "tools_unavailable"},
+                {
+                    "ok": False,
+                    "error": "tools_unavailable",
+                    "executed": False,
+                    "mutation_committed": False,
+                },
                 ensure_ascii=False,
             )
             return CoordinatedToolResult(
@@ -155,7 +160,12 @@ class ToolInvocationCoordinator:
             index = end
 
         limited = json.dumps(
-            {"ok": False, "error": "tool_limit_exceeded"},
+            {
+                "ok": False,
+                "error": "tool_limit_exceeded",
+                "executed": False,
+                "mutation_committed": False,
+            },
             ensure_ascii=False,
         )
         return CoordinatedToolResult(

@@ -91,7 +91,9 @@ def test_work_conflict_receipt_keeps_safe_reason_without_exposing_arbitrary_text
 
 
 def busy():
-    return OperationalError("INSERT", {}, sqlite3.OperationalError("database is locked"))
+    original = sqlite3.OperationalError("database is locked")
+    original.sqlite_errorcode = sqlite3.SQLITE_BUSY
+    return OperationalError("INSERT", {}, original)
 
 
 def executor(provider, telemetry, protocol=ModelProtocol.CHAT_COMPLETIONS):

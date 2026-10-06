@@ -39,7 +39,9 @@ from qq_ai_bot.llm.base import (
     LLMEmptyResponseError,
     LLMError,
     LLMIncompleteResponseError,
+    LLMInvalidResponseError,
     LLMMalformedFunctionCallError,
+    LLMNativeToolError,
     LLMTimeoutError,
     LLMUnavailableError,
 )
@@ -1275,6 +1277,17 @@ class AgentRunner:
                 raise
             except (LLMEmptyResponseError, LLMMalformedFunctionCallError) as exc:
                 malformed = isinstance(exc, LLMMalformedFunctionCallError)
+                if not malformed and native_definitions:
+                    # An absent server receipt does not prove an effect-free
+                    # generation. Do not resend a native-capable request merely
+                    # because its adapter could not return a usable checkpoint.
+                    self._record_failure_usage(
+                        tools, tool_calls=calls_used, model_requests=request_index + 1
+                    )
+                    raise LLMNativeToolError(
+                        "provider-native request returned no resumable output",
+                        diagnostics=exc.diagnostics,
+                    ) from exc
                 if malformed:
                     # This typed failure proves that a response arrived with no
                     # executable calls or native effects. It is not an unknown
@@ -1426,6 +1439,34 @@ class AgentRunner:
                 observations.append(response_observation)
                 continuation_tools = definitions
                 continuation_native_tools = native_definitions
+            if response.incomplete_reason == "duplicate_tool_call_id" or (
+                (response.native_tool_events or native_definitions)
+                and not response.content.strip()
+                and not response.tool_calls
+                and not provider_pause_replay
+            ):
+                # These are paid responses with retained protocol evidence, not
+                # confirmed effect-free empty generations. Only a supported
+                # pause may automatically continue a server tool. A generic
+                # empty/truncation retry could repeat already-dispatched work.
+                self._record_failure_usage(
+                    tools, tool_calls=calls_used, model_requests=request_index + 1
+                )
+                failure = (
+                    LLMInvalidResponseError("provider returned duplicate local tool call IDs")
+                    if response.incomplete_reason == "duplicate_tool_call_id"
+                    else LLMNativeToolError("provider-native result has no final response")
+                )
+                if control is not None and control.session is not None:
+                    try:
+                        await control.session.save("paired")
+                    except Exception as exc:
+                        # A failure to publish the received server-tool state
+                        # cannot grant a database retry that repeats its HTTP
+                        # dispatch. The paid request budget is already durable.
+                        failure.diagnostics["checkpoint_saved"] = False
+                        raise failure from exc
+                raise failure
             if response.status is ModelResponseStatus.INCOMPLETE:
                 # Truncated calls never execute. Pair non-execution receipts before
                 # recovery so either protocol retains a valid, append-only history.

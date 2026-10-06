@@ -197,10 +197,19 @@ class WorkControl:
         )
 
     async def communication_target(self) -> dict[str, str]:
+        from sqlalchemy import select
+
         from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 
         async with self.repository.database.sessions() as session:
-            conversation = await session.get(CanonicalConversationModel, self.lease.conversation_id)
+            conversation = (
+                await session.execute(
+                    select(
+                        CanonicalConversationModel.space_id,
+                        CanonicalConversationModel.person_id,
+                    ).where(CanonicalConversationModel.id == self.lease.conversation_id)
+                )
+            ).first()
         if conversation is None:
             raise ValueError("work_delivery_conversation_missing")
         target_id = conversation.space_id or conversation.person_id
@@ -223,16 +232,36 @@ class WorkControl:
         *,
         kind: str | None = None,
         event_ids: tuple[int, ...] = (),
+        effect_keys: tuple[str, ...] = (),
         delivered_only: bool = False,
     ) -> list[dict[str, Any]]:
         if self.current is None:
             return []
+        target = await self.communication_target()
+        if effect_keys:
+            result = []
+            # Exact batch witnesses use bounded SQL bind pages, without imposing
+            # a new limit on the configured number of model tool calls.
+            for offset in range(0, len(effect_keys), 128):
+                result.extend(
+                    await self.repository.communication_reports(
+                        self.lease,
+                        self.current["id"],
+                        target,
+                        kind=kind,
+                        event_ids=tuple(event_ids),
+                        effect_keys=effect_keys[offset : offset + 128],
+                        delivered_only=delivered_only,
+                    )
+                )
+            return result
         return await self.repository.communication_reports(
             self.lease,
             self.current["id"],
-            await self.communication_target(),
+            target,
             kind=kind,
             event_ids=tuple(event_ids),
+            effect_keys=effect_keys,
             delivered_only=delivered_only,
         )
 

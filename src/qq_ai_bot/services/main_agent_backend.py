@@ -411,7 +411,6 @@ class MainAgentBackend(AgentToolBackend):
     def begin_batch(self, calls: tuple[ToolCall, ...], runtime: AgentRuntime) -> None:
         del runtime
         self._batch = list(calls)
-        self._send_message_attempted |= any(call.function.name == "send_message" for call in calls)
 
     def did_use_web(self) -> bool:
         """Expose a provider-metadata-derived effect to the shared Agent loop."""
@@ -435,7 +434,12 @@ class MainAgentBackend(AgentToolBackend):
                 or set(feedback) - {"text", "work_report"}
             ):
                 return json.dumps(
-                    {"ok": False, "executed": False, "error": "memory_feedback_current_text_only"}
+                    {
+                        "ok": False,
+                        "executed": False,
+                        "mutation_committed": False,
+                        "error": "memory_feedback_current_text_only",
+                    }
                 )
         if name == "send_message" and runtime.work_control is None:
             try:
@@ -444,16 +448,34 @@ class MainAgentBackend(AgentToolBackend):
                 arguments = None
             if isinstance(arguments, dict) and "work_report" in arguments:
                 return json.dumps(
-                    {"ok": False, "executed": False, "error": "work_report_requires_main_work"}
+                    {
+                        "ok": False,
+                        "executed": False,
+                        "mutation_committed": False,
+                        "error": "work_report_requires_main_work",
+                    }
                 )
         if name != "send_message" and self._runtime.before_model_request is not None:
             await self._runtime.before_model_request()
         if self._allowed_tools is not None and name not in self._allowed_tools:
-            return json.dumps({"ok": False, "error": "capability_not_allowed", "executed": False})
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "capability_not_allowed",
+                    "executed": False,
+                    "mutation_committed": False,
+                }
+            )
         async with self._batch_lock:
             if not self._batch:
                 return json.dumps(
-                    {"ok": False, "error": "tool_batch_state_missing"}, ensure_ascii=False
+                    {
+                        "ok": False,
+                        "error": "tool_batch_state_missing",
+                        "executed": False,
+                        "mutation_committed": False,
+                    },
+                    ensure_ascii=False,
                 )
             call_index = next(
                 (
@@ -465,7 +487,13 @@ class MainAgentBackend(AgentToolBackend):
             )
             if call_index is None:
                 return json.dumps(
-                    {"ok": False, "error": "tool_batch_state_mismatch"}, ensure_ascii=False
+                    {
+                        "ok": False,
+                        "error": "tool_batch_state_mismatch",
+                        "executed": False,
+                        "mutation_committed": False,
+                    },
+                    ensure_ascii=False,
                 )
             call = self._batch.pop(call_index)
         control = runtime.work_control
@@ -485,7 +513,12 @@ class MainAgentBackend(AgentToolBackend):
             and await control.pending()
         ):
             return json.dumps(
-                {"ok": False, "error": "new_input_before_execution", "executed": False}
+                {
+                    "ok": False,
+                    "error": "new_input_before_execution",
+                    "executed": False,
+                    "mutation_committed": False,
+                }
             )
         if name == "update_short_state" and self._service.runtime.runner.main_contract is not None:
             return await self._service.runtime.runner.main_contract.state.execute(arguments_json)
@@ -493,6 +526,8 @@ class MainAgentBackend(AgentToolBackend):
             return json.dumps(
                 {
                     "ok": False,
+                    "executed": False,
+                    "mutation_committed": False,
                     "error": "tools_closed",
                     "detail": "本轮只声明会话前缀工具 schema，不允许真实调用。",
                 },
@@ -502,6 +537,8 @@ class MainAgentBackend(AgentToolBackend):
             return json.dumps(
                 {
                     "ok": False,
+                    "executed": False,
+                    "mutation_committed": False,
                     "error": (
                         "mutation_already_committed" if self._mutation_committed else "tools_closed"
                     ),
@@ -515,10 +552,16 @@ class MainAgentBackend(AgentToolBackend):
             )
         capability_runtime = self._capability_runtime
         if capability_runtime is not None:
-            ok, error = capability_runtime.validate_call(name, arguments_json)
-            if not ok and error != UNDECLARED_TOOL:
+            validation = capability_runtime.validate_call_result(name, arguments_json)
+            if not validation.ok and validation.error_category != UNDECLARED_TOOL:
                 return json.dumps(
-                    {"ok": False, "error": error or NO_LONGER_AUTHORIZED},
+                    {
+                        "ok": False,
+                        "executed": False,
+                        "mutation_committed": False,
+                        "error": validation.error_category or NO_LONGER_AUTHORIZED,
+                        "detail": validation.detail,
+                    },
                     ensure_ascii=False,
                 )
         if (
@@ -526,7 +569,12 @@ class MainAgentBackend(AgentToolBackend):
             and self._service.runtime.runner.main_contract is None
         ):
             return json.dumps(
-                {"ok": False, "error": "main_agent_contract_unavailable"},
+                {
+                    "ok": False,
+                    "error": "main_agent_contract_unavailable",
+                    "executed": False,
+                    "mutation_committed": False,
+                },
                 ensure_ascii=False,
             )
         entry = self._catalog.by_model_name(name) if self._catalog is not None else None
@@ -537,9 +585,21 @@ class MainAgentBackend(AgentToolBackend):
                 tool.name == name for tool in await contract.definitions()
             ):
                 return json.dumps(
-                    {"ok": False, "error": "capability_not_allowed", "executed": False}
+                    {
+                        "ok": False,
+                        "error": "capability_not_allowed",
+                        "executed": False,
+                        "mutation_committed": False,
+                    }
                 )
-            return json.dumps({"ok": False, "error": "unknown_capability"})
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "unknown_capability",
+                    "executed": False,
+                    "mutation_committed": False,
+                }
+            )
         binding = descriptor.binding
         effective_descriptor = self._effective_descriptor(call, descriptor)
         is_web_tool = effective_descriptor.namespace_id.startswith("web.")
@@ -566,6 +626,8 @@ class MainAgentBackend(AgentToolBackend):
             result = json.dumps(
                 {
                     "ok": False,
+                    "executed": False,
+                    "mutation_committed": False,
                     "error": "duplicate_mutation",
                     "detail": "本轮已经成功执行过相同修改，不再重复执行。",
                 },
@@ -575,6 +637,8 @@ class MainAgentBackend(AgentToolBackend):
             result = json.dumps(
                 {
                     "ok": False,
+                    "executed": False,
+                    "mutation_committed": False,
                     "error": "web_tool_limit_exceeded",
                     "detail": (
                         f"本轮最多执行 {config.web.max_calls_per_turn} 次联网工具，"
@@ -594,6 +658,8 @@ class MainAgentBackend(AgentToolBackend):
             result = json.dumps(
                 {
                     "ok": False,
+                    "executed": False,
+                    "mutation_committed": False,
                     "error": "retry_scope_violation",
                     "detail": "参数修正只能重试刚才失败的同一个工具和操作。",
                 },
@@ -612,11 +678,17 @@ class MainAgentBackend(AgentToolBackend):
                 parsed = None
             if not isinstance(parsed, dict):
                 result = json.dumps(
-                    {"ok": False, "error": "invalid_json"},
+                    {
+                        "ok": False,
+                        "error": "invalid_json",
+                        "executed": False,
+                        "mutation_committed": False,
+                    },
                     ensure_ascii=False,
                 )
             else:
                 started = time.perf_counter()
+                send_attempted_before = self._send_message_attempted
                 try:
 
                     async def invoke_binding() -> ToolExecutionResult:
@@ -631,10 +703,14 @@ class MainAgentBackend(AgentToolBackend):
                             if name != "send_message" and await work.pending():
                                 return ToolExecutionResult(
                                     ok=False,
+                                    data={"executed": False},
                                     error_code="new_input_before_execution",
                                     public_message="新要求已到达，此调用未执行，请按新要求继续。",
                                     retryable=True,
+                                    mutation_committed=False,
                                 )
+                        if name == "send_message":
+                            self._send_message_attempted = True
                         return await binding.invoke(
                             {str(key): value for key, value in parsed.items()},
                             ToolInvocationContext(
@@ -666,6 +742,15 @@ class MainAgentBackend(AgentToolBackend):
                         provider_id=descriptor.provider_id,
                         tool_name=descriptor.provider_tool_name or descriptor.model_name,
                     )
+                if (
+                    name == "send_message"
+                    and not outcome.uncertain
+                    and isinstance(outcome.data, dict)
+                    and outcome.data.get("executed") is False
+                    and not outcome.data.get("uncertain")
+                    and outcome.data.get("status") not in {"unknown", "uncertain"}
+                ):
+                    self._send_message_attempted = send_attempted_before
                 mutation_committed = self._is_mutating_call(call) and resolve_mutation_commit(
                     outcome,
                     effective_descriptor,

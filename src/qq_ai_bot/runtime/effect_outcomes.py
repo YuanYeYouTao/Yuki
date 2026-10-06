@@ -7,7 +7,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
-from qq_ai_bot.capabilities.results import ToolExecutionResult
+from qq_ai_bot.capabilities.results import ToolExecutionResult, process_receipt
 
 
 @dataclass(slots=True)
@@ -88,6 +88,7 @@ def execution_evidence(
         )
     raw_status = body.get("status")
     status = raw_status if isinstance(raw_status, str) else None
+    process = process_receipt(outcome)
     return {
         "tool": tool,
         "side_effecting": side_effecting,
@@ -109,6 +110,7 @@ def execution_evidence(
         "run_id": body.get("run_id"),
         "ok": outcome.ok
         and not body.get("error")
+        and process.get("succeeded") is not False
         and status not in {"failed", "cancelled", "uncertain", "unknown"}
         and body.get("exit_code") in (None, 0),
         "pending": bool(body.get("pending")) or status in {"running", "queued", "waiting"},
@@ -119,4 +121,5 @@ def execution_evidence(
         "error_code": outcome.error_code,
         "mutation_committed": outcome.mutation_committed,
         "executed": body.get("executed", True),
+        **({"process": process} if process else {}),
     }

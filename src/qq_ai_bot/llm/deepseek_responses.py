@@ -185,6 +185,7 @@ class DeepSeekResponsesProvider(LLMProvider):
                     self._request_continuation(request),
                     function_outputs=(),
                     allowed_tool_names=frozenset(tool.name for tool in request.tools),
+                    native_tools_requested=bool(request.native_tools),
                     latency=latency,
                 )
         except LLMError as exc:
@@ -452,6 +453,7 @@ class DeepSeekResponsesProvider(LLMProvider):
         *,
         function_outputs: tuple[FunctionCallOutput, ...] = (),
         allowed_tool_names: frozenset[str] = frozenset(),
+        native_tools_requested: bool = False,
         latency: float,
     ) -> ChatResponse:
         try:
@@ -535,7 +537,18 @@ class DeepSeekResponsesProvider(LLMProvider):
             if status == "incomplete"
             else ModelResponseStatus.COMPLETED
         )
-        if not content and not calls and response_status is ModelResponseStatus.COMPLETED:
+        duplicate_call_ids = len({call.id for call in calls}) != len(calls)
+        if duplicate_call_ids:
+            # Keep the paid response and any server-tool effects in the private
+            # checkpoint, but never expose ambiguous local calls for execution.
+            response_status = ModelResponseStatus.INCOMPLETE
+        if (
+            not content
+            and not calls
+            and not native_events
+            and not native_tools_requested
+            and response_status is ModelResponseStatus.COMPLETED
+        ):
             raise LLMEmptyResponseError(
                 "provider returned no final message or function call",
                 diagnostics={"reasoning_only": bool(reasoning)},
@@ -562,7 +575,7 @@ class DeepSeekResponsesProvider(LLMProvider):
             content=content,
             latency_seconds=latency,
             provider_request_id=(payload.get("id") if isinstance(payload.get("id"), str) else None),
-            tool_calls=tuple(calls),
+            tool_calls=() if duplicate_call_ids else tuple(calls),
             reasoning_content="\n".join(reasoning) or None,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
@@ -573,7 +586,7 @@ class DeepSeekResponsesProvider(LLMProvider):
             citations=tuple(citations),
             continuation=continuation,
             reasoning_tokens=cls._integer(output_details.get("reasoning_tokens")),
-            incomplete_reason=incomplete_reason,
+            incomplete_reason="duplicate_tool_call_id" if duplicate_call_ids else incomplete_reason,
         )
 
     @classmethod

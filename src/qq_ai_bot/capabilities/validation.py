@@ -101,11 +101,11 @@ class JsonSchemaCapabilityValidator:
             )
         try:
             validator.validate(payload)
-        except ValidationError:
+        except ValidationError as exc:
             return CapabilityValidationResult(
                 ok=False,
                 error_category=TOOL_INPUT_VALIDATION_FAILED,
-                detail="arguments do not match the declared schema",
+                detail=_validation_detail(exc),
             )
         except Exception as exc:
             module = getattr(type(exc), "__module__", "")
@@ -120,6 +120,53 @@ class JsonSchemaCapabilityValidator:
 
     def is_quarantined(self, capability_id: str) -> bool:
         return capability_id in self._quarantined
+
+
+def _validation_detail(error: ValidationError, *, depth: int = 0) -> str:
+    """Describe the frozen schema only, never the invalid instance or its keys."""
+    schema_path = tuple(error.absolute_schema_path)
+    path: list[str] = []
+    for index, segment in enumerate(schema_path):
+        if segment == "properties" and index + 1 < len(schema_path):
+            field_name = schema_path[index + 1]
+            if isinstance(field_name, str):
+                path.append(field_name[:64])
+        elif segment in {"items", "prefixItems"}:
+            path.append("[]")
+        elif segment in {"additionalProperties", "patternProperties"}:
+            path.append("*")
+    location = ".".join(path)[:256] or "$"
+    category = str(error.validator)
+    expected = error.validator_value
+    if category == "required" and isinstance(expected, list):
+        # Check names declared in this schema, not the exception message, which
+        # may contain arbitrary instance keys or values.
+        instance = error.instance if isinstance(error.instance, dict) else {}
+        missing = [name[:64] for name in expected if name not in instance][:8]
+        requirement = "required fields: " + json.dumps(missing[:8], ensure_ascii=False)
+    elif category == "type":
+        requirement = "expected type: " + json.dumps(expected, ensure_ascii=False)
+    elif category == "enum" and isinstance(expected, list):
+        values = [
+            value
+            for value in expected[:8]
+            if value is None
+            or isinstance(value, (int, float, bool))
+            or (isinstance(value, str) and len(value) <= 80)
+        ]
+        label = "allowed values" if len(values) == len(expected) else "allowed values (partial)"
+        requirement = label + ": " + json.dumps(values, ensure_ascii=False)
+    elif category in {"minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems"}:
+        requirement = f"{category}: {expected}"
+    elif category == "additionalProperties":
+        requirement = "undeclared fields are not allowed"
+    elif category in {"anyOf", "oneOf"} and depth < 2 and error.context:
+        requirement = "declared alternatives: " + "; ".join(
+            _validation_detail(child, depth=depth + 1) for child in error.context[:3]
+        )
+    else:
+        requirement = "must satisfy the declared constraint"
+    return f"{location}: {category}; {requirement}"[:1024]
 
 
 def _assert_safe_schema(

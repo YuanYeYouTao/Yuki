@@ -763,6 +763,7 @@ class WorkRepository:
                             func.coalesce(func.json_extract(inputs.c.payload_json, "$.signal"), 0)
                             == 0,
                             ChatEventModel.direction == "inbound",
+                            ChatEventModel.canonical_conversation_id == lease.conversation_id,
                         )
                         .order_by(inputs.c.id)
                         .limit(limit)
@@ -781,6 +782,7 @@ class WorkRepository:
         *,
         kind: str | None = None,
         event_ids: tuple[int, ...] = (),
+        effect_keys: tuple[str, ...] = (),
         delivered_only: bool = False,
     ) -> list[dict[str, Any]]:
         """Query original sends; child effects and unrelated targets never qualify."""
@@ -788,6 +790,14 @@ class WorkRepository:
             raise ValueError("work_report_kind_invalid")
         if len(event_ids) > 128:
             raise ValueError("work_communication_page_invalid")
+
+        def matches_target(value: Any) -> bool:
+            if isinstance(value, str):
+                value = json.loads(value)
+            return isinstance(value, dict) and all(
+                value.get(field) == expected for field, expected in target.items()
+            )
+
         async with self.database.sessions() as session:
             if not await session.scalar(
                 select(self._lease_table(lease).c.fence).where(self._fence(lease))
@@ -795,6 +805,8 @@ class WorkRepository:
                 raise WorkConflict("work_activation_obsolete")
             clauses = [
                 effects.c.work_id == identity,
+                work.c.conversation_id == lease.conversation_id,
+                work.c.generation == lease.generation,
                 func.json_extract(effects.c.receipt_json, "$.outcome.tool") == "send_message",
                 func.json_type(effects.c.receipt_json, "$.outcome.work_report") == "object",
             ]
@@ -802,11 +814,12 @@ class WorkRepository:
                 clauses.append(
                     func.json_extract(effects.c.receipt_json, "$.outcome.work_report.kind") == kind
                 )
+            if effect_keys:
+                clauses.append(effects.c.effect_key.in_(effect_keys))
             if event_ids:
                 links = func.json_each(
                     effects.c.receipt_json, "$.outcome.work_report.reply_to_event_ids"
                 ).table_valued("value")
-                clauses.append(select(links.c.value).where(links.c.value.in_(event_ids)).exists())
             for field, value in target.items():
                 clauses.append(
                     func.coalesce(
@@ -819,16 +832,57 @@ class WorkRepository:
                     )
                     == value
                 )
-            if delivered_only:
-                clauses.extend(
-                    (
-                        effects.c.state == "accepted",
-                        func.json_extract(effects.c.receipt_json, "$.outcome.delivered_message")
-                        == 1,
+                clauses.append(
+                    or_(
+                        func.json_extract(effects.c.receipt_json, "$.outcome.delivery_target").is_(
+                            None
+                        ),
+                        func.json_extract(
+                            effects.c.receipt_json, f"$.outcome.delivery_target.{field}"
+                        )
+                        == value,
                     )
                 )
+            delivered = and_(
+                effects.c.state == "accepted",
+                func.json_extract(effects.c.receipt_json, "$.outcome.delivered_message") == 1,
+                *(
+                    func.json_extract(effects.c.receipt_json, f"$.outcome.delivery_target.{field}")
+                    == value
+                    for field, value in target.items()
+                ),
+            )
+            uncertain = or_(
+                effects.c.state.in_(("prepared", "unknown")),
+                func.json_extract(effects.c.receipt_json, "$.outcome.uncertain") == 1,
+                func.json_extract(effects.c.receipt_json, "$.outcome.pending") == 1,
+            )
+            if delivered_only:
+                clauses.append(delivered)
+            # Communication needs small facts, never the saved result/body.
+            # json_extract keeps those large values inside SQLite's row page.
+            fields = (
+                "work_report",
+                "report_target",
+                "delivery_target",
+                "delivered_message",
+                "uncertain",
+                "pending",
+                "ok",
+                "executed",
+                "status",
+                "error_code",
+            )
             query = (
-                select(effects.c.effect_key, effects.c.state, effects.c.receipt_json)
+                select(
+                    effects.c.effect_key,
+                    effects.c.state,
+                    *(
+                        func.json_extract(effects.c.receipt_json, f"$.outcome.{field}").label(field)
+                        for field in fields
+                    ),
+                )
+                .join(work, work.c.id == effects.c.work_id)
                 .where(*clauses)
                 .order_by(effects.c.effect_key)
             )
@@ -837,17 +891,40 @@ class WorkRepository:
                 # page dominated by another input cannot hide a later reply.
                 witnessed = {}
                 for event_id in dict.fromkeys(event_ids):
-                    item = (
-                        (
-                            await session.execute(
-                                query.where(
-                                    select(links.c.value).where(links.c.value == event_id).exists()
-                                ).limit(1)
-                            )
-                        )
-                        .mappings()
-                        .first()
+                    linked = query.order_by(None).where(
+                        select(links.c.value).where(links.c.value == event_id).exists()
                     )
+                    # A failed earlier attempt cannot hide a later success;
+                    # uncertainty wins over known failure and forbids blind retry.
+                    # Existence witnesses avoid sorting/returning all receipts.
+                    item = (await session.execute(linked.limit(1))).mappings().first()
+                    if item is not None and not delivered_only:
+                        actual_target = item["delivery_target"]
+                        confirmed = (
+                            item["state"] == "accepted"
+                            and item["delivered_message"]
+                            and matches_target(actual_target)
+                        )
+                        if not confirmed:
+                            later = (
+                                (await session.execute(linked.where(delivered).limit(1)))
+                                .mappings()
+                                .first()
+                            )
+                            if later is not None:
+                                item = later
+                            elif not (
+                                item["state"] in {"prepared", "unknown"}
+                                or item["uncertain"]
+                                or item["pending"]
+                            ):
+                                later = (
+                                    (await session.execute(linked.where(uncertain).limit(1)))
+                                    .mappings()
+                                    .first()
+                                )
+                                if later is not None:
+                                    item = later
                     if item is not None:
                         witnessed[item["effect_key"]] = item
                 rows = list(witnessed.values())
@@ -855,15 +932,20 @@ class WorkRepository:
                 rows = list((await session.execute(query.limit(256))).mappings().all())
             result = []
             for row in rows:
-                evidence = json.loads(row["receipt_json"]).get("outcome", {})
-                if (evidence.get("report_target") or evidence.get("delivery_target")) != target:
+                evidence = {field: row[field] for field in fields}
+                for field in ("work_report", "report_target", "delivery_target"):
+                    value = evidence[field]
+                    evidence[field] = json.loads(value) if isinstance(value, str) else value
+                if not matches_target(
+                    evidence.get("report_target") or evidence.get("delivery_target")
+                ):
                     continue
                 if row["state"] in {"prepared", "unknown"}:
                     evidence["uncertain"] = True
                 if delivered_only and not (
                     row["state"] == "accepted"
                     and evidence.get("delivered_message")
-                    and evidence.get("delivery_target") == target
+                    and matches_target(evidence.get("delivery_target"))
                 ):
                     continue
                 result.append({**evidence, "effect_key": row["effect_key"], "state": row["state"]})

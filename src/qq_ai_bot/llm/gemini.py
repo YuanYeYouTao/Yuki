@@ -34,7 +34,12 @@ from qq_ai_bot.llm.base import (
 )
 from qq_ai_bot.llm.gemini_schema import response_schema
 from qq_ai_bot.llm.json_http import JSONHTTPProvider
-from qq_ai_bot.llm.protocol_state import checkpoint_items, integer, ordered_delta
+from qq_ai_bot.llm.protocol_state import (
+    checkpoint_items,
+    integer,
+    ordered_delta,
+    tool_result_failed,
+)
 from qq_ai_bot.llm.vendor_policy import ChatWireOptions, effort_value, thinking_budget, wire_options
 
 
@@ -151,7 +156,9 @@ class GeminiProvider(JSONHTTPProvider):
                     continue
                 result: dict[str, Any] = {
                     "name": call["name"],
-                    "response": {"output": item.output},
+                    "response": {
+                        "error" if tool_result_failed(item.output) else "output": item.output
+                    },
                 }
                 if call.get("id"):
                     result["id"] = call["id"]
@@ -396,10 +403,17 @@ class GeminiProvider(JSONHTTPProvider):
                         query=search_queries[call_id],
                     )
                 )
-        if len(set(call_ids)) != len(call_ids):
+        duplicate_call_ids = len(set(call_ids)) != len(call_ids)
+        if duplicate_call_ids and not (native_events or request.native_tools):
             raise LLMInvalidResponseError("duplicate Gemini function IDs")
         text = "".join(texts)
-        if not text and not calls and not truncated:
+        if (
+            not text
+            and not calls
+            and not native_events
+            and not request.native_tools
+            and not truncated
+        ):
             raise LLMEmptyResponseError(
                 "Gemini returned no visible text or tool calls",
                 diagnostics=self._usage_diagnostics(payload),
@@ -454,7 +468,7 @@ class GeminiProvider(JSONHTTPProvider):
             if isinstance(payload.get("responseId"), str)
             else None,
             reasoning_content="\n".join(thoughts) or None,
-            tool_calls=tuple(calls),
+            tool_calls=() if duplicate_call_ids else tuple(calls),
             prompt_tokens=integer(usage.get("promptTokenCount")),
             completion_tokens=output + (thinking or 0) if output is not None else None,
             total_tokens=integer(usage.get("totalTokenCount")),
@@ -462,8 +476,14 @@ class GeminiProvider(JSONHTTPProvider):
             cached_prompt_tokens=integer(usage.get("cachedContentTokenCount")),
             native_tool_events=tuple(native_events),
             citations=tuple(citations),
-            status=ModelResponseStatus.INCOMPLETE if truncated else ModelResponseStatus.COMPLETED,
-            incomplete_reason="max_output_tokens" if truncated else None,
+            status=ModelResponseStatus.INCOMPLETE
+            if duplicate_call_ids or truncated
+            else ModelResponseStatus.COMPLETED,
+            incomplete_reason="duplicate_tool_call_id"
+            if duplicate_call_ids
+            else "max_output_tokens"
+            if truncated
+            else None,
             continuation=ProviderContinuation(
                 provider=self.provider_name,
                 protocol=self.protocol,
