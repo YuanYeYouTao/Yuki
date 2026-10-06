@@ -145,6 +145,7 @@ class AutomationCapabilityHandlers:
             invocation_goal=str(arguments["instruction"]),
             invocation_source={
                 "owner": "automation",
+                "delivery_target": arguments.get("delivery_target") or "none",
                 "principal_kind": context.creator_kind,
                 "actor_person_id": context.canonical_creator_person_id,
                 "bot_user_id": context.bot_user_id,

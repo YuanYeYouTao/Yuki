@@ -1020,6 +1020,37 @@ class MainAgentBackend(AgentToolBackend):
                     "这段最终正文是内部结果，尚未发送。需要参与当前群讨论时调用 send_message；"
                     "决定沉默则返回 NO_REPLY。已经成功的操作不要重复。"
                 )
+        control = runtime.work_control
+        source = (
+            (control.source if control is not None else runtime.invocation_source or {})
+            if runtime.origin is RuntimeTurnOrigin.SCHEDULED_AUTOMATION
+            else {}
+        )
+        if (
+            runtime.origin is RuntimeTurnOrigin.SCHEDULED_AUTOMATION
+            and source.get("owner") == "automation"
+            and source.get("principal_kind") == "person"
+            and source.get("delivery_target") in {"current_group", "self_private"}
+            and (control is None or control.lease.work_id is None)
+            and body.strip()
+            and not self._send_message_attempted
+            and not self.messages_sent
+        ):
+            if self._unsent_final_feedback_count:
+                raise UnsentFinalResponseError("scheduled notification was not sent")
+            self._unsent_final_feedback_count += 1
+            target_feedback = (
+                "原获准目标是创建者私聊：用 target.kind=person、subject_ref=current_speaker，"
+                "不能改发当前群。"
+                if source["delivery_target"] == "self_private"
+                else "按原获准的当前群目标发送。"
+            )
+            return (
+                "这次自动化明确要求通知，但上一段最终正文只是内部结果，尚未发送。"
+                + target_feedback
+                + "请调用 send_message；原工具结果和发送回执仍有效，"
+                "不重复已成功或结果未知的操作。不能交付时如实保留阻塞。"
+            )
         if self._capability_was_used and contains_internal_capability_payload(content):
             return (
                 "上一正文未发送：权限结果是内部执行资料。请根据实际结果继续，勿转发内部权限载荷。"
