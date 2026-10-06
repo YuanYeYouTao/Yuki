@@ -124,18 +124,13 @@ mypy（726 源文件）通过。真实 worker 测试无跳过；唯一跳过仍�
 [最终联合证据](pi-codemode-evidence/native-media-main-compatibility.json)。其中 pytest
 进程总耗时 971.08 秒，960.10 秒是 pytest 自报的测试耗时，二者不混用。
 
-Python、运行时和测试源码在最终复验后全部保持相同 hash。复验过程中只更新安装器
-PowerShell 的原生参数引号及旧 WSL 查询错误兜底；初始 hash 保留，最终 hash 和
-补充验证单列，没有将它改写成开跑时的源码。最终脚本实际经过 PowerShell 7.6.6
-的 Legacy 参数模式检查、八组原生参数、Bash 引号、状态续写、拷贝中断/重试、
-保留现有编辑与 WSL 查询失败检查，另有 14 项安装器回归、Bash 语法和 Compose
-配置检查通过；范围与记录见[安装器验证](pi-codemode-evidence/windows-deployment-verification.json)。
+2026-10-06 按用户要求在本地撤出 Windows 一键部署及其专用测试、验证文件。
+上述 4022 项是当时包含 14 项安装器测试的历史联合结果；原始全量报告、源码 hash
+及日志保持原样，报告中的已撤出文件 hash 仅用于定位历史源码。核心与 main
+兼容修复保留，本次撤出以本地提交保存，未推送，远端原有提交暂未改变。
 
-真实供应商图片/工具/原回执续接验证通过：原生媒体适配器两次请求 18.499 秒，
-最终安装器同一探针两次请求 5.845 秒。它们属于真实 API 连通与协议验收，不是
-与旧版的性能对照；原始记录见[原生媒体](pi-codemode-evidence/native-media-provider-probe.json)和
-[安装器 API](pi-codemode-evidence/windows-deployment-provider-probe.json)。API 密钥未进入源码或报告。
+真实供应商图片/工具/原回执续接验证通过：原生媒体适配器两次请求 18.499 秒。
+这是实际 API 连通与协议验收，不是与旧版的性能对照；原始记录见
+[原生媒体](pi-codemode-evidence/native-media-provider-probe.json)。API 密钥未进入源码或报告。
 
 此轮没有真实 QQ 发送、生产访问、PR、main 合并、镜像发布或部署。
-Windows 一键安装器已准备，私有包使用联合验收通过的源码提交；目标 Windows 运行门
-由安装器现场检查，当前不把 macOS 脚本检查当成 Windows 部署成功。

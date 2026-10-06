@@ -905,101 +905,31 @@ main 的三个新增测试文件按 typed Invocation 更新夹具，并添加解
 源文件）通过。唯一跳过为未提供私有生产备份，真实 worker 无跳过。源码、worker、
 退出码及日志 hash 见[最终联合证据](pi-codemode-evidence/native-media-main-compatibility.json)。
 
-复验过程中只有 PowerShell 安装器参数传递及旧 WSL 版本查询兜底变更；原始源码
-hash 保留，最终脚本的独立行为检查、14 项安装器回归及最终 hash 单列于证据。
-其余 Python、运行时和测试源码均未改变。两个原生图片/工具/续接 API 探针实际
-通过，分别两次请求；未做真实 QQ 发送或生产访问，不把连通性作为性能对照。
+上述全量包含当时的 14 项 Windows 安装器测试。2026-10-06 按用户要求在本地撤出
+安装器及其专用测试、验证文件，历史全量报告、源码 hash 与日志保持原样；其中已
+撤出文件的 hash 仅用于定位历史源码。核心及 main 兼容修复保留。原生媒体适配器
+的图片/工具/原回执续接 API 探针通过，两次请求；未做真实 QQ 发送或生产访问，
+不把连通性作为性能对照。
 
 三轮全量自有临时根与便携 PowerShell 工具已删除，压缩日志及失败/中止证据保留；
 清理量和范围见[清理记录](pi-codemode-evidence/native-media-windows-cleanup.json)。
 开发 worker/binding、共享临时根和用户数据保留。本轮无 PR、main 写入、镜像发布
 或部署。测试分支提交、推送与祖先关系由最终回报单列。
 
-下一依赖：使用同一份已验证的源码提交生成私有 Windows 包；目标 Windows 的
-原生运行和 QQ 扫码尚未运行，私有生产备份测试仍缺数据。
+目标环境实际运行及 QQ 扫码尚未验证，私有生产备份测试仍缺数据。
 
-## 2026-10-06：Windows 私有一键部署包
+## 2026-10-06：本地撤出 Windows 一键部署
 
-用户在最新 main 兼容后继续要求 Windows 一键安装。当前兼容提交 `783d0873`
-是 `c4afe62d` 与 `3ca36510` 的正常双父合并；安装器使用随后已验证的完整源码提交，
-不使用旧发行镜像。公开仓库只保存通用脚本，真实密钥、完整角色提示词和机器人
-账号仅在仓库外生成的私有包中。首次部署由用户输入独立管理员 QQ。
+按用户要求撤出 `deploy/windows/`、私有包生成器、安装器验证工具、专用测试及
+专用证据，移除架构索引入口并更新交接说明。QQ Bot 核心、Code Mode、迁移及
+main 兼容修复保留。仓库外已生成的私有包保留。
 
-新增 `deploy/windows/` 与 `scripts/build_windows_private_bundle.py`：
+本次撤出以本地提交保存，未推送；此前已推送的远端提交未改动。
 
-- 全新 x64 Windows 10/11 启用 WSL2、缺新 WSL 时安装校验固定 SHA 的官方 MSI，
-  导入独立 `Yuki-Bocchi` Ubuntu 24.04，重启续装且拒绝覆盖其他所有者的环境。
-- Bot / Monty 以普通 `yuki` 用户运行；NapCat 通过同一 WSL 内的 Docker Engine
-  启动，使用固定 amd64 manifest。编译固定 Monty 与 wheel、构建 WebUI，校验
-  原生 namespace / UID / 无网络 / watchdog / 所有者死亡，不放宽隔离规则。
-- 原子配置接入完整角色提示词、Anthropic 主/后台 profiles、全部 ModelTask 路由、
-  Work / 自动化 / 子 Agent / Code Mode 与原生图片；不硬编码用户密钥或管理员。
-  管理凭据随机生成，Linux 私有文件和 Windows 安装目录限制访问。
-- 现场检查真实 API 的图片、工具与原回执续接，再正常迁移至 `0096` 并只读
-  quick_check；服务与 Windows localhost 均通过后才标记安装完成。重试先停
-  原 Bot，systemd 重启后再次停，避免第二个 SQLite 写者。QQ 登录仍由用户扫码。
-- 源码 tar 固定 git 提交，私有 ZIP 校验每项 SHA、来源和完整性；Windows 脚本
-  使用 CRLF。安装/启动/停止入口保存运行数据，成功后仅删除自有 Monty 构建缓存。
-
-验证没有依赖目标 Windows：14 项真实 Settings / 路由 / 权限 / 私有文件 / 原子
-配置 / 安全解包 / 固定 git archive / ZIP 回归通过（0.26 秒），已包含在最终
-4022 项通过的联合检查中。PowerShell 7.6.6 的实际 Legacy 模式行为检查、Bash
-语法及含临时合成 `.env` 的 Compose config 检查通过，具体输入、输出与 hash
-保存在[安装器验证](pi-codemode-evidence/windows-deployment-verification.json)。
-它们不冒充 Windows PowerShell 5.1、WSL 导入或目标 QQ 运行测试。
-
-用户真实 API 已验证：原连通探针两次请求 8.009 秒，原生图片探针两次 18.499 秒，
-最终安装器自身探针两次 5.845 秒，共六次实际请求；安装器主 profile 接收蓝色原图、
-返回指定函数参数后，原 continuation 配对工具结果并回复 READY。对应原始
-[安装器探针](pi-codemode-evidence/windows-deployment-provider-probe.json)保留 token
-与时间；没有从时间不同推断性能提升，没有真实 QQ 消息外发。
-
-目标 Windows 的导入、原生编译/隔离、迁移、systemd、网关、localhost 与扫码状态
-均标记**未运行**，由安装器在用户部署电脑上逐项执行。额外搜索、语音及 gVisor /
-Manager 终端服务尚无对应连接，默认不启用；不影响已配置的聊天、原生图片和受限
-Python Code Mode。使用方式与这些边界见[安装说明](../../deploy/windows/README.md)。
-
-这次交付范围为本地通用安装器、私有包生成、验证及测试分支提交/推送；没有替用户
-在当前 Mac 或生产环境部署。私有包由上述 builder 在提交后生成并独立核对；实际
-路径、固定源码提交、ZIP SHA 与推送结果随最终回报交付，不把密钥载荷加入 Git。
-
-## 2026-10-06：Windows D 盘位置与安装进度修复
-
-用户实际执行旧包后停留在 `Installing the official WSL core and Linux kernel`，
-随后明确要求安装到 D 盘并显示进度。旧提示同时覆盖 GitHub 下载与 `/qn` 静默 MSI；
-尚未取得目标机的文件/进程信息，具体阻塞在下载还是 MSI 不能从这句话确定。
-旧安装根使用 LOCALAPPDATA，通常在 C 盘，这是安装器默认位置的问题。
-
-- 主要安装目录固定 `D:\Yuki-Bocchi`；虚拟磁盘、Docker、Bot、数据库、下载和
-  临时文件都在 D。D 不存在、不是 NTFS 或首次安装少于 25 GB 时停止，不回落 C。
-  WSL 共享 swapFile 也显式放在 D，只改该设置、保留其他配置并提示重启生效。
-  Windows 的 WSL 系统组件、RunOnce/启动链接和小型用户配置仍由操作系统管理。
-- 分九阶段显示安装，实际下载大小/速度/百分比可见；120 秒无数据或总时间超过
-  一小时拒绝下载，临时文件清理且原缓存不被失败覆盖。MSI 改为 `/passive`，
-  每 15 秒显示等待耗时，并使用独立 `/L*V!` 日志；1618 明确指出其他安装占用。
-  Linux 依赖、WebUI、Monty、真实 API/迁移和网关显示阶段、原命令输出和耗时。
-- 修复包复用已验证旧包的 UUID、运行时 tar、管理员与私有配置，新的安装器提交
-  单记 installer_revision。严格旧/新文件 hash 支持中断更新重试，拒绝用户编辑。
-  旧安装文件原子复制到 D；已存在的原 WSL 使用 3.0.1 以上的 `--manage --move`，
-  不导出/注销或复制 live VHD。复核原 owner、注册路径和最终服务后，才清理已
-  核对迁移完成的旧副本；未知根、reparse point、额外或后来修改的文件保留/拒绝。
-  旧窗口与 D 盘安装锁避免重叠安装，迁移不新建 Bot 或重置原预算、回执和数据库。
-
-14 项 Python 安装器回归通过（0.25 秒），原断言保留，新增真实小型 git 仓库的
-旧源码/UUID/私有文件保持及配置不同的拒绝检查。PowerShell 7.6.6 在 macOS 实际
-执行函数；本机 HTTP 服务器实际复现头部停滞、正文停滞、总时长超限及错误 SHA，
-验证进度、失败保留和临时文件清理。文件迁移、atomic replace、升级中断/重试、
-WSL 参数/所有权/不重复移动、swap 配置保持、MSI 参数/心跳/错误及清理围栏通过；
-WSL 注册/移动和 MSI 本身是受限 fake，没有冒充真实 Windows 验收。
-
-ruff check、format（1202 文件）、mypy（726 源文件）与 Bash 语法通过。
-本次新增补丁曾被 parser 发现一处错误字符串括号缺失，状态替换检查又发现
-PowerShell 把 File.Replace 的 $null 转为空字符串；均修正后重跑实际检查通过，
-后者使用 NullString.Value 表达真正的 null，没有新增备份文件。
-命令、日志和最后源码 hash 见[修复验证](pi-codemode-evidence/windows-d-drive-verification.json)。
-
-src 与 migrations 的源码 hash 全部保持原验收状态，修复包运行时仍固定 `8d6e3534`；
-未重复无关的 16 分钟全量，原 4022/1 跳过是该运行时的历史验证，新的安装器由
-上述定向验证覆盖。API 配置与 probe 代码未改，不重复付费连通调用；没有在当前
-Mac 安装 WSL、启动 Bot、写生产数据或发送 QQ。目标 Windows 执行仍标记未运行，
-以修复包现场的检查和扫码结果为准。安装说明已更新，旧阶段记录保持原样。
+撤出后验证：`uv run --frozen --no-sync ruff check src tests scripts migrations`、
+`uv run --frozen --no-sync ruff format --check src tests scripts migrations`
+（1199 文件）及 `uv run --frozen --no-sync mypy`（726 源文件）通过。
+显式使用真实 `.venv/bin/yuki-monty-worker`，运行原生图片组合、段末发布、
+主模型媒体、只读回执复用及历史投影五份回归文件：41 项通过，8.83 秒，无跳过。
+770 个核心与迁移文件 SHA 与原全量证据一致，81 个相关文档本地链接有效，
+diff 检查通过。核心未改动，本次未重复全量、付费 API 或真实 QQ 发送。
