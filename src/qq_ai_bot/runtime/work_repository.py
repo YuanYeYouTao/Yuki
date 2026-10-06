@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import and_, case, delete, func, or_, select, update
+from sqlalchemy import and_, case, delete, func, literal_column, or_, select, text, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1740,13 +1740,36 @@ class WorkRepository:
             receipt.updated_at = datetime.now(UTC)
 
     async def completed_children(
-        self, lease: WorkLease, work_id: str, run_ids: list[str]
+        self,
+        lease: WorkLease,
+        work_id: str,
+        run_ids: list[str],
+        *,
+        request_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Read only terminal host receipts belonging to this fenced parent."""
+        from qq_ai_bot.runtime.effect_outcomes import execution_finished
         from qq_ai_bot.sandbox.db_models import SandboxTaskRunModel
 
-        if not run_ids:
+        request_ids = request_ids or []
+        if not run_ids and not request_ids:
             return []
+        identities = []
+        if run_ids:
+            identities.append(SandboxTaskRunModel.run_id.in_(run_ids[:32]))
+        if request_ids:
+            identities.append(SandboxTaskRunModel.request_id.in_(request_ids[:32]))
+        source_fields = ("work_id", "conversation_id", "generation")
+        completion_fields = (
+            "run_id",
+            "status",
+            "pending",
+            "uncertain",
+            "exit_code",
+            "error",
+            "artifact_id",
+            "artifacts",
+        )
         async with self.database.sessions() as session:
             if (
                 await session.scalar(
@@ -1755,24 +1778,54 @@ class WorkRepository:
                 is None
             ):
                 raise WorkConflict("work_activation_obsolete")
-            rows = await session.scalars(
-                select(SandboxTaskRunModel).where(
+            rows = await session.execute(
+                select(
+                    SandboxTaskRunModel.request_id,
+                    SandboxTaskRunModel.run_id,
+                    func.json_extract(
+                        SandboxTaskRunModel.source_json,
+                        *(f"$.{field}" for field in source_fields),
+                    ).label("source"),
+                    func.json_extract(
+                        SandboxTaskRunModel.completion_json,
+                        *(f"$.{field}" for field in completion_fields),
+                    ).label("completion"),
+                )
+                .where(
                     SandboxTaskRunModel.source_conversation_id == lease.conversation_id,
-                    SandboxTaskRunModel.run_id.in_(run_ids[:32]),
+                    or_(*identities),
                     SandboxTaskRunModel.completion_json.is_not(None),
                 )
+                .order_by(SandboxTaskRunModel.request_id)
+                .limit(64)
             )
             results = []
             for row in rows:
-                source = json.loads(row.source_json)
-                if source.get("work_id") != work_id or source.get("generation") != lease.generation:
+                source = dict(zip(source_fields, json.loads(row.source), strict=True))
+                if (
+                    source.get("work_id") != work_id
+                    or source.get("conversation_id") != lease.conversation_id
+                    or type(source.get("generation")) is not int
+                    or source["generation"] != lease.generation
+                ):
                     continue
-                value = json.loads(row.completion_json or "{}")
-                if value.get("status") not in {"completed", "succeeded", "failed", "cancelled"}:
+                value = {
+                    key: value
+                    for key, value in zip(
+                        completion_fields, json.loads(row.completion), strict=True
+                    )
+                    if value is not None
+                }
+                if (
+                    not isinstance(row.run_id, str)
+                    or value.get("run_id") != row.run_id
+                    or not execution_finished(value)
+                ):
                     continue
                 results.append(
                     {
                         "run_id": row.run_id,
+                        "request_id": row.request_id,
                         "pending": False,
                         **{
                             key: value[key]
@@ -2008,6 +2061,17 @@ class WorkRepository:
         )
 
     @staticmethod
+    def _lifecycle_role_clause() -> Any:
+        # Only an explicit JSON boolean false proves an observation. Legacy
+        # missing/null roles remain conservative, rather than inventing safety.
+        return (
+            func.coalesce(
+                func.json_type(effects.c.receipt_json, "$.outcome.side_effecting"), "missing"
+            )
+            != "false"
+        )
+
+    @staticmethod
     def _unresolved_clause(*, pending: bool = True, uncertain: bool = True) -> Any:
         clauses = []
         if pending:
@@ -2018,14 +2082,10 @@ class WorkRepository:
                     func.json_extract(effects.c.receipt_json, "$.outcome.uncertain") == 1,
                     and_(
                         effects.c.state.in_(("prepared", "unknown")),
-                        func.coalesce(
-                            func.json_extract(effects.c.receipt_json, "$.outcome.side_effecting"), 1
-                        )
-                        == 1,
                     ),
                 )
             )
-        return or_(*clauses) if clauses else False
+        return and_(WorkRepository._lifecycle_role_clause(), or_(*clauses)) if clauses else False
 
     async def effect_evidence(
         self,
@@ -2084,8 +2144,11 @@ class WorkRepository:
                         outcome = execution_evidence(
                             legacy, tool="legacy_tool", side_effecting=True
                         )
-                    if row["state"] in {"prepared", "unknown"}:
-                        outcome["uncertain"] = outcome.get("side_effecting", True)
+                    if (
+                        row["state"] in {"prepared", "unknown"}
+                        and outcome.get("side_effecting") is not False
+                    ):
+                        outcome["uncertain"] = True
                     outcome.update(effect_key=row["effect_key"], work_id=row["work_id"])
                     result.append(outcome)
                 cursor = rows[-1]["effect_key"]
@@ -2125,43 +2188,106 @@ class WorkRepository:
         identity: str,
         run_id: str,
         outcome: dict[str, Any],
+        *,
+        effect_key: str | None = None,
+        request_id: str | None = None,
     ) -> None:
         """Use an owned run receipt; preserve every original invocation and its mutating role."""
+        from qq_ai_bot.runtime.effect_outcomes import execution_finished
+        from qq_ai_bot.sandbox.environment_tools import EXECUTION_TOOLS
+
+        if not execution_finished(outcome) or outcome.get("run_id") != run_id:
+            return
+        if effect_key is not None and (
+            request_id is None or outcome.get("request_id") != request_id
+        ):
+            return
+        if lease.work_id is not None and identity != lease.work_id:
+            raise WorkConflict("work_effect_obsolete")
+        owned = and_(
+            work.c.id == identity,
+            work.c.conversation_id == lease.conversation_id,
+            work.c.generation == lease.generation,
+        )
+        # A terminal child's late receipt is still an issued execution fact.
+        # Resolving it neither revives that Work nor grants another dispatch.
+        target = (
+            and_(effects.c.effect_key == effect_key, effects.c.state == "accepted")
+            if effect_key is not None
+            else func.json_extract(effects.c.receipt_json, literal_column("'$.outcome.run_id'"))
+            == run_id
+        )
+        prepared: list[tuple[str, str, str]] = []
+        cursor = ""
         async with self.database.sessions() as reader:
-            rows = (
-                (
-                    await reader.execute(
-                        select(effects).where(
-                            effects.c.work_id == identity,
-                            func.json_extract(effects.c.receipt_json, "$.outcome.run_id") == run_id,
+            await reader.execute(text("BEGIN"))
+            await self._assert_lease_readonly(reader, lease)
+            if await reader.scalar(select(work.c.id).where(owned)) is None:
+                raise WorkConflict("work_effect_obsolete")
+            while True:
+                rows = (
+                    (
+                        await reader.execute(
+                            select(effects.c.effect_key, effects.c.receipt_json)
+                            .where(
+                                effects.c.work_id == identity,
+                                target,
+                                self._lifecycle_role_clause(),
+                                effects.c.effect_key > cursor,
+                            )
+                            .order_by(effects.c.effect_key)
+                            .limit(128)
                         )
                     )
+                    .mappings()
+                    .all()
                 )
-                .mappings()
-                .all()
-            )
-        prepared = []
-        for row in rows:
-            receipt = json.loads(row["receipt_json"])
-            previous = receipt.get("outcome", {})
-            merged = {**previous, **outcome}
-            merged["side_effecting"] = previous.get("side_effecting", False) or outcome.get(
-                "side_effecting", False
-            )
-            merged["tool"] = previous.get("tool", outcome.get("tool"))
-            receipt["outcome"] = merged
-            prepared.append((row["effect_key"], row["receipt_json"], bounded_json(receipt)))
-        async with self.database.immediate_session() as writer:
-            await self._assert_lease(writer, lease)
-            for key, previous_json, next_json in prepared:
-                await writer.execute(
-                    update(effects)
-                    .where(
-                        effects.c.effect_key == key,
-                        effects.c.receipt_json == previous_json,
+                if not rows:
+                    break
+                for row in rows:
+                    receipt = json.loads(row["receipt_json"])
+                    previous = receipt.get("outcome", {})
+                    if effect_key is not None and (
+                        previous.get("request_id") != request_id
+                        or previous.get("run_id") not in (None, run_id)
+                        or previous.get("tool") not in EXECUTION_TOOLS
+                    ):
+                        continue
+                    if previous.get("tool") not in (
+                        EXECUTION_TOOLS | {"terminal_write", "terminal_control", "cancel_code_run"}
+                    ):
+                        continue
+                    merged = {**previous, **outcome}
+                    merged["side_effecting"] = True
+                    merged["tool"] = previous.get("tool", outcome.get("tool"))
+                    # A readonly poll's False describes the poll, never whether
+                    # the original execution committed. Preserve unknown too.
+                    merged["mutation_committed"] = previous.get("mutation_committed")
+                    if merged == previous:
+                        continue
+                    receipt["outcome"] = merged
+                    encoded = bounded_json(receipt)
+                    if encoded != row["receipt_json"]:
+                        prepared.append((row["effect_key"], row["receipt_json"], encoded))
+                cursor = rows[-1]["effect_key"]
+        if not prepared:
+            return
+        # Receipts are independent facts. A partial page commit retains exact
+        # unresolved originals, so completion stays blocked without replay.
+        for offset in range(0, len(prepared), 128):
+            async with self.database.immediate_session() as writer:
+                await self._assert_lease(writer, lease)
+                for key, previous_json, next_json in prepared[offset : offset + 128]:
+                    await writer.execute(
+                        update(effects)
+                        .where(
+                            effects.c.effect_key == key,
+                            effects.c.work_id == identity,
+                            effects.c.receipt_json == previous_json,
+                            select(work.c.id).where(owned).exists(),
+                        )
+                        .values(receipt_json=next_json, updated=time.time())
                     )
-                    .values(receipt_json=next_json, updated=time.time())
-                )
 
     async def record_effect(
         self,
