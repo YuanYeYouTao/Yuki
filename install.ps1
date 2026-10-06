@@ -137,6 +137,11 @@ try {
     Write-Host "Configuration saved. No services were stopped or started and no database was upgraded." -ForegroundColor Green
     Write-Host "Review $InstallDir/Yuki-$Version-Upgrade.md before starting or upgrading the deployment."
     Write-Host "Upgrade guide: https://github.com/$Repository/blob/v$Version/docs/upgrade-$Version.md"
+    Write-Host "Path file tools and terminals require the Linux Docker host Manager; Compose does not install it."
+    Write-Host "After preparing the persistent-environment prerequisites, explicitly run on that Linux host:"
+    Write-Host "sudo /opt/yuki-sandbox/deploy/sandbox/install-manager.sh --deployment-root /absolute/deployment/path"
+    Write-Host "Use the Linux host deployment root; a Windows client path is not the Docker host path."
+    Write-Host "Then check: docker compose exec --user 10001:10001 bot qq-ai-bot-cli setup environment-check"
 } finally {
     $ResolvedTemporary = [System.IO.Path]::GetFullPath($Temporary)
     if ([System.IO.Path]::GetDirectoryName($ResolvedTemporary).TrimEnd([System.IO.Path]::DirectorySeparatorChar) -ne $TemporaryRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar)) {

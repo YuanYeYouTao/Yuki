@@ -434,6 +434,72 @@ def test_memory_exclusive_write_changes_grants_without_changing_declarations() -
     )
 
 
+def test_memory_exclusive_user_feedback_keeps_only_core_reply_and_original_declarations():
+    view = MemoryCapabilityView(
+        eager_namespaces=("memory.state.write",),
+        requestable_namespaces=(),
+        hidden_namespaces=(),
+        exclusive_namespace="memory.state.write",
+        transition_revision=1,
+    )
+    send = _descriptor(
+        "send_message",
+        namespace="social.send",
+        effect=CapabilityEffect.PLATFORM_SEND,
+        risk=CapabilityRisk.MUTATE,
+    )
+    entries = (
+        _entry(send),
+        _entry(
+            _descriptor(
+                "other_send", namespace="social.send", effect=CapabilityEffect.PLATFORM_SEND
+            )
+        ),
+        _entry(
+            _descriptor(
+                "poke_person", namespace="social.poke", effect=CapabilityEffect.PLATFORM_MUTATE
+            )
+        ),
+        _entry(
+            _descriptor(
+                "workspace_write", namespace="workspace.write", effect=CapabilityEffect.WRITE_STATE
+            )
+        ),
+        _entry(
+            _descriptor(
+                "memory_change", namespace="memory.state.write", effect=CapabilityEffect.WRITE_STATE
+            )
+        ),
+    )
+    runtime = _runtime(*entries)
+    runtime.initial_exposure()
+    original = runtime.definitions()
+    runtime.sync_memory_view(view)
+    assert runtime.definitions() == original
+    assert runtime.callable_capability_ids() == frozenset({"send_message", "memory_change"})
+    assert runtime.validate_call("send_message", '{"query":"feedback"}') == (True, None)
+    for name in ("other_send", "poke_person", "workspace_write"):
+        assert runtime.validate_call(name, '{"query":"x"}') == (False, NO_LONGER_AUTHORIZED)
+    for origin, read_only, descriptor in (
+        (TurnOrigin.USER_MESSAGE, True, send),
+        (TurnOrigin.SELF_INITIATIVE, False, send),
+        (TurnOrigin.SCHEDULED_AUTOMATION, False, send),
+        (TurnOrigin.PLUGIN_BACKGROUND, False, send),
+        (TurnOrigin.USER_MESSAGE, False, replace(send, trust_source=CapabilityTrustSource.PLUGIN)),
+        (TurnOrigin.USER_MESSAGE, False, replace(send, namespace="unrelated.send")),
+    ):
+        visible = CapabilityPolicyEngine().visible(
+            (descriptor,),
+            CapabilityPolicyContext(
+                authority=AuthorityContext(actor_user_id="u1", is_superuser=False),
+                origin=origin,
+                read_only=read_only,
+                memory_view=view,
+            ),
+        )
+        assert not visible
+
+
 def test_schema_conflict_rebuilds_only_without_side_effects() -> None:
     first = _entry(_descriptor("web_search", namespace="web.search", revision="1"))
     runtime = _runtime(first, append_only=True)

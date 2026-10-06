@@ -30,6 +30,8 @@ _CONFIG_FILES = frozenset(
 )
 _EMPTY_DIRECTORIES = (
     "data",
+    "workspace",
+    "social-transfer",
     "webui-config",
     "data/speech/cache",
     "data/speech/genie_data",

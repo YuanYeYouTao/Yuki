@@ -1,4 +1,4 @@
-"""Explicit, audited recovery of a known Space; never an automatic unpause."""
+"""Explicit, audited group registration and recovery; never an automatic unpause."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from qq_ai_bot.conversation.canonical_db_models import (
     SpaceBindingIngestRouteModel,
 )
 from qq_ai_bot.gateway.registry import GatewayConnectionRegistry, RegistryClosed
+from qq_ai_bot.identity.canonical_repository import find_space_binding, new_identity_id
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
@@ -47,31 +48,18 @@ class GroupRecoveryService:
         audit: ControlAuditRef,
         event_type: str,
     ) -> bool:
-        """Return False on a replay. No model, event append, generation reset or new owner."""
+        """Return False on a replay; register an unbound group only after live proof."""
 
         require_capability(context, "control.group.mutate")
         target = context.canonical_target
-        if target.space_id is None:
-            raise RouteSendError("none")
-        space_id = target.space_id.text
+        registering = target.space_id is None
+        space_id = new_identity_id() if target.space_id is None else target.space_id.text
+        binding_id = new_identity_id() if registering else ""
         principal_id = context.principal.principal_id.text
         if context.principal.person_id is None:
             raise PermissionError("invalid_control_principal")
         person_id = context.principal.person_id.text
-        payload_hash = hashlib.sha256(
-            json.dumps(
-                [
-                    "group.recover",
-                    space_id,
-                    target.storage_group_id,
-                    presence_id,
-                    event_type,
-                    audit.trigger_message_id,
-                    principal_id,
-                ],
-                separators=(",", ":"),
-            ).encode()
-        ).hexdigest()
+        payload_hash = self._payload_hash(context, space_id, presence_id, audit, event_type)
         async with self._database.sessions() as session:
             await self._require_actor(session, person_id, audit)
             presence = await session.get(PresenceModel, presence_id)
@@ -83,32 +71,54 @@ class GroupRecoveryService:
                 or presence.external_account_id != audit.bot_user_id
             ):
                 raise RouteSendError("none")
+            if await self._request_replayed(session, context, presence_id, audit, event_type):
+                return False
             if await self._replayed(session, principal_id, payload_hash):
                 return False
-            binding = await session.scalar(
-                select(SpaceBindingModel).where(
-                    SpaceBindingModel.space_id == space_id,
-                    SpaceBindingModel.platform == "qq",
-                    SpaceBindingModel.external_space_id == target.storage_group_id,
-                )
-            )
-            if binding is None:
-                raise RouteSendError("none")
-            binding_id = binding.id
-            before = await self._state(session, space_id, binding_id)
-            presences = list(await session.scalars(select(PresenceModel)))
+            binding = await find_space_binding(session, target.storage_group_id)
+            if registering:
+                if binding is not None:
+                    raise RouteSendError("conflict")
+                before: dict[str, object] = {
+                    "space": None,
+                    "binding": None,
+                    "ingest": None,
+                    "send": None,
+                }
+                live_ids = self._registry.connected_presence_ids("qq")
+                presences = await self._live_presences(session, live_ids)
+            else:
+                if binding is None or binding.space_id != space_id:
+                    raise RouteSendError("none")
+                binding_id = binding.id
+                before = await self._state(session, space_id, binding_id)
+                live_ids = ()
+                presences = list(await session.scalars(select(PresenceModel)))
         connections_before = self._connections(presences)
-        candidate = await self._router.group_recovery_candidate(binding_id)
-        if candidate.presence_id != presence_id:
+        candidate_id = (
+            await self._router.unbound_group_recovery_presence(target.storage_group_id)
+            if registering
+            else (await self._router.group_recovery_candidate(binding_id)).presence_id
+        )
+        if candidate_id != presence_id:
             raise RouteSendError("not_ingest")
-        preserve_send = await self._router.space_send_pin_healthy(space_id)
+        preserve_send = not registering and await self._router.space_send_pin_healthy(space_id)
         async with self._database.immediate_session() as session:
             await self._require_actor(session, person_id, audit)
+            if await self._request_replayed(session, context, presence_id, audit, event_type):
+                return False
             if await self._replayed(session, principal_id, payload_hash):
                 return False
-            if before != await self._state(session, space_id, binding_id):
-                raise RouteSendError("conflict")
-            current_presences = list(await session.scalars(select(PresenceModel)))
+            if registering:
+                if await find_space_binding(session, target.storage_group_id) is not None:
+                    raise RouteSendError("conflict")
+                if live_ids != self._registry.connected_presence_ids("qq"):
+                    raise RouteSendError("conflict")
+                current_presences = await self._live_presences(session, live_ids)
+            else:
+                if before != await self._state(session, space_id, binding_id):
+                    raise RouteSendError("conflict")
+                current_presences = list(await session.scalars(select(PresenceModel)))
             if connections_before != self._connections(current_presences):
                 raise RouteSendError("conflict")
             connection = self._registry.resolve_active(presence_id)
@@ -118,9 +128,41 @@ class GroupRecoveryService:
                 or connection.snapshot.external_account_id != presence.external_account_id
             ):
                 raise RouteSendError("conflict")
-            space = await session.get(CanonicalSpaceModel, space_id)
-            assert space is not None  # Included in the revision snapshot.
             now = datetime.now(UTC)
+            if registering:
+                space = CanonicalSpaceModel(
+                    id=space_id,
+                    name="",
+                    enabled=True,
+                    autonomous_enabled=True,
+                    require_mention=True,
+                    revision=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add_all(
+                    (
+                        space,
+                        SpaceBindingModel(
+                            id=binding_id,
+                            space_id=space_id,
+                            platform="qq",
+                            external_space_id=target.storage_group_id,
+                            display_name="",
+                            status="active",
+                            revision=1,
+                            first_seen_at=now,
+                            last_seen_at=now,
+                            created_at=now,
+                            updated_at=now,
+                        ),
+                    )
+                )
+                await session.flush()
+            else:
+                existing_space = await session.get(CanonicalSpaceModel, space_id)
+                assert existing_space is not None  # Included in the revision snapshot.
+                space = existing_space
             if not space.enabled:
                 space.enabled = True
                 space.revision += 1
@@ -201,6 +243,89 @@ class GroupRecoveryService:
             await session.flush()
             if connections_before != self._connections(current_presences):
                 raise RouteSendError("conflict")
+            if registering and live_ids != self._registry.connected_presence_ids("qq"):
+                raise RouteSendError("conflict")
+        return True
+
+    @staticmethod
+    async def _live_presences(
+        session: AsyncSession, identities: tuple[str, ...]
+    ) -> list[PresenceModel]:
+        if not identities:
+            return []
+        return list(
+            await session.scalars(
+                select(PresenceModel)
+                .where(PresenceModel.id.in_(identities))
+                .order_by(PresenceModel.id)
+                .limit(len(identities))
+            )
+        )
+
+    @staticmethod
+    def _payload_hash(
+        context: SpaceAdminContext,
+        space_id: str,
+        presence_id: str,
+        audit: ControlAuditRef,
+        event_type: str,
+    ) -> str:
+        return hashlib.sha256(
+            json.dumps(
+                [
+                    "group.recover",
+                    space_id,
+                    context.canonical_target.storage_group_id,
+                    presence_id,
+                    event_type,
+                    audit.trigger_message_id,
+                    context.principal.principal_id.text,
+                ],
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+
+    async def _request_replayed(
+        self,
+        session: AsyncSession,
+        context: SpaceAdminContext,
+        presence_id: str,
+        audit: ControlAuditRef,
+        event_type: str,
+    ) -> bool:
+        receipt = await session.scalar(
+            select(ControlCommandReceiptModel)
+            .where(
+                ControlCommandReceiptModel.principal_id == context.principal.principal_id.text,
+                ControlCommandReceiptModel.request_id == context.request_id.text,
+            )
+            .limit(1)
+        )
+        if receipt is None:
+            return False
+        # Only the original persisted receipt can supply ownership to a stale unbound target.
+        space_id = receipt.result_resource_id
+        target = context.canonical_target
+        if (
+            receipt.status != "succeeded"
+            or space_id is None
+            or (target.space_id is not None and target.space_id.text != space_id)
+            or receipt.payload_hash
+            != self._payload_hash(context, space_id, presence_id, audit, event_type)
+            or await session.get(CanonicalSpaceModel, space_id) is None
+        ):
+            raise RouteSendError("conflict")
+        binding = await session.scalar(
+            select(SpaceBindingModel.id)
+            .where(
+                SpaceBindingModel.space_id == space_id,
+                SpaceBindingModel.platform == "qq",
+                SpaceBindingModel.external_space_id == target.storage_group_id,
+            )
+            .limit(1)
+        )
+        if binding is None:
+            raise RouteSendError("conflict")
         return True
 
     @staticmethod
@@ -279,6 +404,14 @@ class GroupRecoveryService:
             except RegistryClosed as exc:
                 token = exc.category
             result.append(
-                (presence.id, presence.revision, presence.enabled, presence.ingest_eligible, token)
+                (
+                    presence.id,
+                    presence.revision,
+                    presence.enabled,
+                    presence.ingest_eligible,
+                    presence.platform,
+                    presence.external_account_id,
+                    token,
+                )
             )
         return result

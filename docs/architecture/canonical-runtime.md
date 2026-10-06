@@ -78,6 +78,13 @@ admission 再确认原连接与 pin。探测或 CAS 前取消不安装路由；�
 探针的候选。群启用、必要的两张群路由变更、审计和幂等回执在同一个 `BEGIN IMMEDIATE` 中提交；
 重验身份、路由 revision 与连接快照，冲突整笔退出。命令及回执不进聊天账本、模型、Memory 或
 Relationship，不修改 ConversationGeneration。普通消息、插件和其他管理命令仍受原围栏限制。
+尚无 SpaceBinding 的新群也只可由上述超管控制入口首次登记：按 Registry 中当前 QQ 连接的内部
+Presence ID 有界读取并在写事务前完成实时成员核验，要求唯一候选就是事件所在账号。writer 重验
+原连接、Presence revision 和外部绑定仍不存在，再将新内部 Space/Binding、两条路由、审计和回执
+一起提交；竞态或多个候选不创建身份，也不采纳或替换期间新出现的 owner。已有绑定继续按原
+内部 Space 恢复；首次登记不创建聊天事件或会话，后续普通消息才走正常入库与会话建立。
+原 Context 的同一内部 request 重放先按 principal/request 索引核验原回执及其内部 Space owner、
+载荷 hash，再返回已处理；请求 ID 被不同载荷复用则拒绝，不依外部群号重建已登记的 owner。
 
 ## Gateway Registry 与正式 Provider
 

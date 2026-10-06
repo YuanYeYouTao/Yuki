@@ -2,6 +2,33 @@
 
 [English](persistent-environment.md)
 
+默认 Compose 已挂载 `./workspace:/app/workspace`，这是 Bot 与 Manager 共用的
+artifact/short_state 库；终端可写目录由 Manager 管理在
+`/var/lib/yuki-sandbox/home/workspace`，通过现有家目录挂载显示为 `/workspace`。
+不新增第二个可写工作区，也不把 Bot 数据库、QQ 凭据或 Docker 控制挂入环境。
+
+配置安装器不安装宿主 Manager。路径文件工具和终端需要 Linux Docker 宿主上的
+Python 3.12、已验证的 runsc、环境镜像、独立出网/防火墙与有界家目录/运行记录文件系统。
+Docker Desktop 或 Bot healthy 本身不证明这些依赖可用。准备下文的宿主依赖后显式连接：
+
+```sh
+sudo /opt/yuki-sandbox/deploy/sandbox/install-manager.sh --deployment-root /absolute/deployment/path
+docker compose exec --user 10001:10001 bot qq-ai-bot-cli setup environment-check
+```
+
+部署根必须是 Compose 挂载 `./workspace` 的目录。安装入口只记录
+`/etc/yuki-sandbox/deployment.env` 的 `YUKI_MANAGER_WORKSPACE_STORE`，保留其它配置，
+拒绝覆盖已配置的 artifact 根；不带参数保留该文件或旧 `/opt/yuki-qqbot/workspace` 默认值。
+只识别本工具生成的整段双引号值或简单绝对字面路径，`#` 保留为路径字符；复杂引号或续行
+明确拒绝，不猜旧路径，其它 EnvironmentFile 字节原样保留。
+它不迁移持久家目录、不改已有容器挂载，也不暗中切换活动 Manager 的 artifact 库。
+已有自定义路径应继续使用原配置；迁移须另行规划。
+
+`environment-check` 要求实际 UID 10001，检查 artifact 目录可写性，仅读取现有
+`environment_status` 和一项 `workspace_list`。缺 socket、UID 错误、环境未 ready 或
+文件接口失败均非零退出，不建容器、不执行代码、不调用模型、不发 QQ、不打开 Bot 数据库。
+这是连接与读取能力验收，不冒充实际终端/包安装测试；已有部署覆盖配置仍生效。
+
 Yuki 全局共用 `/home/yuki` 和 `/workspace`，不按用户或群划分，文件不自动过期。
 `short_state` 继续独立、有界并过期；文件目录、内容和完整日志不自动载入提示词。
 

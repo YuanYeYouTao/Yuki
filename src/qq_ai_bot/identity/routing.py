@@ -520,6 +520,43 @@ class PresenceRouter:
             raise RouteSendError("ambiguous" if candidates else "none")
         return candidates[0]
 
+    async def unbound_group_recovery_presence(self, group_id: str) -> str:
+        """Prove one live QQ member before an explicit first group registration."""
+        identities = self._registry.connected_presence_ids("qq")
+        if not identities:
+            raise RouteSendError("none")
+        async with self._database.sessions() as session:
+            presences = list(
+                await session.scalars(
+                    select(PresenceModel)
+                    .where(PresenceModel.id.in_(identities))
+                    .order_by(PresenceModel.id)
+                    .limit(len(identities))
+                )
+            )
+        found: list[str] = []
+        for presence in presences:
+            if not presence.enabled or not presence.ingest_eligible or presence.platform != "qq":
+                continue
+            try:
+                connection = self._registry.resolve_active(presence.id)
+                if (
+                    connection.snapshot.platform != presence.platform
+                    or connection.snapshot.external_account_id != presence.external_account_id
+                ):
+                    continue
+                require_capability(connection, "group_member_probe")
+                require_capability(connection, "send_group")
+            except RegistryClosed:
+                continue
+            if await self._probe(connection.bot, group_id, presence.external_account_id):
+                found.append(presence.id)
+                if len(found) > 1:
+                    raise RouteSendError("ambiguous")
+        if not found:
+            raise RouteSendError("none")
+        return found[0]
+
     async def space_send_pin_healthy(self, space_id: str) -> bool:
         """Whether explicit group recovery should preserve the existing send route."""
 
