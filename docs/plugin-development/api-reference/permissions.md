@@ -63,8 +63,6 @@
 | `automation.read` | 读取当前所有者自动化 |
 | `automation.manage_self` | 创建/暂停/恢复/取消当前所有者任务 |
 | `automation.action.register` | 注册插件 Automation Action |
-| `mcp.read` | 读取 MCP Server 状态与紧凑工具目录 |
-| `mcp.call` | 调用已配置并启用的 MCP Tool |
 | `plugin.config.read` | 读取本插件配置 |
 | `plugin.config.write` | 写入本插件配置 |
 | `runtime.config.read` | 读取允许公开的 Yuki 运行时配置 |

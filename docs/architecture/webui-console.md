@@ -84,7 +84,7 @@ Manager 控制链执行。二进制预览最多 32 MiB，按内容识别图片�
 | Work/自动化 | 原 Work 预算、等待、子工作、输入、效果/投递意图、检查点与恢复元数据、轨迹；自动化脚本、执行与步骤历史分页；创建、编辑、暂停/恢复、取消、run_now |
 | 自主参与 | 当前控制器状态、已接纳轮次/全部反馈分页、Jev/Host 决策诊断时间线、完整数学参数表单与原热更新文件；查询不 tick、不重算、不调用 Jev |
 | Memory | 按原主体/内部证据筛选 fact 与证据、原版本确认/隔离、关系与自省、rebuild 原候选审核/暂停/续跑/提交/重试及 dream/maintain；展示运行中 Embedding 配置和覆盖状态，可保存全局向量检索开关（重启生效） |
-| 插件/MCP | 原 schema 配置、GitHub queue/cursor/诊断、通知 outbox；原 manifest/权限复选授权、Manager 启停/doctor、background turn 分页、MCP refresh/reconnect |
+| 插件 | 原 schema 配置、GitHub queue/cursor/诊断、通知 outbox；原 manifest/权限复选授权、Manager 启停/doctor、background turn 分页 |
 | 身份/配置 | canonical Person/Space/Presence、Binding 与三种原路由的详情/注册/编辑/暂停/恢复；Registry schema、作用域有效配置、保存/删除覆盖 |
 | 工作区/素材 | 共享 artifact 上传/版本编辑/删除、文本预览、授权下载、原 Linux 文件与终端；表情与语音目录及原管理动作 |
 | 审计 | 执行诊断、Control/rebuild/dream 原状态与回执、管理审计、Social 投递确定性 |

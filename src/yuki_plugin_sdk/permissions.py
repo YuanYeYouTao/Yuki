@@ -70,8 +70,6 @@ class PluginPermission(StrEnum):
     NOTIFICATION_AGENT = "notification.agent"
     STORAGE_PRIVATE = "storage.private"
     ADMISSION_SIGNAL_REGISTER = "admission.signal.register"
-    MCP_READ = "mcp.read"
-    MCP_CALL = "mcp.call"
 
 
 HIGH_RISK_PERMISSIONS: frozenset[PluginPermission] = frozenset(

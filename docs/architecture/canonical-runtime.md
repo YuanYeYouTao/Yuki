@@ -112,7 +112,7 @@ Memory 使用 canonical owner 分区：SELF 属于永久 Yuki，PERSON 属于 Pe
 PERSON_GROUP 表示某 Person 在某 Space 中的共同经历。证据保留真实事件来源，读取仍受作用域、
 权限和内容能力约束。Presence 或 Provider 变化不会复制或迁移记忆。
 
-关系、偏好、自动化目标、插件状态、Emoji、Speech、MCP 和配置投影均使用 canonical owner。
+关系、偏好、自动化目标、插件状态、Emoji、Speech 和配置投影均使用 canonical owner。
 Person 自动化在实际发送时解析当前路由。SELF 自动化固定创建时的群和 Presence；
 该场景或代际变化后阻止执行，不借新的 Yuki QQ 账号或真人身份投递。
 
@@ -146,7 +146,7 @@ QQ 消息证明伪造成 Web 请求。分页使用 opaque cursor；mutation 使�
 认证、CSRF 和内容脱敏，而不是复制业务服务。
 
 `ApplicationContainer.control_plane` 已装配共享 Query/Command 服务及运行中的配置、连接、
-自动化、插件、MCP 和 Memory 依赖；access 从服务器配置认证 CLI/Web operator，
+自动化、插件和 Memory 依赖；access 从服务器配置认证 CLI/Web operator，
 公开 wire 合同仅转换已核验的 DTO，不直接开放 HTTP。现有 QQ/CLI 仍有直接调用共享领域服务的入口，图中边界是
 统一接入方向，不表示所有入口已经迁入 ControlPlaneBundle。
 配置、revision、分页、事务外执行、原操作查询和管理 HTTP 后续边界见

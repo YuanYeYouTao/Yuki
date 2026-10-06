@@ -85,40 +85,6 @@ export function Tools(props: PageProps) {
         <PluginApproval key={approval} pluginId={approval} props={props} />
       )}
       {plugin && <PluginDetails key={plugin} pluginId={plugin} props={props} />}
-      <Section title="MCP">
-        <QueryList
-          method="list_mcp_servers"
-          refresh={refresh}
-          columns={[
-            ["server_id", "服务"],
-            ["enabled", "启用", status],
-            ["healthy", "健康", status],
-            ["tool_count", "工具"],
-            ["revision", "版本"],
-          ]}
-          actions={(row) => (
-            <>
-              {[
-                ["enable", "启用"],
-                ["disable", "停用"],
-                ["refresh", "刷新工具"],
-                ["reconnect", "重连"],
-              ].map(([action, label]) => (
-                <button
-                  key={action}
-                  className="btn-secondary"
-                  disabled={!allowed("mutate_mcp")}
-                  onClick={() =>
-                    mutation("mutate_mcp", row, "server_id", action, label)
-                  }
-                >
-                  {label}
-                </button>
-              ))}
-            </>
-          )}
-        />
-      </Section>
     </>
   );
 }

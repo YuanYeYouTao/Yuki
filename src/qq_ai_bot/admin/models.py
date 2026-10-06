@@ -311,19 +311,6 @@ class ToolingRuntimeConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class MCPRuntimeConfig:
-    enabled: bool
-    gateway_enabled: bool
-    metadata_cache_ttl_seconds: int
-    connect_timeout_seconds: float
-    request_timeout_seconds: float
-    result_token_budget: int | None
-    result_item_limit: int | None
-    max_parallel_calls: int
-    artifact_retention_seconds: int
-
-
-@dataclass(frozen=True, slots=True)
 class WebRuntimeConfig:
     search_max_results: int
     extract_max_results: int
@@ -432,7 +419,6 @@ class RuntimeConfigSnapshot:
     speech: SpeechRuntimeConfig
     conversation: ConversationRuntimeConfig
     tooling: ToolingRuntimeConfig | None = None
-    mcp: MCPRuntimeConfig | None = None
     work_storage: WorkStorageRuntimeConfig = WorkStorageRuntimeConfig()
 
     def conversation_policy(self) -> ConversationRuntimeConfig:

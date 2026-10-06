@@ -15,7 +15,6 @@ from qq_ai_bot.conversation.autonomy_db_models import AutonomyBindingModel, Init
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.identity.db_models import SpaceBindingModel
 from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.mcp.repository import MCPRepository
 from qq_ai_bot.memory.enums import MemoryKind, MemoryScopeType, SelfMemoryVisibility
 from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.mutation.models import (
@@ -37,6 +36,7 @@ from qq_ai_bot.persistence.models import (
     MemorySelfReflectionRunModel,
     MemoryToolReceiptModel,
 )
+from qq_ai_bot.tool_results.recorder import ToolInvocationRepository
 
 
 async def seed(database):
@@ -89,7 +89,7 @@ async def seed(database):
 
 
 async def record(database, event, run_id, call="call-1", **extra):
-    await MCPRepository(database).record_invocation(
+    await ToolInvocationRepository(database).record_invocation(
         conversation_key=event.scope.key,
         provider_id="core",
         tool_name="terminal_exec",

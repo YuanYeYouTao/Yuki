@@ -13,7 +13,6 @@
 | `web`, `http` | Yuki 联网与白名单 HTTP |
 | `vision`, `media` | 当前真实媒体的受控分析 |
 | `automation` | 当前所有者的持久化任务 |
-| `mcp` | MCP Server 状态、目录检索与工具调用 |
 | `config`, `secrets`, `storage` | 插件配置、Secret 和私有 KV |
 | `scheduler` | Host 托管的短生命周期后台任务 |
 | `onebot` | 按读/发送/修改分类的 OneBot 接口 |
@@ -45,7 +44,7 @@
 
 Memory V2 的写入仍统一经过 Host `MemoryFactService`。插件 update 创建修正版本，delete 只做显式
 失效；插件不能直接访问 Repository、指定事实状态/authority、物理删除审计记录或绕过当前真实
-调用作用域。冲突审计与管理员 merge/resolve 不属于 Plugin API 3.0。
+调用作用域。冲突审计与管理员 merge/resolve 不属于 Plugin API 3.1。
 
 ## 独立 AI 会话：跑团示例
 
@@ -119,17 +118,6 @@ Provider 当前会按真实批准能力决定是否提交 native 声明。原生
 部署级固定”尚待单独治理的差异，不是已经通过的验收。当前 DeepSeek 路由剔除 native
 search，不受此项差异影响；不依赖 `tool_choice` 实现权限控制。
 
-## MCP Facade
-
-`ctx.mcp.status/list_servers/search_tools` 需要 `mcp.read`；
-`ctx.mcp.call(server_id, tool_name, arguments)` 需要 `mcp.call`。Facade 复用宿主唯一
-`MCPManager`，不会创建插件私有连接池，也不会向插件暴露 Session、Header 或环境 Secret。
-图片返回在 `PluginResult.media_artifacts` 中，仅为调用插件拥有的 Host 句柄；不会自动注入
-主 Agent。插件工具需要本次显式返回选中的句柄，见[媒体与视觉](media-and-vision.md)。
-
-这两项是 Plugin Host 的能力批准，不是针对每个 MCP Tool 的审批；Server 是否可用仍只取决于
-Yuki 配置和启停状态。
-
 ## 当前会话音乐卡片
 
 `ctx.onebot.send_music_card(provider=..., resource_id=...)` 使用 `onebot.send` 权限，将
@@ -138,7 +126,7 @@ OneBot `music` 消息段发送到触发插件的当前真实私聊或群聊。�
 发送权限，成功后再写事件账本与脱敏审计。
 
 当前 provider 支持 `qq`、`netease`（发送时规范化为 `163`）、`kugou`、`kuwo` 和 `migu`。
-如果资源来自 MCP、网页或其他外部数据，插件应先做结构校验和重名消歧，不得把自定义 URL 当成
+如果资源来自网页或其他外部数据，插件应先做结构校验和重名消歧，不得把自定义 URL 当成
 资源 ID。任意 OneBot action 仍必须走权限更高的 `call_mutating_action`，不能借音乐卡片 Facade
 绕过。
 

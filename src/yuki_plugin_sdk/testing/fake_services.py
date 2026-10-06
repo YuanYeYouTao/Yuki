@@ -737,28 +737,3 @@ class FakeAgentSessionFacade:
         if session.status is SessionStatus.CLOSED:
             raise ValueError("plugin AI session is closed")
         return session
-
-
-class FakeMCPFacade:
-    calls: list[tuple[str, str, Mapping[str, JsonValue]]]
-
-    def __init__(self) -> None:
-        self.calls = []
-
-    async def status(self) -> Mapping[str, JsonValue]:
-        return {"enabled": False, "configured_servers": 0}
-
-    async def list_servers(self) -> tuple[Mapping[str, JsonValue], ...]:
-        return ()
-
-    async def search_tools(self, query: str) -> tuple[Mapping[str, JsonValue], ...]:
-        return ()
-
-    async def call(
-        self,
-        server_id: str,
-        tool_name: str,
-        arguments: Mapping[str, JsonValue],
-    ) -> PluginResult:
-        self.calls.append((server_id, tool_name, arguments))
-        return PluginResult(data={"called": True})

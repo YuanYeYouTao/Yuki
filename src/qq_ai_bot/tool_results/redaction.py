@@ -1,4 +1,4 @@
-"""Shared secret redaction for model-facing MCP results and evidence."""
+"""Shared secret redaction for model-facing tool results and evidence."""
 
 from __future__ import annotations
 

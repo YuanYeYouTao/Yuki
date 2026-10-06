@@ -15,7 +15,6 @@ from sqlalchemy import delete, update
 
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities.media import MediaResultText, result_images
-from qq_ai_bot.capabilities.results import ToolExecutionResult
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.plugin_host.capability_adapter import PluginCapabilityAdapter
@@ -57,7 +56,7 @@ async def environment(database, tmp_path, *, permissions=None, handler=None):
                         plugin_id=plugin_id,
                         name=plugin_id,
                         version="1.0",
-                        plugin_api="3.0",
+                        plugin_api="3.1",
                         yuki_requires="*",
                         manifest_hash="original-manifest",
                         entrypoint="test:plugin",
@@ -82,7 +81,6 @@ async def environment(database, tmp_path, *, permissions=None, handler=None):
             approval_revision="original-manifest",
             media_artifacts=store,
             native_media=NativeMediaPreparer(ImagePreprocessor()),
-            mcp_manager=SimpleNamespace(),
         ),
     )
     calls = []
@@ -150,6 +148,20 @@ async def test_explicit_owned_selection_is_private_and_rechecked(database, tmp_p
     with pytest.raises(PluginPermissionError):
         await env.adapter.validate_images(result.images, env.runtime, web_was_used=False)
     assert len(env.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_media_selection_requires_explicit_permission_without_losing_result(
+    database, tmp_path
+):
+    env = await environment(database, tmp_path, permissions=(PluginPermission.TOOL_REGISTER,))
+    result = await env.adapter.execute(env.name, "{}", env.runtime, web_was_used=False)
+    payload = json.loads(result)
+    assert payload["ok"] is True and payload["data"]["selected"] is True
+    assert payload["data"]["media_error"] == "PluginPermissionError"
+    assert payload["data"]["media_read"] is False and not result_images(result)
+    assert len(env.calls) == 1
+    assert not hasattr(env.context, "mcp")
 
 
 @pytest.mark.asyncio
@@ -259,105 +271,6 @@ async def test_foreign_owned_handle_and_fake_json_never_grant_read(database, tmp
     assert not result_images(
         await env.adapter.execute(env.name, "{}", env.runtime, web_was_used=False)
     )
-
-
-@pytest.mark.asyncio
-async def test_sdk_mcp_pixels_need_explicit_result_selection(database, tmp_path, monkeypatch):
-    preparer = NativeMediaPreparer(ImagePreprocessor())
-    raw_images = preparer.prepare_image(pixels(), source="tool")
-    invoke = AsyncMock(
-        return_value=ToolExecutionResult(ok=True, data={"status": "ok"}, images=raw_images)
-    )
-    monkeypatch.setattr("qq_ai_bot.mcp.binding.MCPToolBinding.invoke", invoke)
-    returned = []
-
-    async def unselected(context, handle):
-        receipt = await context.mcp.call("example", "read", {})
-        returned.append(receipt)
-        return ToolResult(data={"mcp_ok": receipt.ok})
-
-    permissions = (PluginPermission.TOOL_REGISTER, PluginPermission.MCP_CALL)
-    env = await environment(database, tmp_path, permissions=permissions, handler=unselected)
-    result = await env.adapter.execute(env.name, "{}", env.runtime, web_was_used=False)
-    assert not result_images(result)
-    assert len(returned[0].media_artifacts) == 1
-    assert "data:image" not in returned[0].model_dump_json()
-    with pytest.raises(PluginPermissionError):
-        await env.store.resolve(
-            plugin_id="other.plugin", handle_id=returned[0].media_artifacts[0].handle_id
-        )
-
-    async def selected(context, handle):
-        receipt = await context.mcp.call("example", "read", {})
-        return ToolResult(data={"mcp_ok": receipt.ok}, media_artifacts=receipt.media_artifacts)
-
-    env = await environment(database, tmp_path, permissions=permissions, handler=selected)
-    result = await env.adapter.execute(env.name, "{}", env.runtime, web_was_used=False)
-    assert len(result_images(result)) == 1
-    await env.adapter.validate_images(result.images, env.runtime, web_was_used=False)
-    assert invoke.await_count == 2
-
-
-@pytest.mark.asyncio
-async def test_mcp_owner_copy_does_not_extend_original_expiry(database, tmp_path, monkeypatch):
-    expiry = datetime.now(UTC) + timedelta(seconds=25)
-    images = tuple(
-        replace(image, expires_at=expiry.isoformat())
-        for image in NativeMediaPreparer(ImagePreprocessor()).prepare_image(pixels(), source="tool")
-    )
-    monkeypatch.setattr(
-        "qq_ai_bot.mcp.binding.MCPToolBinding.invoke",
-        AsyncMock(return_value=ToolExecutionResult(ok=True, images=images)),
-    )
-    observed = []
-
-    async def select(context, handle):
-        receipt = await context.mcp.call("example", "read", {})
-        observed.extend(receipt.media_artifacts)
-        return ToolResult(media_artifacts=receipt.media_artifacts)
-
-    env = await environment(
-        database,
-        tmp_path,
-        permissions=(PluginPermission.TOOL_REGISTER, PluginPermission.MCP_CALL),
-        handler=select,
-    )
-    result = await env.adapter.execute(env.name, "{}", env.runtime, web_was_used=False)
-    assert len(result_images(result)) == 1
-    assert observed[0].expires_at == expiry
-
-
-@pytest.mark.asyncio
-async def test_media_failure_keeps_mcp_effect_receipt_and_does_not_repeat(
-    database, tmp_path, monkeypatch
-):
-    invoke = AsyncMock(
-        return_value=ToolExecutionResult(
-            ok=True,
-            images=NativeMediaPreparer(ImagePreprocessor()).prepare_image(pixels(), source="tool"),
-        )
-    )
-    monkeypatch.setattr("qq_ai_bot.mcp.binding.MCPToolBinding.invoke", invoke)
-    observed = []
-
-    async def select(context, handle):
-        context._services.media_storage_mb = 0
-        receipt = await context.mcp.call("example", "write_once", {})
-        observed.append(receipt)
-        return receipt
-
-    env = await environment(
-        database,
-        tmp_path,
-        permissions=(PluginPermission.TOOL_REGISTER, PluginPermission.MCP_CALL),
-        handler=select,
-    )
-    result = await env.adapter.execute(env.name, "{}", env.runtime, web_was_used=False)
-    assert json.loads(result)["ok"] is True
-    assert observed[0].ok and not observed[0].media_artifacts
-    assert invoke.await_count == 1
-    assert "media_error" in observed[0].data
-    assert observed[0].data["media_read"] is False
 
 
 def test_empty_sdk_result_serialization_stays_compatible():

@@ -14,7 +14,7 @@ from qq_ai_bot.admin.config_specs_protected import protected_config_specs
 from qq_ai_bot.admin.config_specs_restart import restart_config_specs
 from qq_ai_bot.admin.config_specs_social import social_config_specs
 from qq_ai_bot.admin.config_specs_speech import speech_config_specs
-from qq_ai_bot.admin.config_specs_tooling_mcp import tooling_mcp_config_specs
+from qq_ai_bot.admin.config_specs_tooling import tooling_config_specs
 from qq_ai_bot.admin.models import ConfigSpec, ConfigValue
 
 
@@ -30,7 +30,7 @@ def _registered_specs() -> tuple[ConfigSpec, ...]:
         *speech_config_specs(),
         *asr_config_specs(),
         *social_config_specs(),
-        *tooling_mcp_config_specs(),
+        *tooling_config_specs(),
         *protected_config_specs(),
     )
 

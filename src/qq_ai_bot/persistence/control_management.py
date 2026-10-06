@@ -32,8 +32,6 @@ from qq_ai_bot.emoji.db_models import EmojiAssetModel
 from qq_ai_bot.emoji.lifecycle import EmojiLifecycleService
 from qq_ai_bot.emoji.models import EmojiLifecycleStatus
 from qq_ai_bot.emoji.repository import EmojiRepository
-from qq_ai_bot.mcp.manager import MCPManager
-from qq_ai_bot.mcp.repository import MCPRepository
 from qq_ai_bot.memory.dream.db_models import MemoryDreamRunModel
 from qq_ai_bot.memory.dream.repository import DreamRepository
 from qq_ai_bot.memory.dream.service import PreparedDreamPlan, plan_full_core, prepare_full_core
@@ -169,7 +167,6 @@ class ControlManagementGateway:
         rebuild_service: MemoryRebuildService | None = None,
         config_files: ConfigFileService | None = None,
         runtime_config: RuntimeConfigService | None = None,
-        mcp: MCPManager | None = None,
         maintenance: MemoryMaintenanceWorker | None = None,
         embeddings: MemoryEmbeddingRuntime | None = None,
         automation: AutomationService | None = None,
@@ -184,7 +181,6 @@ class ControlManagementGateway:
         self._rebuild_service = rebuild_service
         self._settings = settings
         self._runtime_config = runtime_config
-        self._mcp = mcp
         self._maintenance = maintenance
         self._embeddings = embeddings
         self._automation = automation
@@ -272,18 +268,6 @@ class ControlManagementGateway:
                         raise ValueError("permission not requested")
                 except (TypeError, ValueError) as exc:
                     raise ManagementFailure(ProblemCode.VALIDATION_ERROR) from exc
-        elif operation == CommandOperation.MCP_MUTATE.value:
-            if self._mcp is None:
-                raise ManagementUnavailable
-            if parsed.action not in {"enable", "disable", "refresh", "reconnect"}:
-                raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
-            if parsed.resource_id not in self._mcp.configured_server_ids:
-                raise ManagementFailure(ProblemCode.NOT_FOUND)
-            mcp_row = await MCPRepository(self._database).state(parsed.resource_id, session=session)
-            _require_revision(
-                0 if mcp_row is None else state_revision(mcp_row.updated_at),
-                command.expected_revision,
-            )
         elif operation == CommandOperation.MEMORY_MAINTENANCE.value:
             if self._maintenance is None:
                 raise ManagementUnavailable
@@ -392,20 +376,6 @@ class ControlManagementGateway:
                 raise ManagementFailure(ProblemCode.PRECONDITION_FAILED)
             return ManagementMutation(
                 parsed.resource_id, state_revision(record.updated_at), record.status
-            )
-        if operation == CommandOperation.MCP_MUTATE.value:
-            if self._mcp is None:
-                raise ManagementUnavailable
-            await self._mcp.manage(
-                parsed.resource_id,
-                action=parsed.action,
-                expected_revision=command.expected_revision,
-            )
-            row = await MCPRepository(self._database).state(parsed.resource_id)
-            if row is None:
-                raise RuntimeError("MCP state missing after management")
-            return ManagementMutation(
-                parsed.resource_id, state_revision(row.updated_at), str(row.status)
             )
         if self._maintenance is None:
             raise ManagementUnavailable

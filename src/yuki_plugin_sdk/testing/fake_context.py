@@ -19,7 +19,6 @@ from yuki_plugin_sdk.testing.fake_services import (
     FakeGroupFacade,
     FakeHttpFacade,
     FakeLLMFacade,
-    FakeMCPFacade,
     FakeMediaFacade,
     FakeMemoryFacade,
     FakeMessageFacade,
@@ -50,7 +49,6 @@ class FakePluginContext:
     agent: FakeAgentFacade = field(default_factory=FakeAgentFacade)
     agent_sessions: FakeAgentSessionFacade = field(default_factory=FakeAgentSessionFacade)
     web: FakeWebFacade = field(default_factory=FakeWebFacade)
-    mcp: FakeMCPFacade = field(default_factory=FakeMCPFacade)
     http: FakeHttpFacade = field(default_factory=FakeHttpFacade)
     vision: FakeVisionFacade = field(default_factory=FakeVisionFacade)
     media: FakeMediaFacade = field(default_factory=FakeMediaFacade)

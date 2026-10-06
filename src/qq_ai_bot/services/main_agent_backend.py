@@ -17,7 +17,6 @@ from qq_ai_bot.capabilities import (
     CapabilityEffect,
     CapabilityPolicyContext,
     CapabilityRisk,
-    CapabilityTrustSource,
     ToolExecutionResult,
     ToolInvocationContext,
     ToolProviderRegistry,
@@ -95,7 +94,7 @@ class MainAgentBackend(AgentToolBackend):
                 await plugin_tools.validate_images(
                     plugin_images, self._runtime, web_was_used=self._web_was_used
                 )
-            from qq_ai_bot.mcp.artifact_access import access_from_runtime
+            from qq_ai_bot.tool_results.access import access_from_runtime
 
             store = self._service._tool_artifacts
             validator = getattr(store, "validate_media", None)
@@ -806,37 +805,23 @@ class MainAgentBackend(AgentToolBackend):
                             and part["delivered_text"].strip()
                         )
                 tooling = config.tooling
-                mcp = config.mcp
-                is_mcp = effective_descriptor.trust_source is CapabilityTrustSource.MCP
-                result_tokens = (
-                    mcp.result_token_budget
-                    if is_mcp and mcp is not None and mcp.result_token_budget is not None
-                    else (tooling.result_token_budget if tooling is not None else None)
-                )
+                result_tokens = tooling.result_token_budget if tooling is not None else None
                 result_budget = (
                     result_tokens * 4
                     if result_tokens is not None
                     else config.agent.tool_result_max_characters
                 )
-                item_limit = (
-                    mcp.result_item_limit
-                    if is_mcp and mcp is not None and mcp.result_item_limit is not None
-                    else (tooling.result_item_limit if tooling is not None else None)
-                )
+                item_limit = tooling.result_item_limit if tooling is not None else None
                 artifact_store = (
                     self._service._tool_artifacts
                     if outcome.images or (tooling is not None and tooling.result_artifact_enabled)
                     else None
                 )
                 retention_seconds = (
-                    mcp.artifact_retention_seconds
-                    if is_mcp and mcp is not None
-                    else (
-                        tooling.result_artifact_retention_seconds if tooling is not None else None
-                    )
+                    tooling.result_artifact_retention_seconds if tooling is not None else None
                 )
-                from qq_ai_bot.mcp.artifact_access import access_from_runtime
                 from qq_ai_bot.runtime.work_activation import current_work_control
+                from qq_ai_bot.tool_results.access import access_from_runtime
 
                 active = current_work_control.get()
 
@@ -861,7 +846,7 @@ class MainAgentBackend(AgentToolBackend):
                     outcome.ok,
                 )
                 if self._service._tool_invocations is not None:
-                    await self._service._record_mcp_invocation(
+                    await self._service._record_tool_invocation(
                         runtime=execution_runtime,
                         provider_id=descriptor.provider_id,
                         tool_name=descriptor.provider_tool_name or descriptor.model_name,

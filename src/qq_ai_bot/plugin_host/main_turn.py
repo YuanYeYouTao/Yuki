@@ -12,7 +12,6 @@ from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 
 from qq_ai_bot.llm.base import LLMInvalidRequestError
-from qq_ai_bot.mcp.artifact_access import access_from_runtime
 from qq_ai_bot.memory.enums import MemoryScopeType
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.runtime.activation_outcome import ContextBoundaryChanged
@@ -21,6 +20,7 @@ from qq_ai_bot.services.agent_runner import AgentRunResult, AgentRuntime, AgentT
 from qq_ai_bot.services.agent_tools import OneBotToolGateway, ToolRuntime
 from qq_ai_bot.services.main_agent_backend import MainAgentBackend
 from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
+from qq_ai_bot.tool_results.access import access_from_runtime
 from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.permissions import PluginPermission
 

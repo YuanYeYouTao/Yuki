@@ -236,10 +236,7 @@ class PluginCapabilityAdapter:
             or installation is None
             or not await self._available(item, registration, runtime, web_was_used)
             or PluginPermission.TOOL_REGISTER.value not in installation.approved_permissions
-            or not {
-                PluginPermission.MEDIA_ARTIFACT_CREATE.value,
-                PluginPermission.MCP_CALL.value,
-            }.intersection(installation.approved_permissions)
+            or PluginPermission.MEDIA_ARTIFACT_CREATE.value not in installation.approved_permissions
             or installation.manifest_hash != context._services.approval_revision
             or frozenset(installation.approved_permissions)
             != frozenset(permission.value for permission in context._approved_permissions)

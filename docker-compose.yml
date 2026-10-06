@@ -41,7 +41,6 @@ services:
       - ./config:/app/config:ro
       - ./webui-config:/app/webui-config:ro
       - ./plugins:/app/plugins:ro
-      - ./.mcp.json:/app/.mcp.json:ro
     networks:
       - qq-ai-bot-network
     healthcheck:

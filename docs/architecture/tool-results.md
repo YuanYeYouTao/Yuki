@@ -6,7 +6,7 @@
 
 ## 结构化 JSON
 
-Core Tool `read_tool_artifact` 支持三个通用操作，不依赖 MCP 的业务字段：
+Core Tool `read_tool_artifact` 支持三个通用操作，不依赖任何外部服务的业务字段：
 
 - `inspect`：查看对象键、数组长度和浅层类型；对象键使用稳定排序。
 - `get`：按 `path` 精确读取对象、数组元素或分页后的数组区间。
@@ -25,3 +25,7 @@ JMESPath 或任意表达式。标准工具结果外层的 `ok/provider/tool/data
 省略 `operation` 时保持旧的文本读取行为，继续支持 `offset`、`limit` 和 `query`。非 JSON Artifact
 使用结构化操作时会返回 `artifact_not_json`，并明确提示改用文本模式。Handle 由数据库映射文件并在
 保留期后清理。
+
+## 存储与来源
+
+共享实现位于 `tool_results/`，供 Core、Plugin 与 Work 使用。保留原工具句柄、`data/tool_artifacts` 路径、媒体授权、隐私删除和回收边界。工具调用的强制来源证据与可丢诊断分别结算；可丢诊断继续共用有界异步 writer。

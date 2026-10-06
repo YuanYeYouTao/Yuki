@@ -49,7 +49,7 @@ async def test_production_sources_share_core_without_sharing_turn_state(database
                 version="1.0.0",
                 description="Verify shared Host execution dependencies",
                 entrypoint="fixture:Plugin",
-                plugin_api="3.0",
+                plugin_api="3.1",
                 yuki_requires=">=3.9.0",
             ),
             frozenset(),
@@ -78,7 +78,6 @@ async def test_production_sources_share_core_without_sharing_turn_state(database
     finally:
         await app.model_clients.close()
         await app.plugin_http.close()
-        await app.mcp_manager.close()
 
 
 class Worker:

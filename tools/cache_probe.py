@@ -34,7 +34,6 @@ from qq_ai_bot.domain.messages import ChatImage, ChatMessage, ChatRequest, ChatT
 from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
 from qq_ai_bot.llm.gemini import GeminiProvider
 from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
-from qq_ai_bot.mcp.repository import ToolArtifactRepository
 from qq_ai_bot.model_runtime.db_models import ModelInvocationModel
 from qq_ai_bot.model_runtime.executor import TaskModelExecutor
 from qq_ai_bot.model_runtime.models import ModelProfile, ModelProtocol, ModelRoute, ModelTask
@@ -47,6 +46,7 @@ from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.runtime.work_compaction import CompactionSummary, summary_json_text
 from qq_ai_bot.services.ordinary_compaction import OrdinarySummary
 from qq_ai_bot.services.turn_transcript import TurnTranscript
+from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
 
 SCENARIOS = tuple(f"C{number:02}" for number in range(1, 9))
 PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jf1sAAAAASUVORK5CYII="
@@ -480,8 +480,6 @@ async def isolated_application(root: Path) -> tuple[ApplicationContainer, tuple[
             "social_transfer_directory": root / "social-transfer",
             "plugin_directory": root / "plugins",
             "plugin_system_enabled": False,
-            "mcp_config_path": root / "absent-mcp.json",
-            "mcp_enabled": False,
             "sandbox_socket": root / "absent-sandbox.sock",
             "web_mode": "disabled",
             "web_search_bridge_state_path": root / "search.sqlite3",
@@ -708,7 +706,6 @@ async def run_experiment(
                         )
                     )
                 if scenario == "C07":
-                    entry["mcp_status"] = "not_applicable: no external MCP server is contacted"
                     if not any(
                         capability.value == "image_input" for capability in profile.capabilities
                     ):

@@ -108,7 +108,6 @@ class QueryResourceKind(StrEnum):
     PLUGIN_OUTBOX = "plugin_outbox"
     PLUGIN_BACKGROUND = "plugin_background"
     PARTICIPATION_FEEDBACK = "participation_feedback"
-    MCP = "mcp"
     EMOJI = "emoji"
     SPEECH = "speech"
     CHAT_EVENT = "chat_event"
@@ -1365,23 +1364,6 @@ class PluginView:
         require_opaque_token(self.version, name="version", max_length=64)
         require_opaque_token(self.status, name="status", max_length=32)
         _require_bool(self.enabled, "enabled")
-
-
-@final
-@dataclass(frozen=True, slots=True)
-class McpServerView:
-    server_id: str
-    enabled: bool
-    healthy: bool
-    tool_count: int
-    revision: int
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "revision", _require_int(self.revision, "revision", minimum=0))
-        require_opaque_token(self.server_id, name="server_id", max_length=128)
-        _require_bool(self.enabled, "enabled")
-        _require_bool(self.healthy, "healthy")
-        object.__setattr__(self, "tool_count", _require_int(self.tool_count, "tool_count"))
 
 
 @final

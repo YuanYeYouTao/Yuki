@@ -102,7 +102,7 @@ def authorize_terminal_finalization(
     """Gate terminal metadata at the provider→result mapping boundary.
 
     Only host-owned tool providers may propagate terminal finalization.
-    Plugin/MCP providers returning terminal-looking metadata get it dropped
+    Plugin providers returning terminal-looking metadata get it dropped
     here, so forged annotations can never end the agent loop.
     """
 

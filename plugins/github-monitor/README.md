@@ -21,7 +21,7 @@ GitHub Monitor 是 Yuki 的只读 GitHub 仓库管家。它定时读取一个或
 ## 运行要求
 
 - Yuki `>=3.8.1,<4.0`
-- Plugin API `3.0`
+- Plugin API `3.1`
 - Bot 可以访问 `https://api.github.com`
 - 私有仓库必须提供可读取目标仓库的 GitHub Token
 
@@ -265,7 +265,7 @@ doctor。
 
 ## 开发验证
 
-启用 WebUI 后，可在「插件与 MCP」打开 GitHub Monitor 的配置、仓库 queue/cursor/诊断
+启用 WebUI 后，可在「插件」打开 GitHub Monitor 的配置、仓库 queue/cursor/诊断
 及 Host 通知 outbox。配置来自已批准注册的 schema；修改保存原 Host 配置表，插件按
 自身读取逻辑生效。只读状态使用 SDK 的可选 `observe`，不访问 GitHub、不轮询或封口，
 不返回 prepared 通知内容。队列未建立或状态损坏会明确显示，不当作零。

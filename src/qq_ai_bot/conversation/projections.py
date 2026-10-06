@@ -643,7 +643,7 @@ class PromptProjectionRepository:
                         "selected representation publication conflict"
                     ) from exc
             if parent_summaries:
-                from qq_ai_bot.mcp.artifact_schema import artifact_refs
+                from qq_ai_bot.tool_results.schema import artifact_refs
 
                 identities = list(parent_summaries.keys() | summary_parents.keys())
                 refs: dict[str, set[str]] = {}

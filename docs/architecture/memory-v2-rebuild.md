@@ -121,7 +121,7 @@ run completed 也不表示异步向量已经生成完毕。
 receipt 保留。cancel 只停止后续处理，不回滚已提交事实。
 
 Tool Kernel 的 `admin_memory_rebuild_*` 工具共用同一服务和真实事件权限绑定，不能
-跳过 review。Plugin API 3.0 未暴露 rebuild。
+跳过 review。Plugin API 3.1 未暴露 rebuild。
 
 ## 配置
 

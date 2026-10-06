@@ -44,13 +44,12 @@ hash 不共享授权。Work journal 保存选中图片、原 call_id 与顺序�
 检查点未落地时按原回执恢复图片，不重新下载、搜索或执行已确认效果。普通下一轮不自动
 带入旧图，私有检查点只用于原执行恢复。
 
-获准 MCP image block 和嵌入的 image blob 使用同一纯准备器进入原生输入，工具图片归入原
+获准工具图片 使用同一纯准备器进入原生输入，工具图片归入原
 读取授权的私有 artifact。`read_tool_artifact(operation="image")` 返回像素；text/get/search
 仅返回图片 manifest。来源权限、owner、generation、有效期和字节完整性在读取前后及派发前
 复核，不把任意 URL 当成可读取文件。插件自己拥有的媒体 handle 不因此开放跨插件读取；
 SDK `vision.analyze_current_media` 是另一个明确授予 `VISION_ANALYZE` 的辅助合同。插件工具
-本次显式返回 `PluginResult/ToolResult.media_artifacts` 才接入主模型；SDK MCP 只保留为
-调用插件拥有的句柄，不自动附图。Host 保留实际插件、manifest revision、原工具与 TTL/hash，
+本次显式返回 `PluginResult/ToolResult.media_artifacts` 才接入主模型；普通插件媒体句柄不自动附图。Host 保留实际插件、manifest revision、原工具与 TTL/hash，
 派发前重验当前批准、精确委托及原文件；归档副本不延长授权。该桥接已完成本地定向测试，
 真实 API 与生产验收另记。
 

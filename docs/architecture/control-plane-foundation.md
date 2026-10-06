@@ -16,7 +16,7 @@
 ## 应用与身份
 
 `ApplicationContainer.control_plane` 装配唯一 `ControlPlaneBundle`：`access`、`queries`、
-`commands` 和启动恢复函数。配置、连接、插件、MCP、自动化、Memory、维护和 embedding
+`commands` 和启动恢复函数。配置、连接、插件、自动化、Memory、维护和 embedding
 依赖来自正在运行的容器，不另建 registry、第二个 Bot 或数据库事实源。
 
 查询和命令分别经过现有 ControlPrincipal/DecisionContext 能力核验。角色仅作描述，不隐含授权。
@@ -47,8 +47,8 @@
   当作新建 Person 覆盖项的版本，新建使用 expected revision 0。无覆盖时 version 为 null。
 - 敏感配置只给 configured，不返回当前或保存值。待重启比较当前和期望值，启动已采用的覆盖
   不再显示待重启，删除覆盖仍能显示差异。
-- Memory fact、自动化、插件、MCP、表情和语音 revision 与修改合同一致。MCP 无持久状态时为 0。
-  时间戳版本更新保持单调，插件/MCP 在 Manager 锁内复核版本后执行效果。
+- Memory fact、自动化、插件、表情和语音 revision 与修改合同一致。
+  时间戳版本更新保持单调，插件 在 Manager 锁内复核版本后执行效果。
 - keyset cursor 绑定资源和查询范围；schema、有效配置、保存覆盖、fact/evidence 及各类 operation
   不能混用。Page.snapshot_at 是本次读取时刻，不是跨页锁定快照或 CAS revision。
 
@@ -70,8 +70,7 @@
 平台 trigger_message_id 留空。0073 迁移仅转换由既有回执证明关联的历史控制审计，QQ 审计不改写。
 
 插件 approve/enable/disable/doctor 使用实际 PluginManager。批准与运行状态分别查询，
-启动失败不能返回 enabled 成功。MCP enable/disable/refresh/reconnect 使用真实 Manager 的服务器锁；
-排队的刷新重新核验 enabled，不能在禁用后重新启动连接。目录刷新不修改已冻结主工具合同。
+启动失败不能返回 enabled 成功。
 
 外部命令采用原 `control_command_receipts` 的短事务意图 → 事务外真实效果 → 短事务结果登记。
 不增加第二个 worker、持久请求载荷或恢复状态库。操作 ID 为 `control:<principal_uuid>:<request_uuid>`。
@@ -135,7 +134,7 @@ HTTP handler 应调用这些转换和共享服务，不能把数据库方法直�
 | 身份/配置 | 详情与筛选、适用动作；文件型 JSON/TOML/人格的验证、原子保存、加载结果与生效范围 |
 | Work/自动化 | 原 work/run/step、等待、预算、子工作、投递回执的详情及领域允许的取消/续跑 |
 | 自主参与/模型 | Jev/群决策时间线、参数读写、Profile/Route 配置与调用统计，不重算第二份数学模型 |
-| 插件/MCP | 配置 schema、监控游标/队列/outbox 详情与有证据的处理动作 |
+| 插件 | 配置 schema、监控游标/队列/outbox 详情与有证据的处理动作 |
 | Memory/关系 | 主体筛选、内部事件证据、运行水位与自省统计、关系投影和实际领域动作 |
 | 内容/工作区 | 聊天 timeline、24 小时媒体权限及过期、长期共享工作区、文件/表情/语音操作 |
 | HTTP | 登录会话、退出/撤销、CSRF/Origin、请求体限制、错误映射、文件授权、同源监听与反代 |
@@ -152,7 +151,7 @@ reply delay 的 min/max 修改与审计仍在同一事务。跨作用域验证�
 O(N+U+G)，不枚举用户与群的笛卡尔积。重复 canonical owner 仍明确拒绝，不能以优化
 之名跳过最终 writer 当前配置验证。
 
-使用实际容器装配和真实本地 Plugin/MCP 生命周期，覆盖未授权、并发版本、幂等、等待不持写锁、
+使用实际容器装配和真实本地 Plugin 生命周期，覆盖未授权、并发版本、幂等、等待不持写锁、
 效果后异常、取消、重启、跨资源分页、可信 operator、无 QQ operator 的 Person/SELF 自动化及迁移。
 模型 hash 使用多个独立进程验收。测试不发送真实 QQ 消息、不调用付费模型。
 

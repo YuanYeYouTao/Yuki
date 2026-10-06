@@ -306,7 +306,6 @@ async def test_container_assembles_live_control_services(database: Database) -> 
         management = container.control_plane.commands._port._management
         assert query._config is container.runtime_config
         assert query._connections is container.gateway_registry
-        assert query._mcp is container.mcp_manager
         assert management._automation is container.automation
         assert management._memories is container.memories
         snapshot = await container.control_plane.queries.read_system(context("control.system.read"))

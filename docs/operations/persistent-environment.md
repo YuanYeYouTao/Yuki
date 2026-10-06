@@ -145,12 +145,11 @@ Stop only Bot and Manager for a consistent database/config/artifact/receipt back
 Initialize/mount storage, then run Manager with `--persistent-home ... --migrate-only`
 and verify every copied artifact hash. Start the updated Manager and replace **only**
 the Compose Bot service using all existing overrides plus the new image override.
-Validate healthz, OneBot connection, RSS, completion/continuation workers, tool manifest
+Validate healthz, OneBot connection, completion/continuation workers, tool manifest
 and real gVisor resources/network/file operations. Retain the prior image and latest
-consistent backup. NetEase MCP/music-sign and the unused hardware services are disabled;
-RSS, QQ, proxy, Docker and system maintenance remain enabled.
-Disable NetEase in both its file configuration and persisted `mcp_server_states`
-entry before freezing the tool manifest; the persisted switch takes precedence.
+consistent backup. Preserve QQ, proxy, Docker and system maintenance without changing
+unrelated service switches. MCP is retired at schema head `0096`; the old image cannot
+run directly against that head. See the [upgrade guide](../upgrade-3.9.0.md).
 
 Rollback changes images/units, not the current database/home. Keep the persistent
 environment running if rolling back Bot alone; its label is excluded from legacy

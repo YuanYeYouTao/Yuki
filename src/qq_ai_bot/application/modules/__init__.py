@@ -5,7 +5,6 @@ from qq_ai_bot.application.modules.automation import AutomationBundle, Automatio
 from qq_ai_bot.application.modules.control_plane import ControlPlaneBundle, ControlPlaneModule
 from qq_ai_bot.application.modules.conversation import ConversationBundle, ConversationModule
 from qq_ai_bot.application.modules.emoji import EmojiBundle, EmojiModule
-from qq_ai_bot.application.modules.mcp import MCPBundle, MCPModule
 from qq_ai_bot.application.modules.media import MediaBundle, MediaModule
 from qq_ai_bot.application.modules.model_runtime import ModelRuntimeBundle, ModelRuntimeModule
 from qq_ai_bot.application.modules.persistence import PersistenceBundle, PersistenceModule
@@ -28,8 +27,6 @@ __all__ = [
     "ConversationModule",
     "EmojiBundle",
     "EmojiModule",
-    "MCPBundle",
-    "MCPModule",
     "MediaBundle",
     "MediaModule",
     "ModelRuntimeBundle",

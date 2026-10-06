@@ -99,7 +99,6 @@ _MANAGEMENT_OPERATIONS: Final[frozenset[str]] = frozenset(
         "control.memory.maintenance",
         "control.automation.mutate",
         "control.plugin.mutate",
-        "control.mcp.mutate",
         "control.emoji.mutate",
         "control.speech.mutate",
         "control.operation.cancel",
@@ -193,7 +192,6 @@ class CommandOperation(StrEnum):
     ENVIRONMENT_FILE_MUTATE = "control.environment.file.mutate"
     TERMINAL_MUTATE = "control.terminal.mutate"
     WORK_MUTATE = "control.work.mutate"
-    MCP_MUTATE = "control.mcp.mutate"
     EMOJI_MUTATE = "control.emoji.mutate"
     SPEECH_MUTATE = "control.speech.mutate"
     OPERATION_CANCEL = "control.operation.cancel"
@@ -1297,22 +1295,6 @@ def _require_management_semantics(
         if expected_statuses is None or status not in expected_statuses:
             raise _mismatch()
         return
-    if operation == CommandOperation.MCP_MUTATE.value:
-        if action not in {"enable", "disable", "refresh", "reconnect"}:
-            raise _mismatch()
-        if resource_id != _material_resource(material):
-            raise _mismatch()
-        if action == "enable" and status not in {"enabled", "disconnected", "connected"}:
-            raise _mismatch()
-        if action == "disable" and status != "disabled":
-            raise _mismatch()
-        if action in {"refresh", "reconnect"} and status not in {
-            "enabled",
-            "disabled",
-            "connected",
-        }:
-            raise _mismatch()
-        return
     if operation == CommandOperation.EMOJI_MUTATE.value:
         if action not in {"pin", "unpin", "reject", "ban"} or status not in _EMOJI_STATUSES:
             raise _mismatch()
@@ -1640,6 +1622,7 @@ def failure_audit_target_type(operation: str) -> str:
         return "work"
     if operation.startswith("control.plugin."):
         return "plugin"
+    # Historical audit receipts retain this classification; no dispatch surface remains.
     if operation.startswith("control.mcp."):
         return "mcp"
     if operation.startswith("control.emoji."):

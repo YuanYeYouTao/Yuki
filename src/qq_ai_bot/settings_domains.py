@@ -559,17 +559,3 @@ class ToolingSettings(DomainSettings):
     tooling_result_item_limit: int | None = Field(default=None, gt=0)
     tooling_result_artifact_enabled: bool
     tooling_result_artifact_retention_seconds: int = Field(gt=0)
-
-
-class MCPSettings(DomainSettings):
-    mcp_enabled: bool
-    mcp_config_path: Path
-    mcp_cache_enabled: bool
-    mcp_gateway_enabled: bool
-    mcp_metadata_cache_ttl_seconds: int = Field(gt=0)
-    mcp_connect_timeout_seconds: float = Field(gt=0)
-    mcp_request_timeout_seconds: float = Field(gt=0)
-    mcp_result_token_budget: int | None = Field(default=None, gt=0)
-    mcp_result_item_limit: int | None = Field(default=None, gt=0)
-    mcp_max_parallel_calls: int = Field(gt=0)
-    mcp_artifact_retention_seconds: int = Field(gt=0)

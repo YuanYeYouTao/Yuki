@@ -1,4 +1,4 @@
-<!-- release-baseline: version=3.9.0 schema=0095 -->
+<!-- release-baseline: version=3.9.0 schema=0096 -->
 
 [简体中文](README.md) · English
 
@@ -35,7 +35,7 @@ Yuki is an open-source, self-hosted social AI agent exploring what a persistent 
 | Conversation and long-term memory | Chat in groups or privately, look up past events, and explicitly ask Yuki to remember, correct, or delete facts |
 | Images, voice, and attachments | Send images, voice, video, or documents and ask follow-up questions in the same conversation without quoting the attachment |
 | QQ social actions | Look up members, use structured mentions, send group/private messages, and recall Yuki's own messages; the backend checks targets and permissions |
-| Search and extensions | Use configured online tools, MCP services, and plugins |
+| Search and extensions | Use configured online tools and plugins |
 | Persistent workspace | Save projects and files, run Python, Node.js, or Shell, install dependencies, and deliver results |
 | Background work and automation | Start work while continuing the conversation, check progress later, and run scheduled work within granted permissions |
 | Speech and stickers | Optional Genie-TTS voice output and sticker search, classification, and sending |
@@ -114,7 +114,7 @@ The Bot image is `ghcr.io/yuanyeyoutao/yuki-qqbot:3.8.4`; the optional TTS Worke
 
 ## Upgrading and maintenance
 
-The current source uses Plugin API **3.0**. The bundled Alembic head determines the database target; the application version does not replace a schema check. The historical target for the 3.8.2 package was 0055. Older databases must follow the migration chain—do not skip migrations with `stamp`. Legacy plugin calls to `llm.generate` / `agent.run` now use the unified main entry point; plugins that relied on separate-generation behavior need adaptation.
+The current source uses Plugin API **3.1**. The bundled Alembic head determines the database target; the application version does not replace a schema check. The historical target for the 3.8.2 package was 0055. Older databases must follow the migration chain—do not skip migrations with `stamp`. Legacy plugin calls to `llm.generate` / `agent.run` now use the unified main entry point; plugins that relied on separate-generation behavior need adaptation.
 
 Before upgrading, make a consistent backup of the database, configuration, plugins, and files. For a persistent workspace, retain its home directory and execution receipts. Pause writes from Bot and related Manager components; you do not need to shut down all of Docker or the QQ gateway. Preserve any new messages, files, and receipts before rollback; see the [3.8.4 upgrade guide](docs/upgrade-3.8.4.md).
 
@@ -155,8 +155,8 @@ Use targeted checks during development; the release pipeline also verifies migra
 | [Development contract](docs/architecture/development-contract.md) | Event IDs, boundaries, fixed tools, resumption, and transactions |
 | [Rollup](docs/architecture/conversation-rollup.md) | Long-conversation condensation |
 | [Memory](docs/architecture/memory-v2.md) | Extraction, retrieval, and permissions |
-| [Plugin API 3.0](docs/plugin-development/index.md) | Plugin development and capability boundaries |
-| [MCP](docs/mcp/architecture.md) | External tools |
+| [Plugin API 3.1](docs/plugin-development/index.md) | Plugin development and capability boundaries |
+| [Tool results](docs/architecture/tool-results.md) | Result budgets, media, and durable receipts |
 | [Speech output](docs/speech/operations.md) | Genie-TTS deployment and operations |
 | [Versioned releases](docs/operations/versioned-docker-release.md) | Images, bundles, and the release process |
 | [CHANGELOG](CHANGELOG.md) | Historical changes |

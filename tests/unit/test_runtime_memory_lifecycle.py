@@ -17,8 +17,6 @@ from qq_ai_bot.admin.models import ConversationRuntimeConfig
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
-from qq_ai_bot.mcp.connection import SDKMCPConnection
-from qq_ai_bot.mcp.models import MCPServerConfig
 from qq_ai_bot.services.autonomous_groups import AutonomousGroupService
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.effect_gate import ConversationEffectGate, EffectGateTimeoutError
@@ -187,56 +185,6 @@ async def test_autonomous_callback_handoff_and_close_release_events(monkeypatch:
     assert not service._states
     service.observe(*observation(4))
     assert not service._states
-
-
-@pytest.mark.parametrize("failing", [False, True])
-async def test_idle_mcp_connection_does_not_retain_last_payload(
-    monkeypatch: Any, failing: bool
-) -> None:
-    class Session:
-        async def __aenter__(self) -> Session:
-            return self
-
-        async def __aexit__(self, *args: Any) -> None:
-            pass
-
-        async def initialize(self) -> Any:
-            return SimpleNamespace()
-
-        async def call_tool(self, name: str, arguments: dict[str, object]) -> Any:
-            if failing:
-                raise ValueError("offline failure")
-            return arguments["payload"]
-
-    async def open_transport(*args: Any) -> tuple[None, None]:
-        return None, None
-
-    monkeypatch.setattr("qq_ai_bot.mcp.connection.ClientSession", lambda *a, **kw: Session())
-    connection = SDKMCPConnection(
-        MCPServerConfig(url="https://offline.invalid/mcp"),
-        connect_timeout_seconds=1,
-        request_timeout_seconds=1,
-    )
-    monkeypatch.setattr(connection, "_open_transport", open_transport)
-    await connection.connect()
-    try:
-        for _ in range(3):
-            payload = Payload()
-            ref = weakref.ref(payload)
-            if failing:
-                with pytest.raises(ValueError, match="offline failure"):
-                    await connection.call_tool("echo", {"payload": payload})
-            else:
-                result = await connection.call_tool("echo", {"payload": payload})
-                assert result is payload
-                del result
-            del payload
-            await flush_callbacks()
-            gc.collect()
-            assert ref() is None
-            assert connection.connected
-    finally:
-        await connection.close()
 
 
 @pytest.fixture(params=["conversation", "effect"])
