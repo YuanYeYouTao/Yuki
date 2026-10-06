@@ -291,3 +291,47 @@ def test_builder_uses_committed_source_and_keeps_secrets_private(tmp_path, monke
             assert tar.extractfile("src/version.txt").read() == b"committed source"
     deployment.verify_bundle(output)
     assert source.read_text() == "uncommitted source must stay local"
+
+    # Installer repair retains the old runtime and UUID: a partial deployment
+    # must not become a fresh Bot or fail an existing app's source marker.
+    old_manifest = json.loads((output / "manifest.json").read_text())
+    source.write_text("later committed runtime")
+    subprocess.run(["git", "-C", repository, "add", "src"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "-c",
+            "user.name=Deployment test",
+            "-c",
+            "user.email=test@invalid",
+            "commit",
+            "-qm",
+            "later revision",
+        ],
+        check=True,
+    )
+    repaired = tmp_path / "repaired-bundle"
+    builder.build(provider, persona, repaired, "HEAD", "876543210", previous_bundle=output)
+    repair_manifest = deployment.verify_bundle(repaired)
+    assert repair_manifest["bundle_id"] == old_manifest["bundle_id"]
+    assert repair_manifest["source_revision"] == old_manifest["source_revision"]
+    assert repair_manifest["installer_revision"] != old_manifest["source_revision"]
+    assert repair_manifest["previous_files"] == old_manifest["files"]
+    assert (
+        repair_manifest["previous_manifest_sha256"]
+        == deployment.hashlib.sha256((output / "manifest.json").read_bytes()).hexdigest()
+    )
+    assert (repaired / "source.tar.gz").read_bytes() == (output / "source.tar.gz").read_bytes()
+    assert (repaired / "private/provider.json").read_bytes() == (
+        output / "private/provider.json"
+    ).read_bytes()
+    assert (repaired / "private/persona.md").read_bytes() == (
+        output / "private/persona.md"
+    ).read_bytes()
+    persona.write_text("different persona must not replace deployed private configuration")
+    refused = tmp_path / "refused-repair"
+    with pytest.raises(ValueError, match="configuration differs"):
+        builder.build(provider, persona, refused, "HEAD", "876543210", previous_bundle=output)
+    assert not refused.exists()

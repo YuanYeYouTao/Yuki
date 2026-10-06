@@ -39,6 +39,7 @@ def build(
     revision: str,
     bot_qq: str,
     verification: Path | None = None,
+    previous_bundle: Path | None = None,
 ) -> Path:
     spec = importlib.util.spec_from_file_location(
         "windows_deployment", ROOT / "deploy/windows/deployment.py"
@@ -58,6 +59,23 @@ def build(
         stderr=subprocess.DEVNULL,
         text=True,
     ).strip()
+    installer_revision = revision
+    previous = None
+    if previous_bundle is not None:
+        previous = module.verify_bundle(previous_bundle)
+        if (
+            previous["schema_version"] != 1
+            or previous["branch"] != "codex/pi-codemode-experiment"
+            or not {"source.tar.gz", "private/provider.json", "private/persona.md"}
+            <= set(previous["files"])
+            or previous["bot_qq"] != bot_qq
+            or not re.fullmatch(r"[0-9a-f]{40}", previous["source_revision"])
+            or json.loads((previous_bundle / "private/provider.json").read_text()) != credentials
+            or (previous_bundle / "private/persona.md").read_text() != role
+        ):
+            raise ValueError("Previous package identity or private configuration differs")
+        uuid.UUID(previous["bundle_id"])
+        revision = previous["source_revision"]
     output = output.resolve()
     archive = output.with_suffix(".zip")
     if output.is_relative_to(ROOT) or output.exists() or archive.exists():
@@ -76,26 +94,30 @@ def build(
     (output / "private").mkdir(mode=0o700)
     module.private_write(output / "private/provider.json", json.dumps(credentials, indent=2) + "\n")
     module.private_write(output / "private/persona.md", role)
-    with (output / "source.tar.gz").open("wb") as stream:
-        with gzip.GzipFile(fileobj=stream, mode="wb", mtime=0) as compressor:
-            child = subprocess.Popen(
-                ["git", "archive", "--format=tar", revision, *SOURCE_PATHS],
-                cwd=ROOT,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-            )
-            assert child.stdout
-            with child.stdout:
-                shutil.copyfileobj(child.stdout, compressor)
-            if child.wait() != 0:
-                raise ValueError("Unable to archive the pinned source")
+    if previous_bundle is not None:
+        shutil.copyfile(previous_bundle / "source.tar.gz", output / "source.tar.gz")
+    else:
+        with (output / "source.tar.gz").open("wb") as stream:
+            with gzip.GzipFile(fileobj=stream, mode="wb", mtime=0) as compressor:
+                child = subprocess.Popen(
+                    ["git", "archive", "--format=tar", revision, *SOURCE_PATHS],
+                    cwd=ROOT,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                )
+                assert child.stdout
+                with child.stdout:
+                    shutil.copyfileobj(child.stdout, compressor)
+                if child.wait() != 0:
+                    raise ValueError("Unable to archive the pinned source")
     os.chmod(output / "source.tar.gz", 0o600)
     if verification is not None:
         module.private_write(output / "verification.json", verification.read_text(encoding="utf-8"))
     manifest = {
         "schema_version": 1,
-        "bundle_id": str(uuid.uuid4()),
+        "bundle_id": previous["bundle_id"] if previous else str(uuid.uuid4()),
         "source_revision": revision,
+        "installer_revision": installer_revision,
         "branch": "codex/pi-codemode-experiment",
         "migration_head": "0096",
         "bot_qq": bot_qq,
@@ -105,6 +127,11 @@ def build(
             if path.is_file()
         },
     }
+    if previous is not None and previous_bundle is not None:
+        manifest["previous_files"] = previous["files"]
+        manifest["previous_manifest_sha256"] = hashlib.sha256(
+            (previous_bundle / "manifest.json").read_bytes()
+        ).hexdigest()
     module.private_write(output / "manifest.json", json.dumps(manifest, indent=2) + "\n")
     module.verify_bundle(output)
     with archive.open("xb") as stream:
@@ -127,6 +154,7 @@ def main() -> None:
     parser.add_argument("--revision", default="HEAD")
     parser.add_argument("--bot-qq", required=True)
     parser.add_argument("--verification-file", type=Path)
+    parser.add_argument("--previous-bundle", type=Path)
     args = parser.parse_args()
     try:
         archive = build(
@@ -136,6 +164,7 @@ def main() -> None:
             args.revision,
             args.bot_qq,
             args.verification_file,
+            args.previous_bundle,
         )
     except Exception as exc:
         raise SystemExit(

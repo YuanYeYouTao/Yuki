@@ -6,7 +6,8 @@ Docker Engine 运行。无需预装 Python、Git、Node、Rust 或 Docker Deskto
 
 ## 使用
 
-1. 将私有 ZIP 完整解压到本地磁盘，双击 `Deploy.cmd`，允许 Windows 管理员安装请求。
+1. 先关闭旧版 Yuki 安装窗口；若 Windows 的 WSL 安装进度窗口正在运行，等它结束。
+   将新版私有 ZIP 完整解压到 `D:\Yuki-Installer`，双击 `Deploy.cmd`，允许 Windows 管理员安装请求。
 2. 输入你自己的管理员 QQ。机器人的 QQ 已由私有包指定，两者不能相同。
 3. 如提示重启，重启并登录同一个 Windows 用户；脚本会续装。也可再次双击 `Deploy.cmd`。
 4. 安装完成后会打开登录凭据文件、NapCat 和 Yuki 管理界面。在 NapCat 输入其凭据，
@@ -15,6 +16,24 @@ Docker Engine 运行。无需预装 Python、Git、Node、Rust 或 Docker Deskto
 需要联网下载依赖、具备硬件虚拟化支持，建议安装盘至少留出 25 GB 空间。
 首次编译时间取决于电脑和网络，安装器不会强制重启，也不会卸载其他 WSL 环境。
 运行中不要删除专用 WSL 环境：它包含 QQ 登录、数据库、长期记忆、原执行回执和工作区。
+
+安装目录固定为 **`D:\Yuki-Bocchi`**。WSL 虚拟磁盘、Linux 内的 Docker 镜像、Bot、
+数据库、角色与密钥、安装下载和临时文件都在 D 盘；D 盘不存在、不是 NTFS 或首次
+安装空间不足时停止，绝不改装到 C 盘。Windows 的 WSL 系统组件及少量用户配置仍
+由 Windows 放在系统盘。WSL 共享交换文件显式配置为 `D:\Yuki-Bocchi\wsl-swap.vhdx`，
+只调整 `.wslconfig` 的 `swapFile`，保留其余设置；按提示重启 Windows 后生效。
+
+你已经用旧版开始安装时，使用对应旧包生成的修复包。它沿用原 bundle ID、管理员、
+密钥、完整提示词和已验收的运行时 tar，不创建另一个 Bot 或自动升级数据库。
+旧 C 盘安装资料先核对并搬到 D 盘；已存在的 WSL 由官方 `--manage --move` 搬迁，
+不导出/注销或复制正在使用的 VHD。核对 D 盘注册路径、全部包文件及服务成功后，
+仅删除已经核对迁移完成的旧副本；用户改过或额外加入的文件保留。未知所有者或
+旧包校验不符时拒绝覆盖，迁移中断也不会借删除旧环境来重试。
+
+安装分九个阶段显示；大文件下载显示大小、速度、总量和百分比，无数据 120 秒
+或总时长超过一小时会失败并提示网络检查。WSL 使用可见安装进度窗口，每 15 秒
+输出等待耗时，详细日志在 `D:\Yuki-Bocchi\wsl-install-*.log`。Linux 依赖、WebUI、
+Monty、API/数据库检查以及 QQ 网关分别显示阶段和实际命令输出；编译不伪造百分比。
 
 ## 已配置内容
 
@@ -63,6 +82,9 @@ Windows 安装使用 [Microsoft 的 WSL tar 导入机制](https://learn.microsof
 [localhost 访问](https://learn.microsoft.com/en-us/windows/wsl/networking)。
 Ubuntu 根文件系统与 SHA256 来自 [Canonical 的官方 WSL 镜像](https://cloud-images.ubuntu.com/wsl/releases/24.04/20240423/)，
 Node 归档与 SHA256 来自 [Node.js 官方发行目录](https://nodejs.org/dist/v24.21.0/)。
+迁移命令依据 [Microsoft WSL 的命令定义](https://github.com/microsoft/WSL/blob/master/localization/strings/en-US/Resources.resw)，
+交换文件依据 [Microsoft 的 WSL 配置说明](https://learn.microsoft.com/en-us/windows/wsl/wsl-config)，
+可见安装与详细日志依据 [Windows Installer 官方选项](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/msiexec)。
 
 ## 为自己的配置生成私有包
 
@@ -78,3 +100,15 @@ uv run --frozen python scripts/build_windows_private_bundle.py \
 ```
 
 新提交改变迁移 head 或源码合同后应更新部署验证，不能自动套用本包的 `0096` 验收。
+
+为一个已开始的旧包修复安装器时，增加 `--previous-bundle /absolute/private/original-bundle`。
+builder 核对旧包全部文件及相同的私有配置，保留原 UUID、源码 tar 与 source revision；
+新的安装器提交单独记为 `installer_revision`。普通新包仍生成新 UUID。
+
+开发验证：先运行安装器 Python 回归，再运行真实 PowerShell 函数与本机 HTTP
+超时夹具（WSL / MSI 用有边界的 fake，没有操作目标 Windows）：
+
+```sh
+uv run --frozen pytest -q -p no:warnings tests/unit/test_windows_private_deployment.py
+uv run --frozen python scripts/verify_windows_installer.py --powershell /absolute/path/to/pwsh
+```
