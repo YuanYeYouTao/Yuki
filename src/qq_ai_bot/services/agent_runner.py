@@ -39,6 +39,7 @@ from qq_ai_bot.llm.base import (
     LLMEmptyResponseError,
     LLMError,
     LLMIncompleteResponseError,
+    LLMMalformedFunctionCallError,
     LLMTimeoutError,
     LLMUnavailableError,
 )
@@ -519,6 +520,7 @@ class AgentRunner:
         citations: list[ResponseCitation] = []
         response_status = ModelResponseStatus.COMPLETED
         incomplete_recovery_used = False
+        malformed_recoveries = 0
         continuation_tools: tuple[ChatTool, ...] = ()
         continuation_native_tools: tuple[NativeToolDefinition, ...] = ()
         previous_batch_fingerprint: tuple[tuple[str, str, str], ...] | None = None
@@ -550,6 +552,9 @@ class AgentRunner:
             repeated_batch_count = int(runtime.work_control.session.progress.get("repeats", 0))
             provider_pause_replay = bool(
                 runtime.work_control.session.progress.get("provider_pause_replay", False)
+            )
+            malformed_recoveries = int(
+                runtime.work_control.session.progress.get("malformed_function_call_recoveries", 0)
             )
             await initialize_input_feedback(runtime.work_control)
             observations = runtime.work_control.session.progress.get("model_observations", [])
@@ -703,6 +708,16 @@ class AgentRunner:
             )
             pending_stage_feedback = None
             return None
+
+        async def confirm_memory_exposure() -> None:
+            confirm_exposure = getattr(tools, "confirm_memory_prompt_exposure", None)
+            if callable(confirm_exposure):
+                try:
+                    await confirm_exposure()
+                except Exception as exc:
+                    evidence_observation.emit(
+                        "exposure_confirmation_failed", category=type(exc).__name__
+                    )
 
         for request_index in range(runtime.max_model_requests):
             if (
@@ -1234,15 +1249,7 @@ class AgentRunner:
                 # A prepared request may be cancelled while waiting for the LLM
                 # slot or rejected by the transport budget before dispatch.
                 # Confirm conservatively only after a response was received.
-                if tools is not None:
-                    confirm_exposure = getattr(tools, "confirm_memory_prompt_exposure", None)
-                    if callable(confirm_exposure):
-                        try:
-                            await confirm_exposure()
-                        except Exception as exc:
-                            evidence_observation.emit(
-                                "exposure_confirmation_failed", category=type(exc).__name__
-                            )
+                await confirm_memory_exposure()
                 evidence_observation.emit(
                     "response_received",
                     request_index=request_index + 1,
@@ -1266,7 +1273,18 @@ class AgentRunner:
                     tools, tool_calls=calls_used, model_requests=request_index + 1
                 )
                 raise
-            except LLMEmptyResponseError:
+            except (LLMEmptyResponseError, LLMMalformedFunctionCallError) as exc:
+                malformed = isinstance(exc, LLMMalformedFunctionCallError)
+                if malformed:
+                    # This typed failure proves that a response arrived with no
+                    # executable calls or native effects. It is not an unknown
+                    # transport outcome, and prior receipts remain authoritative.
+                    if control is not None:
+                        await control.confirm_inputs()
+                    receipts = current_receipts.get()
+                    if receipts is not None:
+                        await receipts.confirm()
+                    await confirm_memory_exposure()
                 if (
                     control is not None
                     and control.session is not None
@@ -1276,8 +1294,9 @@ class AgentRunner:
                 ):
                     control.ending = None
                     control.session.progress.pop("caller_completion_pending_result", None)
-                    await control.session.save("paired")
-                    continue
+                    if not malformed:
+                        await control.session.save("paired")
+                        continue
                 has_visible_effects = bool(
                     tools is not None
                     and callable(getattr(tools, "has_visible_effects", None))
@@ -1288,6 +1307,8 @@ class AgentRunner:
                 if has_visible_effects and (
                     control is None or control.current is None or control.ending == "completed"
                 ):
+                    if malformed and control is not None and control.session is not None:
+                        await control.session.save("paired")
                     return AgentRunResult(
                         text="",
                         tool_calls_used=calls_used,
@@ -1297,27 +1318,50 @@ class AgentRunner:
                         citations=tuple(citations),
                         response_status=response_status,
                     )
-                if empty_retries >= 2 or request_index + 1 >= runtime.max_model_requests:
+                recovery_exhausted = malformed_recoveries >= 2 if malformed else empty_retries >= 2
+                if recovery_exhausted or request_index + 1 >= runtime.max_model_requests:
+                    if malformed and control is not None and control.session is not None:
+                        await control.session.save("paired")
                     self._record_failure_usage(
                         tools, tool_calls=calls_used, model_requests=request_index + 1
                     )
                     raise
-                empty_retries += 1
-                logger.warning(
-                    "agent_empty_response_retry retry=%d tool_calls_used=%d",
-                    empty_retries,
-                    calls_used,
-                )
+                if malformed:
+                    malformed_recoveries += 1
+                    if control is not None and control.session is not None:
+                        control.session.progress["malformed_function_call_recoveries"] = (
+                            malformed_recoveries
+                        )
+                    logger.warning(
+                        "agent_malformed_function_call_recovery retry=%d tool_calls_used=%d",
+                        malformed_recoveries,
+                        calls_used,
+                    )
+                else:
+                    empty_retries += 1
+                    logger.warning(
+                        "agent_empty_response_retry retry=%d tool_calls_used=%d",
+                        empty_retries,
+                        calls_used,
+                    )
                 transcript.append(
                     ChatMessage(
                         role="system",
                         content=(
-                            "上一次模型请求返回了空内容。请继续当前同一轮任务：如果已有工具"
+                            "上一响应的工具调用格式无效，未执行其中任何调用。请按当前工具声明"
+                            "生成合法的工具名称和 JSON 参数，或在无需工具时直接结束。继续原任务，"
+                            "核对已有回执，不得重复已完成的操作，也不得声称未成功的操作已完成。"
+                            if malformed
+                            else "上一次模型请求返回了空内容。请继续当前同一轮任务：如果已有工具"
                             "结果，先核对结果再给出简短、真实的最终答复；如果任务尚未完成，"
                             "继续调用必要工具。不得声称未成功的操作已经完成。"
                         ),
                     )
                 )
+                if malformed and control is not None and control.session is not None:
+                    # Persist the correction and its bounded fence together;
+                    # restart may not grant another correction or reset budgets.
+                    await control.session.save("paired")
                 continue
             except LLMError:
                 self._record_failure_usage(

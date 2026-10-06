@@ -18,8 +18,152 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
+from qq_ai_bot.llm.base import LLMMalformedFunctionCallError
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.services.agent_runner import AgentRuntime
+
+
+class _MalformedRecoveryBackend:
+    def __init__(self):
+        self.executions = []
+        self.exposure_confirmations = 0
+
+    async def confirm_memory_prompt_exposure(self):
+        self.exposure_confirmations += 1
+
+    def definitions(self, runtime, **kwargs):
+        return (ChatTool("effect_probe", "Apply the authorized effect", {"type": "object"}),)
+
+    def begin_batch(self, *args):
+        pass
+
+    def parallel_safe(self, *args):
+        return False
+
+    def is_side_effecting(self, *args):
+        return True
+
+    async def execute(self, name, arguments, runtime):
+        self.executions.append((name, json.loads(arguments)))
+        return '{"ok":true,"mutation_committed":true}'
+
+    def finalize(self, text, runtime):
+        return text
+
+    def exhausted(self, runtime):
+        raise AssertionError("malformed requests must stop through the typed failure")
+
+
+async def _malformed_runtime(chat, *, max_requests=8):
+    return AgentRuntime(
+        origin=TurnOrigin.USER_MESSAGE,
+        actor_user_id="1001",
+        actor_is_superuser=False,
+        delegated_authority=None,
+        conversation_key="malformed-recovery",
+        current_group_id=None,
+        bot_user_id="9999",
+        gateway=None,
+        runtime_config=await chat._runtime_config.snapshot(),
+        current_time=chat._time.current_default(),
+        allowed_capabilities=frozenset(),
+        max_tool_calls=8,
+        max_model_requests=max_requests,
+    )
+
+
+@pytest.mark.parametrize("private_continuation", [False, True])
+async def test_malformed_recovers_without_pseudo_call_and_executes_valid_effect_once(
+    database, private_continuation
+):
+    checkpoint = ProviderContinuation(
+        provider="fake", protocol="chat_completions", payload={"private": "unchanged checkpoint"}
+    )
+    steps = iter(
+        [
+            *(
+                [
+                    ChatResponse(
+                        "",
+                        0,
+                        status=ModelResponseStatus.INCOMPLETE,
+                        incomplete_reason="pause_turn",
+                        continuation=checkpoint,
+                    )
+                ]
+                if private_continuation
+                else []
+            ),
+            LLMMalformedFunctionCallError(
+                "sensitive malformed provider bytes must not be feedback"
+            ),
+            ChatResponse(
+                "",
+                0,
+                tool_calls=(ToolCall("valid-effect", ToolFunction("effect_probe", '{"value":1}')),),
+            ),
+            ChatResponse("已核对真实回执", 0),
+        ]
+    )
+
+    def respond(_request):
+        step = next(steps)
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+    provider = FakeLLMProvider(respond)
+    harness = build_harness(database, make_settings(database.url), provider)
+    chat = harness.processor._chat
+    backend = _MalformedRecoveryBackend()
+    initial = (ChatMessage("system", "fixed contract"), ChatMessage("user", "apply once"))
+    result = await chat.runtime.runner.run(initial, await _malformed_runtime(chat), backend)
+    assert result.text == "已核对真实回执"
+    assert result.model_requests == (4 if private_continuation else 3)
+    assert result.tool_calls_used == 1
+    assert backend.executions == [("effect_probe", {"value": 1})]
+    # A known malformed response still confirms that the request was seen.
+    assert backend.exposure_confirmations == len(provider.requests)
+    failed_index = 1 if private_continuation else 0
+    failed, corrected = provider.requests[failed_index : failed_index + 2]
+    assert corrected.tools == failed.tools and corrected.tool_choice == failed.tool_choice
+    assert corrected.request_chain_id == failed.request_chain_id
+    assert (
+        corrected.continuation
+        == failed.continuation
+        == (checkpoint if private_continuation else None)
+    )
+    assert corrected.messages[: len(initial)] == initial
+    entries = (*corrected.messages, *corrected.continuation_items)
+    assert all(not item.tool_calls for item in entries if isinstance(item, ChatMessage))
+    assert all(item.role != "assistant" for item in entries if isinstance(item, ChatMessage))
+    feedback = [item for item in entries if isinstance(item, ChatMessage) and item not in initial]
+    assert len(feedback) == 1 and feedback[0].role == "system"
+    assert "sensitive malformed provider bytes" not in str(entries)
+    assert "private" not in (feedback[0].content or "")
+
+
+@pytest.mark.parametrize("max_requests,expected_requests", [(1, 1), (2, 2), (8, 3)])
+async def test_malformed_stops_after_two_corrections_or_original_request_budget(
+    database, max_requests, expected_requests
+):
+    def respond(_request):
+        raise LLMMalformedFunctionCallError("malformed again")
+
+    provider = FakeLLMProvider(respond)
+    harness = build_harness(database, make_settings(database.url), provider)
+    chat = harness.processor._chat
+    backend = _MalformedRecoveryBackend()
+    with pytest.raises(LLMMalformedFunctionCallError):
+        await chat.runtime.runner.run(
+            (ChatMessage("user", "apply once"),),
+            await _malformed_runtime(chat, max_requests=max_requests),
+            backend,
+        )
+    assert len(provider.requests) == expected_requests
+    assert backend.executions == []
+    assert all(request.tools == provider.requests[0].tools for request in provider.requests)
+    assert all(request.tool_choice == "auto" for request in provider.requests)
 
 
 async def test_paused_provider_tool_replays_without_synthetic_recovery_message(database):

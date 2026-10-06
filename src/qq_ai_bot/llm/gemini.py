@@ -29,6 +29,7 @@ from qq_ai_bot.llm.base import (
     LLMEmptyResponseError,
     LLMInvalidRequestError,
     LLMInvalidResponseError,
+    LLMMalformedFunctionCallError,
     LLMUnsupportedFeatureError,
 )
 from qq_ai_bot.llm.gemini_schema import response_schema
@@ -65,6 +66,50 @@ class GeminiProvider(JSONHTTPProvider):
                 "cached_prompt_tokens": integer(usage.get("cachedContentTokenCount")),
             }
         }
+
+    @staticmethod
+    def _confirmed_malformed_local_call(
+        payload: dict[str, Any], candidate: dict[str, Any], request: ChatRequest
+    ) -> bool:
+        # A native tool could have run even when its response was lost. Only
+        # classify the explicit empty local-call marker, never infer no effects
+        # from a malformed/unknown block or recover provider safety failures.
+        if request.native_tools or "error" in payload or payload.get("promptFeedback"):
+            return False
+        if set(payload) - {
+            "candidates",
+            "usageMetadata",
+            "responseId",
+            "modelVersion",
+            "promptFeedback",
+        }:
+            return False
+        if set(candidate) - {"content", "finishReason", "index", "finishMessage", "safetyRatings"}:
+            return False
+        if "index" in candidate and (
+            type(candidate["index"]) is not int or candidate["index"] != 0
+        ):
+            return False
+        ratings = candidate.get("safetyRatings", [])
+        if not isinstance(ratings, list) or any(
+            not isinstance(rating, dict) or rating.get("blocked") for rating in ratings
+        ):
+            return False
+        content = candidate.get("content")
+        if (
+            not isinstance(content, dict)
+            or set(content) - {"role", "parts"}
+            or content.get("role", "model") != "model"
+            or not isinstance(content.get("parts"), list)
+        ):
+            return False
+        return all(
+            isinstance(part, dict)
+            and set(part) == {"text"}
+            and isinstance(part["text"], str)
+            and not part["text"].strip()
+            for part in content["parts"]
+        )
 
     def _message(self, message: ChatMessage) -> dict[str, Any]:
         if message.response_item is not None:
@@ -257,6 +302,13 @@ class GeminiProvider(JSONHTTPProvider):
                 diagnostics=self._usage_diagnostics(payload),
             )
         candidate = candidates[0]
+        if candidate.get("finishReason") == "MALFORMED_FUNCTION_CALL" and (
+            self._confirmed_malformed_local_call(payload, candidate, request)
+        ):
+            raise LLMMalformedFunctionCallError(
+                "Gemini rejected a malformed local function call",
+                diagnostics=self._usage_diagnostics(payload),
+            )
         if candidate.get("finishReason") not in {"STOP", "MAX_TOKENS"}:
             raise LLMInvalidResponseError(
                 "Gemini response was blocked or not completed",

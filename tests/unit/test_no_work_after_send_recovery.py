@@ -12,7 +12,7 @@ from tests.unit.test_commands_and_chat import inbound
 
 from qq_ai_bot.conversation.hydrate import require_primary_alias_for_conversation
 from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.llm.base import LLMEmptyResponseError
+from qq_ai_bot.llm.base import LLMEmptyResponseError, LLMMalformedFunctionCallError
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.runtime.work_activation import current_work_control
@@ -21,8 +21,9 @@ from qq_ai_bot.runtime.work_schema_v1 import work
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("accepted", [False, True])
+@pytest.mark.parametrize("failure", ["empty", "malformed"])
 async def test_confirmed_send_empty_response_respects_actual_work_ownership(
-    database, tmp_path, accepted
+    database, tmp_path, accepted, failure
 ):
     env = await social_env(database, tmp_path)
     async with database.sessions() as reader:
@@ -53,7 +54,7 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
                     **({"work_report": {"kind": "start"}} if accepted else {}),
                 },
             ),
-            ("empty", {}),
+            (failure, {}),
             *(
                 [
                     ("body", {}),
@@ -72,10 +73,11 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
         assert control is not None
         ownership.append(control.current is not None)
         name, arguments = next(steps)
-        if name == "empty":
+        if name in {"empty", "malformed"}:
             receipts = [message.content for message in request.messages if message.role == "tool"]
             assert any('"succeeded"' in str(receipt) for receipt in receipts), receipts
-            raise LLMEmptyResponseError("empty after a real successful delivery")
+            error = LLMEmptyResponseError if name == "empty" else LLMMalformedFunctionCallError
+            raise error("unusable response after a real successful delivery")
         if name == "body":
             return ChatResponse("这仍然只是内部阶段结果", 0)
         if name == "final":
