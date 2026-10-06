@@ -277,7 +277,7 @@ class OpenAICompatibleProvider(JSONHTTPProvider):
                     for call in calls
                 ],
             }
-        if not content.strip() and not calls and not truncated:
+        if not content.strip() and not calls and not truncated and not request.native_tools:
             raise LLMEmptyResponseError(
                 "provider returned empty content",
                 diagnostics={
@@ -299,6 +299,7 @@ class OpenAICompatibleProvider(JSONHTTPProvider):
             or message.get("reasoning") is not None
             or isinstance(raw_content, list)
             or request.continuation is not None
+            or request.native_tools
         ):
             tail = self._history(request)[len(request.messages) :]
             assistant = {

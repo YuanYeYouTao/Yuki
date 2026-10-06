@@ -87,9 +87,20 @@ class ActivationOutcome:
 
 def failure_status_text(failure: RuntimeFailure) -> str:
     """Operational status when no owned activation can recover; never provider details."""
+    if failure.code == "WorkNoProgress":
+        return {
+            "work_start_not_delivered": "工作开始说明尚未确认送达，已暂停并保留已有结果。",
+            "interactive_work_missing_exit": (
+                "工作尚未给出明确的完成或等待决定，已暂停并保留已有结果。"
+            ),
+            "repeated_tool_results": "连续取得相同工具结果且没有进展，已暂停并保留已有结果。",
+        }.get(
+            str(failure.diagnostics.get("reason", "")),
+            "连续执行没有取得进展，已暂停并保留已有结果。",
+        )
     if failure.code == "sqlite_busy":
         return "数据存储暂时繁忙，本次处理未完成，请稍后重试。"
-    if failure.code == "database_failure":
+    if failure.code in {"database_failure", "sqlite_locked"}:
         return "数据存储出现异常，本次处理未完成，请联系管理员。"
     if failure.code == "context_boundary_changed":
         return "会话上下文已变化，本次处理已停止。"
@@ -125,14 +136,38 @@ def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFa
     if isinstance(exc, BaseExceptionGroup):
         failures = [classify_failure(item, stage) for item in exc.exceptions]
         return next((item for item in failures if not item.retryable), failures[0])
-    if isinstance(exc, OperationalError):
-        code = getattr(exc.orig, "sqlite_errorcode", 0)
-        busy = (
-            isinstance(code, int) and code & 255 in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
-        ) or str(exc.orig).lower() in {"database is locked", "database table is locked"}
-        return RuntimeFailure("sqlite_busy" if busy else "database_failure", stage, busy)
+    if isinstance(exc, (OperationalError, sqlite3.Error)):
+        original = exc.orig if isinstance(exc, OperationalError) else exc
+        code = getattr(original, "sqlite_errorcode", None)
+        # Text alone does not identify a retryable writer conflict. In particular,
+        # LOCKED is not BUSY, even when a driver describes both as a lock error.
+        if isinstance(code, int) and not isinstance(code, bool):
+            primary = code & 255
+            if primary in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+                busy = primary == sqlite3.SQLITE_BUSY
+                return RuntimeFailure(
+                    "sqlite_busy" if busy else "sqlite_locked",
+                    stage,
+                    busy,
+                    diagnostics={"sqlite_errorcode": code},
+                )
+        return RuntimeFailure("database_failure", stage)
     if isinstance(exc, SQLAlchemyError):
         return RuntimeFailure("database_failure", stage)
+    if isinstance(exc, WorkNoProgress):
+        reason = str(exc)
+        return RuntimeFailure(
+            "WorkNoProgress",
+            "agent_output",
+            diagnostics={"reason": reason}
+            if reason
+            in {
+                "work_start_not_delivered",
+                "interactive_work_missing_exit",
+                "repeated_tool_results",
+            }
+            else {},
+        )
     if isinstance(exc, ContextBoundaryChanged):
         return RuntimeFailure("context_boundary_changed", "context", True)
     from qq_ai_bot.prompting.compiler import PromptCapacityError

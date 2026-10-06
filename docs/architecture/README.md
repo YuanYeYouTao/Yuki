@@ -58,6 +58,10 @@ Agent 自主选取历史附件、工作区与工具图片后交给原主模型�
 
 本文是开发导航，不是上线证明；实际部署状态须核对当前镜像、数据库版本与部署记录。
 
+当前模式的错误反馈、执行事实、恢复及非阻断汇报修复见
+[Harness 修复任务书](harness-feedback-and-codemode-compatibility-taskbook-2026-10-06.md)。
+MCP 重构和 Code Mode 移植延后；本轮复用原 journal/效果回执，数据库防回归与实际交付分别核验。
+
 本轮实现任务书：[共享持久 Runtime 主干重构](persistent-runtime-refactor-taskbook.md)。
 现行执行与恢复规则仍以主 Agent 合同和共同架构约束为准；任务书中的阶段验收不能替代实际 CI 与部署证据。
 实际入口与职责删除见[实现记录](../operations/persistent-runtime-20261001.md)。

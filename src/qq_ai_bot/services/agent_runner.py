@@ -39,7 +39,9 @@ from qq_ai_bot.llm.base import (
     LLMEmptyResponseError,
     LLMError,
     LLMIncompleteResponseError,
+    LLMInvalidResponseError,
     LLMMalformedFunctionCallError,
+    LLMNativeToolError,
     LLMTimeoutError,
     LLMUnavailableError,
 )
@@ -1268,13 +1270,33 @@ class AgentRunner:
                     tools, tool_calls=calls_used, model_requests=request_index
                 )
                 raise exc.cause from exc
-            except (LLMTimeoutError, LLMUnavailableError):
+            except (LLMTimeoutError, LLMUnavailableError) as exc:
                 self._record_failure_usage(
                     tools, tool_calls=calls_used, model_requests=request_index + 1
                 )
+                physical_count = exc.diagnostics.get("physical_request_count")
+                if native_definitions and type(physical_count) is int and physical_count > 0:
+                    # The server may already have executed native tools. A
+                    # transport-level unknown cannot become a queued Work that
+                    # repeats its paid request on the next activation.
+                    raise LLMNativeToolError(
+                        "provider-native request transport outcome is unknown",
+                        diagnostics=exc.diagnostics,
+                    ) from exc
                 raise
             except (LLMEmptyResponseError, LLMMalformedFunctionCallError) as exc:
                 malformed = isinstance(exc, LLMMalformedFunctionCallError)
+                if not malformed and native_definitions:
+                    # An absent server receipt does not prove an effect-free
+                    # generation. Do not resend a native-capable request merely
+                    # because its adapter could not return a usable checkpoint.
+                    self._record_failure_usage(
+                        tools, tool_calls=calls_used, model_requests=request_index + 1
+                    )
+                    raise LLMNativeToolError(
+                        "provider-native request returned no resumable output",
+                        diagnostics=exc.diagnostics,
+                    ) from exc
                 if malformed:
                     # This typed failure proves that a response arrived with no
                     # executable calls or native effects. It is not an unknown
@@ -1426,6 +1448,87 @@ class AgentRunner:
                 observations.append(response_observation)
                 continuation_tools = definitions
                 continuation_native_tools = native_definitions
+            native_empty = (
+                (response.native_tool_events or native_definitions)
+                and not response.content.strip()
+                and not response.tool_calls
+                and not provider_pause_replay
+            )
+            if (
+                native_empty
+                and response.status is ModelResponseStatus.COMPLETED
+                and response.incomplete_reason != "duplicate_tool_call_id"
+                and (control is None or control.current is None or control.ending == "completed")
+                and (
+                    not response.native_tool_events
+                    or (
+                        control is not None
+                        and control.current is not None
+                        and control.ending == "completed"
+                    )
+                )
+            ):
+                # Preserve the ordinary empty-final boundary after a real send.
+                # A progress report cannot complete an accepted Work, and a
+                # truncated/blocked response cannot borrow this closing rule.
+                delivered = bool(
+                    tools is not None
+                    and callable(getattr(tools, "has_visible_effects", None))
+                    and tools.has_visible_effects()  # type: ignore[attr-defined]
+                )
+                try:
+                    if (
+                        delivered
+                        and control is not None
+                        and control.current is not None
+                        and control.source.get("delivery_contract") == "return_to_caller"
+                    ):
+                        delivered = await revalidate_caller_completion()
+                    elif not delivered:
+                        delivered = await caller_has_confirmed_delivery()
+                    if delivered and control is not None and control.session is not None:
+                        await control.session.save("paired")
+                except Exception as exc:
+                    self._record_failure_usage(
+                        tools, tool_calls=calls_used, model_requests=request_index + 1
+                    )
+                    raise LLMNativeToolError(
+                        "provider-native closing checkpoint could not be confirmed",
+                        diagnostics={"checkpoint_saved": False},
+                    ) from exc
+                if delivered:
+                    return AgentRunResult(
+                        text="",
+                        tool_calls_used=calls_used,
+                        model_requests=request_index + 1,
+                        web_was_used=web_was_used,
+                        native_tool_events=tuple(native_events),
+                        citations=tuple(citations),
+                        response_status=response.status,
+                    )
+            if response.incomplete_reason == "duplicate_tool_call_id" or native_empty:
+                # These are paid responses with retained protocol evidence, not
+                # confirmed effect-free empty generations. Only a supported
+                # pause may automatically continue a server tool. A generic
+                # empty/truncation retry could repeat already-dispatched work.
+                self._record_failure_usage(
+                    tools, tool_calls=calls_used, model_requests=request_index + 1
+                )
+                failure = (
+                    LLMInvalidResponseError("provider returned duplicate local tool call IDs")
+                    if response.incomplete_reason == "duplicate_tool_call_id"
+                    else LLMNativeToolError("provider-native result has no final response")
+                )
+                if control is not None and control.session is not None:
+                    try:
+                        await control.session.save("paired")
+                    except Exception as exc:
+                        # A failure to publish the received server-tool state
+                        # cannot grant a database retry that repeats its HTTP
+                        # dispatch. The paid request budget is already durable.
+                        failure.diagnostics["checkpoint_saved"] = False
+                        raise failure from exc
+                raise failure
             if response.status is ModelResponseStatus.INCOMPLETE:
                 # Truncated calls never execute. Pair non-execution receipts before
                 # recovery so either protocol retains a valid, append-only history.

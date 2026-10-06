@@ -48,6 +48,13 @@ class ToolExecutionResult:
         payload = {f.name: getattr(self, f.name) for f in fields(self) if f.name != "images"}
         if not self.uncertain:
             payload.pop("uncertain")
+        if isinstance(self.data, dict) and isinstance(self.data.get("executed"), bool):
+            # The coordinator consumes this same fact on short and archived
+            # paths. A typed pre-dispatch refusal is not an executed tool.
+            payload["executed"] = self.data["executed"]
+        process = process_receipt(self)
+        if process:
+            payload["process"] = process
         return {key: value for key, value in payload.items() if value not in (None, (), "")}
 
 
@@ -274,6 +281,40 @@ class ToolResultBudgeter:
         )
 
 
+def process_receipt(result: ToolExecutionResult) -> dict[str, Any]:
+    """A successful status read does not mean the observed process succeeded."""
+    if (
+        result.provider_id != "core"
+        or result.tool_name not in {"run_python", "get_code_run", "terminal_exec", "terminal_read"}
+        or not isinstance(result.data, dict)
+    ):
+        return {}
+    body = result.data
+    if isinstance(body.get("completion"), dict):
+        body = body["completion"]
+    receipt = {
+        key: body[key]
+        for key in ("run_id", "status", "pending", "exit_code", "output_lost")
+        if key in body and isinstance(body[key], (str, int, bool))
+    }
+    status = body.get("status")
+    exit_code = body.get("exit_code")
+    if result.uncertain or body.get("uncertain") or status in {"uncertain", "unknown"}:
+        return receipt
+    if status in {"failed", "cancelled"} or (
+        isinstance(exit_code, int) and not isinstance(exit_code, bool) and exit_code != 0
+    ):
+        receipt["succeeded"] = False
+    elif (
+        status == "succeeded"
+        and exit_code in (None, 0)
+        and not body.get("pending")
+        and not body.get("error")
+    ):
+        receipt["succeeded"] = True
+    return receipt
+
+
 def _workspace_progress(result: ToolExecutionResult) -> dict[str, Any]:
     """Keep execution receipts visible even when the full output becomes an artifact."""
     from qq_ai_bot.sandbox.environment_tools import SANDBOX_TOOLS
@@ -313,6 +354,9 @@ def _workspace_progress(result: ToolExecutionResult) -> dict[str, Any]:
     if isinstance(output, str):
         progress["output_preview"] = output[:1000]
         progress["preview_truncated"] = len(output) > 1000
+    process = process_receipt(result)
+    if process:
+        progress["process"] = process
     return progress
 
 
@@ -332,6 +376,9 @@ def _execution_envelope(result: ToolExecutionResult) -> dict[str, Any]:
     ):
         if value is not None:
             envelope[key] = value
+    process = process_receipt(result)
+    if process:
+        envelope["process"] = process
     return envelope
 
 

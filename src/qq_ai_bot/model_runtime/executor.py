@@ -669,6 +669,14 @@ class TaskModelExecutor:
                 priority=priority,
             )
         except Exception as exc:
+            if isinstance(exc, LLMError):
+                # The actual transport counter survives the executor boundary;
+                # zero remains a predispatch failure, not an unknown paid effect.
+                exc.diagnostics = {
+                    **exc.diagnostics,
+                    "physical_request_count": attempts.requests,
+                    "unknown_usage_request_count": attempts.unknown_usage_requests,
+                }
             if self._invocations is not None:
                 diagnostic_usage = (
                     exc.diagnostics.get("usage") if isinstance(exc, LLMError) else None

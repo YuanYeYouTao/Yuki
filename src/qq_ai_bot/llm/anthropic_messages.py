@@ -33,7 +33,12 @@ from qq_ai_bot.llm.base import (
     LLMUnsupportedFeatureError,
 )
 from qq_ai_bot.llm.json_http import JSONHTTPProvider
-from qq_ai_bot.llm.protocol_state import checkpoint_items, integer, ordered_delta
+from qq_ai_bot.llm.protocol_state import (
+    checkpoint_items,
+    integer,
+    ordered_delta,
+    tool_result_failed,
+)
 from qq_ai_bot.llm.vendor_policy import ChatWireOptions, effort_value, thinking_budget, wire_options
 
 logger = logging.getLogger(__name__)
@@ -245,6 +250,7 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
                     "type": "tool_result",
                     "tool_use_id": message.tool_call_id,
                     "content": message.content or "",
+                    **({"is_error": True} if tool_result_failed(message.content or "") else {}),
                 }
             ]
         return {"role": "assistant" if message.role == "assistant" else "user", "content": blocks}
@@ -475,11 +481,19 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
                         query=search_calls[call_id],
                     )
                 )
-        if len({call.id for call in calls}) != len(calls):
+        duplicate_call_ids = len({call.id for call in calls}) != len(calls)
+        if duplicate_call_ids and not (native_events or request.native_tools):
             raise LLMInvalidResponseError("duplicate Claude tool IDs")
         truncated = stop == "max_tokens"
         content = "".join(texts)
-        if not content and not calls and not truncated and stop != "pause_turn":
+        if (
+            not content
+            and not calls
+            and not native_events
+            and not request.native_tools
+            and not truncated
+            and stop != "pause_turn"
+        ):
             raise LLMEmptyResponseError(
                 "Claude returned no visible text or tool calls",
                 diagnostics=self._usage_diagnostics(payload),
@@ -526,7 +540,7 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
             latency_seconds=0,
             provider_request_id=payload.get("id") if isinstance(payload.get("id"), str) else None,
             reasoning_content="\n".join(reasoning) or None,
-            tool_calls=tuple(calls),
+            tool_calls=() if duplicate_call_ids else tuple(calls),
             prompt_tokens=total_input,
             completion_tokens=output,
             cached_prompt_tokens=cached,
@@ -540,11 +554,17 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
             else None,
             status=(
                 ModelResponseStatus.INCOMPLETE
-                if truncated or stop == "pause_turn"
+                if duplicate_call_ids or truncated or stop == "pause_turn"
                 else ModelResponseStatus.COMPLETED
             ),
             incomplete_reason=(
-                "pause_turn" if stop == "pause_turn" else "max_output_tokens" if truncated else None
+                "duplicate_tool_call_id"
+                if duplicate_call_ids
+                else "pause_turn"
+                if stop == "pause_turn"
+                else "max_output_tokens"
+                if truncated
+                else None
             ),
             continuation=ProviderContinuation(
                 provider=self.provider_name,

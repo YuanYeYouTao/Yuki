@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -12,13 +13,14 @@ from dataclasses import asdict, replace
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select, true
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ToolCall
 from qq_ai_bot.execution_trace.phases import model_detail
 from qq_ai_bot.model_runtime.capacity import estimate_request_tokens, estimate_text_tokens
+from qq_ai_bot.runtime.activation_outcome import classify_failure
 from qq_ai_bot.runtime.work_journal import (
     JournalUnavailable,
     WorkJournal,
@@ -1387,6 +1389,26 @@ class WorkSession:
                         },
                     )
                     break
+                except OperationalError as exc:
+                    if classify_failure(exc, "journal").code != "sqlite_busy":
+                        raise
+                    cleanup_failed = any(
+                        note.startswith(("rollback_failed:", "invalidation_failed:"))
+                        for error in (exc, exc.orig)
+                        for note in getattr(error, "__notes__", ())
+                    )
+                    if not attempt and not cleanup_failed:
+                        # The failed writer has rolled back and closed. Rebuild
+                        # this same publication once; the new journal transaction
+                        # rechecks lease, owner and source before publishing.
+                        await asyncio.sleep(0.05)
+                        continue
+                    if phase in {"response", "paired"} or cleanup_failed:
+                        # A paid response cannot be repurchased merely because
+                        # publishing it failed. The prior checkpoint and budgets
+                        # remain authoritative; the new response is not durable.
+                        raise JournalUnavailable("work_journal_unavailable") from exc
+                    raise
                 except WorkConflict as exc:
                     if (
                         exc.code != "work_journal_source_changed"
