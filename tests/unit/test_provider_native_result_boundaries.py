@@ -24,6 +24,7 @@ from qq_ai_bot.domain.messages import (
     ToolFunction,
 )
 from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
+from qq_ai_bot.llm.base import LLMUnavailableError
 from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.llm.gemini import GeminiProvider
@@ -543,6 +544,186 @@ async def test_runner_suspends_paid_native_boundary_without_requeue_or_local_exe
     ) in encoded
     events = control.session.progress["model_observations"][-1]["native_tool_events"]
     assert events == [] if missing_event else events[0]["call_id"] == "search-original"
+    await repository.release(lease)
+
+
+@pytest.mark.parametrize(
+    "kind,native_requested",
+    [
+        (AnthropicMessagesProvider, True),
+        (GeminiProvider, True),
+        (OpenAIResponsesProvider, True),
+        (OpenAICompatibleProvider, True),
+        (GeminiProvider, False),
+        (OpenAIResponsesProvider, False),
+    ],
+)
+@pytest.mark.parametrize(
+    "failure",
+    ["timeout", "disconnected", "predispatch", "authentication", "unavailable_with_usage"],
+)
+async def test_native_transport_unknown_suspends_original_work_without_automatic_replay(
+    database, tmp_path, kind, failure, native_requested
+):
+    env = await social_env(database, tmp_path)
+    repository = WorkRepository(database)
+    lease = await repository.acquire(env.context.conversation_id, 1)
+
+    async def validate():
+        assert await repository.valid(lease)
+
+    control = WorkControl(repository, lease, "native-transport", {}, validate)
+    control.current = await repository.accept(
+        lease, source_key="native-transport", source=control.source, goal="audit sources"
+    )
+    fixed = (
+        ()
+        if kind is OpenAICompatibleProvider
+        else (ChatTool("read_fixture", "read", {"type": "object"}),)
+    )
+    harness = build_harness(database, make_settings(database.url), FakeLLMProvider())
+    chat = harness.processor._chat
+    wire = []
+
+    def transport(request):
+        wire.append(json.loads(request.content))
+        if failure == "authentication":
+            return httpx.Response(401, json={"error": "synthetic unauthorized"})
+        if failure == "unavailable_with_usage":
+            body = (
+                native_reply(kind)
+                if kind is not OpenAICompatibleProvider
+                else empty_native_reply(kind)
+            )
+            body["error"] = {"message": "synthetic server failure"}
+            return httpx.Response(503, json=body)
+        if failure == "timeout":
+            raise httpx.ReadTimeout("fixture timeout", request=request)
+        raise httpx.ConnectError("fixture disconnected", request=request)
+
+    async with httpx.AsyncClient(
+        base_url="https://wire.invalid/", transport=httpx.MockTransport(transport)
+    ) as client:
+        options = (
+            ChatWireOptions(native_web_search=True) if kind is OpenAICompatibleProvider else None
+        )
+        provider = kind(
+            base_url="https://wire.invalid",
+            api_key="synthetic",
+            timeout_seconds=1,
+            max_retries=3 if native_requested else 0,
+            client=client,
+            **({"options": options} if options else {}),
+        )
+        protocol = (
+            ModelProtocol.ANTHROPIC_MESSAGES
+            if kind is AnthropicMessagesProvider
+            else ModelProtocol.GEMINI
+            if kind is GeminiProvider
+            else ModelProtocol.CHAT_COMPLETIONS
+            if kind is OpenAICompatibleProvider
+            else ModelProtocol.RESPONSES
+        )
+        profile = ModelProfile(
+            id="native-transport",
+            provider=provider.provider_name,
+            protocol=protocol,
+            base_url="https://wire.invalid",
+            api_key_env="UNUSED",
+            model="synthetic",
+            timeout_seconds=1,
+            max_retries=3,
+            default_max_output_tokens=8192,
+            default_temperature=0.5,
+            wire_options=options,
+            search_mode=ModelSearchMode.NATIVE if native_requested else ModelSearchMode.EXTERNAL,
+            capabilities=frozenset(
+                {
+                    ModelCapability.TOOLS,
+                    ModelCapability.NATIVE_WEB_SEARCH,
+                    ModelCapability.REASONING,
+                }
+            )
+            - ({ModelCapability.TOOLS} if kind is OpenAICompatibleProvider else set()),
+        )
+        chat.runtime.runner._models = TaskModelExecutor(
+            router=ModelRouter(
+                ModelProfileCatalog(
+                    profiles={profile.id: profile},
+                    routes={
+                        task: ModelRoute(task=task, profile_id=profile.id) for task in ModelTask
+                    },
+                )
+            ),
+            pool=ModelClientPool(injected_profiles={profile.id: provider}),
+        )
+        backend = type("Backend", (), {})()
+        backend.definitions = lambda *_args, **_kwargs: fixed
+        backend.execute = AsyncMock(side_effect=AssertionError("no tool execution"))
+        before = (
+            AsyncMock(side_effect=LLMUnavailableError("admission unavailable"))
+            if failure == "predispatch"
+            else None
+        )
+        runtime = AgentRuntime(
+            origin=TurnOrigin.USER_MESSAGE,
+            actor_user_id="1001",
+            actor_is_superuser=False,
+            delegated_authority=None,
+            conversation_key="native-transport",
+            current_group_id=None,
+            bot_user_id="9999",
+            gateway=None,
+            runtime_config=await chat._runtime_config.snapshot(),
+            current_time=chat._time.current_default(),
+            allowed_capabilities=frozenset({"web"}),
+            max_tool_calls=8,
+            max_model_requests=8,
+            fixed_tools=fixed,
+            work_control=control,
+            compaction_brief=ChatMessage("user", "audit sources"),
+            before_model_request=before,
+        )
+        result = await chat.runtime.runner.run(
+            (ChatMessage("system", "fixed"), runtime.compaction_brief), runtime, backend
+        )
+    backend.execute.assert_not_awaited()
+    persisted = await repository.get(control.current["id"])
+    assert persisted["tool_calls"] == 0
+    if failure == "predispatch":
+        assert not wire and persisted["model_requests"] == 0
+        assert result.work_state == "queued" and result.outcome.failure.retryable
+        assert result.outcome.failure.code == "LLMUnavailableError"
+        assert result.outcome.failure.diagnostics.get("physical_request_count", 0) == 0
+    else:
+        assert len(wire) == 1 and persisted["model_requests"] == 1
+        if not native_requested and failure != "authentication":
+            assert result.work_state == "queued" and persisted["state"] == "queued"
+            assert result.outcome.failure.retryable
+            assert result.outcome.failure.code == (
+                "LLMTimeoutError" if failure == "timeout" else "LLMUnavailableError"
+            )
+            assert result.outcome.failure.diagnostics["physical_request_count"] == 1
+            await repository.release(lease)
+            return
+        assert result.work_state == "suspended" and persisted["state"] == "suspended"
+        assert not result.outcome.failure.retryable
+        assert result.outcome.failure.code == (
+            "LLMAuthenticationError" if failure == "authentication" else "LLMNativeToolError"
+        )
+        assert result.outcome.failure.diagnostics["physical_request_count"] == 1
+        assert result.outcome.failure.diagnostics["unknown_usage_request_count"] == (
+            0 if failure == "unavailable_with_usage" else 1
+        )
+        if failure == "unavailable_with_usage":
+            assert result.outcome.failure.diagnostics["usage"]["total_tokens"] == 13
+            assert result.outcome.failure.diagnostics["http_status"] == 503
+            assert len(result.outcome.failure.diagnostics["body_sha256"]) == 64
+        checkpoint = await control.session.journal.load(
+            lease, persisted["id"], control.session.contract
+        )
+        assert checkpoint.record["phase"] == "dispatched"
+        assert checkpoint.pending_calls == ()
     await repository.release(lease)
 
 

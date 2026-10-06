@@ -1270,10 +1270,19 @@ class AgentRunner:
                     tools, tool_calls=calls_used, model_requests=request_index
                 )
                 raise exc.cause from exc
-            except (LLMTimeoutError, LLMUnavailableError):
+            except (LLMTimeoutError, LLMUnavailableError) as exc:
                 self._record_failure_usage(
                     tools, tool_calls=calls_used, model_requests=request_index + 1
                 )
+                physical_count = exc.diagnostics.get("physical_request_count")
+                if native_definitions and type(physical_count) is int and physical_count > 0:
+                    # The server may already have executed native tools. A
+                    # transport-level unknown cannot become a queued Work that
+                    # repeats its paid request on the next activation.
+                    raise LLMNativeToolError(
+                        "provider-native request transport outcome is unknown",
+                        diagnostics=exc.diagnostics,
+                    ) from exc
                 raise
             except (LLMEmptyResponseError, LLMMalformedFunctionCallError) as exc:
                 malformed = isinstance(exc, LLMMalformedFunctionCallError)
