@@ -47,6 +47,10 @@ class LLMInvalidResponseError(LLMError):
     """The provider returned malformed or contradictory data."""
 
 
+class LLMMalformedFunctionCallError(LLMInvalidResponseError):
+    """Confirmed malformed local call with no usable output or native effect."""
+
+
 class LLMIncompleteResponseError(LLMError):
     """The bounded recovery request also failed to complete."""
 

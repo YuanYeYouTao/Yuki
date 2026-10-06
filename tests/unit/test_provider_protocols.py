@@ -34,6 +34,7 @@ from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
 from qq_ai_bot.llm.base import (
     LLMInvalidRequestError,
     LLMInvalidResponseError,
+    LLMMalformedFunctionCallError,
     LLMUnsupportedFeatureError,
 )
 from qq_ai_bot.llm.gemini import GeminiProvider
@@ -1746,3 +1747,133 @@ def test_configuration_never_ignores_options_from_another_protocol(vendor, proto
             capabilities={ModelCapability.REASONING},
             wire_options=options,
         )
+
+
+@pytest.mark.parametrize("parts", [[{"text": ""}], [], [{"text": " \n"}]])
+async def test_gemini_confirmed_malformed_local_call_is_typed_and_keeps_numeric_usage(parts):
+    from copy import deepcopy
+
+    async with httpx.AsyncClient() as client:
+        adapter = provider(GeminiProvider, client)
+        configured = replace(
+            request(),
+            continuation=ProviderContinuation(
+                "gemini",
+                "gemini",
+                ({"role": "model", "parts": [{"text": "prior", "thoughtSignature": "signature"}]},),
+            ),
+        )
+        original = deepcopy(configured)
+        with pytest.raises(LLMMalformedFunctionCallError) as caught:
+            adapter._parse(
+                httpx.Response(
+                    200,
+                    json={
+                        "candidates": [
+                            {
+                                "index": 0,
+                                "finishReason": "MALFORMED_FUNCTION_CALL",
+                                "finishMessage": "private malformed call and arguments",
+                                "content": {"role": "model", "parts": parts},
+                            }
+                        ],
+                        "usageMetadata": {
+                            "promptTokenCount": 120,
+                            "candidatesTokenCount": 0,
+                            "thoughtsTokenCount": 12,
+                            "totalTokenCount": 132,
+                            "cachedContentTokenCount": 80,
+                        },
+                    },
+                ),
+                configured,
+            )
+        assert isinstance(caught.value, LLMInvalidResponseError)
+        assert caught.value.diagnostics == {
+            "usage": {
+                "prompt_tokens": 120,
+                "completion_tokens": 12,
+                "total_tokens": 132,
+                "cached_prompt_tokens": 80,
+            }
+        }
+        assert "private malformed" not in str(caught.value)
+        assert "finishMessage" not in repr(caught.value.diagnostics)
+        assert configured == original  # No partial output appended to signed history.
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        {"content": {"parts": [{"functionCall": {"name": "send_message", "args": {}}}]}},
+        {"content": {"parts": [{"toolCall": {"id": "search", "toolType": "GOOGLE_SEARCH"}}]}},
+        {"content": {"parts": [{"toolResponse": {"id": "search"}}]}},
+        {"content": {"parts": [{"text": "", "functionCall": {"name": "inspect"}}]}},
+        {"content": {"parts": [{"text": "visible content"}]}},
+        {"content": {"parts": [{"text": "reasoning", "thought": True}]}},
+        {"content": {"parts": [{"text": "", "thoughtSignature": "signature"}]}},
+        {"content": {"parts": [{"inlineData": {"mimeType": "image/png", "data": "private"}}]}},
+        {"content": {"parts": ["invalid part"]}},
+        {"content": {"parts": [{"text": None}]}},
+        {"content": {"parts": [{"text": 0}]}},
+        {"content": {"parts": [{}]}},
+        {"content": {"parts": None}},
+        {"content": {"role": "user", "parts": []}},
+        {"content": {}},
+        {"content": None},
+        {"index": "0", "content": {"parts": []}},
+        {"index": 1, "content": {"parts": []}},
+        {"content": {"parts": []}, "groundingMetadata": {"webSearchQueries": ["query"]}},
+        {"content": {"parts": []}, "safetyRatings": [{"blocked": True}]},
+        {"content": {"parts": []}, "unknownToolEffect": True},
+    ],
+)
+async def test_gemini_malformed_marker_with_ambiguous_output_remains_fatal(candidate):
+    async with httpx.AsyncClient() as client:
+        adapter = provider(GeminiProvider, client)
+        with pytest.raises(LLMInvalidResponseError) as caught:
+            adapter._parse(
+                httpx.Response(
+                    200,
+                    json={"candidates": [{"finishReason": "MALFORMED_FUNCTION_CALL", **candidate}]},
+                ),
+                request(),
+            )
+        assert type(caught.value) is LLMInvalidResponseError
+
+
+@pytest.mark.parametrize(
+    "variant",
+    ["native_tools", "multiple", "safety", "block", "error", "unknown_effect", "invalid_json"],
+)
+async def test_gemini_only_exact_safe_malformed_marker_can_be_recovered(variant):
+    body = {
+        "candidates": [
+            {"finishReason": "MALFORMED_FUNCTION_CALL", "content": {"parts": [{"text": ""}]}}
+        ]
+    }
+    configured = request()
+    if variant == "native_tools":
+        configured = replace(
+            configured, native_tools=(NativeToolDefinition(NativeToolType.WEB_SEARCH),)
+        )
+    elif variant == "multiple":
+        body["candidates"] *= 2
+    elif variant == "safety":
+        body["candidates"][0]["finishReason"] = "SAFETY"
+    elif variant == "block":
+        body["promptFeedback"] = {"blockReason": "SAFETY"}
+    elif variant == "error":
+        body["error"] = {"status": "INTERNAL"}
+    elif variant == "unknown_effect":
+        body["toolResponse"] = {"id": "possibly-executed"}
+    async with httpx.AsyncClient() as client:
+        adapter = provider(GeminiProvider, client)
+        response = (
+            httpx.Response(200, content=b"invalid JSON")
+            if variant == "invalid_json"
+            else httpx.Response(200, json=body)
+        )
+        with pytest.raises(LLMInvalidResponseError) as caught:
+            adapter._parse(response, configured)
+        assert type(caught.value) is LLMInvalidResponseError

@@ -1489,6 +1489,114 @@ class WorkRepository:
         )
         await session.execute(delete(scope).where(scope.c.conversation_id == conversation_id))
 
+    async def confirm_child_completion(self, request_id: str) -> bool:
+        """Confirm the original model's receipt and retire only its duplicate wakeup."""
+        from qq_ai_bot.sandbox.db_models import SandboxTaskContinuationModel, SandboxTaskRunModel
+
+        # Empty/repeated confirmations need no writer. This indexed candidate
+        # read only avoids work; the transaction below rechecks every authority.
+        matching_input = (
+            select(inputs.c.id)
+            .where(
+                inputs.c.source_key == f"completion:{request_id}",
+                inputs.c.kind == "completion",
+                inputs.c.state == "pending",
+            )
+            .exists()
+        )
+        async with self.database.sessions() as reader:
+            candidate = await reader.scalar(
+                select(SandboxTaskRunModel.request_id)
+                .join(
+                    SandboxTaskContinuationModel,
+                    SandboxTaskContinuationModel.request_id == SandboxTaskRunModel.request_id,
+                )
+                .where(
+                    SandboxTaskRunModel.request_id == request_id,
+                    SandboxTaskRunModel.status == "completed",
+                    SandboxTaskRunModel.run_id.is_not(None),
+                    or_(
+                        SandboxTaskContinuationModel.state == "ready",
+                        and_(
+                            SandboxTaskContinuationModel.state == "observed",
+                            or_(
+                                SandboxTaskContinuationModel.reason == "forwarded_to_parent_work",
+                                and_(
+                                    SandboxTaskContinuationModel.reason == "original_turn_observed",
+                                    matching_input,
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+            )
+        if candidate is None:
+            return False
+        async with self.database.immediate_session() as session:
+            task = await session.get(SandboxTaskRunModel, request_id)
+            receipt = await session.get(SandboxTaskContinuationModel, request_id)
+            if (
+                task is None
+                or receipt is None
+                or task.status != "completed"
+                or not task.run_id
+                or receipt.state not in {"ready", "observed"}
+                or (
+                    receipt.state == "observed"
+                    and receipt.reason not in {"forwarded_to_parent_work", "original_turn_observed"}
+                )
+            ):
+                return False
+            source = json.loads(task.source_json)
+            completion = json.loads(task.completion_json or "{}")
+            if (
+                not isinstance(source, dict)
+                or not isinstance(completion, dict)
+                or completion.get("run_id") != task.run_id
+                or completion.get("pending") is not False
+                or completion.get("status") not in {"succeeded", "failed", "cancelled"}
+            ):
+                return False
+            parent_id = source.get("work_id")
+            parent = None
+            if parent_id:
+                parent = (
+                    (await session.execute(select(work).where(work.c.id == parent_id)))
+                    .mappings()
+                    .first()
+                )
+                if (
+                    parent is None
+                    or source.get("conversation_id") != task.source_conversation_id
+                    or task.source_conversation_id != parent["conversation_id"]
+                    or type(source.get("generation")) is not int
+                    or source["generation"] != parent["generation"]
+                ):
+                    return False
+            changed = receipt.state != "observed" or receipt.reason != "original_turn_observed"
+            if changed:
+                receipt.state, receipt.reason = "observed", "original_turn_observed"
+                receipt.updated_at = datetime.now(UTC)
+            if parent is not None:
+                # A fast command may have been forwarded before the original
+                # response consumed its tool result. Keep unseen/staged inputs
+                # and every other source; only this confirmed wakeup is redundant.
+                cancelled = await session.execute(
+                    update(inputs)
+                    .where(
+                        inputs.c.source_key == f"completion:{request_id}",
+                        inputs.c.work_id == parent["id"],
+                        inputs.c.conversation_id == parent["conversation_id"],
+                        inputs.c.generation == parent["generation"],
+                        inputs.c.kind == "completion",
+                        inputs.c.state == "pending",
+                    )
+                    .values(state="cancelled")
+                    .returning(inputs.c.id)
+                )
+                changed = cancelled.scalar_one_or_none() is not None or changed
+            return changed
+
     async def route_child_completion(self, request_id: str) -> None:
         """Atomically hand a child receipt to its parent, or retire an unparented receipt."""
         from datetime import UTC, datetime

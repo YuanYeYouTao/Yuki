@@ -142,6 +142,10 @@ def test_bundle_contains_only_deployment_files_and_expected_assets(tmp_path: Pat
     assert f"{prefix}data/speech/japanese_frontend/lexicon.toml" in names
     assert f"{prefix}napcat-data/" in names
     assert f"{prefix}webui-config/" in names
+    assert f"{prefix}workspace/" in names
+    assert f"{prefix}social-transfer/" in names
+    assert f"{prefix}docs/operations/persistent-environment.md" in names
+    assert f"{prefix}docs/operations/persistent-environment.zh-CN.md" in names
     assert f"{prefix}snowluma-data/" in names
     assert f"{prefix}snowluma-qq-config/" in names
     assert f"{prefix}snowluma-qq-data/" in names

@@ -462,7 +462,7 @@ class Settings(BaseSettings):
     trust_affection_cap_offset: int = 10
     conflict_preference_min_gap: int = 15
 
-    web_enabled: bool = False
+    web_enabled: bool = True
     web_mode: WebMode | None = None
     tavily_api_key: str = Field(default="", repr=False)
     web_search_backend: Literal["tavily", "deepseek_anthropic"] = "tavily"
@@ -873,6 +873,16 @@ class Settings(BaseSettings):
             self.mcp,
         )
         return self
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_web_strategy(cls, value: object) -> object:
+        """New installs use model search; explicitly supplied legacy switches stay legacy."""
+        if isinstance(value, dict):
+            supplied = {str(key).casefold() for key in value}
+            if not {"web_mode", "web_enabled"}.intersection(supplied):
+                value = {**value, "web_mode": WebMode.NATIVE}
+        return value
 
     @model_validator(mode="after")
     def _validate_embedding_settings(self) -> Self:

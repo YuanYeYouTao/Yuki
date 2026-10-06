@@ -132,6 +132,7 @@ const protocolsFor = (provider: unknown) =>
 const presetValues = (provider: string): Row => {
   const preset = providerPresets.find((item) => item.id === provider);
   const gemini = provider === "gemini";
+  const nativeSearch = provider === "openai" || provider === "anthropic";
   return {
     provider,
     protocol: preset?.protocol || "chat_completions",
@@ -139,7 +140,7 @@ const presetValues = (provider: string): Row => {
     model: gemini ? "gemini-3.8-flash" : "",
     api_key_env: "",
     reasoning_effort: "low",
-    search_mode: "external",
+    search_mode: gemini ? "bridge" : nativeSearch ? "native" : "external",
     capabilities: gemini
       ? [
           "reasoning",
@@ -148,7 +149,12 @@ const presetValues = (provider: string): Row => {
           "image_input",
           "long_context",
         ]
-      : ["reasoning", "tools", "structured_output"],
+      : [
+          "reasoning",
+          "tools",
+          "structured_output",
+          ...(nativeSearch ? ["native_web_search"] : []),
+        ],
   };
 };
 
@@ -377,6 +383,22 @@ function ModelDocument({
                     ...profile,
                     ...presetValues(event.target.value),
                   };
+                  // New-connection defaults do not migrate an existing search choice.
+                  if (Object.hasOwn(profile, "search_mode")) {
+                    next.search_mode = profile.search_mode;
+                  } else {
+                    delete next.search_mode;
+                  }
+                  const capabilities = (next.capabilities as string[]).filter(
+                    (capability) => capability !== "native_web_search",
+                  );
+                  if (
+                    Array.isArray(profile.capabilities) &&
+                    profile.capabilities.includes("native_web_search")
+                  ) {
+                    capabilities.push("native_web_search");
+                  }
+                  next.capabilities = capabilities;
                   delete next.base_url_env;
                   delete next.model_env;
                   delete next.reasoning_effort_env;

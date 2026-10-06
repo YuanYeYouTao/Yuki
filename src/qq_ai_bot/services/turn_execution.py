@@ -41,6 +41,7 @@ from qq_ai_bot.llm.base import (
     LLMEmptyResponseError,
     LLMError,
     LLMIncompleteResponseError,
+    LLMMalformedFunctionCallError,
     LLMTimeoutError,
     LLMUnavailableError,
 )
@@ -93,6 +94,7 @@ class TurnState:
     calls_used: int = 0
     web_was_used: bool = False
     empty_retries: int = 0
+    malformed_recoveries: int = 0
     mention_recovery_used: bool = False
     answer_recovery_used: bool = False
     native_events: list[NativeToolEvent] = field(default_factory=list)
@@ -353,6 +355,11 @@ class TurnExecution:
             )
             self.state.provider_pause_replay = bool(
                 self.runtime.work_control.session.progress.get("provider_pause_replay", False)
+            )
+            self.state.malformed_recoveries = int(
+                self.runtime.work_control.session.progress.get(
+                    "malformed_function_call_recoveries", 0
+                )
             )
             await initialize_input_feedback(self.runtime.work_control)
             self.state.observations = self.runtime.work_control.session.progress.get(
@@ -620,6 +627,15 @@ class TurnExecution:
                 return End(waiting)
         return None
 
+    async def confirm_memory_exposure(self) -> None:
+        if self.tools is not None:
+            try:
+                await self.tools.confirm_memory_prompt_exposure()
+            except Exception as exc:
+                self.state.evidence_observation.emit(
+                    "exposure_confirmation_failed", category=type(exc).__name__
+                )
+
     async def request(self, request_index: int) -> ChatResponse | End | LoopSignal:
 
         if self.state.fixed_definitions is not None:
@@ -708,13 +724,7 @@ class TurnExecution:
             # A prepared request may be cancelled while waiting for the LLM
             # slot or rejected by the transport budget before dispatch.
             # Confirm conservatively only after a response was received.
-            if self.tools is not None:
-                try:
-                    await self.tools.confirm_memory_prompt_exposure()
-                except Exception as exc:
-                    self.state.evidence_observation.emit(
-                        "exposure_confirmation_failed", category=type(exc).__name__
-                    )
+            await self.confirm_memory_exposure()
             self.state.evidence_observation.emit(
                 "response_received",
                 request_index=request_index + 1,
@@ -738,7 +748,17 @@ class TurnExecution:
                 self.tools, tool_calls=self.state.calls_used, model_requests=request_index + 1
             )
             raise
-        except LLMEmptyResponseError:
+        except (LLMEmptyResponseError, LLMMalformedFunctionCallError) as exc:
+            malformed = isinstance(exc, LLMMalformedFunctionCallError)
+            if malformed:
+                # This typed provider failure confirms a response with no usable
+                # calls or native effects; prior receipts stay authoritative.
+                if self.state.control is not None:
+                    await self.state.control.confirm_inputs()
+                receipts = current_receipts.get()
+                if receipts is not None:
+                    await receipts.confirm()
+                await self.confirm_memory_exposure()
             if (
                 self.state.control is not None
                 and self.state.control.session is not None
@@ -748,8 +768,9 @@ class TurnExecution:
             ):
                 self.state.control.ending = None
                 self.state.control.session.progress.pop("caller_completion_pending_result", None)
-                await self.state.control.session.save("paired")
-                return RETRY
+                if not malformed:
+                    await self.state.control.session.save("paired")
+                    return RETRY
             has_visible_effects = bool(self.tools is not None and self.tools.has_visible_effects())
             if not has_visible_effects:
                 has_visible_effects = await self.caller_has_confirmed_delivery()
@@ -758,6 +779,12 @@ class TurnExecution:
                 or self.state.control.current is None
                 or self.state.control.ending == "completed"
             ):
+                if (
+                    malformed
+                    and self.state.control is not None
+                    and self.state.control.session is not None
+                ):
+                    await self.state.control.session.save("paired")
                 return End(
                     AgentRunResult(
                         text="",
@@ -769,30 +796,60 @@ class TurnExecution:
                         response_status=self.state.response_status,
                     )
                 )
-            if (
-                self.state.empty_retries >= 2
-                or request_index + 1 >= self.runtime.max_model_requests
-            ):
+            recovery_exhausted = (
+                self.state.malformed_recoveries >= 2 if malformed else self.state.empty_retries >= 2
+            )
+            if recovery_exhausted or request_index + 1 >= self.runtime.max_model_requests:
+                if (
+                    malformed
+                    and self.state.control is not None
+                    and self.state.control.session is not None
+                ):
+                    await self.state.control.session.save("paired")
                 self.runner._record_failure_usage(
                     self.tools, tool_calls=self.state.calls_used, model_requests=request_index + 1
                 )
                 raise
-            self.state.empty_retries += 1
-            logger.warning(
-                "agent_empty_response_retry retry=%d tool_calls_used=%d",
-                self.state.empty_retries,
-                self.state.calls_used,
-            )
+            if malformed:
+                self.state.malformed_recoveries += 1
+                if self.state.control is not None and self.state.control.session is not None:
+                    self.state.control.session.progress["malformed_function_call_recoveries"] = (
+                        self.state.malformed_recoveries
+                    )
+                logger.warning(
+                    "agent_malformed_function_call_recovery retry=%d tool_calls_used=%d",
+                    self.state.malformed_recoveries,
+                    self.state.calls_used,
+                )
+            else:
+                self.state.empty_retries += 1
+                logger.warning(
+                    "agent_empty_response_retry retry=%d tool_calls_used=%d",
+                    self.state.empty_retries,
+                    self.state.calls_used,
+                )
             self.state.transcript.append(
                 ChatMessage(
                     role="system",
                     content=(
-                        "上一次模型请求返回了空内容。请继续当前同一轮任务：如果已有工具"
+                        "上一响应的工具调用格式无效，未执行其中任何调用。请按当前工具声明"
+                        "生成合法的工具名称和 JSON 参数，或在无需工具时直接结束。继续原任务，"
+                        "核对已有回执，不得重复已完成的操作，也不得声称未成功的操作已完成。"
+                        if malformed
+                        else "上一次模型请求返回了空内容。请继续当前同一轮任务：如果已有工具"
                         "结果，先核对结果再给出简短、真实的最终答复；如果任务尚未完成，"
                         "继续调用必要工具。不得声称未成功的操作已经完成。"
                     ),
                 )
             )
+            if (
+                malformed
+                and self.state.control is not None
+                and self.state.control.session is not None
+            ):
+                # Save the correction and bounded count together. A new
+                # activation cannot grant more corrections or reset budgets.
+                await self.state.control.session.save("paired")
             return RETRY
         except LLMError:
             self.runner._record_failure_usage(
@@ -1236,7 +1293,7 @@ class TurnExecution:
             self.state.transcript.append(
                 ChatMessage(
                     role="system",
-                    content=("上一段回复尚未发送；有新的用户输入到达，请先处理新增内容再继续。"),
+                    content=("上一段回复尚未发送；有新的输入或执行信号到达，请先处理再继续。"),
                 )
             )
             return Continue()

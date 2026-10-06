@@ -1,6 +1,7 @@
 """execute_code through the real AgentRunner loop, Work journal and restore."""
 
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,7 @@ from tests.support.social_identity_cases import social_env
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.codemode.api_projection import project
 from qq_ai_bot.domain.messages import ChatMessage, ChatResponse, ToolCall, ToolFunction
+from qq_ai_bot.llm.base import LLMMalformedFunctionCallError
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.mcp.artifact_access import ArtifactAccess
 from qq_ai_bot.runtime.work_control import WorkControl, work_control_tools
@@ -108,6 +110,58 @@ async def runner_env(database, tmp_path, responses, *, max_tool_calls=8):
 
 
 ACCEPT = {"action": "accept", "goal": "compose", "output_kind": "state_change"}
+
+
+@pytest.mark.parametrize("segmented", [False, True])
+async def test_malformed_recovery_keeps_code_effects_and_root_budget(database, tmp_path, segmented):
+    code = {
+        "code": "await yuki_workspace_write({'path': 'one'})\n"
+        "await yuki_workspace_write({'path': 'two'})"
+    }
+    responses = iter(
+        [
+            call("task_control", ACCEPT, "accept"),
+            call("execute_code", code, "code"),
+            LLMMalformedFunctionCallError("synthetic invalid local-call format"),
+            ChatResponse("done", 0),
+        ]
+    )
+    chat, provider, control, runtime, repo = await runner_env(
+        database, tmp_path, (), max_tool_calls=1 if segmented else 8
+    )
+
+    def respond(_request):
+        step = next(responses)
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+    provider._responder = respond
+    backend = Backend()
+    initial = (ChatMessage("user", "write two files once"),)
+    result = await chat.runtime.runner.run(initial, runtime, backend)
+    active = control
+    if segmented:
+        assert result.work_state == "queued"
+        assert len(backend.log) == 1 and len(provider.requests) == 2
+        active = WorkControl(repo, control.lease, "code-runner", {}, control.validate)
+        active.current = await repo.get(control.current["id"])
+        result = await chat.runtime.runner.run(
+            initial, replace(runtime, work_control=active, max_tool_calls=8), backend
+        )
+    assert result.text == "done"
+    assert [name for name, _ in backend.log] == ["workspace_write", "workspace_write"]
+    assert len({identity for _, identity in backend.log}) == 2
+    assert len(provider.requests) == 4
+    assert active.session.progress["malformed_function_call_recoveries"] == 1
+    stored = await repo.get(control.current["id"])
+    assert stored["model_requests"] == 4 and stored["tool_calls"] == 2
+    failed, corrected = provider.requests[-2:]
+    assert corrected.request_chain_id == failed.request_chain_id
+    assert corrected.tools == failed.tools
+    assert [(m.tool_call_id, m.content) for m in corrected.messages if m.role == "tool"] == [
+        (m.tool_call_id, m.content) for m in failed.messages if m.role == "tool"
+    ]
 
 
 async def test_execute_code_requires_admitted_work(database, tmp_path):

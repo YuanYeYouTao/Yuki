@@ -177,7 +177,7 @@ async def execute_subagent(
             await repository.message(control.lease, root_id, identity, key, instruction)
         elif action not in {"status", "result"}:
             raise ValueError("invalid_subagent_action")
-        rows = [await repository.related(root_id, identity)]
+        rows = [await repository.related(root_id, identity, include_checkpoint=action == "result")]
     return {
         "ok": True,
         "next_cursor": next_cursor,

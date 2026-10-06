@@ -68,3 +68,5 @@ class WebSearchResponse:
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     cached_prompt_tokens: int | None = None
+    # Provider-generated, untrusted synthesis; never an extracted page or source URL.
+    provider_summary: str | None = None

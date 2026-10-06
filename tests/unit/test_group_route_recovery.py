@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from tests.conftest import MemorySender, make_settings
 
+from qq_ai_bot.admin.control_resolution import ControlAccess
+from qq_ai_bot.admin.models import ControlAuditRef
 from qq_ai_bot.container import ApplicationContainer
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
@@ -31,9 +36,10 @@ from qq_ai_bot.identity.db_models import (
     PresenceModel,
     SpaceBindingModel,
 )
-from qq_ai_bot.identity.routing import RouteCandidate
+from qq_ai_bot.identity.routing import RouteCandidate, RouteSendError
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import AdminOperationEventModel, ChatEventModel
+from qq_ai_bot.services.admin.group_recovery import GroupRecoveryService
 
 
 @dataclass
@@ -427,3 +433,312 @@ async def test_recovery_creates_missing_routes_only_for_the_proven_existing_grou
     await app.processor.handle(message(), sender)
     assert "恢复可用路由" in sender.messages[-1].text
     assert await state(database, space, binding) == before
+
+
+NEW_GROUP = "490001"
+
+
+async def new_group_binding(database: Database) -> SpaceBindingModel | None:
+    async with database.sessions() as session:
+        return await session.scalar(
+            select(SpaceBindingModel)
+            .where(
+                SpaceBindingModel.platform == "qq",
+                SpaceBindingModel.external_space_id == NEW_GROUP,
+            )
+            .limit(1)
+        )
+
+
+@pytest.mark.asyncio
+async def test_superuser_on_registers_proven_new_group_atomically_and_replay_is_stable(
+    database: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, bot, presence, _space, _binding = await stack(database)
+    bot.groups |= {NEW_GROUP}
+    assert await new_group_binding(database) is None
+    writer_active = False
+    original_writer = database.immediate_session
+
+    @asynccontextmanager
+    async def writer() -> AsyncIterator[AsyncSession]:
+        nonlocal writer_active
+        async with original_writer() as session:
+            writer_active = True
+            try:
+                yield session
+            finally:
+                writer_active = False
+
+    original_probe = bot.call_api
+    probes = 0
+
+    async def probe(action: str, **kwargs: object) -> dict[str, object]:
+        nonlocal probes
+        assert not writer_active
+        probes += 1
+        return await original_probe(action, **kwargs)
+
+    monkeypatch.setattr(database, "immediate_session", writer)
+    monkeypatch.setattr(bot, "call_api", probe)
+    request = replace(message(), group_id=NEW_GROUP)
+    sender = Sender(bot)
+    await app.processor.handle(request, sender)
+    assert "恢复可用路由" in sender.messages[-1].text
+    binding = await new_group_binding(database)
+    assert binding is not None
+    assert probes == 1
+    async with database.sessions() as session:
+        space = await session.get(CanonicalSpaceModel, binding.space_id)
+        ingest = await session.get(SpaceBindingIngestRouteModel, binding.id)
+        outgoing = await session.get(SpaceActiveRouteModel, binding.space_id)
+        assert space is not None and space.enabled
+        assert ingest is not None and not ingest.paused and ingest.ingest_presence_id == presence
+        assert outgoing is not None and not outgoing.paused and outgoing.presence_id == presence
+        assert outgoing.space_binding_id == binding.id
+        assert ingest.route_generation == outgoing.route_generation == 1
+        assert await session.scalar(select(func.count()).select_from(ChatEventModel)) == 0
+        assert await session.scalar(select(func.count()).select_from(AdminOperationEventModel)) == 1
+        assert (
+            await session.scalar(select(func.count()).select_from(ControlCommandReceiptModel)) == 1
+        )
+        assert (
+            await session.scalar(
+                select(CanonicalConversationModel.id).where(
+                    CanonicalConversationModel.space_id == binding.space_id
+                )
+            )
+            is None
+        )
+    await pause(database, binding.space_id, binding.id)
+    await app.processor.handle(request, sender)
+    assert "已处理" in sender.messages[-1].text
+    replayed = await new_group_binding(database)
+    assert replayed is not None and replayed.id == binding.id
+    async with database.sessions() as session:
+        ingest = await session.get(SpaceBindingIngestRouteModel, binding.id)
+        assert ingest is not None and ingest.paused
+        assert (
+            await session.scalar(select(func.count()).select_from(ControlCommandReceiptModel)) == 1
+        )
+    await app.processor.handle(replace(request, message_id="new-enable"), sender)
+    await app.processor.handle(replace(request, text="/ai ping", message_id="new-ping"), sender)
+    assert sender.messages[-1].text.startswith("pong")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    [
+        "non_admin",
+        "missing_member",
+        "ambiguous",
+        "disabled_presence",
+        "ineligible_presence",
+        "forged_handle",
+        "mismatched_presence",
+        "disabled_person",
+    ],
+)
+async def test_new_group_registration_rejects_untrusted_or_unproven_requests(
+    database: Database, case: str
+) -> None:
+    app, bot, presence, _space, _binding = await stack(database)
+    bot.groups |= {NEW_GROUP}
+    request = replace(message(), group_id=NEW_GROUP)
+    if case == "non_admin":
+        request = replace(request, sender=SenderIdentity(user_id="1001"))
+    elif case == "missing_member":
+        bot.groups = frozenset()
+    elif case == "ambiguous":
+        async with database.immediate_session() as session:
+            other_presence = await ensure_presence(session, "8001")
+        app.gateway_registry.connect(
+            Bot("8001", frozenset({NEW_GROUP})),
+            provider_id="snowluma",
+            presence_id=other_presence,
+        )
+    elif case == "forged_handle":
+        request = replace(request, bot_user_id="8001")
+    elif case == "mismatched_presence":
+        async with database.immediate_session() as session:
+            other_presence = await ensure_presence(session, "8001")
+        app.gateway_registry.disconnect(bot)
+        app.gateway_registry.connect(bot, provider_id="napcat", presence_id=other_presence)
+    elif case in {"disabled_presence", "ineligible_presence"}:
+        async with database.immediate_session() as session:
+            row = await session.get(PresenceModel, presence)
+            assert row is not None
+            if case == "disabled_presence":
+                row.enabled = False
+            else:
+                row.ingest_eligible = False
+    elif case == "disabled_person":
+        async with database.immediate_session() as session:
+            actor = await find_identity_binding(session, "9000")
+            assert actor is not None
+            person = await session.get(CanonicalPersonModel, actor.person_id)
+            assert person is not None
+            person.enabled = False
+    sender = Sender(bot)
+    await app.processor.handle(request, sender)
+    assert await new_group_binding(database) is None
+    if case == "ambiguous":
+        assert "多个可用账号" in sender.messages[-1].text
+    async with database.sessions() as session:
+        assert await session.scalar(select(func.count()).select_from(AdminOperationEventModel)) == 0
+        assert (
+            await session.scalar(select(func.count()).select_from(ControlCommandReceiptModel)) == 0
+        )
+        assert await session.scalar(select(func.count()).select_from(ChatEventModel)) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["connection", "presence_revision", "existing_owner"])
+async def test_new_group_registration_race_never_creates_or_replaces_owner(
+    database: Database, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    app, bot, presence, _space, _binding = await stack(database)
+    bot.groups |= {NEW_GROUP}
+    original = app.presence_router.unbound_group_recovery_presence
+
+    async def raced(group_id: str) -> str:
+        candidate = await original(group_id)
+        if change == "connection":
+            app.gateway_registry.disconnect(bot)
+            app.gateway_registry.connect(
+                Bot("8000", frozenset({NEW_GROUP})), provider_id="napcat", presence_id=presence
+            )
+        else:
+            async with database.immediate_session() as session:
+                if change == "presence_revision":
+                    row = await session.get(PresenceModel, presence)
+                    assert row is not None
+                    row.revision += 1
+                else:
+                    space_id = await ensure_space(session, NEW_GROUP)
+                    space = await session.get(CanonicalSpaceModel, space_id)
+                    assert space is not None
+                    space.enabled = False
+        return candidate
+
+    monkeypatch.setattr(app.presence_router, "unbound_group_recovery_presence", raced)
+    sender = Sender(bot)
+    await app.processor.handle(replace(message(), group_id=NEW_GROUP), sender)
+    assert "刚发生变化" in sender.messages[-1].text
+    binding = await new_group_binding(database)
+    if change == "existing_owner":
+        assert binding is not None
+        async with database.sessions() as session:
+            space = await session.get(CanonicalSpaceModel, binding.space_id)
+            assert space is not None and not space.enabled
+            assert await session.get(SpaceBindingIngestRouteModel, binding.id) is None
+            assert await session.get(SpaceActiveRouteModel, binding.space_id) is None
+    else:
+        assert binding is None
+    async with database.sessions() as session:
+        assert await session.scalar(select(func.count()).select_from(AdminOperationEventModel)) == 0
+        assert (
+            await session.scalar(select(func.count()).select_from(ControlCommandReceiptModel)) == 0
+        )
+
+
+@pytest.mark.asyncio
+async def test_new_group_registration_audit_failure_rolls_back_identity_and_routes(
+    database: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, bot, _presence, _space, _binding = await stack(database)
+    bot.groups |= {NEW_GROUP}
+    async with database.sessions() as session:
+        space_count = await session.scalar(select(func.count()).select_from(CanonicalSpaceModel))
+
+    async def fail_audit(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("audit unavailable")
+
+    monkeypatch.setattr("qq_ai_bot.services.admin.group_recovery.add_audit_event", fail_audit)
+    with pytest.raises(RuntimeError, match="audit unavailable"):
+        await app.processor.handle(replace(message(), group_id=NEW_GROUP), Sender(bot))
+    assert await new_group_binding(database) is None
+    async with database.sessions() as session:
+        assert (
+            await session.scalar(select(func.count()).select_from(CanonicalSpaceModel))
+            == space_count
+        )
+        assert (
+            await session.scalar(select(func.count()).select_from(ControlCommandReceiptModel)) == 0
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed", ["group", "event_type", "trigger_message"])
+async def test_new_group_original_control_request_recovers_receipt_and_rejects_reused_id(
+    database: Database, changed: str
+) -> None:
+    app, bot, presence, _space, _binding = await stack(database)
+    bot.groups |= {NEW_GROUP}
+    access = ControlAccess(database, superuser_ids=frozenset({"9000"}))
+    principal = await access.principal_for_qq("9000")
+    context = access.context(principal, await access.space_target(NEW_GROUP))
+    assert context.canonical_target.space_id is None
+    connection_id = app.gateway_registry.resolve_active(presence).snapshot.connection_id
+    audit = ControlAuditRef(
+        user_id="9000",
+        bot_user_id="8000",
+        trigger_message_id="original-request",
+        conversation_key=f"bot:8000:group:{NEW_GROUP}",
+    )
+    service = GroupRecoveryService(database, app.gateway_registry, app.presence_router)
+    results = await asyncio.gather(
+        *(
+            service.enable(
+                context,
+                presence_id=presence,
+                connection_id=connection_id,
+                audit=audit,
+                event_type="message:group:normal",
+            )
+            for _ in range(2)
+        )
+    )
+    assert sorted(results) == [False, True]
+    binding = await new_group_binding(database)
+    assert binding is not None
+    await pause(database, binding.space_id, binding.id)
+    assert not await service.enable(
+        context,
+        presence_id=presence,
+        connection_id=connection_id,
+        audit=audit,
+        event_type="message:group:normal",
+    )
+    altered = context
+    event_type = "message:group:normal"
+    if changed == "group":
+        altered = replace(
+            context, canonical_target=replace(context.canonical_target, storage_group_id="490002")
+        )
+    elif changed == "event_type":
+        event_type = "message:group:anonymous"
+    else:
+        audit = replace(audit, trigger_message_id="different-request")
+    with pytest.raises(RouteSendError) as error:
+        await service.enable(
+            altered,
+            presence_id=presence,
+            connection_id=connection_id,
+            audit=audit,
+            event_type=event_type,
+        )
+    assert error.value.category == "conflict"
+    unchanged = await new_group_binding(database)
+    assert unchanged is not None and unchanged.id == binding.id
+    async with database.sessions() as session:
+        ingest = await session.get(SpaceBindingIngestRouteModel, binding.id)
+        outgoing = await session.get(SpaceActiveRouteModel, binding.space_id)
+        assert ingest is not None and outgoing is not None
+        assert ingest.paused and outgoing.paused
+        assert ingest.route_generation == outgoing.route_generation == 1
+        assert await session.scalar(select(func.count()).select_from(AdminOperationEventModel)) == 1
+        assert (
+            await session.scalar(select(func.count()).select_from(ControlCommandReceiptModel)) == 1
+        )

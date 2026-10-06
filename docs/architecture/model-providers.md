@@ -52,8 +52,13 @@ Gemini 的 Google Search 与函数工具同请求在当前 Cloud Code 代理路�
 `read_webpage` 函数声明，只有执行 `web_search` 时另发一条只含 `googleSearch`
 的 Gemini 请求。桥只采纳上游 `groundingMetadata.groundingChunks[].web` 来源；
 模型正文里的 URL 不算来源。无可信来源或请求失败时显式退到已配置的 Tavily，
-回退结果不进桥缓存。此模式要求部署的 WebMode 为 tavily/both 且 Tavily 凭据可用，
-以便读网页与降级；模型配置保存时按发起工具调用的任务连接热切换桥。
+回退结果不进桥缓存。部署 WebMode 为 native/tavily/both 时均可使用显式 bridge；
+Tavily 是可选的网页读取与失败降级后端。没有 Tavily 时仍可取得真实 grounding 来源 URL/标题，
+并保留同一搜索响应已有的 `provider_summary`（明确标为上游模型生成的不可信总结，非网页
+原文或逐来源摘录）。仅在已有真实 grounding 时输出总结，其正文 URL 不参与来源认定。
+总结按现有工具字符限额裁剪，超额时先缩短总结再处理真实来源；旧缓存缺该字段仍可读取。
+不虚构网页正文，`read_webpage` 明确返回 `extract_unavailable`。模型配置保存时按发起工具
+调用的任务连接热切换桥。
 已开始的 Runner 将搜索后端与模型连接一起固定至该轮结束；热保存只影响后续 Runner。
 Gemini 搜索桥使用原连接的 `timeout_seconds` 和 `default_max_output_tokens`，不额外
 施加 Web 超时或 2048 token 输出上限；DeepSeek 桥同样沿所选搜索 Profile 配置，
@@ -64,6 +69,14 @@ Gemini 搜索桥使用原连接的 `timeout_seconds` 和 `default_max_output_tok
 `bridge` 在独立请求中使用 Google Search，不向主请求声明该能力或内联原生工具。
 Claude 原生工具与本地 `web_search` 同名，原生模式不向 Claude 声明外部搜索函数。
 全局搜索禁用仍会关闭所有联网工具；外部模式还需要部署中确实配置外部搜索后端。
+新安装未提供 `WEB_MODE` 或旧 `WEB_ENABLED` 时默认开启模型搜索（native），不要求额外
+Tavily 密钥，不自动声明任何模型能力。显式 `WEB_MODE` 优先；只有旧 `WEB_ENABLED=true`
+则保留 Tavily 模式和凭据校验，`false` 继续禁用。既有 Profile 的搜索选择不被默认值改写。
+Gemini 使用显式 bridge；支持原生搜索的连接仍须声明实际能力和获得当次 Web 授权。
+独立 DeepSeek 搜索仅在已配置 `deepseek_anthropic` 后端和明确 `search_connection` 时使用
+已有适配器；native 模式不猜测主模型作为搜索连接，也不改变主任务 Provider。
+未配置可用外部后端的本地搜索调用返回 `search_unavailable`；全局开启不证明任意模型
+具备搜索或网页全文读取能力。启用后的模型配置热切换保持原 Runner 的已固定搜索后端。
 主 Agent 使用完整函数合同，Chat 搜索专用模型不能混用该合同；它们也不能通过 `tool_choice=none`
 保证禁用服务端搜索。需要联网的主 Agent 可配置现有外部搜索工具。
 
@@ -137,8 +150,8 @@ Gemini 3.8 Flash 的官方模型 ID 是 `gemini-3.8-flash`。WebUI 的 Google Ge
 `low` 思考强度及文字、图片、工具、结构化输出能力。Gemini 3.8 的 Yuki 连接使用
 `thinkingLevel`，拒绝该型号的固定 `thinkingBudget` 配置；代理转发仍需另行核对，不能把
 代理改写误认为 Yuki 请求。适配器保留工具回合的 thought signature，
-按上游 `cachedContentTokenCount` 统计缓存。Google 搜索桥须在此连接明确选择；默认仍走
-部署配置的外部搜索。此连接不实现 Interactions API 或 Live/TTS；这些能力不能因为模型
+按上游 `cachedContentTokenCount` 统计缓存。Google 搜索桥须在此连接明确选择；旧连接保留
+原搜索选择，未配置可用搜索后端时明确不可用。此连接不实现 Interactions API 或 Live/TTS；这些能力不能因为模型
 本身支持就标成已接入。
 无 TOML 的兼容配置也使用同一个客户端池；显式 `LLM_PROVIDER=anthropic/gemini`
 分别采用对应原生协议，其他兼容供应商保持 Chat。额外命名的 endpoint/model/key 变量需要
@@ -166,6 +179,11 @@ Work compaction 继续使用原任务 Profile 的超时。两类摘要的生成�
   合同或来源变化按原原因建立新链，不改写旧聊天事件；各协议的原生块跨 Work 复用并不等价。
 - Chat `length`、Claude `max_tokens`、Gemini `MAX_TOKENS` 均转为 INCOMPLETE；
   Runner 的既有截断处理不会执行其中的工具。不自动增加预算。
+- Gemini 明确返回 `MALFORMED_FUNCTION_CALL`，且请求没有原生服务端工具、响应仅含空文本而无
+  可执行调用或原生效果证据时，Runner 在原链追加工具格式纠正反馈，最多纠正两次。
+  每次仍走原请求接纳、来源核验和累计预算；Work journal 保存纠正次数和反馈，重启不重置。
+  不构造缺失的工具调用，不改工具声明或重发已确认效果；安全拦截、非法 JSON、矛盾响应和
+  结果不明的传输失败不进入此纠正路径。已有确认交付的普通聊天按原收尾规则结束。
 - reasoning、签名、完整工具回执不进入对外消息或普通运行日志；只有显式 send_message 交付。
 - [执行诊断](execution-trace.md) 单独保存实际返回的可读思考和工具结果；正文权限查询，按期清理。
   不透明签名/加密状态只留摘要，原恢复 journal 继续按协议私有合同保存。

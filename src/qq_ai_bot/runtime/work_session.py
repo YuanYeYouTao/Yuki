@@ -1372,17 +1372,26 @@ class WorkSession:
         key = call.get("readonly_result_key")
         if key is None:
             return original
-        if not isinstance(key, str) or not 1 <= len(key) <= 1024:
+        if not isinstance(key, str) or not key:
             raise JournalUnavailable("work_readonly_reuse_corrupt")
+        assert self.transcript is not None
+        hashed = key.startswith("invocation:v1:")
         try:
-            chain, sequence, identity = key.rsplit(":", 2)
-            current_chain, current_sequence, _ = original.rsplit(":", 2)
-            if (
-                chain != current_chain
-                or not 0 <= int(sequence) <= int(current_sequence)
-                or not identity
-            ):
-                raise ValueError("invalid readonly source")
+            if hashed:
+                digest = key.removeprefix("invocation:v1:")
+                if len(digest) != 64 or set(digest) - set("0123456789abcdef"):
+                    raise ValueError("invalid readonly identity")
+            else:
+                # Provider IDs after these two Host fields stay opaque. The
+                # current alias may itself use a hash, so read its trusted
+                # chain/sequence from the restored journal, not its key text.
+                chain, sequence, identity = key.split(":", 2)
+                if (
+                    chain != self.transcript.chain_id
+                    or not 0 <= int(sequence) <= self.sequence
+                    or not identity
+                ):
+                    raise ValueError("invalid readonly source")
         except ValueError as exc:
             raise JournalUnavailable("work_readonly_reuse_corrupt") from exc
         from qq_ai_bot.runtime.work_schema_v1 import effects
@@ -1408,6 +1417,25 @@ class WorkSession:
         if row["state"] != "accepted":
             return original
         receipt = json.loads(row["receipt_json"])
+        if hashed:
+            metadata = receipt.get("invocation")
+            if (
+                not isinstance(metadata, dict)
+                or metadata.get("version") != 1
+                or metadata.get("operation_id") != key
+                or metadata.get("owner_execution_id") != self.control.current["id"]
+                or metadata.get("chain_id") != self.transcript.chain_id
+                or type(metadata.get("request_sequence")) is not int
+                or not 0 <= metadata["request_sequence"] <= self.sequence
+                or not isinstance(metadata.get("provider_call_id"), str)
+                or not metadata["provider_call_id"]
+                or metadata.get("parent_effect_key") is not None
+                or direct_operation_id(
+                    metadata["chain_id"], metadata["request_sequence"], metadata["provider_call_id"]
+                )
+                != key
+            ):
+                raise JournalUnavailable("work_readonly_reuse_corrupt")
         outcome = receipt.get("outcome", {})
         if (
             not isinstance(outcome, dict)
@@ -1874,9 +1902,11 @@ def _decode_compaction_anchor(value: object) -> TurnTranscript | None:
             raise ValueError("invalid anchor transcript")
         anchor = decode_transcript(value)
         messages = anchor.request().messages
-        if messages[-1].role != "user" or any(
-            message.role not in {"system", "developer", "user", "assistant"}
-            for message in messages[:-1]
+        # The anchor also retains Host-selected public conversation deltas.
+        # Their real chronological order may end with an assistant message;
+        # the original Work/source, not the last speaker, owns the task.
+        if any(
+            message.role not in {"system", "developer", "user", "assistant"} for message in messages
         ):
             raise ValueError("invalid anchor roles")
         if any(

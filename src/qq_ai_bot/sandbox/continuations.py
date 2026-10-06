@@ -34,19 +34,9 @@ class SandboxContinuationRepository:
 
     async def observed(self, request_id: str) -> bool:
         """The original Agent consumed the terminal result; no extra turn is needed."""
-        async with self.database.sessions() as session, session.begin():
-            result = await session.execute(
-                update(SandboxTaskContinuationModel)
-                .where(
-                    SandboxTaskContinuationModel.request_id == request_id,
-                    SandboxTaskContinuationModel.state == "ready",
-                )
-                .values(
-                    state="observed", reason="original_turn_observed", updated_at=datetime.now(UTC)
-                )
-                .returning(SandboxTaskContinuationModel.request_id)
-            )
-            return result.scalar_one_or_none() is not None
+        from qq_ai_bot.runtime.work_repository import WorkRepository
+
+        return await WorkRepository(self.database).confirm_child_completion(request_id)
 
     async def rotate(self, request_id: str) -> None:
         """Busy or invalid sources cannot starve later completions in a bounded scan."""

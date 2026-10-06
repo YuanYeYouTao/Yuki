@@ -48,7 +48,10 @@ def _gemini_response(*parts: dict, response_id: str, grounding: dict | None = No
 
 
 @pytest.mark.asyncio
-async def test_gemini_search_bridge_main_turn_with_trusted_receipt(database: Database, tmp_path):
+@pytest.mark.parametrize("with_tavily", [True, False])
+async def test_gemini_search_bridge_main_turn_with_trusted_receipt(
+    database: Database, tmp_path, with_tavily: bool
+):
     """The protocol mock controls model choice; all Yuki entry/tool code is real."""
     identity = await social_env(database, tmp_path)
     main_wires: list[dict] = []
@@ -95,7 +98,10 @@ async def test_gemini_search_bridge_main_turn_with_trusted_receipt(database: Dat
         assert search_result["evidence_state"]["query_status"] == "success"
         assert search_result["evidence_state"]["source_refs"]
         assert search_result["data"]["sources"][0]["url"] == SOURCE_URL
-        assert "invented.example" not in json.dumps(search_result)
+        assert "invented.example" not in json.dumps(search_result["data"]["sources"])
+        assert "invented.example" not in json.dumps(search_result["evidence_state"])
+        assert "invented.example" in search_result["data"]["provider_summary"]
+        assert "不可信总结" in search_result["data"]["provider_summary_instruction"]
         if len(main_wires) == 2:
             assert [item["name"] for item in declarations] == [
                 item["name"] for item in main_wires[0]["tools"][0]["functionDeclarations"]
@@ -189,15 +195,15 @@ async def test_gemini_search_bridge_main_turn_with_trusted_receipt(database: Dat
         credential="test-only",
         provider=search_model,
         state=BridgeState(tmp_path / "bridge-cache.db"),
-        fallback=fallback,
+        fallback=fallback if with_tavily else None,
     )
     settings = make_settings(
         database.url,
         llm_model="gemini-3.8-flash",
         enabled_groups_csv="20001",
-        web_enabled=False,
-        web_mode=WebMode.BOTH,
-        tavily_api_key="test-only",
+        web_enabled=True,
+        web_mode=WebMode.BOTH if with_tavily else WebMode.NATIVE,
+        tavily_api_key="test-only" if with_tavily else "",
     )
     harness = build_harness(database, settings, main, web_provider=bridge)
     bind_main_contract(harness, tmp_path)
@@ -249,9 +255,11 @@ async def test_gemini_search_bridge_main_turn_with_trusted_receipt(database: Dat
     assert len(main_wires) == 3
     assert len(search_wires) == 1
     assert not fallback.search_requests
-    assert fallback.extract_requests == [
-        (SOURCE_URL, "Python asyncio TaskGroup gather failure official docs")
-    ]
+    assert fallback.extract_requests == (
+        [(SOURCE_URL, "Python asyncio TaskGroup gather failure official docs")]
+        if with_tavily
+        else []
+    )
     assert len(sender.messages) == 1, send_receipt
     assert SOURCE_URL in sender.messages[0].text
     assert not any(action.startswith("send_") for action, _ in identity.bot.calls)

@@ -8,8 +8,10 @@ Type=simple
 Group=10001
 WorkingDirectory=/opt/yuki-sandbox
 Environment=PYTHONPATH=/opt/yuki-sandbox/src
+Environment=YUKI_MANAGER_WORKSPACE_STORE=/opt/yuki-qqbot/workspace
+EnvironmentFile=-/etc/yuki-sandbox/deployment.env
 ExecStartPre=/bin/sh /opt/yuki-sandbox/deploy/sandbox/network-guard.sh
-ExecStart=/opt/yuki-sandbox/venv/bin/python -m qq_ai_bot.sandbox.manager --root /var/lib/yuki-sandbox --workspace /opt/yuki-qqbot/workspace --socket /run/yuki-sandbox/manager.sock --persistent-home /var/lib/yuki-sandbox/home --image yuki-environment:20260912
+ExecStart=/opt/yuki-sandbox/venv/bin/python -m qq_ai_bot.sandbox.manager --root /var/lib/yuki-sandbox --workspace ${YUKI_MANAGER_WORKSPACE_STORE} --socket /run/yuki-sandbox/manager.sock --persistent-home /var/lib/yuki-sandbox/home --image yuki-environment:20260912
 RuntimeDirectory=yuki-sandbox
 RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes

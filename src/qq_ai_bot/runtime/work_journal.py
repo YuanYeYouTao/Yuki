@@ -199,21 +199,19 @@ class WorkJournal:
                 pending_sequence = payload["metadata"].get("sequence", 0)
                 if (
                     not isinstance(raw_pending, list)
-                    or len(raw_pending) > 32
                     or type(pending_sequence) is not int
                     or pending_sequence < 0
                     or any(
                         not isinstance(call, dict)
                         or not isinstance(call.get("id"), str)
                         or not call["id"]
-                        or len(call["id"]) > 128
                         or not isinstance(call.get("name"), str)
                         or not call["name"]
                         or (
                             "readonly_result_key" in call
                             and (
                                 not isinstance(call["readonly_result_key"], str)
-                                or not 1 <= len(call["readonly_result_key"]) <= 1024
+                                or not call["readonly_result_key"]
                             )
                         )
                         for call in raw_pending

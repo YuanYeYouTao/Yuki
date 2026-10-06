@@ -455,7 +455,7 @@ class WorkControl:
                 "关联原输入并按需回答，不重复原文]"
                 if already_visible
                 else f"[Work 信号 event_id={item['event_id']}；续原任务]\n{text}"
-                if payload.get("signal")
+                if item["kind"] == "completion" or payload.get("signal")
                 else f"[新增输入 event_id={item['event_id']}；保持原任务，按内容补充或回答]\n{text}"
             )
             if size + len(content.encode()) > 8192 and selected:

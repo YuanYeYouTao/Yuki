@@ -445,6 +445,20 @@ class MainAgentBackend(AgentToolBackend):
         call = invocation.call
         name, arguments_json = call.function.name, call.function.arguments
         runtime: AgentRuntime = invocation.context.runtime
+        if name == "send_message" and self._exclusive_write():
+            try:
+                feedback = json.loads(arguments_json)
+            except ValueError:
+                feedback = None
+            if (
+                runtime.origin is not RuntimeTurnOrigin.USER_MESSAGE
+                or self._runtime.inbound is None
+                or not isinstance(feedback, dict)
+                or set(feedback) - {"text", "work_report"}
+            ):
+                return json.dumps(
+                    {"ok": False, "executed": False, "error": "memory_feedback_current_text_only"}
+                )
         if name == "send_message" and runtime.work_control is None:
             try:
                 arguments = json.loads(arguments_json)

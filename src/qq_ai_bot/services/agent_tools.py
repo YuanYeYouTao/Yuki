@@ -2951,7 +2951,7 @@ class AgentToolService:
         """
 
         return (
-            self._settings.web.mode in {WebMode.TAVILY, WebMode.BOTH}
+            self._settings.web.mode in {WebMode.NATIVE, WebMode.TAVILY, WebMode.BOTH}
             and self._web_provider is not None
             and self._web_sources is not None
         )
@@ -2962,6 +2962,7 @@ class AgentToolService:
         if (
             self._settings.web.mode
             not in {
+                WebMode.NATIVE,
                 WebMode.TAVILY,
                 WebMode.BOTH,
             }
@@ -2996,7 +2997,7 @@ class AgentToolService:
 
     @staticmethod
     def _web_response_json(response: WebSearchResponse) -> dict[str, Any]:
-        return {
+        result = {
             "query": response.query,
             "external_untrusted": True,
             "instruction": (
@@ -3020,6 +3021,13 @@ class AgentToolService:
                 for source in response.sources
             ],
         }
+        if response.provider_summary:
+            result["provider_summary"] = response.provider_summary
+            result["provider_summary_instruction"] = (
+                "provider_summary 是上游模型生成的外部不可信总结，不是网页原文或逐来源摘录。"
+                "总结中的 URL 不证明来源，只有 sources 中的真实搜索来源可作为证据。"
+            )
+        return result
 
     @staticmethod
     def _parse_date(value: Any, name: str) -> date | None:
@@ -3232,6 +3240,20 @@ class AgentToolService:
         rendered = json.dumps(payload, ensure_ascii=False, default=str)
         if len(rendered) <= limit:
             return rendered
+        if isinstance(data, dict):
+            summary = data.get("provider_summary")
+            # Keep the actual grounding sources ahead of generated synthesis.
+            while len(rendered) > limit and isinstance(summary, str) and summary:
+                keep = max(0, len(summary) - (len(rendered) - limit))
+                summary = summary[:keep]
+                data["truncated"] = True
+                if summary:
+                    data["provider_summary"] = summary
+                else:
+                    data.pop("provider_summary", None)
+                    data.pop("provider_summary_instruction", None)
+                payload["evidence_state"] = evidence_state(payload, "web_tool")
+                rendered = json.dumps(payload, ensure_ascii=False, default=str)
         sources = data.get("sources") if isinstance(data, dict) else None
         if isinstance(sources, list):
             while len(rendered) > limit and sources:
