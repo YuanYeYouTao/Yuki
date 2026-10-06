@@ -1550,6 +1550,7 @@ class WorkSession:
             ResultCapture,
             current_result_capture,
             execution_evidence,
+            execution_finished,
         )
 
         capture = ResultCapture(control.current["id"], key)
@@ -1658,8 +1659,7 @@ class WorkSession:
             and call.function.name
             in {"get_code_run", "terminal_read", "cancel_code_run", "terminal_control"}
             and isinstance(evidence.get("run_id"), str)
-            and not evidence["pending"]
-            and not evidence["uncertain"]
+            and execution_finished(evidence)
         ):
             await control.repository.resolve_run_effects(
                 control.lease,

@@ -421,6 +421,7 @@ class WorkControl:
         # checkpoint into a second authority list.
         from qq_ai_bot.capabilities.results import normalize_legacy_result
         from qq_ai_bot.runtime.effect_outcomes import execution_evidence
+        from qq_ai_bot.sandbox.environment_tools import EXECUTION_TOOLS
 
         evidence = await self.repository.effect_evidence(
             self.lease,
@@ -428,10 +429,19 @@ class WorkControl:
             only_unresolved=True,
         )
         owners: dict[str, list[str]] = {}
+        requests: dict[str, dict[str, str]] = {}
         for effect in evidence:
             identity = effect.get("run_id")
             if isinstance(identity, str) and (effect.get("pending") or effect.get("uncertain")):
                 owners.setdefault(effect["work_id"], []).append(identity)
+            elif (
+                effect.get("tool") in EXECUTION_TOOLS
+                and isinstance(effect.get("request_id"), str)
+                and effect.get("uncertain")
+            ):
+                requests.setdefault(effect["work_id"], {})[effect["request_id"]] = effect[
+                    "effect_key"
+                ]
         for owner, ids in owners.items():
             ids = list(dict.fromkeys(ids))
             for offset in range(0, len(ids), 32):
@@ -453,6 +463,28 @@ class WorkControl:
                         owner,
                         result["run_id"],
                         outcome,
+                    )
+        for owner, original in requests.items():
+            ids = list(original)
+            for offset in range(0, len(ids), 32):
+                for result in await self.repository.completed_children(
+                    self.lease, owner, [], request_ids=ids[offset : offset + 32]
+                ):
+                    receipt = normalize_legacy_result(
+                        {"ok": True, "data": result},
+                        provider_id="core",
+                        tool_name="sandbox_completion",
+                    )
+                    outcome = execution_evidence(
+                        receipt, tool="sandbox_completion", side_effecting=False
+                    )
+                    await self.repository.resolve_run_effects(
+                        self.lease,
+                        owner,
+                        result["run_id"],
+                        outcome,
+                        effect_key=original[result["request_id"]],
+                        request_id=result["request_id"],
                     )
         await self.refresh_effects()
 
