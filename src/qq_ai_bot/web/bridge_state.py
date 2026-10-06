@@ -16,7 +16,11 @@ class BridgeState:
         self.path = path
 
     def access(self, key: str, value: WebSearchResponse | None = None) -> WebSearchResponse | None:
-        payload = json.dumps(asdict(value), ensure_ascii=False, default=str) if value else None
+        document = asdict(value) if value else None
+        if document is not None and document.get("provider_summary") is None:
+            # Unchanged provider cache keys remain readable by the previous decoder.
+            document.pop("provider_summary", None)
+        payload = json.dumps(document, ensure_ascii=False, default=str) if document else None
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(sqlite3.connect(self.path, timeout=5)) as db, db:
             self.path.chmod(0o600)

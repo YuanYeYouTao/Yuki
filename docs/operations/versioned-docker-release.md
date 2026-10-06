@@ -22,6 +22,19 @@ Memory release check 读取项目版本与迁移图，不另存版本常量或�
 首次配置 GHCR 可使用 workflow 的 bootstrap 模式；该模式只准备镜像访问，不等于正式发布。
 Genie-TTS Worker 的发行镜像标签跟随应用版本，其内部组件版本独立维护。
 
+新部署的配置向导默认开启模型搜索，不要求新增 Tavily 密钥。Gemini 主 Agent
+明确选择 `search_mode="bridge"`，通过独立请求检索真实来源；支持原生搜索的
+OpenAI Responses / Anthropic 主连接选择 `native` 并声明 `native_web_search`。
+所选模型及接入服务仍须实际支持该能力；向导的本地验证不等于真实 API 验收。
+默认 DeepSeek 示例保留 Responses 主对话，另以 `search_mode="external"`、
+`search_connection="primary_agent"` 和 `WEB_SEARCH_BACKEND=deepseek_anthropic`
+明确使用官方独立搜索，不宣称主对话具备原生搜索。
+
+向导仍允许选择“关闭”；不支持模型搜索的主连接需选择 Tavily 并提供密钥，
+或明确配置可用的搜索连接。Gemini 搜索桥返回服务提供的检索来源，未配置 Tavily
+时网页提取不可用会如实报错。现有 `.env` 的显式关闭和模型档案的搜索选择不会
+被新默认覆盖；`basic` / `flash` 重建遇到无法保留的独立搜索配置时拒绝写入。
+
 ## 现有服务器
 
 生产热修沿用本地构建、传服务器加载的方式，明确记录代码提交、镜像与数据库版本。

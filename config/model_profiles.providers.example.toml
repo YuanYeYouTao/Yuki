@@ -20,7 +20,9 @@ default_max_output_tokens = 8192
 thinking_mode = "enabled"
 reasoning_effort = "low"
 structured_output_mode = "json_schema"
-capabilities = ["tools", "structured_output", "reasoning", "image_input", "long_context"]
+capabilities = ["tools", "structured_output", "reasoning", "image_input", "long_context", "native_web_search"]
+search_mode = "native"
+# Requires a Claude model/service with native web search enabled; no Tavily key required.
 # Adaptive-capable Claude required. Older models: wire_options.reasoning = "budget".
 
 [profiles.background_tasks]
@@ -54,6 +56,8 @@ reasoning_effort = "low"
 structured_output_mode = "json_schema"
 capabilities = ["structured_output", "reasoning"]
 # Gemini 3 thinkingLevel dialect. Gemini 2.5: wire_options.reasoning = "budget".
+# For a Gemini main-agent connection with tools, explicitly use search_mode = "bridge"
+# instead of declaring native_web_search. The independent bridge needs no Tavily key.
 
 [routes]
 chat_agent = "main"

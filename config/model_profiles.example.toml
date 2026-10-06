@@ -1,4 +1,5 @@
 schema_version = 3
+search_connection = "primary_agent"
 
 # Copy to webui-config/model_profiles.toml to configure explicit task routing.
 # Secrets stay in environment variables; this file only names them.
@@ -21,6 +22,9 @@ reasoning_effort = "low"
 reasoning_effort_env = "LLM_REASONING_EFFORT"
 structured_output_mode = "function_tool"
 capabilities = ["tools", "reasoning", "long_context", "image_input"]
+# Explicit independent DeepSeek search with WEB_SEARCH_BACKEND=deepseek_anthropic.
+# The Responses main call does not gain native web_search capability.
+search_mode = "external"
 
 [profiles.background_tasks]
 provider = "deepseek"
