@@ -280,6 +280,16 @@ Work。steer 与普通观察按原事件顺序呈现一次，输入消费仍沿�
 真实 Work 的 projection CAS、来源依赖和 dispatched journal 同事务
 发布，文件读取、散列及 JSON 编码在 writer 之前完成。
 
+压缩锚点保留真实选取的公众时间线，可由 assistant 发言结尾；最后发言角色不决定任务
+身份，也不作为记录损坏的依据。恢复仍校验记录结构、来源、私有协议与原执行回执。
+待配对调用沿保存端的真实容量和配置恢复，不另套固定 32 项或 Provider ID 长度限制；
+readonly 效果键只解析 Host 的 chain/sequence 前缀，余下 Provider ID 保持 opaque。
+压缩任务指令的 refs 是来源集合，顺序变化不表示改向；既有指令 ID 和明确更正仍保留。
+
+终端结果被原模型观察后，仅原 request 对应、同 Work/Conversation/generation 的重复
+pending 完成通知可在同一事务退役。未观察的异步结果、staged 输入、真人新要求及未知
+效果仍按原安全边界接入；完成通知按内部 Work 信号解释，不冒充真人追加要求。
+
 选取准备在显式读快照中确定本次缺失的 `(view_key, source_key)`，writer 只插新增项。
 同 epoch 的既有冻结片段保持不变，显式容量或合同 epoch 边界仍保留原 first-selection
 来源和覆盖口径；owner、scope、generation、事件身份冲突不能用忽略重复插入隐藏。
@@ -300,6 +310,8 @@ Work 或发送回执。
 `alembic downgrade 0081`，再替换镜像；不能直接恢复旧数据库覆盖上线后产生的事实。
 
 Work 冲突在恢复记录和运维日志中保留受控的具体原因码，不把任意异常文本发到聊天。
+Journal 恢复失败同样保留有限的内部原因码，未知异常文本使用通用码；具体原因不授予
+重试或重放已有操作的资格。
 `work_journal_source_changed` 若尚无效果或投递回执，可用原 Work ID 有界重试，并在新来源
 上建立显式链边界；已有任何效果记录时暂停并提示核对状态，不自动重放已创建的自动任务、
 已执行工具或未知投递。租约失效与其他冲突仍遵守原所有权围栏，不借来源变化扩大重试范围。

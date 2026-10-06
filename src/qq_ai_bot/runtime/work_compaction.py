@@ -54,7 +54,7 @@ def summary_json_text(raw: str) -> str:
 
 def directive_id(fact: dict[str, Any]) -> str:
     return hashlib.sha256(
-        json.dumps({"text": fact["text"], "refs": fact["refs"]}, sort_keys=True).encode()
+        json.dumps({"text": fact["text"], "refs": sorted(fact["refs"])}, sort_keys=True).encode()
     ).hexdigest()
 
 
@@ -81,7 +81,25 @@ def validate_summary(raw: str, source: dict[str, Any]) -> tuple[dict[str, Any], 
             if len(set(fact["refs"])) != len(fact["refs"]) or not set(fact["refs"]) <= allowed:
                 raise WorkCapacityError("work_compaction_invalid_reference")
     previous = {item["id"]: item for item in source["task_material"].get("directives", [])}
-    directives = [{**fact, "id": directive_id(fact)} for fact in summary["task_directives"]]
+    # References prove a set of sources; their presentation order is not a new
+    # instruction. Reuse the stored ID of an exactly equivalent directive so
+    # checkpoints created before canonical reference ordering remain resumable.
+    previous_ids: dict[str, list[str]] = {}
+    for identity, item in previous.items():
+        previous_ids.setdefault(directive_id(item), []).append(identity)
+    directives = []
+    seen_directives: set[str] = set()
+    for fact in summary["task_directives"]:
+        canonical_id = directive_id(fact)
+        original_ids = previous_ids.get(canonical_id, [])
+        if original_ids:
+            identity = original_ids.pop(0)
+        elif canonical_id in seen_directives:
+            raise WorkCapacityError("work_compaction_invalid_structure")
+        else:
+            identity = canonical_id
+        seen_directives.add(canonical_id)
+        directives.append({**fact, "id": identity})
     retained = {item["id"] for item in directives}
     if len(retained) != len(directives):
         raise WorkCapacityError("work_compaction_invalid_structure")
