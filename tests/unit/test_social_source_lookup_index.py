@@ -389,8 +389,10 @@ async def test_actual_0094_upgrade_downgrade_preserves_all_business_facts(tmp_pa
         await original.close()
     before_facts, before_schema, version = _database_facts(path)
     assert version == "0094"
-    await asyncio.to_thread(command.upgrade, config, "head")
-    await require_canonical_schema(url)
+    # This regression isolates the 0095 index change; later migrations own other DDL.
+    await asyncio.to_thread(command.upgrade, config, "0095")
+    with pytest.raises(CanonicalSchemaError, match="migration head"):
+        await require_canonical_schema(url)
     after_facts, after_schema, version = _database_facts(path)
     assert version == "0095"
     assert after_facts == before_facts

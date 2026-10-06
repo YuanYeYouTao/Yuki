@@ -14,12 +14,11 @@ async def run_manifest_cases(state):
     started, release = asyncio.Event(), asyncio.Event()
     failure = True
 
-    async def prepare(context):
-        assert context.declaration_only
+    async def snapshot():
         started.set()
         await release.wait()
         if failure:
-            raise RuntimeError("catalog unavailable")
+            raise RuntimeError("configuration unavailable")
 
     tool = ChatTool(
         name="example",
@@ -31,6 +30,7 @@ async def run_manifest_cases(state):
     )
 
     def build_registry(*args, **kwargs):
+        assert args[0].declaration_only
         assert release.is_set()
         return SimpleNamespace(
             catalog=lambda context: SimpleNamespace(
@@ -45,8 +45,7 @@ async def run_manifest_cases(state):
         )
 
     chat = SimpleNamespace(
-        _runtime_config=SimpleNamespace(snapshot=AsyncMock(return_value=None)),
-        _external_tool_providers=[SimpleNamespace(prepare_manifest=prepare)],
+        _runtime_config=SimpleNamespace(snapshot=AsyncMock(side_effect=snapshot)),
         _build_tool_registry=build_registry,
     )
     contract = MainAgentContract(chat, state)
@@ -55,7 +54,7 @@ async def run_manifest_cases(state):
         await asyncio.wait_for(started.wait(), timeout=2)
         assert not pending.done() and contract._tools is None and not contract.revision
         release.set()
-        with pytest.raises(RuntimeError, match="catalog unavailable"):
+        with pytest.raises(RuntimeError, match="configuration unavailable"):
             await pending
     finally:
         if not pending.done():
