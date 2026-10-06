@@ -59,6 +59,18 @@
 
 ## MCP 退出与 Plugin API 3.1
 
+升级前检查 `CONTROL_OPERATORS_FILE` 指向的实际管理授权文件，并从每个 operator 的
+`capabilities` 显式移除退役的 `control.mcp.read`、`control.mcp.mutate` 及旧
+`mcp.web_search` 等 MCP 权限。保留原 `principal_id`、`person_id`、`roles`、`token_env`
+和其他有效授权；不要直接用示例文件覆盖生产文件，也不要将旧权限自动改成新的权限。
+[`config/control-operators.example.toml`](../config/control-operators.example.toml) 只包含现行有效授权。
+
+管理授权文件仍严格校验所有声明，包含已禁用的 operator。退役权限会使
+`ControlOperatorAccess` 初始化失败，继而阻止 Bot 启动；它们与被忽略的旧 MCP 环境变量、
+运行时 override 不同，不会自动忽略。停旧 Bot 后、启动新 Bot 前，先用目标版本代码加载
+实际授权文件验证，避免迁移完成后才暴露配置错误。已完成 `0096` 时，撤去旧权限并在
+同一 schema 上重启验证，不通过旧镜像或数据库回退绕过权限校验。
+
 `0096` 仅删除 `mcp_server_states`、`mcp_tool_cache` 两张派生表。共享工具结果、调用证据、媒体和 Work 原回执保留；不改历史迁移、不扫描/重建业务历史。旧 MCP 配置不再生效，现有未知调用不能取得重放资格。停旧 Bot 后再升级并启动新实例；schema head 精确匹配，不能直接换旧镜像回退，优先在新 head 向前修补。离线 downgrade 只重建空缓存表，不能恢复被删缓存，也不授权生产库回退。
 
 SDK 合同升级为 3.1，全部插件/示例须更新 manifest；原批准会失效，按现有批准流程重新批准。网易云 MCP 插件不再提供，普通插件 HTTP、自有工具及 QQ 音乐卡片发送保留。详见 [API 3.1 迁移](plugin-development/api-3.1-migration.md)。QQ 网关登录目录不受此迁移影响。
