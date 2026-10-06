@@ -1489,6 +1489,45 @@ class WorkRepository:
         """Confirm the original model's receipt and retire only its duplicate wakeup."""
         from qq_ai_bot.sandbox.db_models import SandboxTaskContinuationModel, SandboxTaskRunModel
 
+        # Empty/repeated confirmations need no writer. This indexed candidate
+        # read only avoids work; the transaction below rechecks every authority.
+        matching_input = (
+            select(inputs.c.id)
+            .where(
+                inputs.c.source_key == f"completion:{request_id}",
+                inputs.c.kind == "completion",
+                inputs.c.state == "pending",
+            )
+            .exists()
+        )
+        async with self.database.sessions() as reader:
+            candidate = await reader.scalar(
+                select(SandboxTaskRunModel.request_id)
+                .join(
+                    SandboxTaskContinuationModel,
+                    SandboxTaskContinuationModel.request_id == SandboxTaskRunModel.request_id,
+                )
+                .where(
+                    SandboxTaskRunModel.request_id == request_id,
+                    SandboxTaskRunModel.status == "completed",
+                    SandboxTaskRunModel.run_id.is_not(None),
+                    or_(
+                        SandboxTaskContinuationModel.state == "ready",
+                        and_(
+                            SandboxTaskContinuationModel.state == "observed",
+                            or_(
+                                SandboxTaskContinuationModel.reason == "forwarded_to_parent_work",
+                                and_(
+                                    SandboxTaskContinuationModel.reason == "original_turn_observed",
+                                    matching_input,
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+            )
+        if candidate is None:
+            return False
         async with self.database.immediate_session() as session:
             task = await session.get(SandboxTaskRunModel, request_id)
             receipt = await session.get(SandboxTaskContinuationModel, request_id)

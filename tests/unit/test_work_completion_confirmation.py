@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select, update
+from sqlalchemy import event, select, update
 from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.domain.messages import ChatMessage, ToolCall, ToolFunction
@@ -227,4 +227,52 @@ async def test_confirmation_requires_original_terminal_source(completion_case, c
             )
             task.source_json = json.dumps(source)
     await case.receipts.confirm()
+    assert len(await case.control.pending()) == 1
+
+
+@pytest.mark.asyncio
+async def test_repeated_confirmation_without_pending_input_never_takes_writer(completion_case):
+    case = completion_case
+    await case.client._stage_result("terminal_exec", case.request_id, case.result)
+    await case.repository.route_child_completion(case.request_id)
+    await case.receipts.confirm()
+    statements = []
+
+    def capture(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement)
+
+    event.listen(case.database.engine.sync_engine, "before_cursor_execute", capture)
+    try:
+        assert not await SandboxContinuationRepository(case.database).observed(case.request_id)
+        assert not await case.repository.confirm_child_completion(case.request_id)
+    finally:
+        event.remove(case.database.engine.sync_engine, "before_cursor_execute", capture)
+    assert statements
+    assert all(statement.lstrip().upper().startswith("SELECT") for statement in statements)
+    assert all("BEGIN IMMEDIATE" not in statement.upper() for statement in statements)
+
+
+@pytest.mark.asyncio
+async def test_unknown_missing_and_unfinished_confirmation_never_take_writer(completion_case):
+    case = completion_case
+    await case.client._stage_result("terminal_exec", case.request_id, case.result)
+    await case.repository.route_child_completion(case.request_id)
+    await case.tasks.prepare("unfinished", {"command": "true"}, case.source)
+    async with case.database.sessions() as session, session.begin():
+        receipt = await session.get(SandboxTaskContinuationModel, case.request_id)
+        receipt.state = "uncertain"
+    statements = []
+
+    def capture(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement)
+
+    event.listen(case.database.engine.sync_engine, "before_cursor_execute", capture)
+    try:
+        for request_id in (case.request_id, "missing", "unfinished"):
+            assert not await case.repository.confirm_child_completion(request_id)
+    finally:
+        event.remove(case.database.engine.sync_engine, "before_cursor_execute", capture)
+    assert len(statements) == 3
+    assert all(statement.lstrip().upper().startswith("SELECT") for statement in statements)
+    assert all("BEGIN IMMEDIATE" not in statement.upper() for statement in statements)
     assert len(await case.control.pending()) == 1
