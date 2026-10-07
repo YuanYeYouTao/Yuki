@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from tests.conftest import build_harness, make_settings
-from tests.support.codemode_cases import BINARY, requires_worker
+from tests.support.codemode_cases import BINARY, requires_worker, worker
 from tests.support.parent_receipts import parent_receipts
 from tests.support.runtime_execution import make_work_resumer
 from tests.unit.test_self_initiative_runtime import self_source
@@ -63,6 +63,8 @@ async def test_self_code_uses_original_initiative_and_shared_main_service(
         enabled_groups_csv="2001",
         code_mode_worker_path=BINARY,
         code_mode_worker_sha256=hashlib.sha256(BINARY.read_bytes()).hexdigest(),
+        code_mode_launcher_path=worker().launcher_path,
+        code_mode_launcher_sha256=worker().launcher_sha256,
     )
     chat = build_harness(database, settings, provider).processor._chat
     state = ShortState(WorkspaceStore(tmp_path / "state"))
@@ -82,6 +84,7 @@ async def test_self_code_uses_original_initiative_and_shared_main_service(
         goal=source["instruction"],
         output_kind="answer",
         deliver_artifacts=False,
+        initial_state="queued",
     )
     await repository.release(lease)
     writes = []
@@ -89,7 +92,7 @@ async def test_self_code_uses_original_initiative_and_shared_main_service(
 
     async def record(arguments):
         result = await execute(arguments)
-        if json.loads(result)["ok"]:
+        if result.ok:
             writes.append(json.loads(arguments))
             if scenario == "cancelled":
                 await repository.cancel(source["conversation_id"])

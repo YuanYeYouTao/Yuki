@@ -389,7 +389,7 @@ async def test_coordinator_execution_budget_uses_typed_fact_not_display(executed
         )
         return json.dumps({"ok": not executed, "executed": not executed})
 
-    backend = StubAgentBackend(execute_call=execute)
+    backend = StubAgentBackend(execute_call=execute, is_side_effecting=lambda *_: True)
     call = ToolCall("original", ToolFunction("send_message", "{}"))
     result = await ToolInvocationCoordinator().execute_batch(
         (call,),
@@ -401,6 +401,7 @@ async def test_coordinator_execution_budget_uses_typed_fact_not_display(executed
     assert result.calls[0][2] is executed
     assert result.executed_count == int(executed)
     assert result.evidence[call.id]["executed"] is executed
+    assert result.evidence[call.id]["side_effecting"] is True
 
 
 @pytest.mark.asyncio
@@ -431,7 +432,7 @@ async def test_replayed_original_outcome_controls_budget_without_redispatch(
         )
         return json.dumps({"ok": not executed, "executed": not executed})
 
-    backend = StubAgentBackend(execute_call=execute)
+    backend = StubAgentBackend(execute_call=execute, is_side_effecting=lambda *_: True)
     call = ToolCall("original", ToolFunction("send_message", "{}"))
     for _ in range(2):
         result = await ToolInvocationCoordinator().execute_batch(
@@ -444,6 +445,8 @@ async def test_replayed_original_outcome_controls_budget_without_redispatch(
         assert result.calls[0][2] is executed
         assert result.executed_count == int(executed)
         assert result.evidence[call.id]["executed"] is executed
+        assert result.evidence[call.id]["side_effecting"] is True
+        assert "readonly_call_signature" not in result.evidence[call.id]
     assert len(calls) == 1
 
 
@@ -460,7 +463,7 @@ async def test_host_predispatch_rejection_needs_no_display_fact():
     reject = AsyncMock(return_value="host refused before dispatch")
     result = await ToolInvocationCoordinator().execute_batch(
         (ToolCall("original", ToolFunction("send_message", "{}")),),
-        StubAgentBackend(execute_call=execute),
+        StubAgentBackend(execute_call=execute, is_side_effecting=lambda *_: True),
         SimpleNamespace(work_control=None),
         remaining_calls=1,
         max_parallel_calls=1,

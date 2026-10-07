@@ -280,7 +280,7 @@ def test_provider_summary_cache_keeps_old_entries_readable(tmp_path):
         payload = json.loads(
             db.execute("SELECT payload FROM cache WHERE key=?", ("old",)).fetchone()[0]
         )
-        assert "provider_summary" not in payload
+        assert payload.pop("provider_summary") is None
         db.execute("UPDATE cache SET payload=? WHERE key=?", (json.dumps(payload), "old"))
     recovered = state.access("old")
     assert recovered == response and recovered.provider_summary is None

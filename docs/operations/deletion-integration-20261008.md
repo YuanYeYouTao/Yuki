@@ -24,7 +24,7 @@
 
 ## 删除量口径
 
-相对 Pi 固定输入的实现阶段统计（包含 main 集成，非全部归因于新重构）：产品 `src` 新增 4120 / 删除 11641，净减少 7521 行；测试新增 5375 / 删除 2924；迁移新增 270 / 删除 27；scripts 新增 123 / 删除 121；tools 新增 49 / 删除 1299。测试搬迁、冻结历史迁移 SQL 和必要保护不能冒充产品净删除。最终提交可直接用上述固定输入复算。
+相对 Pi 固定输入的源码提交 `bcb43a74` 统计（包含 main 集成，非全部归因于新重构）：产品 `src` 新增 4689 / 删除 12010，净减少 7321 行；迁移新增 270 / 删除 27；scripts 新增 125 / 删除 122；tools 新增 49 / 删除 1299。测试搬迁、冻结历史迁移 SQL 和必要保护不能冒充产品净删除。最终提交可直接用上述固定输入复算。
 
 ## 生产准备与回滚边界
 
@@ -48,3 +48,7 @@
 部署前语音文件盘点：以原一致数据库记录逐条解析 107 条非空相对路径（6 个参考文件及 101 个生成文件），实际绑定的 `/opt/yuki-qqbot/data/speech` 中均已不存在，原目录只保留 japanese_frontend。此次盘点未删除文件，不能宣称把这些缺失 WAV 纳入了冷备。原表、路径和缺失事实另存私有 manifest，正式冷备仍保存全部现存 data；历史 accepted/unknown 发送回执按原身份保留，不因源 WAV 缺失推翻已发生效果。
 
 终审补改验收：直调 typed / 原回执 144 passed；运行时最后观察边界与隐藏拒绝 19 passed；Code 单元 251 passed，Linux 三入口与 control 30 passed、追加 control 完整 11 passed；历史 outcome 完整回归 85 passed、补充严格边界 22 passed；退役模型路由 44 passed。历史回执展示字节不改，未知不取得重执行资格。
+
+最终历史容器边界再审 90 passed，260 组 Python/SQLite 差分一致。有效 typed 拒绝重放的测试后端补齐真实 side_effecting 布尔角色，联合 72 passed；没有为错型 null 角色放宽生产 unknown 保护。
+
+`bcb43a74` 源码的 direct 镜像确认不含 Monty binding、Settings 默认关闭 Code；codemode 镜像已在实际生产内核通过无 bind mount 的打包隔离探针，worker/launcher 全部来自镜像，见 [打包探针原件](deletion-codemode-packaged-20261008.json)。任务索引 68 项源码及专项验收均已标记；最终 CI、上线仍单独记录。

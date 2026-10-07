@@ -718,7 +718,7 @@ async def test_web_lookup_can_be_followed_by_superuser_onebot_tool(
     llm = WebThenOneBotLLM()
     import hashlib
 
-    from tests.support.codemode_cases import BINARY, BINDING
+    from tests.support.codemode_cases import BINARY, BINDING, worker
 
     if not BINDING or not BINARY.is_file():
         pytest.skip("OneBot tiered calling syntax requires the pinned Monty worker/binding")
@@ -727,6 +727,8 @@ async def test_web_lookup_can_be_followed_by_superuser_onebot_tool(
             "runtime_work_enabled": True,
             "code_mode_worker_path": BINARY,
             "code_mode_worker_sha256": hashlib.sha256(BINARY.read_bytes()).hexdigest(),
+            "code_mode_launcher_path": worker().launcher_path,
+            "code_mode_launcher_sha256": worker().launcher_sha256,
         }
     )
     harness = build_harness(

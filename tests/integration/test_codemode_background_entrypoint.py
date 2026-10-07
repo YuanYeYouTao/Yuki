@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import select, update
 from tests.conftest import build_harness, make_settings
 from tests.support.codemode_cases import BINARY, requires_worker
+from tests.support.codemode_cases import worker as pinned_worker
 from tests.support.parent_receipts import parent_receipts
 from tests.support.social_identity_cases import social_env
 
@@ -97,6 +98,8 @@ async def test_background_job_code_keeps_event_owner_and_current_plugin_grant(
         enabled_groups_csv="20001",
         code_mode_worker_path=BINARY,
         code_mode_worker_sha256=hashlib.sha256(BINARY.read_bytes()).hexdigest(),
+        code_mode_launcher_path=pinned_worker().launcher_path,
+        code_mode_launcher_sha256=pinned_worker().launcher_sha256,
     )
     harness = build_harness(database, settings, provider)
     chat = harness.processor._chat

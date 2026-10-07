@@ -7,7 +7,7 @@ from dataclasses import replace
 import pytest
 from tests.conftest import build_harness, make_settings
 from tests.integration.test_work_result_handoff import observed_receipts
-from tests.support.codemode_cases import BINARY, requires_worker
+from tests.support.codemode_cases import BINARY, requires_worker, worker
 from tests.unit.test_caller_work_completion import CallerBackend, caller_case
 from tests.unit.test_work_delivery_ownership import call
 
@@ -65,6 +65,8 @@ async def test_pending_vm_then_caller_proposal_resumes_without_duplicate_sends(
         runtime_work_enabled=True,
         code_mode_worker_path=BINARY,
         code_mode_worker_sha256=hashlib.sha256(BINARY.read_bytes()).hexdigest(),
+        code_mode_launcher_path=worker().launcher_path,
+        code_mode_launcher_sha256=worker().launcher_sha256,
     )
     chat = build_harness(database, settings, provider).processor._chat
     service = chat.runtime.main_turns
