@@ -201,8 +201,6 @@ class WebModule:
         self,
         catalog: ModelProfileCatalog | None,
         clients: ModelClientPool | None,
-        *,
-        require_explicit: bool,
     ) -> WebSearchProvider | None:
         settings = self._settings
         if settings.mode is WebMode.DISABLED:
@@ -229,7 +227,7 @@ class WebModule:
                     raise ValueError("search default exceeds configured provider output limit")
                 if not clients.api_key_for(profile):
                     raise ValueError("Selected Gemini connection has no API key")
-        default = self._default_provider(catalog, clients, require_explicit=require_explicit)
+        default = self._default_provider(catalog, clients)
         if not bridge_profiles and settings.mode is not WebMode.NATIVE:
             return default
         if bridge_profiles:
@@ -247,11 +245,7 @@ class WebModule:
 
     def _gemini_bridge(self, profile: ModelProfile, clients: ModelClientPool) -> GeminiSearchBridge:
         settings = self._settings
-        if profile.protocol is not ModelProtocol.GEMINI:
-            raise ValueError("the separate native search bridge requires Gemini protocol")
         key = clients.api_key_for(profile)
-        if not key:
-            raise ValueError("Selected Gemini connection has no API key")
         return GeminiSearchBridge(
             profile=profile,
             credential=key,
@@ -273,8 +267,6 @@ class WebModule:
         self,
         catalog: ModelProfileCatalog | None,
         clients: ModelClientPool | None,
-        *,
-        require_explicit: bool,
     ) -> WebSearchProvider | None:
         settings = self._settings
         if settings.web_search_backend == "tavily":
@@ -286,13 +278,6 @@ class WebModule:
         if catalog is None or clients is None:
             raise ValueError("DeepSeek search requires a configured model connection")
         connection = catalog.search_connection
-        if (
-            connection is None
-            and not require_explicit
-            and settings.mode in {WebMode.TAVILY, WebMode.BOTH}
-        ):
-            # Legacy startup only: prior versions attached search to the chat route.
-            connection = catalog.routes[ModelTask.CHAT_AGENT].profile_id
         if connection is None:
             raise ValueError("Select a DeepSeek search connection in the WebUI")
         profile = catalog.profiles.get(connection)
@@ -342,7 +327,7 @@ class WebModule:
         self._provider.activate(provider)
 
     def build(self) -> WebBundle:
-        provider = self.prepare(self._catalog, self._clients, require_explicit=False)
+        provider = self.prepare(self._catalog, self._clients)
         if provider is None:
             return WebBundle(None)
         self._provider = HotWebSearchProvider(provider)

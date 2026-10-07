@@ -2,12 +2,15 @@
 
 import json
 from dataclasses import replace
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
+
+# P10: fixed typed backend fixture, original assertions retained.
+from tests.support.agent_backend import StubAgentBackend
 from tests.support.work_compaction import summary_json
+from tests.support.work_session import WorkSession
 from tests.unit.test_work_compaction_capacity import (
     _grow,
     _runtime,
@@ -29,7 +32,7 @@ from qq_ai_bot.runtime.activation_outcome import SegmentBudgetReached
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkCapacityError, WorkConflict
 from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, journal
-from qq_ai_bot.runtime.work_session import WorkSession
+from qq_ai_bot.runtime.work_session import WorkSession as RuntimeWorkSession
 
 
 async def test_runner_finishes_paid_candidate_before_pending_steer(database, tmp_path, monkeypatch):
@@ -143,11 +146,10 @@ async def test_tool_pair_and_paid_retirement_share_writer_and_recover_original_e
             raise WorkConflict("paired_publication_failed")
         await original_save(self, phase, *args, **kwargs)
 
-    monkeypatch.setattr(WorkSession, "save", fail_retirement)
+    monkeypatch.setattr(RuntimeWorkSession, "save", fail_retirement)
     execute = AsyncMock(return_value='{"ok":true,"executed":true,"data":"Original receipt"}')
-    backend = SimpleNamespace(
-        begin_batch=lambda *_: None,
-        execute=execute,
+    backend = StubAgentBackend(
+        execute_call=execute,
         is_side_effecting=lambda *_: False,
         parallel_safe=lambda *_: False,
         finalize=lambda content, _: content,
@@ -172,7 +174,7 @@ async def test_tool_pair_and_paid_retirement_share_writer_and_recover_original_e
     )
     text = "Resume the original effect without replaying the probe."
     assert await control.repository.prepare_input(pending, {"text": text})
-    monkeypatch.setattr(WorkSession, "save", original_save)
+    monkeypatch.setattr(RuntimeWorkSession, "save", original_save)
     await control.repository.release(lease)
     lease = await control.repository.acquire(control.lease.conversation_id, 1)
     resumed = WorkControl(

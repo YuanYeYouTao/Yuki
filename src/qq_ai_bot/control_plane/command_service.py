@@ -47,13 +47,6 @@ def _require_command(
 class ControlCommandService:
     """Authorize then mutate. Does not invent principals, actors, or capabilities."""
 
-    async def mutate_workspace(self, context: object, command: object) -> ControlResult:
-        authorized = _require_context(context)
-        _require_capability(authorized, method_capability("mutate_workspace"))
-        return await self._port.mutate_workspace(
-            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
-        )
-
     async def mutate_environment_file(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
         _require_capability(authorized, method_capability("mutate_environment_file"))

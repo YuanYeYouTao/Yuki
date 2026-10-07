@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from sqlalchemy import delete, select
 from tests.support.social_identity_cases import social_env
+from tests.support.workspace_snapshots import snapshot_bytes
 
 from qq_ai_bot.admin.models import ReplyRuntimeConfig
 from qq_ai_bot.capabilities.invocation import ToolInvocationContext, current_invocation
@@ -77,7 +78,7 @@ async def test_strict_social_receipt_is_uncertain_without_resend_and_upload_stay
             == result
         )
         assert gateway.await_count == count
-    artifact = env.store.write("receipt.txt", b"test")
+    artifact = snapshot_bytes(env.store, "receipt.txt", b"test")
     gateway.return_value = {}
     uploaded = await env.service.execute(
         "send_message",
@@ -179,8 +180,26 @@ async def test_historical_or_deleted_event_reference_never_reconstructs_content_
 
 @pytest.mark.asyncio
 async def test_plugin_background_media_uses_only_real_target_without_actor(database, tmp_path):
+    from tests.support.background_authority import approve_background_plugin
+
+    from yuki_plugin_sdk.models import NotificationTarget
+
     env = await social_env(database, tmp_path)
     assert await env.router.cas_takeover_person(env.person) in {"taken", "unchanged"}
+    # Both actorless targets require their actual current canonical grant.
+    notifications = await approve_background_plugin(
+        database,
+        plugin_id="test",
+        bot_user_id="80001",
+        group_id="20001",
+        creator_user_id="10001",
+    )
+    await notifications.grant_target(
+        plugin_id="test",
+        target=NotificationTarget(target_type="private", target_id="10001"),
+        bot_user_id="80001",
+        created_by_user_id="10001",
+    )
     selector = SimpleNamespace(
         select=AsyncMock(return_value=EmojiSelectionResult(emoji_id="emoji"))
     )

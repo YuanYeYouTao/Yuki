@@ -18,6 +18,7 @@ from qq_ai_bot.capabilities.models import (
     CapabilityRisk,
     CapabilityTrustSource,
 )
+from qq_ai_bot.capabilities.results import ToolExecutionResult
 from qq_ai_bot.capabilities.search_aliases import merge_search_terms
 from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.sandbox.environment_tools import READ_TOOLS, SANDBOX_TOOLS
@@ -43,7 +44,6 @@ _RESIDENT_YUKI_TOOLS = (
             "inspect_conversation_attachment",
             "save_conversation_attachment_to_workspace",
             "workspace_delete",
-            "run_python",
             "get_code_run",
             "cancel_code_run",
         }
@@ -86,7 +86,6 @@ _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
     "workspace_read": ("workspace.read", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
     "workspace_write": ("workspace.write", CapabilityEffect.WRITE_STATE, CapabilityRisk.MUTATE),
     "workspace_delete": ("workspace.write", CapabilityEffect.WRITE_STATE, CapabilityRisk.MUTATE),
-    "run_python": ("sandbox.run", CapabilityEffect.WRITE_STATE, CapabilityRisk.MUTATE),
     "get_code_run": ("sandbox.read", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
     "cancel_code_run": ("sandbox.cancel", CapabilityEffect.WRITE_STATE, CapabilityRisk.MUTATE),
     "find_contacts": ("social.contacts", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
@@ -393,7 +392,7 @@ class ChatToolCapabilityProvider:
         )
 
 
-LegacyExecutor = Callable[[str, str, Any], Awaitable[object]]
+ToolExecutor = Callable[[str, str, Any], Awaitable[ToolExecutionResult]]
 DefinitionFactory = Callable[[Any], tuple[ChatTool, ...]]
 
 
@@ -406,7 +405,7 @@ class InProcessToolProvider:
         provider_id: str,
         source: CapabilityTrustSource,
         definitions: DefinitionFactory,
-        execute: LegacyExecutor,
+        execute: ToolExecutor,
         plugin_read_only: Callable[[str], bool] | None = None,
         bot_aliases: tuple[str, ...] = ("Yuki", "yuki", "由纪"),
     ) -> None:
@@ -441,7 +440,7 @@ class InProcessToolProvider:
         async def invoke(
             arguments: dict[str, object],
             context: ToolInvocationContext,
-        ) -> object:
+        ) -> ToolExecutionResult:
             token = current_invocation.set(context)
             try:
                 return await self._execute(

@@ -110,13 +110,31 @@ class FileWorkspace:
             raise WorkspaceError("file_changed_during_read")
         return digest.hexdigest(), after
 
-    def read(self, path: str, *, offset: int = 0) -> dict[str, Any]:
+    def read(
+        self,
+        path: str,
+        *,
+        offset: int = 0,
+        limit: int = MAX_TEXT,
+        expected_version: str | None = None,
+    ) -> dict[str, Any]:
         if type(offset) is not int or offset < 0:
             raise WorkspaceError("invalid_offset")
+        if type(limit) is not int or not 4 <= limit <= MAX_TEXT:
+            raise WorkspaceError("invalid_limit")
         with self.open_file(path) as fd:
             version, info = self.fingerprint(fd)
+            if expected_version is not None and version != expected_version:
+                raise WorkspaceError("version_conflict")
             os.lseek(fd, offset, os.SEEK_SET)
-            data = os.read(fd, MAX_TEXT)
+            data = os.read(fd, limit)
+            after = os.fstat(fd)
+            if (info.st_size, info.st_mtime_ns, info.st_ctime_ns) != (
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+            ):
+                raise WorkspaceError("file_changed_during_read")
         result: dict[str, Any] = {
             "path": "/workspace/" + "/".join(self.parts(path)),
             "version": version,
@@ -125,6 +143,7 @@ class FileWorkspace:
             "next_offset": offset + len(data),
             "truncated": offset + len(data) < info.st_size,
             "external_untrusted": True,
+            "offset_unit": "bytes",
         }
         try:
             import codecs
@@ -135,8 +154,13 @@ class FileWorkspace:
             if "\x00" in value:
                 raise UnicodeError
             result["text"] = value
+            result["read_state"] = "inline"
         except UnicodeError:
             result["binary"] = True
+            result["read_state"] = "binary"
+            result["text"] = None
+        result["eof"] = result["next_offset"] >= info.st_size
+        result["truncated"] = not result["eof"]
         return result
 
     def write(self, path: str, data: bytes, expected_version: str | None = None) -> dict[str, Any]:

@@ -17,7 +17,6 @@ from qq_ai_bot.memory.runtime.contract import (
     MemoryAvailability,
     MemoryReadPolicy,
     MemoryTurnContract,
-    MemoryWritePolicy,
 )
 
 logger = logging.getLogger(__name__)
@@ -277,8 +276,6 @@ class MemoryLifecycleMetrics:
 
         if contract.availability is MemoryAvailability.FORBIDDEN:
             access = MemoryAccessMode.NONE
-        elif contract.write_policy is MemoryWritePolicy.EXCLUSIVE:
-            access = MemoryAccessMode.MUTATION
         elif contract.read_policy is MemoryReadPolicy.EAGER:
             access = MemoryAccessMode.TOOL
         else:

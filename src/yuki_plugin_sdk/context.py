@@ -124,32 +124,11 @@ class RelationshipFacade(Protocol):
     ) -> PluginResult: ...
 
 
-class LLMFacade(Protocol):
-    """Yuki Main Agent generation in a real Host-bound Conversation.
-
-    Does not send the returned text. Missing source/target identity is an error;
-    use target-bound notifications for background wakeups, or agent_sessions for
-    explicitly independent computation. Context profiles do not grant history reads.
-    """
-
-    async def generate(
-        self, instruction: str, *, max_characters: int = 2_000
-    ) -> str | PluginResult: ...
-
-    async def generate_with_context(
-        self,
-        instruction: str,
-        *,
-        context_profile: str,
-        max_characters: int = 2_000,
-    ) -> str | PluginResult: ...
-
-
 class AgentFacade(Protocol):
     """Yuki Main Agent with the plugin's approved capability intersection.
 
-    Requires the same real invocation as LLMFacade; this is no longer an isolated
-    random-key session. Main Agent declarations do not expand execution authority.
+    Requires a real Host-bound invocation. Main Agent declarations do not expand
+    execution authority.
     """
 
     async def result(self, work_id: str) -> PluginResult: ...
@@ -160,6 +139,7 @@ class AgentFacade(Protocol):
         self,
         instruction: str,
         *,
+        context_profile: str = "none",
         allowed_capabilities: tuple[str, ...] = (),
         max_tool_calls: int | None = None,
         max_model_requests: int | None = None,
@@ -375,9 +355,6 @@ class PluginContext(Protocol):
 
     @property
     def relationship(self) -> RelationshipFacade: ...
-
-    @property
-    def llm(self) -> LLMFacade: ...
 
     @property
     def agent(self) -> AgentFacade: ...

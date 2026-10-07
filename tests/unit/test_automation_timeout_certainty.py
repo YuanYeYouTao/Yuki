@@ -34,12 +34,34 @@ async def short_remaining_deadline(case, database):
     )
 
 
+def dispatch_driven_deadline(monkeypatch):
+    """Use a real asyncio Timeout, expired at the tested boundary rather than
+    during unrelated SQLite setup under load. Certainty assertions stay intact.
+    """
+    original_timeout = asyncio.timeout
+    outer = None
+
+    def controlled_timeout(delay):
+        nonlocal outer
+        if outer is None:
+            outer = original_timeout(None)
+            return outer
+        return original_timeout(delay)
+
+    def expire():
+        assert outer is not None
+        outer.reschedule(asyncio.get_running_loop().time())
+
+    monkeypatch.setattr(asyncio, "timeout", controlled_timeout)
+    return expire
+
+
 @pytest.mark.asyncio
 async def test_transport_deadline_preserves_uncertain_receipt_and_original_dispatch(
     database, tmp_path, monkeypatch
 ):
     case = await setup_run(database, tmp_path, strategy="static")
-    await short_remaining_deadline(case, database)
+    expire = dispatch_driven_deadline(monkeypatch)
     original_call = case.env.bot.call_api
     calls = 0
 
@@ -47,6 +69,7 @@ async def test_transport_deadline_preserves_uncertain_receipt_and_original_dispa
         nonlocal calls
         if action in {"send_group_msg", "send_private_msg"}:
             calls += 1
+            expire()
             await asyncio.Event().wait()
         return await original_call(action, **params)
 
@@ -90,7 +113,7 @@ async def test_pending_work_checkpoint_failure_counts_completed_usage_once(
 ):
     from qq_ai_bot.automation import work_cursor
 
-    case = await setup_run(database, tmp_path, strategy="generated")
+    case = await setup_run(database, tmp_path, strategy="agentic")
     calls = 0
 
     async def pending_agent(arguments, context):

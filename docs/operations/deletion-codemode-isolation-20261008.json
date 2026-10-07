@@ -1,0 +1,117 @@
+{
+  "format": "yuki_monty_linux_isolation_v1",
+  "platform": "Linux-6.8.0-136-generic-x86_64-with-glibc2.41",
+  "worker_sha256": "d437ae731460bedf9319adc20b6b0d041aab93209235bc9b7183cf4ab99c2b8c",
+  "launcher_sha256": "a3d43e7ab1d4a115a12607f1a44d2e5a4a0f1d7f7c451a77a1b81ce6b8da18fb",
+  "bwrap_sha256": "573236e5328ac2ebb08f59ae3a9805b4f8d12bdef14be8af4450d5463294985f",
+  "verdict": "passed",
+  "worker": {
+    "host_uid": 10001,
+    "apparmor_profile": "yuki-bot-codemode//launcher//&yuki-bot-codemode//launcher//worker (enforce)",
+    "procfs_exposed": false,
+    "worker_namespace_uid": 65534,
+    "namespaces": {
+      "user": {
+        "host": "user:[4026531837]",
+        "worker": "user:[4026532583]"
+      },
+      "mnt": {
+        "host": "mnt:[4026532456]",
+        "worker": "mnt:[4026532519]"
+      },
+      "pid": {
+        "host": "pid:[4026532459]",
+        "worker": "pid:[4026532522]"
+      },
+      "net": {
+        "host": "net:[4026532461]",
+        "worker": "net:[4026532524]"
+      },
+      "ipc": {
+        "host": "ipc:[4026532458]",
+        "worker": "ipc:[4026532521]"
+      },
+      "uts": {
+        "host": "uts:[4026532457]",
+        "worker": "uts:[4026532520]"
+      }
+    },
+    "uid_map": [
+      [
+        65534,
+        10001,
+        1
+      ]
+    ],
+    "gid_map": [
+      [
+        65534,
+        10001,
+        1
+      ]
+    ],
+    "environment": {
+      "PWD": "/tmp"
+    },
+    "mountinfo": "693 444 0:63 /newroot / rw,nosuid,nodev,relatime - tmpfs tmpfs rw,uid=10001,gid=10001,inode64\n707 693 0:59 /opt/yuki-monty/monty /worker/monty ro,nosuid,nodev,relatime - overlay overlay rw,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3522/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3499/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3498/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3497/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3496/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3495/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3494/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3493/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3492/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3491/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3490/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3489/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3488/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3487/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3486/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3485/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3484/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3447/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3446/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3445/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3444/fs,upperdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3523/fs,workdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3523/work,nouserxattr\n708 693 0:59 /usr/lib /usr/lib ro,nosuid,nodev,relatime - overlay overlay rw,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3522/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3499/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3498/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3497/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3496/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3495/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3494/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3493/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3492/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3491/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3490/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3489/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3488/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3487/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3486/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3485/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3484/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3447/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3446/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3445/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3444/fs,upperdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3523/fs,workdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3523/work,nouserxattr\n709 693 0:59 /usr/lib /lib ro,nosuid,nodev,relatime - overlay overlay rw,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3522/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3499/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3498/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3497/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3496/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3495/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3494/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3493/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3492/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3491/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3490/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3489/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3488/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3487/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3486/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3485/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3484/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3447/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3446/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3445/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3444/fs,upperdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3523/fs,workdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3523/work,nouserxattr\n710 693 0:59 /usr/lib64 /lib64 ro,nosuid,nodev,relatime - overlay overlay rw,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3522/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3499/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3498/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3497/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3496/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3495/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3494/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3493/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3492/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3491/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3490/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3489/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3488/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3487/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3486/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3485/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3484/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3447/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3446/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3445/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3444/fs,upperdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3523/fs,workdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3523/work,nouserxattr\n711 693 0:74 / /dev rw,nosuid,nodev,relatime - tmpfs tmpfs rw,mode=755,uid=10001,gid=10001,inode64\n712 711 0:94 /null /dev/null rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755,inode64\n713 711 0:94 /zero /dev/zero rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755,inode64\n714 711 0:94 /full /dev/full rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755,inode64\n715 711 0:94 /random /dev/random rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755,inode64\n716 711 0:94 /urandom /dev/urandom rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755,inode64\n717 711 0:94 /tty /dev/tty rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755,inode64\n718 711 0:76 / /dev/pts rw,nosuid,noexec,relatime - devpts devpts rw,mode=620,ptmxmode=666\n719 693 0:90 / /tmp rw,nosuid,nodev,relatime - tmpfs tmpfs rw,mode=755,uid=10001,gid=10001,inode64\n",
+    "network_interfaces": [
+      "lo"
+    ],
+    "limits": "Limit                     Soft Limit           Hard Limit           Units     \nMax cpu time              30                   30                   seconds   \nMax file size             4194304              4194304              bytes     \nMax data size             unlimited            unlimited            bytes     \nMax stack size            8388608              unlimited            bytes     \nMax core file size        0                    0                    bytes     \nMax resident set          unlimited            unlimited            bytes     \nMax processes             unlimited            unlimited            processes \nMax open files            32                   32                   files     \nMax locked memory         8388608              8388608              bytes     \nMax address space         536870912            536870912            bytes     \nMax file locks            unlimited            unlimited            locks     \nMax pending signals       6099                 6099                 signals   \nMax msgqueue size         819200               819200               bytes     \nMax nice priority         0                    0                    \nMax realtime priority     0                    0                    \nMax realtime timeout      unlimited            unlimited            us        \n",
+    "status": "Name:\tmonty\nUmask:\t0022\nState:\tS (sleeping)\nTgid:\t20\nNgid:\t0\nPid:\t20\nPPid:\t19\nTracerPid:\t0\nUid:\t10001\t10001\t10001\t10001\nGid:\t10001\t10001\t10001\t10001\nFDSize:\t64\nGroups:\t10001 \nNStgid:\t20\t2\nNSpid:\t20\t2\nNSpgid:\t19\t1\nNSsid:\t19\t1\nKthread:\t0\nVmPeak:\t  177392 kB\nVmSize:\t  111868 kB\nVmLck:\t       0 kB\nVmPin:\t       0 kB\nVmHWM:\t    7992 kB\nVmRSS:\t    7992 kB\nRssAnon:\t     728 kB\nRssFile:\t    7264 kB\nRssShmem:\t       0 kB\nVmData:\t   16772 kB\nVmStk:\t     132 kB\nVmExe:\t   20072 kB\nVmLib:\t    2228 kB\nVmPTE:\t      88 kB\nVmSwap:\t       0 kB\nHugetlbPages:\t       0 kB\nCoreDumping:\t0\nTHP_enabled:\t1\nuntag_mask:\t0xffffffffffffffff\nThreads:\t2\nSigQ:\t0/6099\nSigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\nSigBlk:\t0000000000000000\nSigIgn:\t0000000081001000\nSigCgt:\t0000000100000440\nCapInh:\t0000000000000000\nCapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapBnd:\t0000000000000000\nCapAmb:\t0000000000000000\nNoNewPrivs:\t1\nSeccomp:\t2\nSeccomp_filters:\t1\nSpeculation_Store_Bypass:\tvulnerable\nSpeculationIndirectBranch:\talways enabled\nCpus_allowed:\t3\nCpus_allowed_list:\t0-1\nMems_allowed:\t00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001\nMems_allowed_list:\t0\nvoluntary_ctxt_switches:\t1\nnonvoluntary_ctxt_switches:\t6\nx86_Thread_features:\t\nx86_Thread_features_locked:\t\n",
+    "process_ids": [
+      18,
+      19,
+      20
+    ],
+    "native_pid": 20
+  },
+  "infinite_loop": "engine_time_limit",
+  "terminated_process_ids": [
+    18,
+    19,
+    20,
+    22,
+    23,
+    24
+  ],
+  "termination": "all_original_process_ids_gone",
+  "parent_death": {
+    "owner_signal": "SIGKILL",
+    "process_ids": [
+      30,
+      31,
+      32
+    ],
+    "verdict": "passed"
+  },
+  "host_policy": {
+    "max_native_workers": 2,
+    "background_limit": 1,
+    "observed_peak_native_workers": 2,
+    "native_high_water_rss_kib": [
+      8140,
+      8088
+    ],
+    "queued_cancellation_created_no_worker": true,
+    "all_capacity_process_ids_gone": [
+      34,
+      35,
+      36,
+      38,
+      39,
+      40
+    ],
+    "measurement_scope": "two suspended synthetic scripts; not production capacity sizing",
+    "host_watchdog": {
+      "configured_seconds": 0.5,
+      "elapsed_seconds": 0.5025854669511318,
+      "failure_category": "limit_time",
+      "all_process_ids_gone": [
+        43,
+        44,
+        45
+      ]
+    }
+  }
+}

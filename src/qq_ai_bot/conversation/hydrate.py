@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import cast
@@ -304,14 +303,6 @@ async def touch_canonical_watermarks(
     row.updated_at = _utcnow()
 
 
-def synthetic_scope_id(conversation_id: str) -> int:
-    """Positive stand-in for ConversationScopeState.id. Not a conversation_scopes row."""
-
-    digest = hashlib.sha256(f"canonical-scope:{conversation_id}".encode()).digest()
-    value = int.from_bytes(digest[:8], "big") % ((1 << 31) - 1)
-    return value or 1
-
-
 def scope_state_from_canonical(
     scope: ConversationScope,
     conversation: CanonicalConversationModel,
@@ -325,7 +316,7 @@ def scope_state_from_canonical(
     """
 
     return ConversationScopeState(
-        id=synthetic_scope_id(conversation.id),
+        id=conversation.id,
         scope=scope,
         generation=int(conversation.generation),
         starts_after_event_id=int(conversation.starts_after_event_id),

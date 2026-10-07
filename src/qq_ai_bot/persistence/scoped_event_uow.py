@@ -17,7 +17,6 @@ from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalEventReceiptModel,
 )
 from qq_ai_bot.conversation.hydrate import (
-    bump_canonical_generation,
     ensure_canonical_conversation,
     hydrate_scope_state_from_canonical,
     touch_canonical_watermarks,
@@ -29,7 +28,6 @@ from qq_ai_bot.conversation.rollup.prompt_accounting import (
 )
 from qq_ai_bot.conversation.rollup.repository import calculate_canonical_uncovered
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.identity.canonical_repository import (
     apply_event_identity,
     external_id,
@@ -125,33 +123,6 @@ class ScopedEventLedgerUnitOfWork:
     def notify_committed(self, result: ScopedAppendResult) -> None:
         """Notify only after an external caller committed its shared ledger transaction."""
         self._notify_after_commit(result.job_signalled)
-
-    async def append_inbound(self, message: InboundMessage) -> ScopedAppendResult:
-        scope = message.scope()
-        segments = list(message.segments)
-        segments.append(
-            {
-                "type": "yuki_context",
-                "data": {
-                    "mentioned_user_ids": list(message.mentioned_user_ids),
-                    "reply_sender_user_id": message.reply_sender_user_id,
-                },
-            }
-        )
-        return await self.append(
-            scope=scope,
-            platform_message_id=message.message_id,
-            sender_user_id=message.sender.user_id,
-            direction="inbound",
-            content=message.text,
-            segments=tuple(segments),
-            reply_to_message_id=message.reply_to_message_id,
-            reply_to_event_id=message.reply_to_event_id,
-            occurred_at=message.received_at,
-            sender_nickname=message.sender.nickname,
-            sender_group_card=message.sender.group_card,
-            sender_is_bot=message.sender.is_bot,
-        )
 
     async def append_external(
         self,
@@ -277,69 +248,6 @@ class ScopedEventLedgerUnitOfWork:
             )
         self._notify_after_commit(result.job_signalled)
         return result
-
-    async def append_new_generation_command(
-        self,
-        *,
-        scope: ConversationScope,
-        inbound: InboundMessage,
-    ) -> NewGenerationResult:
-        """Append `/ai new` and switch generation in the same short transaction."""
-
-        now = datetime.now(UTC)
-        async with self._database.immediate_session() as session:
-            appended = await self._append_canonical(
-                session,
-                scope=scope,
-                platform_message_id=inbound.message_id,
-                sender_user_id=inbound.sender.user_id,
-                direction="inbound",
-                content=inbound.text,
-                segments=tuple(inbound.segments),
-                reply_to_message_id=inbound.reply_to_message_id,
-                reply_to_event_id=inbound.reply_to_event_id,
-                timestamp=inbound.received_at,
-                observed_at=now,
-                sender_nickname=inbound.sender.nickname,
-                sender_group_card=inbound.sender.group_card,
-                sender_is_bot=inbound.sender.is_bot,
-                origin="user_message",
-                automation_id=None,
-                automation_run_id=None,
-                event_kind="message",
-                source_plugin_id=None,
-                external_source=None,
-                external_event_key=None,
-                external_event_type=None,
-                external_payload=None,
-                external_target_id=None,
-                caused_by_event_id=None,
-            )
-            event_row = await session.get(ChatEventModel, appended.event.id)
-            conversation_id = None if event_row is None else event_row.canonical_conversation_id
-            if conversation_id:
-                conversation = await session.get(CanonicalConversationModel, conversation_id)
-                if conversation is not None:
-                    prior_change = int(conversation.last_generation_change_event_id)
-                    await bump_canonical_generation(
-                        session,
-                        conversation.id,
-                        event_id=appended.event.id,
-                    )
-                    conversation = await session.get(CanonicalConversationModel, conversation.id)
-                    assert conversation is not None
-                    return NewGenerationResult(
-                        event=appended.event,
-                        scope=await hydrate_scope_state_from_canonical(
-                            session, scope, conversation
-                        ),
-                        generation_changed=prior_change != appended.event.id,
-                    )
-            return NewGenerationResult(
-                event=appended.event,
-                scope=appended.scope,
-                generation_changed=False,
-            )
 
     async def set_visual_summary(self, event_id: int, summary: str) -> bool:
         normalized = summary.strip()[:6000]

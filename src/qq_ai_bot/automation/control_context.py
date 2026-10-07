@@ -139,3 +139,35 @@ async def resolve_control_context(
         presence_id=presence.id,
         space_id=conversation.space_id,
     )
+
+
+async def resolve_execution_identity(
+    session: AsyncSession, settings: Settings, *, owner_id: str
+) -> tuple[str, PermissionLevel]:
+    """Resolve a current account for the permanent owner, independent of the send target."""
+    person = await session.get(CanonicalPersonModel, owner_id)
+    if person is None or not person.enabled:
+        raise PermissionError("automation_owner_unavailable")
+    bindings = list(
+        (
+            await session.scalars(
+                select(IdentityBindingModel).where(
+                    IdentityBindingModel.person_id == owner_id,
+                    IdentityBindingModel.platform == "qq",
+                    IdentityBindingModel.status == "active",
+                )
+            )
+        ).all()
+    )
+    route = await session.get(PersonActiveRouteModel, owner_id)
+    if route is not None:
+        if route.paused:
+            raise PermissionError("automation_owner_route_paused")
+        binding = next((item for item in bindings if item.id == route.identity_binding_id), None)
+    else:
+        binding = bindings[0] if len(bindings) == 1 else None
+    if binding is None:
+        raise PermissionError("automation_owner_route_ambiguous")
+    return binding.external_account_id, permission_for_accounts(
+        settings, (item.external_account_id for item in bindings)
+    )

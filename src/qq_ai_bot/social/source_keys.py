@@ -3,6 +3,13 @@
 import hashlib
 
 
+def social_call_key(operation_id: str) -> str:
+    """Bound only the receipt representation; the Work keeps its full identity."""
+    if len(operation_id) <= 128:
+        return operation_id
+    return "social-call:v1:sha256:" + hashlib.sha256(operation_id.encode()).hexdigest()
+
+
 def social_source_key(source_turn_id: str) -> str:
     """Preserve existing short keys and digest the complete UTF-8 source when needed.
 

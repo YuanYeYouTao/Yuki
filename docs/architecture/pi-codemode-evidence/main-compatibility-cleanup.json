@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "completed_roots": [
+    {
+      "report": "main-compatibility-regression.json",
+      "temporary_root": "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-main-compatibility-final-9gy50ske",
+      "allocated_bytes_du": 7426535424,
+      "logs_archived_and_verified": true,
+      "removed": true
+    },
+    {
+      "report": "main-compatibility-regression-final.json",
+      "temporary_root": "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-main-compatibility-final-3cql_0sa",
+      "allocated_bytes_du": 886943744,
+      "logs_archived_and_verified": true,
+      "removed": true
+    },
+    {
+      "report": "main-compatibility-verified.json",
+      "temporary_root": "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-main-compatibility-final-pujwpeai",
+      "allocated_bytes_du": 4962402304,
+      "logs_archived_and_verified": true,
+      "removed": true
+    },
+    {
+      "report": "main-compatibility-accepted.json",
+      "temporary_root": "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-main-compatibility-final-oeh2uzqm",
+      "allocated_bytes_du": 7433117696,
+      "logs_archived_and_verified": true,
+      "removed": true
+    }
+  ],
+  "active_final_root_removed": true,
+  "allocated_gib_sum": 19.286758422851562
+}

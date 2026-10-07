@@ -145,7 +145,10 @@ async def test_late_audio_rechecks_snapshot_before_reset_or_counter_commit(datab
                     rollup.revision += 1
                     rollup.summary_text = "a concurrent compacted summary"
             else:
-                await uow.append_new_generation_command(
+                from tests.support.canonical_ingress import append_new_generation
+
+                await append_new_generation(
+                    uow,
                     scope=scope,
                     inbound=InboundMessage(
                         message_id="reset-source",

@@ -638,3 +638,160 @@ async def test_interrupted_second_page_retains_exact_unsettled_originals(
     assert not await repo.has_unresolved_effects(lease, identity)
     assert len(await repo.effect_evidence(lease, identity)) == 129
     assert await repo.get(identity) == original_work
+
+
+@pytest.mark.parametrize(
+    "stored,unknown",
+    [
+        ({"result": "opaque success"}, True),
+        ({"outcome": {"side_effecting": True}}, True),
+        ({"outcome": {"status": "unknown"}}, True),
+        ({"outcome": {"ok": True, "status": "unknown"}}, True),
+        ({"result": "{}"}, True),
+        ({"result": '{"ok":true,"truncated":true}'}, True),
+        ({"result": '{"ok":true}'}, False),
+        ({"result": '{"ok":true,"uncertain":true}'}, True),
+        ({"result": '{"ok":false,"executed":false}'}, False),
+        ({"outcome": {"ok": "false", "side_effecting": False}}, True),
+        ({"outcome": {"ok": True, "side_effecting": True, "uncertain": "false"}}, True),
+        (
+            {"outcome": {"ok": True, "side_effecting": True, "pending": False, "uncertain": False}},
+            False,
+        ),
+    ],
+)
+async def test_historical_unknown_reader_and_atomic_debt_agree_without_rewriting(
+    owned, stored, unknown
+):
+    repo, lease, identity = owned
+    await repo.prepare_effect(lease, identity, "history", "tool")
+    raw = json.dumps(stored)
+    async with repo.database.immediate_session() as writer:
+        await writer.execute(
+            update(effects)
+            .where(effects.c.effect_key == "history")
+            .values(state="accepted", receipt_json=raw)
+        )
+    facts = await repo.effect_evidence(lease, identity)
+    assert bool(facts[0].get("uncertain")) is unknown
+    assert await repo.has_unresolved_effects(lease, identity) is unknown
+    assert bool(await repo.effect_evidence(lease, identity, only_unresolved=True)) is unknown
+    assert (await read_receipt(repo, "history"))["receipt_json"] == raw
+
+
+@pytest.mark.parametrize("status", [[], {}, True, 1])
+@pytest.mark.parametrize("location", ["outcome", "legacy"])
+async def test_malformed_historical_status_is_unknown_in_reader_and_cas(owned, status, location):
+    repo, lease, identity = owned
+    await repo.prepare_effect(lease, identity, "bad-status", "tool")
+    payload = {"ok": True, "side_effecting": True, "status": status}
+    stored = {"outcome": payload} if location == "outcome" else {"result": json.dumps(payload)}
+    async with repo.database.immediate_session() as writer:
+        await writer.execute(
+            update(effects)
+            .where(effects.c.effect_key == "bad-status")
+            .values(state="accepted", receipt_json=json.dumps(stored))
+        )
+    fact = (await repo.effect_evidence(lease, identity))[0]
+    assert fact["uncertain"] is True and fact["ok"] is False
+    assert await repo.has_unresolved_effects(lease, identity)
+
+
+@pytest.mark.parametrize("data", [None, [], ""])
+@pytest.mark.parametrize(
+    "root", [{"pending": True}, {"status": "unknown"}, {"progress": {"status": "unknown"}}]
+)
+async def test_legacy_nondict_data_preserves_root_lifecycle_facts(owned, data, root):
+    repo, lease, identity = owned
+    await repo.prepare_effect(lease, identity, "legacy-root", "tool")
+    stored = {"result": json.dumps({"ok": True, "data": data, **root})}
+    async with repo.database.immediate_session() as writer:
+        await writer.execute(
+            update(effects)
+            .where(effects.c.effect_key == "legacy-root")
+            .values(state="accepted", receipt_json=json.dumps(stored))
+        )
+    fact = (await repo.effect_evidence(lease, identity))[0]
+    assert fact.get("pending") or fact.get("uncertain")
+    assert await repo.has_unresolved_effects(lease, identity)
+
+
+@pytest.mark.parametrize("kind", ["final", "tool"])
+@pytest.mark.parametrize(
+    "state,stored,proven",
+    [
+        ("accepted", {"transport_accepted": True}, True),
+        (
+            "accepted",
+            {
+                "transport_accepted": True,
+                "message_id": "original",
+                "transport": "onebot",
+                "text": "accepted",
+                "media": [],
+            },
+            True,
+        ),
+        (
+            "failed",
+            {"error": "delivery_not_dispatched", "executed": False, "mutation_committed": False},
+            True,
+        ),
+        ("accepted", {}, False),
+        ("accepted", {"transport_accepted": "true"}, False),
+        ("accepted", {"transport_accepted": True, "pending": True}, False),
+        ("accepted", {"transport_accepted": True, "executed": False}, False),
+        ("failed", {"executed": False, "mutation_committed": False}, False),
+        ("failed", {"error": None, "executed": False, "mutation_committed": False}, False),
+        ("accepted", {"transport_accepted": True, "uncertain": True}, False),
+        ("accepted", {"transport_accepted": True, "status": "unknown"}, False),
+        (
+            "failed",
+            {"error": "delivery_not_dispatched", "executed": 0, "mutation_committed": False},
+            False,
+        ),
+        ("failed", {"error": "delivery_not_dispatched", "executed": False}, False),
+        ("failed", {"error": "delivery_outcome_unknown"}, False),
+        ("unknown", {"transport_accepted": True}, False),
+        ("prepared", {"transport_accepted": True}, False),
+        (
+            "prepared",
+            {"error": "delivery_not_dispatched", "executed": False, "mutation_committed": False},
+            False,
+        ),
+    ],
+)
+async def test_native_final_receipts_keep_domain_proof_without_exempting_tools(
+    owned, kind, state, stored, proven
+):
+    from qq_ai_bot.runtime.effect_outcomes import ResultCapture, current_result_capture
+    from qq_ai_bot.runtime.work_journal import WorkJournal
+
+    repo, lease, identity = owned
+    await repo.prepare_effect(lease, identity, "native-final", kind)
+    raw = json.dumps(stored)
+    async with repo.database.immediate_session() as writer:
+        await writer.execute(
+            update(effects)
+            .where(effects.c.effect_key == "native-final")
+            .values(state=state, receipt_json=raw)
+        )
+    known = proven and kind == "final"
+    fact = (await repo.effect_evidence(lease, identity))[0]
+    assert bool(fact.get("uncertain")) is not known
+    assert await repo.has_unresolved_effects(lease, identity) is not known
+    if known:
+        assert fact["executed"] is (state == "accepted")
+        assert fact["ok"] is (state == "accepted")
+    if kind == "final":
+        capture = ResultCapture(identity, "native-final")
+        token = current_result_capture.set(capture)
+        try:
+            await WorkJournal(repo).effect_result("native-final")
+        finally:
+            current_result_capture.reset(token)
+        assert capture.evidence is not None
+        assert bool(capture.evidence.get("uncertain")) is not known
+        if known:
+            assert capture.evidence["executed"] is (state == "accepted")
+    assert (await read_receipt(repo, "native-final"))["receipt_json"] == raw

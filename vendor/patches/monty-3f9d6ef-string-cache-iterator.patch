@@ -1,0 +1,12 @@
+diff --git a/crates/monty/src/modules/json/string_cache.rs b/crates/monty/src/modules/json/string_cache.rs
+--- a/crates/monty/src/modules/json/string_cache.rs
++++ b/crates/monty/src/modules/json/string_cache.rs
+@@ -95,7 +95,7 @@
+     /// Called during `VM::drop()` before the heap is torn down.
+     pub fn drop_all(&mut self, heap: &mut impl ContainsHeap) {
+         if let Some(inner) = &mut self.inner {
+-            for entry in &mut inner.entries {
++            for entry in inner.entries.iter_mut() {
+                 if let Some((_, _, value)) = entry.take() {
+                     value.drop_with(heap);
+                 }

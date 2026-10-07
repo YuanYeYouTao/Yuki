@@ -25,7 +25,6 @@ from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.runtime.partition_lookup import DatabaseMemoryPartitionLookup
 from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.model_runtime.executor import require_model_executor
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import (
     AgentActionRepository,
@@ -33,11 +32,10 @@ from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     GroupSettingsRepository,
     MediaAnalysisRepository,
+    PeopleRepository,
     PrivateUserSettingsRepository,
-    ProcessedEventRepository,
     RelationshipJobRepository,
     RelationshipRepository,
-    UserProfileRepository,
     WebSearchSourceRepository,
 )
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
@@ -46,7 +44,6 @@ from qq_ai_bot.services.agent_tools import AgentToolService
 from qq_ai_bot.services.chat import ChatService
 from qq_ai_bot.services.command_service import CommandService
 from qq_ai_bot.services.concurrency import ConcurrencyManager
-from qq_ai_bot.services.deduplication import DeduplicationService
 from qq_ai_bot.services.effect_gate import ConversationEffectGate
 from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
 from qq_ai_bot.services.media_resolver import MediaResolver
@@ -61,6 +58,7 @@ from qq_ai_bot.services.vision_service import VisionService
 from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.vision.base import VisionProvider
 from qq_ai_bot.web.base import WebSearchProvider
+from tests.support.model_executor import require_model_executor
 
 
 class MemorySender:
@@ -94,7 +92,7 @@ class Harness:
     conversation_rollups: ConversationRollupRepository
     groups: GroupSettingsRepository
     private_users: PrivateUserSettingsRepository
-    profiles: UserProfileRepository
+    profiles: PeopleRepository
     relationships: RelationshipRepository
     relationship_jobs: RelationshipJobRepository
     relationship_worker: RelationshipWorker
@@ -113,7 +111,6 @@ def make_settings(database_url: str, **overrides: object) -> Settings:
         "llm_provider": "fake",
         "llm_model": "fake-model",
         "model_profiles_file": Path("__test_model_profiles_not_present__.toml"),
-        "model_profiles_legacy_compatibility": True,
         "global_llm_concurrency": 4,
         "per_user_requests_per_minute": 20,
         "per_group_requests_per_minute": 50,
@@ -143,13 +140,12 @@ def build_harness(
         initial_affection=settings.relationship_initial_affection,
         initial_trust=settings.relationship_initial_trust,
     )
-    profiles = UserProfileRepository(
+    profiles = PeopleRepository(
         database,
         initial_affection=settings.relationship_initial_affection,
         initial_trust=settings.relationship_initial_trust,
     )
     user_profiles = UserProfileService(profiles)
-    processed_events = ProcessedEventRepository(database)
     rollup_config = RollupPolicyConfig(
         context_token_budget=settings.context_window_tokens,
         trigger_ratio=settings.conversation_rollup_trigger_ratio,
@@ -255,10 +251,14 @@ def build_harness(
         effect_gate=effect_gate,
         turn_coordinator=turn_coordinator,
     )
+    from tests.support.canonical_ingress import fixture_ingress
+
+    ingress = fixture_ingress(database)
     processor = MessageProcessor(
+        canonical_ingress=ingress,
+        canonical_uow=ingress.uow,
         settings=settings,
         ledger=ledger,
-        scoped_events=scoped_events,
         conversation_scopes=conversation_scopes,
         conversation_rollups=conversation_rollups,
         effect_gate=effect_gate,
@@ -266,10 +266,6 @@ def build_harness(
         private_users=private_users,
         user_profiles=user_profiles,
         chat=chat,
-        deduplication=DeduplicationService(
-            processed_events,
-            ttl_seconds=settings.processed_event_ttl_seconds,
-        ),
         rate_limiter=SlidingWindowRateLimiter(
             per_user=settings.per_user_requests_per_minute,
             per_group=settings.per_group_requests_per_minute,

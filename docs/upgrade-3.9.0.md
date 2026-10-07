@@ -1,15 +1,17 @@
 # Yuki 3.9.0 配置与升级草案（未发布）
 
-<!-- release-baseline: version=3.9.0 schema=0097 -->
+<!-- release-baseline: version=3.9.0 schema=0099 -->
 
-本指南对应截至主线 `16b5c7b8` 的开发源码。**3.9.0 尚未正式发布**，正式下载仍为 [3.8.4 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.4)。开发提交镜像已有各自运维记录，但应用版本号不代表可拉取的 `:3.9.0` 正式镜像。全部 102 个已合并 PR 与功能变化见 [发布说明草案](releases/v3.9.0.md)。
+本指南对应测试分支兼容主线 `25cd6083` 后的开发源码。**3.9.0 尚未正式发布**，正式下载仍为 [3.8.4 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.4)。开发提交镜像已有各自运维记录，但应用版本号不代表可拉取的 `:3.9.0` 正式镜像。全部 102 个已合并 PR 与功能变化见 [发布说明草案](releases/v3.9.0.md)。
+
+默认构建、发行和部署使用 direct：镜像不包含 Monty binding、worker、launcher，Code Mode 默认关闭；当前作用域全部获准工具仍经同一 Agent loop 执行。Code 为显式 `--target codemode` 可选构建，启用前须完成目标主机隔离验收。模式切换沿原回执收尾旧 composition，不重置预算或重派发。
 
 ## 版本与迁移范围
 
 | 项目 | 3.8.4 正式包 | 当前 3.9.0 源码 |
 | --- | --- | --- |
-| 数据库 head | `0072` | `0097`，按随包 Alembic 单一 head 核对 |
-| Plugin API | 3.0 | 3.2，插件需适配并重新批准 |
+| 数据库 head | `0072` | `0099`，按随包 Alembic 单一 head 核对 |
+| Plugin API | 3.0 | 3.3，插件需适配并重新批准 |
 | MCP | 旧实现 | 完全退役 |
 | 管理 WebUI | 不包含 | 可选、默认关闭，共用现有控制面 |
 | Genie-TTS 语音输出 | 旧可选组件 | 合成、SDK、配置、Worker 与发布依赖全部退役；ASR 保留 |
@@ -37,6 +39,16 @@
 
 迁移不重建原 Work、预算或发送回执，也不回填未知请求和旧账单。建索引及 DDL 的锁与 I/O 成本应在独立副本测量，不能假定在线零影响。
 
+当前完整 main/Pi 集成树只有 `0099` 一个 head。`0096` 保留调用索引并兼容主线 MCP 已退役的形状；`0097` 保留主线语音退役身份，`0098` 汇合 MCP 派生表退役，`0099` 冻结摘要 kind/renderer。不能用 stamp 或重建数据库解决编号冲突。
+
+本次操作者已确认仅有当前 main 系谱 `0096` 生产库需要升级，没有另一个需保留的 Pi `0097/0098` 数据库。若其他安装报告这种旧分支编号，先核完整 schema 与生产者提交，不能按编号相同直接升级。
+
+正常升级保留原 Work ID、内部事件、invocation/composition、发送回执、协议对象引用和累计预算。孤立 running 执行由取得有效新租约的 owner 保守结算；未知效果不重跑。语音 queued/generating、未知表形状或外部依赖会阻止迁移。停写一致快照和冷备完成后再执行。
+
+`0097` 不提供事实重建型 downgrade；当前完整数据库只能使用兼容 `0099` 的 reader 或前向修复。早期仅撤销索引的降级步骤不适用于本次生产升级，不能恢复旧备份覆盖升级后的事件和效果。历史 producer 的完整升级、幂等重跑及降级拒绝由集成测试验证。
+
+备份校验步骤见 [Work 协议与证据完整备份](operations/work-evidence-backup.md)。
+
 ## 升级前整理配置
 
 保留实际 Compose 项目名、全部覆盖文件、挂载、模型连接和插件目录。新模板用于对照，不覆盖现有部署；不要依赖一个简化的 `docker compose` 命令替代原参数链。
@@ -45,6 +57,12 @@
 - **联网默认值**：新安装未提供 `WEB_MODE` 或旧 `WEB_ENABLED` 时默认 native。显式禁用和既有 Profile 选择不被覆盖；仅旧 `WEB_ENABLED=true` 仍沿 Tavily 模式核验凭据。Gemini 独立搜索桥、Claude/Responses 原生搜索、DeepSeek 独立搜索连接各按真实能力配置。默认开启不能补出模型没有的能力。
 - **持久环境**为单独部署的可选组件。保留工作区 volume、原 Manager 和运行回执，核对 Bot 与 Manager 使用同一目录；普通部署包不会自动安装 gVisor 或新 Manager。见[持久环境说明](operations/persistent-environment.zh-CN.md)。
 - **管理 WebUI**默认关闭；按[WebUI 合同](architecture/webui-console.md)设置身份、认证与管理授权。既有配置保存、热切换和实际请求生效分别核对。
+
+### generated 模型路由退役
+
+`generated` / `yuki.generate` 已退出新执行，`automation_text_generation` 不再是可配置的模型任务。升级实际 `webui-config/model_profiles.toml` 时，仅从 `[routes]` 删除 `automation_text_generation = ...` 这一项；保留其他文件字节、Profile、连接、密钥引用和有效路由，不用新模板覆盖现有配置，也不把旧路由自动改成 `automation_agent`。新版本会明确拒绝仍含此退役路由的完整旧 TOML，不静默忽略。当前自动任务按已有 `automation_agent` 主 Agent 合同执行。
+
+历史 `model_invocations.task`、统计和错误记录继续保留并读取原字符串；不改写旧账单，不据此重跑旧自动任务。备份已核验后，由操作者对实际配置作上述单项删除，再用目标版本 parser 验证。
 
 ### MCP 退出与管理授权
 
@@ -81,9 +99,9 @@ WAV 引用；另保全用户自有参考音频。冷备包含校验和、原路�
 共享 `local_path`、`duration_milliseconds` 仅兼容旧图片中的 `null`，不作为合成字段恢复。
 跨工具合同升级也须保留原投递链和回执，不能丢计划再进模型重新生成答案。
 
-### 插件 API 3.2
+### 插件 API 3.3
 
-更新插件 manifest 与代码，移除 `ctx.mcp`、`ctx.speech`、相关 facade、权限、事件及 TTS 注册；原批准失效后，通过现有插件批准流程重新核对请求权限并批准，保持原启用意图。不得为适配增加未经核验的授权。依次核对 [API 3.1 历史迁移](plugin-development/api-3.1-migration.md) 和 [API 3.2 迁移](plugin-development/api-3.2-migration.md)。
+更新插件 manifest 与代码，移除 `ctx.mcp`、`ctx.speech`、相关 facade、权限、事件及 TTS 注册；原批准失效后，通过现有插件批准流程重新核对请求权限并批准，保持原启用意图。不得为适配增加未经核验的授权。依次核对 [API 3.1 历史迁移](plugin-development/api-3.1-migration.md) 、[API 3.2 迁移](plugin-development/api-3.2-migration.md) 和 [API 3.3 迁移](plugin-development/api-3.3-migration.md)。
 
 网易云 MCP 插件不再提供；普通插件 HTTP、自有工具和 QQ 音乐卡片发送保留。后台表情分类、SDK 显式视觉任务和 ASR 仍可能使用独立 Qwen 连接，不能因主 Agent 原生读图而删除这些消费者所需凭据。
 
@@ -92,7 +110,7 @@ WAV 引用；另保全用户自有参考音频。冷备包含校验和、原路�
 1. 固定目标源码/镜像提交，核对随包 head、Plugin API、全部迁移与发行资产；正式发布时再核对 `v3.9.0` 的实际下载和镜像。
 2. 在**独立数据库及文件副本**演练完整迁移、配置加载、插件批准和应用启动。核对原 Work 身份、预算、协议对象、发送回执与工具正文引用；隔离演练不启动第二个主动 Bot 写生产库或向 QQ 发消息。
 3. 停止旧 Bot 和需要停写的相关 Manager，保存一致的数据库、配置、插件、媒体、工具正文、私有协议对象及持久环境回执。QQ 网关可保持运行。完整范围及恢复映射见 [Work 证据备份](operations/work-evidence-backup.md)。
-4. 完成 Genie 旧执行、真实事实与 WAV 冷备门槛，撤去退役 operator 权限/环境/挂载，再沿实际 Compose 参数，以目标镜像执行 `qq-ai-bot-cli init-db`，检查 head 为 `0097`。更新宿主挂载的插件代码并完成原权限重新批准；只更新镜像不会更新独立挂载目录。
+4. 完成 Genie 旧执行、真实事实与 WAV 冷备门槛，撤去退役 operator 权限/环境/挂载，再沿实际 Compose 参数，以目标镜像执行 `qq-ai-bot-cli init-db`，检查 head 为 `0099`。更新宿主挂载的插件代码并完成原权限重新批准；只更新镜像不会更新独立挂载目录。
 5. 启动一个新 Bot，核对实际 revision、数据库、QQ 连接、主工具合同、插件/worker 状态与模型路由。健康检查不代表自然聊天速度、真实 API 或长任务交付已验收。
 
 QQ 登录目录不受迁移影响。若另外重启 SnowLuma，保留原持久挂载；保存登录态、自动启动与成功自动登录是不同步骤，重启后须确认真实 QQ 连接，必要时手动登录。

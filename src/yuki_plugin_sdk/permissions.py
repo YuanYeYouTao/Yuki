@@ -28,8 +28,6 @@ class PluginPermission(StrEnum):
     RELATIONSHIP_CURRENT_READ = "relationship.current.read"
     RELATIONSHIP_READ = "relationship.read"
     RELATIONSHIP_WRITE = "relationship.write"
-    LLM_GENERATE = "llm.generate"
-    LLM_GENERATE_WITH_CONTEXT = "llm.generate_with_context"
     AGENT_RUN = "agent.run"
     AGENT_SESSION = "agent.session"
     WEB_SEARCH = "web.search"

@@ -36,7 +36,7 @@ _SENSITIVE_KEYS = frozenset(
         "subject_ref",
     }
 )
-_LLM_CAPABILITIES = frozenset({"yuki.generate", "yuki.agent"})
+_LLM_CAPABILITIES = frozenset({"yuki.agent"})
 _MESSAGE_CAPABILITIES = frozenset({"social.send_message"})
 
 

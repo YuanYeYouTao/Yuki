@@ -258,12 +258,6 @@ CONTROL_CAPABILITY_DESCRIPTORS: Final[tuple[ControlCapabilityDescriptor, ...]] =
         mutating=True,
     ),
     _descriptor(
-        "control.workspace.mutate",
-        CapabilityFamily.CONTROL,
-        CapabilitySensitivity.MUTATE,
-        mutating=True,
-    ),
-    _descriptor(
         "control.environment.file.mutate",
         CapabilityFamily.CONTROL,
         CapabilitySensitivity.MUTATE,

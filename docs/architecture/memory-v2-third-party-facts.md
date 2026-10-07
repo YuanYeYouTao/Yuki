@@ -2,21 +2,21 @@
 
 本文规定**写入与证据**边界，不是结构化读取政策。普通读取依据
 [历史共同群关系](memory-v2.md)，可以读取获准人物的完整 Person（含私聊来源事实）和
-相关 PersonGroup；不因此允许按昵称生成第三方写入主体、开放原始私聊或读取他人 evidence。
-下列第三方写入仍须真实 mention/reply、当前群和真实证据，不复用读取 resolver。
+相关 PersonGroup；读取权不扩大写入权，也不开放原始私聊或他人 evidence。
+第三方写入须当前群的明确主体及真实证据，不复用读取 resolver。
 
 ## 可信主体来源
 
-群聊只有当前真实 OneBot 事件中的 `@` 和被回复消息的真实作者可以生成第三方主体。后端把它们
-映射成 `mentioned_1...N` / `reply_author`，去重当前发送者、Bot 和重复成员；模型只能选择这些
-引用，不能提交 QQ 号、按昵称搜索人物或从普通文本名字猜主体。
+后端将当前真实事件中的 `@` 和回复作者映射成 `mentioned_1...N` / `reply_author`，
+去重当前发送者、Bot 和重复成员。`named_member` 另沿既有当前群受控名称解析；只有唯一
+匹配且通过同一写入权限核验才成立，歧义返回澄清，不猜测人物。名称或模型输入不能授权。
 
 第三方事实强制满足：
 
 ```text
 scope_type = person_group
 group_id = 当前真实群
-subject_user_id = 当前真实 mention/reply 对应人物
+subject_user_id = 当前真实 mention/reply 或受控唯一群内名称解析所得人物
 authority = third_party
 ```
 

@@ -121,7 +121,8 @@ async def test_status_question_request_contains_terminal_work_and_preserves_pref
     assert await turns._run_prepared(original, runtime, None) is result
     submitted, submitted_runtime, _ = runner.run.call_args.args
     assert submitted[: len(original)] == original
-    state = json.loads(submitted[-1].content.split("] ", 1)[1])
+    assert submitted == original
+    state = await control.runtime_state()
     assert state["state"] == "no_active_work"
     assert state["state_scope"] == "current_activation"
     assert "work_id" not in state and "goal" not in state and "reporting" not in state

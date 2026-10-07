@@ -6,7 +6,7 @@ from typing import Any
 
 from qq_ai_bot.domain.messages import ChatTool
 
-EXECUTION_TOOLS = frozenset({"run_python", "terminal_exec", "environment_packages"})
+EXECUTION_TOOLS = frozenset({"terminal_exec", "environment_packages"})
 READ_TOOLS = frozenset({"get_code_run", "terminal_read", "environment_status"})
 ENVIRONMENT_TOOLS = frozenset(
     {
@@ -19,7 +19,7 @@ ENVIRONMENT_TOOLS = frozenset(
         "environment_service",
     }
 )
-SANDBOX_TOOLS = ENVIRONMENT_TOOLS | {"run_python", "get_code_run", "cancel_code_run"}
+SANDBOX_TOOLS = ENVIRONMENT_TOOLS | {"get_code_run", "cancel_code_run"}
 
 
 def tool(

@@ -26,7 +26,6 @@ from qq_ai_bot.conversation.canonical_db_models import (
 from qq_ai_bot.conversation.hydrate import (
     hydrate_scope_state_from_canonical,
     require_primary_alias_for_conversation,
-    synthetic_scope_id,
 )
 from qq_ai_bot.conversation.rollup.coverage import (
     session_effective_coverage,
@@ -116,10 +115,10 @@ def _overlay_should_replace(
 
 
 def _canonical_overlay_state(
-    row: CanonicalConversationRollupEmergencyOverlayModel, scope_id: int
+    row: CanonicalConversationRollupEmergencyOverlayModel,
 ) -> ConversationRollupState:
     return ConversationRollupState(
-        scope_id=scope_id,
+        conversation_id=row.conversation_id,
         generation=row.generation,
         covered_through_event_id=row.covered_through_event_id,
         summary_text=row.summary_text,
@@ -533,21 +532,9 @@ class ConversationScopeRepository:
                 return None
             return await hydrate_scope_state_from_canonical(session, scope, conversation)
 
-    async def generation_matches(
-        self, scope_id: int, generation: int, *, scope_key: str | None = None
-    ) -> bool:
-        del scope_id
-        if not scope_key:
-            return False
+    async def generation_matches(self, conversation_id: str, generation: int) -> bool:
         async with self._database.sessions() as session:
-            alias = await session.scalar(
-                select(ConversationLegacyAliasModel).where(
-                    ConversationLegacyAliasModel.scope_key == scope_key
-                )
-            )
-            if alias is None:
-                return False
-            conversation = await session.get(CanonicalConversationModel, alias.conversation_id)
+            conversation = await session.get(CanonicalConversationModel, conversation_id)
             return conversation is not None and int(conversation.generation) == generation
 
 
@@ -760,14 +747,13 @@ class ConversationRollupRepository:
             if not cast(CursorResult[object], result).rowcount:
                 raise RollupLeaseLostError("rollup heartbeat lost its lease")
         return RollupJobClaim(
-            scope_id=claim.scope_id,
+            conversation_id=claim.conversation_id,
             generation=claim.generation,
             claimed_signal_revision=claim.claimed_signal_revision,
             failure_count=claim.failure_count,
             lease_owner=claim.lease_owner,
             lease_token=claim.lease_token,
             lease_until=renewed,
-            conversation_id=claim.conversation_id,
         )
 
     async def candidate_for_claim(
@@ -1091,7 +1077,6 @@ class ConversationRollupRepository:
         job.next_attempt_at = now
         job.updated_at = now
         return RollupJobClaim(
-            scope_id=synthetic_scope_id(conversation.id),
             generation=conversation.generation,
             claimed_signal_revision=job.signal_revision,
             failure_count=job.failure_count,
@@ -1128,7 +1113,7 @@ class ConversationRollupRepository:
             semantic_revision=semantic_revision,
         ):
             assert overlay_row is not None
-            effective = _canonical_overlay_state(overlay_row, synthetic_scope_id(conversation.id))
+            effective = _canonical_overlay_state(overlay_row)
         return (
             await hydrate_scope_state_from_canonical(session, scope, conversation),
             effective,
@@ -1171,7 +1156,7 @@ class ConversationRollupRepository:
         state = await hydrate_scope_state_from_canonical(session, scope, conversation)
         if expected_turn is not None and not turn_matches_hydrated_scope(
             expected_turn,
-            scope_id=state.id,
+            conversation_id=state.id,
             generation=state.generation,
             transport_key=scope.key,
             runtime_key=state.runtime_scope_key,
@@ -1193,7 +1178,7 @@ class ConversationRollupRepository:
             semantic_revision=semantic_revision,
         ):
             assert overlay_row is not None
-            overlay_state = _canonical_overlay_state(overlay_row, state.id)
+            overlay_state = _canonical_overlay_state(overlay_row)
         coverage = session_effective_coverage(
             generation=conversation.generation,
             starts_after=conversation.starts_after_event_id,
@@ -1224,7 +1209,6 @@ class ConversationRollupRepository:
             raw_tail_end_event_id=tail_end,
             overlay=overlay_state,
             rewrite_pending=overlay_state is not None,
-            conversation_id=conversation.id,
             prompt_source_revision=conversation.prompt_source_revision,
             raw_complete=raw_complete,
             rollup_stamp=(
@@ -1276,7 +1260,6 @@ class ConversationRollupRepository:
         if row is None:
             return None
         return RollupJobClaim(
-            scope_id=synthetic_scope_id(str(row.conversation_id)),
             generation=row.generation,
             claimed_signal_revision=row.signal_revision,
             failure_count=row.failure_count,
@@ -1356,7 +1339,7 @@ class ConversationRollupRepository:
             timezone=self.config.timezone,
         )
         fingerprint = source_fingerprint(
-            scope_id=claim.scope_id,
+            conversation_id=claim.conversation_id,
             generation=claim.generation,
             source_coverage=coverage,
             source_rollup_revision=revision,
@@ -1364,7 +1347,7 @@ class ConversationRollupRepository:
             events=batch,
         )
         return RollupCandidate(
-            scope_id=claim.scope_id,
+            conversation_id=claim.conversation_id,
             generation=claim.generation,
             source_coverage=coverage,
             source_rollup_revision=revision,
@@ -1373,7 +1356,6 @@ class ConversationRollupRepository:
             event_count=len(batch),
             projection_characters=characters,
             fingerprint=fingerprint,
-            conversation_id=claim.conversation_id,
         )
 
     async def _protected_suffix_start(
@@ -1502,7 +1484,7 @@ class ConversationRollupRepository:
             tuple(_event_record(row) for row in rows),
         )
         fingerprint = source_fingerprint(
-            scope_id=candidate.scope_id,
+            conversation_id=candidate.conversation_id,
             generation=candidate.generation,
             source_coverage=coverage,
             source_rollup_revision=revision,
@@ -1672,7 +1654,7 @@ class ConversationRollupRepository:
             tuple(_event_record(row) for row in rows),
         )
         fingerprint = source_fingerprint(
-            scope_id=candidate.scope_id,
+            conversation_id=candidate.conversation_id,
             generation=candidate.generation,
             source_coverage=coverage,
             source_rollup_revision=revision,
@@ -1744,7 +1726,7 @@ class ConversationRollupRepository:
         if stored is None:
             raise ConversationCoverageError("emergency overlay commit did not persist")
         return RollupCommitResult(
-            rollup=_canonical_overlay_state(stored, claim.scope_id),
+            rollup=_canonical_overlay_state(stored),
             claim_retained=False,
         )
 
@@ -1764,7 +1746,7 @@ class ConversationRollupRepository:
     @staticmethod
     def _canonical_rollup_state(row: CanonicalConversationRollupModel) -> ConversationRollupState:
         return ConversationRollupState(
-            scope_id=synthetic_scope_id(row.conversation_id),
+            conversation_id=row.conversation_id,
             generation=row.generation,
             covered_through_event_id=row.covered_through_event_id,
             summary_text=row.summary_text,

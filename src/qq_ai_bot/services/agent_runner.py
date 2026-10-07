@@ -3,24 +3,26 @@
 from __future__ import annotations
 
 import hashlib
-import inspect
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from contextlib import nullcontext
-from dataclasses import asdict, dataclass, replace
-from functools import partial
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from contextlib import AbstractContextManager, nullcontext
+from dataclasses import asdict, dataclass, field, replace
+from typing import TYPE_CHECKING, Any, Protocol
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.authority import DelegatedAuthority
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities.coordinator import (
     MISSING_TOOL_RESULT,
+    CoordinatedToolBackend,
     CoordinatedToolResult,
     ToolInvocationCoordinator,
 )
+from qq_ai_bot.capabilities.invocation import Invocation
 from qq_ai_bot.capabilities.media import result_images
+from qq_ai_bot.capabilities.results import ToolExecutionResult
+from qq_ai_bot.codemode.contract import EXECUTE_CODE_NAME
 from qq_ai_bot.domain.messages import (
     ChatImage,
     ChatMessage,
@@ -33,57 +35,71 @@ from qq_ai_bot.domain.messages import (
     PromptRequestDiagnostics,
     ResponseCitation,
     ToolCall,
+    ToolFunction,
 )
 from qq_ai_bot.execution_trace.recorder import trace_span
 from qq_ai_bot.llm.base import (
-    LLMEmptyResponseError,
     LLMError,
-    LLMIncompleteResponseError,
-    LLMInvalidResponseError,
-    LLMMalformedFunctionCallError,
-    LLMNativeToolError,
-    LLMTimeoutError,
-    LLMUnavailableError,
 )
-from qq_ai_bot.model_runtime.capacity import ModelCapacity, estimate_request_tokens
+from qq_ai_bot.model_runtime.capacity import estimate_request_tokens
 from qq_ai_bot.model_runtime.dispatch_guard import model_dispatch_guard
-from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
+from qq_ai_bot.model_runtime.executor import ModelExecutor
 from qq_ai_bot.model_runtime.models import ModelCapability, ModelExecutionPriority, ModelTask
 from qq_ai_bot.model_runtime.structured import (
     tool_free_json_format,
     tool_free_structured_output_mode,
 )
-from qq_ai_bot.prompting.serializer import serialized_messages_hash
 from qq_ai_bot.runtime.activation_outcome import ActivationOutcome
+from qq_ai_bot.runtime.effect_outcomes import (
+    ResultCapture,
+    current_result_capture,
+    execution_evidence,
+)
 from qq_ai_bot.runtime.execution_receipts import ExecutionReceipts, current_receipts
-from qq_ai_bot.runtime.work_control import WORK_CONTROL_NAMES, WorkControl, WorkInputsPreparing
+from qq_ai_bot.runtime.work_control import WORK_CONTROL_NAMES, WorkControl
 from qq_ai_bot.runtime.work_repository import WorkCapacityError
 from qq_ai_bot.services.concurrency import ConcurrencyManager
-from qq_ai_bot.services.context_boundary import ContextBoundary, ContextBoundaryReader
-from qq_ai_bot.services.evidence_observation import EVIDENCE_TOOLS, EvidenceObservation
+from qq_ai_bot.services.context_boundary import ContextBoundaryReader
+from qq_ai_bot.services.invocation_service import BatchPlan
 from qq_ai_bot.services.native_tool_binder import NativeToolBinder
 from qq_ai_bot.services.turn_transcript import (
-    DispatchOrigin,
     TranscriptRequest,
     TurnTranscript,
-    validating_request,
-)
-from qq_ai_bot.services.work_reporting import (
-    append_input_feedback,
-    before_work_tool,
-    initialize_input_feedback,
-    require_interactive_exit,
-    stage_feedback_opportunity,
-    start_feedback_updates,
 )
 from qq_ai_bot.time.models import TimeContext
 from qq_ai_bot.web.models import WebMode
 from qq_ai_bot.web.route_context import web_model_task
 
 if TYPE_CHECKING:
+    from qq_ai_bot.codemode.api_projection import ScriptApi
     from qq_ai_bot.services.main_agent_contract import MainAgentContract
 
 logger = logging.getLogger(__name__)
+# Never a tool result: the outer code call stays unpaired for its original owner.
+CODE_COMPOSITION_YIELDED = "\x00yuki.code.yielded"
+
+
+@dataclass(frozen=True, slots=True)
+class ReusableToolResult:
+    """A turn-local display paired with the execution fact that permits reuse."""
+
+    display: str
+    evidence: dict[str, Any]
+
+
+def _unexecuted_tool_result(name: str, error: str) -> str:
+    """Publish a pre-dispatch refusal before formatting its public result."""
+    capture = current_result_capture.get()
+    if capture is not None:
+        capture.outcome = ToolExecutionResult(
+            ok=False,
+            error_code=error,
+            data={"executed": False},
+            mutation_committed=False,
+            provider_id="runtime",
+            tool_name=name,
+        )
+    return json.dumps({"ok": False, "executed": False, "error": error})
 
 
 class _RequestNotStarted(Exception):
@@ -115,6 +131,7 @@ class AgentRuntime:
     execution_id: str | None = None
     source_event_id: int | None = None
     fixed_tools: tuple[ChatTool, ...] | None = None
+    script_api: ScriptApi | None = None
     invocation_source: dict[str, Any] | None = None
     invocation_goal: str | None = None
     compaction_brief: ChatMessage | None = None
@@ -139,12 +156,10 @@ class AgentRunResult:
     work_id: str | None = None
 
 
-class AgentToolBackend(Protocol):
+class AgentToolBackend(CoordinatedToolBackend, Protocol):
     def definitions(self, runtime: AgentRuntime, *, web_was_used: bool) -> tuple[ChatTool, ...]: ...
 
-    def begin_batch(self, calls: tuple[ToolCall, ...], runtime: AgentRuntime) -> None: ...
-
-    async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str: ...
+    async def execute_call(self, invocation: Invocation) -> str: ...
 
     def parallel_safe(self, name: str, runtime: AgentRuntime) -> bool: ...
 
@@ -159,44 +174,115 @@ class AgentToolBackend(Protocol):
 
     def exhausted(self, runtime: AgentRuntime) -> str: ...
 
+    async def prepare(self, runtime: AgentRuntime) -> None:
+        """Prepare authorized local exposure before the first request."""
+
+    def record_failure_usage(self, *, tool_calls: int, model_requests: int) -> None:
+        pass
+
+    def refresh_catalog(self, runtime: AgentRuntime, *, web_was_used: bool) -> None:
+        pass
+
+    def pin_web_provider(self) -> AbstractContextManager[None]:
+        return nullcontext()
+
+    def work_control_allowed(self, name: str) -> bool:
+        return False
+
+    def work_query_allowed(self, action: str) -> bool:
+        return False
+
+    async def archive_code_result(self, text: str) -> str | None:
+        return None
+
+    async def confirm_memory_prompt_exposure(self) -> None:
+        pass
+
+    def mark_native_web_used(self) -> None:
+        pass
+
+    def did_use_web(self) -> bool:
+        return False
+
+    async def observe_response(self, response: ChatResponse, runtime: AgentRuntime) -> None:
+        pass
+
+    def has_visible_effects(self) -> bool:
+        return False
+
+    def allow_silent_final(self, runtime: AgentRuntime) -> bool:
+        return False
+
+
+@dataclass(slots=True)
+class _WorkSummaryDispatch:
+    """One frozen Work summary page; never publishes a main request journal."""
+
+    runner: AgentRunner
+    runtime: AgentRuntime
+    control: WorkControl
+    request: ChatRequest
+    priority: ModelExecutionPriority
+    prepared: bool = field(default=False, init=False)
+
+    async def complete(self) -> ChatResponse:
+        with model_dispatch_guard(self.admit):
+            return await self.runner._models.execute(
+                self.runner._task,
+                self.request,
+                priority=self.priority,
+                canonical_conversation_id=self.runtime.canonical_conversation_id,
+            )
+
+    async def admit(self) -> None:
+        if self.prepared:
+            return
+        assert self.control.session is not None
+        await self.control.session.validate_compaction_source()
+        await self.control.reserve_request(auxiliary=True)
+        self.prepared = True
+
 
 class AgentRunner:
     """Execute a provider-neutral bounded tool loop without fabricating inbound events."""
 
     def __init__(
         self,
-        model_executor: ModelExecutor | ModelCompleter,
+        model_executor: ModelExecutor,
         concurrency: ConcurrencyManager,
         *,
         task: ModelTask = ModelTask.CHAT_AGENT,
     ) -> None:
-        if callable(getattr(model_executor, "execute", None)):
-            self._models = cast(ModelExecutor, model_executor)
-        else:
-            self._models = require_model_executor(
-                None,
-                provider=cast(ModelCompleter, model_executor),
-            )
+        self._models = model_executor
         self._concurrency = concurrency
         self._task = task
         self._tool_coordinator = ToolInvocationCoordinator()
         self._native_tools = NativeToolBinder()
         self.main_contract: MainAgentContract | None = None
+        # Pinned worker path/digest and limits; Code Mode is unavailable until set.
+        self.code_mode_settings: Any = None
 
     def work_contract(
         self,
         runtime: RuntimeConfigSnapshot,
         system_messages: tuple[ChatMessage, ...],
         definitions: tuple[ChatTool, ...] | None,
+        *,
+        script_api: ScriptApi | None = None,
     ) -> str:
-        profile_revision = getattr(self._models, "profile_revision", None)
         return hashlib.sha256(
             json.dumps(
                 [
+                    "context-layout:2",
                     repr(definitions),
+                    script_api.manifest_revision
+                    if script_api is not None
+                    else self.main_contract.revision
+                    if self.main_contract is not None
+                    else "",
                     asdict(runtime.llm),
                     asdict(runtime.web),
-                    profile_revision(self._task) if callable(profile_revision) else "legacy",
+                    self._models.profile_revision(self._task),
                     [(m.role, m.content) for m in system_messages if m.role == "system"],
                 ],
                 sort_keys=True,
@@ -263,8 +349,7 @@ class AgentRunner:
                 schema=CompactionSummary.model_json_schema(),
             ),
         )
-        capacity_getter = getattr(self._models, "capacity", None)
-        capacity = capacity_getter(self._task) if callable(capacity_getter) else ModelCapacity()
+        capacity = self._models.capacity(self._task)
         summary_budget = capacity.input_budget(
             runtime.runtime_config.context.work_window_tokens,
             output_tokens=request.max_output_tokens,
@@ -297,26 +382,8 @@ class AgentRunner:
         while ready_summary is None:
             if estimate_request_tokens(self._capacity_request(request)) > summary_budget:
                 raise WorkCapacityError("work_compaction_source_capacity")
-            prepared = False
-
-            async def reserve() -> None:
-                nonlocal prepared
-                if not prepared:
-                    await session.validate_compaction_source()
-                    await control.reserve_request(auxiliary=True)
-                    prepared = True
-                    # Auxiliary pages never replace the last paired main journal.
-
-            async def execute(request: ChatRequest = request) -> ChatResponse:
-                with model_dispatch_guard(reserve):
-                    return await self._models.execute(
-                        self._task,
-                        request,
-                        priority=priority,
-                        canonical_conversation_id=runtime.canonical_conversation_id,
-                    )
-
-            response = await self._concurrency.run_llm(runtime.conversation_key, execute)
+            dispatch = _WorkSummaryDispatch(self, runtime, control, request, priority)
+            response = await self._concurrency.run_llm(runtime.conversation_key, dispatch.complete)
             if response.tool_calls or response.status != ModelResponseStatus.COMPLETED:
                 raise WorkCapacityError("work_compaction_incomplete")
             try:
@@ -355,8 +422,7 @@ class AgentRunner:
         )
 
     def _capacity_request(self, request: ChatRequest) -> ChatRequest:
-        prepare = getattr(self._models, "capacity_request", None)
-        return prepare(self._task, request) if callable(prepare) else request
+        return self._models.capacity_request(self._task, request)
 
     def prepare_request_tools(
         self,
@@ -367,15 +433,14 @@ class AgentRunner:
         web_was_used: bool = False,
     ) -> tuple[tuple[ChatTool, ...], tuple[NativeToolDefinition, ...]]:
         """Use the dispatch tool shape for both preparation and the actual request."""
-        web_config = getattr(runtime_config, "web", None)
+        web_config = runtime_config.web
         try:
-            web_mode = WebMode(getattr(web_config, "mode", WebMode.DISABLED.value))
+            web_mode = WebMode(web_config.mode)
         except ValueError:
             web_mode = WebMode.DISABLED
-        search_mode_getter = getattr(self._models, "search_mode", None)
         protocol = self._models.protocol(self._task)
         capabilities = self._models.capabilities(self._task)
-        search_mode = search_mode_getter(self._task) if callable(search_mode_getter) else None
+        search_mode = self._models.search_mode(self._task)
         native = self._native_tools.bind(
             protocol=protocol,
             capabilities=capabilities,
@@ -399,17 +464,15 @@ class AgentRunner:
         runtime: AgentRuntime,
         tools: AgentToolBackend | None,
     ) -> AgentRunResult:
-        pin = getattr(self._models, "pin", None)
-        pin_web = getattr(tools, "pin_web_provider", None)
         with (
             web_model_task(self._task),
-            pin() if callable(pin) else nullcontext(),
-            pin_web() if callable(pin_web) else nullcontext(),
+            self._models.pin(),
+            tools.pin_web_provider() if tools is not None else nullcontext(),
         ):
             async with trace_span(
                 "turn",
                 {"messages": [asdict(message) for message in initial_messages]},
-                recorder=getattr(self._models, "traces", None),
+                recorder=self._models.traces,
                 conversation_id=runtime.canonical_conversation_id,
                 execution_id=runtime.execution_id,
                 source_event_id=runtime.source_event_id,
@@ -438,7 +501,9 @@ class AgentRunner:
             control.segment_model_limit = runtime.max_model_requests
         try:
             try:
-                result = await self._run(initial_messages, runtime, tools)
+                from qq_ai_bot.services.turn_execution import TurnExecution
+
+                result = await TurnExecution(self, initial_messages, runtime, tools).activate()
                 if control is not None:
                     result = replace(
                         result,
@@ -494,1574 +559,6 @@ class AgentRunner:
             )
         finally:
             current_receipts.reset(token)
-
-    async def _run(
-        self,
-        initial_messages: tuple[ChatMessage, ...],
-        runtime: AgentRuntime,
-        tools: AgentToolBackend | None,
-    ) -> AgentRunResult:
-        fixed_definitions = None
-        if runtime.fixed_tools is not None:
-            fixed_definitions = runtime.fixed_tools
-        elif self.main_contract is not None:
-            fixed_definitions = await self.main_contract.definitions()
-            if not runtime.dynamic_context_prepared:
-                raise LLMError("main_agent_composition_required")
-            if tools is None:
-                raise LLMError("main_agent_executor_required")
-        transcript = TurnTranscript(initial_messages)
-        evidence_observation = EvidenceObservation(runtime.origin.value)
-        staged_evidence_results = 0
-        calls_used = 0
-        web_was_used = False
-        empty_retries = 0
-        mention_recovery_used = False
-        answer_recovery_used = False
-        native_events: list[NativeToolEvent] = []
-        citations: list[ResponseCitation] = []
-        response_status = ModelResponseStatus.COMPLETED
-        incomplete_recovery_used = False
-        malformed_recoveries = 0
-        continuation_tools: tuple[ChatTool, ...] = ()
-        continuation_native_tools: tuple[NativeToolDefinition, ...] = ()
-        previous_batch_fingerprint: tuple[tuple[str, str, str], ...] | None = None
-        repeated_batch_count = 0
-        no_progress_recovery = False
-        reusable_tool_results: dict[tuple[str, str], str] = {}
-        input_feedback_watermark = 0
-        stage_feedback_batch: str | None = None
-        pending_stage_feedback: str | None = None
-        provider_pause_replay = False
-        ordinary_compaction_tokens = 0
-        ordinary_observations: list[dict[str, Any]] = []
-        ordinary_evidence: list[dict[str, Any]] = []
-        observed_event_ids = set(runtime.visible_event_ids)
-        public_tail: list[ChatMessage] = []
-        await self._prepare_tools(tools, runtime)
-        if runtime.work_control is not None:
-            from qq_ai_bot.runtime.work_session import WorkSession
-
-            contract = self.work_contract(
-                runtime.runtime_config, initial_messages, fixed_definitions
-            )
-            runtime.work_control.session = WorkSession(runtime.work_control, contract)
-            transcript = await runtime.work_control.session.restore(
-                transcript,
-                compaction_brief=runtime.compaction_brief,
-                visible_event_ids=runtime.visible_event_ids,
-            )
-            repeated_batch_count = int(runtime.work_control.session.progress.get("repeats", 0))
-            provider_pause_replay = bool(
-                runtime.work_control.session.progress.get("provider_pause_replay", False)
-            )
-            malformed_recoveries = int(
-                runtime.work_control.session.progress.get("malformed_function_call_recoveries", 0)
-            )
-            await initialize_input_feedback(runtime.work_control)
-            observations = runtime.work_control.session.progress.get("model_observations", [])
-            if observations:
-                opportunity = await stage_feedback_opportunity(
-                    runtime.work_control, observations[-1]
-                )
-                if opportunity is not None:
-                    stage_feedback_batch, pending_stage_feedback = opportunity
-            if runtime.work_control.handoff_work_id is not None:
-                await runtime.work_control.session.save("paired")
-            if (
-                runtime.work_control.session.recovered_delivery
-                or runtime.work_control.handoff_work_id is not None
-            ):
-                return AgentRunResult(
-                    text="",
-                    tool_calls_used=0,
-                    model_requests=0,
-                    web_was_used=False,
-                    suppress_delivery=True,
-                )
-        deferred_paid_compaction = False
-        caller_completion_checked = False
-
-        async def revalidate_caller_completion() -> bool:
-            control = runtime.work_control
-            if (
-                control is None
-                or control.current is None
-                or control.ending != "completed"
-                or control.source.get("delivery_contract") != "return_to_caller"
-            ):
-                return False
-            if await control.pending():
-                control.ending = None
-                if control.session is not None:
-                    control.session.progress.pop("caller_completion_pending_result", None)
-                return False
-            proposed = (
-                control.session.progress.get("caller_completion_pending_result", {})
-                if control.session is not None
-                else {}
-            )
-            receipt = await control.execute(
-                "task_control",
-                {
-                    "action": "complete",
-                    "artifact_ids": proposed.get("artifact_ids", [])
-                    if isinstance(proposed, dict)
-                    else [],
-                },
-                "caller-result-revalidate",
-            )
-            if json.loads(receipt).get("ok") is not True:
-                control.ending = None
-                if control.session is not None:
-                    control.session.progress.pop("caller_completion_pending_result", None)
-                return False
-            return True
-
-        async def caller_has_confirmed_delivery() -> bool:
-            if not await revalidate_caller_completion():
-                return False
-            control = runtime.work_control
-            assert control is not None
-            # A fresh backend has no turn-local send count. Only a confirmed
-            # original receipt permits an empty internal result.
-            return any(
-                fact.get("ok") is True
-                and fact.get("delivered_message") is True
-                and not fact.get("pending")
-                and not fact.get("uncertain")
-                for fact in await control.effect_evidence()
-            )
-
-        async def take_boundary_inputs(
-            request_index: int, boundary: ContextBoundary | None
-        ) -> AgentRunResult | None:
-            nonlocal input_feedback_watermark, pending_stage_feedback, caller_completion_checked
-            control = runtime.work_control
-            assert control is not None
-            try:
-                added = await control.take_inputs(
-                    f"{transcript.chain_id}:{request_index}",
-                    observed_event_ids=boundary.event_ids if boundary is not None else frozenset(),
-                )
-            except WorkInputsPreparing:
-                control.ending = "waiting_external"
-                return AgentRunResult(
-                    text="",
-                    suppress_delivery=True,
-                    work_state="waiting_external",
-                    tool_calls_used=calls_used,
-                    model_requests=request_index,
-                    web_was_used=web_was_used,
-                )
-            # Queued Work input may be prepared by a newer ingress catalog
-            # while this activation is still pinned to the old provider.
-            if ModelCapability.IMAGE_INPUT not in self._models.capabilities(self._task):
-                added = tuple(
-                    replace(
-                        message,
-                        images=(),
-                        content=(message.content or "")
-                        + "\n[本次输入的图片或视频帧未读取：当前模型连接不支持图片输入。]",
-                    )
-                    if message.images
-                    else message
-                    for message in added
-                )
-            for message in added:
-                transcript.append(message)
-            if control.session is not None:
-                proposed = control.session.progress.get("caller_completion_pending_result")
-                if added:
-                    control.session.progress.pop("caller_completion_pending_result", None)
-                elif (
-                    not caller_completion_checked
-                    and isinstance(proposed, dict)
-                    and proposed.get("action") == "complete"
-                    and control.source.get("delivery_contract") == "return_to_caller"
-                    and control.ending is None
-                ):
-                    # The previous segment verified completion, but still owed
-                    # its caller a model result. Recheck current authority and
-                    # receipts; the saved proposal is never completion authority.
-                    receipt = await control.execute(
-                        "task_control",
-                        {"action": "complete", "artifact_ids": proposed.get("artifact_ids", [])},
-                        "caller-completion-revalidate",
-                    )
-                    if json.loads(receipt).get("ok") is True:
-                        transcript.append(
-                            ChatMessage(
-                                role="system",
-                                content=(
-                                    "原 Work 的完成条件已按当前来源与真实回执重新核验；"
-                                    "现在仅返回调用方需要的内部结果，不重复已完成的操作。"
-                                ),
-                            )
-                        )
-                    else:
-                        control.session.progress.pop("caller_completion_pending_result", None)
-                caller_completion_checked = True
-            input_feedback_watermark = await append_input_feedback(
-                control,
-                transcript,
-                input_feedback_watermark,
-                extra_feedback=pending_stage_feedback,
-            )
-            pending_stage_feedback = None
-            return None
-
-        async def confirm_memory_exposure() -> None:
-            confirm_exposure = getattr(tools, "confirm_memory_prompt_exposure", None)
-            if callable(confirm_exposure):
-                try:
-                    await confirm_exposure()
-                except Exception as exc:
-                    evidence_observation.emit(
-                        "exposure_confirmation_failed", category=type(exc).__name__
-                    )
-
-        for request_index in range(runtime.max_model_requests):
-            if (
-                runtime.auxiliary_requests
-                and request_index + runtime.auxiliary_requests[0] >= runtime.max_model_requests
-            ):
-                break
-            control = runtime.work_control
-            boundary = None
-            if (
-                request_index > 0
-                and runtime.observation_boundary is not None
-                and not provider_pause_replay
-                and not (
-                    control is not None
-                    and control.current is not None
-                    and (
-                        control.lease.work_id
-                        or (control.session and control.session.uses_recovery_transcript)
-                    )
-                )
-            ):
-                known = observed_event_ids | (
-                    control.session.public_event_ids if control and control.session else set()
-                )
-                boundary = await runtime.observation_boundary(frozenset(known))
-                if boundary is not None:
-                    for _, message in boundary.fragments:
-                        transcript.append(message)
-                        if message not in public_tail:
-                            public_tail.append(message)
-            if (
-                control is not None
-                and control.current is not None
-                and control.requests_started >= runtime.max_model_requests
-            ):
-                break
-            paid_staging = bool(
-                control and control.session and control.session.progress.get("compaction_staging")
-            )
-            exact_dispatch_replay = bool(
-                request_index == 0
-                and control
-                and control.session
-                and control.session.recovered_phase == "dispatched"
-            )
-            if (
-                control is not None
-                and not provider_pause_replay
-                and not paid_staging
-                and not exact_dispatch_replay
-            ):
-                waiting = await take_boundary_inputs(request_index, boundary)
-                if waiting is not None:
-                    return waiting
-            if fixed_definitions is not None:
-                refresh_catalog = getattr(tools, "refresh_catalog", None)
-                if callable(refresh_catalog):
-                    refresh_catalog(runtime, web_was_used=web_was_used)
-                definitions = fixed_definitions
-            else:
-                definitions = (
-                    tools.definitions(runtime, web_was_used=web_was_used)
-                    if tools is not None
-                    else ()
-                )
-            web_config = getattr(runtime.runtime_config, "web", None)
-            try:
-                web_mode = WebMode(getattr(web_config, "mode", WebMode.DISABLED.value))
-            except ValueError:
-                web_mode = WebMode.DISABLED
-            definitions, native_definitions = self.prepare_request_tools(
-                definitions,
-                runtime_config=runtime.runtime_config,
-                allowed_capabilities=runtime.allowed_capabilities,
-                web_was_used=web_was_used,
-            )
-            restart_chain = getattr(tools, "consume_provider_chain_restart", None)
-            if callable(restart_chain):
-                # Discovery/execution policy cannot discard a submitted request prefix.
-                restart_chain()
-            if transcript.continuation is not None:
-                # Responses continuations are one cumulative request chain.
-                # Keep previously declared tools paired with their function outputs.
-                # The Main Agent manifest is fixed for the submitted chain.
-                definitions = self._merge_function_tools(continuation_tools, definitions)
-                native_definitions = self._merge_native_tools(
-                    continuation_native_tools, native_definitions
-                )
-            compacting = False
-            try:
-                diagnostics = runtime.prompt_diagnostics
-                sequence = transcript.request()
-                if control is not None and control.session is not None:
-                    sequence = replace(
-                        sequence,
-                        origin=(
-                            DispatchOrigin.WORK_RECOVERY
-                            if control.session.uses_recovery_transcript
-                            else DispatchOrigin.COMPOSED_INITIAL
-                        ),
-                    )
-                    if control.session.uses_recovery_transcript:
-                        guard = control.session.source_guard
-                        diagnostics = PromptRequestDiagnostics(
-                            conversation_prefix_hash=serialized_messages_hash(sequence.messages),
-                            prompt_snapshot_fingerprint=hashlib.sha256(
-                                json.dumps(
-                                    guard.snapshot()
-                                    if guard is not None
-                                    else {
-                                        "conversation_id": control.lease.conversation_id,
-                                        "source_revision": control.session.source_revision,
-                                    },
-                                    sort_keys=True,
-                                    default=str,
-                                ).encode()
-                            ).hexdigest(),
-                            static_prompt_revision=hashlib.sha256(
-                                "\n\n".join(
-                                    m.content or "" for m in sequence.messages if m.role == "system"
-                                ).encode()
-                            ).hexdigest(),
-                        )
-                request = ChatRequest(
-                    messages=sequence.messages,
-                    request_chain_id=transcript.chain_id,
-                    continuation_items=sequence.items,
-                    model=runtime.runtime_config.llm.model or "fake",
-                    temperature=runtime.runtime_config.llm.temperature,
-                    max_output_tokens=runtime.runtime_config.llm.max_output_tokens,
-                    thinking_enabled=runtime.runtime_config.llm.thinking_enabled,
-                    tools=definitions,
-                    # Recovery and compaction keep the submitted declaration/settings.
-                    # Their local response fences, not provider tool_choice support,
-                    # prevent local function execution in those phases. Native
-                    # tools, where supported, execute at the provider boundary.
-                    tool_choice="auto" if definitions or native_definitions else None,
-                    native_tools=native_definitions,
-                    continuation=sequence.continuation,
-                    conversation_prefix_hash=(
-                        diagnostics.conversation_prefix_hash if diagnostics else ""
-                    ),
-                    prompt_snapshot_fingerprint=(
-                        diagnostics.prompt_snapshot_fingerprint if diagnostics else ""
-                    ),
-                    static_prompt_revision=(
-                        diagnostics.static_prompt_revision if diagnostics else ""
-                    ),
-                )
-                evidence_observation.request(
-                    request_index + 1,
-                    definitions,
-                    native_definitions,
-                    finalization=False,
-                    web_mode=web_mode.value,
-                )
-                priority = (
-                    ModelExecutionPriority.BACKGROUND
-                    if runtime.origin
-                    in {
-                        TurnOrigin.SCHEDULED_AUTOMATION,
-                        TurnOrigin.PLUGIN_BACKGROUND,
-                        TurnOrigin.AUTONOMOUS_GROUP,
-                        TurnOrigin.SELF_INITIATIVE,
-                        TurnOrigin.SYSTEM_TASK,
-                    }
-                    or bool(runtime.work_control and runtime.work_control.lease.work_id)
-                    else ModelExecutionPriority.FOREGROUND
-                )
-                capacity_getter = getattr(self._models, "capacity", None)
-                capacity = (
-                    capacity_getter(self._task) if callable(capacity_getter) else ModelCapacity()
-                )
-                context = runtime.runtime_config.context
-                input_budget = capacity.input_budget(
-                    context.work_window_tokens
-                    if control and control.current
-                    else context.window_tokens,
-                    output_tokens=request.max_output_tokens,
-                )
-                predicted_tokens = estimate_request_tokens(self._capacity_request(request))
-                maintenance_budget = min(input_budget, context.compaction_window_tokens)
-                compaction_threshold = maintenance_budget * context.work_compaction_trigger_ratio
-                if control is not None and control.session is not None:
-                    compacted_tokens = control.session.progress.get("compaction_request_tokens", 0)
-                    if isinstance(compacted_tokens, int) and compacted_tokens > 0:
-                        # A compacted request may legitimately sit above the soft
-                        # target. Wait for growth into its remaining headroom,
-                        # rather than summarizing the same checkpoint again.
-                        compaction_threshold = max(
-                            compaction_threshold,
-                            compacted_tokens
-                            + max(
-                                1,
-                                maintenance_budget * (1 - context.work_compaction_trigger_ratio),
-                                (maintenance_budget - compacted_tokens)
-                                * context.work_compaction_trigger_ratio,
-                            ),
-                        )
-                if (
-                    control is not None
-                    and control.session is not None
-                    and control.current is not None
-                    and control.ending is None
-                    and not exact_dispatch_replay
-                    and not deferred_paid_compaction
-                    and (
-                        paid_staging
-                        or predicted_tokens >= compaction_threshold
-                        or predicted_tokens > input_budget
-                    )
-                ):
-                    try:
-                        transcript = await self._compact_work(
-                            runtime,
-                            priority,
-                            input_budget,
-                            request,
-                            retained_public=tuple(public_tail),
-                        )
-                    except (WorkCapacityError, LLMError) as exc:
-                        candidate_failure = isinstance(exc, LLMError) or str(exc) in {
-                            "work_compaction_source_capacity",
-                            "work_compaction_no_capacity_improvement",
-                            "work_compaction_incomplete",
-                            "work_compaction_invalid_structure",
-                            "work_compaction_invalid_reference",
-                            "work_compaction_invalid_directive_source",
-                            "work_compaction_invalid_correction",
-                            "work_compaction_invalid_input_disposition",
-                            "work_compaction_missing_directive",
-                            "work_compaction_missing_input",
-                        }
-                        if predicted_tokens > input_budget or not candidate_failure:
-                            raise
-                        # A soft maintenance target cannot prohibit a complete
-                        # request that still fits. The failed candidate preserves
-                        # the original transcript and paired receipts.
-                        control.session.progress["compaction_request_tokens"] = predicted_tokens
-                        deferred_paid_compaction = paid_staging
-                        logger.info("work_compaction_deferred category=%s", type(exc).__name__)
-                    else:
-                        # The paid source is now safely paired. New inputs can
-                        # enter this new request without invalidating its cursor.
-                        if control.requests_started >= runtime.max_model_requests:
-                            break
-                        if paid_staging and not provider_pause_replay:
-                            waiting = await take_boundary_inputs(request_index, boundary)
-                            if waiting is not None:
-                                return waiting
-                        # Keep this prepared public delta through the explicit
-                        # private-tail replacement; dispatch it once below.
-                        sequence = transcript.request()
-                        request = replace(
-                            request,
-                            messages=sequence.messages,
-                            request_chain_id=transcript.chain_id,
-                            continuation=sequence.continuation,
-                            continuation_items=sequence.items,
-                            continuation_messages=(),
-                            function_outputs=(),
-                        )
-                        predicted_tokens = estimate_request_tokens(self._capacity_request(request))
-                        continuation_tools = ()
-                        continuation_native_tools = ()
-                ordinary_threshold = max(
-                    maintenance_budget * context.compaction_trigger_ratio,
-                    estimate_request_tokens(
-                        self._capacity_request(
-                            replace(
-                                request,
-                                messages=initial_messages,
-                                continuation=None,
-                                continuation_items=(),
-                                continuation_messages=(),
-                                function_outputs=(),
-                            )
-                        )
-                    )
-                    + maintenance_budget * (1 - context.compaction_trigger_ratio),
-                    ordinary_compaction_tokens
-                    + maintenance_budget * (1 - context.compaction_trigger_ratio),
-                )
-                ordinary_maintenance = (
-                    (control is None or control.current is None)
-                    and not provider_pause_replay
-                    and len(transcript.portable_entries()) > len(initial_messages)
-                    and predicted_tokens >= ordinary_threshold
-                )
-                if predicted_tokens > input_budget or ordinary_maintenance:
-                    if (
-                        (control is None or control.current is None)
-                        and not provider_pause_replay
-                        and len(transcript.portable_entries()) > len(initial_messages)
-                    ):
-                        from qq_ai_bot.services.ordinary_compaction import compact_ordinary
-
-                        async def summarize(
-                            candidate: ChatRequest,
-                            request_index: int = request_index,
-                            sequence: TranscriptRequest = sequence,
-                            control: WorkControl | None = control,
-                            priority: ModelExecutionPriority = priority,
-                        ) -> ChatResponse:
-                            prepared_summary = False
-
-                            async def reserve_summary() -> None:
-                                nonlocal prepared_summary
-                                if prepared_summary:
-                                    return
-                                assert runtime.auxiliary_requests is not None
-                                if (
-                                    request_index + runtime.auxiliary_requests[0] + 1
-                                    >= runtime.max_model_requests
-                                ):
-                                    raise WorkCapacityError("model_request_budget")
-                                if runtime.before_model_request is not None:
-                                    with validating_request(sequence):
-                                        await runtime.before_model_request()
-                                if control is not None:
-                                    await control.reserve_request(auxiliary=True)
-                                runtime.auxiliary_requests[0] += 1
-                                prepared_summary = True
-
-                            with model_dispatch_guard(reserve_summary):
-                                return await self._models.execute(
-                                    self._task,
-                                    candidate,
-                                    priority=priority,
-                                    canonical_conversation_id=runtime.canonical_conversation_id,
-                                )
-
-                        try:
-                            compacted = await compact_ordinary(
-                                initial_messages,
-                                transcript,
-                                main_request=request,
-                                structured_mode=tool_free_structured_output_mode(
-                                    self._models, self._task
-                                ),
-                                summary_budget=capacity.input_budget(
-                                    context.window_tokens,
-                                    output_tokens=context.compaction_output_tokens,
-                                ),
-                                input_budget=input_budget,
-                                output_tokens=context.compaction_output_tokens,
-                                prepare=self._capacity_request,
-                                execute=lambda candidate: self._concurrency.run_llm(
-                                    runtime.conversation_key, partial(summarize, candidate)
-                                ),
-                                evidence=ordinary_evidence,
-                                model_observations=ordinary_observations,
-                                retained_public=tuple(public_tail),
-                            )
-                        except (WorkCapacityError, LLMError):
-                            if predicted_tokens > input_budget:
-                                raise
-                            logger.info("ordinary_compaction_deferred_with_available_capacity")
-                            compacted = transcript
-                        if compacted is not transcript:
-                            ordinary_observations.clear()
-                        transcript = compacted
-                        ordinary_compaction_tokens = estimate_request_tokens(
-                            self._capacity_request(
-                                replace(
-                                    request,
-                                    messages=transcript.request().messages,
-                                    continuation=transcript.continuation,
-                                    continuation_items=transcript.request().items,
-                                )
-                            )
-                        )
-                        if control is not None and control.session is not None:
-                            control.session.transcript = transcript
-                        sequence = transcript.request()
-                        request = replace(
-                            request,
-                            messages=sequence.messages,
-                            request_chain_id=transcript.chain_id,
-                            continuation=sequence.continuation,
-                            continuation_items=sequence.items,
-                            continuation_messages=(),
-                            function_outputs=(),
-                        )
-                        continuation_tools = ()
-                        continuation_native_tools = ()
-                    else:
-                        raise WorkCapacityError("model_request_capacity")
-                execute = (
-                    partial(
-                        self._models.execute,
-                        self._task,
-                        request,
-                        priority=priority,
-                        canonical_conversation_id=runtime.canonical_conversation_id,
-                    )
-                    if runtime.canonical_conversation_id is not None
-                    else partial(self._models.execute, self._task, request, priority=priority)
-                )
-
-                async def dispatch(
-                    execute: Callable[[], Awaitable[ChatResponse]] = execute,
-                    sequence: TranscriptRequest = sequence,
-                    input_feedback_watermark: int = input_feedback_watermark,
-                    stage_feedback_batch: str | None = stage_feedback_batch,
-                    boundary: ContextBoundary | None = boundary,
-                    has_native_effects: bool = bool(request.native_tools),
-                    selected_media: tuple[ChatImage, ...] = tuple(
-                        image
-                        for item in transcript.portable_entries()
-                        if isinstance(item, ChatMessage)
-                        for image in item.images
-                    ),
-                ) -> ChatResponse:
-                    prepared = False
-                    # A capacity compaction can replace this candidate with a
-                    # derived summary. Freeze only the rendering that is actually
-                    # present in this admitted primary request.
-                    selected_boundary = (
-                        boundary
-                        if boundary is not None
-                        and all(
-                            message in (*sequence.messages, *sequence.items)
-                            for _, message in boundary.fragments
-                        )
-                        else None
-                    )
-
-                    async def prepare_dispatch() -> None:
-                        nonlocal prepared
-                        if prepared:
-                            return
-                        self._check_request_media_budget(selected_media, runtime, tools)
-                        await self._validate_tool_media(tools, runtime, sequence, selected_media)
-                        # The executor invokes this only after real admission.
-                        # HTTP retries must not reserve this logical request again.
-                        if runtime.before_model_request is not None:
-                            try:
-                                with validating_request(sequence):
-                                    await runtime.before_model_request()
-                            except LLMError as exc:
-                                raise _RequestNotStarted(exc) from exc
-                        if runtime.work_control is not None:
-                            await runtime.work_control.reserve_request()
-                            candidate = None
-                            work_session = runtime.work_control.session
-                            prior_event_ids = None
-                            if selected_boundary is not None:
-                                if (
-                                    work_session is not None
-                                    and runtime.work_control.current is not None
-                                    and selected_boundary.prepare is not None
-                                ):
-                                    candidate = await selected_boundary.prepare()
-                                    candidate.stage()
-                                    prior_event_ids = list(work_session.event_ids)
-                                    work_session.event_ids.extend(
-                                        sorted(
-                                            selected_boundary.event_ids.difference(
-                                                work_session.event_ids
-                                            )
-                                        )
-                                    )
-                                else:
-                                    await selected_boundary.commit()
-                            communication_updates: dict[str, Any] = {}
-                            communication = runtime.work_control.communication
-                            if input_feedback_watermark > communication.get(
-                                "input_feedback_through_id", 0
-                            ):
-                                communication_updates["input_feedback_through_id"] = (
-                                    input_feedback_watermark
-                                )
-                            if stage_feedback_batch and stage_feedback_batch != communication.get(
-                                "stage_feedback_batch"
-                            ):
-                                communication_updates["stage_feedback_batch"] = stage_feedback_batch
-                            if work_session is not None:
-                                try:
-                                    await work_session.save(
-                                        "dispatched",
-                                        communication_updates=communication_updates,
-                                        publication=candidate.publication
-                                        if candidate is not None
-                                        else None,
-                                    )
-                                except BaseException:
-                                    if candidate is not None:
-                                        candidate.rollback()
-                                        assert prior_event_ids is not None
-                                        work_session.event_ids[:] = prior_event_ids
-                                    raise
-                                if candidate is not None:
-                                    candidate.finalize()
-                            elif communication_updates:
-                                await runtime.work_control.patch_communication(
-                                    **communication_updates
-                                )
-                            if selected_boundary is not None:
-                                observed_event_ids.update(selected_boundary.event_ids)
-                                if work_session is not None:
-                                    work_session.public_event_ids.update(
-                                        selected_boundary.event_ids
-                                    )
-                        elif selected_boundary is not None:
-                            await selected_boundary.commit()
-                            observed_event_ids.update(selected_boundary.event_ids)
-                        if has_native_effects:
-                            # MainAgentBackend owns the ordinary private turn
-                            # token; other SDK backends do not use its preemption.
-                            protect_native = getattr(tools, "protect_native_dispatch", None)
-                            if callable(protect_native):
-                                await protect_native(runtime)
-                        prepared = True
-
-                    with model_dispatch_guard(prepare_dispatch):
-                        return await execute()
-
-                response = await self._concurrency.run_llm(
-                    runtime.conversation_key,
-                    dispatch,
-                )
-                if runtime.work_control is not None:
-                    await runtime.work_control.confirm_inputs()
-                receipts = current_receipts.get()
-                if receipts is not None:
-                    await receipts.confirm()
-                # A prepared request may be cancelled while waiting for the LLM
-                # slot or rejected by the transport budget before dispatch.
-                # Confirm conservatively only after a response was received.
-                await confirm_memory_exposure()
-                evidence_observation.emit(
-                    "response_received",
-                    request_index=request_index + 1,
-                    confirmed_prior_results=staged_evidence_results,
-                    native_completed=sum(
-                        event.status.value == "completed" for event in response.native_tool_events
-                    ),
-                    native_failed=sum(
-                        event.status.value == "failed" for event in response.native_tool_events
-                    ),
-                    source_count=len(response.citations),
-                )
-                staged_evidence_results = 0
-            except _RequestNotStarted as exc:
-                self._record_failure_usage(
-                    tools, tool_calls=calls_used, model_requests=request_index
-                )
-                raise exc.cause from exc
-            except (LLMTimeoutError, LLMUnavailableError) as exc:
-                self._record_failure_usage(
-                    tools, tool_calls=calls_used, model_requests=request_index + 1
-                )
-                physical_count = exc.diagnostics.get("physical_request_count")
-                if native_definitions and type(physical_count) is int and physical_count > 0:
-                    # The server may already have executed native tools. A
-                    # transport-level unknown cannot become a queued Work that
-                    # repeats its paid request on the next activation.
-                    raise LLMNativeToolError(
-                        "provider-native request transport outcome is unknown",
-                        diagnostics=exc.diagnostics,
-                    ) from exc
-                raise
-            except (LLMEmptyResponseError, LLMMalformedFunctionCallError) as exc:
-                malformed = isinstance(exc, LLMMalformedFunctionCallError)
-                if not malformed and native_definitions:
-                    # An absent server receipt does not prove an effect-free
-                    # generation. Do not resend a native-capable request merely
-                    # because its adapter could not return a usable checkpoint.
-                    self._record_failure_usage(
-                        tools, tool_calls=calls_used, model_requests=request_index + 1
-                    )
-                    raise LLMNativeToolError(
-                        "provider-native request returned no resumable output",
-                        diagnostics=exc.diagnostics,
-                    ) from exc
-                if malformed:
-                    # This typed failure proves that a response arrived with no
-                    # executable calls or native effects. It is not an unknown
-                    # transport outcome, and prior receipts remain authoritative.
-                    if control is not None:
-                        await control.confirm_inputs()
-                    receipts = current_receipts.get()
-                    if receipts is not None:
-                        await receipts.confirm()
-                    await confirm_memory_exposure()
-                if (
-                    control is not None
-                    and control.session is not None
-                    and control.source.get("delivery_contract") == "return_to_caller"
-                    and "caller_completion_pending_result" in control.session.progress
-                    and not await revalidate_caller_completion()
-                ):
-                    control.ending = None
-                    control.session.progress.pop("caller_completion_pending_result", None)
-                    if not malformed:
-                        await control.session.save("paired")
-                        continue
-                has_visible_effects = bool(
-                    tools is not None
-                    and callable(getattr(tools, "has_visible_effects", None))
-                    and tools.has_visible_effects()  # type: ignore[attr-defined]
-                )
-                if not has_visible_effects:
-                    has_visible_effects = await caller_has_confirmed_delivery()
-                if has_visible_effects and (
-                    control is None or control.current is None or control.ending == "completed"
-                ):
-                    if malformed and control is not None and control.session is not None:
-                        await control.session.save("paired")
-                    return AgentRunResult(
-                        text="",
-                        tool_calls_used=calls_used,
-                        model_requests=request_index + 1,
-                        web_was_used=web_was_used,
-                        native_tool_events=tuple(native_events),
-                        citations=tuple(citations),
-                        response_status=response_status,
-                    )
-                recovery_exhausted = malformed_recoveries >= 2 if malformed else empty_retries >= 2
-                if recovery_exhausted or request_index + 1 >= runtime.max_model_requests:
-                    if malformed and control is not None and control.session is not None:
-                        await control.session.save("paired")
-                    self._record_failure_usage(
-                        tools, tool_calls=calls_used, model_requests=request_index + 1
-                    )
-                    raise
-                if malformed:
-                    malformed_recoveries += 1
-                    if control is not None and control.session is not None:
-                        control.session.progress["malformed_function_call_recoveries"] = (
-                            malformed_recoveries
-                        )
-                    logger.warning(
-                        "agent_malformed_function_call_recovery retry=%d tool_calls_used=%d",
-                        malformed_recoveries,
-                        calls_used,
-                    )
-                else:
-                    empty_retries += 1
-                    logger.warning(
-                        "agent_empty_response_retry retry=%d tool_calls_used=%d",
-                        empty_retries,
-                        calls_used,
-                    )
-                transcript.append(
-                    ChatMessage(
-                        role="system",
-                        content=(
-                            "上一响应的工具调用格式无效，未执行其中任何调用。请按当前工具声明"
-                            "生成合法的工具名称和 JSON 参数，或在无需工具时直接结束。继续原任务，"
-                            "核对已有回执，不得重复已完成的操作，也不得声称未成功的操作已完成。"
-                            if malformed
-                            else "上一次模型请求返回了空内容。请继续当前同一轮任务：如果已有工具"
-                            "结果，先核对结果再给出简短、真实的最终答复；如果任务尚未完成，"
-                            "继续调用必要工具。不得声称未成功的操作已经完成。"
-                        ),
-                    )
-                )
-                if malformed and control is not None and control.session is not None:
-                    # Persist the correction and its bounded fence together;
-                    # restart may not grant another correction or reset budgets.
-                    await control.session.save("paired")
-                continue
-            except LLMError:
-                self._record_failure_usage(
-                    tools, tool_calls=calls_used, model_requests=request_index + 1
-                )
-                raise
-            native_events.extend(response.native_tool_events)
-            citations.extend(response.citations)
-            if control is not None and control.session is not None and response.citations:
-                control.session.record_search_sources(
-                    [(item.url, item.title) for item in response.citations]
-                )
-            response_status = response.status
-            if response.native_tool_events:
-                web_was_used = True
-                mark_native_web = getattr(tools, "mark_native_web_used", None)
-                if callable(mark_native_web):
-                    mark_native_web()
-            observe_response = getattr(tools, "observe_response", None)
-            if callable(observe_response):
-                await observe_response(response, runtime)
-            if response.continuation is not None:
-                transcript.accept(response.continuation)
-            provider_pause_replay = response.incomplete_reason == "pause_turn"
-            response_observation = {
-                "sequence": request_index + 1,
-                "content": response.content,
-                "tool_calls": [asdict(call) for call in response.tool_calls],
-                "citations": [asdict(item) for item in response.citations],
-                "native_tool_events": [asdict(item) for item in response.native_tool_events],
-                "status": response.status.value,
-            }
-            ordinary_observations.append(response_observation)
-            if control is not None and control.session is not None:
-                if provider_pause_replay:
-                    control.session.progress["provider_pause_replay"] = True
-                else:
-                    control.session.progress.pop("provider_pause_replay", None)
-                if control.lease.work_id:
-                    last_tokens = control.session.progress.get("context_tokens", 0)
-                    samples = control.session.progress.setdefault("cache_samples", [])
-                    samples.append(
-                        {
-                            "sequence": control.session.sequence,
-                            "chain_id": transcript.chain_id,
-                            "kind": "compaction"
-                            if compacting
-                            else ("resume" if request_index == 0 and last_tokens else "execution"),
-                            "input": response.prompt_tokens,
-                            "cached": response.cached_prompt_tokens,
-                            "warm_candidate": bool(
-                                response.prompt_tokens
-                                and last_tokens >= response.prompt_tokens * 0.95
-                            ),
-                        }
-                    )
-                    del samples[:-32]
-                if response.prompt_tokens is not None:
-                    control.session.progress["context_tokens"] = response.prompt_tokens
-                observations = control.session.progress.setdefault("model_observations", [])
-                response_observation["sequence"] = control.session.sequence
-                observations.append(response_observation)
-                continuation_tools = definitions
-                continuation_native_tools = native_definitions
-            native_empty = (
-                (response.native_tool_events or native_definitions)
-                and not response.content.strip()
-                and not response.tool_calls
-                and not provider_pause_replay
-            )
-            if (
-                native_empty
-                and response.status is ModelResponseStatus.COMPLETED
-                and response.incomplete_reason != "duplicate_tool_call_id"
-                and (control is None or control.current is None or control.ending == "completed")
-                and (
-                    not response.native_tool_events
-                    or (
-                        control is not None
-                        and control.current is not None
-                        and control.ending == "completed"
-                    )
-                )
-            ):
-                # Preserve the ordinary empty-final boundary after a real send.
-                # A progress report cannot complete an accepted Work, and a
-                # truncated/blocked response cannot borrow this closing rule.
-                delivered = bool(
-                    tools is not None
-                    and callable(getattr(tools, "has_visible_effects", None))
-                    and tools.has_visible_effects()  # type: ignore[attr-defined]
-                )
-                try:
-                    if (
-                        delivered
-                        and control is not None
-                        and control.current is not None
-                        and control.source.get("delivery_contract") == "return_to_caller"
-                    ):
-                        delivered = await revalidate_caller_completion()
-                    elif not delivered:
-                        delivered = await caller_has_confirmed_delivery()
-                    if delivered and control is not None and control.session is not None:
-                        await control.session.save("paired")
-                except Exception as exc:
-                    self._record_failure_usage(
-                        tools, tool_calls=calls_used, model_requests=request_index + 1
-                    )
-                    raise LLMNativeToolError(
-                        "provider-native closing checkpoint could not be confirmed",
-                        diagnostics={"checkpoint_saved": False},
-                    ) from exc
-                if delivered:
-                    return AgentRunResult(
-                        text="",
-                        tool_calls_used=calls_used,
-                        model_requests=request_index + 1,
-                        web_was_used=web_was_used,
-                        native_tool_events=tuple(native_events),
-                        citations=tuple(citations),
-                        response_status=response.status,
-                    )
-            if response.incomplete_reason == "duplicate_tool_call_id" or native_empty:
-                # These are paid responses with retained protocol evidence, not
-                # confirmed effect-free empty generations. Only a supported
-                # pause may automatically continue a server tool. A generic
-                # empty/truncation retry could repeat already-dispatched work.
-                self._record_failure_usage(
-                    tools, tool_calls=calls_used, model_requests=request_index + 1
-                )
-                failure = (
-                    LLMInvalidResponseError("provider returned duplicate local tool call IDs")
-                    if response.incomplete_reason == "duplicate_tool_call_id"
-                    else LLMNativeToolError("provider-native result has no final response")
-                )
-                if control is not None and control.session is not None:
-                    try:
-                        await control.session.save("paired")
-                    except Exception as exc:
-                        # A failure to publish the received server-tool state
-                        # cannot grant a database retry that repeats its HTTP
-                        # dispatch. The paid request budget is already durable.
-                        failure.diagnostics["checkpoint_saved"] = False
-                        raise failure from exc
-                raise failure
-            if response.status is ModelResponseStatus.INCOMPLETE:
-                # Truncated calls never execute. Pair non-execution receipts before
-                # recovery so either protocol retains a valid, append-only history.
-                if response.continuation is None:
-                    transcript.append(
-                        ChatMessage(
-                            role="assistant",
-                            content=response.content or None,
-                            tool_calls=response.tool_calls,
-                            reasoning_content=response.reasoning_content,
-                        )
-                    )
-                for call in response.tool_calls:
-                    transcript.append_result(
-                        call.id,
-                        json.dumps(
-                            {
-                                "ok": False,
-                                "error": "provider_response_incomplete",
-                                "executed": False,
-                                "mutation_committed": False,
-                            }
-                        ),
-                    )
-                if control is not None and control.session is not None:
-                    await control.session.save("paired")
-                if incomplete_recovery_used or request_index + 1 >= runtime.max_model_requests:
-                    raise LLMIncompleteResponseError(
-                        "provider response remained incomplete after bounded recovery"
-                    )
-                incomplete_recovery_used = True
-                if response.incomplete_reason == "pause_turn":
-                    if response.continuation is None:
-                        raise LLMIncompleteResponseError(
-                            "paused provider response has no resumable checkpoint"
-                        )
-                    # Claude's paused server tool must be echoed unchanged.
-                    # A synthetic user/system message would change that replay.
-                else:
-                    transcript.append(
-                        ChatMessage(
-                            role="system",
-                            content=(
-                                "上一响应未完整结束。根据真实回执继续原任务，必要时查询或解释；"
-                                "不要重复任何已经完成的原生搜索或本地工具调用。"
-                            ),
-                        )
-                    )
-                logger.warning(
-                    "agent_incomplete_response_recovery reason=%s",
-                    response.incomplete_reason or "unknown",
-                )
-                continue
-            if not response.tool_calls:
-                content = response.content
-                assistant_recorded = False
-                assistant_message = ChatMessage(
-                    role="assistant",
-                    content=response.content,
-                    reasoning_content=response.reasoning_content,
-                )
-                control = runtime.work_control
-                if deferred_paid_compaction and control is not None and control.session is not None:
-                    if response.continuation is None:
-                        transcript.append(assistant_message)
-                        assistant_recorded = True
-                    await control.session.retire_paid_compaction()
-                    deferred_paid_compaction = False
-                if control is not None and await control.pending():
-                    if response.continuation is None and not assistant_recorded:
-                        transcript.append(assistant_message)
-                    transcript.append(
-                        ChatMessage(
-                            role="system",
-                            content=(
-                                "上一段回复尚未发送；有新的输入或执行信号到达，请先处理再继续。"
-                            ),
-                        )
-                    )
-                    continue
-                if (
-                    control is not None
-                    and control.session is not None
-                    and control.ending == "completed"
-                    and control.source.get("delivery_contract") == "return_to_caller"
-                    and "caller_completion_pending_result" in control.session.progress
-                    and not await revalidate_caller_completion()
-                ):
-                    if response.continuation is None and not assistant_recorded:
-                        transcript.append(assistant_message)
-                    transcript.append(
-                        ChatMessage(
-                            role="system",
-                            content=(
-                                "原完成条件已变化或原执行回执仍未决，不能宣告完成。"
-                                "保留已有结果，按真实来源与回执接续，不重复已完成操作。"
-                            ),
-                        )
-                    )
-                    await control.session.save("paired")
-                    continue
-                # The final body is internal; the main backend can reject an
-                # unsent user-facing answer without implicitly delivering it.
-                if "[提及" in content:
-                    if (
-                        not mention_recovery_used
-                        and request_index + 1 < runtime.max_model_requests
-                        and any(tool.name == "send_message" for tool in definitions)
-                    ):
-                        mention_recovery_used = True
-                        if response.continuation is None and not assistant_recorded:
-                            transcript.append(assistant_message)
-                        transcript.append(
-                            ChatMessage(
-                                role="system",
-                                content=(
-                                    "上一回复含 [提及…] 历史占位标记，已拦截且未发送；"
-                                    "该占位标记不是发送回执。若用户要求提醒成员，"
-                                    "先明确人物，再用 send_message.mentions 发送；"
-                                    "普通正文和 @名字都不能触发提醒。无法执行时如实说明。"
-                                ),
-                            )
-                        )
-                        continue
-                    raise LLMError("model repeated an invalid mention placeholder")
-                feedback = getattr(tools, "response_feedback", None)
-                issue = feedback(content, runtime) if callable(feedback) else None
-                if (
-                    control is not None
-                    and getattr(control, "reporting", None) == "interactive"
-                    and control.ending is None
-                ):
-                    if response.continuation is None and not assistant_recorded:
-                        transcript.append(assistant_message)
-                    if await require_interactive_exit(control, transcript, extra_feedback=issue):
-                        continue
-                if issue:
-                    if answer_recovery_used or request_index + 1 >= runtime.max_model_requests:
-                        raise LLMError("model repeated an unsupported final response")
-                    answer_recovery_used = True
-                    if response.continuation is None and not assistant_recorded:
-                        transcript.append(assistant_message)
-                    transcript.append(ChatMessage(role="system", content=issue))
-                    continue
-                if tools is not None:
-                    content = tools.finalize(content, runtime)
-                has_visible_effects = bool(
-                    tools is not None
-                    and callable(getattr(tools, "has_visible_effects", None))
-                    and tools.has_visible_effects()  # type: ignore[attr-defined]
-                )
-                if not content.strip() and not has_visible_effects:
-                    has_visible_effects = await caller_has_confirmed_delivery()
-                if not content.strip() and not has_visible_effects:
-                    allow_silence = getattr(tools, "allow_silent_final", None)
-                    if callable(allow_silence) and allow_silence(runtime):
-                        logger.info("agent_silent_final origin=%s", runtime.origin.value)
-                    else:
-                        if empty_retries >= 2 or request_index + 1 >= runtime.max_model_requests:
-                            raise LLMEmptyResponseError("model returned no final answer")
-                        empty_retries += 1
-                        logger.warning(
-                            "agent_empty_final_retry retry=%d tool_calls_used=%d",
-                            empty_retries,
-                            calls_used,
-                        )
-                        if response.continuation is None and not assistant_recorded:
-                            transcript.append(assistant_message)
-                        transcript.append(
-                            ChatMessage(
-                                role="system",
-                                content=(
-                                    "上一响应正文为空；回执仍保留，不能据此断言整个任务完成。"
-                                    "根据目标和真实结果选择继续执行、等待或回答；"
-                                    "不要重复已经成功的工具调用，也不要只描述发送模式。"
-                                ),
-                            )
-                        )
-                        continue
-                if control is not None and control.current is not None and control.ending is None:
-                    # Infer lifecycle completion from a real final answer, but use
-                    # the same receipt validation as explicit task_control.complete.
-                    await control.reconcile_completed_children()
-                    state = await control.background_state()
-                    await control.refresh_effects()
-                    if await control.has_unresolved_effects(pending=False):
-                        state = "suspended"
-                    elif await control.has_unresolved_effects(uncertain=False):
-                        state = state or "waiting_external"
-                    if state is not None:
-                        control.ending = state
-                    else:
-                        artifacts = list(
-                            dict.fromkeys(
-                                artifact
-                                for effect in control.known_effects
-                                if effect.get("ok") or effect.get("delivered_artifacts")
-                                for artifact in effect.get("artifacts", [])
-                            )
-                        )[-8:]
-                        receipt = await control.execute(
-                            "task_control",
-                            {"action": "complete", "artifact_ids": artifacts},
-                            f"final-answer:{request_index}",
-                        )
-                        if not json.loads(receipt).get("ok"):
-                            if response.continuation is None and not assistant_recorded:
-                                transcript.append(assistant_message)
-                            transcript.append(ChatMessage(role="system", content=receipt))
-                            continue
-                if control is not None and control.session is not None:
-                    if response.continuation is None and not assistant_recorded:
-                        transcript.append(assistant_message)
-                    await control.session.save("paired")
-                return AgentRunResult(
-                    text=content,
-                    tool_calls_used=calls_used,
-                    model_requests=request_index + 1,
-                    web_was_used=web_was_used,
-                    native_tool_events=tuple(native_events),
-                    citations=tuple(citations),
-                    response_status=response_status,
-                )
-            if no_progress_recovery:
-                logger.warning(
-                    "agent_tool_no_progress_stopped tool_calls_used=%d model_requests=%d",
-                    calls_used,
-                    request_index + 1,
-                )
-                return AgentRunResult(
-                    text=("检测到模型反复调用相同工具且结果没有变化，已停止本轮工具循环。"),
-                    tool_calls_used=calls_used,
-                    model_requests=request_index + 1,
-                    web_was_used=web_was_used,
-                    native_tool_events=tuple(native_events),
-                    citations=tuple(citations),
-                    response_status=response_status,
-                )
-            responses_path = response.continuation is not None
-            if not responses_path:
-                transcript.append(
-                    ChatMessage(
-                        role="assistant",
-                        content=response.content or None,
-                        tool_calls=response.tool_calls,
-                        reasoning_content=response.reasoning_content,
-                    )
-                )
-            tooling = getattr(runtime.runtime_config, "tooling", None)
-            coordinated = await self._execute_tool_batch(
-                response.tool_calls,
-                tools,
-                runtime,
-                remaining_calls=max(
-                    0,
-                    runtime.max_tool_calls
-                    - max(
-                        calls_used,
-                        runtime.work_control.tools_started
-                        if runtime.work_control is not None
-                        and runtime.work_control.current is not None
-                        else 0,
-                    ),
-                ),
-                max_parallel_calls=tooling.max_parallel_calls if tooling is not None else 1,
-                reusable_results=reusable_tool_results,
-                cacheable_names=frozenset(t.name for t in definitions if t.result_cacheable),
-                declared_names=frozenset(t.name for t in definitions),
-            )
-            batch, executed = coordinated.calls, coordinated.executed_count
-            batch = self._budget_tool_media(batch, transcript, runtime, tools)
-            calls_used += executed
-            for call, result, _was_executed in batch:
-                try:
-                    outcome = json.loads(result)
-                except json.JSONDecodeError:
-                    outcome = {}
-                if (
-                    call.function.name == "web_search"
-                    and isinstance(outcome, dict)
-                    and outcome.get("ok") is True
-                    and runtime.work_control is not None
-                    and runtime.work_control.session is not None
-                ):
-                    data = outcome.get("data")
-                    sources = data.get("sources") if isinstance(data, dict) else None
-                    if isinstance(sources, list):
-                        runtime.work_control.session.record_search_sources(
-                            [
-                                (
-                                    source["url"],
-                                    source.get("title", ""),
-                                    source.get("snippet", ""),
-                                )
-                                for source in sources
-                                if isinstance(source, dict)
-                                and isinstance(source.get("url"), str)
-                                and isinstance(source.get("title", ""), str)
-                                and isinstance(source.get("snippet", ""), str)
-                            ]
-                        )
-                if call.function.name in EVIDENCE_TOOLS:
-                    evidence_observation.emit(
-                        "tool_result_staged",
-                        request_index=request_index + 1,
-                        tool=call.function.name,
-                        reused=not _was_executed,
-                        ok=isinstance(outcome, dict) and outcome.get("ok") is True,
-                    )
-                    staged_evidence_results += 1
-                logger.info(
-                    "agent_tool_complete tool=%s ok=%s error=%s reused=%s",
-                    call.function.name,
-                    outcome.get("ok") if isinstance(outcome, dict) else None,
-                    (
-                        outcome.get("error") or outcome.get("error_code")
-                        if isinstance(outcome, dict)
-                        else None
-                    ),
-                    not _was_executed,
-                )
-                transcript.append_result(call.id, result)
-                if runtime.work_control is not None:
-                    runtime.work_control.observe_result(
-                        call.function.name,
-                        result,
-                        _was_executed,
-                        side_effecting=self._is_side_effecting(tools, call, runtime),
-                        arguments=call.function.arguments,
-                    )
-            transcript.append_tool_media(tuple((call.id, result) for call, result, _ in batch))
-            from qq_ai_bot.capabilities.results import normalize_legacy_result
-            from qq_ai_bot.runtime.effect_outcomes import execution_evidence
-
-            public_results = []
-            for call, result, was_executed in batch:
-                public_result = {
-                    "call_id": call.id,
-                    "name": call.function.name,
-                    "arguments": call.function.arguments,
-                    "output": result,
-                    "executed": was_executed,
-                }
-                fact = execution_evidence(
-                    normalize_legacy_result(
-                        result, provider_id="display", tool_name=call.function.name
-                    ),
-                    tool=call.function.name,
-                    side_effecting=self._is_side_effecting(tools, call, runtime),
-                    arguments=call.function.arguments,
-                )
-                if (
-                    was_executed
-                    and fact["executed"]
-                    and (fact["side_effecting"] or fact["run_id"] or fact["artifacts"])
-                ):
-                    # This is a turn-local model view of the existing execution
-                    # receipt, not another effect ledger or replay authority.
-                    ordinary_evidence.append({"call_id": call.id, **fact})
-                public_results.append(public_result)
-            response_observation["results"] = public_results
-            if runtime.work_control is not None and runtime.work_control.session is not None:
-                if runtime.work_control.ending != "completed":
-                    runtime.work_control.session.progress.pop(
-                        "caller_completion_pending_result", None
-                    )
-                if (
-                    runtime.work_control.ending == "completed"
-                    and runtime.work_control.source.get("delivery_contract") == "return_to_caller"
-                ):
-                    for call, result, _ in batch:
-                        if (
-                            call.function.name == "task_control"
-                            and json.loads(result).get("ok") is True
-                        ):
-                            arguments = json.loads(call.function.arguments)
-                            if arguments.get("action") == "complete":
-                                runtime.work_control.session.progress[
-                                    "caller_completion_pending_result"
-                                ] = {
-                                    "action": "complete",
-                                    "artifact_ids": arguments.get("artifact_ids", []),
-                                }
-                batch_hash = hashlib.sha256(
-                    json.dumps(
-                        [
-                            (call.function.name, self._tool_call_signature(call)[1], result)
-                            for call, result, _ in batch
-                        ],
-                        sort_keys=True,
-                    ).encode()
-                ).hexdigest()
-                persisted_progress = runtime.work_control.session.progress
-                observations = persisted_progress.get("model_observations", [])
-                if observations:
-                    opportunity = await stage_feedback_opportunity(
-                        runtime.work_control, observations[-1]
-                    )
-                    if opportunity is not None:
-                        stage_feedback_batch, pending_stage_feedback = opportunity
-                repeats = (
-                    int(persisted_progress.get("repeats", 0)) + 1
-                    if (
-                        batch
-                        and persisted_progress.get("fingerprint") == batch_hash
-                        and not any(self._tool_result_pending(result) for _, result, _ in batch)
-                    )
-                    else 0
-                )
-                persisted_progress.update(fingerprint=batch_hash, repeats=repeats)
-                communication_updates = await start_feedback_updates(runtime.work_control, batch)
-                if deferred_paid_compaction:
-                    await runtime.work_control.session.retire_paid_compaction(
-                        communication_updates=communication_updates
-                    )
-                    deferred_paid_compaction = False
-                else:
-                    await runtime.work_control.session.save(
-                        "paired", communication_updates=communication_updates
-                    )
-                if runtime.work_control.handoff_work_id is not None:
-                    return AgentRunResult(
-                        text="",
-                        tool_calls_used=calls_used,
-                        model_requests=request_index + 1,
-                        web_was_used=web_was_used,
-                        suppress_delivery=True,
-                        work_state="suspended",
-                    )
-                if (
-                    runtime.work_control.ending == "completed"
-                    and runtime.work_control.source.get("delivery_contract") != "return_to_caller"
-                    and not runtime.work_control.lease.work_id
-                    and not await runtime.work_control.pending()
-                ):
-                    runtime.work_control.final_delivery = True
-                    await runtime.work_control.session.save("delivered")
-                    return AgentRunResult(
-                        text="",
-                        tool_calls_used=calls_used,
-                        model_requests=request_index + 1,
-                        web_was_used=web_was_used,
-                        suppress_delivery=True,
-                        work_state="completed",
-                    )
-                if (
-                    runtime.work_control.lease.work_id
-                    or runtime.work_control.source.get("delivery_contract") == "return_to_caller"
-                ) and runtime.work_control.ending in {
-                    "waiting_user",
-                    "waiting_external",
-                }:
-                    return AgentRunResult(
-                        text="",
-                        tool_calls_used=calls_used,
-                        model_requests=request_index + 1,
-                        web_was_used=web_was_used,
-                        suppress_delivery=True,
-                        work_state=runtime.work_control.ending,
-                    )
-            fingerprint = tuple(
-                (call.function.name, self._tool_call_signature(call)[1], result)
-                for call, result, _was_executed in batch
-            )
-            pending_work = any(self._tool_result_pending(result) for _, result, _ in batch)
-            if fingerprint and fingerprint == previous_batch_fingerprint and not pending_work:
-                repeated_batch_count += 1
-            else:
-                repeated_batch_count = 0
-            previous_batch_fingerprint = fingerprint
-            if runtime.work_control is not None and runtime.work_control.session is not None:
-                repeated_batch_count = int(runtime.work_control.session.progress.get("repeats", 0))
-            if coordinated.reused_count == len(batch) and batch:
-                logger.info(
-                    "agent_tool_batch_reused reused_calls=%d tool_calls_used=%d",
-                    coordinated.reused_count,
-                    calls_used,
-                )
-            if repeated_batch_count >= 2:
-                if runtime.work_control is not None and runtime.work_control.current is not None:
-                    from qq_ai_bot.runtime.activation_outcome import WorkNoProgress
-
-                    raise WorkNoProgress("repeated_tool_results")
-                no_progress_recovery = True
-                logger.warning(
-                    "agent_tool_no_progress_detected repeated_batches=%d tool_calls_used=%d",
-                    repeated_batch_count,
-                    calls_used,
-                )
-                if transcript.continuation is None:
-                    transcript.append(
-                        ChatMessage(
-                            role="system",
-                            content=(
-                                "相同工具调用已经连续返回相同结果。停止调用工具，"
-                                "只根据已有结果给出简短、真实的最终答复。"
-                            ),
-                        )
-                    )
-            if tools is not None:
-                effect_probe = getattr(tools, "did_use_web", None)
-                if callable(effect_probe) and effect_probe():
-                    web_was_used = True
-            if (
-                runtime.work_control is not None
-                and runtime.work_control.tools_started >= runtime.max_tool_calls
-            ):
-                break
-        if runtime.work_control is not None and runtime.work_control.current is not None:
-            runtime.work_control.yield_segment = True
-            runtime.work_control.ending = "queued"
-            if runtime.work_control.session is not None:
-                await runtime.work_control.session.save("paired")
-            return AgentRunResult(
-                text="",
-                tool_calls_used=calls_used,
-                model_requests=runtime.work_control.requests_started,
-                web_was_used=web_was_used,
-                suppress_delivery=True,
-                work_state="queued",
-            )
-        exhausted = (
-            tools.exhausted(runtime) if tools is not None else "工具调用次数过多，Agent 已停止。"
-        )
-        return AgentRunResult(
-            text=exhausted,
-            tool_calls_used=calls_used,
-            model_requests=runtime.max_model_requests,
-            web_was_used=web_was_used,
-            native_tool_events=tuple(native_events),
-            citations=tuple(citations),
-            response_status=response_status,
-        )
 
     @staticmethod
     async def _validate_tool_media(
@@ -2130,7 +627,13 @@ class AgentRunner:
                     error = "media_request_budget_exceeded"
                 if error:
                     outcome = json.loads(result)
-                    if isinstance(outcome, dict) and outcome.get("mutation_committed") is True:
+                    if isinstance(outcome, dict) and (
+                        outcome.get("mutation_committed") is True
+                        or (
+                            call.function.name == EXECUTE_CODE_NAME
+                            and outcome.get("executed") is True
+                        )
+                    ):
                         result = json.dumps({**outcome, "media_read": False, "media_error": error})
                     else:
                         result = json.dumps({"ok": False, "error": error, "read": False})
@@ -2149,9 +652,11 @@ class AgentRunner:
         *,
         remaining_calls: int,
         max_parallel_calls: int,
-        reusable_results: dict[tuple[str, str], str],
+        reusable_results: dict[tuple[str, str], ReusableToolResult],
         cacheable_names: frozenset[str],
         declared_names: frozenset[str],
+        chain_id: str = "",
+        request_sequence: int = 0,
     ) -> CoordinatedToolResult:
         async with trace_span("tool_batch", {"calls": [asdict(call) for call in calls]}) as span:
             result = await self._execute_tool_batch_impl(
@@ -2163,9 +668,300 @@ class AgentRunner:
                 reusable_results=reusable_results,
                 cacheable_names=cacheable_names,
                 declared_names=declared_names,
+                chain_id=chain_id,
+                request_sequence=request_sequence,
             )
             span.result = asdict(result)
             return result
+
+    async def _execute_code_batch(
+        self,
+        calls: tuple[ToolCall, ...],
+        tools: AgentToolBackend | None,
+        runtime: AgentRuntime,
+        *,
+        declared_names: frozenset[str],
+        chain_id: str,
+        request_sequence: int,
+        max_parallel_calls: int,
+    ) -> CoordinatedToolResult:
+        """Outer code calls run in model order, alone in their batch.
+
+        A composition is a lifecycle-bound program: mixing it with direct calls
+        in one response would let two owners race on the same effects.
+        """
+        if len(calls) != len([c for c in calls if c.function.name == EXECUTE_CODE_NAME]):
+            result = json.dumps(
+                {"ok": False, "executed": False, "error": "execute_code_requires_own_batch"}
+            )
+            return CoordinatedToolResult(tuple((call, result, False) for call in calls), 0)
+        ordered: list[tuple[ToolCall, str, bool]] = []
+        control = runtime.work_control
+        for index, call in enumerate(calls):
+            if (
+                index
+                and control is not None
+                and (control.ending is not None or control.handoff_work_id is not None)
+            ):
+                # An earlier composition ended or yielded the Work: no later code runs.
+                ordered.append(
+                    (
+                        call,
+                        json.dumps(
+                            {"ok": False, "executed": False, "error": "code_composition_closed"}
+                        ),
+                        False,
+                    )
+                )
+                continue
+            result = await self._run_code_call(
+                call,
+                tools,
+                runtime,
+                declared_names=declared_names,
+                chain_id=chain_id,
+                request_sequence=request_sequence,
+                max_parallel_calls=max_parallel_calls,
+            )
+            ordered.append((call, result, True))
+        return CoordinatedToolResult(tuple(ordered), 0)
+
+    async def _resume_compositions(
+        self,
+        pending: list[Any],
+        transcript: TurnTranscript,
+        tools: AgentToolBackend | None,
+        runtime: AgentRuntime,
+        definitions: tuple[ChatTool, ...] | None,
+    ) -> bool:
+        """Resume restored compositions; True means the segment yielded again."""
+        from qq_ai_bot.capabilities.invocation import (
+            Invocation,
+            InvocationIdentity,
+            TrustedInvocationContext,
+        )
+        from qq_ai_bot.codemode.driver import CodeCompositionYield, CodeModeDriver
+
+        control = runtime.work_control
+        assert control is not None and control.session is not None
+        session = control.session
+        declared = frozenset(tool.name for tool in definitions or ())
+        tooling = runtime.runtime_config.tooling
+        host = self._code_host(
+            tools,
+            runtime,
+            declared_names=declared,
+            max_parallel_calls=tooling.max_parallel_calls if tooling is not None else 1,
+        )
+        for item in pending:
+            call = ToolCall(item.call_id, ToolFunction(item.name, item.arguments))
+            if isinstance(host, str):
+                result = host
+            else:
+                assert control.current is not None and session.transcript is not None
+                outer = Invocation(
+                    InvocationIdentity(
+                        item.operation_id,
+                        str(control.current["id"]),
+                        session.transcript.chain_id,
+                        session.sequence,
+                        item.call_id,
+                    ),
+                    call,
+                    TrustedInvocationContext(
+                        runtime, host.api.manifest_revision if host.api is not None else ""
+                    ),
+                )
+                try:
+                    result = await CodeModeDriver(host, outer).resume()
+                except CodeCompositionYield:
+                    control.yield_segment = True
+                    control.ending = "queued"
+                    return True
+            result = self._budget_tool_media(((call, result, True),), transcript, runtime, tools)[
+                0
+            ][1]
+            transcript.append_result(item.call_id, result)
+            transcript.append_tool_media(((item.call_id, result),))
+
+        session.pending_compositions = []
+        await session.save("paired")
+        return False
+
+    async def _run_code_call(
+        self,
+        call: ToolCall,
+        tools: AgentToolBackend | None,
+        runtime: AgentRuntime,
+        *,
+        declared_names: frozenset[str],
+        chain_id: str,
+        request_sequence: int,
+        max_parallel_calls: int,
+    ) -> str:
+        from qq_ai_bot.capabilities.invocation import direct_invocations
+        from qq_ai_bot.codemode.driver import CodeCompositionYield, CodeModeDriver
+
+        control = runtime.work_control
+        if call.function.name not in declared_names:
+            return json.dumps({"ok": False, "executed": False, "error": "tool_not_declared"})
+        if control is None or control.current is None or control.session is None:
+            # Short chat and single sends stay direct; code needs an admitted Work.
+            return json.dumps(
+                {
+                    "ok": False,
+                    "executed": False,
+                    "error": "accept_work_before_execution",
+                    "detail": "execute_code 需要已接纳的持续工作；短聊和单次发送直接调用原工具。",
+                },
+                ensure_ascii=False,
+            )
+        host = self._code_host(
+            tools,
+            runtime,
+            declared_names=declared_names,
+            max_parallel_calls=max_parallel_calls,
+        )
+        if isinstance(host, str):
+            return host
+        if host.api is None:
+            return json.dumps({"ok": False, "executed": False, "error": "code_engine_unavailable"})
+        outer = direct_invocations(
+            (call,),
+            runtime,
+            chain_id=chain_id,
+            request_sequence=request_sequence,
+            manifest_revision=host.api.manifest_revision,
+        )[0]
+        try:
+            return await CodeModeDriver(host, outer).run()
+        except CodeCompositionYield:
+            # Resource yield: the outer call stays pending in the journal; the
+            # original Work resumes the same composition in its next segment.
+            control.yield_segment = True
+            return CODE_COMPOSITION_YIELDED
+
+    def _code_host(
+        self,
+        tools: AgentToolBackend | None,
+        runtime: AgentRuntime,
+        *,
+        declared_names: frozenset[str],
+        max_parallel_calls: int,
+    ) -> Any:
+        from qq_ai_bot.codemode.driver import ChildClass, CodeHost
+        from qq_ai_bot.codemode.engine_monty import CodeEngineUnavailable, PinnedWorker
+        from qq_ai_bot.codemode.limits import CodeModeLimits
+        from qq_ai_bot.services.invocation_service import InvocationService
+
+        control = runtime.work_control
+        assert control is not None
+        # Worker execution supplies its separately frozen subset. The shared
+        # runner never substitutes the main API for that explicitly bound view.
+        api = runtime.script_api or (
+            self.main_contract.script_api
+            if self.main_contract is not None and control.lease.work_id is None
+            else None
+        )
+        settings = self.code_mode_settings
+        if tools is None:
+            return json.dumps({"ok": False, "executed": False, "error": "code_engine_unavailable"})
+        try:
+            worker = (
+                PinnedWorker.from_settings(settings)
+                if settings is not None and getattr(settings, "code_mode_enabled", False)
+                else None
+            )
+            limits = (
+                CodeModeLimits.from_settings(settings) if settings is not None else CodeModeLimits()
+            )
+        except CodeEngineUnavailable:
+            worker, limits = None, CodeModeLimits()
+        service = InvocationService()
+
+        def classify(call: ToolCall) -> ChildClass:
+            name = call.function.name
+            if name in WORK_CONTROL_NAMES:
+                return ChildClass("control", False, False)
+            if name == "memory_change":
+                return ChildClass("memory_write", False, True)
+            side = self._is_side_effecting(tools, call, runtime)
+            if name == "send_message":
+                return ChildClass("send", False, True)
+            parallel = (not side) and bool(tools.parallel_safe(name, runtime))
+            return ChildClass("write" if side else "read", parallel, side)
+
+        async def execute_business(invocation: Invocation, side_effecting: bool) -> str:
+            call = invocation.call
+            # Children use the full frozen execution API, independently of the
+            # compact Provider declaration. Worker APIs are already restricted.
+            if api is None or call.function.name not in api.schemas:
+                return _unexecuted_tool_result(call.function.name, "tool_not_declared")
+
+            async def invoke() -> str:
+                return await tools.execute_call(invocation)
+
+            return await service.invoke(invocation, invoke, side_effecting=side_effecting)
+
+        async def execute_control(call: ToolCall, key: str) -> tuple[str, bool]:
+            if api is None:
+                return _unexecuted_tool_result(call.function.name, "tool_not_declared"), False
+            return await self._execute_control_call(
+                call, tools, runtime, frozenset(api.schemas), key
+            )
+
+        agent = runtime.runtime_config.agent
+        return CodeHost(
+            control=control,
+            api=api,
+            worker=worker,
+            limits=limits,
+            execute_business=execute_business,
+            execute_control=execute_control,
+            classify=classify,
+            max_parallel=max_parallel_calls,
+            # Segment business allowance: the same counter direct calls use.
+            tool_limit=runtime.max_tool_calls,
+            result_limit=agent.tool_result_max_characters or 12000,
+            archive=tools.archive_code_result if tools is not None else None,
+            background=(
+                control.lease.work_id is not None
+                or runtime.origin not in {TurnOrigin.USER_MESSAGE, TurnOrigin.PLUGIN_SESSION}
+            ),
+        )
+
+    async def _execute_control_call(
+        self,
+        call: ToolCall,
+        tools: AgentToolBackend | None,
+        runtime: AgentRuntime,
+        declared_names: frozenset[str],
+        key: str,
+    ) -> tuple[str, bool]:
+        """One lifecycle control with the original checks; shared by direct and code calls."""
+        control = runtime.work_control
+        if (
+            call.function.name not in declared_names
+            or control is None
+            or tools is None
+            or not tools.work_control_allowed(call.function.name)
+        ):
+            return _unexecuted_tool_result(call.function.name, "work_control_unavailable"), False
+        try:
+            arguments = json.loads(call.function.arguments)
+            if not isinstance(arguments, dict):
+                raise ValueError("arguments must be an object")
+        except (ValueError, TypeError):
+            return _unexecuted_tool_result(call.function.name, "invalid_work_arguments"), False
+        action = arguments.get("action")
+        if (
+            call.function.name == "task_control"
+            and isinstance(action, str)
+            and action in {"get", "list"}
+            and not tools.work_query_allowed(action)
+        ):
+            return _unexecuted_tool_result(call.function.name, "work_query_not_authorized"), False
+        return await control.execute(call.function.name, arguments, key), True
 
     async def _execute_tool_batch_impl(
         self,
@@ -2175,19 +971,93 @@ class AgentRunner:
         *,
         remaining_calls: int,
         max_parallel_calls: int,
-        reusable_results: dict[tuple[str, str], str],
+        reusable_results: dict[tuple[str, str], ReusableToolResult],
         cacheable_names: frozenset[str],
         declared_names: frozenset[str],
+        chain_id: str = "",
+        request_sequence: int = 0,
     ) -> CoordinatedToolResult:
-        """Execute each semantic call once and fan its result out to duplicate IDs."""
+        """Preserve original IDs; only explicitly safe read results may be reused."""
 
         control = runtime.work_control
         session = getattr(control, "session", None)
-        control_calls = [call for call in calls if call.function.name in WORK_CONTROL_NAMES]
-        if control_calls:
+
+        async def save_response() -> None:
             if session is not None:
                 session.pending_readonly_keys = {}
                 await session.save("response", calls)
+
+        if BatchPlan.prepare(calls).conflicting_ids:
+            await save_response()
+            result = json.dumps(
+                {"ok": False, "executed": False, "error": "duplicate_provider_call_id"}
+            )
+            return CoordinatedToolResult(tuple((call, result, False) for call in calls), 0)
+
+        from qq_ai_bot.codemode.tool_visibility import TOOL_LOOKUP_NAME, lookup_tools
+
+        if calls and all(call.function.name == TOOL_LOOKUP_NAME for call in calls):
+            await save_response()
+            if calls[0].function.name not in declared_names:
+                result = json.dumps({"ok": False, "error": "tool_not_declared"})
+            else:
+                api = runtime.script_api
+                if api is None and self.main_contract is not None:
+                    # Never substitute the main catalog for a worker scope.
+                    if control is None or control.lease.work_id is None:
+                        api = self.main_contract.script_api
+                if api is not None:
+                    return CoordinatedToolResult(
+                        tuple(
+                            (
+                                call,
+                                lookup_tools(
+                                    api, call.function.arguments, declared_names=declared_names
+                                ),
+                                False,
+                            )
+                            for call in calls
+                        ),
+                        0,
+                    )
+                result = json.dumps({"ok": False, "error": "tool_catalog_unavailable"})
+            # Frozen metadata creates no business effect or execution charge;
+            # its paired result still persists in the ordinary Work journal.
+            return CoordinatedToolResult(tuple((call, result, False) for call in calls), 0)
+
+        code_calls = [call for call in calls if call.function.name == EXECUTE_CODE_NAME]
+        if code_calls:
+            await save_response()
+            return await self._execute_code_batch(
+                calls,
+                tools,
+                runtime,
+                declared_names=declared_names,
+                chain_id=chain_id,
+                request_sequence=request_sequence,
+                max_parallel_calls=max_parallel_calls,
+            )
+
+        def readonly_control(call: ToolCall) -> bool:
+            if call.function.name != "task_control":
+                return False
+            try:
+                arguments = json.loads(call.function.arguments)
+            except ValueError:
+                return False
+            return isinstance(arguments, dict) and arguments.get("action") in {
+                "get",
+                "list",
+                "wait_status",
+            }
+
+        control_calls = [
+            call
+            for call in calls
+            if call.function.name in WORK_CONTROL_NAMES and not readonly_control(call)
+        ]
+        if control_calls:
+            await save_response()
             if len(calls) != 1:
                 result = json.dumps({"ok": False, "error": "work_control_requires_single_call"})
                 return CoordinatedToolResult(
@@ -2196,54 +1066,68 @@ class AgentRunner:
                     reused_count=0,
                 )
             call = calls[0]
-            control = runtime.work_control
-            allowed = getattr(tools, "work_control_allowed", None)
-            if (
-                call.function.name not in declared_names
-                or control is None
-                or (callable(allowed) and not allowed(call.function.name))
-            ):
-                result = json.dumps({"ok": False, "error": "work_control_unavailable"})
-                executed = False
-            else:
-                try:
-                    arguments = json.loads(call.function.arguments)
-                    if not isinstance(arguments, dict):
-                        raise ValueError("arguments must be an object")
-                except (ValueError, TypeError):
-                    result = json.dumps({"ok": False, "error": "invalid_work_arguments"})
-                    executed = False
-                else:
-                    query_allowed = getattr(tools, "work_query_allowed", None)
-                    action = arguments.get("action")
-                    if (
-                        call.function.name == "task_control"
-                        and isinstance(action, str)
-                        and action in {"get", "list"}
-                        and callable(query_allowed)
-                        and not query_allowed(action)
-                    ):
-                        result = json.dumps({"ok": False, "error": "work_query_not_authorized"})
-                        executed = False
-                    else:
-                        rejection = await before_work_tool(control, call)
-                        if rejection is not None:
-                            result, executed = rejection, False
-                        else:
-                            result = await control.execute(
-                                call.function.name,
-                                arguments,
-                                control.session.call_key(call.id)
-                                if control.session
-                                else f"{control.lease.owner}:{call.id}",
-                            )
-                            executed = True
+            capture = ResultCapture("", call.id)
+            token = current_result_capture.set(capture)
+            try:
+                result, executed = await self._execute_control_call(
+                    call,
+                    tools,
+                    runtime,
+                    declared_names,
+                    runtime.work_control.session.call_key(call.id)
+                    if runtime.work_control is not None and runtime.work_control.session
+                    else f"{runtime.work_control.lease.owner}:{call.id}"
+                    if runtime.work_control is not None
+                    else call.id,
+                )
+            finally:
+                current_result_capture.reset(token)
+            fact = capture.evidence
+            if fact is None and capture.outcome is not None:
+                fact = execution_evidence(
+                    capture.outcome,
+                    tool=call.function.name,
+                    side_effecting=True,
+                    arguments=call.function.arguments,
+                )
             return CoordinatedToolResult(
                 calls=((call, result, executed),),
                 # Lifecycle controls use the model and message budgets, not
                 # the caller's delegated business-tool execution allowance.
                 executed_count=0,
                 reused_count=0,
+                evidence={call.id: fact} if fact is not None else {},
+            )
+
+        metadata_results: dict[str, str] = {}
+        for call in calls:
+            if readonly_control(call):
+                metadata_results[call.id], _ = await self._execute_control_call(
+                    call,
+                    tools,
+                    runtime,
+                    declared_names,
+                    session.call_key(call.id) if session is not None else call.id,
+                )
+            elif call.function.name == TOOL_LOOKUP_NAME:
+                api = runtime.script_api or (
+                    self.main_contract.script_api
+                    if self.main_contract is not None
+                    and (control is None or control.lease.work_id is None)
+                    else None
+                )
+                metadata_results[call.id] = (
+                    lookup_tools(api, call.function.arguments, declared_names=declared_names)
+                    if api is not None and call.function.name in declared_names
+                    else json.dumps(
+                        {"ok": False, "executed": False, "error": "tool_catalog_unavailable"}
+                    )
+                )
+
+        if calls and len(metadata_results) == len(calls):
+            await save_response()
+            return CoordinatedToolResult(
+                tuple((call, metadata_results[call.id], False) for call in calls), 0
             )
 
         work_admission_blocked = {
@@ -2258,10 +1142,13 @@ class AgentRunner:
         signatures = {call.id: self._tool_call_signature(call) for call in calls}
         first_call_by_signature: dict[tuple[str, str], ToolCall] = {}
         reused_by_id: dict[str, str] = {}
-        rejected_by_id: dict[str, str] = {}
+        reused_evidence: dict[str, dict[str, Any]] = {}
+        rejected_by_id: dict[str, str] = dict(metadata_results)
         aliases: dict[str, str] = {}
         unique_calls: list[ToolCall] = []
         for call in calls:
+            if call.id in metadata_results:
+                continue
             if call.id in work_admission_blocked:
                 rejected_by_id[call.id] = json.dumps(
                     {"ok": False, "error": "accept_work_before_execution"}
@@ -2288,22 +1175,15 @@ class AgentRunner:
                 and session is not None
                 and control is not None
                 and control.current is not None
-                and signature not in session.readonly_result_keys
             ):
-                # An unowned in-memory value is not a durable reuse receipt.
-                cached = None
-            if (
-                cached is not None
-                and session is not None
-                and control is not None
-                and control.current is not None
-                and not session.readonly_result_keys.get(signature, "").startswith(
+                original_key = session.readonly_result_keys.get(signature)
+                if original_key is None or not original_key.startswith(
                     session.call_key("").rsplit(":", 2)[0] + ":"
-                )
-            ):
-                cached = None
+                ):
+                    cached = None
             if cached is not None:
-                reused_by_id[call.id] = cached
+                reused_by_id[call.id] = cached.display
+                reused_evidence[call.id] = cached.evidence
                 continue
             representative = None if side_effecting else first_call_by_signature.get(signature)
             if representative is not None:
@@ -2313,11 +1193,21 @@ class AgentRunner:
                 first_call_by_signature[signature] = call
             unique_calls.append(call)
 
-        if session is not None and control is not None and control.current is not None:
+        if any(call.function.name == "memory_change" for call in unique_calls):
+            # Multiple authorized mutations remain legal. A message already
+            # authored in this batch cannot have observed their actual results.
+            for call in unique_calls:
+                if call.function.name == "send_message":
+                    rejected_by_id[call.id] = _unexecuted_tool_result(
+                        call.function.name, "delivery_requires_observed_result"
+                    )
+            unique_calls = [call for call in unique_calls if call.function.name != "send_message"]
+
+        if session is not None:
             session.pending_readonly_keys = {
                 call.id: session.readonly_result_keys[signatures[call.id]]
                 for call in calls
-                if call.id in reused_by_id
+                if call.id in reused_by_id and signatures[call.id] in session.readonly_result_keys
             }
             session.pending_readonly_keys.update(
                 {
@@ -2325,57 +1215,22 @@ class AgentRunner:
                     for alias, representative in aliases.items()
                 }
             )
-            # Exact original response/call IDs and reuse ownership are durable
-            # before any representative can dispatch or charge a tool budget.
             await session.save("response", calls)
-
-        if tools is not None:
-            write_calls = [call for call in unique_calls if call.function.name == "memory_change"]
-            if write_calls:
-                conflicting = [
-                    call
-                    for call in unique_calls
-                    if call.function.name != "memory_change"
-                    and self._is_side_effecting(tools, call, runtime)
-                ]
-                non_delivery_conflicts = [
-                    call for call in conflicting if call.function.name != "send_message"
-                ]
-                if non_delivery_conflicts:
-                    violation = json.dumps(
-                        {
-                            "ok": False,
-                            "error": "memory_mutation_exclusive_violation",
-                            "detail": "记忆写入批次不能夹带其他副作用工具。",
-                        },
-                        ensure_ascii=False,
-                    )
-                    return CoordinatedToolResult(
-                        calls=tuple((call, violation, False) for call in calls),
-                        executed_count=0,
-                        reused_count=0,
-                    )
-                for call in conflicting:
-                    rejected_by_id[call.id] = json.dumps(
-                        {
-                            "ok": False,
-                            "error": "delivery_requires_observed_result",
-                            "executed": False,
-                            "detail": "先观察记忆写入的真实回执，再决定要发送的内容。",
-                        },
-                        ensure_ascii=False,
-                    )
-                unique_calls = [
-                    call for call in unique_calls if call.function.name != "send_message"
-                ]
-            tools.begin_batch(tuple(unique_calls), runtime)
         coordinated = await self._tool_coordinator.execute_batch(
             tuple(unique_calls),
             tools,
             runtime,
             remaining_calls=remaining_calls,
             max_parallel_calls=max_parallel_calls,
-            before_execute=partial(before_work_tool, control),
+            chain_id=chain_id,
+            request_sequence=request_sequence,
+            manifest_revision=(
+                runtime.script_api.manifest_revision
+                if runtime.script_api is not None
+                else self.main_contract.revision
+                if self.main_contract
+                else ""
+            ),
         )
         unique_results = {call.id: result for call, result, _executed in coordinated.calls}
         unique_executed = {call.id: executed for call, _result, executed in coordinated.calls}
@@ -2405,25 +1260,42 @@ class AgentRunner:
             )
 
         for call, result, executed in coordinated.calls:
-            if not executed or not self._tool_result_reusable(result):
+            fact = coordinated.evidence.get(call.id)
+            if not executed or fact is None:
                 continue
             signature = signatures[call.id]
-            if self._successful_side_effect(tools, call, result, runtime):
+            if fact.get("mutation_committed") is True or (
+                self._is_side_effecting(tools, call, runtime)
+                and (fact.get("mutation_committed") is not False or fact.get("uncertain") is True)
+            ):
                 reusable_results.clear()
                 if session is not None:
                     session.readonly_result_keys.clear()
             elif (
                 not self._is_side_effecting(tools, call, runtime)
                 and call.function.name in cacheable_names
+                and fact.get("ok") is True
+                and fact.get("pending") is False
+                and fact.get("uncertain") is False
+                and fact.get("retryable") is False
             ):
-                reusable_results[signature] = result
-                if session is not None and control is not None and control.current is not None:
+                reusable_results[signature] = ReusableToolResult(result, fact)
+                if session is not None:
                     session.readonly_result_keys[signature] = session.call_key(call.id)
 
         return CoordinatedToolResult(
             calls=tuple(ordered),
             executed_count=coordinated.executed_count,
             reused_count=len(reused_by_id) + len(aliases),
+            evidence={
+                **coordinated.evidence,
+                **reused_evidence,
+                **{
+                    alias: coordinated.evidence[original]
+                    for alias, original in aliases.items()
+                    if original in coordinated.evidence
+                },
+            },
         )
 
     @staticmethod
@@ -2442,71 +1314,24 @@ class AgentRunner:
         return call.function.name, normalized
 
     @staticmethod
-    def _tool_result_pending(result: str) -> bool:
-        try:
-            payload = json.loads(result)
-        except json.JSONDecodeError:
-            return False
-        if not isinstance(payload, dict) or payload.get("ok") is not True:
-            return False
-        data = payload.get("data")
-        return isinstance(data, dict) and data.get("pending") is True
-
-    @classmethod
-    def _tool_result_reusable(cls, result: str) -> bool:
-        try:
-            payload = json.loads(result)
-        except json.JSONDecodeError:
-            return False
-        return bool(
-            isinstance(payload, dict)
-            and payload.get("ok") is True
-            and payload.get("retryable") is not True
-            and not cls._tool_result_pending(result)
-        )
-
-    @staticmethod
-    def _successful_side_effect(
-        tools: AgentToolBackend | None,
-        call: ToolCall,
-        result: str,
-        runtime: AgentRuntime,
-    ) -> bool:
-        if tools is None:
-            return False
-        try:
-            payload = json.loads(result)
-        except json.JSONDecodeError:
-            payload = None
-        if not isinstance(payload, dict) or payload.get("ok") is not True:
-            return False
-        committed = payload.get("mutation_committed")
-        if committed is not None:
-            return committed is True
-        probe = getattr(tools, "is_side_effecting", None)
-        return bool(callable(probe) and probe(call.function.name, call.function.arguments, runtime))
-
-    @staticmethod
     def _is_side_effecting(
         tools: AgentToolBackend | None,
         call: ToolCall,
         runtime: AgentRuntime,
     ) -> bool:
+        from qq_ai_bot.codemode.tool_visibility import TOOL_LOOKUP_NAME
+
+        if call.function.name == TOOL_LOOKUP_NAME:
+            return False
         if tools is None:
             return False
-        probe = getattr(tools, "is_side_effecting", None)
-        return bool(callable(probe) and probe(call.function.name, call.function.arguments, runtime))
+        return tools.is_side_effecting(call.function.name, call.function.arguments, runtime)
 
     @staticmethod
     async def _prepare_tools(tools: AgentToolBackend | None, runtime: AgentRuntime) -> None:
         if tools is None:
             return
-        prepare = getattr(tools, "prepare", None)
-        if not callable(prepare):
-            return
-        result = prepare(runtime)
-        if inspect.isawaitable(result):
-            await result
+        await tools.prepare(runtime)
 
     @staticmethod
     def _record_failure_usage(
@@ -2515,9 +1340,8 @@ class AgentRunner:
         tool_calls: int,
         model_requests: int,
     ) -> None:
-        recorder = getattr(tools, "record_failure_usage", None)
-        if callable(recorder):
-            recorder(tool_calls=tool_calls, model_requests=model_requests)
+        if tools is not None:
+            tools.record_failure_usage(tool_calls=tool_calls, model_requests=model_requests)
 
     @staticmethod
     def _merge_function_tools(

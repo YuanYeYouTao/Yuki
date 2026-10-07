@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime
 
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -231,6 +232,50 @@ class AutomationService:
             for event in relevant[:10]
         )
 
+    async def _commit_script(
+        self,
+        validated: ValidatedAutomation,
+        authority: DelegatedAuthority,
+        *,
+        creator_person_id: str,
+        now: datetime,
+        session: AsyncSession,
+        automation_id: int | None = None,
+        creation_source_key: str | None = None,
+        max_runs: int | None = None,
+    ) -> AutomationRecord:
+        """Single compiled-script persistence path; each entry owns its authority checks."""
+        if automation_id is not None:
+            row = await self._repository.update_script(
+                automation_id,
+                creator_person_id=creator_person_id,
+                validated=validated,
+                authority=authority,
+                now=now,
+                session=session,
+            )
+            if row is None:
+                raise ValueError("该任务已经结束，不能更新")
+            return row
+        if max_runs is not None and (type(max_runs) is not int or max_runs <= 0):
+            raise ValueError("max_runs 必须是正整数")
+        maximum = (
+            self._settings.automation_max_active_per_superuser
+            if authority.permission_level is PermissionLevel.SUPERUSER
+            else self._settings.automation_max_active_per_user
+        )
+        return await self._repository.create(
+            validated,
+            authority,
+            creator_person_id=creator_person_id,
+            creation_source_key=creation_source_key,
+            max_runs=max_runs,
+            max_active=maximum,
+            misfire_grace_seconds=self._settings.automation_default_misfire_grace_seconds,
+            now=now,
+            session=session,
+        )
+
     async def create(
         self,
         script_payload: object,
@@ -259,11 +304,6 @@ class AutomationService:
             if existing.script_hash != validated.script_hash or existing.max_runs != max_runs:
                 raise ValueError("automation_creation_key_conflict")
             return existing
-        maximum = (
-            self._settings.automation_max_active_per_superuser
-            if permission.value == "superuser"
-            else self._settings.automation_max_active_per_user
-        )
         authority = DelegatedAuthority(
             creator_user_id=actor.user_id,
             bot_user_id=actor.bot_user_id,
@@ -290,14 +330,12 @@ class AutomationService:
                 current_scene = await self._self_scene_fields(actor, session=session)
                 if any(getattr(authority, key) != value for key, value in current_scene.items()):
                     raise PermissionError("self_automation_scene_changed")
-            row = await self._repository.create(
+            row = await self._commit_script(
                 validated,
                 authority,
                 creation_source_key=_creation_key(actor.source_key),
                 creator_person_id=creator_person_id,
                 max_runs=max_runs,
-                max_active=maximum,
-                misfire_grace_seconds=self._settings.automation_default_misfire_grace_seconds,
                 now=now,
                 session=session,
             )
@@ -355,11 +393,7 @@ class AutomationService:
         except ValidationError as exc:
             raise ValueError(f"自动化脚本格式错误：{exc.errors()[0]['msg']}") from exc
         now = self._time.clock.now()
-        validated = self._validator.validate(
-            script,
-            provenance,
-            now_utc=now,
-        )
+        validated = self._validator.validate(script, provenance, now_utc=now)
         authority = DelegatedAuthority(
             creator_user_id=owner_account_id,
             bot_user_id=existing.bot_user_id,
@@ -394,16 +428,14 @@ class AutomationService:
                 current_scene = await self._self_scene_fields(actor, session=session)
                 if any(getattr(authority, key) != value for key, value in current_scene.items()):
                     raise PermissionError("self_automation_scene_changed")
-            row = await self._repository.update_script(
-                existing.id,
+            row = await self._commit_script(
+                validated,
+                authority,
+                automation_id=existing.id,
                 creator_person_id=owner_person_id,
-                validated=validated,
-                authority=authority,
                 now=now,
                 session=session,
             )
-            if row is None:
-                raise ValueError("该任务已经结束，不能更新")
             await self._audit_event(
                 actor,
                 conversation_key,
@@ -659,19 +691,12 @@ class AutomationService:
                 active, self._settings, owner_id=owner_id, conversation_id=conversation_id
             )
             validated = self._validator.validate(script, context.provenance, now_utc=now)
-            maximum = (
-                self._settings.automation_max_active_per_superuser
-                if context.provenance.permission is PermissionLevel.SUPERUSER
-                else self._settings.automation_max_active_per_user
-            )
-            return await self._repository.create(
+            return await self._commit_script(
                 validated,
                 self._control_authority(context, validated),
                 creator_person_id=owner_id,
                 creation_source_key=creation_source_key,
                 max_runs=max_runs,
-                max_active=maximum,
-                misfire_grace_seconds=self._settings.automation_default_misfire_grace_seconds,
                 now=now,
                 session=active,
             )
@@ -712,16 +737,14 @@ class AutomationService:
                 active, self._settings, owner_id=owner_id, conversation_id=conversation_id
             )
             validated = self._validator.validate(script, context.provenance, now_utc=now)
-            row = await self._repository.update_script(
-                automation_id,
+            row = await self._commit_script(
+                validated,
+                self._control_authority(context, validated),
+                automation_id=automation_id,
                 creator_person_id=owner_id,
-                validated=validated,
-                authority=self._control_authority(context, validated),
                 now=now,
                 session=active,
             )
-            if row is None:
-                raise ValueError("该任务已经结束，不能更新")
             return row
 
     async def administer_transition(
@@ -923,10 +946,18 @@ class AutomationService:
                 permission=PermissionLevel.SELF,
             )
             return row, "self", "", PermissionLevel.SELF, provenance
-        owner_accounts = await self._repository.active_creator_accounts(owner_person_id)
-        if row.creator_user_id not in owner_accounts:
-            raise PermissionError("自动化创建者的原账号绑定已失效")
-        owner_permission = permission_for_accounts(self._settings, (row.creator_user_id,))
+        from qq_ai_bot.automation.control_context import resolve_execution_identity
+
+        async with self._repository._database.sessions() as session:
+            _execution_user_id, owner_permission = await resolve_execution_identity(
+                session, self._settings, owner_id=owner_person_id
+            )
+        original = DelegatedAuthority.model_validate(row.authority_snapshot)
+        if (
+            original.permission_level is not PermissionLevel.SUPERUSER
+            and owner_permission is PermissionLevel.SUPERUSER
+        ):
+            owner_permission = PermissionLevel.USER
         provenance = CreationProvenance(
             creator_user_id=row.creator_user_id,
             bot_user_id=row.bot_user_id,

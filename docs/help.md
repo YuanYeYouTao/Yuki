@@ -1,6 +1,6 @@
 # Yuki 使用与运维帮助
 
-当前源码为未发布的 Yuki 3.9.0，Alembic head 为 `0097`，Plugin API 为 `3.2`，只支持 canonical runtime。永久 Yuki、
+当前源码为未发布的 Yuki 3.9.0，Alembic head 为 `0099`，Plugin API 为 `3.3`，只支持 canonical runtime。永久 Yuki、
 Person、Binding、Space、Presence 和 canonical Conversation 的关系见
 [当前架构](architecture/canonical-runtime.md)。
 
@@ -198,9 +198,9 @@ Gateway；当前功能边界见 [WebUI 合同](architecture/webui-console.md)。
 在 QQ 中使用 `/ai help` 与 `/ai capabilities` 查看当前可用命令和能力；实际结果以当前
 Principal、会话和运行配置为准。
 
-## Plugin API 3.2
+## Plugin API 3.3
 
-当前 Host 只接受精确声明 Plugin API `3.2` 的插件，Genie 专属 facade、事件及权限已移除。插件可以使用固定 primary `conversation_key`，也可读取可选的
+当前 Host 只接受精确声明 Plugin API `3.3` 的插件，Genie 专属 facade、事件及权限，以及直接模型 LLMFacade 已移除；模型任务使用 `agent.run`。插件可以使用固定 primary `conversation_key`，也可读取可选的
 person、space、conversation 和 presence ID。插件不能自报超级管理员，也不能绕过
 Control Plane、Capability 或 Gateway Registry。
 
@@ -217,7 +217,7 @@ Web、Memory read 和 history read 仍可使用。
 - [Plugin 开发索引](plugin-development/index.md)
 - [架构](plugin-development/architecture.md)
 - [权限与安全](plugin-development/security.md)
-- [从旧 Plugin API 迁移](plugin-development/api-3.2-migration.md)
+- [从旧 Plugin API 迁移](plugin-development/api-3.3-migration.md)
 
 ## Emoji 与 Vision
 

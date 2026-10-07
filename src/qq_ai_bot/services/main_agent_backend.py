@@ -10,7 +10,6 @@ from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
-from qq_ai_bot.admin.permission_catalog import contains_internal_capability_payload
 from qq_ai_bot.capabilities import (
     AuthorityContext,
     CapabilityDescriptor,
@@ -26,6 +25,8 @@ from qq_ai_bot.capabilities import (
 )
 from qq_ai_bot.capabilities.catalog import DescriptorRegistrySnapshot
 from qq_ai_bot.capabilities.exposure import NO_LONGER_AUTHORIZED
+from qq_ai_bot.capabilities.invocation import Invocation
+from qq_ai_bot.capabilities.models import CapabilityTrustSource
 from qq_ai_bot.capabilities.runtime import TurnCapabilityRuntime
 from qq_ai_bot.capabilities.validation import UNDECLARED_TOOL
 from qq_ai_bot.domain.messages import ChatImage, ChatTool, ToolCall, ToolFunction
@@ -47,18 +48,8 @@ logger = logging.getLogger(__name__)
 _ARTIFACT_READER_NAME = "read_tool_artifact"
 
 
-class UnsentFinalResponseError(LLMError):
-    """A user-facing answer never reached the explicit send tool."""
-
-
 _ADMIN_RETRYABLE_ERRORS = frozenset(
-    {
-        "invalid_json",
-        "invalid_arguments",
-        "validation_error",
-        "unknown_capability",
-        "ValueError",
-    }
+    {"invalid_json", "invalid_arguments", "validation_error", "unknown_capability", "ValueError"}
 )
 
 
@@ -122,20 +113,15 @@ class MainAgentBackend(AgentToolBackend):
         self._memory_session = getattr(runtime, "memory_session", None)
         self.messages_sent = 0
         self.sent_current_texts: list[str] = []
-        self._send_message_attempted = False
-        self._unsent_final_feedback_count = 0
         self.failed_model_requests = 0
         self.failed_tool_calls = 0
         self._tools_closed = False
         self._web_was_used = False
         self._web_calls_used = 0
-        self._capability_was_used = False
         self._admin_retry_constraint: tuple[str, str] | None = None
         self._admin_terminal_failure: dict[str, object] | None = None
         self._completed_admin_mutations: set[tuple[str, str]] = set()
         self._mutation_committed = False
-        self._batch: list[ToolCall] = []
-        self._batch_lock = asyncio.Lock()
         self._catalog: UnifiedToolCatalog | None = None
         self._provider_registry: ToolProviderRegistry | None = None
         self._capability_runtime: TurnCapabilityRuntime | None = None
@@ -160,22 +146,13 @@ class MainAgentBackend(AgentToolBackend):
     def _memory(self) -> Any:
         return self._memory_session
 
-    def _exclusive_write(self) -> bool:
-        session = self._memory()
-        return session is not None and session.exclusive_write
-
     def _eager_memory_read(self) -> bool:
         session = self._memory()
         if session is None:
             return False
         return session.contract.read_policy in {
             MemoryReadPolicy.EAGER,
-            MemoryReadPolicy.LOCATOR_ONLY,
         }
-
-    def _locator_open(self) -> bool:
-        session = self._memory()
-        return session is not None and session.locator_open
 
     async def confirm_memory_prompt_exposure(self) -> None:
         session = self._memory()
@@ -195,14 +172,6 @@ class MainAgentBackend(AgentToolBackend):
                 execution_runtime.turn_token
             )
 
-    def consume_provider_chain_restart(self) -> bool:
-        """Consume a local schema-change signal; the Runner retains the submitted chain."""
-
-        runtime = self._capability_runtime
-        if runtime is None:
-            return False
-        return runtime.consume_provider_chain_restart()
-
     def work_control_allowed(self, name: str) -> bool:
         # Lifecycle tools are declared globally, but remain subject to the
         # currently executing backend's mutation and delivery restrictions.
@@ -214,7 +183,6 @@ class MainAgentBackend(AgentToolBackend):
             return False
         return not (
             self._prompt_tools_closed()
-            or self._exclusive_write()
             or self._runtime.read_only
             or self._admin_retry_constraint is not None
         )
@@ -356,7 +324,6 @@ class MainAgentBackend(AgentToolBackend):
             scene=self._scene_facts(),
             memory_view=memory_view,
             policy_context=policy_context,
-            append_only=self._service._responses_append_only(),
         )
         return self._capability_runtime
 
@@ -407,9 +374,30 @@ class MainAgentBackend(AgentToolBackend):
             reason,
         )
 
-    def begin_batch(self, calls: tuple[ToolCall, ...], runtime: AgentRuntime) -> None:
-        del runtime
-        self._batch = list(calls)
+    async def archive_code_result(self, text: str) -> str | None:
+        """Full program result as an authorized artifact; the model sees a preview."""
+        store = self._service._tool_artifacts
+        config = self._runtime.runtime_config
+        tooling = config.tooling if config is not None else None
+        if store is None or tooling is None or not tooling.result_artifact_enabled:
+            return None
+        from qq_ai_bot.runtime.work_activation import current_work_control
+        from qq_ai_bot.tool_results.access import access_from_runtime
+
+        active = current_work_control.get()
+        request_runtime = self._request_runtime()
+        handle: str = await store.write_artifact(
+            provider_id="codemode",
+            tool_name="execute_code",
+            content=text,
+            media_type="application/json",
+            retention_seconds=tooling.result_artifact_retention_seconds,
+            access=access_from_runtime(
+                request_runtime,
+                generation=active.lease.generation if active is not None else None,
+            ),
+        )
+        return handle
 
     def did_use_web(self) -> bool:
         """Expose a provider-metadata-derived effect to the shared Agent loop."""
@@ -420,162 +408,64 @@ class MainAgentBackend(AgentToolBackend):
         tools = self._service._tools
         return tools.pin_web_provider() if tools is not None else nullcontext()
 
-    async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str:
-        if name == "send_message" and self._exclusive_write():
-            try:
-                feedback = json.loads(arguments_json)
-            except ValueError:
-                feedback = None
-            if (
-                runtime.origin is not RuntimeTurnOrigin.USER_MESSAGE
-                or self._runtime.inbound is None
-                or not isinstance(feedback, dict)
-                or set(feedback) - {"text", "work_report"}
-            ):
-                return json.dumps(
-                    {
-                        "ok": False,
-                        "executed": False,
-                        "mutation_committed": False,
-                        "error": "memory_feedback_current_text_only",
-                    }
-                )
+    async def execute_call(self, invocation: Invocation) -> str:
+        call = invocation.call
+        name, arguments_json = call.function.name, call.function.arguments
+        runtime: AgentRuntime = invocation.context.runtime
         if name == "send_message" and runtime.work_control is None:
             try:
                 arguments = json.loads(arguments_json)
             except ValueError:
                 arguments = None
             if isinstance(arguments, dict) and "work_report" in arguments:
-                return json.dumps(
-                    {
-                        "ok": False,
-                        "executed": False,
-                        "mutation_committed": False,
-                        "error": "work_report_requires_main_work",
-                    }
-                )
+                return _refused_result(name, "work_report_requires_main_work")
         if name != "send_message" and self._runtime.before_model_request is not None:
             await self._runtime.before_model_request()
         if self._allowed_tools is not None and name not in self._allowed_tools:
-            return json.dumps(
-                {
-                    "ok": False,
-                    "error": "capability_not_allowed",
-                    "executed": False,
-                    "mutation_committed": False,
-                }
-            )
-        async with self._batch_lock:
-            if not self._batch:
-                return json.dumps(
-                    {
-                        "ok": False,
-                        "error": "tool_batch_state_missing",
-                        "executed": False,
-                        "mutation_committed": False,
-                    },
-                    ensure_ascii=False,
-                )
-            call_index = next(
-                (
-                    index
-                    for index, item in enumerate(self._batch)
-                    if item.function.name == name and item.function.arguments == arguments_json
-                ),
-                None,
-            )
-            if call_index is None:
-                return json.dumps(
-                    {
-                        "ok": False,
-                        "error": "tool_batch_state_mismatch",
-                        "executed": False,
-                        "mutation_committed": False,
-                    },
-                    ensure_ascii=False,
-                )
-            call = self._batch.pop(call_index)
+            return _refused_result(name, "capability_not_allowed")
+        contract = self._service.runtime.runner.main_contract
+        if contract is not None and not contract.plugin_binding_current(name):
+            return _refused_result(name, "plugin_tool_contract_changed", restart_required=True)
         control = runtime.work_control
-        # Provider IDs are response-local. Durable SELF receipts need the
-        # original journal request identity to distinguish a later call_0.
-        receipt_call_id = (
-            control.session.call_key(call.id)
-            if self._runtime.initiative_run_id
-            and control is not None
-            and control.session is not None
-            else call.id
-        )
+        # Provider IDs are response-local for every origin. The domain receipt
+        # follows the original Host operation, including ordinary direct sends.
+        receipt_call_id = invocation.identity.operation_id
         if (
             name != "send_message"
             and control is not None
             and self.is_side_effecting(name, arguments_json, runtime)
             and await control.pending()
         ):
-            return json.dumps(
-                {
-                    "ok": False,
-                    "error": "new_input_before_execution",
-                    "executed": False,
-                    "mutation_committed": False,
-                }
-            )
+            return _refused_result(name, "new_input_before_execution")
         if name == "update_short_state" and self._service.runtime.runner.main_contract is not None:
-            return await self._service.runtime.runner.main_contract.state.execute(arguments_json)
+            outcome = await self._service.runtime.runner.main_contract.state.execute(arguments_json)
+            return (await ToolResultBudgeter(max_characters=None).render(outcome)).text
         if self._runtime.tools_closed:
-            return json.dumps(
-                {
-                    "ok": False,
-                    "executed": False,
-                    "mutation_committed": False,
-                    "error": "tools_closed",
-                    "detail": "本轮只声明会话前缀工具 schema，不允许真实调用。",
-                },
-                ensure_ascii=False,
+            return _refused_result(
+                name, "tools_closed", detail="本轮只声明会话前缀工具 schema，不允许真实调用。"
             )
         if self._tools_closed and name != "send_message":
-            return json.dumps(
-                {
-                    "ok": False,
-                    "executed": False,
-                    "mutation_committed": False,
-                    "error": (
-                        "mutation_already_committed" if self._mutation_committed else "tools_closed"
-                    ),
-                    "detail": (
-                        "本轮已有修改成功提交，后续工具调用已关闭。"
-                        if self._mutation_committed
-                        else "本轮工具调用已因之前的终止错误关闭。"
-                    ),
-                },
-                ensure_ascii=False,
+            return _refused_result(
+                name,
+                "mutation_already_committed" if self._mutation_committed else "tools_closed",
+                detail="本轮已有修改成功提交，后续工具调用已关闭。"
+                if self._mutation_committed
+                else "本轮工具调用已因之前的终止错误关闭。",
             )
         capability_runtime = self._capability_runtime
         if capability_runtime is not None:
             validation = capability_runtime.validate_call_result(name, arguments_json)
             if not validation.ok and validation.error_category != UNDECLARED_TOOL:
-                return json.dumps(
-                    {
-                        "ok": False,
-                        "executed": False,
-                        "mutation_committed": False,
-                        "error": validation.error_category or NO_LONGER_AUTHORIZED,
-                        "detail": validation.detail,
-                    },
-                    ensure_ascii=False,
+                return _refused_result(
+                    name,
+                    validation.error_category or NO_LONGER_AUTHORIZED,
+                    detail=validation.detail,
                 )
         if (
             name not in self._callable_tool_names
             and self._service.runtime.runner.main_contract is None
         ):
-            return json.dumps(
-                {
-                    "ok": False,
-                    "error": "main_agent_contract_unavailable",
-                    "executed": False,
-                    "mutation_committed": False,
-                },
-                ensure_ascii=False,
-            )
+            return _refused_result(name, "main_agent_contract_unavailable")
         entry = self._catalog.by_model_name(name) if self._catalog is not None else None
         descriptor = entry.descriptor if entry is not None else None
         if descriptor is None or descriptor.binding is None:
@@ -583,22 +473,8 @@ class MainAgentBackend(AgentToolBackend):
             if contract is not None and any(
                 tool.name == name for tool in await contract.definitions()
             ):
-                return json.dumps(
-                    {
-                        "ok": False,
-                        "error": "capability_not_allowed",
-                        "executed": False,
-                        "mutation_committed": False,
-                    }
-                )
-            return json.dumps(
-                {
-                    "ok": False,
-                    "error": "unknown_capability",
-                    "executed": False,
-                    "mutation_committed": False,
-                }
-            )
+                return _refused_result(name, "capability_not_allowed")
+            return _refused_result(name, "unknown_capability")
         binding = descriptor.binding
         effective_descriptor = self._effective_descriptor(call, descriptor)
         is_web_tool = effective_descriptor.namespace_id.startswith("web.")
@@ -607,44 +483,24 @@ class MainAgentBackend(AgentToolBackend):
             and effective_descriptor.effect is CapabilityEffect.READ_STATE
         )
         is_memory_write_tool = effective_descriptor.namespace_id == "memory.state.write"
-        if is_memory_write_tool and self._service.runtime.runner.main_contract is not None:
-            # Enter the already-authorized write phase on invocation, not on a
-            # directory lookup. Batch effect isolation is enforced by AgentRunner.
-            memory_session = self._memory()
-            if memory_session is not None:
-                memory_session.request_exclusive_write()
-        if is_memory_read_tool and not self._exclusive_write() and not self._eager_memory_read():
+        if is_memory_read_tool and not self._eager_memory_read():
             self._service._tool_metrics.record_automatic_memory_read_tool_call(
-                locator_fallback=self._locator_open()
+                locator_fallback=False
             )
         config = self._runtime.runtime_config
         assert config is not None
         mutation_identity = self._mutation_identity(call)
         mutation_committed: bool | None = False
         if mutation_identity is not None and mutation_identity in self._completed_admin_mutations:
-            result = json.dumps(
-                {
-                    "ok": False,
-                    "executed": False,
-                    "mutation_committed": False,
-                    "error": "duplicate_mutation",
-                    "detail": "本轮已经成功执行过相同修改，不再重复执行。",
-                },
-                ensure_ascii=False,
+            result = _refused_result(
+                name, "duplicate_mutation", detail="本轮已经成功执行过相同修改，不再重复执行。"
             )
         elif is_web_tool and self._web_calls_used >= config.web.max_calls_per_turn:
-            result = json.dumps(
-                {
-                    "ok": False,
-                    "executed": False,
-                    "mutation_committed": False,
-                    "error": "web_tool_limit_exceeded",
-                    "detail": (
-                        f"本轮最多执行 {config.web.max_calls_per_turn} 次联网工具，"
-                        "请根据已有结果回答。"
-                    ),
-                },
-                ensure_ascii=False,
+            result = _refused_result(
+                name,
+                "web_tool_limit_exceeded",
+                detail=f"本轮最多执行 {config.web.max_calls_per_turn} 次联网工具，"
+                "请根据已有结果回答。",
             )
         elif (
             name != "send_message"
@@ -654,15 +510,8 @@ class MainAgentBackend(AgentToolBackend):
                 self._admin_retry_constraint,
             )
         ):
-            result = json.dumps(
-                {
-                    "ok": False,
-                    "executed": False,
-                    "mutation_committed": False,
-                    "error": "retry_scope_violation",
-                    "detail": "参数修正只能重试刚才失败的同一个工具和操作。",
-                },
-                ensure_ascii=False,
+            result = _refused_result(
+                name, "retry_scope_violation", detail="参数修正只能重试刚才失败的同一个工具和操作。"
             )
             self._tools_closed = True
         else:
@@ -676,21 +525,14 @@ class MainAgentBackend(AgentToolBackend):
             except json.JSONDecodeError:
                 parsed = None
             if not isinstance(parsed, dict):
-                result = json.dumps(
-                    {
-                        "ok": False,
-                        "error": "invalid_json",
-                        "executed": False,
-                        "mutation_committed": False,
-                    },
-                    ensure_ascii=False,
-                )
+                result = _refused_result(name, "invalid_json")
             else:
                 started = time.perf_counter()
-                send_attempted_before = self._send_message_attempted
+                binding_started = False
                 try:
 
                     async def invoke_binding() -> ToolExecutionResult:
+                        nonlocal binding_started
                         from qq_ai_bot.runtime.work_activation import current_work_control
 
                         work = current_work_control.get()
@@ -708,21 +550,11 @@ class MainAgentBackend(AgentToolBackend):
                                     retryable=True,
                                     mutation_committed=False,
                                 )
-                        if name == "send_message":
-                            self._send_message_attempted = True
+                        binding_started = True
                         return await binding.invoke(
                             {str(key): value for key, value in parsed.items()},
                             ToolInvocationContext(
-                                runtime=execution_runtime,
-                                call_id=receipt_call_id,
-                                conversation_key=execution_runtime.conversation_key,
-                                actor_user_id=execution_runtime.actor_user_id,
-                                trigger_message_id=execution_runtime.trigger_message_id,
-                                execution_id=execution_runtime.effective_execution_id,
-                                provider_metadata={
-                                    "contains_images": bool(self._runtime.image_present),
-                                    "web_was_used": self._web_was_used,
-                                },
+                                runtime=execution_runtime, call_id=receipt_call_id
                             ),
                         )
 
@@ -733,23 +565,20 @@ class MainAgentBackend(AgentToolBackend):
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
+                    uncertain = binding_started and effective_descriptor.effect not in {
+                        CapabilityEffect.READ_STATE,
+                        CapabilityEffect.EXTERNAL_READ,
+                    }
                     outcome = ToolExecutionResult(
                         ok=False,
                         error_code=type(exc).__name__,
                         public_message="工具执行失败",
                         retryable=False,
+                        uncertain=uncertain,
+                        mutation_committed=None if uncertain else False,
                         provider_id=descriptor.provider_id,
                         tool_name=descriptor.provider_tool_name or descriptor.model_name,
                     )
-                if (
-                    name == "send_message"
-                    and not outcome.uncertain
-                    and isinstance(outcome.data, dict)
-                    and outcome.data.get("executed") is False
-                    and not outcome.data.get("uncertain")
-                    and outcome.data.get("status") not in {"unknown", "uncertain"}
-                ):
-                    self._send_message_attempted = send_attempted_before
                 mutation_committed = self._is_mutating_call(call) and resolve_mutation_commit(
                     outcome,
                     effective_descriptor,
@@ -856,35 +685,18 @@ class MainAgentBackend(AgentToolBackend):
                         artifact_created=budgeted.artifact_id is not None,
                         error_category=outcome.error_code,
                         result_excerpt=result,
-                        tool_call_id=(
-                            control.session.call_key(call.id)
-                            if control is not None and control.session is not None
-                            else receipt_call_id
-                        ),
+                        # The same Host operation the effect row and audit fence use.
+                        tool_call_id=receipt_call_id,
                     )
-            if contains_internal_capability_payload(result):
-                self._capability_was_used = True
             if is_web_tool:
                 self._web_calls_used += 1
                 self._web_was_used = True
         decoded = self._service._decode_tool_result(result)
-        if self._capability_runtime is not None and self.is_side_effecting(
-            name, arguments_json, runtime
-        ):
-            self._capability_runtime.mark_side_effect()
         session = self._memory()
         if session is not None and (is_memory_write_tool or is_memory_read_tool):
             await session.observe_tool_result(name, result)
-        if is_memory_write_tool and session is not None and session.exclusive_write:
-            self._service._record_memory_mutation_turn_outcome(
-                self._memory_mutation_outcome(decoded)
-            )
         if self._is_mutating_call(call):
-            if (
-                not self._exclusive_write()
-                and descriptor.provider_id != "admin"
-                and not decoded.get("ok")
-            ):
+            if descriptor.provider_id != "admin" and not decoded.get("ok"):
                 self._admin_retry_constraint = None
                 self._admin_terminal_failure = None
                 return result
@@ -894,8 +706,6 @@ class MainAgentBackend(AgentToolBackend):
                 if mutation_identity is not None and mutation_committed:
                     self._completed_admin_mutations.add(mutation_identity)
                     self._mutation_committed = True
-                    if self._exclusive_write():
-                        self._tools_closed = True
             elif (decoded.get("error") or decoded.get("error_code")) == "duplicate_mutation":
                 # A prior identical call already committed in this turn. Keep
                 # the successful result available so the model can summarize it.
@@ -983,81 +793,6 @@ class MainAgentBackend(AgentToolBackend):
                 and runtime.delegated_authority.principal_kind == "self"
             )
         ) and (runtime.work_control is None or runtime.work_control.lease.work_id is None)
-
-    def response_feedback(self, content: str, runtime: AgentRuntime) -> str | None:
-        from yuki_participation.self_report import extract_tail
-
-        body, _ = extract_tail(content)
-        if (
-            runtime.origin is RuntimeTurnOrigin.USER_MESSAGE
-            and self._runtime.inbound is not None
-            and body.strip() in {"", "NO_REPLY"}
-        ):
-            return None
-        if self._self_main_run(runtime):
-            if body.strip() in {"", "NO_REPLY"}:
-                return None
-            if not self._send_message_attempted and not self.messages_sent:
-                if self._unsent_final_feedback_count:
-                    raise UnsentFinalResponseError("self answer was not sent")
-                self._unsent_final_feedback_count += 1
-                return (
-                    "这段最终正文是内部结果，尚未发送。需要参与当前群讨论时调用 send_message；"
-                    "决定沉默则返回 NO_REPLY。已经成功的操作不要重复。"
-                )
-        control = runtime.work_control
-        source = (
-            (control.source if control is not None else runtime.invocation_source or {})
-            if runtime.origin is RuntimeTurnOrigin.SCHEDULED_AUTOMATION
-            else {}
-        )
-        if (
-            runtime.origin is RuntimeTurnOrigin.SCHEDULED_AUTOMATION
-            and source.get("owner") == "automation"
-            and source.get("principal_kind") == "person"
-            and source.get("delivery_target") in {"current_group", "self_private"}
-            and (control is None or control.lease.work_id is None)
-            and body.strip()
-            and not self._send_message_attempted
-            and not self.messages_sent
-        ):
-            if self._unsent_final_feedback_count:
-                raise UnsentFinalResponseError("scheduled notification was not sent")
-            self._unsent_final_feedback_count += 1
-            target_feedback = (
-                "原获准目标是创建者私聊：用 target.kind=person、subject_ref=current_speaker，"
-                "不能改发当前群。"
-                if source["delivery_target"] == "self_private"
-                else "按原获准的当前群目标发送。"
-            )
-            return (
-                "这次自动化明确要求通知，但上一段最终正文只是内部结果，尚未发送。"
-                + target_feedback
-                + "请调用 send_message；原工具结果和发送回执仍有效，"
-                "不重复已成功或结果未知的操作。不能交付时如实保留阻塞。"
-            )
-        if self._capability_was_used and contains_internal_capability_payload(content):
-            return (
-                "上一正文未发送：权限结果是内部执行资料。请根据实际结果继续，勿转发内部权限载荷。"
-            )
-        if (
-            runtime.origin is RuntimeTurnOrigin.USER_MESSAGE
-            and self._runtime.inbound is not None
-            and body.strip()
-            and not self._send_message_attempted
-            and not self.messages_sent
-            and (runtime.work_control is None or runtime.work_control.current is None)
-        ):
-            if self._unsent_final_feedback_count:
-                raise UnsentFinalResponseError("user-facing answer was not sent")
-            self._unsent_final_feedback_count += 1
-            logger.warning("agent_unsent_final_retry origin=%s", runtime.origin.value)
-            return (
-                "上一段最终正文没有发送给用户。若要回复，调用 send_message(text=答复)，"
-                "当前会话省略 target；不要只写最终正文，也不要重复已成功的其他工具。"
-                "若你决定不回复，返回空的最终正文。"
-            )
-        return None
 
     def allow_silent_final(self, runtime: AgentRuntime) -> bool:
         if self._self_main_run(runtime):
@@ -1161,7 +896,7 @@ class MainAgentBackend(AgentToolBackend):
         entry = self._catalog.by_model_name(name) if self._catalog is not None else None
         descriptor = entry.descriptor if entry is not None else None
         if descriptor is None:
-            return False
+            return True
         call = ToolCall(
             id="cache-classification",
             function=ToolFunction(name=name, arguments=arguments_json),
@@ -1172,10 +907,19 @@ class MainAgentBackend(AgentToolBackend):
         """Keep local response controls and Artifact reads outside the business budget."""
 
         del runtime
-        return name != _ARTIFACT_READER_NAME
+        from qq_ai_bot.capabilities.invocation import counts_toward_business_limit
+
+        return counts_toward_business_limit(name)
 
     def _mutation_identity(self, call: ToolCall) -> tuple[str, str] | None:
         if not self._is_mutating_call(call):
+            return None
+        entry = self._catalog.by_model_name(call.function.name) if self._catalog else None
+        if call.function.name != "memory_change" and (
+            entry is None or entry.descriptor.trust_source is not CapabilityTrustSource.ADMIN
+        ):
+            # This is a turn-local single-write grant, not effect deduplication.
+            # Legitimate sends, files, MCP and plugin writes keep their original IDs.
             return None
         try:
             arguments = json.loads(call.function.arguments)
@@ -1216,3 +960,24 @@ class MainAgentBackend(AgentToolBackend):
 
     def _request_runtime(self) -> ToolRuntime:
         return self._runtime
+
+
+def _refused_result(
+    name: str, error_code: str, *, detail: str = "", restart_required: bool = False
+) -> str:
+    """Publish one pre-dispatch refusal as typed evidence and its model view."""
+    from qq_ai_bot.runtime.effect_outcomes import current_result_capture
+
+    outcome = ToolExecutionResult(
+        ok=False,
+        error_code=error_code,
+        public_message=detail,
+        mutation_committed=False,
+        data={"executed": False, **({"restart_required": True} if restart_required else {})},
+        provider_id="core",
+        tool_name=name,
+    )
+    capture = current_result_capture.get()
+    if capture is not None:
+        capture.outcome = outcome
+    return json.dumps(outcome.model_payload(), ensure_ascii=False)

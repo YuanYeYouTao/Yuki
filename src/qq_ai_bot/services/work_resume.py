@@ -74,6 +74,13 @@ class WorkResumer:
     async def resume(self, item: dict[str, Any]) -> None:
         source = json.loads(item["source_json"])
         try:
+            if item["state"] == "running":
+                # Scheduler selected an expired/absent owner. The lost process
+                # cannot supply its exception; settle the original facts only.
+                await self._recover_preparation_failure(
+                    item, source, WorkConflict("work_activation_interrupted"), orphan=True
+                )
+                return
             if source.get("owner") == "plugin_invocation":
                 await self.services.resume_plugin(item, source)
             elif source.get("origin") == "self_initiative":
@@ -92,11 +99,10 @@ class WorkResumer:
         except Exception as exc:
             from qq_ai_bot.runtime.activation_outcome import (
                 WorkActivationHandled,
-                WorkRecoveryDeferred,
             )
 
             self.last_error = type(exc).__name__
-            if isinstance(exc, (WorkActivationHandled, WorkRecoveryDeferred)):
+            if isinstance(exc, WorkActivationHandled):
                 return
             try:
                 await self._recover_preparation_failure(item, source, exc)
@@ -105,11 +111,13 @@ class WorkResumer:
                 raise exc from exc.__cause__
 
     async def _recover_preparation_failure(
-        self, item: dict[str, Any], source: dict[str, Any], exc: Exception
+        self, item: dict[str, Any], source: dict[str, Any], exc: Exception, *, orphan: bool = False
     ) -> None:
+        from qq_ai_bot.runtime.activation_outcome import WorkRecoveryDeferred
         from qq_ai_bot.runtime.work_activation import bind_work_activation
         from qq_ai_bot.runtime.work_control import WorkControl
 
+        deferred = exc if isinstance(exc, WorkRecoveryDeferred) else None
         lease = await self.repository.acquire(item["conversation_id"], item["generation"])
         if lease is None:
             return
@@ -119,8 +127,46 @@ class WorkResumer:
                 raise WorkConflict("work_recovery_lease_lost")
 
         control = WorkControl(self.repository, lease, item["source_key"], source, validate)
-        async with bind_work_activation(control, meter_active_time=item["state"] != "suspended"):
+        async with bind_work_activation(control):
             current = await self.repository.get(item["id"])
+            if orphan:
+                if (
+                    current is None
+                    or current["state"] != "running"
+                    or current["generation"] != item["generation"]
+                    or current["revision"] != item["revision"]
+                ):
+                    control.settled = True
+                    return
+                control.current = current
+                if await control.pending():
+                    # A new admitted input owns the next activation. Let the
+                    # existing mailbox CAS retain it without recording old failure.
+                    control.current = await self.repository.transition(
+                        lease, current["id"], current["revision"], "waiting_external"
+                    )
+                    control.settled = True
+                    return
+                control.deferred_failure = WorkRecoveryDeferred(
+                    "work_activation_interrupted", work=item
+                )
+            if deferred is not None:
+                failed = deferred.work
+                prior_lease = deferred.lease
+                if (
+                    failed is None
+                    or prior_lease is None
+                    or current is None
+                    or lease.fence != prior_lease.fence + 1
+                    or lease.cancel_epoch != prior_lease.cancel_epoch
+                    or current["id"] != failed["id"]
+                    or current["generation"] != failed["generation"]
+                    or current["revision"] != failed["revision"]
+                    or current["state"] != "running"
+                ):
+                    control.settled = True
+                    return
+                control.deferred_failure = deferred
             if (
                 item["state"] != "suspended"
                 and current
@@ -287,19 +333,15 @@ class WorkResumer:
                         actor_context=actor,
                         gateway=None,
                         allow_generic_onebot=False,
-                        actor_user_id="",
                         actor_is_superuser=False,
-                        current_group_id=recovered.external_target_id,
                         conversation_key=key,
                         execution_id=item["id"],
                         origin=TurnOrigin.SELF_INITIATIVE,
                         initiative_run_id=recovered.run_id,
                         conversation_id=recovered.conversation_id,
                         scope_type=ScopeType.GROUP,
-                        bot_user_id=recovered.bot_user_id,
                         external_target_id=recovered.external_target_id,
                         space_id=recovered.target_space_id,
-                        presence_id=recovered.presence_id,
                         sandbox_source={**source, "work_id": item["id"]},
                         allow_work_environment=True,
                         allow_automation=True,
@@ -464,11 +506,9 @@ class WorkResumer:
                         inbound=inbound,
                         gateway=None,
                         allow_generic_onebot=False,
-                        actor_user_id=recovered.actor_user_id,
                         actor_is_superuser=False,
                         allow_admin_actions=False,
                         allow_automation=bool(source.get("allow_automation")),
-                        current_group_id=original.group_id,
                         conversation_key=key,
                         trigger_message_id=original.platform_message_id,
                         execution_id=item["id"],
@@ -476,7 +516,6 @@ class WorkResumer:
                         conversation_id=recovered.conversation_id,
                         person_id=recovered.actor_person_id,
                         space_id=recovered.target_space_id,
-                        presence_id=recovered.presence_id,
                         sandbox_source={**source, "work_id": item["id"]},
                     ),
                 )

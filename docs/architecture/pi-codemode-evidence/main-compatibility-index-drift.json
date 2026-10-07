@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "cause": "Generic ifnotexists substring deletion treats a changed identifier as equivalent to the original column",
+  "migration_before_sha256": "ae613b0db09bded368f43070b536ef2434786c6065e3ae2371871ad5fa21c591",
+  "wrong_index_sql": "CREATE INDEX IF NOT EXISTS ix_runtime_effects_parent ON runtime_work_effects (work_idifnotexists, json_extract(receipt_json, '$.invocation.parent_effect_key'), effect_key) WHERE json_extract(receipt_json, '$.invocation.version') = 1",
+  "normalized_as_original_before_fix": true,
+  "regression_command": "YUKI_MONTY_BINARY=$PWD/.venv/bin/yuki-monty-worker uv run --frozen pytest -q -p no:warnings tests/unit/test_migration_0096.py -k column",
+  "observed_before_fix": "2 failed, 2 passed, 6 deselected in 0.87s",
+  "failed_nodes": [
+    "test_compatibility_index_drift_keeps_original_schema[column-upgrade]",
+    "test_compatibility_index_drift_keeps_original_schema[column-downgrade]"
+  ],
+  "failure": "Failed: DID NOT RAISE RuntimeError",
+  "scope": "isolated malformed schema; no production data",
+  "migration_after_sha256": "2964458e5156005ffbde3a80c813c67f419b954887f504fb20acb88dd8484ae4",
+  "after_fix": "Only remove the declaration IF NOT EXISTS; fold ASCII keywords and whitespace, preserve actual identifiers and JSON literals. Real SQLite upgrade/downgrade reject all identifier drift cases.",
+  "targeted_after_fix": "87 passed in 28.22s; all real old-branch migration paths and drift rejection retained",
+  "full_after_fix": "3926 passed, 1 skipped in 813.13s",
+  "full_report": "main-compatibility-accepted.json"
+}

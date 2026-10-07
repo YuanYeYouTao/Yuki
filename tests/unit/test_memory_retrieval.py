@@ -110,11 +110,10 @@ async def test_attribution_worker_evaluates_no_use_but_not_failed_requests(datab
 
 
 async def test_recall_receipt_tracks_zero_partial_evaluation_and_interruption(database: Database):
-    import json
-
     from sqlalchemy.exc import SQLAlchemyError
     from tests.conftest import build_harness
 
+    from qq_ai_bot.capabilities.results import ToolExecutionResult
     from qq_ai_bot.domain.conversations import ConversationScope
     from qq_ai_bot.memory.receipt import MemoryRecallTurn
     from qq_ai_bot.memory.runtime.partition_lookup import DatabaseMemoryPartitionLookup
@@ -263,21 +262,23 @@ async def test_recall_receipt_tracks_zero_partial_evaluation_and_interruption(da
         runtime_config=runtime,
         memory_session=memory_session,
     )
-    with patch.object(tools, "_person_memories", AsyncMock(side_effect=SQLAlchemyError("secret"))):
-        failure = json.loads(await tools.execute("get_person_memories", "{}", tool_runtime))
-    assert failure["error"] == "database_failure"
+    with patch.object(tools, "_search_memory", AsyncMock(side_effect=SQLAlchemyError("secret"))):
+        failure = (await tools.execute("search_memory", "{}", tool_runtime)).model_payload()
+    assert failure["error_code"] == "database_failure"
     assert failure["retryable"] is True
     assert context.metrics.count("memory_read_infrastructure_failure") == 1
     assert (await receipts.summarize(since=datetime(2020, 1, 1, tzinfo=UTC)))["tool_reads"][
         "infrastructure_failure"
     ] == 1
     with (
-        patch.object(tools, "_person_memories", AsyncMock(return_value='{"ok":true,"data":{}}')),
+        patch.object(
+            tools, "_search_memory", AsyncMock(return_value=ToolExecutionResult(ok=True, data={}))
+        ),
         patch.object(
             context, "record_tool_read_outcome", AsyncMock(side_effect=RuntimeError("secret"))
         ),
     ):
-        success = json.loads(await tools.execute("get_person_memories", "{}", tool_runtime))
+        success = (await tools.execute("search_memory", "{}", tool_runtime)).model_payload()
     assert success["ok"] is True and success["data"] == {}
     assert success["evidence_state"] == {
         "source": "memory_tool",

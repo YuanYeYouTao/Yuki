@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import func, select
 from tests.conftest import make_settings
+from tests.support.model_executor import InjectedModelExecutor
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.llm.fake import FakeLLMProvider
@@ -63,7 +64,6 @@ from qq_ai_bot.memory.mutation.service import DreamRecomposePlan, MemoryMutation
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.resolution import MemoryResolutionPolicy
 from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.model_runtime.executor import LegacyTaskModelExecutor
 from qq_ai_bot.model_runtime.structured import StructuredTaskError, StructuredTaskRunner
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
@@ -423,7 +423,7 @@ async def test_episode_decision_does_not_retry_soft_compression_miss() -> None:
             first.model_dump_json() if len(provider.requests) == 1 else repaired.model_dump_json()
         )
     )
-    service._structured = StructuredTaskRunner(LegacyTaskModelExecutor(provider))
+    service._structured = StructuredTaskRunner(InjectedModelExecutor(provider))
     service._concurrency = ConcurrencyManager(1)
     service._reserve_model_call = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
@@ -496,7 +496,7 @@ async def test_episode_decision_repairs_invalid_length_with_original_output() ->
             first.model_dump_json() if len(provider.requests) == 1 else repaired.model_dump_json()
         )
     )
-    service._structured = StructuredTaskRunner(LegacyTaskModelExecutor(provider))
+    service._structured = StructuredTaskRunner(InjectedModelExecutor(provider))
     service._concurrency = ConcurrencyManager(1)
     service._reserve_model_call = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
@@ -516,7 +516,7 @@ async def test_episode_decision_repairs_invalid_length_with_original_output() ->
     assert "乙" * 801 in repair["previous_invalid_result"]
     # Invalid twice must remain a failure, not a fabricated KEEP success.
     invalid_provider = FakeLLMProvider(lambda _: first.model_dump_json())
-    service._structured = StructuredTaskRunner(LegacyTaskModelExecutor(invalid_provider))
+    service._structured = StructuredTaskRunner(InjectedModelExecutor(invalid_provider))
     with pytest.raises(StructuredTaskError) as failed:
         await service._preview_decide(payload, self_memory=False)
     assert failed.value.attempts == len(invalid_provider.requests) == 2

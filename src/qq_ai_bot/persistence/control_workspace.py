@@ -12,7 +12,7 @@ import binascii
 import json
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from jsonschema import Draft202012Validator
 
@@ -23,13 +23,14 @@ from qq_ai_bot.control_plane.principal import ControlPrincipal
 from qq_ai_bot.control_plane.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_types import ActivityView, ControlQueryError
 from qq_ai_bot.domain.identity import PrincipalId, RequestId
+from qq_ai_bot.persistence.control_management import ManagementMutation
 from qq_ai_bot.sandbox.client import SandboxClient, sandbox_tools
 from qq_ai_bot.workspace.files import MAX_CONTROL_UPLOAD, FileWorkspace
 from qq_ai_bot.workspace.service import WorkspaceService
 from qq_ai_bot.workspace.store import WorkspaceError
 from qq_ai_bot.workspace.tools import workspace_tools
 
-MAX_UPLOAD_BYTES = 640 * 1024
+MAX_UPLOAD_BYTES = 4 * 1024 * 1024
 FILE_ACTIONS = {
     name: f"workspace_{name}" for name in ("write", "mkdir", "move", "delete", "patch", "publish")
 }
@@ -59,15 +60,7 @@ def file_schema(method: str) -> dict[str, Any]:
             "required": ["path", "base64", "expected_version"],
             "additionalProperties": False,
         }
-    schema: dict[str, Any] = plain(SCHEMAS[method])
-    for key in (
-        "artifact_id",
-        "expected_revision",
-        *(("name",) if method == "workspace_write" else ()),
-    ):
-        schema["properties"].pop(key, None)
-    schema["required"] = list(dict.fromkeys([*schema.get("required", []), "path"]))
-    return schema
+    return cast(dict[str, Any], plain(SCHEMAS[method]))
 
 
 def path_parts(path: str) -> tuple[str, ...]:
@@ -103,21 +96,6 @@ def arguments(parsed: ManagementActionPayload, *, terminal: bool = False) -> dic
             if len(content) > MAX_CONTROL_UPLOAD:
                 raise ValueError("upload too large")
     return args
-
-
-def upload(parsed: ManagementActionPayload) -> tuple[str, bytes]:
-    spec = plain(parsed.spec or {})
-    if set(spec) != {"name", "base64"} or not all(type(v) is str for v in spec.values()):
-        raise ValueError("invalid upload")
-    name = spec["name"]
-    if not name or len(name) > 128 or any(c in name for c in "\\/:\x00") or name in {".", ".."}:
-        raise ValueError("invalid artifact name")
-    if len(spec["base64"]) > (MAX_UPLOAD_BYTES + 2) // 3 * 4:
-        raise ValueError("upload too large")
-    data = base64.b64decode(spec["base64"], validate=True)
-    if len(data) > MAX_UPLOAD_BYTES:
-        raise ValueError("upload too large")
-    return name, data
 
 
 class ControlWorkspace:
@@ -219,42 +197,15 @@ class ControlWorkspace:
         command: ControlCommand,
         parsed: ManagementActionPayload,
         operation: str,
-    ) -> tuple[str, int, str]:
+        *,
+        prepared: object = None,
+    ) -> ManagementMutation:
         if self.workspace is None:
             raise ControlQueryError(Problem(ProblemCode.OPERATION_UNAVAILABLE))
-        if operation == "control.workspace.mutate":
-            if parsed.action == "upload":
-                name, data = upload(parsed)
-                result = await self.workspace.upload_file(
-                    name, data, request_id=command.request_id.text
-                )
-            elif parsed.action == "edit":
-                result = await self.workspace.execute(
-                    "workspace_write",
-                    {
-                        **plain(parsed.spec or {}),
-                        "artifact_id": parsed.resource_id,
-                        "expected_revision": command.expected_revision,
-                    },
-                    request_id=command.request_id.text,
-                )
-            else:
-                await self.workspace.execute(
-                    "workspace_delete",
-                    {
-                        "artifact_id": parsed.resource_id,
-                        "expected_revision": command.expected_revision,
-                    },
-                    request_id=command.request_id.text,
-                )
-                return parsed.resource_id, command.expected_revision + 1, "deleted"
-            return (
-                result["artifact_id"],
-                result["revision"],
-                "saved_import_failed" if result.get("file_error") else "saved",
-            )
         terminal = operation == "control.terminal.mutate"
-        args = arguments(parsed, terminal=terminal)
+        if not isinstance(prepared, dict):
+            raise ValueError("workspace arguments were not prepared")
+        args = prepared
         method = (TERMINAL_ACTIONS if terminal else FILE_ACTIONS)[parsed.action]
         request = (
             f"control:{principal.principal_id.text}:{command.request_id.text}"
@@ -272,4 +223,4 @@ class ControlWorkspace:
                 raise RuntimeError("external workspace effect unknown")
             raise WorkspaceError(str(error))
         resource = str(result["run_id"]) if terminal else parsed.resource_id
-        return resource, 1, "accepted" if terminal else "saved"
+        return ManagementMutation(resource, 1, "accepted" if terminal else "saved")

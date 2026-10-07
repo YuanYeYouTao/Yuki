@@ -1104,37 +1104,6 @@ class PeopleRepository:
         return tuple(scopes[key] for key in sorted(scopes))
 
 
-class UserProfileRepository(PeopleRepository):
-    """Backward-compatible name used by identity services."""
-
-    async def upsert(
-        self,
-        *,
-        user_id: str,
-        nickname: str,
-        group_id: str | None = None,
-        group_card: str = "",
-        nickname_known: bool = True,
-        group_card_known: bool = True,
-        initial_affection: int | None = None,
-        initial_trust: int | None = None,
-        is_bot: bool = False,
-        expected_person_id: str | None = None,
-    ) -> None:
-        await self.observe(
-            user_id=user_id,
-            nickname=nickname,
-            group_id=group_id,
-            group_card=group_card,
-            nickname_known=nickname_known,
-            group_card_known=group_card_known,
-            initial_affection=initial_affection,
-            initial_trust=initial_trust,
-            is_bot=is_bot,
-            expected_person_id=expected_person_id,
-        )
-
-
 class GroupSettingsRepository:
     """Persist group observation and autonomous participation settings."""
 

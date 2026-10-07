@@ -96,12 +96,6 @@ def estimate_request_tokens(request: ChatRequest) -> int:
         value["native_tools"] = [asdict(tool) for tool in request.native_tools]
     if request.continuation is not None:
         value["continuation"] = request.continuation
-    if request.function_outputs:
-        value["function_outputs"] = [asdict(item) for item in request.function_outputs]
-    if request.continuation_messages:
-        value["continuation_messages"] = [
-            _message_input(message) for message in request.continuation_messages
-        ]
     if request.continuation_items:
         value["continuation_items"] = [
             _message_input(item) if isinstance(item, ChatMessage) else asdict(item)

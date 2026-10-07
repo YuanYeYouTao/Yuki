@@ -15,10 +15,6 @@ class ControlCommandPort(Protocol):
         self, principal: ControlPrincipal, target: object, command: ControlCommand
     ) -> ControlResult: ...
 
-    async def mutate_workspace(
-        self, principal: ControlPrincipal, target: object, command: ControlCommand
-    ) -> ControlResult: ...
-
     async def mutate_environment_file(
         self, principal: ControlPrincipal, target: object, command: ControlCommand
     ) -> ControlResult: ...

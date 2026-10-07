@@ -73,8 +73,15 @@ def message(text: str = "/ai on", *, message_id: str = "restore-1") -> InboundMe
 
 
 async def stack(database: Database) -> tuple[ApplicationContainer, Bot, str, str, str]:
+    from pathlib import Path
+
+    from sqlalchemy.engine import make_url
+    from tests.support.model_profiles import write_fake_profiles
+
+    profiles = write_fake_profiles(Path(make_url(database.url).database).parent / "models.toml")
     app = ApplicationContainer(
-        make_settings(database.url, plugin_system_enabled=False), database=database
+        make_settings(database.url, plugin_system_enabled=False, model_profiles_file=profiles),
+        database=database,
     )
     async with database.immediate_session() as session:
         await ensure_person(session, "9000")

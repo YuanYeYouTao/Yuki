@@ -132,6 +132,9 @@ class WorkWaitRepository:
             if row is None:
                 return None
             conditions = json.loads(row["conditions_json"])
+            for condition in conditions:
+                if isinstance(condition.get("matched"), dict):
+                    condition["matched"].pop("text", None)
             return {
                 "wait_id": row["id"],
                 "status": row["status"],
@@ -471,6 +474,9 @@ class WorkWaitRepository:
         delivered_input: int | None = None
         for binding in rows:
             conditions = json.loads(binding["conditions_json"])
+            for condition in conditions:
+                if isinstance(condition.get("matched"), dict):
+                    condition["matched"].pop("text", None)
             changed = False
             for condition in conditions:
                 if (
@@ -491,7 +497,7 @@ class WorkWaitRepository:
                 condition["matched"] = {
                     "event_id": event.id,
                     "kind": kind,
-                    "text": event.content[:7000],
+                    "at": now,
                 }
                 changed = True
             if not changed:
@@ -635,6 +641,9 @@ class WorkWaitRepository:
         ):
             return [], "invalidated"
         conditions = json.loads(binding["conditions_json"])
+        for condition in conditions:
+            if isinstance(condition.get("matched"), dict):
+                condition["matched"].pop("text", None)
         changed = False
         for condition in conditions:
             if condition["matched"] is not None:

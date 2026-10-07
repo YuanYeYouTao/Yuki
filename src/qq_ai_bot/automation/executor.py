@@ -16,7 +16,6 @@ from qq_ai_bot.automation.authority import (
     AuthorityContext,
     DelegatedAuthority,
     PermissionLevel,
-    permission_for_accounts,
 )
 from qq_ai_bot.automation.context import AutomationBindError, bind_automation_conversation
 from qq_ai_bot.automation.gateway import ProactiveGatewayError
@@ -50,7 +49,6 @@ from qq_ai_bot.domain.identity import PersonId, PrincipalId
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
-    IdentityBindingModel,
     PresenceModel,
     SpaceBindingModel,
 )
@@ -86,6 +84,7 @@ class _ExecutionSnapshot:
     record: AutomationRecord
     allowed: frozenset[str]
     actor_is_superuser: bool
+    actor_user_id: str
 
 
 class AutomationExecutionError(RuntimeError):
@@ -177,14 +176,16 @@ class AutomationExecutor:
             phase = "changed"
         automation = snapshot.record
         if not self._settings.runtime_work_enabled and any(
-            step.call in {"yuki.agent", "yuki.generate"} for step in automation.script.steps
+            step.call in {"yuki.agent"} for step in automation.script.steps
         ):
             return ExecutionResult(
                 status=RunStatus.BLOCKED, error_category="automation_runtime_required"
             )
         allowed = snapshot.allowed
         actor_is_superuser = snapshot.actor_is_superuser
-        authority = DelegatedAuthority.model_validate(automation.authority_snapshot)
+        authority = DelegatedAuthority.model_validate(automation.authority_snapshot).model_copy(
+            update={"canonical_creator_person_id": automation.canonical_creator_person_id}
+        )
         if current_group_id is None:
             current_group_id = authority.current_group_id
         blocked_send = await self._revalidate_canonical_send(automation)
@@ -193,7 +194,8 @@ class AutomationExecutor:
         local = self._time.at(run.actual_started_at, automation.timezone)
         authority_context = AuthorityContext(
             origin=TurnOrigin.SCHEDULED_AUTOMATION,
-            actor_user_id=automation.creator_user_id,
+            actor_user_id=snapshot.actor_user_id,
+            actor_person_id=automation.canonical_creator_person_id,
             actor_is_superuser=actor_is_superuser,
             bot_user_id=automation.bot_user_id,
             principal_kind=automation.creator_kind,
@@ -212,6 +214,8 @@ class AutomationExecutor:
                 or fresh.record.authority_snapshot != automation.authority_snapshot
             ):
                 raise AutomationExecutionError("automation_changed")
+            if fresh.actor_user_id != snapshot.actor_user_id:
+                raise AutomationExecutionError("actor_identity_changed")
             if fresh.actor_is_superuser != actor_is_superuser:
                 raise AutomationExecutionError("actor_permission_changed")
             if capability is not None and (
@@ -379,12 +383,6 @@ class AutomationExecutor:
                     effect_evidence = {}
                     if index in model_deliveries:
                         raise AutomationExecutionError("model_delivery_requires_agent_send")
-                    if (
-                        step.call == "yuki.generate"
-                        and model_deliveries
-                        and not (phase == "agent" and index == next_step)
-                    ):
-                        raise AutomationExecutionError("model_delivery_requires_agent_send")
                     definition = self._registry.require(step.call)
                     active_definition = definition
                     if step.call not in allowed:
@@ -438,9 +436,7 @@ class AutomationExecutor:
                         and definition.provider_plugin_id is not None
                     )
                     await checkpoint(
-                        "agent"
-                        if resume_plugin or step.call in {"yuki.agent", "yuki.generate"}
-                        else "dispatching",
+                        "agent" if resume_plugin or step.call in {"yuki.agent"} else "dispatching",
                         index,
                         str(cursor["work_id"]) if resume_plugin else None,
                     )
@@ -451,7 +447,6 @@ class AutomationExecutor:
                             and step.call
                             not in {
                                 "yuki.agent",
-                                "yuki.generate",
                             }
                         ):
                             from qq_ai_bot.runtime.work_budget import (
@@ -769,7 +764,13 @@ class AutomationExecutor:
             loaded = await self._canonical_creator_principal(session, current)
             if isinstance(loaded, ExecutionResult):
                 return loaded
-            principal, current_permission = loaded
+            principal, current_permission, execution_user_id = loaded
+            original_authority = DelegatedAuthority.model_validate(current.authority_snapshot)
+            if (
+                original_authority.permission_level is not PermissionLevel.SUPERUSER
+                and current_permission is PermissionLevel.SUPERUSER
+            ):
+                current_permission = PermissionLevel.USER
             if current.creator_kind != "self" and (
                 not isinstance(principal, ControlPrincipal)
                 or not principal.authenticated
@@ -781,7 +782,10 @@ class AutomationExecutor:
                     summary={"reason": "control principal is no longer active"},
                 )
             allowed = frozenset(
-                item.name for item in self._registry.list() if item.permits(current_permission)
+                item.name
+                for item in self._registry.list()
+                if item.permits(current_permission)
+                and item.name in original_authority.granted_capabilities
             )
             if not {step.call for step in current.script.steps}.issubset(allowed):
                 return ExecutionResult(
@@ -793,6 +797,7 @@ class AutomationExecutor:
                 record=current,
                 allowed=allowed,
                 actor_is_superuser=current_permission is PermissionLevel.SUPERUSER,
+                actor_user_id=execution_user_id,
             )
 
     async def _validate_canonical_identity(
@@ -840,7 +845,7 @@ class AutomationExecutor:
 
     async def _canonical_creator_principal(
         self, session: Any, automation: AutomationRecord
-    ) -> tuple[ControlPrincipal | PrincipalRef, PermissionLevel] | ExecutionResult:
+    ) -> tuple[ControlPrincipal | PrincipalRef, PermissionLevel, str] | ExecutionResult:
         if automation.creator_kind == "self":
             scene = automation.authority_snapshot
             if (
@@ -882,7 +887,7 @@ class AutomationExecutor:
                 return ExecutionResult(
                     status=RunStatus.BLOCKED, error_category="self_scene_changed"
                 )
-            return SELF, PermissionLevel.SELF
+            return SELF, PermissionLevel.SELF, ""
         creator_id = automation.canonical_creator_person_id
         if not creator_id:
             return ExecutionResult(
@@ -897,26 +902,15 @@ class AutomationExecutor:
                 error_category="delegated_authority_revoked",
                 summary={"reason": "canonical creator is missing or disabled"},
             )
-        accounts = list(
-            await session.scalars(
-                select(IdentityBindingModel.external_account_id).where(
-                    IdentityBindingModel.person_id == creator_id,
-                    IdentityBindingModel.status == "active",
-                )
+        from qq_ai_bot.automation.control_context import resolve_execution_identity
+
+        try:
+            execution_user_id, current_permission = await resolve_execution_identity(
+                session, self._settings, owner_id=creator_id
             )
-        )
-        if not accounts:
-            return ExecutionResult(
-                status=RunStatus.BLOCKED,
-                error_category="delegated_authority_revoked",
-                summary={"reason": "canonical creator has no active binding"},
-            )
+        except (PermissionError, ValueError) as exc:
+            return ExecutionResult(status=RunStatus.BLOCKED, error_category=str(exc))
         person_id = PersonId.parse(creator_id)
-        if automation.creator_user_id not in accounts:
-            return ExecutionResult(
-                status=RunStatus.BLOCKED, error_category="actor_identity_changed"
-            )
-        current_permission = permission_for_accounts(self._settings, (automation.creator_user_id,))
         principal = ControlPrincipal(
             principal_id=PrincipalId.parse(person_id.text),
             person_id=person_id,
@@ -926,7 +920,7 @@ class AutomationExecutor:
             authenticated=True,
             active=True,
         )
-        return principal, current_permission
+        return principal, current_permission, execution_user_id
 
     async def _revalidate_canonical_send(
         self, automation: AutomationRecord
@@ -969,7 +963,7 @@ class AutomationExecutor:
             2
             if definition.retry_policy is RetryPolicy.TRANSIENT_ONCE
             and definition.risk_class is RiskClass.READ
-            and definition.name not in {"yuki.agent", "yuki.generate"}
+            and definition.name not in {"yuki.agent"}
             else 1
         )
         for attempt in range(attempts):

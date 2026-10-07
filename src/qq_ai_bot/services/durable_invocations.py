@@ -175,6 +175,13 @@ class DurableInvocations:
                         work_state=bounded.ending or "running",
                         work_id=bounded.current["id"],
                     )
+            # Cancellation can revoke the lease while a domain fact is being
+            # settled. The stored Work, rather than a stale in-memory ending,
+            # decides whether its owning callback may schedule another attempt.
+            if result.work_id is not None:
+                settled = await repository.get(result.work_id)
+                if settled is not None:
+                    result = replace(result, work_state=settled["state"])
             return replace(result, outcome=bounded.outcome)
 
 

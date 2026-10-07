@@ -27,7 +27,7 @@ from qq_ai_bot.config import Settings
 class ExecutionPlan(StrictModel):
     """Backend-generated plan; only the contained script is persisted and executed."""
 
-    strategy: Literal["static", "generated", "agentic"]
+    strategy: Literal["static", "agentic"]
     script: AutomationScript
     warnings: tuple[str, ...] = ()
 

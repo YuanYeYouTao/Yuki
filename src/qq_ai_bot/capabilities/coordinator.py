@@ -6,11 +6,13 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol
 
+from qq_ai_bot.capabilities.invocation import Invocation, direct_invocations
 from qq_ai_bot.domain.messages import ToolCall
 from qq_ai_bot.execution_trace.recorder import trace_span
+from qq_ai_bot.services.invocation_service import BatchPlan, InvocationService
 
 logger = logging.getLogger(__name__)
 TOOL_RESULT_MISSING = "tool_result_missing"
@@ -25,9 +27,15 @@ MISSING_TOOL_RESULT = json.dumps(
 
 
 class CoordinatedToolBackend(Protocol):
-    async def execute(self, name: str, arguments_json: str, runtime: Any) -> str: ...
+    async def execute_call(self, invocation: Invocation) -> str: ...
 
     def parallel_safe(self, name: str, runtime: Any) -> bool: ...
+
+    def is_side_effecting(self, name: str, arguments: str, runtime: Any) -> bool:
+        return True
+
+    def counts_toward_limit(self, name: str, runtime: Any) -> bool:
+        return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +43,7 @@ class CoordinatedToolResult:
     calls: tuple[tuple[ToolCall, str, bool], ...]
     executed_count: int
     reused_count: int = 0
+    evidence: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 class ToolInvocationCoordinator:
@@ -49,6 +58,9 @@ class ToolInvocationCoordinator:
         remaining_calls: int,
         max_parallel_calls: int,
         before_execute: Callable[[ToolCall], Awaitable[str | None]] | None = None,
+        chain_id: str = "",
+        request_sequence: int = 0,
+        manifest_revision: str = "",
     ) -> CoordinatedToolResult:
         if remaining_calls < 0 or max_parallel_calls <= 0:
             raise ValueError("tool call budgets must be non-negative and parallelism positive")
@@ -68,16 +80,34 @@ class ToolInvocationCoordinator:
             )
 
         def counts_toward_limit(call: ToolCall) -> bool:
-            check = getattr(backend, "counts_toward_limit", None)
-            return not callable(check) or bool(check(call.function.name, runtime))
+            return backend.counts_toward_limit(call.function.name, runtime)
 
         overflow_ids: set[str] = set()
         rejected_ids: set[str] = set()
         counted_executions = 0
         results: dict[str, str] = {}
+        facts: dict[str, dict[str, Any]] = {}
+        plan = BatchPlan.prepare(calls)
+        invocations = {
+            invocation.call.id: invocation
+            for invocation in direct_invocations(
+                calls,
+                runtime,
+                chain_id=chain_id,
+                request_sequence=request_sequence,
+                manifest_revision=manifest_revision,
+            )
+        }
+        service = InvocationService()
 
         async def admit(call: ToolCall) -> bool:
             nonlocal counted_executions
+            if call.id in plan.conflicting_ids:
+                results[call.id] = json.dumps(
+                    {"ok": False, "executed": False, "error": "duplicate_provider_call_id"}
+                )
+                rejected_ids.add(call.id)
+                return False
             if before_execute is not None:
                 rejection = await before_execute(call)
                 if rejection is not None:
@@ -104,33 +134,35 @@ class ToolInvocationCoordinator:
             nonlocal counted_executions
 
             async def invoke() -> str:
-                return await backend.execute(call.function.name, call.function.arguments, runtime)
+                return await backend.execute_call(invocations[call.id])
 
-            control = getattr(runtime, "work_control", None)
-            session = getattr(control, "session", None)
-            check_effect = getattr(backend, "is_side_effecting", None)
-            side_effecting = not callable(check_effect) or bool(
-                check_effect(
-                    call.function.name,
-                    call.function.arguments,
-                    runtime,
-                )
+            side_effecting = backend.is_side_effecting(
+                call.function.name, call.function.arguments, runtime
             )
-            results[call.id] = (
-                await session.execute(
-                    call,
-                    invoke,
-                    side_effecting=side_effecting,
-                    allow_pending=call.function.name == "send_message",
-                )
-                if session
-                else await invoke()
+            from qq_ai_bot.runtime.effect_outcomes import (
+                ResultCapture,
+                current_result_capture,
+                execution_evidence,
             )
+
+            capture = ResultCapture("", invocations[call.id].identity.operation_id)
+            token = current_result_capture.set(capture)
             try:
-                receipt = json.loads(results[call.id])
-            except ValueError:
-                receipt = None
-            if isinstance(receipt, dict) and receipt.get("executed") is False:
+                results[call.id] = await service.invoke(
+                    invocations[call.id], invoke, side_effecting=side_effecting
+                )
+            finally:
+                current_result_capture.reset(token)
+            if capture.evidence is not None:
+                facts[call.id] = capture.evidence
+            elif capture.outcome is not None:
+                facts[call.id] = execution_evidence(
+                    capture.outcome,
+                    tool=call.function.name,
+                    side_effecting=side_effecting,
+                    arguments=call.function.arguments,
+                )
+            if facts.get(call.id, {}).get("executed") is False:
                 rejected_ids.add(call.id)
                 if counts_toward_limit(call):
                     counted_executions -= 1
@@ -139,8 +171,7 @@ class ToolInvocationCoordinator:
             # Delivery must finish before a subsequent read-safe stretch can start.
             if call.function.name == "send_message":
                 return False
-            check = getattr(backend, "parallel_safe", None)
-            return bool(callable(check) and check(call.function.name, runtime))
+            return backend.parallel_safe(call.function.name, runtime)
 
         index = 0
         while index < len(calls):
@@ -177,6 +208,7 @@ class ToolInvocationCoordinator:
                 rejected_ids=rejected_ids,
             ),
             counted_executions,
+            evidence=facts,
         )
 
 

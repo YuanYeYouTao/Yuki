@@ -211,7 +211,7 @@ class ToolArtifactRepository:
         from qq_ai_bot.runtime.effect_outcomes import current_result_capture
 
         capture = current_result_capture.get()
-        if capture is not None and work_id is None:
+        if capture is not None and capture.work_id and capture.effect_key and work_id is None:
             work_id, effect_key = capture.work_id, capture.effect_key
         handle = uuid.uuid4().hex
         relative = f"{handle}.json"
@@ -243,53 +243,50 @@ class ToolArtifactRepository:
                 raise ValueError("tool_artifact_capacity")
             await asyncio.to_thread(self._publish, path, encoded)
             now = datetime.now(UTC)
-            try:
-                async with self._database.immediate_session() as session:
-                    if access is not None:
-                        if (
-                            not await session.scalar(
-                                select(CanonicalConversationModel.id).where(
-                                    CanonicalConversationModel.id == access.conversation_id,
-                                    CanonicalConversationModel.generation == access.generation,
-                                )
+            # Cancellation can arrive after COMMIT: bounded orphan maintenance
+            # owns unregistered files; never unlink a potentially durable ref here.
+            async with self._database.immediate_session() as session:
+                if access is not None:
+                    if (
+                        not await session.scalar(
+                            select(CanonicalConversationModel.id).where(
+                                CanonicalConversationModel.id == access.conversation_id,
+                                CanonicalConversationModel.generation == access.generation,
                             )
-                            or int(
-                                await session.scalar(
-                                    select(ExecutionTraceStateModel.privacy_generation).where(
-                                        ExecutionTraceStateModel.id == 1
-                                    )
-                                )
-                                or 0
-                            )
-                            != privacy
-                        ):
-                            raise ValueError("artifact_source_changed")
-                    if work_id is not None:
-                        from qq_ai_bot.runtime.work_schema_v1 import work
-
-                        if not await session.scalar(select(work.c.id).where(work.c.id == work_id)):
-                            raise ValueError("tool_artifact_work_unavailable")
-                    session.add(
-                        ToolArtifactModel(
-                            handle_id=handle,
-                            provider_id=provider_id[:128],
-                            tool_name=tool_name[:255],
-                            relative_path=relative,
-                            media_type=media_type[:128],
-                            byte_size=len(encoded),
-                            created_at=now,
-                            expires_at=now + timedelta(seconds=retention),
-                            work_id=work_id,
-                            effect_key=effect_key,
-                            access_json=access_json,
-                            sha256=digest,
-                            deleting=False,
                         )
+                        or int(
+                            await session.scalar(
+                                select(ExecutionTraceStateModel.privacy_generation).where(
+                                    ExecutionTraceStateModel.id == 1
+                                )
+                            )
+                            or 0
+                        )
+                        != privacy
+                    ):
+                        raise ValueError("artifact_source_changed")
+                if work_id is not None:
+                    from qq_ai_bot.runtime.work_schema_v1 import work
+
+                    if not await session.scalar(select(work.c.id).where(work.c.id == work_id)):
+                        raise ValueError("tool_artifact_work_unavailable")
+                session.add(
+                    ToolArtifactModel(
+                        handle_id=handle,
+                        provider_id=provider_id[:128],
+                        tool_name=tool_name[:255],
+                        relative_path=relative,
+                        media_type=media_type[:128],
+                        byte_size=len(encoded),
+                        created_at=now,
+                        expires_at=now + timedelta(seconds=retention),
+                        work_id=work_id,
+                        effect_key=effect_key,
+                        access_json=access_json,
+                        sha256=digest,
+                        deleting=False,
                     )
-            except BaseException:
-                # A cancellation can arrive after COMMIT. Leave publication for
-                # bounded orphan maintenance instead of deleting a durable ref.
-                raise
+                )
         return handle
 
     @staticmethod
@@ -367,6 +364,7 @@ class ToolArtifactRepository:
         limit: int = 8000,
         query: str = "",
         max_characters: int = 8000,
+        item_limit: int | None = None,
         access: ArtifactAccess | None = None,
     ) -> dict[str, object] | None:
         if offset < 0 or limit <= 0 or max_characters <= 0:
@@ -422,8 +420,6 @@ class ToolArtifactRepository:
         except OSError:
             return _artifact_error("artifact_missing", "Artifact 正文缺失，执行回执仍然有效")
         if media_type == _PRIVATE_MEDIA_TYPE:
-            if access is None:
-                return _artifact_error("artifact_not_authorized", "图片 Artifact 需要原读取授权")
             try:
                 decoded_media = json.loads(content)
                 prepared_images = tuple(
@@ -442,11 +438,8 @@ class ToolArtifactRepository:
                 "provider_id": provider_id,
                 "tool_name": tool_name,
             }
-            # Text and JSON readers can only see this manifest. Never expose
-            # the archive encoding through generic get/search/text operations.
-            if operation != "image":
-                return manifest
-            # Forget/reset may race the file read; recheck after I/O as well.
+        if access is not None:
+            # Erasure, generation changes and GC may race the bounded file I/O.
             async with self._database.sessions() as session:
                 current = await session.get(ToolArtifactModel, handle_id)
                 if (
@@ -462,7 +455,11 @@ class ToolArtifactRepository:
                         )
                     )
                 ):
-                    return _artifact_error("artifact_not_authorized", "图片 Artifact 来源已失效")
+                    return _artifact_error("artifact_not_authorized", "Artifact 来源已失效")
+        if media_type == _PRIVATE_MEDIA_TYPE:
+            # Generic readers receive only the manifest, never archive pixels.
+            if operation != "image":
+                return manifest
             return PreparedMediaData(manifest, prepared_images)
         if operation == "image":
             return _artifact_error("artifact_not_image", "该 Artifact 没有原生图片结果")
@@ -473,6 +470,7 @@ class ToolArtifactRepository:
                 offset=offset,
                 limit=limit,
                 query=query,
+                max_characters=max_characters,
             )
         if operation not in {"inspect", "get", "search"}:
             return _artifact_error(
@@ -503,7 +501,7 @@ class ToolArtifactRepository:
                 resolved,
                 path=path,
                 offset=offset,
-                limit=min(limit, _MAX_JSON_PAGE_ITEMS),
+                limit=min(limit, _MAX_JSON_PAGE_ITEMS, item_limit or _MAX_JSON_PAGE_ITEMS),
                 base=base,
                 max_characters=max_characters,
             )
@@ -512,7 +510,9 @@ class ToolArtifactRepository:
                 resolved,
                 path=path,
                 offset=offset,
-                limit=min(limit, _MAX_JSON_PAGE_ITEMS),
+                limit=limit
+                if isinstance(resolved, str)
+                else min(limit, _MAX_JSON_PAGE_ITEMS, item_limit or _MAX_JSON_PAGE_ITEMS),
                 base=base,
                 max_characters=max_characters,
             )
@@ -523,7 +523,7 @@ class ToolArtifactRepository:
             path=path,
             query=query,
             offset=offset,
-            limit=min(limit, _MAX_JSON_PAGE_ITEMS),
+            limit=min(limit, _MAX_JSON_PAGE_ITEMS, item_limit or _MAX_JSON_PAGE_ITEMS),
             base=base,
             max_characters=max_characters,
         )
@@ -621,6 +621,7 @@ class ToolArtifactRepository:
                         )
                     ).scalars()
                 )
+            unlinked: list[str] = []
             for row in rows:
                 path = (self._root / row.relative_path).resolve()
                 if self._root.resolve() in path.parents:
@@ -630,16 +631,18 @@ class ToolArtifactRepository:
                         continue
                 else:
                     continue
+                unlinked.append(row.handle_id)
+            if unlinked:
                 async with self._database.immediate_session() as writer:
-                    deleted = await writer.scalar(
+                    deleted = await writer.scalars(
                         delete(ToolArtifactModel)
                         .where(
-                            ToolArtifactModel.handle_id == row.handle_id,
+                            ToolArtifactModel.handle_id.in_(unlinked),
                             ToolArtifactModel.deleting.is_(True),
                         )
                         .returning(ToolArtifactModel.handle_id)
                     )
-                    removed += int(deleted is not None)
+                    removed += len(tuple(deleted))
         return removed
 
 
@@ -650,6 +653,7 @@ def _read_text_artifact(
     offset: int,
     limit: int,
     query: str,
+    max_characters: int = 8000,
 ) -> dict[str, object]:
     start = offset
     if query:
@@ -665,16 +669,35 @@ def _read_text_artifact(
                 "query_matched": False,
             }
         start = found
-    end = min(len(content), start + limit)
-    return {
-        "handle": handle_id,
-        "mode": "text",
-        "offset": start,
-        "next_offset": end if end < len(content) else None,
-        "total_characters": len(content),
-        "content": content[start:end],
-        "query_matched": True if query else None,
-    }
+
+    def page(length: int) -> dict[str, object]:
+        end = min(len(content), start + length)
+        return {
+            "handle": handle_id,
+            "mode": "text",
+            "offset": start,
+            "next_offset": end if end < len(content) else None,
+            "total_characters": len(content),
+            "content": content[start:end],
+            "query_matched": True if query else None,
+        }
+
+    low, high = 0, min(limit, max(0, len(content) - start))
+    while low < high:
+        middle = (low + high + 1) // 2
+        if _fits_json_budget(page(middle), max_characters):
+            low = middle
+        else:
+            high = middle - 1
+    if not _fits_json_budget(page(low), max_characters) or (low == 0 and start < len(content)):
+        return {
+            "error_code": "artifact_budget_too_small",
+            "handle": handle_id,
+            "offset": start,
+            "next_offset": start,
+            "detail": "预算不足以返回一个字符",
+        }
+    return page(low)
 
 
 def _logical_artifact_root(value: object) -> tuple[object, str]:
@@ -757,6 +780,15 @@ def _inspect_json(
             if _fits_json_budget(candidate, max_characters):
                 return candidate
             selected.pop()
+        if offset < len(keys):
+            return _artifact_error(
+                "artifact_budget_too_small",
+                "无法放入一个子项，请增大预算",
+                **base,
+                path=list(path),
+                offset=offset,
+                next_offset=offset,
+            )
         result.update({"total_children": len(keys), "children": [], "next_offset": None})
     elif isinstance(value, list):
         selected = value[offset : offset + limit]
@@ -775,6 +807,15 @@ def _inspect_json(
             if _fits_json_budget(candidate, max_characters):
                 return candidate
             selected = selected[:-1]
+        if offset < len(value):
+            return _artifact_error(
+                "artifact_budget_too_small",
+                "无法放入一个子项，请增大预算",
+                **base,
+                path=list(path),
+                offset=offset,
+                next_offset=offset,
+            )
         result.update({"length": len(value), "children": [], "next_offset": None})
     elif isinstance(value, str):
         result["characters"] = len(value)
@@ -792,8 +833,48 @@ def _get_json(
     base: dict[str, object],
     max_characters: int,
 ) -> dict[str, object]:
+    if isinstance(value, str):
+        # Strings page by Unicode characters; workspace cursors remain bytes.
+        # Fit the encoded page, including escaping and its metadata, not a preview.
+        def string_page(length: int) -> dict[str, object]:
+            end = offset + length
+            return {
+                **base,
+                "path": list(path),
+                "type": "string",
+                "value": value[offset:end],
+                "offset": offset,
+                "offset_unit": "characters",
+                "next_offset": end if end < len(value) else None,
+                "total_characters": len(value),
+                "truncated": end < len(value),
+            }
+
+        low, high = 0, min(limit, max(0, len(value) - offset))
+        while low < high:
+            middle = (low + high + 1) // 2
+            if _fits_json_budget(string_page(middle), max_characters):
+                low = middle
+            else:
+                high = middle - 1
+        if not _fits_json_budget(string_page(low), max_characters) or (
+            low == 0 and offset < len(value)
+        ):
+            return _artifact_error(
+                "artifact_budget_too_small",
+                "预算不足以返回一个字符",
+                **base,
+                path=list(path),
+                offset=offset,
+                next_offset=offset,
+            )
+        return string_page(low)
     direct = {**base, "path": list(path), "type": _json_type(value), "value": value}
-    if offset == 0 and _fits_json_budget(direct, max_characters):
+    if (
+        offset == 0
+        and (not isinstance(value, (dict, list)) or len(value) <= limit)
+        and _fits_json_budget(direct, max_characters)
+    ):
         return direct
     if isinstance(value, dict):
         keys = sorted(value, key=lambda item: str(item).casefold())
@@ -949,6 +1030,15 @@ def _search_json(
         if not _fits_json_budget(aggregate, max_characters):
             break
         rendered.append(candidate)
+    if selected and not rendered:
+        return _artifact_error(
+            "artifact_budget_too_small",
+            "无法放入一个匹配，请增大预算或读取更深path",
+            **base,
+            path=list(path),
+            offset=offset,
+            next_offset=offset,
+        )
     has_more = offset + len(rendered) < len(ordered) or len(rendered) < len(selected)
     return {
         **base,
@@ -1030,8 +1120,9 @@ def _path_sort_key(path: tuple[str | int, ...]) -> tuple[str, ...]:
 
 
 def _fits_json_budget(value: object, max_characters: int) -> bool:
-    size = _json_size(value, compact=True)
-    return size is not None and size <= max(256, max_characters - 512)
+    from qq_ai_bot.capabilities.results import artifact_page_fits
+
+    return artifact_page_fits(value, max_characters)
 
 
 def _json_size(value: object, *, compact: bool = False) -> int | None:

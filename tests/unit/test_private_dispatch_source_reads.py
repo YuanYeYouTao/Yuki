@@ -9,6 +9,7 @@ from tests.conftest import MemorySender, build_harness, make_settings
 from tests.support.fixed_contract_fixture import bind_main_contract
 from tests.support.runtime_wire import install_wire
 from tests.support.social_identity_cases import social_env
+from tests.support.work_session import WorkSession
 from tests.unit.test_commands_and_chat import inbound
 
 from qq_ai_bot.conversation.projections import PromptProjectionRepository
@@ -17,7 +18,7 @@ from qq_ai_bot.domain.messages import ChatResponse
 from qq_ai_bot.execution_trace.recorder import TraceRecorder
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.persistence.diagnostic_writer import DiagnosticWriter
-from qq_ai_bot.runtime.work_session import WorkSession
+from qq_ai_bot.runtime.work_session import WorkSession as RuntimeWorkSession
 from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
 
 
@@ -72,7 +73,7 @@ async def test_private_fresh_and_warm_dispatch_share_snapshot_proofs_only(
         return call
 
     monkeypatch.setattr(database, "sessions", sessions)
-    monkeypatch.setattr(WorkSession, "restore", wrapped(WorkSession.restore, "restore"))
+    monkeypatch.setattr(RuntimeWorkSession, "restore", wrapped(WorkSession.restore, "restore"))
     monkeypatch.setattr(WorkSourceGuard, "check", wrapped(WorkSourceGuard.check, "guard"))
     monkeypatch.setattr(
         PromptProjectionRepository,
@@ -93,7 +94,6 @@ async def test_private_fresh_and_warm_dispatch_share_snapshot_proofs_only(
                 bot_user_id=env.bot.self_id,
                 scope_type=ScopeType.PRIVATE,
                 conversation_id=receipt.event.canonical_conversation_id,
-                legacy_conversation_key=receipt.scope.runtime_scope_key,
                 person_id=env.person,
                 presence_id=env.presence,
             )

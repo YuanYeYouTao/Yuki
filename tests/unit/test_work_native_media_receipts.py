@@ -6,6 +6,7 @@ from hashlib import sha256
 
 import pytest
 from sqlalchemy import select, update
+from tests.support.work_session import WorkSession
 from tests.unit.test_semantic_participation_host import _event_and_route
 from tests.unit.test_work_effect_results import owned_session
 from tests.unit.test_work_protocol_continuity import _control
@@ -23,7 +24,6 @@ from qq_ai_bot.runtime.protocol_schema import refs
 from qq_ai_bot.runtime.work_journal import JournalUnavailable
 from qq_ai_bot.runtime.work_repository import WorkConflict
 from qq_ai_bot.runtime.work_schema_v1 import effects
-from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.services.turn_transcript import TurnTranscript, validating_request
 
 

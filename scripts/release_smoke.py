@@ -25,13 +25,11 @@ _MODEL_TASKS = (
     "memory_attribution",
     "relationship_evaluation",
     "emoji_replacement",
-    "automation_text_generation",
     "automation_agent",
     "plugin_agent_session",
     "utility_structured",
     "conversation_compaction",
 )
-_SMOKE_PLUGIN_ID = "io.github.yuanyeyoutao.kun-game"
 
 
 class Compose:
@@ -81,6 +79,8 @@ def validate_production_compose(deploy_directory: Path, version: str, compose: C
             )
         if services[service].get("platform") != "linux/amd64":
             raise SmokeError(f"{service} does not resolve to linux/amd64")
+    if services["bot"].get("environment", {}).get("CODE_MODE_ENABLED") != "false":
+        raise SmokeError("default release must explicitly select direct mode")
     snowluma = services["snowluma"]
     if snowluma["image"] != "motricseven7/snowluma:latest":
         raise SmokeError("SnowLuma image does not resolve to the configured official image")
@@ -130,6 +130,8 @@ def prepare_deployment(deploy_directory: Path) -> dict[Path, str]:
             ),
             "LLM_API_KEY=replace-with-api-key": "LLM_API_KEY=release-smoke-key",
             "LLM_MODEL=replace-with-model-name": "LLM_MODEL=release-smoke-model",
+            "MEMORY_EMBEDDING_ENABLED=true": "MEMORY_EMBEDDING_ENABLED=false",
+            "WEB_MODE=native": "WEB_MODE=disabled",
         }
         for old, new in replacements.items():
             environment = environment.replace(old, new)
@@ -195,54 +197,6 @@ def _enable_plugin_system(env_file: Path) -> None:
     env_file.write_text(text, encoding="utf-8")
 
 
-def discover_smoke_plugin_ids(deploy_directory: Path) -> tuple[str, ...]:
-    root = deploy_directory / "plugins"
-    if not root.is_dir():
-        return ()
-    ids = tuple(
-        sorted(
-            path.name
-            for path in root.iterdir()
-            if path.is_dir() and not path.name.startswith(".") and (path / "plugin.toml").is_file()
-        )
-    )
-    if _SMOKE_PLUGIN_ID in ids:
-        return (_SMOKE_PLUGIN_ID,)
-    return ids[:1]
-
-
-def write_plugin_pending(
-    deploy_directory: Path,
-    compose: Compose | None = None,
-) -> tuple[str, ...]:
-    selected = discover_smoke_plugin_ids(deploy_directory)
-    payload = (
-        json.dumps({"schema_version": 1, "selected_plugins": list(selected)}, ensure_ascii=False)
-        + "\n"
-    )
-    pending = deploy_directory / "data/setup/pending.json"
-    try:
-        pending.parent.mkdir(parents=True, exist_ok=True)
-        pending.write_text(payload, encoding="utf-8")
-    except OSError:
-        if compose is None:
-            raise
-        compose.run(
-            "exec",
-            "-T",
-            "bot",
-            "python",
-            "-c",
-            (
-                "from pathlib import Path; "
-                "path = Path('/app/data/setup/pending.json'); "
-                "path.parent.mkdir(parents=True, exist_ok=True); "
-                f"path.write_text({payload!r}, encoding='utf-8')"
-            ),
-        )
-    return selected
-
-
 def _read_healthz(compose: Compose) -> dict[str, Any]:
     command = (
         "import json,urllib.request; "
@@ -286,6 +240,7 @@ def wait_healthy(compose: Compose, service: str, timeout_seconds: float = 120.0)
 
 def verify_bot(compose: Compose, deploy_directory: Path, version: str) -> None:
     wait_healthy(compose, "bot")
+    compose.run("exec", "-T", "bot", "python", "/app/scripts/verify_monty_packaging.py", "direct")
     health = _read_healthz(compose)
     _assert_core_health(health, version)
     migration_command = (
@@ -302,29 +257,8 @@ def verify_bot(compose: Compose, deploy_directory: Path, version: str) -> None:
     )
     if alembic_version != "ok":
         raise SmokeError(f"unexpected Alembic version: {alembic_version!r}")
-    compose.run("exec", "-T", "bot", "qq-ai-bot-cli", "plugin", "discover", capture=True)
-    selected = write_plugin_pending(deploy_directory, compose)
-    compose.run(
-        "exec",
-        "-T",
-        "bot",
-        "qq-ai-bot-cli",
-        "setup",
-        "apply-pending",
-        "--deployment-root",
-        "/app",
-        "--no-color",
-        capture=True,
-    )
-    if not selected:
-        return
-    compose.run("up", "-d", "--no-deps", "--force-recreate", "bot")
-    wait_healthy(compose, "bot")
-    health = _read_healthz(compose)
-    _assert_core_health(health, version)
-    running = int(health.get("plugin_running_count") or 0)
-    if running < 1:
-        raise SmokeError(f"plugin did not start after apply-pending: {health}")
+    # Smoke validation is read-only; approval and plugin lifecycle belong to
+    # explicit setup, authenticated against the running PluginManager.
 
 
 def verify_guided_setup(deploy_directory: Path, version: str) -> None:

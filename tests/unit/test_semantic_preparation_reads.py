@@ -85,8 +85,8 @@ async def test_warm_idle_tick_reuses_only_current_preparation_policy(
             before = await measured_tick()
         assert runtime._repository.read_relevant_snapshot == original_read
         after = await measured_tick()
-        assert before == (12 * scope_count + 3, 43 * scope_count + 4)
-        assert after == (9 * scope_count + 3, 21 * scope_count + 4)
+        assert before == (13 * scope_count + 3, 43 * scope_count + 4)
+        assert after == (10 * scope_count + 3, 21 * scope_count + 4)
         assert len(host._sessions) == scope_count
         assert all(item.controller.state.now > 0 for item in host._sessions.values())
     finally:

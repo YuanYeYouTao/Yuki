@@ -105,7 +105,6 @@ from yuki_plugin_sdk.context import (
     EmojiFacade,
     GroupFacade,
     HttpFacade,
-    LLMFacade,
     MediaFacade,
     MemoryFacade,
     MessageFacade,
@@ -220,6 +219,7 @@ class PluginInvocation:
     origin: TurnOrigin
     actor_user_id: str
     bot_user_id: str
+    actor_person_id: str | None = None
     inbound: InboundMessage | None = field(default=None, repr=False)
     gateway: OneBotFacadeGateway | None = field(default=None, repr=False)
     runtime_config: RuntimeConfigSnapshot | None = field(default=None, repr=False)
@@ -246,7 +246,11 @@ class PluginInvocation:
                 raise ValueError("plugin invocation bot must match the real inbound event")
         if self.origin is TurnOrigin.SCHEDULED_AUTOMATION:
             authority = self.delegated_authority
-            if authority is None or authority.creator_user_id != self.actor_user_id:
+            if (
+                authority is None
+                or not self.actor_person_id
+                or authority.canonical_creator_person_id != self.actor_person_id
+            ):
                 raise ValueError("scheduled plugin invocation requires matching delegation")
         if self.inbound is not None:
             anchor = self.inbound.source_event_id
@@ -255,6 +259,7 @@ class PluginInvocation:
                     raise ValueError("plugin invocation event anchor mismatch")
                 object.__setattr__(self, "source_event_id", anchor)
             projection = projection_from_inbound(self.inbound)
+            object.__setattr__(self, "actor_person_id", self.inbound.person_id)
             object.__setattr__(self, "person_id", projection.person_id)
             object.__setattr__(self, "space_id", projection.space_id)
             object.__setattr__(self, "conversation_id", projection.conversation_id)
@@ -402,7 +407,6 @@ class HostPluginContext:
         "_features",
         "_groups",
         "_http",
-        "_llm",
         "_logger",
         "_media",
         "_memory",
@@ -447,7 +451,6 @@ class HostPluginContext:
         self._groups = _GroupFacade(self)
         self._memory = _MemoryFacade(self)
         self._relationship = _RelationshipFacade(self)
-        self._llm = _LLMFacade(self)
         self._agent = _AgentFacade(self)
         self._agent_sessions = _AgentSessionsFacade(self)
         self._web = _WebFacade(self)
@@ -502,10 +505,6 @@ class HostPluginContext:
     @property
     def relationship(self) -> RelationshipFacade:
         return self._relationship
-
-    @property
-    def llm(self) -> LLMFacade:
-        return self._llm
 
     @property
     def agent(self) -> AgentFacade:
@@ -719,7 +718,11 @@ class HostPluginContext:
         if invocation.origin is TurnOrigin.SCHEDULED_AUTOMATION:
             authority = invocation.delegated_authority
             allowed = invocation.allowed_capabilities
-            if authority is None or authority.creator_user_id != invocation.actor_user_id:
+            if (
+                authority is None
+                or not invocation.actor_person_id
+                or authority.canonical_creator_person_id != invocation.actor_person_id
+            ):
                 raise PluginPermissionError("scheduled invocation has no valid delegation")
             plugin_prefix = f"plugin.{self._plugin_id}."
             if not any(item.startswith(plugin_prefix) for item in allowed):
@@ -733,7 +736,9 @@ class HostPluginContext:
             delegated_task = bool(
                 invocation.origin is TurnOrigin.SCHEDULED_AUTOMATION
                 and invocation.delegated_authority is not None
-                and invocation.delegated_authority.creator_user_id == invocation.actor_user_id
+                and invocation.delegated_authority.canonical_creator_person_id
+                == invocation.actor_person_id
+                and invocation.actor_person_id is not None
             )
             if invocation.actor_user_id not in self._superuser_ids or not (
                 direct_user_event or delegated_task
@@ -1566,75 +1571,6 @@ class _RelationshipFacade:
         }
 
 
-class _LLMFacade:
-    def __init__(self, host: HostPluginContext) -> None:
-        self._host = host
-
-    async def generate(
-        self, instruction: str, *, max_characters: int = 2_000
-    ) -> str | PluginResult:
-        return await self._generate(
-            instruction,
-            context_profile="none",
-            max_characters=max_characters,
-            permission=PluginPermission.LLM_GENERATE,
-        )
-
-    async def generate_with_context(
-        self,
-        instruction: str,
-        *,
-        context_profile: str,
-        max_characters: int = 2_000,
-    ) -> str | PluginResult:
-        return await self._generate(
-            instruction,
-            context_profile=context_profile,
-            max_characters=max_characters,
-            permission=PluginPermission.LLM_GENERATE_WITH_CONTEXT,
-        )
-
-    async def _generate(
-        self,
-        instruction: str,
-        *,
-        context_profile: str,
-        max_characters: int,
-        permission: PluginPermission,
-    ) -> str | PluginResult:
-        invocation = self._host._require(permission)
-        assert invocation is not None
-        _, runtime = await _agent_dependencies(self._host, invocation)
-        allowed = self._host._services.agent_capabilities
-        if invocation.allowed_capabilities:
-            allowed &= invocation.allowed_capabilities
-        runtime = replace(runtime, allowed_capabilities=allowed)
-        maximum = max(1, min(max_characters, 24_000))
-        context = await _llm_context(self._host, invocation, context_profile)
-        result = await run_plugin_main_turn(
-            self._host,
-            invocation,
-            instruction=_bounded_text(instruction, maximum=12_000, field_name="instruction"),
-            context_data=context,
-            runtime=runtime,
-            tools=None,
-            permission=permission,
-            context_profile=context_profile,
-        )
-        if result.work_state not in {None, "completed"}:
-            return PluginResult(
-                data={
-                    "state": result.work_state,
-                    "work_id": result.work_id,
-                    "pending": result.work_state
-                    in {"queued", "running", "waiting_external", "waiting_user"},
-                    "model_requests": result.model_requests,
-                    "tool_calls_used": result.tool_calls_used,
-                }
-            )
-        return result.text.strip()[:maximum]
-
-
 class _AgentFacade:
     def __init__(self, host: HostPluginContext) -> None:
         self._host = host
@@ -1722,6 +1658,7 @@ class _AgentFacade:
         self,
         instruction: str,
         *,
+        context_profile: str = "none",
         allowed_capabilities: tuple[str, ...] = (),
         max_tool_calls: int | None = None,
         max_model_requests: int | None = None,
@@ -1750,30 +1687,21 @@ class _AgentFacade:
             else base_runtime.max_model_requests,
             base_runtime.max_model_requests,
         )
-        runtime = AgentRuntime(
-            origin=TurnOrigin.PLUGIN_SESSION,
-            actor_user_id=base_runtime.actor_user_id,
-            actor_is_superuser=base_runtime.actor_is_superuser,
-            delegated_authority=base_runtime.delegated_authority,
-            conversation_key=invocation.conversation_key,
-            current_group_id=base_runtime.current_group_id,
-            bot_user_id=base_runtime.bot_user_id,
-            gateway=base_runtime.gateway,
-            runtime_config=base_runtime.runtime_config,
-            current_time=base_runtime.current_time,
+        runtime = replace(
+            base_runtime,
             allowed_capabilities=effective,
             max_tool_calls=max(0, tool_limit),
             max_model_requests=max(1, request_limit),
-            canonical_conversation_id=base_runtime.canonical_conversation_id,
         )
         result = await run_plugin_main_turn(
             self._host,
             invocation,
             instruction=_bounded_text(instruction, maximum=12_000, field_name="instruction"),
-            context_data="",
+            context_data=await _agent_context(self._host, invocation, context_profile),
             runtime=runtime,
             tools=None,
             permission=PluginPermission.AGENT_RUN,
+            context_profile=context_profile,
         )
         return PluginResult(
             data={
@@ -2282,13 +2210,12 @@ class _AutomationFacade:
         except ValueError as exc:
             raise ValueError("task_id must be an integer") from exc
         service = _require_service(self._host._services.automation, "automation")
-        method = cast(
-            Callable[..., Awaitable[bool]],
-            getattr(service, operation),
-        )
+        method = {"pause": service.pause, "resume": service.resume, "cancel": service.cancel}[
+            operation
+        ]
         changed = await method(
             numeric_id,
-            inbound=invocation.inbound,
+            actor=ToolActor.from_inbound(invocation.inbound),
             conversation_key=invocation.conversation_key,
         )
         return PluginResult(
@@ -2775,7 +2702,7 @@ async def _agent_dependencies(
     )
 
 
-async def _llm_context(
+async def _agent_context(
     host: HostPluginContext,
     invocation: PluginInvocation,
     profile: str,
@@ -2917,7 +2844,7 @@ def _delivery_identity(host: HostPluginContext, invocation: PluginInvocation) ->
     if identity is None and tool is not None and tool.call_id:
         control = current_work_control.get()
         identity = (
-            control.session.call_key(tool.call_id)
+            tool.call_id
             if control is not None and control.session is not None
             else f"{tool.execution_key}:{tool.call_id}"
         )

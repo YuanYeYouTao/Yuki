@@ -124,7 +124,7 @@ class AssembledContext:
     memory_intent: MemoryQueryIntent | None = None
     history_anchor_event_id: int | None = None
     rollup_text: str = ""
-    prompt_scope_id: int = 0
+    prompt_conversation_id: str = ""
     prompt_scope_key: str = ""
     prompt_generation: int = 0
     prompt_effective_coverage: int = 0
@@ -383,7 +383,7 @@ class ContextAssembler:
             history_anchor_event_id=bounded.history_anchor_event_id,
             memory_exposures=self._memory_exposures(retrieval, selected),
             rollup_text=rollup,
-            prompt_scope_id=turn.scope_id,
+            prompt_conversation_id=turn.conversation_id,
             prompt_scope_key=turn.scope_key,
             prompt_generation=turn.generation,
             prompt_effective_coverage=snapshot.coverage_end,
@@ -442,7 +442,7 @@ class ContextAssembler:
             coverage = loaded.effective_coverage
             version = ConversationReadVersion(
                 scope,
-                loaded.conversation_id,
+                loaded.scope.id,
                 loaded.scope.generation,
                 loaded.scope.starts_after_event_id,
                 loaded.prompt_source_revision,
@@ -943,7 +943,7 @@ class ContextAssembler:
             memory_intent=memory_intent,
             history_anchor_event_id=bounded_messages.history_anchor_event_id,
             rollup_text=rollup_text,
-            prompt_scope_id=turn.scope_id,
+            prompt_conversation_id=turn.conversation_id,
             prompt_scope_key=turn.scope_key,
             prompt_generation=turn.generation,
             prompt_effective_coverage=snapshot.coverage_end,
@@ -1139,7 +1139,7 @@ class ContextAssembler:
             external_events=(),
             history_anchor_event_id=bounded_messages.history_anchor_event_id,
             rollup_text=rollup_text,
-            prompt_scope_id=turn.scope_id,
+            prompt_conversation_id=turn.conversation_id,
             prompt_scope_key=turn.scope_key,
             prompt_generation=turn.generation,
             prompt_effective_coverage=snapshot.coverage_end,
@@ -1394,22 +1394,17 @@ class ContextAssembler:
         """Select contributions and enforce the serialized metadata budget."""
 
         contributions = cls._context_contributions(context)
-        if capacity_limit is not None:
-            required = tuple(item for item in contributions if item.required)
-            required_payload, required_fact_ids = cls._render_metadata_selection(required)
-            required_json = json.dumps(
-                required_payload, ensure_ascii=False, separators=(",", ":"), default=str
-            )
-            required_size = len(required_json)
-            required_cost = sum(item.cost for item in required)
-            if (
-                max(required_size, required_cost) > limit
-                and estimate_text_tokens(required_json) <= capacity_limit
-            ):
-                # Validate contribution identity, but keep only the required
-                # minimum when a soft policy is below its unavoidable cost.
-                ContextBudgeter().select(contributions, character_budget=required_cost)
-                return required_payload, required_fact_ids
+        # Required metadata belongs to the final full-request capacity check.
+        # Preserve it even when this optional-contribution character target is low.
+        required = tuple(item for item in contributions if item.required)
+        required_payload, required_fact_ids = cls._render_metadata_selection(required)
+        required_cost = sum(item.cost for item in required)
+        required_size = len(
+            json.dumps(required_payload, ensure_ascii=False, separators=(",", ":"), default=str)
+        )
+        if max(required_size, required_cost) >= limit:
+            ContextBudgeter().select(contributions, character_budget=required_cost)
+            return required_payload, required_fact_ids
         selection_budget = limit
         while True:
             selection = ContextBudgeter().select(
@@ -1430,6 +1425,8 @@ class ContextAssembler:
             # Contribution costs intentionally describe standalone items. Reduce the
             # selection budget by the exact container/aggregation overshoot and retry.
             selection_budget -= max(1, rendered_size - limit)
+            if selection_budget < required_cost:
+                return required_payload, required_fact_ids
 
     @staticmethod
     def _render_metadata_selection(
@@ -1725,7 +1722,7 @@ class ContextAssembler:
         rollup = loaded.rollup
         if not turn_matches_hydrated_scope(
             turn,
-            scope_id=loaded.scope.id,
+            conversation_id=loaded.scope.id,
             generation=loaded.scope.generation,
             transport_key=scope.key,
             runtime_key=loaded.scope.runtime_scope_key,
@@ -1739,18 +1736,14 @@ class ContextAssembler:
             rollup=rollup,
             rollup_mode=rollup.summary_kind.value if rollup is not None else None,
             starts_after_event_id=loaded.scope.starts_after_event_id,
-            read_version=(
-                ConversationReadVersion(
-                    scope,
-                    loaded.conversation_id,
-                    loaded.scope.generation,
-                    loaded.scope.starts_after_event_id,
-                    loaded.prompt_source_revision,
-                    tuple(event.id for event in loaded.raw_events),
-                    loaded.rollup_stamp,
-                )
-                if loaded.conversation_id is not None
-                else None
+            read_version=ConversationReadVersion(
+                scope,
+                loaded.scope.id,
+                loaded.scope.generation,
+                loaded.scope.starts_after_event_id,
+                loaded.prompt_source_revision,
+                tuple(event.id for event in loaded.raw_events),
+                loaded.rollup_stamp,
             ),
             raw_complete=loaded.raw_complete,
         )
@@ -2005,7 +1998,7 @@ class ContextAssembler:
             raise ConversationCoverageError("conversation scope does not exist")
         if not turn_matches_hydrated_scope(
             turn,
-            scope_id=state.id,
+            conversation_id=state.id,
             generation=state.generation,
             transport_key=scope.key,
             runtime_key=state.runtime_scope_key,

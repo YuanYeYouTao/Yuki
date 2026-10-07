@@ -111,7 +111,7 @@ class MainAgentTurnService:
         if contract is None:
             return None
         return self._runner.work_contract(
-            runtime, self._composer.static_messages(), await contract.definitions()
+            runtime, self._composer.static_messages(), await contract.model_definitions()
         )
 
     async def compose(
@@ -124,7 +124,6 @@ class MainAgentTurnService:
         visual_failure: bool,
         scope_type: ScopeType | None = None,
         include_plugin_context: bool = True,
-        memory_exclusive_write: bool = False,
         read_scope: str | None = None,
         allowed_capabilities: frozenset[str] = frozenset(),
         before_preparation: Callable[[], Awaitable[None]] | None = None,
@@ -150,7 +149,6 @@ class MainAgentTurnService:
                 scope_type=scope_type,
                 include_plugin_context=include_plugin_context,
                 short_state=state,
-                memory_exclusive_write=memory_exclusive_write,
             )
             if getattr(context, "recovery_protocol", False):
                 return composition
@@ -162,7 +160,7 @@ class MainAgentTurnService:
                 or context.read_version.conversation_id is None
             ):
                 return composition
-            definitions = await contract.definitions()
+            definitions = await contract.model_definitions()
             definitions, native_definitions = self._runner.prepare_request_tools(
                 definitions,
                 runtime_config=runtime,
@@ -209,7 +207,6 @@ class MainAgentTurnService:
                     actor_id,
                     read_scope,
                     include_plugin_context,
-                    memory_exclusive_write,
                 ]
             )
             if context.current_message.images:
@@ -454,7 +451,18 @@ class MainAgentTurnService:
                     *composition.messages,
                     *(sequence.public_initial_suffix or ()),
                 )
-                if sequence.messages[: len(approved_initial)] != approved_initial:
+                if sequence.layout_public_initial is not None:
+                    valid_layout = sequence.layout_public_initial == composition.messages
+                    expected = (
+                        *composition.messages[:-1],
+                        *sequence.layout_host_initial,
+                        composition.messages[-1],
+                        *sequence.layout_current_inputs,
+                    )
+                    valid_layout = valid_layout and sequence.messages[: len(expected)] == expected
+                else:
+                    valid_layout = sequence.messages[: len(approved_initial)] == approved_initial
+                if not valid_layout:
                     await prepared.repository.invalidate_view(view_key, reason="protocol_changed")
                     projection_closed = True
                     return
@@ -632,6 +640,8 @@ class MainAgentTurnService:
                         read_scope=read_scope,
                         selected_summary_text=previous.selected_summary_text,
                         selected_summary_coverage=previous.selected_summary_coverage,
+                        selected_summary_kind=previous.selected_summary_kind,
+                        selected_summary_renderer=previous.selected_summary_renderer,
                     )
                     original_guard = guard.snapshot() if guard is not None else None
                     snapshot = None
@@ -735,21 +745,7 @@ class MainAgentTurnService:
         control = runtime.work_control
         if control is not None:
             control.current_message = messages[-1] if messages else None
-            state_message = ChatMessage(
-                role="user",
-                content=(
-                    "[运行状态] "
-                    + json.dumps(
-                        await control.runtime_state(),
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
-                ),
-            )
-            messages = (*messages, state_message)
-            public_suffix = ()
-        else:
-            public_suffix = ()
+        public_suffix = ()
         validate = runtime.before_model_request
 
         async def validate_prepared() -> None:

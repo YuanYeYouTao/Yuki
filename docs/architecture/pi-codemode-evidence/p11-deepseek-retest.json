@@ -1,0 +1,763 @@
+{
+  "model": "deepseek-flash",
+  "started_at": "2026-10-05T02:42:56.252735+00:00",
+  "finished_at": "2026-10-05T02:43:16.507086+00:00",
+  "harness_sha256": "92a6e16626379b143469392489a6fae87697ddcc381314b14b9100cbcf8f7261",
+  "native_worker_sha256": "af76448a14fe980c823f1c6092692f90a8ddc6341f236f17d6d47d72f49548e8",
+  "tool_shape_comparison": "complete serialized tools, including schemas/order",
+  "exit_code": 0,
+  "records": [
+    {
+      "protocol": "chat_completions",
+      "case": "direct",
+      "passed": true,
+      "error_category": null,
+      "model": "deepseek-flash",
+      "fixed_tools": 76,
+      "physical_http": 3,
+      "normalized_responses": [
+        {
+          "status": "completed",
+          "prompt_tokens": 15792,
+          "completion_tokens": 48,
+          "cached_prompt_tokens": 0,
+          "reasoning_tokens": 8,
+          "reasoning_present": true,
+          "continuation_present": false,
+          "tool_names": [
+            "workspace_read"
+          ]
+        },
+        {
+          "status": "completed",
+          "prompt_tokens": 15869,
+          "completion_tokens": 66,
+          "cached_prompt_tokens": 15616,
+          "reasoning_tokens": 10,
+          "reasoning_present": true,
+          "continuation_present": false,
+          "tool_names": [
+            "workspace_write"
+          ]
+        },
+        {
+          "status": "completed",
+          "prompt_tokens": 15977,
+          "completion_tokens": 6,
+          "cached_prompt_tokens": 15744,
+          "reasoning_tokens": 0,
+          "reasoning_present": false,
+          "continuation_present": false,
+          "tool_names": []
+        }
+      ],
+      "wire": [
+        {
+          "bytes": 58035,
+          "sha256": "b7ca1c450fd97881ffbd07f91192d6a7f7ee1a7cf1b2ad8620f742c2e881072c",
+          "output_limit": 4096,
+          "elapsed_seconds": 0.0945201248396188,
+          "http_status": 200,
+          "usage": {
+            "prompt_tokens": 15792,
+            "completion_tokens": 48,
+            "total_tokens": 15840,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 8
+            },
+            "prompt_cache_hit_tokens": 0,
+            "prompt_cache_miss_tokens": 15792
+          },
+          "response_status": null,
+          "stop_reason": null,
+          "finish_reason": "tool_calls"
+        },
+        {
+          "bytes": 58414,
+          "sha256": "1f27bf4add385dbc36ad15400b9b8ec4af93ba7574c251c7f101635dc109916b",
+          "output_limit": 4096,
+          "elapsed_seconds": 0.7261635828763247,
+          "http_status": 200,
+          "usage": {
+            "prompt_tokens": 15869,
+            "completion_tokens": 66,
+            "total_tokens": 15935,
+            "prompt_tokens_details": {
+              "cached_tokens": 15616
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 10
+            },
+            "prompt_cache_hit_tokens": 15616,
+            "prompt_cache_miss_tokens": 253
+          },
+          "response_status": null,
+          "stop_reason": null,
+          "finish_reason": "tool_calls"
+        },
+        {
+          "bytes": 58854,
+          "sha256": "ea34881afd326d7de7c0b581b0f0fce3a1239e46e21b99daaca587b051b0d2bf",
+          "output_limit": 4096,
+          "elapsed_seconds": 1.5373980419244617,
+          "http_status": 200,
+          "usage": {
+            "prompt_tokens": 15977,
+            "completion_tokens": 6,
+            "total_tokens": 15983,
+            "prompt_tokens_details": {
+              "cached_tokens": 15744
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_cache_hit_tokens": 15744,
+            "prompt_cache_miss_tokens": 233
+          },
+          "response_status": null,
+          "stop_reason": null,
+          "finish_reason": "stop"
+        }
+      ],
+      "business_calls": 2,
+      "business_names": [
+        "workspace_read",
+        "workspace_write"
+      ],
+      "duplicates": 0,
+      "logical_request_budget_used": 3,
+      "business_budget_used": 2,
+      "application_usage_unknown_calls": 0,
+      "first_useful_artifact_seconds": 1.5140825829003006,
+      "total_seconds": 2.110853041987866,
+      "reasoning_replay_checks": [
+        {
+          "field": "reasoning_content",
+          "sha256": "dab1a0eb8b4206cfee08ece06131f8e101a8a14a9f0e09251bf7aacfcd30e508",
+          "replayed_exactly": true
+        },
+        {
+          "field": "reasoning_content",
+          "sha256": "f6f944ab16028a10acc1e4d9667d5df913a9c55da51ce3e3b646954cbd16007a",
+          "replayed_exactly": true
+        }
+      ],
+      "signed_material_observed": false,
+      "reasoning_continuation_observed": true,
+      "request_shapes_fixed": true,
+      "tool_payload_sha256": [
+        "6b3d6b3130c906cf3fd8929b279bed1fe6bf418024aa4a1c807107903f01aa2c",
+        "6b3d6b3130c906cf3fd8929b279bed1fe6bf418024aa4a1c807107903f01aa2c",
+        "6b3d6b3130c906cf3fd8929b279bed1fe6bf418024aa4a1c807107903f01aa2c"
+      ],
+      "real_business_effects": 0
+    },
+    {
+      "protocol": "responses",
+      "case": "direct",
+      "passed": true,
+      "error_category": null,
+      "model": "deepseek-flash",
+      "fixed_tools": 76,
+      "physical_http": 3,
+      "normalized_responses": [
+        {
+          "status": "completed",
+          "prompt_tokens": 15793,
+          "completion_tokens": 46,
+          "cached_prompt_tokens": 15488,
+          "reasoning_tokens": 6,
+          "reasoning_present": true,
+          "continuation_present": true,
+          "tool_names": [
+            "workspace_read"
+          ]
+        },
+        {
+          "status": "completed",
+          "prompt_tokens": 15868,
+          "completion_tokens": 69,
+          "cached_prompt_tokens": 15616,
+          "reasoning_tokens": 13,
+          "reasoning_present": true,
+          "continuation_present": true,
+          "tool_names": [
+            "workspace_write"
+          ]
+        },
+        {
+          "status": "completed",
+          "prompt_tokens": 15979,
+          "completion_tokens": 6,
+          "cached_prompt_tokens": 15744,
+          "reasoning_tokens": 0,
+          "reasoning_present": false,
+          "continuation_present": true,
+          "tool_names": []
+        }
+      ],
+      "wire": [
+        {
+          "bytes": 57012,
+          "sha256": "7ed7950a887949823785e5a9912cbb9e82ff6450e637cca2384c51499d1a7381",
+          "output_limit": 4096,
+          "elapsed_seconds": 0.06108725001104176,
+          "http_status": 200,
+          "usage": {
+            "input_tokens": 15793,
+            "input_tokens_details": {
+              "cached_tokens": 15488
+            },
+            "output_tokens": 46,
+            "output_tokens_details": {
+              "reasoning_tokens": 6
+            },
+            "total_tokens": 15839
+          },
+          "response_status": "completed",
+          "stop_reason": null,
+          "finish_reason": null
+        },
+        {
+          "bytes": 57583,
+          "sha256": "3e1f6b0ced5751733d3cad214030635a7f2cfb040322e3b5671a78072ed8b7aa",
+          "output_limit": 4096,
+          "elapsed_seconds": 0.9086787498090416,
+          "http_status": 200,
+          "usage": {
+            "input_tokens": 15868,
+            "input_tokens_details": {
+              "cached_tokens": 15616
+            },
+            "output_tokens": 69,
+            "output_tokens_details": {
+              "reasoning_tokens": 13
+            },
+            "total_tokens": 15937
+          },
+          "response_status": "completed",
+          "stop_reason": null,
+          "finish_reason": null
+        },
+        {
+          "bytes": 58236,
+          "sha256": "46b1dea8926c68f90825d383b46f4cd3aa8048aa5f48a2675facd2fdd14b1f8d",
+          "output_limit": 4096,
+          "elapsed_seconds": 2.436937040882185,
+          "http_status": 200,
+          "usage": {
+            "input_tokens": 15979,
+            "input_tokens_details": {
+              "cached_tokens": 15744
+            },
+            "output_tokens": 6,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 15985
+          },
+          "response_status": "completed",
+          "stop_reason": null,
+          "finish_reason": null
+        }
+      ],
+      "business_calls": 2,
+      "business_names": [
+        "workspace_read",
+        "workspace_write"
+      ],
+      "duplicates": 0,
+      "logical_request_budget_used": 3,
+      "business_budget_used": 2,
+      "application_usage_unknown_calls": 0,
+      "first_useful_artifact_seconds": 2.408631999976933,
+      "total_seconds": 3.3686282499693334,
+      "reasoning_replay_checks": [
+        {
+          "field": "content",
+          "sha256": "54a90616f4cbf2d2ad7f2bf1b34f8d6b60f8805c3581d557882f97a8f854df2a",
+          "replayed_exactly": true
+        },
+        {
+          "field": "encrypted_content",
+          "sha256": "453e475007c60a4c476316ac215eeb4c0930a3b763ba11837ffbd34f86e136d0",
+          "replayed_exactly": true
+        },
+        {
+          "field": "content",
+          "sha256": "863fe8f03ce5107193a66879febde63e5b9f2b0289c2134dd581a42d59803319",
+          "replayed_exactly": true
+        },
+        {
+          "field": "encrypted_content",
+          "sha256": "a3a8b73d7b25e5a89f2c561c7a445ed8859a6d3debd659cf44a39ddae787b01a",
+          "replayed_exactly": true
+        }
+      ],
+      "signed_material_observed": true,
+      "reasoning_continuation_observed": true,
+      "request_shapes_fixed": true,
+      "tool_payload_sha256": [
+        "205253b758234f335221f0ae864ea750abb4f17d8453ec6921f7c2e99743863e",
+        "205253b758234f335221f0ae864ea750abb4f17d8453ec6921f7c2e99743863e",
+        "205253b758234f335221f0ae864ea750abb4f17d8453ec6921f7c2e99743863e"
+      ],
+      "real_business_effects": 0
+    },
+    {
+      "protocol": "anthropic_messages",
+      "case": "direct",
+      "passed": true,
+      "error_category": null,
+      "model": "deepseek-flash",
+      "fixed_tools": 76,
+      "physical_http": 3,
+      "normalized_responses": [
+        {
+          "status": "completed",
+          "prompt_tokens": 15792,
+          "completion_tokens": 46,
+          "cached_prompt_tokens": 15488,
+          "reasoning_tokens": null,
+          "reasoning_present": true,
+          "continuation_present": true,
+          "tool_names": [
+            "workspace_read"
+          ]
+        },
+        {
+          "status": "completed",
+          "prompt_tokens": 15867,
+          "completion_tokens": 69,
+          "cached_prompt_tokens": 15616,
+          "reasoning_tokens": null,
+          "reasoning_present": true,
+          "continuation_present": true,
+          "tool_names": [
+            "workspace_write"
+          ]
+        },
+        {
+          "status": "completed",
+          "prompt_tokens": 15978,
+          "completion_tokens": 22,
+          "cached_prompt_tokens": 15744,
+          "reasoning_tokens": null,
+          "reasoning_present": true,
+          "continuation_present": true,
+          "tool_names": []
+        }
+      ],
+      "wire": [
+        {
+          "bytes": 56009,
+          "sha256": "0beba03595eb1ed18125b13f236ca68fc1cf734fb1f04348a656497f4050a6dc",
+          "output_limit": 4096,
+          "elapsed_seconds": 0.06038533290848136,
+          "http_status": 200,
+          "usage": {
+            "input_tokens": 304,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 15488,
+            "output_tokens": 46,
+            "service_tier": "standard"
+          },
+          "response_status": null,
+          "stop_reason": "tool_use",
+          "finish_reason": null
+        },
+        {
+          "bytes": 56428,
+          "sha256": "06538cdac7a2df10319e8d82272129208c2c6762fd599de37b4c9bec62932316",
+          "output_limit": 4096,
+          "elapsed_seconds": 0.7649939579423517,
+          "http_status": 200,
+          "usage": {
+            "input_tokens": 251,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 15616,
+            "output_tokens": 69,
+            "service_tier": "standard"
+          },
+          "response_status": null,
+          "stop_reason": "tool_use",
+          "finish_reason": null
+        },
+        {
+          "bytes": 56923,
+          "sha256": "9c9137be9329d05bd645897509e210913ef65ee13445ff6f58da1a1ab2e8671b",
+          "output_limit": 4096,
+          "elapsed_seconds": 1.746525124879554,
+          "http_status": 200,
+          "usage": {
+            "input_tokens": 234,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 15744,
+            "output_tokens": 22,
+            "service_tier": "standard"
+          },
+          "response_status": null,
+          "stop_reason": "end_turn",
+          "finish_reason": null
+        }
+      ],
+      "business_calls": 2,
+      "business_names": [
+        "workspace_read",
+        "workspace_write"
+      ],
+      "duplicates": 0,
+      "logical_request_budget_used": 3,
+      "business_budget_used": 2,
+      "application_usage_unknown_calls": 0,
+      "first_useful_artifact_seconds": 1.7165785420220345,
+      "total_seconds": 2.563722499879077,
+      "reasoning_replay_checks": [
+        {
+          "field": "thinking",
+          "sha256": "23eae70653d75b6b7a9cf8bb1d2b0b3f44b5a280bdde564e37e41d8cae28c3b9",
+          "replayed_exactly": true
+        },
+        {
+          "field": "signature",
+          "sha256": "801f881f682bb2817e185a230c4b79d6fe561dc1637b78b1940a3f0d431b31fd",
+          "replayed_exactly": true
+        },
+        {
+          "field": "thinking",
+          "sha256": "4ff92b93ef3ffb1c013ff8b7486337f4956a603aa8f815960fc30e29d4f487ed",
+          "replayed_exactly": true
+        },
+        {
+          "field": "signature",
+          "sha256": "3ee0144f2c2fa45df1fc1abfb00d829c455a8575907b43382d64381495bba174",
+          "replayed_exactly": true
+        }
+      ],
+      "signed_material_observed": true,
+      "reasoning_continuation_observed": true,
+      "request_shapes_fixed": true,
+      "tool_payload_sha256": [
+        "c7b784e032c64934c80dd466844e356ba83893f9a0bc09d8a364a42bc492c1f6",
+        "c7b784e032c64934c80dd466844e356ba83893f9a0bc09d8a364a42bc492c1f6",
+        "c7b784e032c64934c80dd466844e356ba83893f9a0bc09d8a364a42bc492c1f6"
+      ],
+      "real_business_effects": 0
+    },
+    {
+      "protocol": "chat_completions",
+      "case": "code",
+      "passed": true,
+      "error_category": null,
+      "model": "deepseek-flash",
+      "fixed_tools": 76,
+      "physical_http": 2,
+      "normalized_responses": [
+        {
+          "status": "completed",
+          "prompt_tokens": 15834,
+          "completion_tokens": 523,
+          "cached_prompt_tokens": 0,
+          "reasoning_tokens": 441,
+          "reasoning_present": true,
+          "continuation_present": false,
+          "tool_names": [
+            "execute_code"
+          ]
+        },
+        {
+          "status": "completed",
+          "prompt_tokens": 16595,
+          "completion_tokens": 36,
+          "cached_prompt_tokens": 16256,
+          "reasoning_tokens": 30,
+          "reasoning_present": true,
+          "continuation_present": false,
+          "tool_names": []
+        }
+      ],
+      "wire": [
+        {
+          "bytes": 58168,
+          "sha256": "c09b37c6c47c5d9d58d631655fb76068e25c23de293e60c57a4f6a68d4796ff1",
+          "output_limit": 4096,
+          "elapsed_seconds": 0.13214941695332527,
+          "http_status": 200,
+          "usage": {
+            "prompt_tokens": 15834,
+            "completion_tokens": 523,
+            "total_tokens": 16357,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 441
+            },
+            "prompt_cache_hit_tokens": 0,
+            "prompt_cache_miss_tokens": 15834
+          },
+          "response_status": null,
+          "stop_reason": null,
+          "finish_reason": "tool_calls"
+        },
+        {
+          "bytes": 61363,
+          "sha256": "6229e56573ffa2dd297338838dd8d825b7929f2de2c226f16e1128d913e0a9b2",
+          "output_limit": 4096,
+          "elapsed_seconds": 3.397640084149316,
+          "http_status": 200,
+          "usage": {
+            "prompt_tokens": 16595,
+            "completion_tokens": 36,
+            "total_tokens": 16631,
+            "prompt_tokens_details": {
+              "cached_tokens": 16256
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 30
+            },
+            "prompt_cache_hit_tokens": 16256,
+            "prompt_cache_miss_tokens": 339
+          },
+          "response_status": null,
+          "stop_reason": null,
+          "finish_reason": "stop"
+        }
+      ],
+      "business_calls": 2,
+      "business_names": [
+        "workspace_read",
+        "workspace_write"
+      ],
+      "duplicates": 0,
+      "logical_request_budget_used": 2,
+      "business_budget_used": 2,
+      "application_usage_unknown_calls": 0,
+      "first_useful_artifact_seconds": 3.372831459157169,
+      "total_seconds": 4.3406351250596344,
+      "reasoning_replay_checks": [
+        {
+          "field": "reasoning_content",
+          "sha256": "ad25537d44d61b5d7b40247da949c4c790a4fba74362d7a7548580f5089ec62c",
+          "replayed_exactly": true
+        }
+      ],
+      "signed_material_observed": false,
+      "reasoning_continuation_observed": true,
+      "request_shapes_fixed": true,
+      "tool_payload_sha256": [
+        "6b3d6b3130c906cf3fd8929b279bed1fe6bf418024aa4a1c807107903f01aa2c",
+        "6b3d6b3130c906cf3fd8929b279bed1fe6bf418024aa4a1c807107903f01aa2c"
+      ],
+      "real_business_effects": 0
+    },
+    {
+      "protocol": "anthropic_messages",
+      "case": "code",
+      "passed": true,
+      "error_category": null,
+      "model": "deepseek-flash",
+      "fixed_tools": 76,
+      "physical_http": 2,
+      "normalized_responses": [
+        {
+          "status": "completed",
+          "prompt_tokens": 15835,
+          "completion_tokens": 107,
+          "cached_prompt_tokens": 15616,
+          "reasoning_tokens": null,
+          "reasoning_present": true,
+          "continuation_present": true,
+          "tool_names": [
+            "execute_code"
+          ]
+        },
+        {
+          "status": "completed",
+          "prompt_tokens": 16190,
+          "completion_tokens": 72,
+          "cached_prompt_tokens": 15872,
+          "reasoning_tokens": null,
+          "reasoning_present": true,
+          "continuation_present": true,
+          "tool_names": []
+        }
+      ],
+      "wire": [
+        {
+          "bytes": 56142,
+          "sha256": "7a813e4728ef8d1cd157cc9e6b7a6c4f2d264e5875bbc79b72d6939f59062fce",
+          "output_limit": 4096,
+          "elapsed_seconds": 0.06085716700181365,
+          "http_status": 200,
+          "usage": {
+            "input_tokens": 219,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 15616,
+            "output_tokens": 107,
+            "service_tier": "standard"
+          },
+          "response_status": null,
+          "stop_reason": "tool_use",
+          "finish_reason": null
+        },
+        {
+          "bytes": 57400,
+          "sha256": "25ca94a6b25ab8f585703661b61b516ef1c784ff80bcaa5ea9c34f2103b6819c",
+          "output_limit": 4096,
+          "elapsed_seconds": 1.2540812918450683,
+          "http_status": 200,
+          "usage": {
+            "input_tokens": 318,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 15872,
+            "output_tokens": 72,
+            "service_tier": "standard"
+          },
+          "response_status": null,
+          "stop_reason": "end_turn",
+          "finish_reason": null
+        }
+      ],
+      "business_calls": 2,
+      "business_names": [
+        "workspace_read",
+        "workspace_write"
+      ],
+      "duplicates": 0,
+      "logical_request_budget_used": 2,
+      "business_budget_used": 2,
+      "application_usage_unknown_calls": 0,
+      "first_useful_artifact_seconds": 1.2265334168914706,
+      "total_seconds": 2.503637208836153,
+      "reasoning_replay_checks": [
+        {
+          "field": "thinking",
+          "sha256": "32f7cdb4c55b352659fb08c6dfb053f446ad9d4b893a45116bf0b50c27413968",
+          "replayed_exactly": true
+        },
+        {
+          "field": "signature",
+          "sha256": "c17f1bdff1c06ad5cf7399a35e5f0f36ad9a86af8b110a6d1c55808c36b8c744",
+          "replayed_exactly": true
+        }
+      ],
+      "signed_material_observed": true,
+      "reasoning_continuation_observed": true,
+      "request_shapes_fixed": true,
+      "tool_payload_sha256": [
+        "c7b784e032c64934c80dd466844e356ba83893f9a0bc09d8a364a42bc492c1f6",
+        "c7b784e032c64934c80dd466844e356ba83893f9a0bc09d8a364a42bc492c1f6"
+      ],
+      "real_business_effects": 0
+    },
+    {
+      "protocol": "responses",
+      "case": "disconnect",
+      "passed": true,
+      "error_category": null,
+      "model": "deepseek-flash",
+      "fixed_tools": 76,
+      "physical_http": 1,
+      "normalized_responses": [],
+      "wire": [
+        {
+          "bytes": 57012,
+          "sha256": "233847aea4da2fa76489f9b742734f774b30e0224c32a6e34b544f472b102643",
+          "output_limit": 4096,
+          "elapsed_seconds": 0.06532349996268749,
+          "http_status": 200,
+          "usage": {
+            "input_tokens": 15794,
+            "input_tokens_details": {
+              "cached_tokens": 15488
+            },
+            "output_tokens": 46,
+            "output_tokens_details": {
+              "reasoning_tokens": 6
+            },
+            "total_tokens": 15840
+          },
+          "response_status": "completed",
+          "stop_reason": null,
+          "finish_reason": null
+        }
+      ],
+      "business_calls": 0,
+      "business_names": [],
+      "duplicates": 0,
+      "logical_request_budget_used": 1,
+      "business_budget_used": 0,
+      "application_usage_unknown_calls": 1,
+      "first_useful_artifact_seconds": null,
+      "total_seconds": 0.9075052910484374,
+      "reasoning_replay_checks": [],
+      "signed_material_observed": false,
+      "reasoning_continuation_observed": false,
+      "request_shapes_fixed": true,
+      "tool_payload_sha256": [
+        "205253b758234f335221f0ae864ea750abb4f17d8453ec6921f7c2e99743863e"
+      ],
+      "real_business_effects": 0
+    },
+    {
+      "protocol": "anthropic_messages",
+      "case": "disconnect",
+      "passed": true,
+      "error_category": null,
+      "model": "deepseek-flash",
+      "fixed_tools": 76,
+      "physical_http": 1,
+      "normalized_responses": [],
+      "wire": [
+        {
+          "bytes": 56009,
+          "sha256": "3f4cf8e7d8f6d0c3b019b6d85f34cedb499e2bf66fe0cd0fe1b9502789e39990",
+          "output_limit": 4096,
+          "elapsed_seconds": 0.06435033399611712,
+          "http_status": 200,
+          "usage": {
+            "input_tokens": 304,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 15488,
+            "output_tokens": 46,
+            "service_tier": "standard"
+          },
+          "response_status": null,
+          "stop_reason": "tool_use",
+          "finish_reason": null
+        }
+      ],
+      "business_calls": 0,
+      "business_names": [],
+      "duplicates": 0,
+      "logical_request_budget_used": 1,
+      "business_budget_used": 0,
+      "application_usage_unknown_calls": 1,
+      "first_useful_artifact_seconds": null,
+      "total_seconds": 0.7079323751386255,
+      "reasoning_replay_checks": [],
+      "signed_material_observed": false,
+      "reasoning_continuation_observed": false,
+      "request_shapes_fixed": true,
+      "tool_payload_sha256": [
+        "c7b784e032c64934c80dd466844e356ba83893f9a0bc09d8a364a42bc492c1f6"
+      ],
+      "real_business_effects": 0
+    }
+  ],
+  "resume_report": "docs/architecture/pi-codemode-evidence/p11-deepseek-initial.json",
+  "maximum_physical_calls": 48,
+  "actual_physical_calls": 39,
+  "cost_ceiling_usd": 1.0,
+  "conservative_reserved_usd": 0.8518628999999998,
+  "pricing_source": "https://api-docs.deepseek.com/quick_start/pricing/",
+  "price_basis": "peak Flash rates per million: cache miss input $0.30, output $1.20; not invoice",
+  "scope": "real paid Provider, full fixed declarations, real Runner/SQLite/Monty, fake business downstream",
+  "real_sends": 0,
+  "production_access": false,
+  "deployment": false
+}

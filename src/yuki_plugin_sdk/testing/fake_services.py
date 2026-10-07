@@ -241,26 +241,6 @@ class FakeRelationshipFacade:
         return PluginResult(data={"updated": True})
 
 
-class FakeLLMFacade:
-    def __init__(self, response: str = "fake response") -> None:
-        self.response = response
-        self.calls: list[tuple[str, str]] = []
-
-    async def generate(self, instruction: str, *, max_characters: int = 2_000) -> str:
-        self.calls.append(("none", instruction))
-        return self.response[:max_characters]
-
-    async def generate_with_context(
-        self,
-        instruction: str,
-        *,
-        context_profile: str,
-        max_characters: int = 2_000,
-    ) -> str:
-        self.calls.append((context_profile, instruction))
-        return self.response[:max_characters]
-
-
 class FakeAgentFacade:
     def __init__(self, response: str = "fake agent response") -> None:
         self.response = response
@@ -276,6 +256,7 @@ class FakeAgentFacade:
         self,
         instruction: str,
         *,
+        context_profile: str = "none",
         allowed_capabilities: tuple[str, ...] = (),
         max_tool_calls: int | None = None,
         max_model_requests: int | None = None,

@@ -33,6 +33,25 @@ from qq_ai_bot.execution_trace.phases import timed_lock
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.runtime.protocol_schema import objects, refs, usage
 
+_SNAPSHOT_MAGIC = b"YUKI-CODE-SNAPSHOT\x00\x01"
+
+
+@dataclass(frozen=True, slots=True)
+class CodeSnapshotBinding:
+    """Host provenance checked against the original owner before native loading."""
+
+    work_id: str
+    operation_id: str
+    source_execution_id: str
+    conversation_id: str
+    generation: int
+    source_revision: int
+    privacy_generation: int
+    engine_digest: str
+    api_revision: str
+    dump_format: str
+
+
 _CACHE_ENTRIES = 1024  # Metadata only; never retain encoded transcript copies.
 _CACHE_RECORD_BYTES = 2 * 1024 * 1024  # Bound the retained immutable source records too.
 _GC_BRANCH_ROWS = 64  # Two indexed branches visit at most 128 metadata rows per pass.
@@ -255,6 +274,76 @@ class ProtocolStore:
         if hashlib.sha256(content).hexdigest() != digest:
             raise ValueError("work_protocol_object_corrupt")
         return content
+
+    async def put_code_snapshot(self, binding: CodeSnapshotBinding, dump: bytes) -> str:
+        """T0 binary preparation; publication still uses original Work refs/GC."""
+        header = json.dumps(asdict(binding), ensure_ascii=False, allow_nan=False).encode()
+        return await self.put_bytes(
+            _SNAPSHOT_MAGIC + len(header).to_bytes(4, "big") + header + dump
+        )
+
+    async def get_code_snapshot(self, digest: str, binding: CodeSnapshotBinding) -> bytes:
+        """A public artifact/path or a mismatched runtime cannot supply a dump."""
+        from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+        from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
+        from qq_ai_bot.runtime.work_schema_v1 import work
+
+        async with self.database.sessions() as reader:
+            authority = await reader.scalar(
+                select(work.c.id)
+                .join(
+                    CanonicalConversationModel,
+                    CanonicalConversationModel.id == work.c.conversation_id,
+                )
+                .where(
+                    work.c.id == binding.work_id,
+                    work.c.conversation_id == binding.conversation_id,
+                    work.c.generation == binding.generation,
+                    work.c.state.not_in(("completed", "failed", "cancelled")),
+                    CanonicalConversationModel.generation == binding.generation,
+                    CanonicalConversationModel.prompt_source_revision == binding.source_revision,
+                )
+            )
+            privacy = (
+                await reader.scalar(
+                    select(ExecutionTraceStateModel.privacy_generation).where(
+                        ExecutionTraceStateModel.id == 1,
+                    )
+                )
+                or 0
+            )
+            if authority is None or privacy != binding.privacy_generation:
+                raise ValueError("code_snapshot_authority_changed")
+            owned = await reader.scalar(
+                select(refs.c.sha256).where(
+                    refs.c.work_id == binding.work_id,
+                    refs.c.sha256 == digest,
+                    refs.c.sha256.in_(
+                        select(objects.c.sha256).where(objects.c.deleting.is_(False))
+                    ),
+                )
+            )
+        if owned is None:
+            raise ValueError("code_snapshot_not_owned")
+        content = await self.get_bytes(digest)
+        return self.decode_code_snapshot(content, binding)
+
+    @staticmethod
+    def decode_code_snapshot(content: bytes, binding: CodeSnapshotBinding) -> bytes:
+        offset = len(_SNAPSHOT_MAGIC)
+        if not content.startswith(_SNAPSHOT_MAGIC) or len(content) < offset + 4:
+            raise ValueError("code_snapshot_format_mismatch")
+        header_size = int.from_bytes(content[offset : offset + 4], "big")
+        offset += 4
+        if header_size > 8192 or offset + header_size > len(content):
+            raise ValueError("code_snapshot_header_invalid")
+        try:
+            header = json.loads(content[offset : offset + header_size])
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise ValueError("code_snapshot_header_invalid") from exc
+        if header != asdict(binding):
+            raise ValueError("code_snapshot_binding_mismatch")
+        return content[offset + header_size :]
 
     async def manifest(
         self,

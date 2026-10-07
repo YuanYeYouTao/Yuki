@@ -734,7 +734,7 @@ async def _assemble_private_turn(
             nickname="Ada",
         ),
         turn=ConversationTurnSnapshot(
-            scope_id=state.id,
+            conversation_id=state.id,
             scope_key=state.scope.key,
             generation=state.generation,
             trigger_event_id=current.id,

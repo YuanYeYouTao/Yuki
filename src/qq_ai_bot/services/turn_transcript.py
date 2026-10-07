@@ -35,6 +35,9 @@ class TranscriptRequest:
     # activations explicitly select only their approved initial public suffix;
     # the remaining tools, inputs and continuation belong to their own journal.
     public_initial_suffix: tuple[ChatMessage, ...] | None = None
+    layout_public_initial: tuple[ChatMessage, ...] | None = None
+    layout_host_initial: tuple[ChatMessage, ...] = ()
+    layout_current_inputs: tuple[ChatMessage, ...] = ()
 
 
 _DISPATCH_REQUEST: ContextVar[TranscriptRequest | None] = ContextVar(
@@ -59,9 +62,25 @@ def validating_request(request: TranscriptRequest) -> Iterator[None]:
 class TurnTranscript:
     def __init__(self, messages: tuple[ChatMessage, ...]) -> None:
         self.chain_id = uuid4().hex
+        self._layout_public_initial: tuple[ChatMessage, ...] | None = None
+        self._layout_host_initial: tuple[ChatMessage, ...] = ()
+        self._layout_current_inputs: tuple[ChatMessage, ...] = ()
         self._entries: list[ChatMessage | FunctionCallOutput | ProviderContinuation] = list(
             messages
         )
+
+    def finalize_initial(
+        self,
+        public: tuple[ChatMessage, ...],
+        host: tuple[ChatMessage, ...],
+        current_inputs: tuple[ChatMessage, ...],
+    ) -> None:
+        if self.continuation is not None or self._layout_public_initial is not None:
+            raise ValueError("initial_layout_already_frozen")
+        self._layout_public_initial = public
+        self._layout_host_initial = host
+        self._layout_current_inputs = current_inputs
+        self._entries[:] = [*public[:-1], *host, public[-1], *current_inputs]
 
     @property
     def continuation(self) -> ProviderContinuation | None:
@@ -134,11 +153,17 @@ class TurnTranscript:
                 messages=tuple(item for item in self._entries if isinstance(item, ChatMessage)),
                 continuation=None,
                 items=(),
+                layout_public_initial=self._layout_public_initial,
+                layout_host_initial=self._layout_host_initial,
+                layout_current_inputs=self._layout_current_inputs,
             )
         return TranscriptRequest(
             messages=tuple(
                 item for item in self._entries[: checkpoints[0]] if isinstance(item, ChatMessage)
             ),
+            layout_public_initial=self._layout_public_initial,
+            layout_host_initial=self._layout_host_initial,
+            layout_current_inputs=self._layout_current_inputs,
             continuation=self.continuation,
             items=tuple(
                 item

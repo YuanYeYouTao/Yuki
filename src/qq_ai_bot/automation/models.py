@@ -101,7 +101,7 @@ class AutomationScript(StrictModel):
         # A Yuki step owns a durable runtime budget, including declarations
         # saved before this distinction existed. Its outer DSL counts steps.
         return self.limits.agent_budget_managed or any(
-            step.call in {"yuki.agent", "yuki.generate"} for step in self.steps
+            step.call in {"yuki.agent"} for step in self.steps
         )
 
     @model_validator(mode="after")

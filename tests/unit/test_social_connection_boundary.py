@@ -60,7 +60,7 @@ async def test_connection_change_after_claim_sql_rolls_back_before_dispatch(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("reconnect", [False, True], ids=["disconnect", "reconnect"])
-async def test_connection_change_after_claim_commit_preserves_uncertain_on_public_replay(
+async def test_connection_change_before_dispatch_preserves_failed_on_public_replay(
     database: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reconnect: bool
 ) -> None:
     env = await social_env(database, tmp_path)
@@ -91,10 +91,10 @@ async def test_connection_change_after_claim_commit_preserves_uncertain_on_publi
         {"group_id": 20001, "message": []},
     )
     assert changed
-    assert result["status"] == "uncertain"
+    assert result["status"] == "failed"
     assert not any(action == "send_group_msg" for action, _ in env.bot.calls)
     receipt = await env.service.receipts.find(env.context.turn_id, env.context.call_id)
-    assert receipt is not None and receipt.status.value == "uncertain"
+    assert receipt is not None and receipt.status.value == "failed"
     assert result["operation_id"] == receipt.operation_id
 
     route_lookup = AsyncMock(side_effect=AssertionError("uncertain replay cannot resolve a route"))
@@ -104,7 +104,7 @@ async def test_connection_change_after_claim_commit_preserves_uncertain_on_publi
     monkeypatch.setattr(env.router, "_probe", probe)
     monkeypatch.setattr(env.service, "_call", dispatch)
     replay = await env.service.execute("send_message", {"text": "one"}, env.context)
-    assert replay["status"] == "uncertain"
+    assert replay["status"] == "failed"
     assert replay["operation_id"] == receipt.operation_id
     route_lookup.assert_not_awaited()
     probe.assert_not_awaited()

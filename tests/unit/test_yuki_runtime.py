@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import select
 from tests.conftest import MemorySender, build_harness, make_settings
+from tests.support.model_profiles import write_fake_profiles
 from tests.support.social_identity_cases import social_env
 from tests.unit.test_work_protocol_continuity import _control
 
@@ -28,7 +29,10 @@ async def test_production_sources_share_core_without_sharing_turn_state(database
     plugin_directory = tmp_path / "plugins"
     plugin_directory.mkdir()
     settings = make_settings(
-        database.url, plugin_directory=plugin_directory, plugin_system_enabled=False
+        database.url,
+        plugin_directory=plugin_directory,
+        plugin_system_enabled=False,
+        model_profiles_file=write_fake_profiles(tmp_path / "models.toml"),
     )
     app = ApplicationContainer(settings, database=database)
     try:

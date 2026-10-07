@@ -1,0 +1,43 @@
+{
+  "original_report": "issue-256-default-policy.json",
+  "sha256": "6702d033c57531d7fc4c704aa06b9860f2ad3355b1d2c26e18f9b5a3258415e7",
+  "scope": "Retrospective order check; original report left unchanged. Its final-content oracle did not verify the required per-node audit order.",
+  "records": [
+    {
+      "task": "dependency_chain",
+      "mode": "code",
+      "original_success": true,
+      "per_node_audit_order": true
+    },
+    {
+      "task": "batch_ledger",
+      "mode": "direct",
+      "original_success": true,
+      "per_node_audit_order": true
+    },
+    {
+      "task": "batch_ledger",
+      "mode": "code",
+      "original_success": true,
+      "per_node_audit_order": true
+    },
+    {
+      "task": "resumed_work",
+      "mode": "code",
+      "original_success": true,
+      "per_node_audit_order": false
+    },
+    {
+      "task": "resumed_work",
+      "mode": "direct",
+      "original_success": true,
+      "per_node_audit_order": false
+    },
+    {
+      "task": "dependency_chain",
+      "mode": "direct",
+      "original_success": true,
+      "per_node_audit_order": true
+    }
+  ]
+}

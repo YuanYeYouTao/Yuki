@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 from qq_ai_bot.capabilities.invocation import ToolInvocationContext
-from qq_ai_bot.capabilities.results import ToolExecutionResult, normalize_legacy_result
+from qq_ai_bot.capabilities.results import ToolExecutionResult
 
 
 class ToolBinding(Protocol):
@@ -20,7 +20,7 @@ class ToolBinding(Protocol):
 
 InProcessHandler = Callable[
     [dict[str, object], ToolInvocationContext],
-    Awaitable[object],
+    Awaitable[ToolExecutionResult],
 ]
 
 
@@ -38,10 +38,6 @@ class InProcessToolBinding:
         context: ToolInvocationContext,
     ) -> ToolExecutionResult:
         value = await self.handler(arguments, context)
-        if isinstance(value, ToolExecutionResult):
-            return value
-        return normalize_legacy_result(
-            value,
-            provider_id=self.provider_id,
-            tool_name=self.tool_name,
-        )
+        if not isinstance(value, ToolExecutionResult):
+            raise TypeError("tool handler must return ToolExecutionResult")
+        return replace(value, provider_id=self.provider_id, tool_name=self.tool_name)

@@ -88,8 +88,9 @@ def test_required_metadata_fallback_uses_tokens_without_expanding_optional(chara
         assert payload == expected and fact_ids == ()
     else:
         assert estimate_text_tokens(serialized) > hard_tokens
-        with pytest.raises(ValueError, match="required context exceeds configured budget"):
-            ContextAssembler._fit_metadata(context, 512, capacity_limit=hard_tokens)
+        payload, fact_ids = ContextAssembler._fit_metadata(context, 512, capacity_limit=hard_tokens)
+        assert payload == expected and fact_ids == ()
+        # Only the complete Provider request capacity owner may reject required content.
 
 
 async def _history(

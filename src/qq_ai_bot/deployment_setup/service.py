@@ -25,9 +25,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from qq_ai_bot import __version__
 from qq_ai_bot.config import Settings
 from qq_ai_bot.llm.vendor_policy import supports_native_search
-from qq_ai_bot.model_runtime import ModelCapability, ModelTask, load_model_profile_catalog
+from qq_ai_bot.model_runtime import ModelCapability, ModelTask
 from qq_ai_bot.model_runtime.models import ModelSearchMode
-from qq_ai_bot.model_runtime.profiles import ModelRuntimeConfigurationError
+from qq_ai_bot.model_runtime.profiles import (
+    ModelRuntimeConfigurationError,
+    parse_model_profile_catalog,
+)
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.plugin_host.discovery import PluginDiscovery
 from qq_ai_bot.plugin_host.repository import PluginInstallationRepository
@@ -47,7 +50,6 @@ _FLASH_TASKS = frozenset(
         ModelTask.MEMORY_ATTRIBUTION,
         ModelTask.RELATIONSHIP_EVALUATION,
         ModelTask.EMOJI_REPLACEMENT,
-        ModelTask.AUTOMATION_TEXT_GENERATION,
         ModelTask.UTILITY_STRUCTURED,
         ModelTask.CONVERSATION_COMPACTION,
     }
@@ -418,64 +420,46 @@ def validate_configuration(paths: SetupPaths, configuration: SetupConfiguration)
     except ValidationError as exc:
         raise SetupValidationError(_validation_summary(exc)) from exc
 
-    with tempfile.TemporaryDirectory(prefix="yuki-setup-validate-") as temporary_name:
-        temporary = Path(temporary_name)
-        profile_path = temporary / "model_profiles.toml"
-        profile_path.write_text(configuration.model_profiles, encoding="utf-8")
-        try:
-            catalog = load_model_profile_catalog(
-                profile_path,
-                legacy_provider=settings.llm_provider,
-                legacy_base_url=settings.llm_base_url,
-                legacy_model=settings.llm_model,
-                legacy_timeout_seconds=settings.llm_timeout_seconds,
-                legacy_max_retries=settings.llm_max_retries,
-                legacy_temperature=settings.llm_temperature,
-                legacy_max_output_tokens=settings.llm_max_output_tokens,
-                legacy_thinking_enabled=settings.llm_thinking_enabled,
-                legacy_reasoning_effort=settings.llm_reasoning_effort,
-                environment=environment,
-            )
-            chat_profile = catalog.profiles[catalog.routes[ModelTask.CHAT_AGENT].profile_id]
-            native_mode = chat_profile.search_mode in {ModelSearchMode.NATIVE, ModelSearchMode.BOTH}
-            inherited_native = chat_profile.search_mode is None and settings.web.mode in {
-                WebMode.NATIVE,
-                WebMode.BOTH,
-            }
-            if (
-                settings.web.mode is not WebMode.DISABLED
-                and (native_mode or inherited_native)
-                and (
-                    ModelCapability.NATIVE_WEB_SEARCH not in chat_profile.capabilities
-                    or not supports_native_search(
-                        chat_profile.provider.casefold(),
-                        chat_profile.protocol.value,
-                        chat_profile.wire_options,
-                        has_functions=ModelCapability.TOOLS in chat_profile.capabilities,
-                    )
+    try:
+        catalog = parse_model_profile_catalog(configuration.model_profiles, environment=environment)
+        chat_profile = catalog.profiles[catalog.routes[ModelTask.CHAT_AGENT].profile_id]
+        native_mode = chat_profile.search_mode in {ModelSearchMode.NATIVE, ModelSearchMode.BOTH}
+        inherited_native = chat_profile.search_mode is None and settings.web.mode in {
+            WebMode.NATIVE,
+            WebMode.BOTH,
+        }
+        if (
+            settings.web.mode is not WebMode.DISABLED
+            and (native_mode or inherited_native)
+            and (
+                ModelCapability.NATIVE_WEB_SEARCH not in chat_profile.capabilities
+                or not supports_native_search(
+                    chat_profile.provider.casefold(),
+                    chat_profile.protocol.value,
+                    chat_profile.wire_options,
+                    has_functions=ModelCapability.TOOLS in chat_profile.capabilities,
                 )
-            ):
-                raise SetupValidationError("当前主模型 Profile 未声明可用的模型原生搜索能力")
-            if (
-                settings.web.mode is WebMode.NATIVE
-                and chat_profile.search_mode is ModelSearchMode.EXTERNAL
-            ):
-                if settings.web_search_backend == "deepseek_anthropic":
-                    search_profile = catalog.profiles.get(catalog.search_connection or "")
-                    if (
-                        search_profile is None
-                        or search_profile.provider.casefold() != "deepseek"
-                        or urlsplit(search_profile.base_url).scheme != "https"
-                        or urlsplit(search_profile.base_url).hostname != "api.deepseek.com"
-                        or not _configured_value(environment.get(search_profile.api_key_env, ""))
-                    ):
-                        raise SetupValidationError(
-                            "独立搜索需要明确选择带密钥的官方 DeepSeek 搜索连接"
-                        )
-                elif not settings.tavily_api_key:
-                    raise SetupValidationError("外部搜索需要可用搜索连接或 Tavily 密钥")
-        except (ModelRuntimeConfigurationError, ValidationError) as exc:
-            raise SetupValidationError(str(exc)) from exc
+            )
+        ):
+            raise SetupValidationError("当前主模型 Profile 未声明可用的模型原生搜索能力")
+        if (
+            settings.web.mode is WebMode.NATIVE
+            and chat_profile.search_mode is ModelSearchMode.EXTERNAL
+        ):
+            if settings.web_search_backend == "deepseek_anthropic":
+                search_profile = catalog.profiles.get(catalog.search_connection or "")
+                if (
+                    search_profile is None
+                    or search_profile.provider.casefold() != "deepseek"
+                    or urlsplit(search_profile.base_url).scheme != "https"
+                    or urlsplit(search_profile.base_url).hostname != "api.deepseek.com"
+                    or not _configured_value(environment.get(search_profile.api_key_env, ""))
+                ):
+                    raise SetupValidationError("独立搜索需要明确选择带密钥的官方 DeepSeek 搜索连接")
+            elif not settings.tavily_api_key:
+                raise SetupValidationError("外部搜索需要可用搜索连接或 Tavily 密钥")
+    except (ModelRuntimeConfigurationError, ValidationError) as exc:
+        raise SetupValidationError(str(exc)) from exc
     return settings
 
 
@@ -630,6 +614,74 @@ def _validate_gateway_configuration(environment: Mapping[str, str]) -> None:
 
 
 async def apply_pending_plugins(paths: SetupPaths, settings: Settings) -> int:
+    from qq_ai_bot.persistence.instance_lock import (
+        ApplicationAlreadyActiveError,
+        SQLiteApplicationLock,
+    )
+    from qq_ai_bot.plugin_host.control_client import plugin_control, plugin_mutation, plugin_query
+
+    if not paths.pending.is_file():
+        return 0
+    lock = SQLiteApplicationLock(settings.sqlite_path)
+    try:
+        lock.acquire()
+    except ApplicationAlreadyActiveError:
+        payload = json.loads(paths.pending.read_text(encoding="utf-8"))
+        if payload.get("schema_version") != 1 or not isinstance(
+            payload.get("selected_plugins"), list
+        ):
+            raise SetupValidationError("待应用插件配置无效") from None
+        selected = set(payload["selected_plugins"])
+        async with plugin_control(settings) as client:
+            await plugin_mutation(client, "yuki", "discover")
+            rows = []
+            cursor = None
+            while True:
+                listing = await plugin_query(
+                    client, "list_plugins", {"page": {"limit": 100, "cursor": cursor}}
+                )
+                rows.extend(listing["items"])
+                cursor = listing.get("next_cursor")
+                if cursor is None:
+                    break
+            if selected - {row["plugin_id"] for row in rows}:
+                raise SetupValidationError("选择的插件已不存在或 Manifest 无效") from None
+            changed = 0
+            for row in rows:
+                plugin_id = row["plugin_id"]
+                if plugin_id in selected:
+                    approval = await plugin_query(
+                        client, "read_plugin_approval", {"plugin_id": plugin_id}
+                    )
+                    fields = approval["fields"]
+                    if (
+                        fields["status"] == "pending_approval"
+                        or not fields["manifest_hash_matches"]
+                        or set(fields["approved_permissions"])
+                        != set(fields["requested_permissions"])
+                    ):
+                        await plugin_mutation(
+                            client,
+                            plugin_id,
+                            "approve",
+                            permissions=fields["requested_permissions"],
+                        )
+                    if not row["enabled"]:
+                        await plugin_mutation(client, plugin_id, "enable")
+                        changed += 1
+                elif row["enabled"]:
+                    await plugin_mutation(client, plugin_id, "disable")
+                    changed += 1
+        paths.pending.unlink(missing_ok=True)
+        return changed
+    else:
+        try:
+            return await _bootstrap_pending_plugins(paths, settings)
+        finally:
+            lock.release()
+
+
+async def _bootstrap_pending_plugins(paths: SetupPaths, settings: Settings) -> int:
     if not paths.pending.is_file():
         return 0
     try:

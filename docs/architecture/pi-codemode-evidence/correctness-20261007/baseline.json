@@ -1,0 +1,125 @@
+{
+  "zip_sha256": "09e2436808bdcb9f03d30c738af436ec8e8ab98e485a68113f7fc38e941f1724",
+  "verified_package_members": 252,
+  "runs": [
+    {
+      "label": "branch-lifecycle",
+      "source_sha": "0f24a3b590d103eb547483161fb5873d5a78d032",
+      "import_path": "/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/src/qq_ai_bot/__init__.py",
+      "command": [
+        "/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/.venv/bin/python",
+        "-m",
+        "pytest",
+        "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/receipts/test_codemode_lifecycle_audit.py",
+        "-q",
+        "-o",
+        "asyncio_mode=auto",
+        "-o",
+        "asyncio_default_fixture_loop_scope=function",
+        "--tb=short",
+        "--basetemp",
+        "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/branch-lifecycle-tmp"
+      ],
+      "exit_code": 1,
+      "seconds": 3.287339667091146,
+      "log": "branch-lifecycle.log.gz",
+      "tail": "0, \"rejected_before_dispatch\": 0, \"reused_receipts\": 0}, \"stdout\": \"\", \"stdout_truncated\": false, \"replay_forbidden\": true, \"ok\": true, \"status\": \"completed\", \"executed\": true, \"result\": \"done\", \"complete\": true, \"result_ref\": null} DOWNSTREAM [('workspace_write', {'path': 'should-not-run'})]\n____________ test_pending_owned_execution_allows_code_wait_control _____________\n/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/receipts/test_codemode_lifecycle_audit.py:119: in test_pending_owned_execution_allows_code_wait_control\n    assert json.loads(child.receipt)['ok'] is True, 'Code Mode must retain direct wait semantics'\nE   AssertionError: Code Mode must retain direct wait semantics\nE   assert False is True\n----------------------------- Captured stdout call -----------------------------\nCODE_WAIT {\"ok\": false, \"executed\": false, \"error\": \"unresolved_prior_effect\"}\nDIRECT_WAIT {'ok': True, 'work_id': '2c09e1c3-f0b3-48fc-b48e-49d724c3614d', 'state': 'running', 'revision': 1, 'ending_proposed': 'waiting_external'}\n=============================== warnings summary ===============================\ntest_codemode_lifecycle_audit.py::test_control_receipt_crash_must_not_resume_after_need_input\ntest_codemode_lifecycle_audit.py::test_pending_owned_execution_allows_code_wait_control\n  /Users/huangjiawei/.codex/worktrees/d0aa/Yuki/src/qq_ai_bot/persistence/database.py:104: SAWarning: Cannot correctly sort tables; there are unresolvable cycles between tables \"canonical_conversations, conversation_legacy_aliases\", which is usually caused by mutually dependent foreign key constraints.  Foreign key constraints involving these tables will not be considered; this warning may raise an error in a future release.\n    for table in Base.metadata.sorted_tables\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED ../../../../../../var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/receipts/test_codemode_lifecycle_audit.py::test_control_receipt_crash_must_not_resume_after_need_input\nFAILED ../../../../../../var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/receipts/test_codemode_lifecycle_audit.py::test_pending_owned_execution_allows_code_wait_control\n2 failed, 2 warnings in 0.87s\n"
+    },
+    {
+      "label": "branch-dependencies",
+      "source_sha": "0f24a3b590d103eb547483161fb5873d5a78d032",
+      "import_path": "/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/src/qq_ai_bot/__init__.py",
+      "command": [
+        "/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/.venv/bin/python",
+        "-m",
+        "pytest",
+        "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/receipts/test_pr258_dependencies.py",
+        "-q",
+        "-o",
+        "asyncio_mode=auto",
+        "-o",
+        "asyncio_default_fixture_loop_scope=function",
+        "--tb=short",
+        "--basetemp",
+        "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/branch-dependencies-tmp",
+        "-k",
+        "not through_real_kernel"
+      ],
+      "exit_code": 1,
+      "seconds": 5.388444042066112,
+      "log": "branch-dependencies.log.gz",
+      "tail": "aints.  Foreign key constraints involving these tables will not be considered; this warning may raise an error in a future release.\n    for table in Base.metadata.sorted_tables\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED ../../../../../../var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/receipts/test_pr258_dependencies.py::test_external_read_preserves_observation_without_owning_execution[running-get_code_run]\nFAILED ../../../../../../var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/receipts/test_pr258_dependencies.py::test_external_read_preserves_observation_without_owning_execution[running-terminal_read]\nFAILED ../../../../../../var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/receipts/test_pr258_dependencies.py::test_external_read_preserves_observation_without_owning_execution[unknown-get_code_run]\nFAILED ../../../../../../var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/receipts/test_pr258_dependencies.py::test_external_read_preserves_observation_without_owning_execution[unknown-terminal_read]\nFAILED ../../../../../../var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/receipts/test_pr258_dependencies.py::test_reconnecting_control_cannot_settle_a_still_running_execution\nFAILED ../../../../../../var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/receipts/test_pr258_dependencies.py::test_interrupted_read_is_visible_but_not_an_unknown_mutation\nFAILED ../../../../../../var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/receipts/test_pr258_dependencies.py::test_terminal_receipt_preserves_original_committed_operation[succeeded-0]\nFAILED ../../../../../../var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/receipts/test_pr258_dependencies.py::test_terminal_receipt_preserves_original_committed_operation[failed-1]\nFAILED ../../../../../../var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/receipts/test_pr258_dependencies.py::test_terminal_receipt_preserves_original_committed_operation[cancelled-1]\n9 failed, 2 passed, 2 deselected, 11 warnings in 3.58s\n"
+    },
+    {
+      "label": "main-dependencies",
+      "source_sha": "25cd6083015924bf80405ca7c346f84a995f6ebb",
+      "import_path": "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/main/src/qq_ai_bot/__init__.py",
+      "command": [
+        "/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/.venv/bin/python",
+        "-m",
+        "pytest",
+        "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/receipts/test_pr258_dependencies.py",
+        "-q",
+        "-o",
+        "asyncio_mode=auto",
+        "-o",
+        "asyncio_default_fixture_loop_scope=function",
+        "--tb=short",
+        "--basetemp",
+        "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/main-dependencies-tmp",
+        "-k",
+        "not through_real_kernel"
+      ],
+      "exit_code": 0,
+      "seconds": 5.1346948749851435,
+      "log": "main-dependencies.log.gz",
+      "tail": "...........                                                              [100%]\n=============================== warnings summary ===============================\ntest_pr258_dependencies.py: 11 warnings\n  /var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/main/src/qq_ai_bot/persistence/database.py:104: SAWarning: Cannot correctly sort tables; there are unresolvable cycles between tables \"canonical_conversations, conversation_legacy_aliases\", which is usually caused by mutually dependent foreign key constraints.  Foreign key constraints involving these tables will not be considered; this warning may raise an error in a future release.\n    for table in Base.metadata.sorted_tables\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n11 passed, 2 deselected, 11 warnings in 2.95s\n"
+    },
+    {
+      "label": "branch-output",
+      "source_sha": "0f24a3b590d103eb547483161fb5873d5a78d032",
+      "import_path": "/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/src/qq_ai_bot/__init__.py",
+      "command": [
+        "/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/.venv/bin/python",
+        "-m",
+        "pytest",
+        "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/round2/native/test_recovery_output.py",
+        "-q",
+        "-o",
+        "asyncio_mode=auto",
+        "-o",
+        "asyncio_default_fixture_loop_scope=function",
+        "--tb=short",
+        "--basetemp",
+        "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/branch-output-tmp"
+      ],
+      "exit_code": 1,
+      "seconds": 4.630963542032987,
+      "log": "branch-output.log.gz",
+      "tail": ": \"succeeded\"}, {\"operation_id\": \"8973a34826fd4b779735afa832ada991:0:code-1/c18\", \"tool\": \"lookup\", \"status\": \"succeeded\"}, {\"operation_id\": \"8973a34826fd4b779735afa832ada991:0:code-1/c19\", \"tool\": \"lookup\", \"status\": \"succeeded\"}], \"usage\": {\"compositions\": 1, \"business_admitted\": 20, \"control_calls\": 0, \"rejected_before_dispatch\": 0, \"reused_receipts\": 0}, \"stdout\": \"\", \"stdout_truncated\": true, \"replay_forbidden\": true, \"ok\": true, \"status\": \"completed\", \"executed\": true, \"result\": null, \"complete\": true, \"result_ref\": null}\n=============================== warnings summary ===============================\ntest_recovery_output.py::test_stdout_survives_real_journal_recovery[segment_yield]\ntest_recovery_output.py::test_stdout_survives_real_journal_recovery[cancel_after_receipt]\ntest_recovery_output.py::test_same_stdout_survives_without_yield\ntest_recovery_output.py::test_operation_summary_respects_result_limit\ntest_recovery_output.py::test_bounded_concurrent_reads_keep_exact_budget_and_partial_receipts[None]\ntest_recovery_output.py::test_bounded_concurrent_reads_keep_exact_budget_and_partial_receipts[2]\n  /Users/huangjiawei/.codex/worktrees/d0aa/Yuki/src/qq_ai_bot/persistence/database.py:104: SAWarning: Cannot correctly sort tables; there are unresolvable cycles between tables \"canonical_conversations, conversation_legacy_aliases\", which is usually caused by mutually dependent foreign key constraints.  Foreign key constraints involving these tables will not be considered; this warning may raise an error in a future release.\n    for table in Base.metadata.sorted_tables\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED ../../../../../../var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/round2/native/test_recovery_output.py::test_stdout_survives_real_journal_recovery[segment_yield]\nFAILED ../../../../../../var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/round2/native/test_recovery_output.py::test_stdout_survives_real_journal_recovery[cancel_after_receipt]\nFAILED ../../../../../../var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/round2/native/test_recovery_output.py::test_operation_summary_respects_result_limit\n3 failed, 3 passed, 6 warnings in 2.68s\n"
+    },
+    {
+      "label": "branch-interleave",
+      "source_sha": "0f24a3b590d103eb547483161fb5873d5a78d032",
+      "import_path": "/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/src/qq_ai_bot/__init__.py",
+      "command": [
+        "/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/.venv/bin/python",
+        "-m",
+        "pytest",
+        "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/round3/receipts/test_code_interleave.py",
+        "-q",
+        "-o",
+        "asyncio_mode=auto",
+        "-o",
+        "asyncio_default_fixture_loop_scope=function",
+        "--tb=short",
+        "--basetemp",
+        "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/branch-interleave-tmp"
+      ],
+      "exit_code": 1,
+      "seconds": 11.440801165997982,
+      "log": "branch-interleave.log.gz",
+      "tail": "ARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=gemini\nWARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=gemini\n=============================== warnings summary ===============================\ntest_code_interleave.py::test_pending_code_interleave[chat-pending]\ntest_code_interleave.py::test_pending_code_interleave[chat-settled]\ntest_code_interleave.py::test_pending_code_interleave[responses-pending]\ntest_code_interleave.py::test_pending_code_interleave[responses-settled]\ntest_code_interleave.py::test_pending_code_interleave[anthropic-pending]\ntest_code_interleave.py::test_pending_code_interleave[anthropic-settled]\ntest_code_interleave.py::test_pending_code_interleave[gemini-pending]\ntest_code_interleave.py::test_pending_code_interleave[gemini-settled]\n  /Users/huangjiawei/.codex/worktrees/d0aa/Yuki/src/qq_ai_bot/persistence/database.py:104: SAWarning: Cannot correctly sort tables; there are unresolvable cycles between tables \"canonical_conversations, conversation_legacy_aliases\", which is usually caused by mutually dependent foreign key constraints.  Foreign key constraints involving these tables will not be considered; this warning may raise an error in a future release.\n    for table in Base.metadata.sorted_tables\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED ../../../../../../var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/round3/receipts/test_code_interleave.py::test_pending_code_interleave[chat-pending]\nFAILED ../../../../../../var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/round3/receipts/test_code_interleave.py::test_pending_code_interleave[responses-pending]\nFAILED ../../../../../../var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/round3/receipts/test_code_interleave.py::test_pending_code_interleave[anthropic-pending]\nFAILED ../../../../../../var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/round3/receipts/test_code_interleave.py::test_pending_code_interleave[gemini-pending]\n4 failed, 4 passed, 8 warnings in 9.38s\n"
+    }
+  ]
+}

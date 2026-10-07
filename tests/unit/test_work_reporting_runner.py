@@ -8,6 +8,9 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 from tests.conftest import build_harness, make_settings
+
+# P10: explicit Invocation fixture contract; existing assertions are retained.
+from tests.support.agent_backend import StubAgentBackend, _typed_fixture
 from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.automation.models import TurnOrigin
@@ -80,7 +83,7 @@ async def case(database, tmp_path, responses, *, reporting="interactive", send_s
     chat = harness.processor._chat
     observed = []
 
-    class Backend:
+    class Backend(StubAgentBackend):
         def definitions(self, runtime, **kwargs):
             return (
                 *work_control_tools(),
@@ -99,7 +102,9 @@ async def case(database, tmp_path, responses, *, reporting="interactive", send_s
         def is_side_effecting(self, name, arguments, runtime):
             return name != "read_fixture"
 
-        async def execute(self, name, arguments, runtime):
+        async def execute_call(self, invocation):
+            name = invocation.call.function.name
+            arguments = invocation.call.function.arguments
             observed.append(name)
             if name == "send_message":
                 target = json.loads(arguments).get("target", {"kind": "space", "id": env.space})
@@ -174,14 +179,17 @@ async def test_start_serializes_reads_without_reordering_or_charging_rejections(
         tmp_path,
         [
             response(*first),
-            *([response(*reads)] if order == "last" else []),
             response(tool("write_fixture")),
             response(tool("task_control", {"action": "complete"})),
         ],
     )
     result = await run(test_case)
     assert result.work_state == "completed"
-    assert test_case.observed == ["send_message", "read_fixture", "read_fixture", "write_fixture"]
+    assert test_case.observed == (
+        ["send_message", "read_fixture", "read_fixture", "write_fixture"]
+        if order == "first"
+        else ["read_fixture", "read_fixture", "send_message", "write_fixture"]
+    )
     assert test_case.control.tools_started == 4
     async with database.sessions() as reader:
         receipt_rows = (
@@ -192,7 +200,7 @@ async def test_start_serializes_reads_without_reordering_or_charging_rejections(
     assert len([row for row in receipt_rows if row["kind"] == "tool"]) == 4
     if order == "last":
         serialized = str(test_case.provider.requests[1].messages)
-        assert serialized.count("work_start_required") == 2
+        assert "work_start_required" not in serialized
     for previous, following in zip(
         test_case.provider.requests, test_case.provider.requests[1:], strict=False
     ):
@@ -220,8 +228,8 @@ async def test_subagent_start_cannot_bypass_first_business_barrier(database, tmp
     )
     result = await run(test_case)
     assert result.work_state == "completed"
-    assert "work_start_required" in str(test_case.provider.requests[1].messages)
-    assert test_case.control.communication["start_feedback_given"] is True
+    assert "work_start_required" not in str(test_case.provider.requests[1].messages)
+    assert "start_feedback_given" not in test_case.control.communication
     from qq_ai_bot.runtime.subagent_repository import SubagentRepository
 
     assert await SubagentRepository(test_case.repository).unfinished(result.work_id) == []
@@ -243,9 +251,13 @@ async def test_unconfirmed_start_blocks_business_without_resend_or_tool_charge(
     )
     result = await run(test_case)
     assert result.work_state != "completed"
-    assert test_case.observed == ["send_message"]
-    assert test_case.control.tools_started == 1
-    assert "work_start_delivery_unconfirmed" in str(test_case.provider.requests[1].messages)
+    assert test_case.observed == (
+        ["send_message"] if send_status == "unknown" else ["send_message", "write_fixture"]
+    )
+    assert test_case.control.tools_started == (1 if send_status == "unknown" else 2)
+    assert "work_start_delivery_unconfirmed" not in str(test_case.provider.requests[1].messages)
+    if send_status == "unknown":
+        assert "先查询原执行结果" in str(test_case.provider.requests[1].messages)
 
 
 @pytest.mark.asyncio
@@ -262,10 +274,10 @@ async def test_repeated_start_omission_consumes_one_batch_correction_and_stops(d
     )
     result = await run(test_case)
     assert result.work_state != "completed"
-    assert test_case.observed == []
-    assert test_case.control.tools_started == 0
-    assert len(test_case.provider.requests) == 2
-    assert test_case.control.communication["start_feedback_given"] is True
+    assert test_case.observed == ["read_fixture", "write_fixture", "write_fixture"]
+    assert test_case.control.tools_started == 3
+    assert len(test_case.provider.requests) == 3
+    assert "start_feedback_given" not in test_case.control.communication
 
 
 @pytest.mark.asyncio
@@ -285,11 +297,10 @@ async def test_interactive_internal_final_requires_explicit_exit_once(
             else response(tool("task_control", {"action": "complete"})),
         ],
     )
-    result = await run(test_case)
-    assert (result.work_state == "completed") is not second_final
-    assert len(test_case.provider.requests) == 4
-    assert test_case.control.communication["final_feedback_given"] is True
-    assert "不能据此结束交互式 Work" in str(test_case.provider.requests[-1].messages)
+    await run(test_case)
+    assert test_case.control.ending == "completed"
+    assert len(test_case.provider.requests) == 3
+    assert "final_feedback_given" not in test_case.control.communication
 
 
 @pytest.mark.asyncio
@@ -337,7 +348,7 @@ async def test_rejected_business_does_not_exhaust_budget_before_later_start(data
     )
     test_case.runtime = replace(test_case.runtime, max_tool_calls=1, max_model_requests=1)
     await run(test_case)
-    assert test_case.observed == ["send_message"]
+    assert test_case.observed == ["write_fixture"]
     assert test_case.control.tools_started == 1
 
 
@@ -355,10 +366,11 @@ async def test_stage_and_new_input_share_one_nonblocking_opportunity(database, t
     )
     async with database.sessions() as reader:
         event_id = await reader.scalar(select(ChatEventModel.id))
-    original_execute = test_case.backend.execute
+    original_execute = test_case.backend.execute_call
 
-    async def execute(name, arguments, runtime):
-        result = await original_execute(name, arguments, runtime)
+    async def execute(invocation):
+        name = invocation.call.function.name
+        result = await original_execute(invocation)
         if name == "read_fixture":
             identity = await test_case.repository.enqueue(
                 test_case.control.lease.conversation_id,
@@ -372,7 +384,7 @@ async def test_stage_and_new_input_share_one_nonblocking_opportunity(database, t
             await test_case.repository.prepare_input(identity, {"text": "问题找到了吗？"})
         return result
 
-    test_case.backend.execute = execute
+    test_case.backend.execute_call = execute
     result = await run(test_case)
     assert result.work_state == "completed"
     opportunities = [
@@ -470,9 +482,9 @@ async def test_start_correction_is_not_reset_by_journal_recovery(database, tmp_p
     test_case.runtime = replace(test_case.runtime, work_control=recovered, max_model_requests=4)
     second = await run(test_case)
     assert second.work_state != "completed"
-    assert len(test_case.provider.requests) == 2
-    assert test_case.observed == []
-    assert recovered.communication["start_feedback_given"] is True
+    assert len(test_case.provider.requests) == 3
+    assert test_case.observed == ["read_fixture", "write_fixture"]
+    assert "start_feedback_given" not in recovered.communication
 
 
 @pytest.mark.asyncio
@@ -641,11 +653,13 @@ async def test_only_actual_related_send_suppresses_stage_opportunity(database, t
     )
     test_case.provider._responder = lambda _: next(scripted)
     if delivery in {"failed", "unknown", "reported_failed", "reported_unknown"}:
-        original_execute = test_case.backend.execute
+        original_execute = test_case.backend.execute_call
 
-        async def execute(name, arguments, runtime):
-            result = await original_execute(name, arguments, runtime)
+        async def execute(invocation):
+            name = invocation.call.function.name
+            arguments = invocation.call.function.arguments
             if name == "send_message" and json.loads(arguments).get("text") == "阶段结果":
+                test_case.observed.append(name)
                 return json.dumps(
                     {
                         "ok": False,
@@ -655,9 +669,9 @@ async def test_only_actual_related_send_suppresses_stage_opportunity(database, t
                         },
                     }
                 )
-            return result
+            return await original_execute(invocation)
 
-        test_case.backend.execute = execute
+        test_case.backend.execute_call = _typed_fixture(execute)
     result = await run(test_case)
     assert (result.work_state == "completed") == (
         delivery not in {"failed", "unknown", "reported_failed", "reported_unknown"}

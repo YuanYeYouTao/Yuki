@@ -6,6 +6,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from tests.support.workspace_snapshots import snapshot_bytes
 
 from qq_ai_bot.capabilities.catalog import (
     DescriptorRegistrySnapshot,
@@ -44,13 +45,13 @@ async def test_group_directory_miss_refreshes_without_group_message(database: Da
     from qq_ai_bot.identity.canonical_repository import ensure_space
     from qq_ai_bot.identity.db_models import CanonicalSpaceModel
     from qq_ai_bot.memory.read_scope import MemoryReadScopeResolver
-    from qq_ai_bot.persistence.repositories import UserProfileRepository
+    from qq_ai_bot.persistence.repositories import PeopleRepository
     from qq_ai_bot.social.service import SocialService
 
     async with database.sessions.begin() as session:
         await ensure_presence(session, "80001")
         space_id = await ensure_space(session, "2001", name="旧群名")
-    await UserProfileRepository(database).observe(user_id="1001", nickname="远野", group_id="2001")
+    await PeopleRepository(database).observe(user_id="1001", nickname="远野", group_id="2001")
     router = SimpleNamespace(resolve_presence=AsyncMock(return_value=object()))
     service = SocialService(database, router, None)
     service._call = AsyncMock(
@@ -90,7 +91,7 @@ async def test_transfer_permission_failure_preserves_artifact(
     from qq_ai_bot.workspace.store import WorkspaceStore
 
     store = WorkspaceStore(tmp_path / "workspace")
-    artifact = store.write("hello.txt", b"hello")
+    artifact = snapshot_bytes(store, "hello.txt", b"hello")
     transfer = ArtifactTransfer(store, tmp_path / "transfer", "/transfer")
     original = Path.mkdir
 
@@ -125,7 +126,7 @@ async def test_social_receipt_claim_replay_and_interrupted_delivery(database: Da
     descriptors = ChatToolCapabilityProvider(
         definitions, source=CapabilityTrustSource.CORE
     ).descriptors()
-    assert len(descriptors) == 28
+    assert len(descriptors) == 27
     assert all(
         descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS for descriptor in descriptors
     )
@@ -191,7 +192,6 @@ async def test_social_receipt_claim_replay_and_interrupted_delivery(database: Da
             authority=AuthorityContext(actor_user_id="10001", is_superuser=False),
             origin=TurnOrigin.USER_MESSAGE,
         ),
-        append_only=True,
     )
     runtime.initial_exposure()
     assert {tool.name for tool in runtime.definitions()} == {tool.name for tool in definitions}
@@ -353,7 +353,7 @@ async def test_social_gateway_delivery_and_fail_closed(database: Database, tmp_p
         SocialContext("turn", "recall", conversation_id),
     )
     assert recalled["status"] == "succeeded" and bot.calls[-1][0] == "delete_msg"
-    artifact = store.write("report.txt", b"report")
+    artifact = snapshot_bytes(store, "report.txt", b"report")
     sent = await service.execute(
         "send_message",
         {
@@ -484,7 +484,7 @@ async def test_social_gateway_delivery_and_fail_closed(database: Database, tmp_p
                     updated_at=datetime.now(UTC) - timedelta(minutes=2)
                 )
             )
-        item = store.write(f"caption-{index}.txt", b"hello world")
+        item = snapshot_bytes(store, f"caption-{index}.txt", b"hello world")
         combined_args = {
             "target": {"kind": "person", "target_id": person},
             "artifact_id": item["artifact_id"],
@@ -883,7 +883,7 @@ async def test_chat_agent_sends_only_via_explicit_tool(
     from tests.conftest import MemorySender, build_harness, make_settings
     from tests.support.social_identity_cases import social_env
 
-    from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
+    from qq_ai_bot.domain.conversations import ScopeType
     from qq_ai_bot.domain.messages import (
         ChatResponse,
         InboundMessage,
@@ -937,7 +937,6 @@ async def test_chat_agent_sends_only_via_explicit_tool(
             group_id="20001",
             mentions_bot=True,
             conversation_id=env.context.conversation_id,
-            legacy_conversation_key=ConversationScope.group("80001", "20001").key,
             person_id=env.person,
             space_id=env.space,
             presence_id=env.presence,
@@ -955,21 +954,18 @@ async def test_chat_agent_sends_only_via_explicit_tool(
 
 
 @pytest.mark.asyncio
-async def test_chat_agent_recovers_unsent_final_through_send_message(
+async def test_chat_agent_does_not_request_courtesy_recovery_for_unsent_final(
     database: Database, tmp_path: Path
 ) -> None:
-    import json
 
     from tests.conftest import MemorySender, build_harness, make_settings
     from tests.support.social_identity_cases import social_env
 
-    from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
+    from qq_ai_bot.domain.conversations import ScopeType
     from qq_ai_bot.domain.messages import (
         ChatResponse,
         InboundMessage,
         SenderIdentity,
-        ToolCall,
-        ToolFunction,
     )
     from qq_ai_bot.llm.fake import FakeLLMProvider
     from qq_ai_bot.services.main_agent_contract import MainAgentContract
@@ -980,24 +976,8 @@ async def test_chat_agent_recovers_unsent_final_through_send_message(
 
     def respond(request):
         requests.append(request)
-        if len(requests) == 1:
-            return ChatResponse("你好，我在。", 0)
-        if len(requests) == 2:
-            assert any(
-                message.role == "system" and "上一段最终正文没有发送给用户" in message.content
-                for message in request.messages
-            )
-            return ChatResponse(
-                "",
-                0,
-                tool_calls=(
-                    ToolCall(
-                        "send-recovered",
-                        ToolFunction("send_message", json.dumps({"text": "你好，我在。"})),
-                    ),
-                ),
-            )
-        return ChatResponse("内部收尾", 0)
+        assert len(requests) == 1
+        return ChatResponse("你好，我在。", 0)
 
     provider = FakeLLMProvider(respond)
     harness = build_harness(
@@ -1018,18 +998,15 @@ async def test_chat_agent_recovers_unsent_final_through_send_message(
             group_id="20001",
             mentions_bot=True,
             conversation_id=env.context.conversation_id,
-            legacy_conversation_key=ConversationScope.group("80001", "20001").key,
             person_id=env.person,
             space_id=env.space,
             presence_id=env.presence,
         ),
         sender,
     )
-    assert result.reason == "chat" and result.sent_messages == 1
-    assert len(requests) == 3
-    assert [action for action, _ in env.bot.calls if action == "send_group_msg"] == [
-        "send_group_msg"
-    ]
+    assert result.reason == "chat" and result.sent_messages == 0
+    assert len(requests) == 1
+    assert not [action for action, _ in env.bot.calls if action == "send_group_msg"]
     assert not sender.messages
 
 
@@ -1038,7 +1015,7 @@ async def test_chat_agent_can_choose_silent_final(database: Database, tmp_path: 
     from tests.conftest import MemorySender, build_harness, make_settings
     from tests.support.social_identity_cases import social_env
 
-    from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
+    from qq_ai_bot.domain.conversations import ScopeType
     from qq_ai_bot.domain.messages import ChatResponse, InboundMessage, SenderIdentity
     from qq_ai_bot.llm.fake import FakeLLMProvider
     from qq_ai_bot.services.main_agent_contract import MainAgentContract
@@ -1071,7 +1048,6 @@ async def test_chat_agent_can_choose_silent_final(database: Database, tmp_path: 
             group_id="20001",
             mentions_bot=True,
             conversation_id=env.context.conversation_id,
-            legacy_conversation_key=ConversationScope.group("80001", "20001").key,
             person_id=env.person,
             space_id=env.space,
             presence_id=env.presence,
@@ -1087,11 +1063,13 @@ async def test_chat_agent_can_choose_silent_final(database: Database, tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_chat_agent_rejects_repeated_unsent_final(database: Database, tmp_path: Path) -> None:
+async def test_chat_agent_keeps_unsent_final_internal_without_error_notice(
+    database: Database, tmp_path: Path
+) -> None:
     from tests.conftest import MemorySender, build_harness, make_settings
     from tests.support.social_identity_cases import social_env
 
-    from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
+    from qq_ai_bot.domain.conversations import ScopeType
     from qq_ai_bot.domain.messages import ChatResponse, InboundMessage, SenderIdentity
     from qq_ai_bot.llm.fake import FakeLLMProvider
     from qq_ai_bot.services.main_agent_contract import MainAgentContract
@@ -1123,16 +1101,15 @@ async def test_chat_agent_rejects_repeated_unsent_final(database: Database, tmp_
             group_id="20001",
             mentions_bot=True,
             conversation_id=env.context.conversation_id,
-            legacy_conversation_key=ConversationScope.group("80001", "20001").key,
             person_id=env.person,
             space_id=env.space,
             presence_id=env.presence,
         ),
         sender,
     )
-    assert result.reason == "agent_output_failure"
-    assert len(requests) == 2
-    assert sender.messages
+    assert result.reason == "chat" and result.sent_messages == 0
+    assert len(requests) == 1
+    assert not sender.messages
     assert not [
         action for action, _ in env.bot.calls if action in {"send_group_msg", "send_private_msg"}
     ]
@@ -1145,6 +1122,7 @@ async def test_plugin_background_send_is_bound_to_frozen_job_target(
     from datetime import UTC, datetime
     from types import SimpleNamespace
 
+    from tests.support.background_authority import approve_background_plugin
     from tests.support.social_identity_cases import social_env
 
     from qq_ai_bot.capabilities.invocation import ToolInvocationContext, current_invocation
@@ -1152,6 +1130,14 @@ async def test_plugin_background_send_is_bound_to_frozen_job_target(
     from qq_ai_bot.social.agent_adapter import invoke_social
 
     env = await social_env(database, tmp_path)
+    # Background dispatch now rechecks the real current installation and grant.
+    await approve_background_plugin(
+        database,
+        plugin_id="test-plugin",
+        bot_user_id="80001",
+        group_id="20001",
+        creator_user_id="10001",
+    )
     event = await env.service.writer.append_external(
         scope=ConversationScope.group("80001", "20001"),
         platform_message_id="plugin-event-1",

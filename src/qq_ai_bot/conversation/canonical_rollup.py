@@ -41,7 +41,9 @@ async def signal_canonical_rollup_if_needed(
     if job is not None:
         if force_existing:
             job.signal_revision += 1
-            job.next_attempt_at = now
+            # New eligible input wakes policy parking, never model-failure backoff.
+            if job.last_error_category == "llm_origin_ineligible":
+                job.next_attempt_at = now
             job.updated_at = now
             return True
         return False

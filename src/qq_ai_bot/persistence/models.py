@@ -1720,17 +1720,6 @@ class RelationshipJobModel(Base):
     )
 
 
-class ProcessedEventModel(Base):
-    """Durable idempotency record for incoming OneBot events."""
-
-    __tablename__ = "processed_events"
-    __table_args__ = (Index("ix_processed_events_expires_at", "expires_at"),)
-
-    event_key: Mapped[str] = mapped_column(String(64), primary_key=True)
-    processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
 class AgentActionModel(Base):
     """A bounded audit entry for a model-issued OneBot action."""
 

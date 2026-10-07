@@ -10,7 +10,9 @@ import pytest
 from tests.conftest import build_harness, make_settings
 
 from qq_ai_bot.automation.tools import AutomationToolService
+from qq_ai_bot.capabilities.invocation import direct_invocations
 from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.messages import ToolCall, ToolFunction
 from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.services.agent_tools import ToolRuntime
@@ -41,13 +43,11 @@ async def setup(database, tmp_path):
         gateway=None,
         allow_generic_onebot=False,
         actor_context=actor,
-        actor_user_id=actor.user_id,
         origin=actor.origin,
         execution_id=actor.execution_id,
         allow_automation=True,
         allow_work_environment=True,
         scope_type=ScopeType.PRIVATE,
-        bot_user_id="7777",
         external_target_id="10001",
         runtime_config=config,
     )
@@ -95,12 +95,14 @@ async def test_scheduled_actor_uses_common_automation_receipt(database, tmp_path
         list_directory=AsyncMock(return_value=()),
     )
     chat.set_automation_tools(AutomationToolService(service))
-    receipt = json.loads(await chat._automation_tools.execute("automation_list", "{}", runtime))
+    receipt = (
+        await chat._automation_tools.execute("automation_list", "{}", runtime)
+    ).model_payload()
     assert receipt["ok"]
     service.list_directory.assert_awaited_once_with(status="active", limit=51, offset=0)
     assert runtime.inbound is None
     with pytest.raises(PermissionError):
-        replace(runtime, actor_user_id="9000").require_actor()
+        replace(runtime, actor_context=None).require_actor()
 
 
 @pytest.mark.asyncio
@@ -129,10 +131,10 @@ async def test_main_tool_rejects_retired_voice_without_execution(database, tmp_p
         max_model_requests=8,
     )
     arguments = json.dumps({"text": "hello", "voice": voice})
-    backend.begin_batch(
-        (ToolCall("retired", ToolFunction("send_message", arguments)),), agent_runtime
-    )
-    result = json.loads(await backend.execute("send_message", arguments, agent_runtime))
+    backend.definitions(agent_runtime, web_was_used=False)
+    call = ToolCall("retired", ToolFunction("send_message", arguments))
+    invocation = direct_invocations((call,), agent_runtime)[0]
+    result = json.loads(await backend.execute_call(invocation))
     assert result["executed"] is False
     assert result["mutation_committed"] is False
     chat._tools.social_service.execute.assert_not_awaited()
@@ -141,7 +143,7 @@ async def test_main_tool_rejects_retired_voice_without_execution(database, tmp_p
 @pytest.mark.asyncio
 async def test_current_permission_report_without_fake_event(database, tmp_path):
     chat, _, runtime = await setup(database, tmp_path)
-    result = json.loads(await chat._tools.execute("get_my_capabilities", "{}", runtime))
+    result = (await chat._tools.execute("get_my_capabilities", "{}", runtime)).model_payload()
     assert result["ok"], result
     assert result["data"]["permission_level"] == "user"
     with pytest.raises(PermissionError):
@@ -153,8 +155,9 @@ async def test_revocation_precedes_every_common_tool(database, tmp_path):
     chat, _, runtime = await setup(database, tmp_path)
     check = AsyncMock(side_effect=PermissionError("revoked"))
     backend = MainAgentBackend(chat, replace(runtime, before_model_request=check))
+    call = ToolCall(id="revoked", function=ToolFunction(name="update_short_state", arguments="{}"))
     with pytest.raises(PermissionError, match="revoked"):
-        await backend.execute("update_short_state", "{}", None)
+        await backend.execute_call(direct_invocations((call,), None)[0])
     check.assert_awaited_once()
 
 
@@ -203,9 +206,7 @@ async def test_scheduled_social_uses_actor_without_qq_message(database, tmp_path
     service = SimpleNamespace(
         database=database, execute=AsyncMock(return_value={"status": "succeeded"})
     )
-    token = current_invocation.set(
-        ToolInvocationContext(runtime=runtime, call_id="send-1", execution_id=runtime.execution_id)
-    )
+    token = current_invocation.set(ToolInvocationContext(runtime=runtime, call_id="send-1"))
     try:
         await invoke_social(
             service,

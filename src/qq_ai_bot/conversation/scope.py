@@ -17,7 +17,7 @@ class ConversationTurnSnapshot:
     ingress alias when it differs; ledger ``bot_user_id`` stays on transport.
     """
 
-    scope_id: int
+    conversation_id: str
     scope_key: str
     generation: int
     trigger_event_id: int | None
@@ -26,8 +26,8 @@ class ConversationTurnSnapshot:
     initiative_run_id: str | None = None
 
     def __post_init__(self) -> None:
-        if self.scope_id < 1:
-            raise ValueError("scope_id must be positive")
+        if not isinstance(self.conversation_id, str) or not self.conversation_id.strip():
+            raise ValueError("conversation_id must be nonempty")
         if not self.scope_key:
             raise ValueError("scope_key must not be empty")
         if self.generation < 1:
@@ -85,16 +85,16 @@ def snapshot_transport_key(turn: ConversationTurnSnapshot) -> str:
 def turn_matches_hydrated_scope(
     turn: ConversationTurnSnapshot,
     *,
-    scope_id: int,
+    conversation_id: str,
     generation: int,
     transport_key: str,
     runtime_key: str | None,
 ) -> bool:
-    """Strict fence: scope_id, generation, runtime key, and transport key."""
+    """Strict fence: conversation_id, generation, runtime key, and transport key."""
 
     resolved_runtime = runtime_key or transport_key
     return (
-        turn.scope_id == scope_id
+        turn.conversation_id == conversation_id
         and turn.generation == generation
         and turn.scope_key == resolved_runtime
         and transport_key == snapshot_transport_key(turn)

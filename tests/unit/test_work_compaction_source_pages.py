@@ -6,6 +6,7 @@ from dataclasses import replace
 import pytest
 from sqlalchemy import select
 from tests.support.work_compaction import summary_json
+from tests.support.work_session import WorkSession
 from tests.unit.test_work_compaction_capacity import _runtime, _session, _snapshot
 
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest
@@ -14,7 +15,6 @@ from qq_ai_bot.model_runtime.capacity import ModelCapacity, estimate_request_tok
 from qq_ai_bot.model_runtime.models import ModelExecutionPriority
 from qq_ai_bot.runtime.protocol_schema import refs
 from qq_ai_bot.runtime.work_repository import WorkCapacityError
-from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 
 

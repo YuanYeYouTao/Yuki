@@ -3,27 +3,40 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from contextlib import ExitStack
-from dataclasses import dataclass
+from contextlib import AbstractContextManager, ExitStack
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any
 
 from sqlalchemy import func, select
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
+from qq_ai_bot.capabilities.invocation import Invocation
+from qq_ai_bot.codemode.api_projection import ScriptApi, project
+from qq_ai_bot.codemode.contract import CODE_API_REVISION
+from qq_ai_bot.codemode.tool_visibility import DIRECT_TOOL_NAMES, model_definitions
 from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import ChatMessage, ChatTool, InboundMessage, SenderIdentity
+from qq_ai_bot.domain.messages import (
+    ChatImage,
+    ChatMessage,
+    ChatResponse,
+    ChatTool,
+    InboundMessage,
+    SenderIdentity,
+)
 from qq_ai_bot.domain.tool_actor import ToolActor
+from qq_ai_bot.llm.base import LLMError
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.runtime.activation_bindings import ActiveWorkBindings
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.subagent_repository import SubagentRepository
 from qq_ai_bot.runtime.subagent_schema import children
-from qq_ai_bot.runtime.subagent_tools import WORKER_NAMES, WORKER_PROMPT, WORKER_REQUIRED_NAMES
+from qq_ai_bot.runtime.subagent_tools import WORKER_NAMES, WORKER_REQUIRED_NAMES, worker_prompt
 from qq_ai_bot.runtime.work_activation import bind_work_activation
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
@@ -33,6 +46,7 @@ from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
 from qq_ai_bot.services.agent_runner import AgentRunner, AgentRuntime, AgentToolBackend
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.execution_sources import SelfTaskSource, recover_execution_source
+from qq_ai_bot.services.invocation_context import InvocationContextFactory
 from qq_ai_bot.time.models import TimeContext
 
 logger = logging.getLogger(__name__)
@@ -53,12 +67,74 @@ class SubagentExecutionDependencies:
     web_capabilities: Callable[[RuntimeConfigSnapshot], frozenset[str]]
 
 
-class WorkerBackend:
-    def __init__(self, delegate: Any, names: frozenset[str]) -> None:
+class WorkerBackend(AgentToolBackend):
+    def __init__(self, delegate: AgentToolBackend, names: frozenset[str]) -> None:
         self.delegate, self.names = delegate, names
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.delegate, name)
+    @property
+    def media_max_bytes(self) -> int:
+        return int(getattr(self.delegate, "media_max_bytes", 16_777_216))
+
+    async def validate_images(self, images: tuple[ChatImage, ...], runtime: AgentRuntime) -> None:
+        validator = getattr(self.delegate, "validate_images", None)
+        if not callable(validator):
+            raise LLMError("tool_media_source_validator_unavailable")
+        await validator(images, runtime)
+
+    def definitions(self, runtime: AgentRuntime, *, web_was_used: bool) -> tuple[ChatTool, ...]:
+        return tuple(
+            t
+            for t in self.delegate.definitions(runtime, web_was_used=web_was_used)
+            if t.name in self.names
+        )
+
+    async def prepare(self, runtime: AgentRuntime) -> None:
+        await self.delegate.prepare(runtime)
+
+    def refresh_catalog(self, runtime: AgentRuntime, *, web_was_used: bool) -> None:
+        self.delegate.refresh_catalog(runtime, web_was_used=web_was_used)
+
+    def parallel_safe(self, name: str, runtime: AgentRuntime) -> bool:
+        return self.delegate.parallel_safe(name, runtime)
+
+    def is_side_effecting(self, name: str, arguments_json: str, runtime: AgentRuntime) -> bool:
+        return self.delegate.is_side_effecting(name, arguments_json, runtime)
+
+    def counts_toward_limit(self, name: str, runtime: AgentRuntime) -> bool:
+        return self.delegate.counts_toward_limit(name, runtime)
+
+    def finalize(self, content: str, runtime: AgentRuntime) -> str:
+        return self.delegate.finalize(content, runtime)
+
+    def exhausted(self, runtime: AgentRuntime) -> str:
+        return self.delegate.exhausted(runtime)
+
+    def record_failure_usage(self, *, tool_calls: int, model_requests: int) -> None:
+        self.delegate.record_failure_usage(tool_calls=tool_calls, model_requests=model_requests)
+
+    def pin_web_provider(self) -> AbstractContextManager[None]:
+        return self.delegate.pin_web_provider()
+
+    async def archive_code_result(self, text: str) -> str | None:
+        return await self.delegate.archive_code_result(text)
+
+    async def confirm_memory_prompt_exposure(self) -> None:
+        await self.delegate.confirm_memory_prompt_exposure()
+
+    def mark_native_web_used(self) -> None:
+        self.delegate.mark_native_web_used()
+
+    def did_use_web(self) -> bool:
+        return self.delegate.did_use_web()
+
+    async def observe_response(self, response: ChatResponse, runtime: AgentRuntime) -> None:
+        await self.delegate.observe_response(response, runtime)
+
+    def has_visible_effects(self) -> bool:
+        return self.delegate.has_visible_effects()
+
+    def allow_silent_final(self, runtime: AgentRuntime) -> bool:
+        return self.delegate.allow_silent_final(runtime)
 
     def work_control_allowed(self, name: str) -> bool:
         return name in self.names
@@ -68,10 +144,10 @@ class WorkerBackend:
         # it does not inherit the main Agent's global Automation read authority.
         return "task_control" in self.names and action in {"get", "list"}
 
-    async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str:
-        if name not in self.names:
+    async def execute_call(self, invocation: Invocation) -> str:
+        if invocation.call.function.name not in self.names:
             return '{"ok":false,"error":"worker_tool_not_declared"}'
-        return cast(str, await self.delegate.execute(name, arguments_json, runtime))
+        return await self.delegate.execute_call(invocation)
 
 
 class SubagentExecution:
@@ -85,15 +161,45 @@ class SubagentExecution:
         self.children = children
         self.services = services
         self.definitions: tuple[ChatTool, ...] | None = None
+        self.script_api: ScriptApi | None = None
+
+    @property
+    def code_enabled(self) -> bool:
+        contract = self.services.runner.main_contract
+        return contract is not None and contract.mode == "code"
+
+    def required_names(self) -> frozenset[str]:
+        return WORKER_REQUIRED_NAMES | (
+            {"execute_code", "lookup_tools"} if self.code_enabled else set()
+        )
 
     async def prepare(self, *, admission_enabled: bool) -> None:
-        self.definitions = tuple(
-            t for t in await self.services.load_tools() if t.name in WORKER_NAMES
-        )
-        if admission_enabled and not WORKER_REQUIRED_NAMES <= frozenset(
+        if self.definitions is None:
+            self.definitions = tuple(
+                t for t in await self.services.load_tools() if t.name in WORKER_NAMES
+            )
+        if admission_enabled and not self.required_names() <= frozenset(
             t.name for t in self.definitions
         ):
             raise ValueError("incomplete_worker_tool_manifest")
+        if not self.code_enabled:
+            self.script_api = None
+            return
+        if self.script_api is not None:
+            return
+        revision = hashlib.sha256(
+            json.dumps(
+                {
+                    "worker_contract": 3,
+                    "code_api": CODE_API_REVISION,
+                    "direct_names": sorted(DIRECT_TOOL_NAMES),
+                    "tools": [asdict(tool) for tool in self.definitions],
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        self.script_api = project(self.definitions, revision)
 
     async def cancel_commands(self) -> None:
         """Reconcile cancellation outside the database transaction, by original run ID."""
@@ -285,8 +391,6 @@ class SubagentExecution:
                         actor_context=actor,
                         gateway=None,
                         allow_generic_onebot=False,
-                        actor_user_id=recovered.actor_user_id,
-                        current_group_id=group_id,
                         conversation_key=f"worker:{identity}",
                         trigger_message_id=original.platform_message_id if original else "",
                         trigger_event_id=original.id if original else None,
@@ -299,23 +403,20 @@ class SubagentExecution:
                         sandbox_source={**source, "work_id": identity},
                         memory_session=memory,
                         conversation_id=recovered.conversation_id,
-                        presence_id=recovered.presence_id,
                         person_id=recovered.actor_person_id,
                         space_id=recovered.target_space_id,
                         allow_work_environment=isinstance(recovered, SelfTaskSource),
                         scope_type=ScopeType.GROUP
                         if isinstance(recovered, SelfTaskSource)
                         else None,
-                        bot_user_id=recovered.bot_user_id,
                         external_target_id=recovered.external_target_id,
                     )
                     runner = self.services.runner
                     if self.definitions is None:
-                        self.definitions = tuple(
-                            t for t in await self.services.load_tools() if t.name in WORKER_NAMES
-                        )
+                        await self.prepare(admission_enabled=True)
+                    assert self.definitions is not None
                     names = frozenset(t.name for t in self.definitions)
-                    if not WORKER_REQUIRED_NAMES <= names:
+                    if not self.required_names() <= names:
                         raise ValueError("incomplete_worker_tool_manifest")
                     backend = WorkerBackend(self.services.backend_factory(tool_runtime), names)
                     now = datetime.now(UTC)
@@ -328,29 +429,28 @@ class SubagentExecution:
                     )
                     result = await runner.run(
                         (
-                            ChatMessage(role="system", content=WORKER_PROMPT),
+                            ChatMessage(
+                                role="system",
+                                content=worker_prompt(code_enabled=self.code_enabled),
+                            ),
                             brief_message,
                         ),
-                        AgentRuntime(
-                            origin=TurnOrigin(recovered.origin),
-                            actor_user_id=recovered.actor_user_id,
-                            actor_is_superuser=False,
-                            delegated_authority=None,
-                            conversation_key=f"worker:{identity}",
-                            current_group_id=group_id,
-                            bot_user_id=recovered.bot_user_id,
-                            gateway=None,
-                            runtime_config=config,
-                            current_time=TimeContext(now, now, "UTC"),
-                            allowed_capabilities=self.services.web_capabilities(config),
-                            max_tool_calls=32,
-                            max_model_requests=24,
+                        replace(
+                            InvocationContextFactory.from_tools(
+                                tool_runtime,
+                                current_time=TimeContext(now, now, "UTC"),
+                                allowed_capabilities=self.services.web_capabilities(config),
+                                max_tool_calls=32,
+                                max_model_requests=24,
+                            ),
                             before_model_request=validate,
-                            canonical_conversation_id=recovered.conversation_id,
                             dynamic_context_prepared=True,
                             work_control=control,
-                            execution_id=identity,
-                            fixed_tools=self.definitions,
+                            fixed_tools=model_definitions(
+                                self.definitions,
+                                enabled=self.code_enabled,
+                            ),
+                            script_api=self.script_api,
                             compaction_brief=brief_message,
                         ),
                         backend,

@@ -15,7 +15,8 @@ MemoryPartitionKey 使用 SELF、PERSON、GROUP 或 PERSON_GROUP owner，不得�
 代替。
 
 普通上下文的 expected turn 在 `load_prompt_snapshot` 显式 `BEGIN` 建立的一致快照内，
-先校验 scope id、generation、runtime key 和 transport key，再读取摘要和历史正文。
+先校验 canonical Conversation UUID、generation、runtime key 和 transport key，再读取摘要和历史正文。
+同一 UUID 贯穿 turn snapshot、rollup state/claim/candidate、active 合并键与 settlement；不从 UUID 截取整数，也不以 transport alias 代替内部身份。
 协议恢复单独使用只含身份的 scope state 读取；准备后的 read-version/source/privacy 与
 实际 dispatch CAS 继续独立执行。不能以先前展示资料快照替代授权或取消末端围栏。
 
@@ -166,6 +167,11 @@ FROZEN AUTHORIZED CHAT AND SCOPED OBSERVATIONS
 CURRENT ACTOR DYNAMIC ENVELOPE
 CURRENT MESSAGE
 ```
+
+已选摘要冻结正文、coverage、kind 与 renderer version（当前 1）。同 epoch 的 append
+继续使用原完整表示，后台 semantic 追平不能给旧 emergency 正文换标签。缺少 kind 或
+renderer 的旧记录按当前获准来源进行 `rollup` 显式重建并记录新 epoch；不猜旧语义。
+重启、fit/soft/hard 容量及隐私/来源复核仍走原合同。
 
 Rollup 永不进入 system instructions。冻结历史保留所选聊天与观察的原顺序，新事件在安全点追加。
 昵称、群名片和正文来自落账时事件；当前 Actor 的关系、

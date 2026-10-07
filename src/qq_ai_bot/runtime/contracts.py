@@ -9,12 +9,10 @@ no service references.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict
 
 from qq_ai_bot.runtime.delivery import DeliveryStatus
-from qq_ai_bot.runtime.errors import UntrustedFinalizationError
 
 
 class MemoryCapabilityView(BaseModel):
@@ -30,7 +28,6 @@ class MemoryCapabilityView(BaseModel):
     eager_namespaces: tuple[str, ...]
     requestable_namespaces: tuple[str, ...]
     hidden_namespaces: tuple[str, ...]
-    exclusive_namespace: str | None
     transition_revision: int
 
 
@@ -70,71 +67,3 @@ class DeliverySummary:
     delivered_text: str
     emoji_only: bool = False
     transport_receipt_ids: tuple[str, ...] = ()
-
-
-class TerminalFinalizationSource(StrEnum):
-    """Host components trusted to end the agent loop from a tool batch."""
-
-    HOST_MEMORY_FINALIZER = "host_memory_finalizer"
-
-
-TRUSTED_TERMINAL_SOURCES = frozenset(
-    {
-        TerminalFinalizationSource.HOST_MEMORY_FINALIZER,
-    }
-)
-
-
-@dataclass(frozen=True, slots=True)
-class TerminalFinalization:
-    """Host-authorized instruction to finish the agent loop after this batch."""
-
-    source: TerminalFinalizationSource
-    reason: str = ""
-
-
-def authorize_terminal_finalization(
-    candidate: TerminalFinalization | None,
-    *,
-    provider_is_host: bool,
-) -> TerminalFinalization | None:
-    """Gate terminal metadata at the provider→result mapping boundary.
-
-    Only host-owned tool providers may propagate terminal finalization.
-    Plugin providers returning terminal-looking metadata get it dropped
-    here, so forged annotations can never end the agent loop.
-    """
-
-    if candidate is None:
-        return None
-    if not provider_is_host:
-        return None
-    if candidate.source not in TRUSTED_TERMINAL_SOURCES:
-        raise UntrustedFinalizationError(
-            f"unknown terminal finalization source: {candidate.source!r}"
-        )
-    return candidate
-
-
-@dataclass(frozen=True, slots=True)
-class ToolCallOutcome:
-    """Result of one executed (or skipped) tool call inside a batch."""
-
-    call_id: str
-    tool_name: str
-    result_json: str
-    executed: bool = True
-    error_category: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ToolBatchExecutionResult:
-    """Typed result of ``AgentToolBackend.execute_batch`` (R1 §5).
-
-    ``terminal_finalization`` must have passed
-    :func:`authorize_terminal_finalization`; the conversation session rejects
-    TOOL_ACTIVE → FINALIZING transitions without a trusted source.
-    """
-
-    tool_results: tuple[ToolCallOutcome, ...]
-    terminal_finalization: TerminalFinalization | None = None

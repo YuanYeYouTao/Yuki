@@ -219,7 +219,9 @@ async def test_content_and_child_lineage_remain_on_original_work(database, detai
     assert exc.value.problem.code is ProblemCode.CAPABILITY_DENIED
 
 
-@pytest.mark.parametrize("identity", [None, [], "platform-123", str(uuid4()).upper(), ""])
+@pytest.mark.parametrize(
+    "identity", [None, [], "platform-123", "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA", ""]
+)
 async def test_invalid_work_identity(database, identity):
     service = ControlQueryService(ControlQueryAdapter(database))
     with pytest.raises(ControlQueryError) as exc:

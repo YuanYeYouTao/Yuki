@@ -7,7 +7,6 @@ from typing import Any
 
 __all__ = [
     "BackgroundModelPreempted",
-    "LegacyTaskModelExecutor",
     "ModelCapability",
     "ModelClientPool",
     "ModelCompleter",
@@ -28,16 +27,13 @@ __all__ = [
     "StructuredTaskRunner",
     "TaskModelExecutor",
     "load_model_profile_catalog",
-    "require_model_executor",
 ]
 
 _EXPORT_MODULES = {
-    "LegacyTaskModelExecutor": "executor",
     "BackgroundModelPreempted": "executor",
     "ModelCompleter": "executor",
     "ModelExecutor": "executor",
     "TaskModelExecutor": "executor",
-    "require_model_executor": "executor",
     "ModelCapability": "models",
     "ModelExecutionPriority": "models",
     "ModelInvocationRecord": "models",

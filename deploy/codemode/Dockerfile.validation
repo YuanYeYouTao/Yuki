@@ -1,0 +1,44 @@
+# syntax=docker/dockerfile:1.7
+# Offline validation/build image. It does not start a Bot, gateway or Manager.
+FROM rust:1.96.0-slim AS rust
+FROM ghcr.io/astral-sh/uv:0.11.31 AS uv
+FROM python:3.12-slim AS monty
+COPY --from=rust /usr/local/cargo /usr/local/cargo
+COPY --from=rust /usr/local/rustup /usr/local/rustup
+COPY --from=uv /uv /uvx /bin/
+ENV CARGO_HOME=/usr/local/cargo RUSTUP_HOME=/usr/local/rustup \
+    PATH="/usr/local/cargo/bin:$PATH" CARGO_BUILD_JOBS=1
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates git gcc libc6-dev && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+COPY scripts/build_monty_distribution.sh /build/scripts/
+COPY vendor/patches /build/vendor/patches
+COPY vendor/monty/launcher.c /build/vendor/monty/launcher.c
+RUN bash /build/scripts/build_monty_distribution.sh /build/distribution /usr/local/bin/python build
+COPY scripts/export_monty_notices.py /build/scripts/
+RUN bash /build/scripts/build_monty_distribution.sh /build/distribution /usr/local/bin/python notices
+
+FROM python:3.12-slim AS validation
+RUN apt-get update && apt-get install -y --no-install-recommends bubblewrap \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 validator \
+    && useradd --uid 10001 --gid validator --no-create-home validator
+COPY --from=monty /build/distribution/monty/target/release/monty /opt/yuki-monty/monty
+COPY --from=monty /build/distribution/monty-isolated /opt/yuki-monty/monty-isolated
+COPY --from=monty /build/distribution/wheels /opt/yuki-monty/wheels
+COPY --from=monty /build/distribution/THIRD_PARTY_NOTICES.json /opt/yuki-monty/THIRD_PARTY_NOTICES.json
+COPY --from=monty /build/distribution/artifacts.json /opt/yuki-monty/artifacts.json
+COPY LICENSE /opt/yuki-monty/licenses/Yuki-LICENSE
+COPY vendor/monty/LICENSE /opt/yuki-monty/licenses/Monty-LICENSE
+COPY vendor/monty/TYPESHED-LICENSE /opt/yuki-monty/licenses/TYPESHED-LICENSE
+COPY scripts/verify_monty_isolation.py /opt/yuki-monty/verify_monty_isolation.py
+# The small validation image does not install Yuki's uv.lock environment.
+# Preserve the binding's required typing-extensions dependency using the exact
+# version/wheel hash already locked there; never resolve a floating dependency.
+RUN pip install --no-deps --disable-pip-version-check \
+    'https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl#sha256=481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8' \
+    /opt/yuki-monty/wheels/*.whl
+USER 10001:10001
+WORKDIR /tmp
+ENTRYPOINT ["/opt/yuki-monty/monty-isolated"]
+CMD ["subprocess"]

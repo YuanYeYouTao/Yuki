@@ -30,7 +30,3 @@ class IllegalMemoryTransitionError(MemoryRuntimeError):
 
 class MemorySessionClosedError(MemoryRuntimeError):
     """The memory session was used after ``close()``."""
-
-
-class MemoryLocatorRetryExhaustedError(MemoryRuntimeError):
-    """A second locator-read retry was requested after the one allowed attempt."""

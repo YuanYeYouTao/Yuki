@@ -7,7 +7,11 @@ from itertools import pairwise
 
 import pytest
 from sqlalchemy import select, update
+
+# P10: explicit Invocation fixture contract; existing assertions are retained.
+from tests.support.agent_backend import StubAgentBackend
 from tests.support.social_identity_cases import social_env
+from tests.support.work_session import observe_fixture_result
 
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
@@ -268,7 +272,8 @@ async def test_work_control_has_no_progress_tool_and_preserves_checkpoint(databa
     assert persisted["state"] == "running"
     assert json.loads(persisted["checkpoint_json"])["transcript_ref"] == "preserved"
     assert not json.loads(await control.execute("task_control", {"action": "complete"}, "c2"))["ok"]
-    control.observe_result(
+    observe_fixture_result(
+        control,
         "terminal_exec",
         json.dumps(
             {
@@ -281,7 +286,8 @@ async def test_work_control_has_no_progress_tool_and_preserves_checkpoint(databa
         ),
         True,
     )
-    control.observe_result(
+    observe_fixture_result(
+        control,
         "get_code_run",
         json.dumps(
             {
@@ -350,10 +356,10 @@ async def test_root_business_restore_reads_original_effect_without_replaying(
 ):
     from unittest.mock import AsyncMock
 
+    from tests.support.work_session import WorkSession
     from tests.unit.test_work_effect_results import owned_session
 
     from qq_ai_bot.domain.messages import ChatMessage, ToolCall, ToolFunction
-    from qq_ai_bot.runtime.work_session import WorkSession
     from qq_ai_bot.services.turn_transcript import TurnTranscript
 
     control, first, _store = await owned_session(database, tmp_path)
@@ -471,7 +477,7 @@ async def test_agent_loop_speaks_then_executes_and_proposes_finish(
 
     provider.complete = complete
 
-    class Backend:
+    class Backend(StubAgentBackend):
         def definitions(self, runtime, **kwargs):
             return tuple(
                 sorted(
@@ -492,7 +498,8 @@ async def test_agent_loop_speaks_then_executes_and_proposes_finish(
         def is_side_effecting(self, *args):
             return True
 
-        async def execute(self, name, arguments, runtime):
+        async def execute_call(self, invocation):
+            name = invocation.call.function.name
             assert name == "render_fixture"
             observed.append("render")
             return json.dumps({"ok": True, "data": {"artifact_id": "png", "exit_code": 0}})
@@ -594,9 +601,10 @@ async def test_reset_and_privacy_are_atomic_work_boundaries(database, tmp_path):
 async def test_work_recovery_pairs_calls_without_reexecution(
     database, tmp_path, protocol, receipt_arrived
 ):
+    from tests.support.work_session import WorkSession
+
     from qq_ai_bot.domain.messages import ChatMessage, ProviderContinuation, ToolCall, ToolFunction
     from qq_ai_bot.runtime.work_control import WorkControl
-    from qq_ai_bot.runtime.work_session import WorkSession
     from qq_ai_bot.services.turn_transcript import TurnTranscript
 
     env = await social_env(database, tmp_path)
@@ -761,7 +769,6 @@ async def test_real_chat_entry_progress_delivery_and_work_completion(
     message = replace(
         inbound("记录指定短期信息", message_id="real-work"),
         conversation_id=conversation.conversation_id,
-        legacy_conversation_key="private:9999:1001",
         person_id=person,
         presence_id=presence,
     )
@@ -846,7 +853,6 @@ async def test_real_chat_entry_empty_activation_release_failure_preserves_dispat
     message = replace(
         inbound("记录指定短期信息", message_id="empty-release-locked"),
         conversation_id=conversation.conversation_id,
-        legacy_conversation_key="private:9999:1001",
         person_id=person,
         presence_id=presence,
     )
@@ -1146,8 +1152,9 @@ async def test_receipt_repair_records_accepted_delivery_without_resending(databa
 
 @pytest.mark.asyncio
 async def test_new_epoch_retains_execution_evidence_and_budget(database, tmp_path):
+    from tests.support.work_session import WorkSession
+
     from qq_ai_bot.domain.messages import ChatMessage
-    from qq_ai_bot.runtime.work_session import WorkSession
     from qq_ai_bot.services.turn_transcript import TurnTranscript
 
     env = await social_env(database, tmp_path)
@@ -1163,7 +1170,16 @@ async def test_new_epoch_retains_execution_evidence_and_budget(database, tmp_pat
     brief = ChatMessage("user", "draw")
     await first.restore(TurnTranscript((brief,)), compaction_brief=brief)
     await first.save("paired")
-    await repo.checkpoint(lease, control.current["id"], None, models=3, tools=2, active_seconds=61)
+    await repo.checkpoint(lease, control.current["id"], None, models=3, tools=2)
+    # Legacy rows retain their stored display value; current writers never charge it.
+    from sqlalchemy import update
+
+    from qq_ai_bot.runtime.work_schema_v1 import work
+
+    async with database.sessions() as writer, writer.begin():
+        await writer.execute(
+            update(work).where(work.c.id == control.current["id"]).values(active_seconds=61)
+        )
     await _persisted_tool_receipt(
         control,
         "original-pending",
@@ -1355,8 +1371,9 @@ async def test_independent_work_queues_without_overwriting_waiting_parent(databa
 async def test_completed_receipts_reconcile_pending_evidence_without_model_poll(database, tmp_path):
     from uuid import uuid4
 
+    from tests.support.work_session import WorkSession
+
     from qq_ai_bot.domain.messages import ChatMessage
-    from qq_ai_bot.runtime.work_session import WorkSession
     from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
     from qq_ai_bot.services.turn_transcript import TurnTranscript
 

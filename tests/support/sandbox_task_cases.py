@@ -31,13 +31,13 @@ async def task_receipt_cases(database, tmp_path):
         "presence_id": env.presence,
         "bot_user_id": "80001",
     }
-    arguments = {"code": "print(1)"}
+    arguments = {"command": "printf 1"}
     first, second = await asyncio.gather(
         tasks.prepare("request", arguments, source), tasks.prepare("request", arguments, source)
     )
     assert first.request_id == second.request_id
     for changed_args, changed_source in (
-        ({"code": "print(2)"}, source),
+        ({"command": "printf 2"}, source),
         (arguments, {**source, "actor_user_id": "10002"}),
     ):
         with pytest.raises(ValueError, match="sandbox_task_idempotency_conflict"):
@@ -107,19 +107,19 @@ async def task_receipt_cases(database, tmp_path):
 
     client = SandboxClient(tmp_path / "manager.sock", tasks=tasks)
     with patch.object(asyncio, "open_unix_connection", connect, create=True):
-        assert (await client.execute("run_python", arguments, request_id="before-send"))[
+        assert (await client.execute("terminal_exec", arguments, request_id="before-send"))[
             "error"
         ] == "missing_task_source"
         result = await client.execute(
-            "run_python", arguments, request_id="before-send", source=source
+            "terminal_exec", arguments, request_id="before-send", source=source
         )
         assert result["pending"]
         wire = json.loads(writer.write.call_args.args[0])
-        assert wire == {"method": "run_python", "args": arguments, "request_id": "before-send"}
+        assert wire == {"method": "terminal_exec", "args": arguments, "request_id": "before-send"}
         writer.write.reset_mock()
         with pytest.raises(ValueError, match="sandbox_task_idempotency_conflict"):
             await client.execute(
-                "run_python", {"code": "different"}, request_id="before-send", source=source
+                "terminal_exec", {"code": "different"}, request_id="before-send", source=source
             )
         writer.write.assert_not_called()
     # A lost submission response performs only an idempotency lookup, never a second run.
@@ -140,11 +140,11 @@ async def task_receipt_cases(database, tmp_path):
         create=True,
     ):
         recovered = await client.execute(
-            "run_python", arguments, request_id="uncertain-submit", source=source
+            "terminal_exec", arguments, request_id="uncertain-submit", source=source
         )
     assert recovered == recovered_result
     methods = [json.loads(call.args[0])["method"] for call in recovery_writer.write.call_args_list]
-    assert methods == ["run_python", "get_code_run_by_request"]
+    assert methods == ["terminal_exec", "get_code_run_by_request"]
     assert (await tasks.get("uncertain-submit")).run_id == rediscovered_run
 
     # Rejecting an unknown record must not starve a valid record in the same page.

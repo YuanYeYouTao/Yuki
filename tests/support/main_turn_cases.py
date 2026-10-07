@@ -15,6 +15,7 @@ from qq_ai_bot.prompting.models import (
     PromptTrust,
 )
 from qq_ai_bot.prompting.serializer import DYNAMIC_ENVELOPE_HEADER, serialize_dynamic
+from qq_ai_bot.services.model_context_projection import project_short_state
 from tests.support.state_backend import ShortStateOnlyBackend
 
 
@@ -41,7 +42,7 @@ async def run_compiled_state_cases(handlers, state, provider, runtime, context):
         composition.messages[-1].content[len(DYNAMIC_ENVELOPE_HEADER) :]
     )
     assert [item["id"] for item in items][-2:] == ["runtime.short_state", "runtime.time"]
-    assert items[-2]["data"] == old_rows
+    assert items[-2]["data"] == project_short_state(old_rows)
 
     # An empty snapshot is still final for this turn, even if the store now has data.
     with patch.object(state, "snapshot", side_effect=[[]]) as snapshot:
@@ -71,8 +72,8 @@ async def run_compiled_state_cases(handlers, state, provider, runtime, context):
     compiler = PromptCompiler()
     program = PromptProgram(contributions=(contribution,))
     exact = len(serialize_dynamic((contribution,)))
-    with pytest.raises(ValueError, match="required dynamic"):
-        compiler.compile(program, dynamic_character_budget=exact - 1)
+    preserved = compiler.compile(program, dynamic_character_budget=exact - 1)
+    assert preserved.metrics.dynamic_characters == exact
     compiled = compiler.compile(
         program,
         current_message=ChatMessage(role="user", content="hello"),

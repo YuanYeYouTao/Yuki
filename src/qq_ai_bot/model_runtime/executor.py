@@ -10,7 +10,7 @@ import time
 import weakref
 from collections import OrderedDict
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
@@ -98,6 +98,7 @@ class ProviderCacheShapeDiagnostics:
     instructions_hash: str
     tools_hash: str
     input_prefix_hash: str
+    coverage: str = "normalized messages and tools; excludes native continuation body"
 
 
 def _diagnostic_message(message: object) -> dict[str, object]:
@@ -132,7 +133,11 @@ def provider_cache_shape_diagnostics(
     profile_id: str,
     protocol: str,
 ) -> ProviderCacheShapeDiagnostics:
-    """Hash the normalized provider request while excluding the current user tail."""
+    """Hash the application projection, excluding the current user tail.
+
+    Native continuation body is outside this projection. WireRequestObserver on
+    each adapter's final body is authoritative for that shape and first difference.
+    """
 
     boundary = 0
     while boundary < len(request.messages) and request.messages[boundary].role in {
@@ -232,7 +237,7 @@ class BackgroundModelPreempted(RuntimeError):
 
 
 class ModelCompleter(Protocol):
-    """Small compatibility boundary for injected test providers."""
+    """Provider completion contract consumed by the physical dispatch owner."""
 
     async def complete(self, request: ChatRequest) -> ChatResponse: ...
 
@@ -261,80 +266,14 @@ class ModelExecutor(Protocol):
 
     def capacity_request(self, task: ModelTask, request: ChatRequest) -> ChatRequest: ...
 
+    def profile_revision(self, task: ModelTask) -> str: ...
 
-class LegacyTaskModelExecutor:
-    """Adapt an injected test provider without leaking it into business services."""
+    def search_mode(self, task: ModelTask) -> ModelSearchMode | None: ...
 
-    def __init__(self, provider: ModelCompleter, *, model: str = "fake") -> None:
-        self._provider = provider
-        self._model = model
+    def pin(self) -> AbstractContextManager[None]: ...
 
-    async def execute(
-        self,
-        task: ModelTask,
-        request: ChatRequest,
-        *,
-        priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
-        canonical_conversation_id: str | None = None,
-    ) -> ChatResponse:
-        del task, priority, canonical_conversation_id
-        normalized = replace(
-            request,
-            thinking_enabled=True,
-            reasoning_effort=minimum_reasoning_effort(request.reasoning_effort),
-            request_shape_hash=request_shape_hash(
-                request,
-                provider="fake",
-                model=self._model,
-                profile_id="legacy",
-                protocol=ModelProtocol.CHAT_COMPLETIONS.value,
-            ),
-        )
-        await check_model_dispatch()
-        return await self._provider.complete(normalized)
-
-    def model_name(self, task: ModelTask) -> str:
-        del task
-        return self._model
-
-    def capacity_request(self, task: ModelTask, request: ChatRequest) -> ChatRequest:
-        del task
-        return replace(
-            request,
-            thinking_enabled=True,
-            reasoning_effort=minimum_reasoning_effort(request.reasoning_effort),
-        )
-
-    def structured_output_mode(self, task: ModelTask) -> StructuredOutputMode:
-        del task
-        return StructuredOutputMode.TEXT_JSON
-
-    def protocol(self, task: ModelTask) -> ModelProtocol:
-        del task
-        return ModelProtocol.CHAT_COMPLETIONS
-
-    def capabilities(self, task: ModelTask) -> frozenset[ModelCapability]:
-        del task
-        return frozenset(ModelCapability)
-
-    def capacity(self, task: ModelTask) -> ModelCapacity:
-        del task
-        return ModelCapacity()
-
-
-def require_model_executor(
-    model_executor: ModelExecutor | None,
-    *,
-    provider: ModelCompleter | None = None,
-    model: str = "fake",
-) -> ModelExecutor:
-    """Normalize old test injection at one migration boundary."""
-
-    if model_executor is not None:
-        return model_executor
-    if provider is None:
-        raise TypeError("model_executor is required")
-    return LegacyTaskModelExecutor(provider, model=model)
+    @property
+    def traces(self) -> TraceRecorder | None: ...
 
 
 class TaskModelExecutor:
@@ -543,7 +482,6 @@ class TaskModelExecutor:
             message.images
             for message in (
                 *request.messages,
-                *request.continuation_messages,
                 *(item for item in request.continuation_items if isinstance(item, ChatMessage)),
             )
         ):
@@ -631,7 +569,7 @@ class TaskModelExecutor:
                 "conversation_prefix_hash=%s "
                 "request_shape_hash=%s provider_cache_shape_hash=%s "
                 "provider_instructions_hash=%s provider_tools_hash=%s "
-                "provider_input_prefix_hash=%s prompt_snapshot_fingerprint=%s",
+                "provider_input_prefix_hash=%s prompt_snapshot_fingerprint=%s coverage=%s",
                 task.value,
                 normalized.conversation_prefix_hash,
                 normalized.request_shape_hash,
@@ -640,6 +578,7 @@ class TaskModelExecutor:
                 provider_cache_shape.tools_hash,
                 provider_cache_shape.input_prefix_hash,
                 normalized.prompt_snapshot_fingerprint,
+                provider_cache_shape.coverage,
             )
         if profile.protocol is ModelProtocol.RESPONSES:
             logger.info(
@@ -672,8 +611,18 @@ class TaskModelExecutor:
             if isinstance(exc, LLMError):
                 # The actual transport counter survives the executor boundary;
                 # zero remains a predispatch failure, not an unknown paid effect.
+                usage = attempts.usage_totals()
+                prior_usage = exc.diagnostics.get("usage")
+                # Preserve the adapter's diagnostic field shape; aggregation
+                # adds reported values, not previously absent optional NULLs.
+                reported = {
+                    name: value
+                    for name, value in usage.items()
+                    if value is not None or (isinstance(prior_usage, dict) and name in prior_usage)
+                }
                 exc.diagnostics = {
                     **exc.diagnostics,
+                    **({"usage": reported} if attempts.requests else {}),
                     "physical_request_count": attempts.requests,
                     "unknown_usage_request_count": attempts.unknown_usage_requests,
                 }
@@ -717,6 +666,22 @@ class TaskModelExecutor:
         finally:
             current_provider_attempts.reset(attempt_token)
             switch_model_phase("response_preparation")
+        if attempts.requests:
+            # Adapters report physical usage; only this boundary combines it.
+            # Claude pause may already return a combined logical response, so
+            # replace these fields instead of adding its totals a second time.
+            usage = attempts.usage_totals()
+            response = replace(
+                response,
+                prompt_tokens=usage["prompt_tokens"],
+                completion_tokens=usage["completion_tokens"],
+                total_tokens=usage["total_tokens"],
+                cached_prompt_tokens=usage["cached_prompt_tokens"],
+                reasoning_tokens=usage["reasoning_tokens"],
+                cache_creation_input_tokens=usage["cache_creation_input_tokens"],
+                cache_creation_5m_input_tokens=usage["cache_creation_5m_input_tokens"],
+                cache_creation_1h_input_tokens=usage["cache_creation_1h_input_tokens"],
+            )
         if response.continuation is not None:
             response = replace(
                 response,
@@ -1119,9 +1084,28 @@ class TaskModelExecutor:
             await asyncio.gather(background, return_exceptions=True)
         if maintenance is not None:
             await asyncio.gather(maintenance, return_exceptions=True)
+        errors: list[BaseException] = []
         if self._pool_close_tasks:
-            await asyncio.gather(*self._pool_close_tasks)
+            results = await asyncio.gather(*self._pool_close_tasks, return_exceptions=True)
+            errors.extend(result for result in results if isinstance(result, BaseException))
         pools = (*self._retired_pools.values(), self._active_runtime[1])
         self._retired_pools.clear()
+        closed: set[int] = set()
         for pool in pools:
-            await pool.close()
+            if id(pool) in closed:
+                continue
+            closed.add(id(pool))
+            try:
+                await pool.close()
+            except BaseException as exc:
+                errors.append(exc)
+        if errors:
+            cancellation = next(
+                (error for error in errors if not isinstance(error, Exception)), None
+            )
+            if cancellation is not None:
+                for error in errors:
+                    if error is not cancellation:
+                        cancellation.add_note(f"close failed: {type(error).__name__}")
+                raise cancellation
+            raise BaseExceptionGroup("model executor close failed", errors)

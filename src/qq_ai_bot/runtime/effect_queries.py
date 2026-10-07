@@ -14,7 +14,7 @@ from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.runtime.work_recovery_schema import deliveries
 from qq_ai_bot.runtime.work_schema_v1 import effects, journal, work
 from qq_ai_bot.social.db_models import SocialOperationModel
-from qq_ai_bot.social.source_keys import social_source_key
+from qq_ai_bot.social.source_keys import social_call_key, social_source_key
 
 DeliveryState = Literal["none", "succeeded", "failed", "uncertain"]
 
@@ -76,6 +76,110 @@ class RuntimeEffectQueries:
 
     def __init__(self, database: Database) -> None:
         self._database = database
+
+    async def inspect_social_operation(
+        self, *, reference: str, work_id: str, operation_key: str
+    ) -> dict[str, Any] | None:
+        """Read the exact original parent and its prospective child vector.
+
+        This is observation only: no dispatch, receipt rewrite or lease renewal.
+        Missing planned children remain unconfirmed, including a missing caption.
+        """
+        if not reference.startswith("social:"):
+            return None
+        async with self._database.sessions() as reader:
+            await reader.execute(text("BEGIN"))
+            conversation = await reader.scalar(
+                select(work.c.conversation_id).where(work.c.id == work_id)
+            )
+            parent = await reader.get(SocialOperationModel, reference.removeprefix("social:"))
+            if parent is None or (
+                parent.source_conversation_id != conversation
+                or parent.tool_call_id != social_call_key(operation_key)
+            ):
+                return None
+
+            def receipt(row: SocialOperationModel | None) -> dict[str, Any]:
+                if row is None:
+                    return {"status": "not_sent"}
+                return {
+                    "operation_id": row.id,
+                    "status": row.status,
+                    "target": {"kind": row.target_kind, "id": row.target_id},
+                    "event_id": row.event_id,
+                    "error_category": row.error_category,
+                }
+
+            result = receipt(parent)
+            parts = [result.copy()]
+            complete_plan = True
+            if parent.action == "send_message_sequence":
+                count = parent.planned_parts
+                if count is None or count <= 1:
+                    result["status"] = "uncertain"
+                    return result
+                prefix = f"seq:{hashlib.sha256(parent.tool_call_id.encode()).hexdigest()[:24]}:"
+                children = {
+                    row.tool_call_id: row
+                    for row in await reader.scalars(
+                        select(SocialOperationModel).where(
+                            SocialOperationModel.source_turn_id == parent.source_turn_id,
+                            SocialOperationModel.source_conversation_id == conversation,
+                            SocialOperationModel.target_kind == parent.target_kind,
+                            SocialOperationModel.target_id == parent.target_id,
+                            SocialOperationModel.action == "send_message",
+                            SocialOperationModel.tool_call_id.startswith(prefix),
+                        )
+                    )
+                }
+                parts = [receipt(children.get(f"{prefix}{index}")) for index in range(count)]
+                result.update(
+                    planned_messages=count,
+                    sent_messages=sum(part["status"] == "succeeded" for part in parts),
+                    parts=parts,
+                )
+            else:
+                intent = (
+                    (
+                        await reader.execute(
+                            select(deliveries).where(
+                                deliveries.c.id == parent.id, deliveries.c.work_id == work_id
+                            )
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                if intent is not None and intent["kind"] == "artifact":
+                    result["file"] = parts[0]
+                    if intent["message_count"] > 1:
+                        caption = await reader.scalar(
+                            select(SocialOperationModel).where(
+                                SocialOperationModel.source_turn_id
+                                == f"social-caption:{parent.id}",
+                                SocialOperationModel.tool_call_id == "caption",
+                                SocialOperationModel.source_conversation_id == conversation,
+                                SocialOperationModel.target_kind == parent.target_kind,
+                                SocialOperationModel.target_id == parent.target_id,
+                                SocialOperationModel.action == "send_file_caption",
+                            )
+                        )
+                        result["caption"] = receipt(caption)
+                        parts.append(result["caption"])
+                elif intent is None and parent.action == "send_message":
+                    # An unplanned legacy file/caption cannot prove whole-call success.
+                    complete_plan = False
+            result["status"] = (
+                "succeeded"
+                if complete_plan and all(p["status"] == "succeeded" for p in parts)
+                else "uncertain"
+                if not complete_plan
+                or any(
+                    p["status"] in {"prepared", "executing", "uncertain", "not_sent"} for p in parts
+                )
+                else "failed"
+            )
+            return result
 
     async def inspect_automation_delivery(
         self,
@@ -177,13 +281,25 @@ class RuntimeEffectQueries:
         covered_calls: set[str] = set()
         missing_results: set[str] = set()
         for effect in stored:
-            result = _object(_object(effect["receipt_json"]).get("result"))
+            effect_receipt = _object(effect["receipt_json"])
+            result = _object(effect_receipt.get("result"))
             if (
                 result.get("tool_name") != "send_message"
+                and _object(effect_receipt.get("outcome")).get("tool") != "send_message"
                 and effect["effect_key"] not in pending_sends
             ):
                 continue
-            call_id = effect["effect_key"].split(":", 2)[-1]
+            invocation = _object(effect_receipt.get("invocation"))
+            call_id = (
+                effect["effect_key"]
+                if invocation.get("version") == 1
+                else effect["effect_key"].split(":", 2)[-1]
+            )
+            domain_ref = invocation.get("original_domain_ref")
+            if isinstance(domain_ref, str) and domain_ref.startswith("social:"):
+                linked = social.get(domain_ref.removeprefix("social:"))
+                if linked is not None:
+                    call_id = linked.tool_call_id
             body = _object(result.get("data"))
             if not result and effect["effect_key"] in pending_sends:
                 missing_results.add(call_id)

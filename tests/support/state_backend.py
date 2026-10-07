@@ -2,11 +2,15 @@
 
 from typing import Any
 
+from qq_ai_bot.capabilities.results import ToolResultBudgeter
 from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.workspace.short_state import STATE_TOOL, ShortState
 
+# P10: explicit Invocation fixture contract; existing assertions are retained.
+from tests.support.agent_backend import StubAgentBackend
 
-class ShortStateOnlyBackend:
+
+class ShortStateOnlyBackend(StubAgentBackend):
     """Text-only Main Agent entries may use global state, with no other side effects."""
 
     def __init__(self, state: ShortState) -> None:
@@ -18,9 +22,15 @@ class ShortStateOnlyBackend:
     def begin_batch(self, calls: Any, runtime: Any) -> None:
         pass
 
-    async def execute(self, name: str, arguments_json: str, runtime: Any) -> str:
+    async def execute_call(self, invocation):
+        name = invocation.call.function.name
+        arguments_json = invocation.call.function.arguments
         if name == STATE_TOOL.name:
-            return await self.state.execute(arguments_json)
+            return (
+                await ToolResultBudgeter(max_characters=None).render(
+                    await self.state.execute(arguments_json)
+                )
+            ).text
         return '{"ok":false,"error":"capability_not_allowed"}'
 
     def parallel_safe(self, name: str, runtime: Any) -> bool:

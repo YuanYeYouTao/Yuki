@@ -2,13 +2,13 @@
 
 import json
 import time
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
 
 from qq_ai_bot.sandbox.completions import MAX_UNACKNOWLEDGED, PAGE_BYTES
-from qq_ai_bot.sandbox.manager import Manager
+from qq_ai_bot.sandbox.persistent import PersistentManager
 from qq_ai_bot.workspace.store import WorkspaceStore
 
 
@@ -26,7 +26,9 @@ async def completion_delivery_cases(root):
     store = WorkspaceStore(root / "workspace", capacity=8)
 
     def open_manager():
-        return Manager(root / "manager", store, "test", "internal", "proxy")
+        return PersistentManager(
+            root / "manager", store, "test", "internal", "proxy", root / "home", testing=True
+        )
 
     manager = open_manager()
     run_id = pending_job(manager, "original-turn:original-call")
@@ -55,17 +57,6 @@ async def completion_delivery_cases(root):
     assert (await manager.handle(ack))["acknowledged"]
     assert (await manager.handle(ack))["acknowledged"]
     assert (await manager.handle(request))["events"] == []
-    recovering = pending_job(manager)
-    manager.finish(recovering, "running", {})
-    with (
-        patch.object(manager, "command", AsyncMock(side_effect=[(0, b""), (1, b"")])),
-        patch.object(manager, "cleanup", AsyncMock()),
-    ):
-        await manager.recover()
-    event = (await manager.handle(request))["events"][0]
-    assert event["run_id"] == recovering
-    assert event["result"]["error"] == "manager_restarted"
-    manager.completions.acknowledge(recovering)
     # Pages are bounded by bytes as well as count, including JSON escaping.
     for _ in range(3):
         identity = pending_job(manager)
@@ -89,7 +80,7 @@ async def completion_delivery_cases(root):
     reserved = pending_job(manager)
     assert not manager.completions.reserve_available()
     manager.ready = True
-    submission = {"method": "run_python", "request_id": "blocked", "args": {"code": "pass"}}
+    submission = {"method": "terminal_exec", "request_id": "blocked", "args": {"command": "true"}}
     assert (await manager.handle(submission))["error"] == "completion_backlog_full"
     assert manager.finish(reserved, "cancelled", {})  # reserved capacity remains usable
     assert not manager.completions.reserve_available()

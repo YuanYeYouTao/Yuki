@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy import event, func, select
 from tests.conftest import MemorySender, build_harness, make_settings
 from tests.fakes import FakeWebSearchProvider
+from tests.support.model_executor import InjectedModelExecutor
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import (
@@ -78,7 +79,10 @@ def inbound(
         text=text,
         group_id=group_id,
         mentions_bot=mentions_bot,
-        segments=({"type": "text", "data": {"text": text}},),
+        segments=(
+            (({"type": "at", "data": {"qq": "8000"}},) if mentions_bot else ())
+            + ({"type": "text", "data": {"text": text}},)
+        ),
     )
 
 
@@ -395,7 +399,7 @@ async def test_llm_relationship_evaluator_disables_thinking_and_tools(
     provider = CapturingRelationshipProvider(claimed[0].job_id)
     evaluator = LLMRelationshipEvaluator(
         settings=make_settings(database.url),
-        provider=provider,
+        model_executor=InjectedModelExecutor(provider),
         concurrency=ConcurrencyManager(1),
     )
     result = await evaluator.evaluate(claimed)
@@ -439,7 +443,7 @@ async def test_relationship_evaluator_only_receives_real_inbound_user_text(
     provider = CapturingRelationshipProvider(claimed[0].job_id)
     evaluator = LLMRelationshipEvaluator(
         settings=make_settings(database.url),
-        provider=provider,
+        model_executor=InjectedModelExecutor(provider),
         concurrency=ConcurrencyManager(1),
     )
 
@@ -467,7 +471,7 @@ async def test_low_confidence_relationship_evaluation_is_neutralized(
     provider = CapturingRelationshipProvider(claimed[0].job_id, confidence=0.5)
     evaluator = LLMRelationshipEvaluator(
         settings=make_settings(database.url),
-        provider=provider,
+        model_executor=InjectedModelExecutor(provider),
         concurrency=ConcurrencyManager(1),
     )
     evaluation = (await evaluator.evaluate(claimed))[claimed[0].job_id]
@@ -567,7 +571,7 @@ async def test_silent_direct_chat_does_not_enqueue_relationship_job(database: Da
     await harness.processor.handle(message, MemorySender())
     assert await harness.relationship_jobs.pending_count() == 0
     duplicate = await harness.processor.handle(message, MemorySender())
-    assert duplicate.reason == "duplicate"
+    assert duplicate.reason == "ordinary_already_admitted"
     assert await harness.relationship_jobs.pending_count() == 0
 
     await harness.processor.handle(
@@ -697,13 +701,13 @@ async def test_private_agent_tool_reads_global_relationship_by_exact_alias(
     )
 
     assert "get_relationship" in {tool.name for tool in tools.definitions(runtime)}
-    result = json.loads(
+    result = (
         await tools.execute(
             "get_relationship",
             json.dumps({"display_name": "奶龙"}, ensure_ascii=False),
             runtime,
         )
-    )
+    ).model_payload()
 
     assert result["ok"] is True
     assert result["data"] == {
@@ -723,14 +727,14 @@ async def test_private_agent_tool_reads_global_relationship_by_exact_alias(
         group_id="2002",
         group_card="奶龙",
     )
-    ambiguous = json.loads(
+    ambiguous = (
         await tools.execute(
             "get_relationship",
             json.dumps({"display_name": "奶龙"}, ensure_ascii=False),
             runtime,
         )
-    )
-    assert ambiguous["error"] == "ambiguous_person"
+    ).model_payload()
+    assert ambiguous["error_code"] == "ambiguous_person"
 
 
 class ToolDefinitionProvider(LLMProvider):

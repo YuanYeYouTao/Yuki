@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
 import pytest
 from tests.conftest import make_settings
+from tests.support.canonical_ingress import append_new_generation
 from tests.unit.rollup_test_helpers import candidate_summary
 
 from qq_ai_bot.conversation.canonical_db_models import (
@@ -899,7 +901,7 @@ async def test_v2_prompt_fence_accepts_secondary_and_rejects_forged_keys(
         rollup_service=MagicMock(),
     )
     turn = ConversationTurnSnapshot(
-        scope_id=appended.scope.id,
+        conversation_id=appended.scope.id,
         scope_key=primary.key,
         generation=appended.scope.generation,
         trigger_event_id=appended.event.id,
@@ -909,7 +911,7 @@ async def test_v2_prompt_fence_accepts_secondary_and_rejects_forged_keys(
     window = await assembler._load_history_snapshot(secondary, turn=turn, before_event_id=None)
     assert [row.content for row in window.recent] == ["kept"]
     forged_primary = ConversationTurnSnapshot(
-        scope_id=appended.scope.id,
+        conversation_id=appended.scope.id,
         scope_key="bot:9999:private:1001",
         generation=appended.scope.generation,
         trigger_event_id=appended.event.id,
@@ -919,7 +921,7 @@ async def test_v2_prompt_fence_accepts_secondary_and_rejects_forged_keys(
     with pytest.raises(ConversationCoverageError):
         await assembler._load_history_snapshot(secondary, turn=forged_primary, before_event_id=None)
     wrong_transport = ConversationTurnSnapshot(
-        scope_id=appended.scope.id,
+        conversation_id=appended.scope.id,
         scope_key=primary.key,
         generation=appended.scope.generation,
         trigger_event_id=appended.event.id,
@@ -1062,10 +1064,13 @@ async def test_v2_new_generation_replay_deletes_canonical_checkpoint(
         text="reset context",
         bot_user_id="8000",
     )
-    first = await uow.append_new_generation_command(scope=scope, inbound=inbound)
+    first = await append_new_generation(uow, scope=scope, inbound=inbound)
     assert first.generation_changed is True
     assert first.scope.generation == 2
-    replay = await uow.append_new_generation_command(scope=scope, inbound=inbound)
+    # Recovery carries the internal event assigned by the first admission.
+    replay = await append_new_generation(
+        uow, scope=scope, inbound=replace(inbound, source_event_id=first.event.id)
+    )
     assert replay.generation_changed is False
     assert replay.scope.generation == 2
     assert replay.event.id == first.event.id
@@ -1703,7 +1708,7 @@ async def _assert_stale_reset_rejects(database: Database, *, v2: bool) -> None:
     candidate = await repository.candidate_for_claim(claim)
     assert candidate is not None
     summary, _kind = service.emergency(candidate)
-    changed = await uow.append_new_generation_command(scope=scope, inbound=inbound)
+    changed = await append_new_generation(uow, scope=scope, inbound=inbound)
     assert changed.generation_changed is True
     with pytest.raises((RollupLeaseLostError, RollupSourceChangedError)):
         await repository.commit_emergency_overlay(

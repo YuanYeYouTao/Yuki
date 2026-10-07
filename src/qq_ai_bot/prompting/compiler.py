@@ -1,4 +1,4 @@
-"""Compile stable, session, and dynamic prompt contributions once."""
+"""Compile stable and dynamic prompt contributions once."""
 
 from __future__ import annotations
 
@@ -18,10 +18,6 @@ from qq_ai_bot.prompting.serializer import (
     serialize_dynamic,
     serialized_messages_hash,
 )
-
-
-class PromptCapacityError(ValueError):
-    """Required dynamic contributions cannot fit the configured prompt capacity."""
 
 
 class PromptCompiler:
@@ -51,9 +47,6 @@ class PromptCompiler:
             )
         )
         static = tuple(item for item in ordered if item.stability is PromptStability.STATIC)
-        session = tuple(item for item in ordered if item.stability is PromptStability.SESSION)
-        if session:
-            raise ValueError("SESSION prompt contributions are not supported in 3.7.0")
         dynamic = tuple(item for item in ordered if item.stability is PromptStability.TURN)
         selected_dynamic = self._select(dynamic, dynamic_character_budget)
         stable_text = "\n\n".join(item.content or "" for item in static)
@@ -89,7 +82,6 @@ class PromptCompiler:
                 contribution_count=len(static) + len(selected_dynamic),
                 message_count=len(messages),
                 stable_prefix_hash=stable_hash,
-                session_characters=0,
                 conversation_prefix_hash=conversation_prefix_hash,
             ),
         )
@@ -104,11 +96,8 @@ class PromptCompiler:
         if budget < 0:
             raise ValueError("dynamic prompt budget must not be negative")
         required = tuple(item for item in contributions if item.required)
-        used = len(serialize_dynamic(required))
-        if used > budget:
-            raise PromptCapacityError(
-                "required dynamic prompt contributions exceed configured budget"
-            )
+        # Character budgets only trim optional contributions. The complete
+        # ChatRequest (tools, media and settings included) owns hard capacity.
         selected = list(required)
         for item in contributions:
             if item.required:
@@ -123,9 +112,7 @@ class PromptCompiler:
 def _stability_rank(stability: PromptStability) -> int:
     if stability is PromptStability.STATIC:
         return 0
-    if stability is PromptStability.SESSION:
-        return 1
-    return 2
+    return 1
 
 
 def _with_dynamic_prefix(message: ChatMessage, dynamic_text: str) -> ChatMessage:

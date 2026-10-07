@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from qq_ai_bot.application.provider_registry import ProviderRegistry
 from qq_ai_bot.persistence.turn_observations import RuntimeTurnObservationRepository
 from qq_ai_bot.runtime.authority import DelegatedAuthoritySnapshot, TurnAuthority
 from qq_ai_bot.runtime.origin import TurnOrigin
@@ -49,7 +48,6 @@ class TurnAuthorityFactory:
 class RuntimeFoundationBundle:
     turn_observability: RuntimeTurnObservationRepository
     authority_factory: TurnAuthorityFactory
-    provider_registry: ProviderRegistry
 
 
 class RuntimeFoundationModule:
@@ -58,15 +56,12 @@ class RuntimeFoundationModule:
         *,
         turn_observability: RuntimeTurnObservationRepository,
         superusers: Iterable[str],
-        provider_registry: ProviderRegistry | None = None,
     ) -> None:
         self._turn_observability = turn_observability
         self._superusers = superusers
-        self._provider_registry = provider_registry
 
     def build(self) -> RuntimeFoundationBundle:
         return RuntimeFoundationBundle(
             turn_observability=self._turn_observability,
             authority_factory=TurnAuthorityFactory(superusers=self._superusers),
-            provider_registry=self._provider_registry or ProviderRegistry(),
         )

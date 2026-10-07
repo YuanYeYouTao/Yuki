@@ -13,7 +13,7 @@ from qq_ai_bot.adapters.onebot.profiles import OneBotUserProfileResolver
 from qq_ai_bot.identity.canonical_repository import ensure_person
 from qq_ai_bot.identity.db_models import IdentityBindingModel
 from qq_ai_bot.identity.errors import CanonicalIdentityError
-from qq_ai_bot.persistence.people_repository import UserProfileRepository
+from qq_ai_bot.persistence.people_repository import PeopleRepository
 from qq_ai_bot.services.user_profiles import ProfileResolution, UserProfileService
 
 
@@ -50,13 +50,13 @@ async def test_supplied_runtime_snapshot_is_reused(database):
     runtime = RuntimeConfigService(settings=make_settings(database.url), database=database)
     snapshot = await runtime.snapshot(user_id="1001")
     runtime.snapshot = AsyncMock(side_effect=AssertionError("duplicate snapshot"))
-    service = UserProfileService(UserProfileRepository(database), runtime)
+    service = UserProfileService(PeopleRepository(database), runtime)
     await service.capture(inbound("hello", message_id="a", nickname="name"), runtime=snapshot)
     runtime.snapshot.assert_not_called()
 
 
 async def test_late_profile_cannot_write_to_recreated_person(database):
-    repository = UserProfileRepository(database)
+    repository = PeopleRepository(database)
     async with database.sessions() as session:
         original = await session.scalar(
             select(IdentityBindingModel.person_id).where(

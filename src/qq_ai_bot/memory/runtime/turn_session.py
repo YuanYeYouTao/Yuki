@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import uuid
@@ -19,36 +18,20 @@ from qq_ai_bot.memory.attribution import (
 )
 from qq_ai_bot.memory.context import MemoryContextService
 from qq_ai_bot.memory.enums import (
-    MemoryContextMode,
     MemoryRecallPurpose,
     MemoryRetrievalMode,
-    MemoryScopeType,
-    MemoryTargetRole,
-    SelfMemoryVisibility,
 )
-from qq_ai_bot.memory.models import MemoryEntityTarget, MemoryQueryIntent, MemoryRetrievalResult
-from qq_ai_bot.memory.mutation.models import MemoryMutationResult
+from qq_ai_bot.memory.models import MemoryQueryIntent, MemoryRetrievalResult
 from qq_ai_bot.memory.runtime.capability_view import build_capability_view
-from qq_ai_bot.memory.runtime.command_plane import mutation_state_for_result
 from qq_ai_bot.memory.runtime.contract import (
     MemoryAvailability,
-    MemoryContextPolicy,
-    MemoryFinalizationPolicy,
     MemoryTurnContract,
-    MemoryWritePolicy,
-    MemoryWriteTransition,
+    active_read_contract,
     forbidden_contract,
-    passive_contract,
-)
-from qq_ai_bot.memory.runtime.finalizer import (
-    mutation_view_from_tool_result,
 )
 from qq_ai_bot.memory.runtime.partition_lookup import MemoryPartitionLookup
 from qq_ai_bot.memory.runtime.query_plane import (
     MemoryQueryPlane,
-    MemoryReadConsumer,
-    MemoryReadRequest,
-    ResolvedReadScope,
 )
 from qq_ai_bot.memory.runtime.resolver import (
     MemoryAccessDecision,
@@ -58,10 +41,7 @@ from qq_ai_bot.memory.runtime.resolver import (
     resolve_scope_from_scene,
 )
 from qq_ai_bot.memory.runtime.state import (
-    AccessPhase,
-    LocatorStatus,
     MemorySessionState,
-    MutationState,
     RecallHandle,
 )
 from qq_ai_bot.memory.self_origin import SelfMemoryOrigin
@@ -71,22 +51,9 @@ from qq_ai_bot.runtime.delivery import DeliveryStatus
 from qq_ai_bot.runtime.keys import ResolvedMemoryScope
 from qq_ai_bot.runtime.origin import TurnOrigin
 
-_TERMINAL_MUTATIONS = frozenset(
-    {
-        MutationState.COMMITTED,
-        MutationState.COMMITTED_AS_CONTESTED,
-        MutationState.DEDUPLICATED,
-        MutationState.NO_CHANGE,
-        MutationState.REJECTED,
-    }
-)
-_MEMORY_WRITE_TOOLS = frozenset({"memory_change"})
 _MEMORY_READ_TOOLS = frozenset(
     {
         "search_memory",
-        "get_person_memories",
-        "get_group_memories",
-        "get_self_memories",
         "get_memory_fact",
         "get_memory_evidence",
     }
@@ -150,14 +117,8 @@ class TurnMemorySession:
         self._user_question = user_question
         self._runtime_turn_id = runtime_turn_id
         self._attribution = attribution
-        self._prefetch_token: str | None = None
-        self._prefetch_result: MemoryRetrievalResult | None = None
-        self._prefetch_intent: MemoryQueryIntent | None = None
-        self._staged_fact_ids: tuple[int, ...] = ()
-        self._staged_exposures: tuple[MemoryExposure, ...] = ()
         self._pending_tool_exposures: tuple[MemoryExposure, ...] = ()
         self._confirmed_exposures: list[MemoryExposure] = []
-        self._prefetch_confirmed = False
         self._read_receipt_lock = asyncio.Lock()
         self._delivery_reported = False
 
@@ -230,7 +191,7 @@ class TurnMemorySession:
         ):
             raise ValueError("SELF Memory scope does not match its initiative")
         decision = MemoryAccessDecision(
-            contract=passive_contract(
+            contract=active_read_contract(
                 MemoryRecallPurpose.BACKGROUND,
                 persistent_write_allowed=False,
             )
@@ -265,103 +226,11 @@ class TurnMemorySession:
     def retrieval_degraded(self) -> bool:
         return self._decision.retrieval_degraded
 
-    @property
-    def prefetch_intent(self) -> MemoryQueryIntent | None:
-        return self._prefetch_intent
-
-    @property
-    def prefetch_result(self) -> MemoryRetrievalResult | None:
-        return self._prefetch_result
-
-    @property
-    def staged_exposures(self) -> tuple[MemoryExposure, ...]:
-        return self._staged_exposures
-
-    @property
-    def mutation_terminal(self) -> bool:
-        return self._state.mutation_state in _TERMINAL_MUTATIONS
-
-    @property
-    def exclusive_write(self) -> bool:
-        return self._state.contract.write_policy is MemoryWritePolicy.EXCLUSIVE
-
-    @property
-    def locator_open(self) -> bool:
-        return self._state.locator_status is LocatorStatus.OPEN
-
-    @property
-    def receipt_gated(self) -> bool:
-        return self._state.contract.finalization_policy is MemoryFinalizationPolicy.RECEIPT_GATED
-
-    async def prefetch(self) -> MemoryRetrievalResult | None:
-        if self._state.contract.availability is MemoryAvailability.FORBIDDEN:
-            return None
-        if self._state.contract.context_policy is MemoryContextPolicy.NONE:
-            return None
-        self._state.start_prefetch()
-        intent = MemoryQueryIntent(
-            mode=MemoryContextMode.HYBRID,
-            purpose=self._state.contract.default_purpose,
-        )
-        if self._self_origin is not None:
-            group_id = self._self_origin.group_id
-            self_target = MemoryEntityTarget(
-                role=MemoryTargetRole.CURRENT_SELF,
-                scope_type=MemoryScopeType.SELF,
-                visibility_type=SelfMemoryVisibility.GROUP,
-                visibility_group_id=group_id,
-                block_id="current_self",
-            )
-            result = await self._query.read(
-                MemoryReadConsumer.AUTOMATIC_CONTEXT,
-                MemoryReadRequest(
-                    text=self._user_question,
-                    intent=intent,
-                    resolved_scope=ResolvedReadScope(
-                        targets=(
-                            MemoryEntityTarget(
-                                role=MemoryTargetRole.CURRENT_GROUP,
-                                scope_type=MemoryScopeType.GROUP,
-                                group_id=group_id,
-                                block_id="current_group",
-                            ),
-                            self_target,
-                        )
-                    ),
-                    automatic_self_target=self_target,
-                ),
-                runtime=self._runtime,
-            )
-        else:
-            assert self._inbound is not None
-            result = await self._memory_context.retrieve_for_turn(
-                inbound=self._inbound,
-                content=self._user_question,
-                runtime=self._runtime,
-                memory_mode=MemoryContextMode.HYBRID,
-                memory_intent=intent,
-            )
-        self._prefetch_token = str(uuid.uuid4())
-        self._prefetch_result = result
-        self._prefetch_intent = intent
-        self._state.complete_prefetch()
-        return result
-
     def capability_view(self) -> MemoryCapabilityView:
         return build_capability_view(
             self._state.contract,
-            transition_revision=self._state.transition_revision,
+            transition_revision=1,
         )
-
-    def stage_prompt_selection(
-        self,
-        fact_ids: tuple[int, ...],
-        exposures: tuple[MemoryExposure, ...],
-    ) -> None:
-        """Record which prefetch facts actually entered the composed prompt."""
-
-        self._staged_fact_ids = fact_ids
-        self._staged_exposures = exposures
 
     async def _memory_partition_key(self) -> str:
         if self._self_origin is not None:
@@ -386,7 +255,7 @@ class TurnMemorySession:
                 query_hash="",
                 mode=MemoryRetrievalMode.RELEVANT,
             )
-            intent = self._prefetch_intent or MemoryQueryIntent(purpose=MemoryRecallPurpose.RECALL)
+            intent = MemoryQueryIntent(purpose=MemoryRecallPurpose.RECALL)
             recall = await self._memory_context.record_recall(
                 conversation_key=await self._memory_partition_key(),
                 source_key=self._source_key,
@@ -424,40 +293,8 @@ class TurnMemorySession:
         if receipt_id is not None:
             await self._memory_context.record_tool_read_outcome(receipt_id, outcome)
 
-    async def confirm_prompt_exposure(self, token: str | None = None) -> MemoryReceiptHandle | None:
-        del token
+    async def confirm_prompt_exposure(self) -> MemoryReceiptHandle | None:
         self._state.require_open()
-        handle: MemoryReceiptHandle | None = None
-        if (
-            not self._prefetch_confirmed
-            and self._prefetch_result is not None
-            and self._prefetch_intent is not None
-        ):
-            recall = await self._query.publish_exposure(
-                MemoryReadConsumer.AUTOMATIC_CONTEXT,
-                conversation_key=await self._memory_partition_key(),
-                source_key=self._source_key,
-                origin=self._origin.value,
-                intent=self._prefetch_intent,
-                result=self._prefetch_result,
-                injected_fact_ids=self._staged_fact_ids,
-                runtime=self._runtime,
-            )
-            if recall is not None:
-                self._state.record_recall(
-                    RecallHandle(
-                        runtime_turn_id=self._runtime_turn_id,
-                        receipt_turn_id=recall.turn_id,
-                        purpose=self._prefetch_intent.purpose,
-                        injected_fact_ids=self._staged_fact_ids,
-                    )
-                )
-                handle = MemoryReceiptHandle(
-                    receipt_turn_id=recall.turn_id,
-                    injected_fact_ids=self._staged_fact_ids,
-                )
-            self._confirmed_exposures.extend(self._staged_exposures)
-            self._prefetch_confirmed = True
         if self._pending_tool_exposures:
             fact_ids = tuple(dict.fromkeys(item.fact_id for item in self._pending_tool_exposures))
             receipt_id = await self._ensure_read_receipt()
@@ -466,22 +303,16 @@ class TurnMemorySession:
                 self._state.extend_recall_exposures(receipt_id, fact_ids)
             self._confirmed_exposures.extend(self._pending_tool_exposures)
             self._pending_tool_exposures = ()
-        return handle
+        return None
 
     async def observe_tool_result(self, capability_id: str, result_json: str) -> None:
-        if capability_id in _MEMORY_WRITE_TOOLS:
-            self._observe_write(result_json)
-            return
         if capability_id in _MEMORY_READ_TOOLS:
             self._observe_read(result_json)
-
-    def request_exclusive_write(self) -> None:
-        if self._state.contract.write_transition is MemoryWriteTransition.REQUESTABLE:
-            self._state.enter_exclusive_write()
 
     async def on_delivery_confirmed(self, summary: DeliverySummary) -> None:
         if self._state.closed:
             return
+        self._delivery_reported = True
         if summary.status in {DeliveryStatus.CANCELLED, DeliveryStatus.FAILED}:
             for handle in self._state.recall_handles():
                 await self._memory_context.set_attribution_outcome(
@@ -498,26 +329,15 @@ class TurnMemorySession:
             or not self._confirmed_exposures
         ):
             if self._confirmed_exposures:
-                reason = (
-                    "disabled"
-                    if self._attribution is None
-                    or not self._runtime.memory.usage_attribution_enabled
-                    else "not_scheduled"
+                logging.getLogger(__name__).info(
+                    "memory_attribution_not_scheduled coverage_incomplete=true"
                 )
-                for handle in self._state.recall_handles():
-                    await self._memory_context.set_attribution_outcome(
-                        handle.receipt_turn_id, "skipped", reason
-                    )
             self._state.skip_attribution()
             self._delivery_reported = True
             return
         self._state.freeze_exposures()
         exposures = tuple({item.fact_id: item for item in self._confirmed_exposures}.values())
         handles = self._state.recall_handles()
-        if not handles and self._prefetch_intent is not None:
-            await self._enqueue_job(
-                self._runtime_turn_id, self._prefetch_intent, exposures, summary
-            )
         for handle in handles:
             matched = tuple(item for item in exposures if item.fact_id in handle.injected_fact_ids)
             if not matched:
@@ -547,34 +367,6 @@ class TurnMemorySession:
         finally:
             self._state.close()
 
-    def _observe_write(self, result_json: str) -> None:
-        if self._state.contract.write_transition is MemoryWriteTransition.REQUESTABLE:
-            self._state.enter_exclusive_write()
-        if self._state.access_phase is AccessPhase.LOCATOR_READ_DONE:
-            self._state.return_to_exclusive_write()
-        decoded = _decode_json(result_json)
-        view = mutation_view_from_tool_result(decoded, attempted=True)
-        self._state.remember_mutation_view(view)
-        if self._state.access_phase is not AccessPhase.MUTATION_EXCLUSIVE:
-            return
-        self._state.mark_mutation_attempted()
-        fake_result = _result_from_tool_json(decoded)
-        outcome = mutation_state_for_result(fake_result)
-        data = decoded.get("data")
-        payload = data if isinstance(data, dict) else {}
-        receipt_id = payload.get("mutation_id")
-        if outcome in {MutationState.AMBIGUOUS, MutationState.NOT_FOUND}:
-            if self._state.locator_status is not LocatorStatus.UNUSED:
-                self._state.resolve_mutation(MutationState.REJECTED)
-                return
-            self._state.resolve_mutation(outcome)
-            self._state.open_locator_read()
-            return
-        self._state.resolve_mutation(
-            outcome,
-            receipt_id=str(receipt_id) if receipt_id else None,
-        )
-
     def _observe_read(self, result_json: str) -> None:
         decoded = _decode_json(result_json)
         data = decoded.get("data")
@@ -588,8 +380,6 @@ class TurnMemorySession:
         snapshot = registry.snapshot()
         if snapshot:
             self._pending_tool_exposures = (*self._pending_tool_exposures, *snapshot)
-        if fact_ids and self._state.access_phase is AccessPhase.LOCATOR_READ_ENABLED:
-            self._state.complete_locator_read()
         del fact_ids
 
     async def _enqueue_job(
@@ -624,44 +414,13 @@ def _decode_json(raw: str) -> dict[str, object]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _result_from_tool_json(decoded: dict[str, object]) -> MemoryMutationResult:
-    from qq_ai_bot.memory.mutation.models import (
-        MemoryMutationAppliedOperation,
-        MemoryMutationOperation,
-        MemoryMutationOutcome,
-    )
-
-    data = decoded.get("data")
-    payload = data if isinstance(data, dict) else {}
-    applied = str(payload.get("applied_operation") or "noop")
-    outcome = str(payload.get("outcome") or "rejected")
-    try:
-        applied_op = MemoryMutationAppliedOperation(applied)
-    except ValueError:
-        applied_op = MemoryMutationAppliedOperation.NOOP
-    try:
-        outcome_op = MemoryMutationOutcome(outcome)
-    except ValueError:
-        outcome_op = MemoryMutationOutcome.REJECTED
-    return MemoryMutationResult(
-        ok=bool(decoded.get("ok")),
-        mutation_id=str(payload.get("mutation_id") or "") or None,
-        requested_operation=MemoryMutationOperation.CREATE,
-        applied_operation=applied_op,
-        outcome=outcome_op,
-        reason_code=str(
-            payload.get("reason_code") or decoded.get("error") or decoded.get("error_code") or ""
-        ),
-    )
-
-
 def empty_retrieval() -> MemoryRetrievalResult:
     return MemoryRetrievalResult(
         blocks=(),
         hits=(),
         candidate_count=0,
         selected_count=0,
-        query_hash=hashlib.sha256(b"").hexdigest(),
+        query_hash="",
         mode=MemoryRetrievalMode.RELEVANT,
         semantic_status="session_skipped",
     )

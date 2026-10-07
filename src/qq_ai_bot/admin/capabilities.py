@@ -10,6 +10,7 @@ from qq_ai_bot.admin.action_service import ActionRegistry, AdminActionService, T
 from qq_ai_bot.admin.audit import AdminAuditService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import AdminActor, ConfigChangeResult, EffectiveConfigValue
+from qq_ai_bot.capabilities.results import ToolExecutionResult
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
@@ -317,7 +318,7 @@ class AdminCapabilityService:
         name: str,
         arguments_json: str,
         runtime: ToolRuntime,
-    ) -> str:
+    ) -> ToolExecutionResult:
         """Return a bounded JSON result that never trusts model-supplied authority."""
 
         try:
@@ -648,7 +649,7 @@ class AdminCapabilityService:
             payload["value"] = value.value
         return payload
 
-    def _change_result(self, result: ConfigChangeResult) -> str:
+    def _change_result(self, result: ConfigChangeResult) -> ToolExecutionResult:
         data = {
             "key": result.key,
             "scope_type": result.scope_type.value,
@@ -675,23 +676,13 @@ class AdminCapabilityService:
         data: Any = None,
         error: str | None = None,
         detail: str = "",
-    ) -> str:
-        payload = (
-            {"ok": False, "error": error, "detail": detail, "data": data}
-            if error
-            else {"ok": True, "data": data}
-        )
-        rendered = json.dumps(payload, ensure_ascii=False, default=str)
-        if len(rendered) <= 24000:
-            return rendered
-        return json.dumps(
-            {
-                "ok": False,
-                "error": "result_too_large",
-                "detail": "管理员工具结果超过字符上限，请缩小查询范围",
-                "original_characters": len(rendered),
-            },
-            ensure_ascii=False,
+    ) -> ToolExecutionResult:
+        return ToolExecutionResult(
+            ok=error is None,
+            data=data,
+            error_code=error,
+            public_message=detail or None,
+            mutation_committed=False if error else None,
         )
 
 

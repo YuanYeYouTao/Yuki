@@ -1,0 +1,26 @@
+{
+  "removed_owned_roots": [
+    {
+      "path": "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-handoff-regression-wgn0qd_u",
+      "allocated_kib_before": 5887452,
+      "exists_after": false
+    },
+    {
+      "path": "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-handoff-regression-final-k75jo6u7",
+      "allocated_kib_before": 732308,
+      "exists_after": false
+    },
+    {
+      "path": "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-handoff-regression-final-v2-_b2_f3me",
+      "allocated_kib_before": 5888188,
+      "exists_after": false
+    },
+    {
+      "path": "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-verification-regression-qm2g8jzo",
+      "allocated_kib_before": 5909368,
+      "exists_after": false
+    }
+  ],
+  "installed_worker_retained": ".venv/bin/yuki-monty-worker",
+  "no_vm_created_this_round": true
+}

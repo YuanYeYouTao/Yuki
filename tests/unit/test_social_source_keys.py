@@ -9,7 +9,7 @@ from tests.support.social_identity_cases import social_env
 from qq_ai_bot.social.db_models import SocialOperationModel
 from qq_ai_bot.social.models import OperationStatus, SocialError, SocialTarget
 from qq_ai_bot.social.repository import SocialOperationRepository
-from qq_ai_bot.social.source_keys import social_source_key
+from qq_ai_bot.social.source_keys import social_call_key, social_source_key
 
 
 def test_source_digest_is_stable_and_includes_the_complete_identity():
@@ -91,8 +91,15 @@ async def test_receipt_source_preserves_legacy_lookup_and_execution_separation(d
     assert await prepare(first_source) == first
     with pytest.raises(SocialError, match="idempotency_conflict"):
         await prepare(first_source, "changed content")
-    with pytest.raises(SocialError, match="invalid_operation"):
-        await prepare(first_source, call_id="c" * 129)
+    # Host operation IDs may exceed the legacy receipt column width. P06 now
+    # stores a full-identity digest; it remains a distinct original operation.
+    long_call = "c" * 129
+    long_receipt = await prepare(first_source, call_id=long_call)
+    assert await prepare(first_source, call_id=long_call) == long_receipt
+    assert await repository.find(first_source, long_call) == long_receipt
+    assert social_call_key(long_call) != social_call_key(long_call + "other")
+    with pytest.raises(SocialError, match="idempotency_conflict"):
+        await prepare(first_source, "changed content", call_id=long_call)
 
     reloaded = SocialOperationRepository(database)
     assert await reloaded.find(short, "same-call") == old
@@ -100,5 +107,5 @@ async def test_receipt_source_preserves_legacy_lookup_and_execution_separation(d
     assert await reloaded.find(second_source, "same-call") == second
     async with database.sessions() as session:
         rows = list(await session.scalars(select(SocialOperationModel)))
-        assert len(rows) == 3
+        assert len(rows) == 4
         assert next(row for row in rows if row.id == old.operation_id).source_turn_id == short

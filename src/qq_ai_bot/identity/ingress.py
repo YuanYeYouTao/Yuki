@@ -114,14 +114,22 @@ class CanonicalIngressResolver:
         self._registry = registry
         self._router = router
 
-    async def pre_admit(
-        self, bot: object | None, message: InboundMessage
-    ) -> IngressPreAdmit | None:
+    async def pre_admit(self, bot: object | None, message: InboundMessage) -> IngressPreAdmit:
         """Keep hot admission in one session; release it before cold probes."""
 
         started = time.perf_counter()
         async with self._database.sessions() as session, session.begin():
-            result = await self._admit(session, bot, message)
+            try:
+                result = await self._admit(session, bot, message)
+            except CanonicalIdentityError as exc:
+                if exc.category != "canonical_owner_disabled":
+                    raise
+                return _drop(
+                    "private_not_allowed"
+                    if message.scope_type is ScopeType.PRIVATE
+                    else exc.category,
+                    message,
+                )
         initial_read_seconds = time.perf_counter() - started
         if isinstance(result, IngressPreAdmit):
             logging.getLogger(__name__).info(

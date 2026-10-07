@@ -67,7 +67,7 @@ class RollupPolicyConfig:
 
 @dataclass(frozen=True, slots=True)
 class ConversationScopeState:
-    id: int
+    id: str
     scope: ConversationScope
     generation: int
     starts_after_event_id: int
@@ -82,7 +82,7 @@ class ConversationScopeState:
 
 @dataclass(frozen=True, slots=True)
 class ConversationRollupState:
-    scope_id: int
+    conversation_id: str
     generation: int
     covered_through_event_id: int
     summary_text: str
@@ -95,19 +95,18 @@ class ConversationRollupState:
 
 @dataclass(frozen=True, slots=True)
 class RollupJobClaim:
-    scope_id: int
+    conversation_id: str
     generation: int
     claimed_signal_revision: int
     failure_count: int
     lease_owner: str
     lease_token: str
     lease_until: datetime
-    conversation_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class RollupCandidate:
-    scope_id: int
+    conversation_id: str
     generation: int
     source_coverage: int
     source_rollup_revision: int
@@ -116,7 +115,6 @@ class RollupCandidate:
     event_count: int
     projection_characters: int
     fingerprint: str
-    conversation_id: str | None = None
     policy: RollupPolicyConfig | None = None
 
 
@@ -129,7 +127,6 @@ class ConversationPromptSnapshot:
     raw_tail_end_event_id: int
     overlay: ConversationRollupState | None = None
     rewrite_pending: bool = False
-    conversation_id: str | None = None
     prompt_source_revision: int = 0
     rollup_stamp: tuple[int, int] = (0, 0)
     raw_complete: bool = True

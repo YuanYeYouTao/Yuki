@@ -70,9 +70,7 @@ from qq_ai_bot.persistence.repositories import (
     RelationshipRepository,
 )
 from qq_ai_bot.persistence.repository_records import EventRecord
-from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from qq_ai_bot.plugin_host.direct_command_router import DirectCommandMatch
-from qq_ai_bot.prompting.compiler import PromptCapacityError
 from qq_ai_bot.runtime.activation_outcome import (
     WorkActivationHandled,
     WorkRecoveryDeferred,
@@ -100,13 +98,12 @@ from qq_ai_bot.services.autonomous_groups import AutonomousGroupService
 from qq_ai_bot.services.chat import ChatService, OutboundSender
 from qq_ai_bot.services.command_service import CommandExecution, CommandService
 from qq_ai_bot.services.concurrency import ConcurrencyManager, RequestCancelledError
-from qq_ai_bot.services.deduplication import DeduplicationService, build_event_key
+from qq_ai_bot.services.deduplication import build_event_key
 from qq_ai_bot.services.effect_gate import (
     ConversationEffectGate,
     EffectGateTimeoutError,
     EffectPermitRejectedError,
 )
-from qq_ai_bot.services.main_agent_backend import UnsentFinalResponseError
 from qq_ai_bot.services.media_resolver import OneBotMediaGateway
 from qq_ai_bot.services.plugin_events import (
     LifecycleEventPublisher,
@@ -142,8 +139,6 @@ from yuki_plugin_sdk.events import EventName
 from yuki_plugin_sdk.models import AdmissionSignal as SdkAdmissionSignal
 
 logger = logging.getLogger(__name__)
-
-_UNRESOLVED_ADMISSION = object()
 
 
 class GroupRecoveryHandler(Protocol):
@@ -330,7 +325,6 @@ class MessageProcessor:
         *,
         settings: Settings,
         ledger: EventLedgerRepository,
-        scoped_events: ScopedEventLedgerUnitOfWork,
         conversation_scopes: ConversationScopeRepository,
         conversation_rollups: ConversationRollupRepository,
         effect_gate: ConversationEffectGate,
@@ -338,7 +332,6 @@ class MessageProcessor:
         private_users: PrivateUserSettingsRepository,
         user_profiles: UserProfileService,
         chat: ChatService,
-        deduplication: DeduplicationService,
         rate_limiter: SlidingWindowRateLimiter,
         concurrency: ConcurrencyManager,
         onebot_connected: Callable[[], bool],
@@ -371,15 +364,14 @@ class MessageProcessor:
         emoji_collector: EmojiCollector | None = None,
         emoji_worker: EmojiWorker | None = None,
         turn_observations: TurnObservationRecorder | None = None,
-        canonical_ingress: CanonicalIngressResolver | None = None,
+        canonical_ingress: CanonicalIngressResolver,
         group_recovery: GroupRecoveryHandler | None = None,
-        canonical_uow: CanonicalIngressUnitOfWork | None = None,
+        canonical_uow: CanonicalIngressUnitOfWork,
     ) -> None:
         database = ledger._database
         self._turn_observations = turn_observations
         self._settings = settings
         self._asr = asr_service
-        self._scoped_events = scoped_events
         self._conversation_scopes = conversation_scopes
         self._conversation_rollups = conversation_rollups
         self._effect_gate = effect_gate
@@ -388,7 +380,6 @@ class MessageProcessor:
         self._private_users = private_users
         self._user_profiles = user_profiles
         self._chat = chat
-        self._deduplication = deduplication
         self._rate_limiter = rate_limiter
         self._concurrency = concurrency
         self._onebot_connected = onebot_connected
@@ -628,16 +619,13 @@ class MessageProcessor:
                         await sender.send(OutboundMessage(text=response))
                         result = ProcessResult(True, sent_messages=1, reason="group_recovery")
                         return result
-                if self._canonical_ingress is not None:
-                    admitted = await self._canonical_ingress.pre_admit(
-                        getattr(sender, "bot", None),
-                        message,
-                    )
-                    if admitted is not None and admitted.dropped:
-                        result = await self._handle_ingress_drop(message, sender, admitted.reason)
-                        return result
-                    if admitted is not None:
-                        working = admitted.message
+                admitted = await self._canonical_ingress.pre_admit(
+                    getattr(sender, "bot", None), message
+                )
+                if admitted.dropped:
+                    result = await self._handle_ingress_drop(message, sender, admitted.reason)
+                    return result
+                working = admitted.message
                 result = await self._handle_admitted(
                     working,
                     sender,
@@ -679,24 +667,13 @@ class MessageProcessor:
         message: InboundMessage,
         sender: OutboundSender,
         profile_resolver: UserProfileResolver | None = None,
-        admitted: IngressPreAdmit | None | object = _UNRESOLVED_ADMISSION,
+        *,
+        admitted: IngressPreAdmit,
     ) -> ProcessResult:
         """Process one message without deriving authority from model-visible data."""
 
         started = time.perf_counter()
-        if admitted is _UNRESOLVED_ADMISSION:
-            admitted = None
-            if self._canonical_ingress is not None:
-                admitted = await self._canonical_ingress.pre_admit(
-                    getattr(sender, "bot", None),
-                    message,
-                )
-                if admitted is not None and admitted.dropped:
-                    return await self._handle_ingress_drop(message, sender, admitted.reason)
-                if admitted is not None:
-                    message = admitted.message
-        admitted = cast(IngressPreAdmit | None, admitted)
-        yuki_account_ids = admitted.yuki_account_ids if admitted is not None else frozenset()
+        yuki_account_ids = admitted.yuki_account_ids
         await publish_notification(
             self._event_publisher,
             EventName.MESSAGE_NORMALIZED,
@@ -755,25 +732,9 @@ class MessageProcessor:
         coordinator_key = runtime_conversation_key(
             identity=identity,
             inbound=message,
-            primary_alias=admitted.primary_alias if admitted is not None else None,
+            primary_alias=admitted.primary_alias,
         )
         event_key = build_event_key(message, identity.key)
-        repairing_dedup_gap = False
-        if admitted is None and not await self._deduplication.claim(event_key):
-            existing = await self._ledger.find_by_platform_message(
-                bot_user_id=identity.bot_user_id,
-                platform_message_id=message.message_id,
-            )
-            if existing is not None:
-                await self._publish_turn_rejected(message, "duplicate")
-                return ProcessResult(False, reason="duplicate")
-            logger.warning(
-                "processed_event_without_chat_event_repair scope_key=%s message_id=%s",
-                identity.key,
-                message.message_id,
-            )
-            repairing_dedup_gap = True
-
         runtime_snapshot = await self._runtime_config.snapshot(
             user_id=message.sender.user_id,
             group_id=message.group_id,
@@ -891,16 +852,7 @@ class MessageProcessor:
                     coordinator_key,
                     timeout_seconds=self._settings.conversation_effect_gate_timeout_seconds,
                 ):
-                    if admitted is not None and self._canonical_uow is not None:
-                        switched = await self._canonical_uow.append_new_generation(
-                            message,
-                            admitted,
-                        )
-                    else:
-                        switched = await self._scoped_events.append_new_generation_command(
-                            scope=identity,
-                            inbound=message,
-                        )
+                    switched = await self._canonical_uow.append_new_generation(message, admitted)
             except EffectGateTimeoutError:
                 sent = await self._send_text(
                     message,
@@ -912,15 +864,10 @@ class MessageProcessor:
             created = switched.generation_changed
             scope_state = switched.scope
         else:
-            if admitted is not None and self._canonical_uow is not None:
-                appended = await self._canonical_uow.append_inbound(message, admitted)
-            else:
-                appended = await self._scoped_events.append_inbound(message)
+            appended = await self._canonical_uow.append_inbound(message, admitted)
             record = appended.event
             created = appended.created
             scope_state = appended.scope
-            if repairing_dedup_gap and created:
-                self._scoped_events.metrics.scoped_append_repairs += 1
         message = replace(message, source_event_id=record.id)
         if created and message.attachments and self._conversation_media is not None:
             media_gateway = (
@@ -935,7 +882,7 @@ class MessageProcessor:
                 direct=bool(decision.should_respond or admin_candidate),
             )
         turn_snapshot = ConversationTurnSnapshot(
-            scope_id=scope_state.id,
+            conversation_id=scope_state.id,
             scope_key=coordinator_key,
             generation=scope_state.generation,
             trigger_event_id=record.id,
@@ -1435,15 +1382,6 @@ class MessageProcessor:
                 turn_snapshot=turn_snapshot,
             )
             result = ProcessResult(True, int(sent), "empty_llm_response")
-        except UnsentFinalResponseError as exc:
-            logger.warning("agent_output_failure exception_category=%s", type(exc).__name__)
-            sent = await self._send_text(
-                message,
-                sender,
-                failure_status_text(classify_failure(exc)),
-                turn_snapshot=turn_snapshot,
-            )
-            result = ProcessResult(True, int(sent), "agent_output_failure")
         except LLMError as exc:
             logger.warning("llm_failure exception_category=%s", type(exc).__name__)
             sent = await self._send_text(
@@ -1453,7 +1391,7 @@ class MessageProcessor:
                 turn_snapshot=turn_snapshot,
             )
             result = ProcessResult(True, int(sent), "llm_failure")
-        except (WorkCapacityError, PromptCapacityError) as exc:
+        except WorkCapacityError as exc:
             logger.warning("turn_capacity_failure exception_category=%s", type(exc).__name__)
             sent = await self._send_text(
                 message,
@@ -1986,9 +1924,8 @@ class MessageProcessor:
             snapshot.scope_key,
             snapshot.coordinator_version,
         ) and await self._conversation_scopes.generation_matches(
-            snapshot.scope_id,
+            snapshot.conversation_id,
             snapshot.generation,
-            scope_key=snapshot.scope_key,
         )
 
     async def _publish_turn_rejected(self, message: InboundMessage, reason: str) -> None:

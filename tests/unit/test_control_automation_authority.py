@@ -81,7 +81,12 @@ async def test_control_create_edit_and_transition_preserve_owner_and_scene(
     )
     script["name"] = "edited"
     current = created
-    for action, spec in (("update", script), ("pause", None), ("resume", None), ("run_now", None)):
+    for action, spec in (
+        ("update", {"script": script}),
+        ("pause", None),
+        ("resume", None),
+        ("run_now", None),
+    ):
         ctx = replace(ctx, request_id=RequestId.new())
         payload = {"action": action, "resource_id": current.resource_id}
         if spec is not None:

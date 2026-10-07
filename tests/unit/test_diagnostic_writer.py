@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import event, select
 from tests.conftest import make_settings
+from tests.support.model_profiles import write_fake_profiles
 from tests.support.social_identity_cases import social_env
 from tests.unit.test_execution_trace import decoded, rows
 from tests.unit.test_model_telemetry_failures import executor
@@ -260,11 +261,17 @@ async def test_async_sql_failure_updates_trace_coverage_without_retry(database, 
         await diagnostics.close()
 
 
-async def test_application_starts_diagnostics_and_drains_them_before_database_close(database):
+async def test_application_starts_diagnostics_and_drains_them_before_database_close(
+    database, tmp_path
+):
     lifecycle = LifecycleRegistry()
     lifecycle.register("database", close=database.close)
     bundle = ModelRuntimeModule(
-        make_settings(database.url).model_runtime, database, lifecycle=lifecycle
+        make_settings(
+            database.url, model_profiles_file=write_fake_profiles(tmp_path / "models.toml")
+        ).model_runtime,
+        database,
+        lifecycle=lifecycle,
     ).build()
     assert lifecycle.names.index("database") < lifecycle.names.index("diagnostic_writer")
     assert lifecycle.names.index("diagnostic_writer") < lifecycle.names.index("model_runtime")

@@ -3,7 +3,6 @@
 from qq_ai_bot.persistence.event_repository import (
     AgentActionRepository,
     EventLedgerRepository,
-    ProcessedEventRepository,
 )
 from qq_ai_bot.persistence.media_repository import (
     EmojiDescriptionRepository,
@@ -13,7 +12,6 @@ from qq_ai_bot.persistence.people_repository import (
     GroupSettingsRepository,
     PeopleRepository,
     PrivateUserSettingsRepository,
-    UserProfileRepository,
 )
 from qq_ai_bot.persistence.relationship_repository import (
     RelationshipJobRepository,
@@ -43,11 +41,9 @@ __all__ = [
     "PeopleRepository",
     "PrivateUserSetting",
     "PrivateUserSettingsRepository",
-    "ProcessedEventRepository",
     "RelationshipEventRecord",
     "RelationshipJobRecord",
     "RelationshipJobRepository",
     "RelationshipRepository",
-    "UserProfileRepository",
     "WebSearchSourceRepository",
 ]

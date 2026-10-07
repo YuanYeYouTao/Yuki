@@ -11,6 +11,7 @@ services:
       - path: .env
         required: false
     environment:
+      CODE_MODE_ENABLED: "false"
       APP_HOST: 0.0.0.0
       APP_PORT: 8080
       DATABASE_URL: sqlite+aiosqlite:////app/data/qq_ai_bot.db

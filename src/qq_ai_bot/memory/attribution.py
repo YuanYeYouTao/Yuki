@@ -191,18 +191,9 @@ class MemoryAttributionWorker:
             return False
         limit = max(1, job.runtime.memory.usage_attribution_queue_limit)
         if self._queue.qsize() >= limit:
-            await self._outcome(job, "queue_full")
+            self._metrics.record_attribution("queue_full")
             return False
         self._pending_turn_ids.add(job.turn_id)
-        try:
-            await self._memory_context.set_attribution_outcome(job.turn_id, "pending", "queued")
-        except BaseException:
-            self._pending_turn_ids.discard(job.turn_id)
-            raise
-        if self._queue.qsize() >= limit:
-            self._pending_turn_ids.discard(job.turn_id)
-            await self._outcome(job, "queue_full")
-            return False
         self._queue.put_nowait(job)
         self._metrics.record_attribution("enqueue")
         self._metrics.set_attribution_queue_depth(self._queue.qsize())
@@ -216,6 +207,7 @@ class MemoryAttributionWorker:
                 break
             self._metrics.set_attribution_queue_depth(self._queue.qsize())
             try:
+                await self._memory_context.set_attribution_outcome(job.turn_id, "pending", "queued")
                 await self._process(job)
             except asyncio.CancelledError:
                 await self._outcome(job, "interrupted", status="failed")

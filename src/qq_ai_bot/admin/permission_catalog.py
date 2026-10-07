@@ -13,17 +13,6 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.domain.tool_actor import ToolActor
 
-_INTERNAL_CAPABILITY_MARKERS = (
-    '"transient_internal_reference"',
-    '"do_not_copy_verbatim_to_user"',
-)
-
-
-def contains_internal_capability_payload(content: str) -> bool:
-    """Reject accidental model echoes of the transient permission tool payload."""
-
-    return any(marker in content for marker in _INTERNAL_CAPABILITY_MARKERS)
-
 
 class PermissionLevel(IntEnum):
     """Ordered permission levels; middle levels are intentionally inactive today."""

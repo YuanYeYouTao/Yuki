@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-from uuid import uuid4
 
 import pytest
 from sqlalchemy import select, update
@@ -247,7 +246,9 @@ async def test_cancelled_activation_exits_without_failure_notice(database, detai
         )
 
 
-@pytest.mark.parametrize("identity", ["123", "platform:123", str(uuid4()).upper(), ""])
+@pytest.mark.parametrize(
+    "identity", ["123", "platform:123", "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA", ""]
+)
 async def test_invalid_id_and_arbitrary_spec_do_not_rebuild_work(database, identity):
     ctx = context("control.work.mutate")
     service = ControlCommandService(ControlCommandAdapter(database))

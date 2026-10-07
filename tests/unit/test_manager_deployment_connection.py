@@ -7,6 +7,7 @@ import json
 import os
 import runpy
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock
 
 import pytest
@@ -16,6 +17,14 @@ from qq_ai_bot.deployment_setup.environment_check import check_environment
 ROOT = Path(__file__).resolve().parents[2]
 helper = runpy.run_path(str(ROOT / "deploy/sandbox/configure-manager.py"))
 configure = helper["configure_store"]
+
+
+@pytest.fixture
+def short_manager_socket():
+    # AF_UNIX paths are bounded by the OS, independent of pytest's data root.
+    # Keep the real socket and every read-only assertion on macOS and Linux.
+    with TemporaryDirectory(prefix="ymgr-", dir="/tmp") as directory:
+        yield Path(directory) / "manager.sock"
 
 
 def test_manager_store_configuration_preserves_default_and_existing_values(tmp_path):
@@ -150,7 +159,9 @@ async def test_environment_check_rejects_missing_store_before_socket_access(tmp_
 @pytest.mark.skipif(
     os.name != "posix", reason="Actual Manager directory FDs/AF_UNIX run in Linux CI"
 )
-async def test_environment_check_real_manager_socket_is_read_only(tmp_path):
+async def test_environment_check_real_manager_socket_is_read_only(
+    tmp_path, short_manager_socket, monkeypatch
+):
     from qq_ai_bot.sandbox.persistent import PersistentManager
     from qq_ai_bot.workspace.store import WorkspaceStore
 
@@ -168,18 +179,23 @@ async def test_environment_check_real_manager_socket_is_read_only(tmp_path):
         testing=True,
     )
     manager.ready = True
+    # This probe tests the real socket, listing and read-only state, not Linux
+    # /proc telemetry. Supply only that OS value; do not mock Manager requests.
+    monkeypatch.setattr(manager, "available_memory", lambda: 2 * 1024**3)
     manager.command = AsyncMock(side_effect=AssertionError("check must not touch Docker/execd"))
-    socket = tmp_path / "manager.sock"
+    socket = short_manager_socket
     server = await asyncio.start_unix_server(manager.serve, str(socket))
     before = list(manager.db.iterdump())
     files = sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*"))
+    socket_files = sorted(path.name for path in socket.parent.iterdir())
     try:
         result = await check_environment(socket, artifacts, expected_uid=os.geteuid())
-        assert result["ok"] is True
+        assert result["ok"] is True, result
         assert "private-name" not in json.dumps(result)
         assert "private file content" not in json.dumps(result)
         assert list(manager.db.iterdump()) == before
         assert sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*")) == files
+        assert sorted(path.name for path in socket.parent.iterdir()) == socket_files
         manager.command.assert_not_awaited()
     finally:
         server.close()

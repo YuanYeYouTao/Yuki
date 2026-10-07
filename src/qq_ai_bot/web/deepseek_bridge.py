@@ -281,7 +281,26 @@ class DeepSeekSearchBridge:
             return source
 
     async def close(self) -> None:
-        await self.client.aclose()
-        await self.media.close()
-        if self.fallback is not None:
-            await self.fallback.close()
+        errors: list[BaseException] = []
+        closed: set[int] = set()
+        for resource in (self.client, self.media, self.fallback):
+            if resource is None or id(resource) in closed:
+                continue
+            closed.add(id(resource))
+            try:
+                if isinstance(resource, httpx.AsyncClient):
+                    await resource.aclose()
+                else:
+                    await resource.close()
+            except BaseException as exc:
+                errors.append(exc)
+        if errors:
+            cancellation = next(
+                (error for error in errors if not isinstance(error, Exception)), None
+            )
+            if cancellation is not None:
+                for error in errors:
+                    if error is not cancellation:
+                        cancellation.add_note(f"close failed: {type(error).__name__}")
+                raise cancellation
+            raise BaseExceptionGroup("search bridge close failed", errors)

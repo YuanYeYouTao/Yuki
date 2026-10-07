@@ -58,9 +58,7 @@ from qq_ai_bot.model_runtime import (
 from qq_ai_bot.model_runtime.profiles import model_profile_environment
 from qq_ai_bot.model_runtime.secrets import read_model_secrets
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.plugin_host.discovery import PluginDiscovery
 from qq_ai_bot.plugin_host.manifest import load_manifest
-from qq_ai_bot.plugin_host.repository import PluginInstallationRepository
 from qq_ai_bot.prompting import (
     CORE_CONTRACT,
     PromptChannel,
@@ -184,6 +182,8 @@ def _add_plugin_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     for name in ("inspect", "permissions", "approve", "enable", "disable", "doctor"):
         parser = commands.add_parser(name)
         parser.add_argument("plugin_id")
+        if name == "approve":
+            parser.add_argument("--permission", action="append", default=[])
     validate = commands.add_parser("validate")
     validate.add_argument("path", type=Path)
     docs = commands.add_parser("docs")
@@ -283,16 +283,6 @@ def _add_memory_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
 def _model_catalog(settings: Settings) -> ModelProfileCatalog:
     return load_model_profile_catalog(
         settings.model_profiles_file,
-        allow_legacy_fallback=settings.model_profiles_legacy_compatibility,
-        legacy_provider=settings.llm_provider,
-        legacy_base_url=settings.llm_base_url,
-        legacy_model=settings.llm_model,
-        legacy_timeout_seconds=settings.llm_timeout_seconds,
-        legacy_max_retries=settings.llm_max_retries,
-        legacy_temperature=settings.llm_temperature,
-        legacy_max_output_tokens=settings.llm_max_output_tokens,
-        legacy_thinking_enabled=settings.llm_thinking_enabled,
-        legacy_reasoning_effort=settings.llm_reasoning_effort,
         environment=model_profile_environment(settings),
     )
 
@@ -551,89 +541,24 @@ async def _plugin_command(settings: Settings, args: argparse.Namespace) -> int:
         print(target)
         return 0
 
-    database = Database(settings.database_url)
-    repository = PluginInstallationRepository(database)
-    try:
-        if action == "discover":
-            discovery = PluginDiscovery(
-                settings.plugin_directory,
-                yuki_version=__version__,
-                plugin_api=PLUGIN_API_VERSION,
-            )
-            records = discovery.discover()
-            for discovered in records:
-                discovered_manifest = discovered.manifest
-                if discovered_manifest is None:
-                    print(f"invalid: {discovered.record.directory}: {discovered.record.detail}")
-                    continue
-                await repository.upsert_discovered(
-                    plugin_id=discovered_manifest.id,
-                    name=discovered_manifest.name,
-                    version=discovered_manifest.version,
-                    plugin_api=discovered_manifest.plugin_api,
-                    yuki_requires=discovered_manifest.yuki_requires,
-                    manifest_hash=discovered_manifest.manifest_hash,
-                    entrypoint=discovered_manifest.entrypoint,
-                    requested_permissions=(item.value for item in discovered_manifest.permissions),
-                )
-                print(f"discovered: {discovered_manifest.id}")
-            return 0
+    from qq_ai_bot.plugin_host.control_client import plugin_control, plugin_mutation, plugin_query
+
+    async with plugin_control(settings) as client:
         if action == "list":
-            for item in await repository.list_all():
-                print(
-                    f"{item.plugin_id}\t{item.version}\t{item.status}\t"
-                    f"enabled={str(item.enabled).lower()}"
-                )
-            return 0
-        plugin_id = str(args.plugin_id)
-        row = await repository.get(plugin_id)
-        if row is None:
-            print("plugin not found")
-            return 1
-        if action == "approve":
-            updated = await repository.approve(plugin_id)
-        elif action == "enable":
-            updated = await repository.set_enabled(plugin_id, enabled=True)
-        elif action == "disable":
-            updated = await repository.set_enabled(plugin_id, enabled=False)
-        else:
-            updated = row
-        if updated is None:
-            print("plugin update failed")
-            return 1
-        row = updated
-        if action == "doctor":
-            root = settings.plugin_directory / plugin_id
-            manifest_ok = False
-            try:
-                manifest_ok = (
-                    load_manifest(root, yuki_version=__version__).manifest_hash == row.manifest_hash
-                )
-            except Exception:
-                pass
-            print(
-                json.dumps(
-                    {
-                        "plugin_id": plugin_id,
-                        "manifest_ok": manifest_ok,
-                        "status": row.status,
-                        "enabled": row.enabled,
-                        "approval_current": bool(row.approved_at),
-                        "failure_count": row.failure_count,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
+            result = await plugin_query(client, "list_plugins", {})
+        elif action in {"inspect", "permissions"}:
+            result = await plugin_query(
+                client, "read_plugin_approval", {"plugin_id": args.plugin_id}
             )
-            return 0 if manifest_ok else 1
-        if action == "permissions":
-            print("requested:", ", ".join(row.requested_permissions) or "none")
-            print("approved:", ", ".join(row.approved_permissions) or "none")
         else:
-            print(json.dumps(asdict(row), ensure_ascii=False, default=str, indent=2))
+            result = await plugin_mutation(
+                client,
+                "yuki" if action == "discover" else str(args.plugin_id),
+                action,
+                permissions=list(args.permission) if action == "approve" else None,
+            )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
-    finally:
-        await database.close()
 
 
 async def _conversation_command(settings: Settings, args: argparse.Namespace) -> int:

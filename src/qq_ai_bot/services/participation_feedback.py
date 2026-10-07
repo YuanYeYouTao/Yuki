@@ -182,9 +182,16 @@ async def _scope_social_rows(
         )
 
 
-async def sync_scope_effects(service: SemanticParticipationService, item: _Session) -> None:
+async def sync_scope_effects(
+    service: SemanticParticipationService,
+    item: _Session,
+    *,
+    rows: list[SocialOperationModel] | None = None,
+    apply_committed: bool = True,
+) -> None:
     """Call once per active scope/tick, including legacy-only scopes, before rate integration."""
-    rows = await _scope_social_rows(service, item.scene.conversation_id)
+    if rows is None:
+        rows = await _scope_social_rows(service, item.scene.conversation_id)
     current = [
         row for row in rows if row.target_kind == "space" and row.target_id == item.scene.space_id
     ]
@@ -296,7 +303,7 @@ async def sync_scope_effects(service: SemanticParticipationService, item: _Sessi
         for key in tuple(outbound_threads)[:-1024]:
             outbound_threads.pop(key)
     for run_ref, effect in effects.values():
-        if run_ref.startswith("social-run:") or run_ref in valid_runs:
+        if apply_committed and (run_ref.startswith("social-run:") or run_ref in valid_runs):
             item.controller.observe_committed_effect(run_ref, effect)
 
 

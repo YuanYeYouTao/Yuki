@@ -18,13 +18,13 @@ from qq_ai_bot.domain.relationships import style_policy
 from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE, entity_memory_rule
 from qq_ai_bot.persistence.event_repository import ConversationReadVersion
 from qq_ai_bot.prompting import (
-    CORE_CONTRACT,
     PromptChannel,
     PromptCompiler,
     PromptContribution,
     PromptProgram,
     PromptTrust,
 )
+from qq_ai_bot.prompting.contracts import core_contract
 from qq_ai_bot.prompting.contributors import static_text
 from qq_ai_bot.prompting.models import CompiledPrompt, PromptMetrics
 from qq_ai_bot.prompting.serializer import serialized_messages_hash
@@ -84,7 +84,7 @@ class PromptComposer:
             ),
             static_text(
                 "core.contract",
-                CORE_CONTRACT,
+                core_contract(code_enabled=self._settings.code_mode_enabled),
                 channel=PromptChannel.INVARIANT,
                 priority=90,
             ),
@@ -118,7 +118,6 @@ class PromptComposer:
         scope_type: ScopeType | None = None,
         include_plugin_context: bool = True,
         short_state: list[dict[str, Any]] | None = None,
-        memory_exclusive_write: bool = False,
     ) -> PromptComposition:
         contributions: list[PromptContribution] = [
             *self._static_contributions(),
@@ -153,20 +152,6 @@ class PromptComposer:
                     required=True,
                 )
             )
-        for identity, enabled, data in (
-            ("runtime.memory_mutation", memory_exclusive_write, {"exclusive_write": True}),
-        ):
-            if enabled:
-                contributions.append(
-                    PromptContribution(
-                        id=identity,
-                        channel=PromptChannel.RUNTIME,
-                        trust=PromptTrust.TRUSTED,
-                        priority=90,
-                        payload=data,
-                        required=True,
-                    )
-                )
         if inbound is not None and inbound.sender.user_id in self._settings.superusers:
             contributions.append(
                 PromptContribution(
@@ -356,7 +341,7 @@ class PromptComposer:
         compiled: CompiledPrompt,
     ) -> PromptComposition:
         snapshot = {
-            "scope_id": context.prompt_scope_id,
+            "conversation_id": context.prompt_conversation_id,
             "scope_key": context.prompt_scope_key,
             "generation": context.prompt_generation,
             "coverage": context.prompt_effective_coverage,

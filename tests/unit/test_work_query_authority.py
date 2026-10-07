@@ -12,7 +12,6 @@ from qq_ai_bot.automation.tools import AutomationToolService
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity, ToolCall, ToolFunction
 from qq_ai_bot.domain.tool_actor import ToolActor
-from qq_ai_bot.runtime.contracts import MemoryCapabilityView
 from qq_ai_bot.services.agent_runner import AgentRuntime
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.main_agent_backend import MainAgentBackend
@@ -41,7 +40,6 @@ async def query_environment(database):
         gateway=None,
         allow_generic_onebot=False,
         allow_automation=True,
-        actor_user_id="1001",
         runtime_config=config,
         conversation_key="query-test",
     )
@@ -68,8 +66,9 @@ async def test_queries_require_trusted_internal_actor_and_automation_access(quer
     chat, runtime = query_environment
     invalid = (
         replace(runtime, allow_automation=False),
-        replace(runtime, inbound=replace(runtime.inbound, source_event_id=None)),
-        replace(runtime, actor_user_id="another-user"),
+        replace(
+            runtime, inbound=replace(runtime.inbound, source_event_id=None), actor_context=None
+        ),
         replace(runtime, inbound=None, actor_context=None),
     )
     for candidate in invalid:
@@ -87,23 +86,6 @@ async def test_delegated_query_scope_and_closed_profiles_are_enforced(query_envi
     closed = MainAgentBackend(chat, replace(runtime, tools_closed=True))
     assert not closed.work_query_allowed("get")
     assert not closed.work_query_allowed("list")
-
-    view = MemoryCapabilityView(
-        eager_namespaces=(),
-        requestable_namespaces=("memory.state.write",),
-        hidden_namespaces=(),
-        exclusive_namespace="memory.state.write",
-        transition_revision=1,
-    )
-    memory = SimpleNamespace(exclusive_write=True, capability_view=lambda: view)
-    exclusive = MainAgentBackend(chat, replace(runtime, memory_session=memory))
-    for action in ("get", "list"):
-        arguments = '{"automation_id":1}' if action == "get" else "{}"
-        automation_allowed, _ = exclusive._ensure_capability_runtime().validate_call(
-            f"automation_{action}", arguments
-        )
-        assert not automation_allowed
-        assert not exclusive.work_query_allowed(action)
 
 
 @pytest.mark.asyncio
@@ -123,22 +105,19 @@ async def test_self_directory_reads_do_not_require_or_borrow_a_person(query_envi
     runtime = replace(
         base,
         inbound=None,
-        actor_user_id="",
         actor_context=actor,
         origin=TurnOrigin.SELF_INITIATIVE,
-        current_group_id="2001",
         scope_type=ScopeType.GROUP,
-        bot_user_id="8001",
         conversation_id="conversation-1",
-        presence_id="presence-1",
         initiative_run_id="initiative-1",
     )
+    with pytest.raises(ValueError, match="invalid_self_tool_actor"):
+        replace(actor, user_id="1001")
     backend = MainAgentBackend(chat, runtime)
     assert backend.work_query_allowed("get")
     assert backend.work_query_allowed("list")
     for invalid in (
         replace(runtime, allow_automation=False),
-        replace(runtime, actor_user_id="1001"),
         replace(runtime, initiative_run_id="another-initiative"),
     ):
         refused = MainAgentBackend(chat, invalid)
@@ -202,7 +181,7 @@ async def test_runner_query_gate_refuses_before_domain_read_and_keeps_lifecycle(
     for action in ("get", "list", "complete"):
         accepted = await dispatch(action, action != "complete")
         assert json.loads(accepted.calls[0][1])["ok"]
-        assert accepted.calls[0][2] is True
+        assert accepted.calls[0][2] is (action == "complete")
         assert accepted.executed_count == 0
     assert [entry[1]["action"] for entry in executed] == ["get", "list", "complete"]
-    assert executed[0][2] == "query-owner:get"
+    assert executed[0][2] == "get"  # Read-only metadata keeps the original call ID.

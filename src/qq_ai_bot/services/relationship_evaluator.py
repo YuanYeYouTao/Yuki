@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.relationships import RelationshipEvaluation
-from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
+from qq_ai_bot.model_runtime.executor import ModelExecutor
 from qq_ai_bot.model_runtime.models import ModelExecutionPriority, ModelTask
 from qq_ai_bot.model_runtime.structured import StructuredTaskRunner
 from qq_ai_bot.persistence.repositories import RelationshipJobRecord
@@ -113,17 +113,12 @@ class LLMRelationshipEvaluator:
         self,
         *,
         settings: Settings,
-        provider: ModelCompleter | None = None,
-        model_executor: ModelExecutor | None = None,
+        model_executor: ModelExecutor,
         concurrency: ConcurrencyManager,
         runtime_config: RuntimeConfigService | None = None,
     ) -> None:
         self._settings = settings
-        self._models = require_model_executor(
-            model_executor,
-            provider=provider,
-            model=settings.llm_model or "fake",
-        )
+        self._models = model_executor
         self._structured = StructuredTaskRunner(self._models)
         self._concurrency = concurrency
         self._runtime_config = runtime_config

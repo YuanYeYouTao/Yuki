@@ -1,4 +1,9 @@
-"""MCP retirement preserves shared result storage, evidence and frozen SQLite data."""
+"""MCP retirement preserves shared result storage, evidence and frozen SQLite data.
+
+The reconciler is 0098 after main's speech retirement 0097. Each rejection
+probe starts at 0097 so its no-DDL assertion covers only the MCP boundary;
+full-chain upgrades are tested separately. Speech has no factual downgrade.
+"""
 
 import asyncio
 import importlib
@@ -87,7 +92,7 @@ def test_frozen_old_head_upgrade_removes_only_owned_derived_tables(
     path = tmp_path / "old.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{path.as_posix()}")
     config = _config(path)
-    command.upgrade(config, "0095")
+    command.upgrade(config, "0097")
     asyncio.run(_seed_original_work(path, tmp_path))
     now = datetime.now(UTC).isoformat()
     with sqlite3.connect(path) as db:
@@ -152,15 +157,15 @@ def test_frozen_old_head_upgrade_removes_only_owned_derived_tables(
             for (name,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
             for row in db.execute(f'PRAGMA foreign_key_list("{name}")')
         )
-    command.upgrade(config, "0096")
+    command.upgrade(config, "0098")
     with sqlite3.connect(path) as db:
         assert not RETIRED.intersection(
             name for (name,) in db.execute("SELECT name FROM sqlite_master")
         )
         assert _snapshot(db) == before
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []
-        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0096",)
-    command.downgrade(config, "0095")
+        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0098",)
+    command.downgrade(config, "0097")
     with sqlite3.connect(path) as db:
         assert _snapshot(db) == before
         assert (
@@ -175,12 +180,11 @@ def test_frozen_old_head_upgrade_removes_only_owned_derived_tables(
         assert all(
             db.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone() == (0,) for name in RETIRED
         )
-    # This round trip covers MCP's frozen 0095 -> 0096 boundary. Later Speech
-    # retirement owns other tables and deliberately has no factual downgrade.
-    command.upgrade(config, "0096")
+    # Re-apply only the MCP boundary; do not downgrade across Speech retirement.
+    command.upgrade(config, "0098")
     with sqlite3.connect(path) as db:
         assert _snapshot(db) == before
-        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0096",)
+        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0098",)
 
 
 def test_current_metadata_excludes_retired_tables_but_keeps_shared_tables():
@@ -257,7 +261,7 @@ def test_partial_retirement_ddl_failure_rolls_back_first_drop(tmp_path, monkeypa
     path = tmp_path / "invalid-old.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{path.as_posix()}")
     config = _config(path)
-    command.upgrade(config, "0095")
+    command.upgrade(config, "0097")
     with sqlite3.connect(path) as db:
         before = _all_facts(db)
     from alembic import op
@@ -271,10 +275,10 @@ def test_partial_retirement_ddl_failure_rolls_back_first_drop(tmp_path, monkeypa
 
     monkeypatch.setattr(op, "drop_table", fail_second_drop)
     with pytest.raises(OperationalError, match="fixture failure"):
-        command.upgrade(config, "0096")
+        command.upgrade(config, "0098")
     with sqlite3.connect(path) as db:
         assert _all_facts(db) == before
-        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0095",)
+        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0097",)
 
 
 def _all_facts(db):
@@ -330,8 +334,8 @@ def test_owned_schema_drift_rejected_before_first_ddl_and_preserves_facts(
     path = tmp_path / "drift.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{path.as_posix()}")
     config = _config(path)
-    command.upgrade(config, "0095")
-    frozen = importlib.import_module("migrations.versions.0096_retire_mcp_metadata")
+    command.upgrade(config, "0097")
+    frozen = importlib.import_module("migrations.versions.0098_reconcile_mcp_retirement")
     with sqlite3.connect(path) as db:
         db.execute(
             "INSERT INTO mcp_server_states VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -436,21 +440,21 @@ def test_owned_schema_drift_rejected_before_first_ddl_and_preserves_facts(
     event.listen(Engine, "before_cursor_execute", capture)
     try:
         with pytest.raises(RuntimeError, match="MCP retirement"):
-            command.upgrade(config, "0096")
+            command.upgrade(config, "0098")
     finally:
         event.remove(Engine, "before_cursor_execute", capture)
     assert not any(sql.startswith(("CREATE", "DROP", "ALTER")) for sql in statements)
     with sqlite3.connect(path) as db:
         assert _all_facts(db) == before
-        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0095",)
+        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0097",)
 
 
 def test_equivalent_declared_types_pass_owned_preflight(tmp_path, monkeypatch):
     path = tmp_path / "synonyms.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{path.as_posix()}")
     config = _config(path)
-    command.upgrade(config, "0095")
-    frozen = importlib.import_module("migrations.versions.0096_retire_mcp_metadata")
+    command.upgrade(config, "0097")
+    frozen = importlib.import_module("migrations.versions.0098_reconcile_mcp_retirement")
     with sqlite3.connect(path) as db:
         state = (
             frozen._RESTORE_STATEMENTS[0]
@@ -459,6 +463,6 @@ def test_equivalent_declared_types_pass_owned_preflight(tmp_path, monkeypatch):
         )
         _replace_owned_table(db, "mcp_server_states", state)
         db.commit()
-    command.upgrade(config, "0096")
+    command.upgrade(config, "0098")
     with sqlite3.connect(path) as db:
-        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0096",)
+        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0098",)

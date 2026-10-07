@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import event, select, update
 from sqlalchemy.exc import OperationalError
+from tests.support.canonical_ingress import append_new_generation
 from tests.unit.rollup_test_helpers import candidate_summary
 from tests.unit.test_conversation_rollup_370 import _append, _policy
 
@@ -98,7 +99,8 @@ async def test_source_to_first_write_race_reprepares_only_database(
         elif mutation == "edit":
             assert await uow.set_visual_summary(candidate.events[0].id, "new visual source")
         elif mutation == "reset":
-            await uow.append_new_generation_command(
+            await append_new_generation(
+                uow,
                 scope=scope,
                 inbound=InboundMessage(
                     message_id="reset-snapshot",

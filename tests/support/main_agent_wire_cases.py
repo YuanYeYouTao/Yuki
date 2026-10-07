@@ -41,6 +41,7 @@ from qq_ai_bot.services.main_agent_contract import MainAgentContract
 from qq_ai_bot.workspace.short_state import ShortState
 from qq_ai_bot.workspace.store import WorkspaceStore
 from tests.conftest import MemorySender, build_harness, make_settings
+from tests.support.canonical_ingress import append_inbound
 from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.permissions import PluginPermission
 
@@ -159,6 +160,7 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             make_settings(
                 database.url,
                 automation_enabled=True,
+                code_mode_enabled=True,
                 web_mode="tavily",
                 tavily_api_key="wire-test-key",
             ),
@@ -204,14 +206,19 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             {"onebot.send_private_message": forbidden_send}
         )
         handlers._gateway_factory = lambda context: None
-        contract = MainAgentContract(chat, state)
+        contract = MainAgentContract(chat, state, code_enabled=True)
         chat.runtime.runner.main_contract = contract
         handlers.main_contract = contract
         chat._tools.short_state = state
-        manifest = await contract.definitions()
-        python_tool = next(t for t in manifest if t.name == "run_python")
-        assert python_tool.description == sandbox_tools()[0].description
-        assert python_tool.parameters == sandbox_tools()[0].parameters
+        # Specialized tools retain their exact execution schemas, but leave
+        # the Provider's fixed declarations under the tiered contract.
+        complete = await contract.definitions()
+        manifest = await contract.model_definitions()
+        terminal_tool = next(t for t in complete if t.name == "terminal_exec")
+        terminal_definition = next(t for t in sandbox_tools() if t.name == "terminal_exec")
+        assert terminal_tool.description == terminal_definition.description
+        assert terminal_tool.parameters == terminal_definition.parameters
+        assert "run_python" not in {t.name for t in manifest}
         denied_name = "call_onebot_api"
         assert len(manifest) > 10
 
@@ -308,16 +315,12 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
 
         plugin = HostPluginContext(
             plugin_id="wire.plugin",
-            approved_permissions=(
-                PluginPermission.LLM_GENERATE,
-                PluginPermission.LLM_GENERATE_WITH_CONTEXT,
-                PluginPermission.AGENT_RUN,
-            ),
+            approved_permissions=(PluginPermission.AGENT_RUN,),
             services=PluginFacadeServices(
                 ledger=harness.ledger,
                 people=chat._people,
                 agent_runner=chat.runtime.runner,
-                agent_capabilities=frozenset({"get_person_memories"}),
+                agent_capabilities=frozenset({"search_memory"}),
                 runtime_config=chat._runtime_config,
             ),
         )
@@ -338,8 +341,8 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             bot_user_id="9999",
             person_id=observed.author_person_id,
             conversation_id=observed.canonical_conversation_id,
+            legacy_conversation_key="private:1001",
             presence_id=observed.ingress_presence_id,
-            legacy_conversation_key=ConversationScope.private("9999", "1001").key,
         )
         invocation = PluginInvocation(
             plugin_id="wire.plugin",
@@ -351,22 +354,18 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
         for name in ("sdk-generate", "sdk-context", "sdk-agent"):
             current_entry = name
             with plugin.bind(invocation):
-                if name == "sdk-generate":
-                    answer = await plugin.llm.generate("记录结果")
-                elif name == "sdk-context":
-                    answer = await plugin.llm.generate_with_context(
-                        "记录结果", context_profile="current_user"
-                    )
-                else:
-                    result = await plugin.agent.run(
-                        "记录结果", allowed_capabilities=("get_person_memories",)
-                    )
-                    answer = result.data["text"]
-                    assert result.data["capabilities"] == ["get_person_memories"]
+                result = await plugin.agent.run(
+                    "记录结果",
+                    context_profile="current_user" if name == "sdk-context" else "none",
+                    allowed_capabilities=("search_memory",) if name == "sdk-agent" else (),
+                )
+                answer = result.data["text"]
+                if name == "sdk-agent":
+                    assert result.data["capabilities"] == ["search_memory"]
                 assert answer == "已完成"
         current_entry = "sdk-followup"
         with plugin.bind(invocation):
-            assert await plugin.llm.generate("继续记录") == "已完成"
+            assert (await plugin.agent.run("继续记录")).data["text"] == "已完成"
         repeated = captured.pop("sdk-followup")
         sequence_key = "input" if protocol is ModelProtocol.RESPONSES else "messages"
         # Across SDK activations preserve public H, retire the old private tail.
@@ -381,16 +380,15 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
         # prior current_user material, despite sharing the canonical Conversation.
         current_entry = "sdk-narrow"
         with plugin.bind(invocation):
-            assert (
-                await plugin.llm.generate_with_context("只看本条", context_profile="none")
-                == "已完成"
-            )
+            assert (await plugin.agent.run("只看本条", context_profile="none")).data[
+                "text"
+            ] == "已完成"
         narrowed = captured.pop("sdk-narrow")
         assert "requested_context" not in json.dumps(narrowed[0][sequence_key])
         before = sum(map(len, captured.values()))
         with plugin.bind(replace(invocation, inbound=replace(bound_message, conversation_id=None))):
             with pytest.raises(PluginPermissionError, match="real Host-bound"):
-                await plugin.llm.generate("no source")
+                await plugin.agent.run("no source")
         with plugin.bind(
             replace(
                 invocation,
@@ -402,15 +400,15 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
                 await plugin.agent.run("wrong source")
         with plugin.bind(invocation):
             with pytest.raises(PluginPermissionError, match="real group turn"):
-                await plugin.llm.generate_with_context("no group", context_profile="current_group")
+                await plugin.agent.run("no group", context_profile="current_group")
             with patch.object(
                 harness.ledger, "read_version_matches", AsyncMock(return_value=False)
             ):
                 with pytest.raises(LLMInvalidRequestError, match="Conversation changed"):
-                    await plugin.llm.generate("reset source")
+                    await plugin.agent.run("reset source")
 
             async def recurse(*args, **kwargs):
-                return await plugin.llm.generate("nested")
+                return await plugin.agent.run("nested")
 
             with patch.object(chat.runtime.main_turns, "run", recurse):
                 with pytest.raises(PluginPermissionError, match="recursive"):
@@ -431,9 +429,7 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             )
             arguments = {"instruction": "记录这轮结果", "context_profile": "creator_private"}
             if name.endswith("generate"):
-                result = await handlers.mapping()["yuki.generate"](
-                    {**arguments, "max_characters": 200}, context
-                )
+                result = await handlers.mapping()["yuki.agent"](arguments, context)
             else:
                 result = await handlers.agent(
                     {**arguments, "max_tool_calls": 3, "max_model_requests": 3}, context
@@ -459,7 +455,7 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
         )
         assert token is not None
         snapshot = ConversationTurnSnapshot(
-            scope_id=appended.scope.id,
+            conversation_id=appended.scope.id,
             scope_key=(appended.scope.runtime_scope_key or appended.scope.scope.key),
             generation=appended.scope.generation,
             trigger_event_id=appended.event.id,
@@ -530,14 +526,14 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             bot_user_id="9999",
             group_id="2002",
         )
-        appended = await harness.scoped_events.append_inbound(message)
+        appended = await append_inbound(harness.scoped_events, message)
         token = await chat._turn_coordinator.notify_message(
             (appended.scope.runtime_scope_key or appended.scope.scope.key), observation=True
         )
         token = await chat._turn_coordinator.begin_autonomous(token)
         assert token is not None
         snapshot = ConversationTurnSnapshot(
-            scope_id=appended.scope.id,
+            conversation_id=appended.scope.id,
             scope_key=(appended.scope.runtime_scope_key or appended.scope.scope.key),
             generation=appended.scope.generation,
             trigger_event_id=appended.event.id,
@@ -591,7 +587,9 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
         assert json.loads(outputs[0])["ok"] is True
         if name in {"automation-generate", "sdk-generate"}:
             denied = json.loads(outputs[-1])
-            assert denied["ok"] is False and denied["error"] == "capability_not_allowed", denied
+            # A forged direct call is rejected at the declaration boundary;
+            # execution authorization remains independently covered below it.
+            assert denied["ok"] is False and denied["error"] == "tool_not_declared", denied
         sequence_key = "input" if protocol is ModelProtocol.RESPONSES else "messages"
         for previous, following in pairwise(chain):
             assert following[sequence_key][: len(previous[sequence_key])] == previous[sequence_key]

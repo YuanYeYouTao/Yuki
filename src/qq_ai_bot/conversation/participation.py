@@ -137,11 +137,6 @@ class LocalAutonomousParticipationPolicy:
     def threshold(self) -> int:
         return self._threshold
 
-    def score(self, features: AdmissionFeatures) -> AdmissionScoreSnapshot:
-        """Compatibility alias for the 3.5.3 ``ReplyNecessityScorer.score`` API."""
-
-        return self.evaluate(features)
-
     async def score_candidate(self, candidate: AutonomousCandidate) -> AutonomousAdmissionScore:
         """Protocol-shaped scorer for one autonomous candidate."""
 

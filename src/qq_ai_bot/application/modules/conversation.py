@@ -44,7 +44,6 @@ from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.services.agent_tools import AgentToolService
 from qq_ai_bot.services.chat import ChatService, ToolInvocationRecorder
 from qq_ai_bot.services.concurrency import ConcurrencyManager
-from qq_ai_bot.services.deduplication import DeduplicationService
 from qq_ai_bot.services.effect_gate import ConversationEffectGate
 from qq_ai_bot.services.prompt_composer import PromptComposer
 from qq_ai_bot.services.prompt_registry import PromptRegistry
@@ -65,7 +64,6 @@ class ConversationBundle:
     prompt_registry: PromptRegistry
     admission_features: AdmissionFeatureBuilder
     relationship_evaluator: RelationshipEvaluator
-    deduplication: DeduplicationService
     rate_limiter: SlidingWindowRateLimiter
     agent_tools: AgentToolService
     chat: ChatService
@@ -141,10 +139,6 @@ class ConversationModule:
                 concurrency=self._concurrency,
                 runtime_config=self._runtime_config,
             )
-        deduplication = DeduplicationService(
-            persistence.processed_events,
-            ttl_seconds=settings.processed_event_ttl_seconds,
-        )
         rate_limiter = SlidingWindowRateLimiter(
             per_user=settings.per_user_requests_per_minute,
             per_group=settings.per_group_requests_per_minute,
@@ -327,7 +321,6 @@ class ConversationModule:
             prompt_registry,
             admission_features,
             relationship_evaluator,
-            deduplication,
             rate_limiter,
             agent_tools,
             chat,

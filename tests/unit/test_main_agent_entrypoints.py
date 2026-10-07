@@ -7,9 +7,13 @@ from types import SimpleNamespace
 
 import pytest
 from tests.conftest import build_harness, make_settings
+
+# P10: explicit Invocation fixture contract; existing assertions are retained.
+from tests.support.agent_backend import StubAgentBackend
 from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.automation.models import TurnOrigin
+from qq_ai_bot.capabilities.invocation import direct_invocations
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, ToolCall, ToolFunction
 from qq_ai_bot.domain.tool_actor import ToolActor
@@ -35,7 +39,7 @@ async def test_send_message_bypasses_work_admission_without_reclassifying_mutati
         async def pending(self):
             return True
 
-    class Backend:
+    class Backend(StubAgentBackend):
         def begin_batch(self, calls, runtime):
             pass
 
@@ -45,7 +49,8 @@ async def test_send_message_bypasses_work_admission_without_reclassifying_mutati
         def parallel_safe(self, name, runtime):
             return False
 
-        async def execute(self, name, arguments, runtime):
+        async def execute_call(self, invocation):
+            name = invocation.call.function.name
             executed.append(name)
             return json.dumps({"ok": True})
 
@@ -162,7 +167,7 @@ async def test_neutral_answer_is_delivered_without_registration_request(database
         assert result.text == "Yuki 是用 Python 写的。"
         assert result.model_requests == 1
         assert control.current is None
-        assert control.corrections == 0
+        assert not hasattr(control, "corrections")
     assert len(provider.requests) == 1
 
 
@@ -199,14 +204,22 @@ async def test_host_granted_environment_reaches_shared_executor(database, tmp_pa
         max_tool_calls=32,
         max_model_requests=24,
     )
+    from qq_ai_bot.domain.tool_actor import ToolActor
+
     tool_runtime = ToolRuntime(
+        actor_context=ToolActor(
+            user_id="10001",
+            bot_user_id="7777",
+            group_id=None,
+            origin=origin,
+            instruction="write files",
+            execution_id="environment-test",
+        ),
         inbound=None,
         gateway=None,
         allow_generic_onebot=False,
         origin=origin,
         scope_type=ScopeType.PRIVATE,
-        bot_user_id="7777",
-        actor_user_id="10001",
         execution_id="environment-test",
         runtime_config=config,
         allow_work_environment=True,
@@ -222,10 +235,7 @@ async def test_host_granted_environment_reaches_shared_executor(database, tmp_pa
             allowed_tools=frozenset({"workspace_write"}),
         )
         await backend.prepare(runtime)
-        backend.begin_batch((call,), runtime)
-        result = json.loads(
-            await backend.execute(call.function.name, call.function.arguments, runtime)
-        )
+        result = json.loads(await backend.execute_call(direct_invocations((call,), runtime)[0]))
         assert result["ok"] is allowed, result
     assert calls == [("workspace_write", {"path": "测试.txt", "text": "hello"})]
 
@@ -294,19 +304,29 @@ async def test_owned_main_turn_resumes_original_journal_and_budget(
         invocation_source={"owner": "test"},
         dynamic_context_prepared=True,
     )
+    from qq_ai_bot.domain.tool_actor import ToolActor
+
     tool_runtime = ToolRuntime(
+        actor_context=ToolActor(
+            user_id="10001",
+            bot_user_id="80001",
+            group_id="20001",
+            origin=origin,
+            instruction="write files",
+            person_id=env.person,
+            conversation_id=env.context.conversation_id,
+            presence_id=env.presence,
+            execution_id="same-owned-execution",
+        ),
         inbound=None,
         gateway=None,
         allow_generic_onebot=False,
         origin=origin,
         scope_type=ScopeType.GROUP,
-        actor_user_id="10001",
-        bot_user_id="80001",
         runtime_config=config,
         allow_work_environment=True,
         conversation_id=env.context.conversation_id,
         conversation_key="owned-work",
-        current_group_id="20001",
         execution_id="same-owned-execution",
     )
 
@@ -340,13 +360,15 @@ async def test_owned_main_turn_resumes_original_journal_and_budget(
     for index, (start, current_chat) in enumerate(activations):
         end = activations[index + 1][0] if index + 1 < len(activations) else len(provider.requests)
         requests = provider.requests[start:end]
-        assert requests[0].messages[0].content == current_chat
+        assert requests[0].messages[-1].content == current_chat
+        host = json.loads(requests[0].messages[0].content)
+        assert host["source"] == "host" and host["kind"] == "initial_runtime_context"
         if start:
             assert requests[0].request_chain_id != provider.requests[start - 1].request_chain_id
             material = next(
-                json.loads(message.content)
-                for message in requests[0].messages
-                if message.content and '"kind": "work_current_material"' in message.content
+                json.loads(item["content"])
+                for item in host["data"]["observations"]
+                if '"kind": "work_current_material"' in item["content"]
             )
             assert material["goal"] == "写三个文件"
             assert material["execution_evidence"]
@@ -469,8 +491,10 @@ async def test_plugin_callback_pending_is_queryable_after_callback_returns(
         space_id=env.space,
         presence_id=env.presence,
         conversation_id=env.context.conversation_id,
-        legacy_conversation_key="group:80001:20001",
     )
+    from tests.support.canonical_ingress import fixture_ingress
+
+    inbound = (await fixture_ingress(database).pre_admit(env.bot, inbound)).message
     invocation = PluginInvocation(
         plugin_id=host.plugin_id,
         origin=TurnOrigin.USER_MESSAGE,
@@ -530,12 +554,21 @@ async def test_plugin_callback_pending_is_queryable_after_callback_returns(
                 await asyncio.wait_for(asyncio.gather(*tasks), 10)
             # Settled private tails exit across activations. Shared public facts
             # and the fixed declaration survive; original effects are read back.
-            assert provider.requests[1].messages[:2] == provider.requests[0].messages[:2]
+            assert tuple(
+                m for m in provider.requests[1].messages if m.role in {"system", "developer"}
+            ) == tuple(
+                m for m in provider.requests[0].messages if m.role in {"system", "developer"}
+            )
             assert provider.requests[1].request_chain_id != provider.requests[0].request_chain_id
-            material = next(
+            envelope = next(
                 json.loads(message.content)
                 for message in provider.requests[1].messages
-                if message.content and '"kind": "work_current_material"' in message.content
+                if message.content and "initial_runtime_context" in message.content
+            )
+            material = next(
+                json.loads(item["content"])
+                for item in envelope["data"]["observations"]
+                if '"kind": "work_current_material"' in item["content"]
             )
             assert material["goal"] == "计算"
             if segment_resume == "question":
@@ -668,9 +701,6 @@ async def test_scoped_background_reads_do_not_use_send_route_or_expand_scope(dat
             allow_generic_onebot=False,
             runtime_config=config,
             origin=runtime.origin,
-            actor_user_id="10001",
-            current_group_id="20001",
-            bot_user_id="80001",
             scope_type=ScopeType.GROUP,
             conversation_id=env.context.conversation_id,
             execution_id="scoped-read",
@@ -690,8 +720,7 @@ async def test_scoped_background_reads_do_not_use_send_route_or_expand_scope(dat
         ("read_conversation_history", {"kind": "person", "target_id": env.person}, False),
     ):
         call = ToolCall(name, ToolFunction(name, json.dumps(args)))
-        backend.begin_batch((call,), runtime)
-        result = json.loads(await backend.execute(name, call.function.arguments, runtime))
+        result = json.loads(await backend.execute_call(direct_invocations((call,), runtime)[0]))
         assert result["ok"] is allowed, result
         if name == "get_recent_chat_history":
             assert result["data"]["source"] == "ledger"
@@ -725,9 +754,13 @@ async def test_creation_replay_and_run_budget_are_atomic(database, tmp_path):
     async def create(call_id, script):
         token = current_invocation.set(
             ToolInvocationContext(
-                runtime=None,
+                runtime=ToolRuntime(
+                    inbound=_inbound(),
+                    gateway=None,
+                    allow_generic_onebot=False,
+                    execution_id="one-owned-invocation",
+                ),
                 call_id=call_id,
-                execution_id="one-owned-invocation",
             )
         )
         try:
@@ -895,9 +928,11 @@ async def test_plugin_handler_failure_after_write_is_not_replayed(tmp_path):
             ),
         )
         runtime = ToolRuntime(inbound=None, gateway=None, allow_generic_onebot=False)
-        result = json.loads(await adapter.execute("operation", "{}", runtime, web_was_used=False))
+        result = (
+            await adapter.execute("operation", "{}", runtime, web_was_used=False)
+        ).model_payload()
         assert len(writes) == expected
         assert not result["ok"]
         if risk is RiskClass.MUTATE:
-            assert result["uncertain"] is True and result["mutation_committed"] is None
+            assert result["uncertain"] is True and result.get("mutation_committed") is None
             assert (tmp_path / "committed.txt").read_text(encoding="utf-8") == "written"

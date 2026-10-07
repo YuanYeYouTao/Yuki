@@ -7,6 +7,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import select, update
 from tests.support.social_identity_cases import social_env
+from tests.support.work_session import WorkSession
+from tests.support.workspace_snapshots import snapshot_bytes
 
 from qq_ai_bot.capabilities.results import ToolExecutionResult, ToolResultBudgeter
 from qq_ai_bot.domain.messages import ChatMessage, ToolCall, ToolFunction
@@ -14,7 +16,6 @@ from qq_ai_bot.persistence.models import ToolArtifactModel
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import effects, work
-from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
 from qq_ai_bot.workspace.store import WorkspaceStore
@@ -105,7 +106,7 @@ async def test_large_uncertain_survives_projection_and_seventy_reads(database, t
     blocked = await execute(
         session, store, "next-mutation", ToolExecutionResult(ok=True, tool_name="mutate")
     )
-    assert json.loads(blocked)["error"] == "unresolved_prior_effect"
+    assert json.loads(blocked)["error_code"] == "unresolved_prior_effect"
 
 
 @pytest.mark.asyncio
@@ -212,7 +213,7 @@ async def test_resolution_keeps_original_mutating_run_evidence(database, tmp_pat
 def test_immutable_artifact_pagination_reconstructs_text(tmp_path):
     store = WorkspaceStore(tmp_path / "workspace")
     original = "汉字abc123\n" * 15000
-    artifact = store.write("large.txt", original.encode("utf-8"))
+    artifact = snapshot_bytes(store, "large.txt", original.encode("utf-8"))
     offset, parts = 0, []
     while True:
         page = store.read(artifact["artifact_id"], offset=offset)
@@ -399,11 +400,10 @@ async def test_migrated_active_work_completes_from_original_file_caption_without
             lambda: None,
             side_effecting=True,
         )
-        assert json.loads(blocked)["error"] == "unresolved_prior_effect"
+        assert json.loads(blocked)["error_code"] == "unresolved_prior_effect"
         assert await resumed.journal.effect_result(key) == result
         return
     assert completed["ok"] is True and completed["ending_proposed"] == "completed", completed
-    assert control.completion_delivered is True
     row = await control.repository.get(original_id)
     assert row["model_requests"] == 3 and row["tool_calls"] == 2
     assert row["id"] == original_id

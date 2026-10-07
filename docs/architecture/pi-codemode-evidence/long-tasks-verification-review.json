@@ -1,0 +1,64 @@
+{
+  "reviewed_at": "2026-10-05T11:55:29.455725+00:00",
+  "source_unchanged_since_final_full_suite": true,
+  "final_full_suite": {
+    "evidence": "long-tasks-verification-regression.json",
+    "passed": 3352,
+    "skipped": 1,
+    "seconds": 708.35,
+    "skip_reason": "private production backup paths not provided",
+    "native_worker_tests_skipped": false
+  },
+  "final_static_rechecks": {
+    "ruff_check": {
+      "exit_code": 0
+    },
+    "ruff_format_check": {
+      "exit_code": 0,
+      "files": 1139
+    },
+    "mypy": {
+      "exit_code": 0,
+      "source_files": 722
+    }
+  },
+  "paid_reports": {
+    "normal": {
+      "evidence": "long-tasks-handoff-final.json",
+      "attempted": 24,
+      "completed": 24
+    },
+    "pressure": {
+      "evidence": "long-tasks-verification-final.json",
+      "attempted": 8,
+      "completed": 7,
+      "current_runtime_completed": 4,
+      "current_runtime_attempted": 4,
+      "historical_direct_completed": 1,
+      "historical_direct_attempted": 2,
+      "historical_code_completed": 2,
+      "historical_code_attempted": 2,
+      "known_peak_usd": 0.7345345320000003,
+      "unsettled_reserved_usd": 0
+    }
+  },
+  "checked": {
+    "summaries_reproducible_from_original_reports": true,
+    "all_prior_report_hashes_intact": true,
+    "current_source_hashes_match_paid_pressure_report": true,
+    "groups_have_same_inputs_instructions_quantum_and_tools": true,
+    "duplicate_committed_writes": 0,
+    "duplicate_operation_ids": 0,
+    "configured_api_key_absent_from_all_50_reviewed_task_files_and_decompressed_logs": true,
+    "git_diff_check_exit_code": 0
+  },
+  "cleanup": {
+    "all_four_owned_full_test_fixture_roots_absent": true,
+    "paid_temporary_fixture_roots_remaining": 0,
+    "paid_log_losslessly_compressed_raw_removed": true,
+    "new_vm_created": false,
+    "installed_worker_retained": true,
+    "worker_sha256": "af76448a14fe980c823f1c6092692f90a8ddc6341f236f17d6d47d72f49548e8"
+  },
+  "verification_boundary": "isolated fresh activations in the same process with high reasoning; application default profile unchanged; no production, real messaging, PR, merge or deployment"
+}

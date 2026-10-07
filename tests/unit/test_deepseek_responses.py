@@ -459,16 +459,8 @@ async def test_function_output_follows_cumulative_continuation(caplog) -> None:
                 ),
             )
         )
-    with pytest.raises(LLMInvalidRequestError, match="mixed ordered"):
-        provider._build_payload(
-            _request(
-                continuation=second.continuation,
-                continuation_items=(ChatMessage(role="system", content="tail"),),
-                function_outputs=(
-                    FunctionCallOutput(call_id="call_fixture_1", output="different"),
-                ),
-            )
-        )
+    with pytest.raises(TypeError, match="function_outputs"):
+        _request(function_outputs=())
     assert requests[0]["instructions"] == requests[1]["instructions"] == requests[2]["instructions"]
 
     observations = [
@@ -583,14 +575,14 @@ async def test_function_outputs_remain_paired_across_three_requests() -> None:
         second = await provider.complete(
             _request(
                 continuation=first.continuation,
-                function_outputs=(FunctionCallOutput(call_id="call_1", output='{"ok":true}'),),
+                continuation_items=(FunctionCallOutput(call_id="call_1", output='{"ok":true}'),),
             )
         )
         assert second.continuation is not None
         await provider.complete(
             _request(
                 continuation=second.continuation,
-                function_outputs=(FunctionCallOutput(call_id="call_2", output='{"ok":true}'),),
+                continuation_items=(FunctionCallOutput(call_id="call_2", output='{"ok":true}'),),
             )
         )
 
@@ -677,7 +669,7 @@ async def test_textual_dsml_tool_call_is_recovered_without_leaking_markup() -> N
                 tools=(tool,),
                 tool_choice="auto",
                 continuation=first.continuation,
-                function_outputs=(FunctionCallOutput(call_id=call.id, output='{"ok":true}'),),
+                continuation_items=(FunctionCallOutput(call_id=call.id, output='{"ok":true}'),),
             )
         )
 

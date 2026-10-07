@@ -22,6 +22,10 @@ Yuki 正在逐层解耦：永久主体、内部事件和工作身份由核心持
 | [自主参与连续决策模型](autonomous-participation-model.md) | 连续状态与回执决定自主 SELF 思考时机；参数与合成回放验收边界 |
 | [Memory](memory-v2.md) | 记忆范围、证据与权限 |
 | [Tool Kernel](tool-kernel.md) | 固定主声明、目录查询与执行授权 |
+| [Pi 与 Code Mode 交接](pi-codemode-handoff.md) | 实验分支当前状态、环境准备、已知问题与 P06–P11 接手要点 |
+| [Code Mode 与 main 兼容](pi-codemode-main-compatibility.md) | 主线修复接入新循环、两边旧数据库正常升级及联合验证 |
+| [Code Mode 正确性修复](pi-codemode-correctness-repair.md) | 2026-10-07 F1–F12、main 25cd、摘要/迁移兼容和可核对验证 |
+| [Pi / Code Mode 运维](../operations/pi-codemode-operations.md) | 原数据兼容矩阵、固定 worker 分发、私有对象备份与切换/回退门 |
 | [工具结果](tool-results.md) | 结果预算、共享 artifact 与来源证据 |
 | [插件架构](../plugin-development/architecture.md) | SDK、Host 与隔离插件会话 |
 | [持久环境](../operations/persistent-environment.zh-CN.md) | 工作区、终端、Manager、文件交付和恢复 |
@@ -31,9 +35,15 @@ Yuki 正在逐层解耦：永久主体、内部事件和工作身份由核心持
 属于特定基线的设计或证据，不是现行开发合同。releases 和 upgrade 文档描述各自版本。
 需要核对历史原因时查这些记录；实施时不能照搬其中已经替换的入口、迁移版本或恢复流程。
 
+真实 Provider 对照：[长任务完成度、费用与时间实测](pi-codemode-long-task-benchmark.md)。
+包含四组隔离装配的 24 次测量、未完成样本和原始记录；不是生产入口或小时/天尺度验收。
+后续发现恢复测试缺少读取身份及停止观察器误判，原恢复率需按该缺口解读；
+[分别修复后的恢复重测](pi-codemode-recovery-retest.md)保留诊断轮、最终八次测量与费用。
+
 Agent 自主选取历史附件、工作区与工具图片后交给原主模型的设计和缺口清单见
 [原生多模态媒体统一任务书](native-multimodal-media-taskbook-2026-10-05.md)。
-本轮仅完成审查与任务书，运行链路尚未修改；实现、协议回放、恢复和实际 Provider 验收分别记录。
+运行链路已接入原主模型；测试分支的 typed Invocation、Code Mode 与恢复兼容核验见
+[main 兼容记录](pi-codemode-main-compatibility.md)，本地回放与实际 Provider 验收分别记录。
 
 本轮延迟修复范围与逐项核对见[回复延迟修复任务书](yuki-latency-fix-taskbook-20261004.md)。
 已完成源码、条件未满足的后续项、验证、合并部署与自然回复验收分别记录；现行规则仍以共同开发约束和模块合同为准。

@@ -10,84 +10,23 @@ import pytest
 from tests.support.sandbox_completion_cases import completion_delivery_cases, pending_job
 
 from qq_ai_bot.sandbox.client import SandboxClient, sandbox_tools
-from qq_ai_bot.sandbox.manager import Manager
-from qq_ai_bot.workspace.store import WorkspaceError, WorkspaceStore
-
-
-def test_workspace_is_available_without_explicit_inputs(tmp_path: Path):
-    store = WorkspaceStore(tmp_path / "workspace")
-    state = store.write("chess.json", b'{"moves": ["J9"]}')
-    first = store.write("board.png", b"first")
-    second = store.write("board.png", b"second")
-    manager = Manager(tmp_path / "jobs", store, "python:test", "internal", "http://proxy")
-    target = tmp_path / "snapshot"
-    manager.stage_workspace(target)
-    assert (target / "chess.json").read_bytes() == b'{"moves": ["J9"]}'
-    assert not (target / "board.png").exists()
-    assert (target / "by-id" / first["artifact_id"]).read_bytes() == b"first"
-    assert (target / "by-id" / second["artifact_id"]).read_bytes() == b"second"
-    assert not (target / "manifest.sqlite3").exists()
-    manifest = json.loads((target / "manifest.json").read_text(encoding="utf-8"))
-    assert len(manifest) == 3
-    assert (
-        next(r for r in manifest if r["artifact_id"] == state["artifact_id"])["named_path"]
-        == "/workspace/chess.json"
-    )
-    manager.db.close()
+from qq_ai_bot.sandbox.persistent import PersistentManager
+from qq_ai_bot.workspace.store import WorkspaceStore
 
 
 @pytest.mark.asyncio
-async def test_sandbox_bounded_request_lifecycle_and_publication(tmp_path: Path, database) -> None:
+async def test_sandbox_bounded_request_lifecycle_and_publication(
+    tmp_path: Path, database, monkeypatch
+) -> None:
     store = WorkspaceStore(tmp_path / "workspace", capacity=8)
-    manager = Manager(
-        tmp_path / "jobs", store, "fixed-python:test", "internal", "http://proxy:3128"
+    manager = PersistentManager(
+        tmp_path / "jobs", store, "fixed:test", "internal", "proxy", tmp_path / "home"
     )
-    request = {"method": "run_python", "request_id": "request-1", "args": {"code": "print(1)"}}
-    assert (await manager.handle(request))["error"] == "sandbox_unavailable"
-    manager.ready = True
-
-    async def complete():
-        identity = await manager.queue.get()
-        manager.finish(identity, "succeeded", {"output": "1"})
-        manager.queue.task_done()
-
-    task = asyncio.create_task(complete())
-    result = await manager.handle(request)
-    await task
-    assert result["status"] == "succeeded" and result["output"] == "1"
-    assert await manager.handle(request) == result
-    assert (await manager.handle({**request, "args": {"code": "print(2)"}}))[
+    monkeypatch.setattr(manager, "output", lambda identity: {})
+    assert "run_python" not in {tool.name for tool in sandbox_tools()}
+    assert (await manager.handle({"method": "run_python", "args": {"code": "pass"}}))[
         "error"
-    ] == "idempotency_conflict"
-    assert (await manager.handle({**request, "args": {"code": "", "timeout_seconds": 121}}))[
-        "error"
-    ] == "invalid_arguments"
-    for _ in range(4):
-        manager.queue.put_nowait(str(uuid4()))
-    assert (await manager.handle({**request, "request_id": "full"}))[
-        "error"
-    ] == "sandbox_queue_full"
-    command = manager.docker_args(str(uuid4()))
-    assert command[command.index("--runtime") + 1] == "runsc"
-    assert command[command.index("--memory-swap") + 1] == "256m"
-    assert "--privileged" not in command and "docker.sock" not in " ".join(command)
-    assert command[-3:] == ("fixed-python:test", "python", "/inputs/code.py")
-    with pytest.raises(ValueError):
-        manager.docker_args("../../escape")
-    assert [tool.name for tool in sandbox_tools()][:3] == [
-        "run_python",
-        "get_code_run",
-        "cancel_code_run",
-    ]
-    with pytest.raises(WorkspaceError):
-        store.publish_batch([("one", b"123"), ("../bad", b"4")])
-    assert store.list()["items"] == []
-    assert len(store.publish_batch([("one", b"123"), ("two", b"456")])) == 2
-    with pytest.raises(WorkspaceError, match="workspace_full"):
-        store.publish_batch([("three", b"123")])
-    assert len(store.list()["items"]) == 2
-    # Concurrent observers wake from the persisted terminal result. Polling does
-    # not consume or rerun the job, and abandoning a wait does not cancel it.
+    ] == "unknown_method"
     identity = pending_job(manager)
     manager.finish(identity, "running", {})
     observers = [
@@ -120,6 +59,10 @@ async def test_sandbox_bounded_request_lifecycle_and_publication(tmp_path: Path,
         await abandoned
     assert manager.get(identity)["status"] == "running"
     assert manager._waiters == {}
+    with manager.db:
+        manager.db.execute(
+            "INSERT INTO environment_jobs (id,kind) VALUES (?,?)", (identity, "terminal_exec")
+        )
     waiting_task = asyncio.create_task(manager.wait_result(identity))
     await asyncio.sleep(0)
     await manager.handle({"method": "cancel_code_run", "args": {"run_id": identity}})

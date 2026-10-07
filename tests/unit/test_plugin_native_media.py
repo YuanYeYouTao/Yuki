@@ -14,7 +14,7 @@ from PIL import Image
 from sqlalchemy import delete, update
 
 from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.capabilities.media import MediaResultText, result_images
+from qq_ai_bot.capabilities.results import ToolExecutionResult
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.plugin_host.capability_adapter import PluginCapabilityAdapter
@@ -136,13 +136,15 @@ async def environment(database, tmp_path, *, permissions=None, handler=None):
 async def test_explicit_owned_selection_is_private_and_rechecked(database, tmp_path):
     env = await environment(database, tmp_path)
     result = await env.adapter.execute(env.name, "{}", env.runtime, web_was_used=False)
-    assert isinstance(result, MediaResultText)
+    assert isinstance(result, ToolExecutionResult)
     assert len(result.images) == 1
     image = result.images[0]
     assert image.plugin_media_handle == env.handle.handle_id
     assert image.plugin_approval_revision == "original-manifest"
     assert image.expires_at == env.handle.expires_at.isoformat()
-    assert "data:image" not in result and "media_artifacts" not in result
+    assert "data:image" not in json.dumps(
+        result.model_payload()
+    ) and "media_artifacts" not in json.dumps(result.model_payload())
     await env.adapter.validate_images(result.images, env.runtime, web_was_used=False)
     env.installation.approved_permissions = (PluginPermission.TOOL_REGISTER.value,)
     with pytest.raises(PluginPermissionError):
@@ -156,10 +158,10 @@ async def test_media_selection_requires_explicit_permission_without_losing_resul
 ):
     env = await environment(database, tmp_path, permissions=(PluginPermission.TOOL_REGISTER,))
     result = await env.adapter.execute(env.name, "{}", env.runtime, web_was_used=False)
-    payload = json.loads(result)
+    payload = result.model_payload()
     assert payload["ok"] is True and payload["data"]["selected"] is True
     assert payload["data"]["media_error"] == "PluginPermissionError"
-    assert payload["data"]["media_read"] is False and not result_images(result)
+    assert payload["data"]["media_read"] is False and not result.images
     assert len(env.calls) == 1
     assert not hasattr(env.context, "mcp")
 
@@ -233,7 +235,7 @@ async def test_archive_copy_cannot_bypass_original_plugin_source(database, tmp_p
     elif change == "closed":
         env.runtime = replace(env.runtime, tools_closed=True)
     else:
-        env.runtime = replace(env.runtime, origin=TurnOrigin.SYSTEM_TASK)
+        env.runtime = replace(env.runtime, origin=TurnOrigin.SYSTEM_TASK, actor_context=None)
     with pytest.raises(PluginPermissionError):
         await env.adapter.validate_images(images, env.runtime, web_was_used=False)
     assert len(env.calls) == 1
@@ -259,18 +261,16 @@ async def test_foreign_owned_handle_and_fake_json_never_grant_read(database, tmp
 
     env = await environment(database, tmp_path, handler=select_foreign)
     result = await env.adapter.execute(env.name, "{}", env.runtime, web_was_used=False)
-    assert not result_images(result)
-    assert json.loads(result)["data"]["media_error"] == "PluginPermissionError"
-    assert json.loads(result)["data"]["media_read"] is False
+    assert not result.images
+    assert result.model_payload()["data"]["media_error"] == "PluginPermissionError"
+    assert result.model_payload()["data"]["media_read"] is False
     assert len(env.calls) == 1
 
     async def fake_json(context, handle):
         return ToolResult(data={"media_artifacts": [foreign_handle.model_dump(mode="json")]})
 
     env = await environment(database, tmp_path, handler=fake_json)
-    assert not result_images(
-        await env.adapter.execute(env.name, "{}", env.runtime, web_was_used=False)
-    )
+    assert not (await env.adapter.execute(env.name, "{}", env.runtime, web_was_used=False)).images
 
 
 def test_empty_sdk_result_serialization_stays_compatible():
@@ -282,14 +282,22 @@ async def test_plugin_prefix_delegation_cannot_authorize_another_selected_action
     database, tmp_path
 ):
     env = await environment(database, tmp_path)
+    from qq_ai_bot.identity.canonical_repository import ensure_person
+
+    async with database.immediate_session() as session:
+        person_id = await ensure_person(session, "10001")
+    inbound = replace(env.runtime.inbound, person_id=person_id)
     action = "plugin.example.plugin.tool.select"
     invocation = PluginInvocation(
         plugin_id="example.plugin",
         origin=TurnOrigin.SCHEDULED_AUTOMATION,
         actor_user_id="10001",
         bot_user_id="99999",
-        inbound=env.runtime.inbound,
-        delegated_authority=SimpleNamespace(creator_user_id="10001"),
+        inbound=inbound,
+        actor_person_id=person_id,
+        delegated_authority=SimpleNamespace(
+            creator_user_id="10001", canonical_creator_person_id=person_id
+        ),
         allowed_capabilities=frozenset({"plugin.example.plugin.tool.other"}),
     )
     with env.context.bind(invocation), pytest.raises(PluginPermissionError, match="not delegated"):

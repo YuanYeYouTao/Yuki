@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 import subprocess
 import tarfile
@@ -252,6 +251,45 @@ def test_release_smoke_sentinels_are_idempotent_and_conflict_safe(tmp_path: Path
         prepare_deployment(tmp_path)
 
 
+def test_generated_smoke_configuration_passes_real_setup_validation(tmp_path: Path) -> None:
+    from qq_ai_bot.deployment_setup.service import (
+        EnvironmentDocument,
+        SetupConfiguration,
+        SetupPaths,
+        validate_configuration,
+    )
+
+    (tmp_path / ".env.example").write_bytes((ROOT / ".env.example").read_bytes())
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config/persona.md").write_bytes((ROOT / "config/persona.md").read_bytes())
+    prepare_deployment(tmp_path)
+    paths = SetupPaths(tmp_path)
+    environment = EnvironmentDocument.load(paths).values()
+    assert environment["MEMORY_EMBEDDING_ENABLED"] == "false"
+    assert environment["WEB_MODE"] == "disabled"
+    validate_configuration(
+        paths,
+        SetupConfiguration(
+            environment=environment,
+            model_profiles=paths.model_profiles.read_text(encoding="utf-8"),
+            pending_plugins=None,
+        ),
+    )
+
+
+def test_smoke_preserves_existing_embedding_and_search_configuration(tmp_path: Path) -> None:
+    custom = (
+        "MEMORY_EMBEDDING_ENABLED=true\n"
+        "MEMORY_EMBEDDING_BASE_URL=https://custom.example.invalid/v1\n"
+        "MEMORY_EMBEDDING_API_KEY=custom-test-key\n"
+        "WEB_MODE=native\n"
+        "PLUGIN_SYSTEM_ENABLED=true\n"
+    )
+    (tmp_path / ".env").write_text(custom, encoding="utf-8")
+    prepare_deployment(tmp_path)
+    assert (tmp_path / ".env").read_text(encoding="utf-8") == custom
+
+
 def test_release_smoke_decodes_docker_output_as_utf8(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -293,6 +331,8 @@ def test_release_smoke_reads_alembic_version_inside_container(
     class FakeCompose:
         def run(self, *arguments: str, capture: bool = False) -> str:
             calls.append(arguments)
+            if arguments[-2:] == ("/app/scripts/verify_monty_packaging.py", "direct"):
+                return "direct packaging passed"
             if arguments[:4] == ("exec", "-T", "bot", "python"):
                 if "urllib.request" in arguments[-1]:
                     return (
@@ -312,17 +352,15 @@ def test_release_smoke_reads_alembic_version_inside_container(
     verify_bot(FakeCompose(), tmp_path, VERSION)  # type: ignore[arg-type]
 
     assert [call[:5] for call in calls] == [
+        ("exec", "-T", "bot", "python", "/app/scripts/verify_monty_packaging.py"),
         ("exec", "-T", "bot", "python", "-c"),
         ("exec", "-T", "bot", "python", "-c"),
-        ("exec", "-T", "bot", "qq-ai-bot-cli", "plugin"),
-        ("exec", "-T", "bot", "qq-ai-bot-cli", "setup"),
     ]
-    pending = json.loads((tmp_path / "data/setup/pending.json").read_text(encoding="utf-8"))
-    assert pending == {"schema_version": 1, "selected_plugins": []}
+    assert not (tmp_path / "data/setup/pending.json").exists()
     assert not (tmp_path / "data/qq_ai_bot.db").exists()
 
 
-def test_release_smoke_writes_pending_inside_container_when_host_cannot(
+def test_release_smoke_does_not_write_plugin_state_inside_container(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[tuple[str, ...]] = []
@@ -336,6 +374,8 @@ def test_release_smoke_writes_pending_inside_container_when_host_cannot(
     class FakeCompose:
         def run(self, *arguments: str, capture: bool = False) -> str:
             calls.append(arguments)
+            if arguments[-2:] == ("/app/scripts/verify_monty_packaging.py", "direct"):
+                return "direct packaging passed"
             if arguments[:4] == ("exec", "-T", "bot", "python"):
                 if "pending.json" in arguments[-1]:
                     return ""
@@ -361,10 +401,10 @@ def test_release_smoke_writes_pending_inside_container_when_host_cannot(
         for call in calls
         if call[:4] == ("exec", "-T", "bot", "python") and "pending.json" in call[-1]
     ]
-    assert pending_writes
+    assert not pending_writes
 
 
-def test_release_smoke_applies_builtin_plugin_pending(
+def test_release_smoke_does_not_mutate_running_plugin_setup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     plugin_root = tmp_path / "plugins/io.github.yuanyeyoutao.kun-game"
@@ -385,6 +425,8 @@ def test_release_smoke_applies_builtin_plugin_pending(
     class FakeCompose:
         def run(self, *arguments: str, capture: bool = False) -> str:
             calls.append(arguments)
+            if arguments[-2:] == ("/app/scripts/verify_monty_packaging.py", "direct"):
+                return "direct packaging passed"
             if arguments[:4] == ("exec", "-T", "bot", "python"):
                 if "urllib.request" in arguments[-1]:
                     return next(health_payloads)
@@ -401,9 +443,9 @@ def test_release_smoke_applies_builtin_plugin_pending(
 
     verify_bot(FakeCompose(), tmp_path, VERSION)  # type: ignore[arg-type]
 
-    pending = json.loads((tmp_path / "data/setup/pending.json").read_text(encoding="utf-8"))
-    assert pending["selected_plugins"] == ["io.github.yuanyeyoutao.kun-game"]
-    assert ("up", "-d", "--no-deps", "--force-recreate", "bot") in calls
+    assert not (tmp_path / "data/setup/pending.json").exists()
+    assert ("up", "-d", "--no-deps", "--force-recreate", "bot") not in calls
+    assert not any("apply-pending" in call for call in calls)
 
 
 def test_release_smoke_cleans_root_owned_permission_fixture_in_container(

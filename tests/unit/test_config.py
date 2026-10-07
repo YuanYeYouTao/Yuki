@@ -600,3 +600,11 @@ def test_vision_operational_limits_have_no_hidden_upper_clamp() -> None:
     )
     assert settings.vision_max_images_per_turn == 25
     assert settings.vision_thinking_budget == 65536
+
+
+def test_direct_mode_default_requires_explicit_code_opt_in(monkeypatch):
+    monkeypatch.delenv("CODE_MODE_ENABLED", raising=False)
+    assert Settings(_env_file=None).code_mode_enabled is False
+    assert Settings(_env_file=None, code_mode_enabled=True).code_mode_enabled is True
+    monkeypatch.setenv("CODE_MODE_ENABLED", "true")
+    assert Settings(_env_file=None).code_mode_enabled is True

@@ -16,7 +16,7 @@
 | 主动发送 | `message.group.send`, `onebot.send` | 会对 QQ 外部状态产生可见影响 |
 | 人物/群 | `person.read`, `group.members.read` | 不得跨未批准目标枚举 |
 | 记忆/关系 | `memory.write`, `relationship.write` | 写操作影响长期人格上下文 |
-| 模型 | `llm.generate`, `agent.run`, `agent.session` | 消耗额度；Agent 能力仍由 Host 裁剪 |
+| 模型 | `agent.run`, `agent.session` | 消耗额度；Agent 能力仍由 Host 裁剪 |
 | 联网 | `network.http.allowlisted` | 仅 Manifest 精确公共域名 |
 | 自动化 | `automation.manage_self`, `automation.action.register` | 委托权限必须可重验证 |
 | 配置/Secret/KV | `plugin.config.*`, `storage.private` | Secret 不等于普通配置，不得记录 |

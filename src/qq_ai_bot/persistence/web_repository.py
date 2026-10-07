@@ -63,6 +63,30 @@ class WebSearchSourceRepository:
         """Persist one successful tool run and prune older runs in this conversation."""
 
         now = datetime.now(UTC)
+        prepared: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        ordinal = 0
+        for source in response.sources:
+            try:
+                normalized = normalize_public_url(source.url)
+            except WebSearchError:
+                continue
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            ordinal += 1
+            prepared.append(
+                dict(
+                    ordinal=ordinal,
+                    title=" ".join(source.title.split())[:512],
+                    url=normalized,
+                    domain=source.domain[:255],
+                    snippet=source.snippet[:1000],
+                    published_at=source.published_at,
+                    provider_score=source.provider_score,
+                    created_at=now,
+                )
+            )
         async with self._database.sessions() as session, session.begin():
             run = WebSearchRunModel(
                 conversation_key=conversation_key[:255],
@@ -92,43 +116,17 @@ class WebSearchSourceRepository:
                 raise WebSearchError("missing_runtime", "联网记录缺少内部执行身份")
             session.add(run)
             await session.flush()
-            seen: set[str] = set()
-            ordinal = 0
-            for source in response.sources:
-                try:
-                    normalized = normalize_public_url(source.url)
-                except WebSearchError:
-                    continue
-                if normalized in seen:
-                    continue
-                seen.add(normalized)
-                ordinal += 1
-                session.add(
-                    WebSearchSourceModel(
-                        run_id=run.id,
-                        ordinal=ordinal,
-                        title=" ".join(source.title.split())[:512],
-                        url=normalized,
-                        domain=source.domain[:255],
-                        snippet=source.snippet[:1000],
-                        published_at=source.published_at,
-                        provider_score=source.provider_score,
-                        created_at=now,
-                    )
-                )
+            session.add_all(WebSearchSourceModel(run_id=run.id, **value) for value in prepared)
             await session.flush()
-            old_run_ids = (
-                await session.scalars(
-                    select(WebSearchRunModel.id)
-                    .where(WebSearchRunModel.conversation_key == conversation_key[:255])
-                    .order_by(WebSearchRunModel.created_at.desc(), WebSearchRunModel.id.desc())
-                    .offset(max_runs)
-                )
-            ).all()
-            if old_run_ids:
-                await session.execute(
-                    delete(WebSearchRunModel).where(WebSearchRunModel.id.in_(old_run_ids))
-                )
+            # max_runs is the configured strict retention policy. Keep pruning
+            # atomic, but let SQLite select IDs instead of materializing history.
+            stale = (
+                select(WebSearchRunModel.id)
+                .where(WebSearchRunModel.conversation_key == conversation_key[:255])
+                .order_by(WebSearchRunModel.created_at.desc(), WebSearchRunModel.id.desc())
+                .offset(max_runs)
+            )
+            await session.execute(delete(WebSearchRunModel).where(WebSearchRunModel.id.in_(stale)))
             return run.id
 
     async def for_trigger(

@@ -1,10 +1,9 @@
 """Memory contracts and the concrete per-turn session.
 
 This subpackage owns how memory participates in one turn: the per-turn
-contract (``contract``), orthogonal session machines (``state``), the
+contract (``contract``), read exposure and attribution state (``state``), the
 concrete session (``turn_session``), trusted scope resolution (``resolver``),
-the unified query plane (``query_plane``), mutation outcome mapping
-(``command_plane``), deterministic finalization helpers (``finalizer``) and the
+the unified query plane (``query_plane``) and the
 capability-facing view derivation (``capability_view``).
 
 Boundary rules: this package must never import ``qq_ai_bot.planner`` nor

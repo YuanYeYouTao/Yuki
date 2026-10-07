@@ -182,7 +182,10 @@ def _automation_invocation(
     authority = context.authority
     if authority.origin is not TurnOrigin.SCHEDULED_AUTOMATION:
         raise RuntimeError("plugin automation requires scheduled authority")
-    if authority.actor_user_id != context.creator_user_id:
+    if (
+        not context.canonical_creator_person_id
+        or authority.actor_person_id != context.canonical_creator_person_id
+    ):
         raise RuntimeError("plugin automation creator does not match trusted authority")
     if authority.bot_user_id != context.bot_user_id:
         raise RuntimeError("plugin automation bot does not match trusted authority")
@@ -203,6 +206,7 @@ def _automation_invocation(
         plugin_id=plugin_id,
         origin=TurnOrigin.SCHEDULED_AUTOMATION,
         actor_user_id=authority.actor_user_id,
+        actor_person_id=context.canonical_creator_person_id,
         bot_user_id=authority.bot_user_id,
         delegated_authority=delegated,
         allowed_capabilities=authority.allowed_capabilities,
@@ -248,7 +252,7 @@ async def resume_plugin_result(
         source.get("owner") != "plugin_invocation"
         or source.get("plugin_id") != definition.provider_plugin_id
         or source.get("approval_revision") != definition.provider_manifest_hash
-        or source.get("actor_user_id") != context.creator_user_id
+        or source.get("actor_person_id") != context.canonical_creator_person_id
         or row["conversation_id"] != context.canonical_conversation_id
         or row["generation"] != context.conversation_generation
     ):

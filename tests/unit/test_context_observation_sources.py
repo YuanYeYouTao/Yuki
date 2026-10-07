@@ -172,8 +172,8 @@ async def test_fit_does_not_invoke_summary_and_real_parent_delete_rejects_prepar
     )
 
 
-@pytest.mark.parametrize("bad", ["foreign", "missing_parent"])
-async def test_summary_requires_actual_sources_and_complete_coverage(database, tmp_path, bad):
+@pytest.mark.parametrize("bad", ["foreign"])
+async def test_summary_requires_actual_sources(database, tmp_path, bad):
     env = await social_env(database, tmp_path)
     await add_clue(database, env, "clue-a")
     await add_clue(database, env, "clue-b")
@@ -613,3 +613,42 @@ async def test_prepared_snapshot_source_is_not_observed_or_summarized_before_dis
     async with database.sessions() as reader:
         assert await reader.scalar(select(func.count()).select_from(ContextObservationModel)) == 1
         assert await reader.scalar(select(func.count()).select_from(ContextSelectionModel)) == 1
+
+
+async def test_partial_summary_keeps_unreferenced_sources_and_full_provenance(database, tmp_path):
+    env = await social_env(database, tmp_path)
+    await add_clue(database, env, "clue-a", size=2000)
+    await add_clue(database, env, "clue-b", size=300)
+
+    def partial(rows):
+        payload = summary(rows)
+        payload["facts"][0]["refs"] = ["observation:clue-a"]
+        return payload
+
+    prepared = await prepare(
+        database, env, await context_for(database), AsyncMock(side_effect=partial), limit=1100
+    )
+    await prepared.commit(prepared.fragments)
+    selected = await ContextObservationRepository(database).read(
+        conversation_id=env.context.conversation_id,
+        generation=1,
+        actor_id=env.person,
+        read_scope="main",
+        view_key="a" * 64,
+    )
+    assert "clue-b" in {row.id for row in selected}
+    derived = next(row for row in selected if row.parent_sources)
+    assert derived.parent_sources == (("clue-a", 1), ("clue-b", 1))
+    assert "clue-a" not in {row.id for row in selected}
+    async with database.sessions() as session, session.begin():
+        await session.execute(
+            delete(ContextObservationModel).where(ContextObservationModel.id == "clue-b")
+        )
+    remaining = await ContextObservationRepository(database).read(
+        conversation_id=env.context.conversation_id,
+        generation=1,
+        actor_id=env.person,
+        read_scope="main",
+        view_key="a" * 64,
+    )
+    assert derived.id not in {row.id for row in remaining}

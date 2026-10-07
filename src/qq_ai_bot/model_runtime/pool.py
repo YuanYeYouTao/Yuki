@@ -134,11 +134,30 @@ class ModelClientPool:
 
     async def close(self) -> None:
         closed: set[int] = set()
-        for provider in (*self._clients.values(), *self._injected_profiles.values()):
-            identity = id(provider)
-            if identity in closed:
+        errors: list[BaseException] = []
+        resources: tuple[LLMProvider | httpx.AsyncClient, ...] = (
+            *self._clients.values(),
+            *self._injected_profiles.values(),
+            *self._connection_pools.values(),
+        )
+        for resource in resources:
+            if id(resource) in closed:
                 continue
-            closed.add(identity)
-            await provider.close()
-        for connection_pool in self._connection_pools.values():
-            await connection_pool.aclose()
+            closed.add(id(resource))
+            try:
+                if isinstance(resource, httpx.AsyncClient):
+                    await resource.aclose()
+                else:
+                    await resource.close()
+            except BaseException as exc:
+                errors.append(exc)
+        if errors:
+            cancellation = next(
+                (error for error in errors if not isinstance(error, Exception)), None
+            )
+            if cancellation is not None:
+                for error in errors:
+                    if error is not cancellation:
+                        cancellation.add_note(f"close failed: {type(error).__name__}")
+                raise cancellation
+            raise BaseExceptionGroup("model pool close failed", errors)

@@ -149,12 +149,14 @@ async def test_metadata_is_per_prepare_clock_is_fresh_and_invalid_owners_fail(da
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("wrong", ["scope_id", "generation", "scope_key", "transport_scope_key"])
+@pytest.mark.parametrize(
+    "wrong", ["conversation_id", "generation", "scope_key", "transport_scope_key"]
+)
 async def test_expected_turn_rejected_before_history_body_read(database, wrong):
     repository, scope, events = await _seed(database, count=3)
     snapshot = await repository.load_prompt_snapshot(scope, token_budget=100000)
     turn = ConversationTurnSnapshot(
-        scope_id=snapshot.scope.id,
+        conversation_id=snapshot.scope.id,
         scope_key=snapshot.scope.runtime_scope_key or scope.key,
         generation=snapshot.scope.generation,
         trigger_event_id=events[-1].id,
@@ -162,7 +164,7 @@ async def test_expected_turn_rejected_before_history_body_read(database, wrong):
     )
     mismatched = replace(
         turn,
-        **{wrong: getattr(turn, wrong) + 1 if wrong in {"scope_id", "generation"} else "wrong-key"},
+        **{wrong: getattr(turn, wrong) + 1 if wrong == "generation" else "wrong-key"},
     )
     statements = []
 

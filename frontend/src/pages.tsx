@@ -1,3 +1,4 @@
+import type { CommandMethod } from "./control-methods";
 import { stamp, text } from "./format";
 import { useQuery } from "./hooks";
 import { useState } from "react";
@@ -435,7 +436,7 @@ export function SettingsPage({ allowed, act, refresh }: PageProps) {
 
 export function Assets({ allowed, act, refresh }: PageProps) {
   function action(
-    method: string,
+    method: CommandMethod,
     row: Row,
     key: string,
     value: string,

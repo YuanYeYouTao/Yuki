@@ -1,0 +1,155 @@
+{
+  "overall": "all 12 configured Provider scenarios observed passing; initial failures retained",
+  "configured_protocols": [
+    "chat_completions",
+    "responses",
+    "anthropic_messages"
+  ],
+  "pytest_initial_passed": 5,
+  "pytest_initial_failed": 7,
+  "actual_passed_cases": 12,
+  "actual_failed_cases": 0,
+  "quota_blocked_unrun_cases": 0,
+  "physical_calls": 39,
+  "input_tokens": 621782,
+  "cache_hit_tokens": 549632,
+  "output_tokens": 3169,
+  "wire_usage_missing": 0,
+  "application_usage_unknown_calls": 3,
+  "estimated_usd_peak": 0.028745592,
+  "estimated_usd_off_peak": 0.014372796,
+  "actual_invoice_verified": false,
+  "pricing_source": "https://api-docs.deepseek.com/quick_start/pricing/",
+  "conservative_reserved_usd": 0.8518628999999998,
+  "total_cost_ceiling_usd": 1.0,
+  "retest_request_permission": "covered by existing real-API authorization; redundant additional confirmation withdrawn; original USD1 ceiling retained",
+  "initial_tool_shape_check_scope": "names/order; corrected harness compares whole serialized tools",
+  "real_sends": 0,
+  "production_access": false,
+  "published": false,
+  "deployed": false,
+  "cases": [
+    {
+      "protocol": "chat_completions",
+      "case": "direct",
+      "status": "passed",
+      "physical_http": 3,
+      "business_calls": 2,
+      "duplicate_operation_ids": 0,
+      "elapsed_seconds": 2.110853041987866,
+      "reasoning_checks_exact": true
+    },
+    {
+      "protocol": "responses",
+      "case": "direct",
+      "status": "passed",
+      "physical_http": 3,
+      "business_calls": 2,
+      "duplicate_operation_ids": 0,
+      "elapsed_seconds": 3.3686282499693334,
+      "reasoning_checks_exact": true
+    },
+    {
+      "protocol": "anthropic_messages",
+      "case": "direct",
+      "status": "passed",
+      "physical_http": 3,
+      "business_calls": 2,
+      "duplicate_operation_ids": 0,
+      "elapsed_seconds": 2.563722499879077,
+      "reasoning_checks_exact": true
+    },
+    {
+      "protocol": "chat_completions",
+      "case": "code",
+      "status": "passed",
+      "physical_http": 2,
+      "business_calls": 2,
+      "duplicate_operation_ids": 0,
+      "elapsed_seconds": 4.3406351250596344,
+      "reasoning_checks_exact": true
+    },
+    {
+      "protocol": "responses",
+      "case": "code",
+      "status": "passed",
+      "physical_http": 2,
+      "business_calls": 2,
+      "duplicate_operation_ids": 0,
+      "elapsed_seconds": 1.7648422920610756,
+      "reasoning_checks_exact": true
+    },
+    {
+      "protocol": "anthropic_messages",
+      "case": "code",
+      "status": "passed",
+      "physical_http": 2,
+      "business_calls": 2,
+      "duplicate_operation_ids": 0,
+      "elapsed_seconds": 2.503637208836153,
+      "reasoning_checks_exact": true
+    },
+    {
+      "protocol": "chat_completions",
+      "case": "truncation",
+      "status": "passed",
+      "physical_http": 1,
+      "business_calls": 0,
+      "duplicate_operation_ids": 0,
+      "elapsed_seconds": 0.655395083129406,
+      "reasoning_checks_exact": true
+    },
+    {
+      "protocol": "responses",
+      "case": "truncation",
+      "status": "passed",
+      "physical_http": 1,
+      "business_calls": 0,
+      "duplicate_operation_ids": 0,
+      "elapsed_seconds": 0.6280369169544429,
+      "reasoning_checks_exact": true
+    },
+    {
+      "protocol": "anthropic_messages",
+      "case": "truncation",
+      "status": "passed",
+      "physical_http": 1,
+      "business_calls": 0,
+      "duplicate_operation_ids": 0,
+      "elapsed_seconds": 0.8397776251658797,
+      "reasoning_checks_exact": true
+    },
+    {
+      "protocol": "chat_completions",
+      "case": "disconnect",
+      "status": "passed",
+      "physical_http": 1,
+      "business_calls": 0,
+      "duplicate_operation_ids": 0,
+      "elapsed_seconds": 0.7734793748240918,
+      "reasoning_checks_exact": true
+    },
+    {
+      "protocol": "responses",
+      "case": "disconnect",
+      "status": "passed",
+      "physical_http": 1,
+      "business_calls": 0,
+      "duplicate_operation_ids": 0,
+      "elapsed_seconds": 0.9075052910484374,
+      "reasoning_checks_exact": true
+    },
+    {
+      "protocol": "anthropic_messages",
+      "case": "disconnect",
+      "status": "passed",
+      "physical_http": 1,
+      "business_calls": 0,
+      "duplicate_operation_ids": 0,
+      "elapsed_seconds": 0.7079323751386255,
+      "reasoning_checks_exact": true
+    }
+  ],
+  "retest_passed": 7,
+  "retest_tool_shape_check_scope": "complete serialized tools/schemas/order; each retest unchanged across requests"
+}

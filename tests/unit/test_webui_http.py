@@ -8,6 +8,7 @@ import pytest
 from fastapi import FastAPI
 from tests.conftest import make_settings
 from tests.support.social_identity_cases import social_env
+from tests.support.workspace_snapshots import snapshot_bytes
 from tests.unit import test_control_automation_history as automation_fixtures
 from tests.unit import test_control_memory_query as memory_fixtures
 from tests.unit import test_control_reflection_query as reflection_fixtures
@@ -521,7 +522,7 @@ async def test_real_mutation_uses_original_target_revision_and_receipt(web, data
 async def test_workspace_only_uses_canonical_artifact_ids(web):
     client, _, store = web
     headers = await signed_in(client)
-    metadata = store.write("note.md", b"<script>untrusted</script>")
+    metadata = snapshot_bytes(store, "note.md", b"<script>untrusted</script>")
     result = await client.post(
         "/api/control/queries/read_workspace",
         json={"artifact_id": metadata["artifact_id"]},
@@ -640,7 +641,7 @@ async def test_login_limits_do_not_create_sessions_for_invalid_credentials(web, 
 @pytest.mark.asyncio
 async def test_file_download_never_executes_workspace_html_and_static_assets_are_packaged(web):
     client, _, store = web
-    artifact = store.write("untrusted.html", b"<script>window.attack=1</script>")
+    artifact = snapshot_bytes(store, "untrusted.html", b"<script>window.attack=1</script>")
     path = f"/api/control/files/workspace/{artifact['artifact_id']}"
     assert (await client.get(path)).status_code == 401
     await signed_in(client)

@@ -19,8 +19,6 @@ from qq_ai_bot.runtime.work_supervisor import recover_failure
 @pytest.mark.parametrize(
     "reason,expected",
     [
-        ("work_start_not_delivered", "开始说明尚未确认送达"),
-        ("interactive_work_missing_exit", "明确的完成或等待决定"),
         ("repeated_tool_results", "相同工具结果"),
     ],
 )

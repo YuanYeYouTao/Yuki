@@ -1,3 +1,4 @@
+import type { QueryMethod } from "./control-methods";
 import { useQuery } from "./hooks";
 import { text } from "./format";
 import { useState } from "react";
@@ -220,7 +221,7 @@ export function QueryList({
   actions,
   onRow,
 }: {
-  method: string;
+  method: QueryMethod;
   args?: Row;
   refresh?: number;
   columns: Column[];

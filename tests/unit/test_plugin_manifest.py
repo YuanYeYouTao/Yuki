@@ -19,7 +19,7 @@ name = "Echo"
 version = "0.1.0"
 description = "Echo test plugin"
 entrypoint = "echo_plugin:EchoPlugin"
-plugin_api = "3.2"
+plugin_api = "3.3"
 yuki_requires = ">=1.6.0,<2.0"
 permissions = ["tool.register", "network.http.allowlisted"]
 
@@ -41,12 +41,12 @@ def _plugin_dir(tmp_path: Path, plugin_id: str = "com.example.echo") -> Path:
     return root
 
 
-@pytest.mark.parametrize("version", ["1.1", "2.0", "3.0", "3.1", "3.3"])
+@pytest.mark.parametrize("version", ["1.1", "2.0", "3.0", "3.1", "3.2"])
 def test_manifest_rejects_non_exact_plugin_api(tmp_path: Path, version: str) -> None:
     root = _plugin_dir(tmp_path)
     text = (root / "plugin.toml").read_text(encoding="utf-8")
     (root / "plugin.toml").write_text(
-        text.replace('plugin_api = "3.2"', f'plugin_api = "{version}"'),
+        text.replace('plugin_api = "3.3"', f'plugin_api = "{version}"'),
         encoding="utf-8",
     )
 
@@ -192,14 +192,14 @@ async def test_api_upgrade_revokes_old_approval_without_granting_media(database,
     assert PluginPermission.MEDIA_ARTIFACT_CREATE.value not in current.requested_permissions
 
 
-def test_plugin_api_32_docs_document_current_contract() -> None:
+def test_plugin_api_33_docs_document_current_contract() -> None:
     docs = Path(__file__).resolve().parents[2] / "docs" / "plugin-development"
     assert not (docs / "planner-signals.md").exists()
     index = (docs / "index.md").read_text(encoding="utf-8")
-    migration = (docs / "api-3.2-migration.md").read_text(encoding="utf-8")
+    migration = (docs / "api-3.3-migration.md").read_text(encoding="utf-8")
     admission = (docs / "admission-signals.md").read_text(encoding="utf-8")
-    assert "Yuki Plugin API 3.2" in index
+    assert "Yuki Plugin API 3.3" in index
     assert "register_admission_signal" in admission
     assert "admission.signal.register" in admission
-    assert 'plugin_api = "3.2"' in migration
+    assert 'plugin_api = "3.3"' in migration
     assert "planner-signals.md" not in index

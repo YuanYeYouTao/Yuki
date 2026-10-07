@@ -5,13 +5,21 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from dataclasses import dataclass, replace
 from typing import Any
+from weakref import WeakSet
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.config import Settings
-from qq_ai_bot.memory.claim_processor import MemoryClaimProcessor, MemoryProcessingContext
+from qq_ai_bot.memory.claim_processor import (
+    MemoryClaimProcessor,
+    MemoryClaimProcessResult,
+    MemoryClaimResolution,
+    MemoryProcessingContext,
+)
 from qq_ai_bot.memory.eligibility import MemoryEventEligibilityPolicy
 from qq_ai_bot.memory.enums import (
     MemoryProcessingSource,
@@ -20,6 +28,7 @@ from qq_ai_bot.memory.enums import (
     MemoryRebuildReviewStatus,
     MemoryRebuildRunStatus,
     MemoryRebuildThirdPartyMode,
+    MemoryResolutionAction,
     MemorySourceType,
 )
 from qq_ai_bot.memory.event_extractor import MemoryEventExtractor
@@ -39,6 +48,7 @@ from qq_ai_bot.memory.rebuild.models import (
 )
 from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
 from qq_ai_bot.model_runtime.models import ModelTask
+from qq_ai_bot.persistence.models import MemoryRebuildProposalModel, MemoryRebuildRunModel
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 
 SUBJECT_RESOLVER_VERSION = "1"
@@ -265,7 +275,7 @@ class MemoryRebuildService:
         self.metrics = metrics or MemoryRebuildMetrics()
         self._active_in_flight_calls = 0
         self._in_flight_tasks: dict[str, set[asyncio.Task[Any]]] = {}
-        self._cancelled_runs: set[str] = set()
+        self._cancelled_tasks: WeakSet[asyncio.Task[Any]] = WeakSet()
 
     @property
     def active_in_flight_calls(self) -> int:
@@ -402,8 +412,8 @@ class MemoryRebuildService:
         )
         if not changed:
             raise RuntimeError("memory rebuild state changed concurrently")
-        self._cancelled_runs.add(run_id)
         for task in tuple(self._in_flight_tasks.get(run_id, ())):
+            self._cancelled_tasks.add(task)
             task.cancel()
         self.metrics.increment("rebuild_runs_cancelled")
         return await self._require(run_id, session=session)
@@ -669,7 +679,7 @@ class MemoryRebuildService:
                 )
             except asyncio.CancelledError:
                 await self.repository.defer_item(item_id, category="cancelled")
-                if run.public_id in self._cancelled_runs:
+                if asyncio.current_task() in self._cancelled_tasks:
                     return "deferred"
                 raise
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
@@ -793,8 +803,9 @@ class MemoryRebuildService:
                 )
                 processed += 1
                 continue
+            commit_prepared = False
             try:
-                result = await self.processor.process(
+                resolution = await self.processor.resolve(
                     validated,
                     MemoryProcessingContext(
                         source=MemoryProcessingSource.REBUILD,
@@ -805,6 +816,97 @@ class MemoryRebuildService:
                         force_expired_invalidated=expired,
                     ),
                 )
+
+                async def commit(
+                    owned: AsyncSession,
+                    resolution: MemoryClaimResolution = resolution,
+                    proposal_id: int = proposal.id,
+                ) -> MemoryClaimProcessResult:
+                    original = await owned.get(MemoryRebuildProposalModel, proposal_id)
+                    if original is None:
+                        raise ValueError("rebuild_proposal_removed")
+                    if original.commit_status == MemoryRebuildCommitStatus.COMMITTED.value:
+                        if original.actual_action is None or original.actual_reason_code is None:
+                            raise RuntimeError("committed_proposal_receipt_incomplete")
+                        return MemoryClaimProcessResult(
+                            original.actual_fact_id,
+                            MemoryResolutionAction(original.actual_action),
+                            original.actual_reason_code,
+                        )
+                    current_run = await owned.get(MemoryRebuildRunModel, original.run_id)
+                    if (
+                        current_run is None
+                        or current_run.status != MemoryRebuildRunStatus.COMMITTING.value
+                        or original.review_status != MemoryRebuildReviewStatus.APPROVED.value
+                        or original.commit_status != MemoryRebuildCommitStatus.PENDING.value
+                    ):
+                        raise ValueError("rebuild_proposal_authority_changed")
+                    result = await self.processor.apply_resolution(resolution, session=owned)
+                    # The existing proposal is the durable completion owner. Facts
+                    # and this receipt commit together, before disposable usage.
+                    await self.repository.finish_proposal(
+                        proposal_id,
+                        status=MemoryRebuildCommitStatus.COMMITTED,
+                        fact_id=result.fact_id,
+                        action=result.action.value,
+                        reason_code=result.reason_code,
+                        session=owned,
+                    )
+                    return result
+
+                commit_prepared = True
+                for attempt in range(3):
+                    try:
+                        result = await self.processor._facts.repository.apply_evidence_write(commit)
+                        break
+                    except Exception:
+                        # The proposal is atomic with the fact. Read it before
+                        # retrying a rolled-back pure DB plan or classifying failure.
+                        commit_receipt = await self.repository.proposal_result(proposal.id)
+                        if (
+                            commit_receipt
+                            and commit_receipt.commit_status
+                            == MemoryRebuildCommitStatus.COMMITTED.value
+                        ):
+                            if (
+                                commit_receipt.actual_action is None
+                                or commit_receipt.actual_reason_code is None
+                            ):
+                                raise RuntimeError(
+                                    "committed_proposal_receipt_incomplete"
+                                ) from None
+                            result = MemoryClaimProcessResult(
+                                commit_receipt.actual_fact_id,
+                                MemoryResolutionAction(commit_receipt.actual_action),
+                                commit_receipt.actual_reason_code,
+                            )
+                            break
+                        if attempt == 2:
+                            raise
+            except asyncio.CancelledError:
+                raise
+            except (OSError, RuntimeError, TypeError, ValueError, SQLAlchemyError) as exc:
+                exhausted = await self.repository.fail_proposal(
+                    proposal.id,
+                    type(exc).__name__,
+                    max_attempts=1
+                    if commit_prepared
+                    else self.settings.memory_rebuild_retry_attempts,
+                    retry_initial_seconds=self.settings.memory_rebuild_retry_initial_seconds,
+                )
+                self.metrics.increment("rebuild_proposals_failed")
+                if exhausted:
+                    await self.repository.transition(
+                        run.public_id,
+                        expected={MemoryRebuildRunStatus.COMMITTING},
+                        status=MemoryRebuildRunStatus.FAILED,
+                        error_category=type(exc).__name__,
+                    )
+                    break
+                continue
+            # These fields have only status/metrics readers; execution budgets
+            # are enforced by the model executor, independently of this counter.
+            try:
                 if result.model_requests:
                     self.metrics.increment("rebuild_consolidation_requests", result.model_requests)
                     if result.input_tokens is not None:
@@ -821,32 +923,12 @@ class MemoryRebuildService:
                         output_tokens=result.output_tokens,
                         latency_seconds=result.latency_seconds,
                     )
-            except asyncio.CancelledError:
-                raise
-            except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                exhausted = await self.repository.fail_proposal(
-                    proposal.id,
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "rebuild_usage_missing category=%s proposal_id=%d",
                     type(exc).__name__,
-                    max_attempts=self.settings.memory_rebuild_retry_attempts,
-                    retry_initial_seconds=self.settings.memory_rebuild_retry_initial_seconds,
+                    proposal.id,
                 )
-                self.metrics.increment("rebuild_proposals_failed")
-                if exhausted:
-                    await self.repository.transition(
-                        run.public_id,
-                        expected={MemoryRebuildRunStatus.COMMITTING},
-                        status=MemoryRebuildRunStatus.FAILED,
-                        error_category=type(exc).__name__,
-                    )
-                    break
-                continue
-            await self.repository.finish_proposal(
-                proposal.id,
-                status=MemoryRebuildCommitStatus.COMMITTED,
-                fact_id=result.fact_id,
-                action=result.action.value,
-                reason_code=result.reason_code,
-            )
             self.metrics.increment("rebuild_proposals_committed")
             if result.action.value == "create":
                 self.metrics.increment("rebuild_facts_created")

@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import event, text, update
 from tests.conftest import make_settings
+from tests.support.model_executor import InjectedModelExecutor
 from tests.unit.test_relationships import (
     CapturingRelationshipProvider,
     _add_canonical_person_with_aliases,
@@ -173,7 +174,7 @@ async def test_relationship_evidence_uses_all_person_bindings_in_only_the_trigge
     provider = CapturingRelationshipProvider(claimed[0].job_id)
     evaluator = LLMRelationshipEvaluator(
         settings=make_settings(database.url),
-        provider=provider,
+        model_executor=InjectedModelExecutor(provider),
         concurrency=ConcurrencyManager(1),
     )
     await evaluator.evaluate(claimed)

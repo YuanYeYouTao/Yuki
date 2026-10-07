@@ -349,7 +349,6 @@ async def test_bridge_search_connection_survives_chat_switch_and_hot_key_change(
     replacement = module.prepare(
         catalog,
         SimpleNamespace(api_key_for=lambda _profile: "new-key"),
-        require_explicit=True,
     )
     assert replacement is not None
     module.activate(replacement)
@@ -361,9 +360,7 @@ async def test_bridge_search_connection_survives_chat_switch_and_hot_key_change(
         search_connection=None, profiles=catalog.profiles, routes=catalog.routes
     )
     with pytest.raises(ValueError, match="Select a DeepSeek search connection"):
-        module.prepare(
-            missing, SimpleNamespace(api_key_for=lambda _: "test"), require_explicit=True
-        )
+        module.prepare(missing, SimpleNamespace(api_key_for=lambda _: "test"))
     with pytest.raises(ValueError, match="requires restart before disabling"):
         module.activate(None)
     await lifecycle.start()
@@ -414,7 +411,7 @@ async def test_module_rejects_explicit_search_output_ceiling_before_http(
         if entry == "startup":
             module.build()
         else:
-            module.prepare(catalog, clients, require_explicit=True)
+            module.prepare(catalog, clients)
     assert calls == []
     assert not (tmp_path / "cache.db").exists()
 

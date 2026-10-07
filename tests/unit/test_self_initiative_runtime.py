@@ -7,13 +7,20 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select, update
+from tests.support.work_session import WorkSession
 
 from qq_ai_bot.conversation.autonomy_binding import InitiativeSource, InitiativeSourceKind
 from qq_ai_bot.conversation.autonomy_repository import AutonomyRepository
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
-from qq_ai_bot.domain.messages import ChatMessage, ProviderContinuation, ToolCall, ToolFunction
+from qq_ai_bot.domain.messages import (
+    ChatMessage,
+    ChatTool,
+    ProviderContinuation,
+    ToolCall,
+    ToolFunction,
+)
 from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.identity.canonical_repository import ensure_presence, ensure_space
 from qq_ai_bot.identity.db_models import CanonicalSpaceModel, PresenceModel
@@ -26,7 +33,6 @@ from qq_ai_bot.runtime.work_activation import activate_work, current_work_contro
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import effects, inputs
-from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.services.execution_sources import recover_execution_source, recover_self_source
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 
@@ -106,7 +112,7 @@ def test_self_actor_cannot_borrow_person_or_message(fields):
 
 
 def test_snapshot_and_authority_require_exactly_one_real_principal():
-    snap = ConversationTurnSnapshot(1, "group", 1, None, 1, initiative_run_id="run")
+    snap = ConversationTurnSnapshot("conversation", "group", 1, None, 1, initiative_run_id="run")
     assert snap.trigger_event_id is None
     with pytest.raises(ValueError):
         replace(snap, trigger_event_id=9)
@@ -344,6 +350,7 @@ async def test_scheduler_resumes_self_without_reading_a_person_event_or_sending_
     lease = await repo.acquire(source["conversation_id"], 1)
     item = await repo.accept(
         lease,
+        initial_state="queued",
         source_key=f"initiative:{source['initiative_run_id']}",
         source=source,
         goal="inspect",
@@ -382,7 +389,9 @@ async def test_scheduler_resumes_self_without_reading_a_person_event_or_sending_
         conversation_scopes=SimpleNamespace(
             get=AsyncMock(
                 return_value=SimpleNamespace(
-                    id=1, generation=1, runtime_scope_key="bot:8000:group:2001"
+                    id=source["conversation_id"],
+                    generation=1,
+                    runtime_scope_key="bot:8000:group:2001",
                 )
             )
         ),
@@ -455,7 +464,7 @@ async def test_self_worker_uses_existing_runner_without_synthetic_inbound(databa
         await runtime.work_control.execute("task_control", {"action": "complete"}, "done")
         return SimpleNamespace(text="checked")
 
-    runner = SimpleNamespace(run=AsyncMock(side_effect=run))
+    runner = SimpleNamespace(run=AsyncMock(side_effect=run), main_contract=None)
     chat = SimpleNamespace(
         _agent_runner=runner,
         open_self_memory_session=AsyncMock(return_value=memory),
@@ -475,7 +484,10 @@ async def test_self_worker_uses_existing_runner_without_synthetic_inbound(databa
         config=app.runtime_config,
         runner=runner,
         load_tools=AsyncMock(
-            return_value=tuple(SimpleNamespace(name=name) for name in sorted(WORKER_NAMES))
+            # A worker now freezes the complete schema for its Code Mode subset.
+            return_value=tuple(
+                ChatTool(name, name, {"type": "object"}) for name in sorted(WORKER_NAMES)
+            )
         ),
     )
     assert await executor.run(child_id) is None

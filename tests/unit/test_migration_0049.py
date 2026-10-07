@@ -694,7 +694,9 @@ def _assert_orm_shape(path: Path) -> None:
             and not name.startswith("chat_events_fts")
             and not name.startswith("memory_facts_fts")
         }
-        assert physical_tables == set(current_tables)
+        # Runtime readers were retired; migrations retain historical user facts.
+        retained_historical_tables = {"canonical_rollup_signals", "processed_events"}
+        assert physical_tables == set(current_tables) | retained_historical_tables
         for name, table in current_tables.items():
             physical_columns = {
                 str(row[1]): (str(row[2]).upper(), bool(row[3]), bool(row[5]))

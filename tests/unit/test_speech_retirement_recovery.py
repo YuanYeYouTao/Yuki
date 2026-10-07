@@ -7,6 +7,7 @@ from copy import deepcopy
 
 import pytest
 from sqlalchemy import delete, select, update
+from tests.support.work_session import WorkSession
 from tests.unit.test_runtime_recovery import Sender, setup
 
 from qq_ai_bot.domain.messages import AttachmentKind
@@ -15,7 +16,6 @@ from qq_ai_bot.runtime.work_delivery import resume_delivery_plan
 from qq_ai_bot.runtime.work_recovery_schema import deliveries
 from qq_ai_bot.runtime.work_repository import WorkConflict
 from qq_ai_bot.runtime.work_schema_v1 import effects
-from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 
 

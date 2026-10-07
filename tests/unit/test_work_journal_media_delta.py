@@ -5,12 +5,12 @@ from hashlib import sha256
 
 import pytest
 from sqlalchemy import event, insert, select, update
+from tests.support.work_session import WorkSession
 from tests.unit.test_work_protocol_continuity import _control
 
 from qq_ai_bot.domain.messages import ChatImage, ChatMessage
 from qq_ai_bot.runtime.subagent_schema import media, media_refs
 from qq_ai_bot.runtime.work_schema_v1 import inputs, journal
-from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 
 

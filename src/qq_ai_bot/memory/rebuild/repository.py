@@ -750,6 +750,11 @@ class MemoryRebuildRepository:
                 ).all()
             )
 
+    async def proposal_result(self, proposal_id: int) -> MemoryRebuildProposalModel | None:
+        """Read the original completion receipt after an uncertain commit."""
+        async with self.database.sessions() as session:
+            return await session.get(MemoryRebuildProposalModel, proposal_id)
+
     async def finish_proposal(
         self,
         proposal_id: int,
@@ -759,8 +764,9 @@ class MemoryRebuildRepository:
         action: str,
         reason_code: str,
         error_category: str | None = None,
+        session: AsyncSession | None = None,
     ) -> None:
-        async with self.database.sessions() as session, session.begin():
+        async with optional_session(self.database, session, write=True) as session:
             proposal = await session.get(MemoryRebuildProposalModel, proposal_id)
             if proposal is None:
                 return
@@ -800,7 +806,7 @@ class MemoryRebuildRepository:
         now = datetime.now(UTC)
         async with self.database.sessions() as session, session.begin():
             row = await session.get(MemoryRebuildProposalModel, proposal_id)
-            if row is None:
+            if row is None or row.commit_status == MemoryRebuildCommitStatus.COMMITTED.value:
                 return False
             row.attempts += 1
             exhausted = row.attempts >= max_attempts

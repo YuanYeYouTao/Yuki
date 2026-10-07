@@ -1,0 +1,554 @@
+{
+  "attempted": 6,
+  "completed": 6,
+  "goal_completed": 6,
+  "all_groups_same_input": true,
+  "all_groups_same_serialized_tools": true,
+  "groups": [
+    {
+      "task": "batch_ledger",
+      "loop": "new",
+      "mode": "direct",
+      "completed": 1,
+      "attempted": 1,
+      "mean_completion_fraction": 1.0,
+      "median_seconds_completed_only": 101.74083291599527,
+      "median_requests_completed_only": 7,
+      "total_seconds_all_attempts": 101.74083291599527,
+      "total_known_peak_usd": 0.042216732,
+      "cost_per_completed_task_including_failures_usd": 0.042216732,
+      "unknown_usage_calls": 0,
+      "physical_requests_all_attempts": 7,
+      "tokens_all_attempts": {
+        "input": 175933,
+        "cached": 159872,
+        "output": 30366
+      }
+    },
+    {
+      "task": "batch_ledger",
+      "loop": "new",
+      "mode": "code",
+      "completed": 1,
+      "attempted": 1,
+      "mean_completion_fraction": 1.0,
+      "median_seconds_completed_only": 14.71017083292827,
+      "median_requests_completed_only": 5,
+      "total_seconds_all_attempts": 14.71017083292827,
+      "total_known_peak_usd": 0.0050663999999999995,
+      "cost_per_completed_task_including_failures_usd": 0.0050663999999999995,
+      "unknown_usage_calls": 0,
+      "physical_requests_all_attempts": 5,
+      "tokens_all_attempts": {
+        "input": 70900,
+        "cached": 67200,
+        "output": 2961
+      }
+    },
+    {
+      "task": "dependency_chain",
+      "loop": "new",
+      "mode": "direct",
+      "completed": 1,
+      "attempted": 1,
+      "mean_completion_fraction": 1.0,
+      "median_seconds_completed_only": 19.977264415938407,
+      "median_requests_completed_only": 22,
+      "total_seconds_all_attempts": 19.977264415938407,
+      "total_known_peak_usd": 0.005834184,
+      "cost_per_completed_task_including_failures_usd": 0.005834184,
+      "unknown_usage_calls": 0,
+      "physical_requests_all_attempts": 22,
+      "tokens_all_attempts": {
+        "input": 313914,
+        "cached": 308864,
+        "output": 2055
+      }
+    },
+    {
+      "task": "dependency_chain",
+      "loop": "new",
+      "mode": "code",
+      "completed": 1,
+      "attempted": 1,
+      "mean_completion_fraction": 1.0,
+      "median_seconds_completed_only": 9.16276133293286,
+      "median_requests_completed_only": 4,
+      "total_seconds_all_attempts": 9.16276133293286,
+      "total_known_peak_usd": 0.00584046,
+      "cost_per_completed_task_including_failures_usd": 0.00584046,
+      "unknown_usage_calls": 0,
+      "physical_requests_all_attempts": 4,
+      "tokens_all_attempts": {
+        "input": 55981,
+        "cached": 44160,
+        "output": 1691
+      }
+    },
+    {
+      "task": "resumed_work",
+      "loop": "new",
+      "mode": "direct",
+      "completed": 1,
+      "attempted": 1,
+      "mean_completion_fraction": 1.0,
+      "median_seconds_completed_only": 90.08050616714172,
+      "median_requests_completed_only": 34,
+      "total_seconds_all_attempts": 90.08050616714172,
+      "total_known_peak_usd": 0.03382817999999999,
+      "cost_per_completed_task_including_failures_usd": 0.03382817999999999,
+      "unknown_usage_calls": 0,
+      "physical_requests_all_attempts": 34,
+      "tokens_all_attempts": {
+        "input": 598863,
+        "cached": 564480,
+        "output": 16772
+      }
+    },
+    {
+      "task": "resumed_work",
+      "loop": "new",
+      "mode": "code",
+      "completed": 1,
+      "attempted": 1,
+      "mean_completion_fraction": 1.0,
+      "median_seconds_completed_only": 62.32769508380443,
+      "median_requests_completed_only": 11,
+      "total_seconds_all_attempts": 62.32769508380443,
+      "total_known_peak_usd": 0.019219595999999995,
+      "cost_per_completed_task_including_failures_usd": 0.019219595999999995,
+      "unknown_usage_calls": 0,
+      "physical_requests_all_attempts": 11,
+      "tokens_all_attempts": {
+        "input": 235949,
+        "cached": 230016,
+        "output": 13383
+      }
+    }
+  ],
+  "trials": [
+    {
+      "task": "dependency_chain",
+      "repeat": 0,
+      "loop": "new",
+      "mode": "code",
+      "completed": true,
+      "goal_completed": true,
+      "completion_fraction": 1.0,
+      "correct_artifacts": true,
+      "work_state": "completed",
+      "stopped_for_stall": false,
+      "failures": [],
+      "seconds_spent": 9.16276133293286,
+      "first_correct_artifact_seconds": 5.222130458103493,
+      "physical_requests": 4,
+      "logical_requests": 4,
+      "context": {
+        "total_message_bytes": 93607,
+        "peak_message_bytes": 30392,
+        "total_tool_receipt_characters": 11984,
+        "measured": true
+      },
+      "tokens": {
+        "input": 55981,
+        "cached": 44160,
+        "output": 1691
+      },
+      "known_usage_peak_usd": 0.00584046,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 1,
+      "code_used": true,
+      "segment_tools": 80,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0,
+      "audit_order_verified": true
+    },
+    {
+      "task": "batch_ledger",
+      "repeat": 0,
+      "loop": "new",
+      "mode": "direct",
+      "completed": true,
+      "goal_completed": true,
+      "completion_fraction": 1.0,
+      "correct_artifacts": true,
+      "work_state": "completed",
+      "stopped_for_stall": false,
+      "failures": [],
+      "seconds_spent": 101.74083291599527,
+      "first_correct_artifact_seconds": 98.57460566610098,
+      "physical_requests": 7,
+      "logical_requests": 7,
+      "context": {
+        "total_message_bytes": 350943,
+        "peak_message_bytes": 106677,
+        "total_tool_receipt_characters": 56169,
+        "measured": true
+      },
+      "tokens": {
+        "input": 175933,
+        "cached": 159872,
+        "output": 30366
+      },
+      "known_usage_peak_usd": 0.042216732,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 1,
+      "code_used": false,
+      "segment_tools": 80,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0,
+      "audit_order_verified": true
+    },
+    {
+      "task": "batch_ledger",
+      "repeat": 0,
+      "loop": "new",
+      "mode": "code",
+      "completed": true,
+      "goal_completed": true,
+      "completion_fraction": 1.0,
+      "correct_artifacts": true,
+      "work_state": "completed",
+      "stopped_for_stall": false,
+      "failures": [],
+      "seconds_spent": 14.71017083292827,
+      "first_correct_artifact_seconds": 7.886758457869291,
+      "physical_requests": 5,
+      "logical_requests": 5,
+      "context": {
+        "total_message_bytes": 120382,
+        "peak_message_bytes": 33143,
+        "total_tool_receipt_characters": 13147,
+        "measured": true
+      },
+      "tokens": {
+        "input": 70900,
+        "cached": 67200,
+        "output": 2961
+      },
+      "known_usage_peak_usd": 0.0050663999999999995,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 1,
+      "code_used": true,
+      "segment_tools": 80,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0,
+      "audit_order_verified": true
+    },
+    {
+      "task": "resumed_work",
+      "repeat": 0,
+      "loop": "new",
+      "mode": "code",
+      "completed": true,
+      "goal_completed": true,
+      "completion_fraction": 1.0,
+      "correct_artifacts": true,
+      "work_state": "completed",
+      "stopped_for_stall": false,
+      "failures": [],
+      "seconds_spent": 62.32769508380443,
+      "first_correct_artifact_seconds": 26.257189666852355,
+      "physical_requests": 11,
+      "logical_requests": 11,
+      "context": {
+        "total_message_bytes": 557573,
+        "peak_message_bytes": 78857,
+        "total_tool_receipt_characters": 56535,
+        "measured": true
+      },
+      "tokens": {
+        "input": 235949,
+        "cached": 230016,
+        "output": 13383
+      },
+      "known_usage_peak_usd": 0.019219595999999995,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 6,
+      "code_used": true,
+      "segment_tools": 5,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0,
+      "audit_order_verified": true
+    },
+    {
+      "task": "resumed_work",
+      "repeat": 0,
+      "loop": "new",
+      "mode": "direct",
+      "completed": true,
+      "goal_completed": true,
+      "completion_fraction": 1.0,
+      "correct_artifacts": true,
+      "work_state": "completed",
+      "stopped_for_stall": false,
+      "failures": [],
+      "seconds_spent": 90.08050616714172,
+      "first_correct_artifact_seconds": 18.508347917115316,
+      "physical_requests": 34,
+      "logical_requests": 34,
+      "context": {
+        "total_message_bytes": 1181808,
+        "peak_message_bytes": 47331,
+        "total_tool_receipt_characters": 19756,
+        "measured": true
+      },
+      "tokens": {
+        "input": 598863,
+        "cached": 564480,
+        "output": 16772
+      },
+      "known_usage_peak_usd": 0.03382817999999999,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 6,
+      "code_used": false,
+      "segment_tools": 5,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0,
+      "audit_order_verified": true
+    },
+    {
+      "task": "dependency_chain",
+      "repeat": 0,
+      "loop": "new",
+      "mode": "direct",
+      "completed": true,
+      "goal_completed": true,
+      "completion_fraction": 1.0,
+      "correct_artifacts": true,
+      "work_state": "completed",
+      "stopped_for_stall": false,
+      "failures": [],
+      "seconds_spent": 19.977264415938407,
+      "first_correct_artifact_seconds": 17.96160575002432,
+      "physical_requests": 22,
+      "logical_requests": 22,
+      "context": {
+        "total_message_bytes": 548802,
+        "peak_message_bytes": 34005,
+        "total_tool_receipt_characters": 69722,
+        "measured": true
+      },
+      "tokens": {
+        "input": 313914,
+        "cached": 308864,
+        "output": 2055
+      },
+      "known_usage_peak_usd": 0.005834184,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 1,
+      "code_used": false,
+      "segment_tools": 80,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0,
+      "audit_order_verified": true
+    }
+  ],
+  "completed_same_input_pairs": [
+    {
+      "task": "dependency_chain",
+      "repeat": 0,
+      "baseline_loop": "new",
+      "direct_seconds": 19.977264415938407,
+      "code_seconds": 9.16276133293286,
+      "time_ratio_code_over_direct": 0.458659461183412,
+      "direct_requests": 22,
+      "code_requests": 4,
+      "direct_tokens": {
+        "input": 313914,
+        "cached": 308864,
+        "output": 2055
+      },
+      "code_tokens": {
+        "input": 55981,
+        "cached": 44160,
+        "output": 1691
+      },
+      "direct_context": {
+        "total_message_bytes": 548802,
+        "peak_message_bytes": 34005,
+        "total_tool_receipt_characters": 69722,
+        "measured": true
+      },
+      "code_context": {
+        "total_message_bytes": 93607,
+        "peak_message_bytes": 30392,
+        "total_tool_receipt_characters": 11984,
+        "measured": true
+      },
+      "direct_peak_usd": 0.005834184,
+      "code_peak_usd": 0.00584046
+    },
+    {
+      "task": "batch_ledger",
+      "repeat": 0,
+      "baseline_loop": "new",
+      "direct_seconds": 101.74083291599527,
+      "code_seconds": 14.71017083292827,
+      "time_ratio_code_over_direct": 0.1445847297620816,
+      "direct_requests": 7,
+      "code_requests": 5,
+      "direct_tokens": {
+        "input": 175933,
+        "cached": 159872,
+        "output": 30366
+      },
+      "code_tokens": {
+        "input": 70900,
+        "cached": 67200,
+        "output": 2961
+      },
+      "direct_context": {
+        "total_message_bytes": 350943,
+        "peak_message_bytes": 106677,
+        "total_tool_receipt_characters": 56169,
+        "measured": true
+      },
+      "code_context": {
+        "total_message_bytes": 120382,
+        "peak_message_bytes": 33143,
+        "total_tool_receipt_characters": 13147,
+        "measured": true
+      },
+      "direct_peak_usd": 0.042216732,
+      "code_peak_usd": 0.0050663999999999995
+    },
+    {
+      "task": "resumed_work",
+      "repeat": 0,
+      "baseline_loop": "new",
+      "direct_seconds": 90.08050616714172,
+      "code_seconds": 62.32769508380443,
+      "time_ratio_code_over_direct": 0.6919110219935624,
+      "direct_requests": 34,
+      "code_requests": 11,
+      "direct_tokens": {
+        "input": 598863,
+        "cached": 564480,
+        "output": 16772
+      },
+      "code_tokens": {
+        "input": 235949,
+        "cached": 230016,
+        "output": 13383
+      },
+      "direct_context": {
+        "total_message_bytes": 1181808,
+        "peak_message_bytes": 47331,
+        "total_tool_receipt_characters": 19756,
+        "measured": true
+      },
+      "code_context": {
+        "total_message_bytes": 557573,
+        "peak_message_bytes": 78857,
+        "total_tool_receipt_characters": 56535,
+        "measured": true
+      },
+      "direct_peak_usd": 0.03382817999999999,
+      "code_peak_usd": 0.019219595999999995
+    }
+  ],
+  "budget": {
+    "cumulative_ceiling_usd": null,
+    "prior_peak_usage_cost_usd": 1.2751670879999997,
+    "new_peak_usage_cost_usd": 0.11200555199999997,
+    "unsettled_reserved_usd": 0,
+    "cumulative_peak_exposure_usd": 1.3871726399999997,
+    "new_physical_calls": 83,
+    "prior_reports": [
+      {
+        "name": "long-tasks-handoff-final.json",
+        "sha256": "75723e8df10f96df61a88afb09153e4b85050f1ba21f9649749c46f3ad570bd3",
+        "calls": 285,
+        "peak_usd": 0.33698925599999985,
+        "unknown_usage": 0
+      },
+      {
+        "name": "issue-256-default-policy.json",
+        "sha256": "6702d033c57531d7fc4c704aa06b9860f2ad3355b1d2c26e18f9b5a3258415e7",
+        "calls": 75,
+        "peak_usd": 0.10226311200000004,
+        "unknown_usage": 0
+      },
+      {
+        "name": "issue-256-default-policy-final.json",
+        "sha256": "70a0ece88d4e2d5a884a225dda40351c8ce8b23263da2341d9ecad9b1392c526",
+        "calls": 133,
+        "peak_usd": 0.22926541200000003,
+        "unknown_usage": 0
+      },
+      {
+        "name": "issue-256-acceptance.json",
+        "sha256": "ee57019f0114a1847bce0bbb1cb8ae7fd5b9f79d6eeeef80b55171f85cc52eb6",
+        "calls": 175,
+        "peak_usd": 0.22409013600000005,
+        "unknown_usage": 0
+      },
+      {
+        "name": "issue-256-acceptance-v2.json",
+        "sha256": "4f18e2312e53195178b655e5682d6102b02c2582ecc6fbe5c4c0e03027070094",
+        "calls": 82,
+        "peak_usd": 0.16457571599999993,
+        "unknown_usage": 0
+      },
+      {
+        "name": "issue-256-profile-fixed.json",
+        "sha256": "95a650b709ab84f24f7a647226238376b9ac9985df8869503da32e17a178e8e4",
+        "calls": 77,
+        "peak_usd": 0.09756349199999996,
+        "unknown_usage": 0
+      },
+      {
+        "name": "tiered-tools-model-comparison.json",
+        "sha256": "5695a301dfa86953ca7fefdade287850563561deeff6128966294becaa67f78a",
+        "calls": 81,
+        "peak_usd": 0.12041996399999998,
+        "unknown_usage": 0
+      }
+    ],
+    "actual_invoice_verified": false,
+    "pricing_source": "https://api-docs.deepseek.com/quick_start/pricing/",
+    "peak_usd_per_million": {
+      "cache_hit": 0.006,
+      "cache_miss": 0.3,
+      "output": 1.2
+    }
+  },
+  "run_contract": {
+    "model": "deepseek-flash",
+    "baseline_commit": "b4fdef7d0e2f7ee68fd345605d0a8fadc50b5459",
+    "baseline_scope": "same current runtime, frozen declarations and synthetic inputs; experimental direct-call control compared with shared default orchestration guidance",
+    "max_output_tokens": 32768,
+    "reasoning_effort": "high",
+    "completion_definition": "independent oracle correct, all required inputs read, report verified, per-node audits committed before following the next node or writing the final chain, no repeated committed writes, and original Work durably completed",
+    "acceptance_definition": "success additionally requires the assigned tool mode; default-policy code trials must actually choose execute_code. goal_completed records task completion separately from orchestration acceptance",
+    "stop_policy": "runtime pause/failure, or 10 consecutive activations with no new successful read/write path, semantic context note or same original code snapshot advancing across activations; no task time ceiling",
+    "business_scope": "temporary FileWorkspace, real SQLite/InvocationService/Monty, no production, gateway or real messaging",
+    "recovery_scope": "fresh Runner and WorkControl activations in same process; not an OS process crash or provider disconnect",
+    "harness_sha256": "c449e993a9a103dc77b542d073e9d119a83de2fbfc08fe4f31d516fcb0a1d24b",
+    "read_identity": "canonical synthetic person bound before accept and on every activation",
+    "receipt_errors_scope": "visible tool history per HTTP request; repeated history is not a new failed operation",
+    "runtime_source_sha256": {
+      "src/qq_ai_bot/codemode/engine_monty.py": "eef01e95f1c4a5d2adadfe5db70fe38ea3e8f27b9987062a1568f1a9a4d1b3de",
+      "src/qq_ai_bot/runtime/work_control.py": "80082bfa9c0446b8c6bef7bc19fc96166834fbfe634dbe03750548c35f5bfdfa",
+      "src/qq_ai_bot/runtime/work_session.py": "10f6968f7f8b20d7503739e1f2b26819a80987e80ed03a04388e4bfb1c58846e",
+      "src/qq_ai_bot/services/turn_execution.py": "9751d5eadb994840454f03e70f3cb3bd3c6627717b674136eb4bc8683e5160f7",
+      "src/qq_ai_bot/codemode/contract.py": "d557eb0b59a66e8c4d82748ab604e22ee364e19d5df408485022fee7cd1ab913",
+      "scripts/benchmark_pi_codemode.py": "684a249291ac296ed5ddd86c21fb84dca1db7a97b402366bf1022bf60f35c3a4",
+      "tests/integration/test_codemode_runner.py": "9a852cd49c8bda3a350faac8cda3c4846398dd8eca63e9a185c1cf3f6476d84b"
+    },
+    "segment_tools_override": null,
+    "default_code_policy": true,
+    "model_tool_exposure": "tiered",
+    "cost_estimate_basis": "Common Peak Flash tariff verified at https://api-docs.deepseek.com/quick_start/pricing/ on 2026-10-06; not a provider invoice or the actual time-of-day tariff. Token counts and elapsed time are observed separately.",
+    "context_measurement": "UTF-8 serialized messages and tool receipt characters per physical request; measured separately from the fixed tool declarations and provider reported prompt tokens; no raw reasoning retained"
+  },
+  "cost_basis": "public peak rates times observed wire usage; off-peak half these rates; not invoice. Unknown usage is separate.",
+  "time_basis": "completion medians exclude failures; failure time still appears in all-attempt totals. Observed sample counts appear in each group."
+}

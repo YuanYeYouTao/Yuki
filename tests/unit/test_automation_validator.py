@@ -124,11 +124,10 @@ def test_main_agent_output_cannot_bypass_explicit_tool_delivery() -> None:
         0,
         {
             "id": "generate",
-            "call": "yuki.generate",
+            "call": "yuki.agent",
             "arguments": {
                 "instruction": "生成提醒",
                 "context_profile": "none",
-                "max_characters": 20,
             },
         },
     )
@@ -225,11 +224,10 @@ def test_llm_and_message_counts_must_fit_script_limits() -> None:
         0,
         {
             "id": "generate",
-            "call": "yuki.generate",
+            "call": "yuki.agent",
             "arguments": {
                 "instruction": "生成提醒",
                 "context_profile": "none",
-                "max_characters": 20,
             },
         },
     )
@@ -266,11 +264,10 @@ def test_untrusted_output_cannot_become_group_or_onebot_action() -> None:
     group_payload = _script().model_dump(mode="json")
     generate = {
         "id": "generate",
-        "call": "yuki.generate",
+        "call": "yuki.agent",
         "arguments": {
             "instruction": "生成目标",
             "context_profile": "none",
-            "max_characters": 20,
         },
     }
     group_payload["steps"] = [
@@ -317,11 +314,10 @@ def test_script_cannot_reference_a_later_step() -> None:
     payload["steps"].append(
         {
             "id": "generate",
-            "call": "yuki.generate",
+            "call": "yuki.agent",
             "arguments": {
                 "instruction": "生成提醒",
                 "context_profile": "none",
-                "max_characters": 20,
             },
         }
     )

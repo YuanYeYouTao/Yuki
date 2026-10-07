@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import event, insert, update
+from tests.support.work_session import WorkSession
 from tests.unit.test_work_communication import append_input, control_env
 from tests.unit.test_work_reporting_runner import START, case, response, run, tool
 
@@ -14,7 +15,6 @@ from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.runtime.subagent_repository import SubagentRepository
 from qq_ai_bot.runtime.subagent_schema import children
 from qq_ai_bot.runtime.work_schema_v1 import effects, work
-from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 from qq_ai_bot.services.work_reporting import append_input_feedback, stage_feedback_opportunity
 

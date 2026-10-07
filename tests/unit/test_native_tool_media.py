@@ -14,6 +14,7 @@ from sqlalchemy import select, update
 from tests.conftest import build_harness, make_settings
 from tests.support.social_identity_cases import social_env
 
+from qq_ai_bot.capabilities.invocation import direct_invocations
 from qq_ai_bot.capabilities.media import PreparedMediaData
 from qq_ai_bot.capabilities.results import ToolExecutionResult, ToolResultBudgeter
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
@@ -219,8 +220,6 @@ async def test_main_backend_artifact_binding_preserves_native_pixels(database, t
             inbound=inbound,
             gateway=env.bot,
             allow_generic_onebot=False,
-            actor_user_id="10001",
-            current_group_id="20001",
             conversation_key=scope.key,
             runtime_config=config,
             turn_snapshot=ConversationTurnSnapshot(
@@ -246,8 +245,9 @@ async def test_main_backend_artifact_binding_preserves_native_pixels(database, t
         backend.definitions(runtime, web_was_used=False)
         arguments = json.dumps({"handle": handle, "operation": "image"})
         call = ToolCall("original-read", ToolFunction("read_tool_artifact", arguments))
-        backend.begin_batch((call,), runtime)
-        rendered = await backend.execute("read_tool_artifact", arguments, runtime)
+        # Preserve upstream media assertions through the typed Host boundary.
+        invocation = direct_invocations((call,), runtime)[0]
+        rendered = await backend.execute_call(invocation)
         assert json.loads(rendered)["ok"] is True, rendered
         assert len(rendered.images) == 1
         assert rendered.images[0].data_url == _result().images[0].data_url

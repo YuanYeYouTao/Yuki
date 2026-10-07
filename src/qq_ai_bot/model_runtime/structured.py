@@ -214,24 +214,12 @@ class StructuredTaskRunner:
             if before_attempt is not None:
                 await before_attempt()
             try:
-                if priority is ModelExecutionPriority.FOREGROUND:
-                    if canonical_conversation_id is None:
-                        response = await self._models.execute(task, request)
-                    else:
-                        response = await self._models.execute(
-                            task,
-                            request,
-                            canonical_conversation_id=canonical_conversation_id,
-                        )
-                elif canonical_conversation_id is None:
-                    response = await self._models.execute(task, request, priority=priority)
-                else:
-                    response = await self._models.execute(
-                        task,
-                        request,
-                        priority=priority,
-                        canonical_conversation_id=canonical_conversation_id,
-                    )
+                response = await self._models.execute(
+                    task,
+                    request,
+                    priority=priority,
+                    canonical_conversation_id=canonical_conversation_id,
+                )
             except (LLMInvalidRequestError, LLMUnsupportedFeatureError) as exc:
                 if not (
                     allow_schema_fallback

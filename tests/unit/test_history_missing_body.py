@@ -174,6 +174,10 @@ async def test_full_prepare_equivalence_and_only_missing_body_reads(database, mo
         starts_after_event_id=version.starts_after_event_id,
         items=list(frozen.items),
         rebuild_reason="bootstrap",
+        # Current producer records the full representation. Legacy NULL metadata
+        # is separately tested as an explicit epoch rebuild, never silent reuse.
+        selected_summary_kind="model" if case == "summary" else context.metrics.rollup_mode,
+        selected_summary_renderer=1,
         selected_summary_text="selected summary" if case == "summary" else "",
         selected_summary_coverage=5 if case == "summary" else 0,
     )

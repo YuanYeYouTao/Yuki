@@ -39,7 +39,7 @@ class RecordingExecutor:
         self.calls = 0
         self.requests: list[object] = []
 
-    async def execute(self, task, request, *, priority=None):
+    async def execute(self, task, request, *, priority=None, canonical_conversation_id=None):
         del task, priority
         self.calls += 1
         self.requests.append(request)
@@ -66,7 +66,7 @@ def _event(event_id: int, *, origin: str) -> EventRecord:
 
 def _candidate(events: tuple[EventRecord, ...]) -> RollupCandidate:
     return RollupCandidate(
-        scope_id=1,
+        conversation_id="test-conversation-1",
         generation=1,
         source_coverage=0,
         source_rollup_revision=0,
@@ -119,7 +119,7 @@ async def _assert_emergency_overlay(
     assert service.metrics.extractive_fallbacks == 1
     repository = ConversationRollupRepository(cast(Database, object()), _policy("user_message"))
     claim = RollupJobClaim(
-        scope_id=1,
+        conversation_id="00000000-0000-4000-8000-000000000001",
         generation=1,
         claimed_signal_revision=0,
         failure_count=0,

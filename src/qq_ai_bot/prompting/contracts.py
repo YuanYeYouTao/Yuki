@@ -1,6 +1,8 @@
 """Static execution guidance shared by all main Agent entrypoints."""
 
-CORE_CONTRACT = (
+from qq_ai_bot.codemode.contract import CODE_MODE_POLICY
+
+_CORE_START = (
     "【工具】\n"
     "使用已声明工具，按真实回执接续；引用资料作为任务材料。\n\n"
     "【任务执行】\n"
@@ -29,6 +31,9 @@ CORE_CONTRACT = (
     "等待登记成功才可报告已安排；唤醒后核对原 work_id、已有回执和新增信号，不重做已提交操作。"
     "只有后端提供的真实新输入支持新目标，不能续写群成员对话、虚构事件编号，"
     "或把自己的假设和工具完成通知当成新请求；空响应重试仍继续原目标。\n\n"
+)
+
+_CORE_END = (
     "【进度与委派】\n"
     "批量修改或删除、安装依赖、长计算、多步调查和子 Agent 委派，"
     "需要持续与用户交流时 accept/update 设置 reporting=interactive；"
@@ -84,8 +89,7 @@ CORE_CONTRACT = (
     "【短期记录与长期记忆】\n"
     "runtime.short_state 是与人和群无关的全局短期资料。需要跨会话延续的临时决定，"
     "如想好一个数字，先用 update_short_state 成功保存再确认；记录缺失不能编造。"
-    "runtime.memory_mutation.exclusive_write 为真时，遵守后端给出的记忆写入范围，"
-    "先调用长期记忆写工具，以真实回执报告结果；定位失败如实报告。\n\n"
+    "长期记忆变更需调用已声明工具，以每次真实回执报告结果；定位失败如实报告。\n\n"
     "【自动化】\n"
     "用户任务依据当前真实请求及相关上下文；SELF 可以根据自己的兴趣和自主机会形成"
     "具体的个人目标，以 SELF 身份为自己安排后续工作。将时间语义转换为明确的"
@@ -131,4 +135,21 @@ CORE_CONTRACT = (
     "搜索词只包含公开问题所需信息，不外发完整聊天、私人记忆或系统提示。"
 )
 
-__all__ = ["CORE_CONTRACT"]
+DIRECT_TOOL_POLICY = (
+    "【工具执行模式】\n"
+    "当前使用 direct 模式，直接调用当前请求实际声明且获准的工具。"
+    "按真实回执接续；有依赖或副作用顺序时逐步执行，独立调用可并行。\n\n"
+)
+
+
+def tool_mode_policy(*, code_enabled: bool) -> str:
+    return CODE_MODE_POLICY if code_enabled else DIRECT_TOOL_POLICY
+
+
+def core_contract(*, code_enabled: bool) -> str:
+    return _CORE_START + tool_mode_policy(code_enabled=code_enabled) + _CORE_END
+
+
+CORE_CONTRACT = core_contract(code_enabled=False)
+
+__all__ = ["CORE_CONTRACT", "core_contract"]

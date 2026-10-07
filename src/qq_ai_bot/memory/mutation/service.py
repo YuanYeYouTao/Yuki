@@ -1289,6 +1289,11 @@ class MemoryMutationService:
                                 deduplicated=True,
                                 requested_operation=request.operation,
                             )
+                        from qq_ai_bot.runtime.effect_outcomes import current_result_capture
+
+                        capture = current_result_capture.get()
+                        if capture is not None and not (capture.work_id and capture.effect_key):
+                            capture = None
                         try:
                             current_owners = (
                                 self._facts.persisted_target_owners(prepared.fact)
@@ -1404,6 +1409,19 @@ class MemoryMutationService:
                             created_at=datetime.now(UTC),
                             session=session,
                         )
+                        if capture is not None:
+                            from qq_ai_bot.runtime.work_activation import current_work_control
+                            from qq_ai_bot.runtime.work_repository import WorkRepository
+
+                            control = current_work_control.get()
+                            if control is not None:
+                                await control.repository._assert_lease(session, control.lease)
+                            await WorkRepository.bind_domain_receipt(
+                                session,
+                                capture.work_id,
+                                capture.effect_key,
+                                f"memory:{reserved.mutation_id}",
+                            )
                         applied = await self._apply(
                             prepared,
                             session=session,
@@ -3083,14 +3101,14 @@ class MemoryMutationService:
     async def _schedule_embedding_after_commit(self, fact_id: int | None) -> None:
         if fact_id is None:
             return
-        fact = await self._facts.get_fact(fact_id)
-        if fact is None or fact.status is not MemoryStatus.ACTIVE:
-            return
         try:
+            fact = await self._facts.get_fact(fact_id)
+            if fact is None or fact.status is not MemoryStatus.ACTIVE:
+                return
             await self._facts.schedule_embedding(fact_id)
         except asyncio.CancelledError:
             raise
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        except Exception as exc:
             logger.warning(
                 "memory_mutation_embedding_schedule_failed fact_id=%d category=%s",
                 fact_id,

@@ -405,3 +405,20 @@ async def test_actual_0094_upgrade_downgrade_preserves_all_business_facts(tmp_pa
         await require_canonical_schema(url)
     await asyncio.to_thread(command.upgrade, config, "head")
     await require_canonical_schema(url)
+    final_facts, _final_schema, version = _database_facts(path)
+    assert version == canonical_schema_revision()
+    # Later migrations retire caches and the explicitly retired empty speech tables.
+    # Keep exact checksums for every remaining table, including business facts.
+    retired = {
+        "mcp_server_states",
+        "mcp_tool_cache",
+        "person_speech_preferences",
+        "speech_generations",
+        "speech_voice_profiles",
+        "speech_voice_references",
+    }
+    assert all(before_facts[name][0] == 0 for name in retired)
+    assert retired.isdisjoint(final_facts)
+    assert final_facts == {
+        name: value for name, value in before_facts.items() if name not in retired
+    }

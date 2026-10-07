@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from qq_ai_bot.capabilities.results import ToolExecutionResult, process_receipt
@@ -16,6 +16,7 @@ class ResultCapture:
     effect_key: str
     outcome: ToolExecutionResult | None = None
     artifact_handle: str | None = None
+    evidence: dict[str, Any] | None = None
 
 
 current_result_capture: ContextVar[ResultCapture | None] = ContextVar(
@@ -135,7 +136,134 @@ def execution_evidence(
         or status in {"uncertain", "unknown"},
         "status": status,
         "error_code": outcome.error_code,
+        "retryable": outcome.retryable,
         "mutation_committed": outcome.mutation_committed,
         "executed": body.get("executed", True),
         **({"process": process} if process else {}),
     }
+
+
+def historical_evidence(
+    receipt: dict[str, Any],
+    *,
+    state: str = "accepted",
+    original_tool: str = "legacy_tool",
+    kind: str = "tool",
+) -> dict[str, Any]:
+    """Read original facts without promoting absent or malformed display data."""
+    from qq_ai_bot.capabilities.results import normalize_legacy_result
+
+    # Final transport receipts predate and intentionally do not use tool outcomes.
+    # Only their exact domain/state proof can settle them; a tool row never gets this exemption.
+    if kind == "final" and not any(key in receipt for key in ("outcome", "result", "status", "ok")):
+        accepted = (
+            state == "accepted"
+            and receipt.get("transport_accepted") is True
+            and "error" not in receipt
+            and all(
+                receipt.get(key, expected) is expected
+                for key, expected in (
+                    ("pending", False),
+                    ("uncertain", False),
+                    ("executed", True),
+                    ("mutation_committed", True),
+                )
+            )
+        )
+        refused = (
+            state == "failed"
+            and receipt.get("error") == "delivery_not_dispatched"
+            and receipt.get("executed") is False
+            and receipt.get("mutation_committed") is False
+            and "transport_accepted" not in receipt
+            and receipt.get("pending", False) is False
+            and receipt.get("uncertain", False) is False
+        )
+        if accepted or refused:
+            return {
+                "tool": "final_delivery",
+                "side_effecting": True,
+                "ok": accepted,
+                "executed": accepted,
+                "mutation_committed": accepted,
+                "pending": False,
+                "uncertain": False,
+                "status": "succeeded" if accepted else "not_dispatched",
+                "transport_accepted": accepted,
+                "error_code": None if accepted else "delivery_not_dispatched",
+            }
+
+    evidence = receipt.get("outcome")
+    valid = isinstance(evidence, dict) and (
+        type(evidence.get("ok")) is bool
+        or evidence.get("pending") is True
+        or evidence.get("uncertain") is True
+        or evidence.get("side_effecting") is False
+    )
+    if isinstance(evidence, dict):
+        for key in ("ok", "pending", "uncertain", "side_effecting", "executed", "retryable"):
+            if key in evidence and type(evidence[key]) is not bool:
+                valid = False
+        if evidence.get("status") is not None and not isinstance(evidence["status"], str):
+            valid = False
+        if (
+            "mutation_committed" in evidence
+            and evidence["mutation_committed"] is not None
+            and type(evidence["mutation_committed"]) is not bool
+        ):
+            valid = False
+    if valid and isinstance(evidence, dict):
+        result = dict(evidence)
+    elif evidence is None or evidence == {}:
+        payload = receipt.get("result")
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except ValueError:
+                payload = None
+        try:
+            if (
+                not isinstance(payload, dict)
+                or type(payload.get("ok")) is not bool
+                or payload.get("truncated") is True
+            ):
+                raise ValueError("historical_outcome_unknown")
+            body = payload.get("data", payload)
+            if not isinstance(body, dict):
+                body = payload
+            original_body = body
+            if isinstance(body, dict) and isinstance(body.get("progress"), dict):
+                body = body["progress"]
+            if isinstance(body, dict):
+                if body.get("status") is not None and not isinstance(body["status"], str):
+                    raise ValueError("historical_outcome_unknown")
+                if body.get("truncated") is True or any(
+                    key in body and type(body[key]) is not bool
+                    for key in ("pending", "uncertain", "executed")
+                ):
+                    raise ValueError("historical_outcome_unknown")
+            result = execution_evidence(
+                replace(
+                    normalize_legacy_result(
+                        payload, provider_id="historical", tool_name=original_tool
+                    ),
+                    data=original_body,
+                ),
+                tool=original_tool,
+                side_effecting=True,
+            )
+        except (TypeError, ValueError):
+            result = {"ok": False, "uncertain": True, "side_effecting": True, "executed": True}
+    else:
+        # Retain original identifiers and explicit pending facts for reconciliation.
+        result = dict(evidence) if isinstance(evidence, dict) else {}
+        result.update(ok=False, uncertain=True, side_effecting=True, executed=True)
+        if result.get("status") is not None and not isinstance(result["status"], str):
+            result.pop("status")
+    if result.get("status") in {"unknown", "uncertain"}:
+        result.update(ok=False, uncertain=True)
+    elif result.get("status") in {"running", "queued", "waiting"}:
+        result["pending"] = True
+    if state in {"prepared", "unknown"} and result.get("side_effecting") is not False:
+        result["uncertain"] = True
+    return result

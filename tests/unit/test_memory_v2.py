@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from tests.conftest import MemorySender, build_harness, make_settings
+from tests.support.model_executor import InjectedModelExecutor
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatRequest, ChatResponse, InboundMessage, SenderIdentity
@@ -142,7 +143,7 @@ async def test_batch_retains_multiple_valuable_claims_without_self_declared_auth
         jobs=jobs,
         facts=facts,
         ledger=ledger,
-        provider=Provider(),
+        model_executor=InjectedModelExecutor(Provider()),
         concurrency=ConcurrencyManager(1),
     )
     assert await worker.enqueue(event.id, "private:1001")
@@ -940,7 +941,7 @@ async def test_worker_extracts_one_conversation_batch_in_one_model_call(
         jobs=jobs,
         facts=facts,
         ledger=ledger,
-        provider=provider,
+        model_executor=InjectedModelExecutor(provider),
         concurrency=ConcurrencyManager(1),
     )
 
@@ -968,7 +969,7 @@ async def test_worker_propagates_cancellation(database: Database) -> None:
         jobs=jobs,
         facts=MemoryFactService(MemoryFactRepository(database)),
         ledger=ledger,
-        provider=_CancelledProvider(),
+        model_executor=InjectedModelExecutor(_CancelledProvider()),
         concurrency=ConcurrencyManager(1),
     )
     with pytest.raises(asyncio.CancelledError):
@@ -1020,7 +1021,7 @@ async def test_worker_records_all_rejected_instead_of_no_claims(database: Databa
         jobs=jobs,
         facts=MemoryFactService(MemoryFactRepository(database)),
         ledger=ledger,
-        provider=_RejectedClaimProvider(),
+        model_executor=InjectedModelExecutor(_RejectedClaimProvider()),
         concurrency=ConcurrencyManager(1),
     )
 
@@ -1067,7 +1068,7 @@ async def test_worker_rejects_unknown_batch_event_without_failing_batch(
         jobs=jobs,
         facts=facts,
         ledger=ledger,
-        provider=_UnknownSourceEventProvider(),
+        model_executor=InjectedModelExecutor(_UnknownSourceEventProvider()),
         concurrency=ConcurrencyManager(1),
     )
 
@@ -1123,7 +1124,7 @@ async def test_worker_requeues_every_job_when_shared_batch_extraction_fails(
         jobs=jobs,
         facts=MemoryFactService(MemoryFactRepository(database)),
         ledger=ledger,
-        provider=provider,
+        model_executor=InjectedModelExecutor(provider),
         concurrency=ConcurrencyManager(1),
     )
 
@@ -1179,7 +1180,7 @@ async def test_worker_isolates_unexpected_job_failure(database: Database) -> Non
         jobs=jobs,
         facts=facts,
         ledger=ledger,
-        provider=_UnexpectedThenValidProvider(),
+        model_executor=InjectedModelExecutor(_UnexpectedThenValidProvider()),
         concurrency=ConcurrencyManager(1),
     )
 
@@ -1250,7 +1251,7 @@ async def test_worker_isolates_job_completion_failure(
         jobs=jobs,
         facts=MemoryFactService(MemoryFactRepository(database)),
         ledger=ledger,
-        provider=_BatchProvider(),
+        model_executor=InjectedModelExecutor(_BatchProvider()),
         concurrency=ConcurrencyManager(1),
     )
 
@@ -1370,7 +1371,7 @@ async def test_context_keeps_mentioned_person_facts_for_on_demand_search(
         ),
     )
     await harness.groups.set_enabled("2001", True)
-    await harness.profiles.upsert(
+    await harness.profiles.observe(
         user_id="1002",
         nickname="小李",
         group_id="2001",

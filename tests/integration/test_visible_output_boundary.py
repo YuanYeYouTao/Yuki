@@ -9,7 +9,7 @@ from sqlalchemy import select
 from tests.conftest import MemorySender, build_harness, make_settings
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
+from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, ChatResponse, InboundMessage, SenderIdentity
 from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
 from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
@@ -70,7 +70,7 @@ async def test_provider_text_requires_explicit_delivery(
         payload = json.loads(request.content)
         requests.append(payload)
         index = len(requests)
-        should_send = explicit_send and index == 2
+        should_send = explicit_send and index == 1
         arguments = json.dumps({"text": _ANSWER}, ensure_ascii=False)
         if protocol is ModelProtocol.RESPONSES:
             output = [
@@ -227,7 +227,6 @@ async def test_provider_text_requires_explicit_delivery(
                 group_id="20001",
                 mentions_bot=True,
                 conversation_id=env.context.conversation_id,
-                legacy_conversation_key=ConversationScope.group("80001", "20001").key,
                 person_id=env.person,
                 space_id=env.space,
                 presence_id=env.presence,
@@ -235,7 +234,7 @@ async def test_provider_text_requires_explicit_delivery(
             sender,
         )
 
-    assert len(requests) == (3 if explicit_send else 2)
+    assert len(requests) == (2 if explicit_send else 1)
     sequence_key = (
         "input"
         if protocol is ModelProtocol.RESPONSES
@@ -255,13 +254,13 @@ async def test_provider_text_requires_explicit_delivery(
         if protocol is ModelProtocol.RESPONSES:
             assert following["instructions"] == previous["instructions"]
             assert following["reasoning"] == previous["reasoning"] == {"effort": "low"}
-    second_input = requests[1][sequence_key]
-    offset = len(requests[0][sequence_key])
-    if protocol is ModelProtocol.RESPONSES:
-        assert second_input[offset : offset + len(outputs[0])] == outputs[0]
-    else:
-        assert second_input[offset] == outputs[0]
-    assert "上一段最终正文没有发送给用户" in json.dumps(second_input, ensure_ascii=False)
+    if explicit_send:
+        second_input = requests[1][sequence_key]
+        offset = len(requests[0][sequence_key])
+        if protocol is ModelProtocol.RESPONSES:
+            assert second_input[offset : offset + len(outputs[0])] == outputs[0]
+        else:
+            assert second_input[offset] == outputs[0]
 
     gateway_sends = [
         params
@@ -274,9 +273,8 @@ async def test_provider_text_requires_explicit_delivery(
         assert gateway_sends[0]["message"] == [{"type": "text", "data": {"text": _ANSWER}}]
         assert not sender.messages
     else:
-        # A bounded operational failure may be sent, never the provider's text.
-        assert result.reason == "agent_output_failure"
-        assert sender.messages
+        assert result.reason == "chat" and result.sent_messages == 0
+        assert not sender.messages
     async with database.sessions() as session:
         outbound_texts = list(
             await session.scalars(
@@ -292,10 +290,9 @@ async def test_provider_text_requires_explicit_delivery(
 
 
 @pytest.mark.asyncio
-async def test_received_empty_response_preserves_reasoning_during_retry(database):
-    # Current HTTP adapters reject completed empty responses before Runner receives
-    # them. Exercise Runner's separate already-received ChatResponse contract;
-    # transport exceptions must never fabricate an assistant message instead.
+async def test_received_empty_response_does_not_fabricate_retry_input(database):
+    # An already accepted final response ends this invocation. Adapter-level
+    # empty-response exceptions retain their separate bounded retry contract.
     responses = iter([ChatResponse("", 0, reasoning_content=_REASONING), ChatResponse("done", 0)])
     provider = FakeLLMProvider(lambda _: next(responses))
     harness = build_harness(database, make_settings(database.url), provider)
@@ -318,8 +315,5 @@ async def test_received_empty_response_preserves_reasoning_during_retry(database
     result = await chat.runtime.runner.run(
         (ChatMessage(role="user", content="report the result"),), runtime, None
     )
-    assert result.text == "done" and result.model_requests == 2
-    first, second = (request.messages for request in provider.requests)
-    assert second[: len(first)] == first
-    assert second[-2] == ChatMessage(role="assistant", content="", reasoning_content=_REASONING)
-    assert second[-1].role == "system" and "上一响应正文为空" in second[-1].content
+    assert result.text == "" and result.model_requests == 1
+    assert len(provider.requests) == 1

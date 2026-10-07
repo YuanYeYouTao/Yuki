@@ -252,6 +252,8 @@ async def test_quote_is_understood_but_not_attributed_to_current_speaker(
     inbound = replace(
         inbound,
         attachments=(),
+        segments=({"type": "text", "data": {"text": inbound.text}},),
+        reply_segments=inbound.segments,
         reply_attachments=tuple(replace(a, source="reply") for a in inbound.attachments),
         reply_sender_user_id="2000",
     )
@@ -467,6 +469,9 @@ async def test_derived_audio_updates_revision_and_survives_migration_rollback(
             "physical_request_count",
         ):
             await connection.execute(text(f"ALTER TABLE model_invocations DROP COLUMN {column}"))
+    async with database.engine.begin() as connection:
+        for column in ("selected_summary_kind", "selected_summary_renderer"):
+            await connection.execute(text(f"ALTER TABLE prompt_projections DROP COLUMN {column}"))
     await asyncio.to_thread(command.upgrade, config, "head")
     await require_canonical_schema(database.url)
     assert any(r.id == saved.id for r in await harness.ledger.search(keyword="迁移之后"))

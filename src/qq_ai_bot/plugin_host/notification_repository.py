@@ -140,7 +140,6 @@ class QueuedCanonicalContext:
     creator_person_id: str
     primary_alias: str
     generation: int
-    scope_id: int
 
 
 class PluginNotificationRepository:
@@ -1040,7 +1039,6 @@ class PluginNotificationRepository:
 
         from qq_ai_bot.conversation.hydrate import (
             require_primary_alias_for_conversation,
-            synthetic_scope_id,
         )
 
         category: str | None = None
@@ -1092,7 +1090,6 @@ class PluginNotificationRepository:
                     creator_person_id=creator_id,
                     primary_alias=primary,
                     generation=int(conversation.generation),
-                    scope_id=synthetic_scope_id(conversation.id),
                 )
         if category is not None and category != TURN_ERROR_ATTEMPT_RECLAIMED:
             # Discovery did not authorize a cancellation. Recheck the live
@@ -1241,6 +1238,13 @@ async def _turn_fence_category(
     expected_generation: int,
     include_coverage: bool,
 ) -> str | None:
+    if not await background_authority_live(
+        session,
+        plugin_id=job.plugin_id,
+        person_id=job.canonical_target_person_id,
+        space_id=job.canonical_target_space_id,
+    ):
+        return "plugin_authority_revoked"
     conversation = await session.get(
         CanonicalConversationModel,
         job.canonical_conversation_id,
@@ -1317,6 +1321,26 @@ async def require_queued_work_readable(session: AsyncSession, row: object) -> No
         session,
         getattr(row, "canonical_presence_id", None),
     )
+
+
+async def background_authority_live(
+    session: AsyncSession,
+    *,
+    plugin_id: str,
+    person_id: str | None,
+    space_id: str | None,
+) -> bool:
+    """Read current installation and the original canonical target grant."""
+    installation = await session.get(PluginInstallationModel, plugin_id)
+    if installation is None or not installation.enabled or installation.status != "running":
+        return False
+    try:
+        grant = await _canonical_enabled_grant(
+            session, plugin_id=plugin_id, person_id=person_id, space_id=space_id
+        )
+    except PluginOwnershipError:
+        return False
+    return grant is not None
 
 
 async def _canonical_enabled_grant(

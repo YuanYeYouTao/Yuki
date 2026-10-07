@@ -5,6 +5,7 @@ import asyncio
 import httpx
 from sqlalchemy import func, select
 from tests.conftest import make_settings
+from tests.support.model_executor import InjectedModelExecutor
 from tests.unit.test_relationships import append_user_event
 from tests.unit.test_rollup_scheduling import executor
 
@@ -197,7 +198,9 @@ async def test_http_retry_revalidates_relationship_claim_for_all_protocols(datab
                 jobs=jobs,
                 relationships=RelationshipRepository(database),
                 evaluator=LLMRelationshipEvaluator(
-                    settings=settings, provider=provider, concurrency=ConcurrencyManager(2)
+                    settings=settings,
+                    model_executor=InjectedModelExecutor(provider),
+                    concurrency=ConcurrencyManager(2),
                 ),
             )
             assert await worker.process_once() == 0

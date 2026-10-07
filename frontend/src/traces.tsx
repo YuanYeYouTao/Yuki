@@ -57,8 +57,35 @@ export function TraceContent({ row }: { row: Row }) {
   const observation = data.observation as Row | undefined;
   const snapshot = (data.snapshot || observation?.snapshot) as Row | undefined;
   const proposal = data.proposal as Row | undefined;
+  const codeFamily = String(row.kind || "").startsWith("code_composition_")
+    ? "代码组合"
+    : String(row.kind || "").startsWith("code_child_")
+      ? "业务子调用"
+      : null;
+  const code = (
+    data.result && typeof data.result === "object" ? data.result : data
+  ) as Row;
   return (
     <>
+      {codeFamily && (
+        <>
+          <h3>{codeFamily}</h3>
+          {code.operation_id && <p>原调用 {text(code.operation_id)}</p>}
+          {code.parent_effect_key && (
+            <p className="small">父调用 {text(code.parent_effect_key)}</p>
+          )}
+          {code.tool && (
+            <p>
+              工具 {text(code.tool)} · 子序号 {text(code.child_ordinal)}
+            </p>
+          )}
+          {code.status && <Badge value={code.status} />}
+          {code.stop_reason && <p>停止原因 {text(code.stop_reason)}</p>}
+          {code.result_ref && (
+            <p className="small">原结果引用 {text(code.result_ref)}</p>
+          )}
+        </>
+      )}
       {snapshot && (
         <>
           <h3>实际语义观察</h3>

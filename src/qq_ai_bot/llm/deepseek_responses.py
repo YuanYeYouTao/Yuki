@@ -2,23 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import html
 import json
 import logging
 import re
-import time
 from collections.abc import Iterable
 from typing import Any
 
 import httpx
-from tenacity import (
-    AsyncRetrying,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_random_exponential,
-)
 
 from qq_ai_bot.domain.messages import (
     ChatMessage,
@@ -35,23 +27,14 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
-from qq_ai_bot.execution_trace.phases import current_model_phases, model_detail
-from qq_ai_bot.execution_trace.recorder import record_http_response, trace_span
 from qq_ai_bot.llm.base import (
-    LLMConfigurationError,
     LLMEmptyResponseError,
-    LLMError,
     LLMInvalidRequestError,
     LLMInvalidResponseError,
     LLMNativeToolError,
-    LLMProvider,
-    LLMTimeoutError,
     LLMUnavailableError,
-    RetryableProviderError,
 )
-from qq_ai_bot.llm.http_errors import check_provider_response
-from qq_ai_bot.llm.wire_diagnostics import WireRequestObserver
-from qq_ai_bot.model_runtime.request_accounting import current_provider_attempts
+from qq_ai_bot.llm.json_http import JSONHTTPProvider
 
 logger = logging.getLogger(__name__)
 
@@ -60,164 +43,32 @@ _CONTINUATION_TYPES = frozenset(
 )
 
 
-class DeepSeekResponsesProvider(LLMProvider):
+class DeepSeekResponsesProvider(JSONHTTPProvider):
     """Translate Yuki's compatibility models to DeepSeek Responses items."""
 
     provider_name = "deepseek"
     supports_tool_choice = False
 
-    def __init__(
-        self,
-        *,
-        base_url: str,
-        api_key: str,
-        timeout_seconds: float,
-        max_retries: int,
-        client: httpx.AsyncClient | None = None,
-        headers: dict[str, str] | None = None,
-    ) -> None:
-        self._wire_observer = WireRequestObserver()
-        self._api_key = api_key
-        self._headers = dict(headers or {})
-        self._max_retries = max_retries
-        self._owns_client = client is None
-        self._timeout = httpx.Timeout(
-            connect=timeout_seconds,
-            read=timeout_seconds,
-            write=timeout_seconds,
-            pool=timeout_seconds,
-        )
-        self._client = client or httpx.AsyncClient(
-            base_url=base_url.rstrip("/"),
-            timeout=self._timeout,
-            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+    protocol = "responses"
+    # Preserve the Responses ReadError contract; native calls never retry.
+    transport_errors = (httpx.ConnectError, httpx.TimeoutException)
+
+    def _path(self, request: ChatRequest) -> str:
+        return "/responses"
+
+    def _parse(self, response: httpx.Response, request: ChatRequest) -> ChatResponse:
+        return self._parse_response(
+            response,
+            self._request_continuation(request),
+            function_outputs=(),
+            allowed_tool_names=frozenset(tool.name for tool in request.tools),
+            native_tools_requested=bool(request.native_tools),
+            latency=0.0,
         )
 
-    async def complete(self, request: ChatRequest) -> ChatResponse:
-        if not self._api_key or not request.model:
-            raise LLMConfigurationError("LLM is not configured")
-        with model_detail("payload_preparation"):
-            payload = self._build_payload(request)
-        started = time.perf_counter()
-        # Native search can already have incurred provider-side work. Avoid replaying
-        # it after an ambiguous response; local-function-only calls retain bounded retries.
-        attempts = 1 if request.native_tools else self._max_retries + 1
-
-        async def retry_sleep(seconds: float) -> None:
-            with model_detail("retry_backoff"):
-                await asyncio.sleep(seconds)
-
-        try:
-            async for attempt in AsyncRetrying(
-                stop=stop_after_attempt(attempts),
-                wait=wait_random_exponential(multiplier=0.25, max=2),
-                retry=retry_if_exception_type(
-                    (httpx.ConnectError, httpx.TimeoutException, RetryableProviderError)
-                ),
-                reraise=True,
-                sleep=retry_sleep,
-            ):
-                with attempt:
-                    from qq_ai_bot.runtime.observability import current_runtime_turn_correlation
-                    from qq_ai_bot.runtime.work_activation import current_work_control
-
-                    work = current_work_control.get()
-                    if work is not None and attempt.retry_state.attempt_number > 1:
-                        with model_detail("retry_budget_preparation"):
-                            await work.reserve_request(auxiliary=True)
-                    correlation = current_runtime_turn_correlation()
-                    logger.info(
-                        "model_transport_attempt protocol=responses correlation_id=%s attempt=%d",
-                        correlation.turn_id if correlation else "unbound",
-                        attempt.retry_state.attempt_number,
-                    )
-                    with model_detail("wire_observation"):
-                        self._wire_observer.observe(
-                            payload,
-                            "responses",
-                            chain_id=request.request_chain_id,
-                            provider=self.provider_name,
-                        )
-                    from qq_ai_bot.model_runtime.request_accounting import (
-                        after_provider_request,
-                        before_provider_request,
-                    )
-
-                    account = before_provider_request.get()
-                    if account is not None:
-                        with model_detail("request_accounting_preparation"):
-                            await account()
-                    finish = after_provider_request.get()
-                    try:
-                        response = await self._post(payload)
-                    except BaseException:
-                        if finish is not None:
-                            await finish("failed", None)
-                        raise
-                    if finish is not None:
-                        try:
-                            raw_body = response.json()
-                        except ValueError:
-                            raw_body = {}
-                        body = raw_body if isinstance(raw_body, dict) else {}
-                        usage = body.get("usage")
-                        usage = usage if isinstance(usage, dict) else {}
-                        await finish(
-                            str(body.get("status", "unknown")),
-                            self._integer(usage.get("output_tokens")),
-                        )
-        except httpx.TimeoutException as exc:
-            raise LLMTimeoutError("LLM request timed out") from exc
-        except (httpx.ConnectError, RetryableProviderError) as exc:
-            raise LLMUnavailableError(
-                "LLM is temporarily unavailable", diagnostics=getattr(exc, "diagnostics", {})
-            ) from exc
-
-        latency = time.perf_counter() - started
-        counter = current_provider_attempts.get()
-        reported_usage = self._reported_usage(response)
-        if counter is not None:
-            counter.reported_usage(reported_usage.get("total_tokens"))
-        try:
-            with model_detail("provider_response_preparation"):
-                parsed = self._parse_response(
-                    response,
-                    self._request_continuation(request),
-                    function_outputs=(),
-                    allowed_tool_names=frozenset(tool.name for tool in request.tools),
-                    native_tools_requested=bool(request.native_tools),
-                    latency=latency,
-                )
-        except LLMError as exc:
-            if reported_usage:
-                exc.diagnostics = {**exc.diagnostics, "usage": reported_usage}
-            raise
-        completed = sum(
-            event.status is NativeToolStatus.COMPLETED for event in parsed.native_tool_events
-        )
-        failed = sum(event.status is NativeToolStatus.FAILED for event in parsed.native_tool_events)
-        logger.info(
-            "responses_request_completed provider=%s protocol=responses success=true "
-            "response_status=%s latency_seconds=%.3f input_tokens=%s output_tokens=%s "
-            "reasoning_tokens=%s cached_tokens=%s function_call_count=%d "
-            "native_web_used=%s native_action_count=%d native_completed_count=%d "
-            "native_failed_count=%d citation_count=%d incomplete_reason=%s",
-            self.provider_name,
-            parsed.status.value,
-            latency,
-            parsed.prompt_tokens,
-            parsed.completion_tokens,
-            parsed.reasoning_tokens,
-            parsed.cached_prompt_tokens,
-            len(parsed.tool_calls),
-            bool(parsed.native_tool_events),
-            len(parsed.native_tool_events),
-            completed,
-            failed,
-            len(parsed.citations),
-            parsed.incomplete_reason or "none",
-        )
-        return parsed
+    @classmethod
+    def _usage_diagnostics(cls, payload: dict[str, Any]) -> dict[str, object]:
+        return {"usage": cls._reported_usage(httpx.Response(200, json=payload))}
 
     def _build_payload(self, request: ChatRequest) -> dict[str, Any]:
         if request.native_tools and request.tool_choice == "none" and not self.supports_tool_choice:
@@ -332,14 +183,7 @@ class DeepSeekResponsesProvider(LLMProvider):
 
     @classmethod
     def _request_continuation(cls, request: ChatRequest) -> ProviderContinuation | None:
-        if request.continuation_items and (
-            request.function_outputs or request.continuation_messages
-        ):
-            raise LLMInvalidRequestError("mixed ordered and legacy continuation inputs")
-        delta = request.continuation_items or (
-            *request.function_outputs,
-            *request.continuation_messages,
-        )
+        delta = request.continuation_items
         if not request.continuation and not delta:
             return None
         items = cls._continuation_items(request.continuation)
@@ -377,40 +221,6 @@ class DeepSeekResponsesProvider(LLMProvider):
         ):
             raise LLMInvalidRequestError("invalid Responses continuation payload")
         return [dict(item) for item in continuation.payload]
-
-    async def _post(self, payload: dict[str, Any]) -> httpx.Response:
-        from qq_ai_bot.model_runtime.dispatch_guard import check_model_dispatch
-
-        async with trace_span(
-            "provider", {"protocol": "responses", "body": payload, "dispatch": "prepared"}
-        ):
-            with model_detail("attempt_dispatch_preparation"):
-                await check_model_dispatch()
-            counter = current_provider_attempts.get()
-            if counter is not None:
-                counter.dispatched()
-            phases = current_model_phases.get()
-            if phases is not None:
-                phases.attempts += 1
-            with model_detail("transport"):
-                response = await self._client.post(
-                    "/responses",
-                    headers={**self._headers, "Authorization": f"Bearer {self._api_key}"},
-                    json=payload,
-                    timeout=self._timeout,
-                )
-            await record_http_response(response)
-            try:
-                check_provider_response(response)
-            except LLMError as exc:
-                reported_usage = self._reported_usage(response)
-                counter = current_provider_attempts.get()
-                if counter is not None:
-                    counter.reported_usage(reported_usage.get("total_tokens"))
-                if reported_usage:
-                    exc.diagnostics = {**exc.diagnostics, "usage": reported_usage}
-                raise
-        return response
 
     @classmethod
     def _reported_usage(cls, response: httpx.Response) -> dict[str, int]:
@@ -832,7 +642,3 @@ class DeepSeekResponsesProvider(LLMProvider):
                 if isinstance(candidate, str):
                     return candidate[:100]
         return None
-
-    async def close(self) -> None:
-        if self._owns_client:
-            await self._client.aclose()

@@ -692,7 +692,6 @@ class ControlQueryAdapter:
         return ActivityView(
             "models",
             {
-                "compatibility_mode": catalog.compatibility_mode,
                 "profiles": [
                     {
                         "id": item.id,

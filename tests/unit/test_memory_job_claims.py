@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from sqlalchemy import func, select
 from tests.conftest import make_settings
+from tests.support.model_executor import InjectedModelExecutor
 from tests.unit.test_memory_mutation import _service
 from tests.unit.test_memory_v2 import _append_event, _claim
 
@@ -156,7 +157,7 @@ async def test_reclaim_during_extraction_discards_all_old_worker_results(
         jobs=jobs,
         facts=MemoryFactService(MemoryFactRepository(database)),
         ledger=ledger,
-        provider=Provider(),
+        model_executor=InjectedModelExecutor(Provider()),
         concurrency=ConcurrencyManager(1),
     )
     assert await worker.enqueue(event.id, "private:1001")
@@ -196,7 +197,7 @@ async def test_reclaim_during_resolution_blocks_fact_and_receipt_without_writer_
         jobs=jobs,
         facts=MemoryFactService(MemoryFactRepository(database)),
         ledger=ledger,
-        provider=Provider(),
+        model_executor=InjectedModelExecutor(Provider()),
         concurrency=ConcurrencyManager(1),
     )
     original_resolve = worker.processor.resolve

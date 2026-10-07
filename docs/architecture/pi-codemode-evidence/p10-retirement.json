@@ -1,0 +1,91 @@
+{
+  "main_iteration": "agent_core.loop.run_agent_loop",
+  "call_graph": [
+    "all MainAgentTurnService entries -> AgentRunner.run -> _run_with_receipts",
+    "_run_with_receipts -> TurnExecution.activate -> agent_core.loop.run_agent_loop",
+    "core -> ModelBoundary/InvocationBoundary/TurnSettlement (11 fixed operations)",
+    "request -> prepare_request -> _PrimaryDispatch.admit/complete -> observe_response",
+    "invocation -> ToolInvocationCoordinator -> InvocationService -> typed execute_call",
+    "execute_code -> CodeModeDriver/Host -> same InvocationService/backend/control"
+  ],
+  "main_iteration_call_sites": [
+    "src/qq_ai_bot/services/turn_execution.py:366"
+  ],
+  "removed": [
+    "production AgentRunner._run",
+    "production Callbacks bag/union",
+    "begin_batch compatibility call",
+    "legacy tool execute(name,args,runtime) adapter",
+    "dynamic backend/model fallback in Runner/Turn/Coordinator",
+    "WorkerBackend.__getattr__"
+  ],
+  "owners": {
+    "TurnState": {
+      "fields": [
+        "transcript",
+        "evidence_observation",
+        "fixed_definitions",
+        "staged_evidence_results",
+        "calls_used",
+        "web_was_used",
+        "empty_retries",
+        "mention_recovery_used",
+        "answer_recovery_used",
+        "native_events",
+        "citations",
+        "response_status",
+        "incomplete_recovery_used",
+        "continuation_tools",
+        "continuation_native_tools",
+        "previous_batch_fingerprint",
+        "repeated_batch_count",
+        "no_progress_recovery",
+        "reusable_tool_results",
+        "input_feedback_watermark",
+        "stage_feedback_batch",
+        "pending_stage_feedback",
+        "provider_pause_replay",
+        "ordinary_compaction_tokens",
+        "ordinary_observations",
+        "ordinary_evidence",
+        "observed_event_ids",
+        "public_tail",
+        "deferred_paid_compaction",
+        "control",
+        "boundary",
+        "paid_staging",
+        "exact_dispatch_replay",
+        "definitions",
+        "response_observation",
+        "coordinated",
+        "observations",
+        "opportunity"
+      ],
+      "lifetime": "one activation of original Work"
+    },
+    "TurnExecution": "three fixed core boundaries; no registration/extension hooks",
+    "_PrimaryDispatch": "one frozen model candidate and original reservation/CAS",
+    "_OrdinarySummaryDispatch": "one ordinary tool-free summary and auxiliary counter",
+    "_WorkSummaryDispatch": "one original Work summary page and source validation",
+    "AgentToolBackend": "fixed declaration/exposure/domain executor contract, no loop control",
+    "CodeModeDriver": "subcall/feed state only; no model iteration or second scheduler"
+  },
+  "retained": [
+    "explicit test-provider normalization outside Runner",
+    "paired legacy journal reader and original effect reconciliation",
+    "summary paging and ordered tool batches (not alternate main loops)"
+  ],
+  "dynamic_fallback_sites": [],
+  "source_sha256": {
+    "src/qq_ai_bot/services/agent_runner.py": "bcfb0de33c366231a36825fefbe979e6a30d987edb30519eaedc9680267f9f26",
+    "src/qq_ai_bot/services/turn_execution.py": "420cf1b390f5531c6637662cf5fbc374744245840612ca3eb381ca4ac7865958",
+    "src/qq_ai_bot/agent_core/loop.py": "ae70d4ddb208aa81163efa6e186757b4e8b962be7e59dc2c84afb914e34a3b1d",
+    "src/qq_ai_bot/agent_core/model_boundary.py": "7cad2e1bf064f88b39c50817b4ac9a22bc7071eeb524fd61cde4ef8d67eb5f94",
+    "src/qq_ai_bot/capabilities/coordinator.py": "98bf587227f0425bb582a3876d898c6d3e85a308c085470de974eb3e5c43b1c0",
+    "src/qq_ai_bot/services/subagent_execution.py": "2459f40afc78d9482ddea119dadf957b40a566310a5870b4ee1c98ac2b4252a2"
+  },
+  "limits": [
+    "AST inspection proves these sources; behavioral/entrypoint tests provide runtime evidence.",
+    "No structural result by itself proves faster models, deployment or external effects."
+  ]
+}

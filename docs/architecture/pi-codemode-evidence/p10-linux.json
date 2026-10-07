@@ -1,0 +1,16 @@
+{
+  "passed": 61,
+  "skipped": 0,
+  "seconds": 22.97,
+  "log_sha256": "14d8e828757ae4aaa8694836f145beed2c73c2577794af083490c670918876ed",
+  "command": "YUKI_MONTY_BINARY=/opt/yuki-monty/monty YUKI_MONTY_LAUNCHER=/opt/yuki-monty/monty-isolated uv run --frozen pytest -q -p no:warnings tests/unit/test_agent_core_loop.py tests/unit/test_agent_receipt_loop.py tests/unit/test_agent_core_differential.py tests/integration/test_codemode_composition.py tests/integration/test_codemode_control_gate.py tests/integration/test_codemode_resource_policy.py tests/integration/test_invocation_process_crash.py",
+  "environment": "dedicated Debian 12/aarch64, root-owned isolated launcher, no user mounts/secrets/production data",
+  "native_sha256": "fc4ee999669c5f520f6d37333b13e341fc4a00493785e0a6e6b6133dfe435241",
+  "launcher_sha256": "bc3dd9cd7d1d0f0c11fe294c5e586ca30a28f4281271ee9cda3db800abd07c63",
+  "source_sha256": {
+    "src/qq_ai_bot/services/agent_runner.py": "bcfb0de33c366231a36825fefbe979e6a30d987edb30519eaedc9680267f9f26",
+    "src/qq_ai_bot/services/turn_execution.py": "420cf1b390f5531c6637662cf5fbc374744245840612ca3eb381ca4ac7865958",
+    "src/qq_ai_bot/agent_core/loop.py": "ae70d4ddb208aa81163efa6e186757b4e8b962be7e59dc2c84afb914e34a3b1d"
+  },
+  "real_business_effects": 0
+}

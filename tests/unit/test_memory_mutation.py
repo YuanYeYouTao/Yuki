@@ -15,6 +15,7 @@ import pytest
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from tests.conftest import make_settings
+from tests.support.model_executor import InjectedModelExecutor
 
 from qq_ai_bot.admin.audit import AdminAuditService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
@@ -82,7 +83,6 @@ from qq_ai_bot.memory.self_reflection.worker import SelfReflectionWorker
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import ResolvedSubject
 from qq_ai_bot.memory.validation import ValidatedMemoryClaim
-from qq_ai_bot.model_runtime.executor import LegacyTaskModelExecutor
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     MemoryFactModel,
@@ -1515,7 +1515,7 @@ async def test_self_reflection_batch_survives_presence_switch(database: Database
         repository=repository,
         facts=facts,
         mutations=mutation_service,
-        models=LegacyTaskModelExecutor(provider),
+        models=InjectedModelExecutor(provider),
         metrics=MemoryLifecycleMetrics(),
     )
     historical_episode = await facts.remember(
@@ -1734,7 +1734,7 @@ async def test_self_reflection_skips_reset_prefix_and_recovers_committed_batch(
         repository=repository,
         facts=facts,
         mutations=mutation_service,
-        models=LegacyTaskModelExecutor(provider),
+        models=InjectedModelExecutor(provider),
         metrics=MemoryLifecycleMetrics(),
     )
     assert await reflection.reflect(batch) == (2, 1)
@@ -2253,11 +2253,10 @@ async def test_agent_tool_and_worker_share_one_claim_receipt(
         conversation_key="private:1001",
         trigger_message_id=event.platform_message_id,
         trigger_event_id=event.id if has_event_id else None,
-        actor_user_id=event.sender_user_id,
         origin=TurnOrigin.USER_MESSAGE,
     )
     assert "memory_change" in {tool.name for tool in tools.definitions(runtime)}
-    response = json.loads(
+    response = (
         await tools.execute(
             "memory_change",
             json.dumps(
@@ -2277,9 +2276,9 @@ async def test_agent_tool_and_worker_share_one_claim_receipt(
             ),
             runtime,
         )
-    )
+    ).model_payload()
     if not has_event_id:
-        assert response["error"] == "trigger_event_not_found"
+        assert response["error_code"] == "trigger_event_not_found"
         async with database.sessions() as session:
             assert (
                 await session.scalar(select(func.count()).select_from(MemoryMutationReceiptModel))
@@ -2479,13 +2478,12 @@ async def test_fact_id_tool_operation_infers_target_and_defaults_reason(
         conversation_key="private:1001",
         trigger_message_id=delete_event.platform_message_id,
         trigger_event_id=delete_event.id,
-        actor_user_id=delete_event.sender_user_id,
         origin=TurnOrigin.USER_MESSAGE,
     )
     definition = next(tool for tool in tools.definitions(runtime) if tool.name == "memory_change")
     assert definition.parameters["required"] == ["operation"]
 
-    response = json.loads(
+    response = (
         await tools.execute(
             "memory_change",
             json.dumps(
@@ -2498,7 +2496,7 @@ async def test_fact_id_tool_operation_infers_target_and_defaults_reason(
             ),
             runtime,
         )
-    )
+    ).model_payload()
 
     assert response["ok"]
     assert response["data"]["outcome"] == "committed"
@@ -2545,8 +2543,6 @@ async def test_user_message_turn_can_create_self_memory_from_current_event(
         conversation_key="group:3001:user:1001",
         trigger_message_id=event.platform_message_id,
         trigger_event_id=event.id,
-        actor_user_id=event.sender_user_id,
-        current_group_id=event.group_id,
         origin=TurnOrigin.USER_MESSAGE,
     )
 
@@ -2557,7 +2553,7 @@ async def test_user_message_turn_can_create_self_memory_from_current_event(
     assert "其他目标误填合法值会被后端忽略" in visibility_schema["description"]  # type: ignore[index]
     category_schema = definition.parameters["properties"]["category"]  # type: ignore[index]
     assert "self_episode" in category_schema["description"]  # type: ignore[index]
-    rejected = json.loads(
+    rejected = (
         await tools.execute(
             "memory_change",
             json.dumps(
@@ -2575,9 +2571,9 @@ async def test_user_message_turn_can_create_self_memory_from_current_event(
             ),
             runtime,
         )
-    )
+    ).model_payload()
     assert not rejected["ok"]
-    assert rejected["error"] == "invalid_self_memory_category"
+    assert rejected["error_code"] == "invalid_self_memory_category"
     assert rejected["data"]["reason_code"] == "invalid_self_memory_category"
     assert rejected["data"]["allowed_self_categories"] == [
         "self_fact",
@@ -2586,7 +2582,7 @@ async def test_user_message_turn_can_create_self_memory_from_current_event(
         "self_reflection",
         "self_principle",
     ]
-    response = json.loads(
+    response = (
         await tools.execute(
             "memory_change",
             json.dumps(
@@ -2605,7 +2601,7 @@ async def test_user_message_turn_can_create_self_memory_from_current_event(
             ),
             runtime,
         )
-    )
+    ).model_payload()
 
     assert response["ok"]
     fact = await facts.get_fact(response["data"]["new_fact_id"])
@@ -2616,15 +2612,15 @@ async def test_user_message_turn_can_create_self_memory_from_current_event(
 
     self_tool = next(tool for tool in tools.definitions(runtime) if tool.name == "search_memory")
     assert "SELF" in self_tool.description
-    listed = json.loads(
+    listed = (
         await tools.execute(
-            "get_self_memories",
-            json.dumps({"mode": "overview", "limit": 10}),
+            "search_memory",
+            json.dumps({"query": "自我记忆", "target": {"scope": "self"}, "limit": 10}),
             runtime,
         )
-    )
+    ).model_payload()
     assert listed["ok"]
-    assert listed["data"]["visible_scope"] == "global_and_current_group"
+    assert listed["data"]["result_scope"] == "explicit_targets"
     assert [item["fact_id"] for item in listed["data"]["memories"]] == [fact.id]
     serialized = json.dumps(listed["data"], ensure_ascii=False)
     assert "visibility_user_id" not in serialized
@@ -2668,12 +2664,10 @@ async def test_autonomous_group_turn_can_change_memory_like_user(database: Datab
         conversation_key="group:3001:user:1001",
         trigger_message_id=event.platform_message_id,
         trigger_event_id=event.id,
-        actor_user_id=event.sender_user_id,
-        current_group_id=event.group_id,
         origin=TurnOrigin.AUTONOMOUS_GROUP,
     )
     assert "memory_change" in {tool.name for tool in tools.definitions(runtime)}
-    response = json.loads(
+    response = (
         await tools.execute(
             "memory_change",
             json.dumps(
@@ -2691,7 +2685,7 @@ async def test_autonomous_group_turn_can_change_memory_like_user(database: Datab
             ),
             runtime,
         )
-    )
+    ).model_payload()
     assert response["ok"]
     fact = await facts.get_fact(response["data"]["new_fact_id"])
     assert fact is not None
@@ -2899,8 +2893,6 @@ async def test_named_member_fuzzy_candidates_can_be_selected_by_agent(database: 
         conversation_key="group:3001",
         trigger_message_id=event.platform_message_id,
         trigger_event_id=event.id,
-        actor_user_id="1001",
-        current_group_id="3001",
         origin=TurnOrigin.USER_MESSAGE,
     )
     arguments = {
@@ -2916,17 +2908,17 @@ async def test_named_member_fuzzy_candidates_can_be_selected_by_agent(database: 
         "evidence_quote": event.content,
     }
 
-    unresolved = json.loads(
+    unresolved = (
         await tools.execute("memory_change", json.dumps(arguments, ensure_ascii=False), runtime)
-    )
-    assert unresolved["error"] == "subject_resolution_required"
+    ).model_payload()
+    assert unresolved["error_code"] == "subject_resolution_required"
     assert unresolved["retryable"] is True
     assert unresolved["data"]["candidates"][0]["user_id"] == "2002"
 
     arguments["target"]["candidate_ref"] = "member_candidate_1"
-    committed = json.loads(
+    committed = (
         await tools.execute("memory_change", json.dumps(arguments, ensure_ascii=False), runtime)
-    )
+    ).model_payload()
     assert committed["ok"] is True
     fact = await facts.get_fact(committed["data"]["new_fact_id"])
     assert fact is not None and fact.subject_user_id == "2002"
@@ -3399,7 +3391,7 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
         content="我喜欢围棋",
         group_id="3002",
     )
-    other_group_fact = await facts.remember(
+    await facts.remember(
         MemoryFactCreate(
             scope_type=MemoryScopeType.PERSON,
             subject_user_id="2002",
@@ -3492,9 +3484,6 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
         inbound=inbound,
         gateway=None,
         allow_generic_onebot=False,
-        actor_user_id="1001",
-        current_group_id="3001",
-        mentioned_user_ids=("2002",),
     )
     definitions = tools.definitions(runtime)
     assert not {"get_person_memories", "get_group_memories", "get_self_memories"} & {
@@ -3506,13 +3495,13 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     assert set(properties) >= {"query", "target", "purpose", "entities"}  # type: ignore[arg-type]
     assert "mentioned_user_1" in properties["target"]["properties"]["subject_ref"]["enum"]  # type: ignore[index]
 
-    global_search = json.loads(
+    global_search = (
         await tools.execute("search_memory", json.dumps({"query": "喜欢天文"}), runtime)
-    )
+    ).model_payload()
     assert global_search["ok"], global_search
     assert global_search["data"]["result_scope"] == "authorized_maximum"
     assert global_search["data"]["partial_reason"] == "semantic_not_configured"
-    explicit_missing = json.loads(
+    explicit_missing = (
         await tools.execute(
             "search_memory",
             json.dumps(
@@ -3523,7 +3512,7 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
             ),
             runtime,
         )
-    )
+    ).model_payload()
     assert explicit_missing["ok"]
     assert explicit_missing["data"]["result_scope"] == "explicit_targets"
     assert explicit_missing["data"]["returned_count"] == 0
@@ -3531,15 +3520,15 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     assert explicit_missing["data"]["exhaustive"] is False
     assert explicit_missing["data"]["partial_reason"] == "semantic_not_configured"
     assert projected_fact.id in {row["fact_id"] for row in global_search["data"]["memories"]}
-    top_one = json.loads(
+    top_one = (
         await tools.execute(
             "search_memory", json.dumps({"query": "旧群友喜欢天文", "limit": 1}), runtime
         )
-    )
+    ).model_payload()
     assert [row["fact_id"] for row in top_one["data"]["memories"]] == [late_high_rank_fact.id]
-    historical_search = json.loads(
+    historical_search = (
         await tools.execute("search_memory", json.dumps({"query": "昆虫标本"}), runtime)
-    )
+    ).model_payload()
     historical_ids = {row["fact_id"] for row in historical_search["data"]["memories"]}
     assert historical_fact.id in historical_ids
     assert inaccessible_fact.id not in historical_ids
@@ -3552,49 +3541,46 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
             .where(IdentityBindingModel.external_account_id == "4004")
             .values(status="disabled")
         )
-    unbound_search = json.loads(
+    unbound_search = (
         await tools.execute("search_memory", json.dumps({"query": "昆虫标本"}), runtime)
-    )
+    ).model_payload()
     assert unbound_search["ok"], unbound_search
     assert historical_fact.id in {row["fact_id"] for row in unbound_search["data"]["memories"]}
     person_only = replace(
         runtime,
         origin=TurnOrigin.PLUGIN_SESSION,
+        actor_context=None,
         memory_allowed_scopes=(MemoryScopeType.PERSON, MemoryScopeType.PERSON_GROUP),
     )
     group_only = replace(
         runtime,
         origin=TurnOrigin.PLUGIN_SESSION,
+        actor_context=None,
         memory_allowed_scopes=(MemoryScopeType.GROUP,),
     )
-    person_result = json.loads(
+    person_result = (
         await tools.execute("search_memory", json.dumps({"query": "喜欢天文"}), person_only)
-    )
+    ).model_payload()
     assert projected_fact.id in {row["fact_id"] for row in person_result["data"]["memories"]}
     assert group_only_fact.id not in {row["fact_id"] for row in person_result["data"]["memories"]}
-    group_result = json.loads(
+    group_result = (
         await tools.execute("search_memory", json.dumps({"query": "群活动远足"}), group_only)
-    )
+    ).model_payload()
     assert group_only_fact.id in {row["fact_id"] for row in group_result["data"]["memories"]}
     assert (
-        json.loads(
-            await tools.execute(
-                "get_memory_fact", json.dumps({"fact_id": group_fact.id}), group_only
-            )
-        )["error"]
-        == "memory_not_found"
-    )
-    assert json.loads(
+        await tools.execute("get_memory_fact", json.dumps({"fact_id": group_fact.id}), group_only)
+    ).model_payload()["error_code"] == "memory_not_found"
+    assert (
         await tools.execute(
             "get_memory_fact", json.dumps({"fact_id": group_only_fact.id}), group_only
         )
-    )["ok"]
+    ).model_payload()["ok"]
     strict_person_only = replace(person_only, memory_allowed_scopes=(MemoryScopeType.PERSON,))
-    strict_person_result = json.loads(
+    strict_person_result = (
         await tools.execute(
             "search_memory", json.dumps({"query": "在本群负责摄影"}), strict_person_only
         )
-    )
+    ).model_payload()
     assert group_fact.id not in {row["fact_id"] for row in strict_person_result["data"]["memories"]}
     self_actor = ToolActor(
         user_id="",
@@ -3611,52 +3597,38 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     self_runtime = replace(
         runtime,
         inbound=None,
-        actor_user_id="",
         actor_context=self_actor,
         origin=TurnOrigin.SELF_INITIATIVE,
         execution_id=self_actor.execution_id,
         initiative_run_id=self_actor.initiative_run_id,
         conversation_id=self_actor.conversation_id,
-        presence_id=self_actor.presence_id,
         scope_type=ScopeType.GROUP,
-        bot_user_id=self_actor.bot_user_id,
     )
-    self_search = json.loads(
+    self_search = (
         await tools.execute("search_memory", json.dumps({"query": "在本群负责摄影"}), self_runtime)
-    )
+    ).model_payload()
     assert group_fact.id not in {row["fact_id"] for row in self_search["data"]["memories"]}
     assert (
-        json.loads(
-            await tools.execute(
-                "get_memory_fact", json.dumps({"fact_id": group_fact.id}), self_runtime
-            )
-        )["error"]
-        == "memory_not_found"
-    )
+        await tools.execute("get_memory_fact", json.dumps({"fact_id": group_fact.id}), self_runtime)
+    ).model_payload()["error_code"] == "memory_not_found"
     assert (
-        json.loads(
-            await tools.execute(
-                "get_memory_fact", json.dumps({"fact_id": global_fact.id}), self_runtime
-            )
-        )["error"]
-        == "memory_not_found"
-    )
-    assert json.loads(
+        await tools.execute(
+            "get_memory_fact", json.dumps({"fact_id": global_fact.id}), self_runtime
+        )
+    ).model_payload()["error_code"] == "memory_not_found"
+    assert (
         await tools.execute(
             "get_memory_fact", json.dumps({"fact_id": group_only_fact.id}), self_runtime
         )
-    )["ok"]
+    ).model_payload()["ok"]
     assert (
-        json.loads(
-            await tools.execute(
-                "search_memory",
-                json.dumps({"query": "喜欢天文", "target": {"scope": "person", "user_id": "2002"}}),
-                group_only,
-            )
-        )["error"]
-        == "permission_denied"
-    )
-    scoped_search = json.loads(
+        await tools.execute(
+            "search_memory",
+            json.dumps({"query": "喜欢天文", "target": {"scope": "person", "user_id": "2002"}}),
+            group_only,
+        )
+    ).model_payload()["error_code"] == "permission_denied"
+    scoped_search = (
         await tools.execute(
             "search_memory",
             json.dumps(
@@ -3667,78 +3639,39 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
             ),
             runtime,
         )
-    )
+    ).model_payload()
     assert scoped_search["ok"]
     assert scoped_search["data"]["result_scope"] == "explicit_targets"
-    denied_search = json.loads(
+    denied_search = (
         await tools.execute(
             "search_memory",
             json.dumps({"query": "喜欢围棋", "target": {"scope": "group", "group_id": "3002"}}),
             runtime,
         )
-    )
-    assert denied_search["error"] == "permission_denied"
+    ).model_payload()
+    assert denied_search["error_code"] == "permission_denied"
 
-    by_reference = json.loads(
-        await tools.execute(
-            "get_person_memories",
-            json.dumps({"subject_ref": "mentioned_user_1"}),
-            runtime,
-        )
-    )
-    reference_ids = {row["fact_id"] for row in by_reference["data"]["memories"]}
-    assert by_reference["data"]["resolved_by"] == "subject_ref"
-    assert by_reference["data"]["subject_ref"] == "mentioned_user_1"
-    assert group_fact.id in reference_ids
-    assert projected_fact.id in reference_ids
-    assert global_fact.id in reference_ids
-    assert other_group_fact.id in reference_ids
-    projected_row = next(
-        row for row in by_reference["data"]["memories"] if row["fact_id"] == projected_fact.id
-    )
-    assert "access_scope" not in projected_row  # No old evidence-only projection.
-
-    listed = json.loads(
-        await tools.execute(
-            "get_person_memories",
-            json.dumps({"user_id": "2002"}),
-            runtime,
-        )
-    )
-    visible_ids = {row["fact_id"] for row in listed["data"]["memories"]}
-    assert group_fact.id in visible_ids
-    assert projected_fact.id in visible_ids
-    assert global_fact.id in visible_ids
-    assert other_group_fact.id in visible_ids
-    queried = json.loads(
-        await tools.execute(
-            "get_person_memories",
-            json.dumps({"subject_ref": "mentioned_user_1", "query": "天文"}),
-            runtime,
-        )
-    )
-    assert projected_fact.id in {row["fact_id"] for row in queried["data"]["memories"]}
-    group_lookup = json.loads(
+    group_lookup = (
         await tools.execute(
             "get_memory_fact",
             json.dumps({"fact_id": group_fact.id}),
             runtime,
         )
-    )
-    global_lookup = json.loads(
+    ).model_payload()
+    global_lookup = (
         await tools.execute(
             "get_memory_fact",
             json.dumps({"fact_id": global_fact.id}),
             runtime,
         )
-    )
-    projected_lookup = json.loads(
+    ).model_payload()
+    projected_lookup = (
         await tools.execute(
             "get_memory_fact",
             json.dumps({"fact_id": projected_fact.id}),
             runtime,
         )
-    )
+    ).model_payload()
     assert group_lookup["ok"]
     assert global_lookup["ok"]
     assert projected_lookup["ok"]
@@ -3748,38 +3681,48 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     private_runtime = replace(
         runtime,
         inbound=replace(inbound, scope_type=ScopeType.PRIVATE, group_id=None, bot_user_id="8001"),
-        current_group_id=None,
+        actor_context=None,
     )
-    private_list = json.loads(
-        await tools.execute("get_person_memories", json.dumps({"user_id": "2002"}), private_runtime)
-    )
-    assert {row["fact_id"] for row in private_list["data"]["memories"]} == visible_ids
-    evidence = json.loads(
+    evidence = (
         await tools.execute(
             "get_memory_evidence", json.dumps({"fact_id": projected_fact.id}), private_runtime
         )
-    )
+    ).model_payload()
     assert not evidence["ok"]
-    background = json.loads(
+    background = (
         await tools.execute(
-            "get_person_memories",
-            json.dumps({"user_id": "2002"}),
-            replace(private_runtime, origin=TurnOrigin.PLUGIN_BACKGROUND),
+            "search_memory",
+            json.dumps({"query": "天文", "target": {"scope": "person", "user_id": "2002"}}),
+            replace(private_runtime, origin=TurnOrigin.PLUGIN_BACKGROUND, actor_context=None),
         )
-    )
-    assert not background["ok"]
+    ).model_payload()
+    # Origin labels do not revoke a retained real actor; the common query plane
+    # still applies the same person and scope read authorization.
+    assert background["ok"]
     await people.observe(user_id="2003", nickname="间接关系", group_id="3002")
-    indirect = json.loads(
-        await tools.execute("get_person_memories", json.dumps({"user_id": "2003"}), private_runtime)
-    )
+    indirect = (
+        await tools.execute(
+            "search_memory",
+            json.dumps({"query": "天文", "target": {"scope": "person", "user_id": "2003"}}),
+            private_runtime,
+        )
+    ).model_payload()
     assert not indirect["ok"] and indirect["retryable"] is False
-    unrelated_group = json.loads(
-        await tools.execute("get_group_memories", json.dumps({"group_id": "3002"}), private_runtime)
-    )
+    unrelated_group = (
+        await tools.execute(
+            "search_memory",
+            json.dumps({"query": "群活动", "target": {"scope": "group", "group_id": "3002"}}),
+            private_runtime,
+        )
+    ).model_payload()
     assert not unrelated_group["ok"]
-    historical_group = json.loads(
-        await tools.execute("get_group_memories", json.dumps({"group_id": "3001"}), private_runtime)
-    )
+    historical_group = (
+        await tools.execute(
+            "search_memory",
+            json.dumps({"query": "群活动", "target": {"scope": "group", "group_id": "3001"}}),
+            private_runtime,
+        )
+    ).model_payload()
     assert historical_group["ok"]
     assert {row["fact_id"] for row in historical_group["data"]["memories"]} == {group_only_fact.id}
     from qq_ai_bot.identity.db_models import CanonicalSpaceModel
@@ -3791,298 +3734,26 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
             .where(CanonicalSpaceModel.id == old_space)
             .values(enabled=False)
         )
-    complete_search = json.loads(
+    complete_search = (
         await tools.execute("search_memory", json.dumps({"query": "昆虫标本"}), private_runtime)
-    )
+    ).model_payload()
     assert complete_search["data"]["partial_reason"] == "semantic_not_configured"
     assert complete_search["data"]["partial_reason"] != "owner_projection_unavailable"
-    cross_group = replace(
-        runtime, inbound=replace(inbound, group_id="3002"), current_group_id="3002"
-    )
-    assert json.loads(
+    cross_group = replace(runtime, inbound=replace(inbound, group_id="3002"), actor_context=None)
+    assert (
         await tools.execute("get_memory_fact", json.dumps({"fact_id": group_fact.id}), cross_group)
-    )["ok"]
+    ).model_payload()["ok"]
     private_runtime = replace(
         private_runtime,
         runtime_config=await tools._runtime_config.snapshot(user_id="1001", group_id=None),
     )
     assert await people.delete_person("1001")
-    forgotten = json.loads(
+    forgotten = (
         await tools.execute(
             "get_memory_fact", json.dumps({"fact_id": global_fact.id}), private_runtime
         )
-    )
+    ).model_payload()
     assert not forgotten["ok"]
-
-
-@pytest.mark.asyncio
-async def test_memory_tool_selectors_share_intent_reads_and_cache_with_historical_names(
-    database: Database,
-) -> None:
-    _service_unused, facts, ledger, _processor = _service(database)
-    people = PeopleRepository(database)
-    await people.observe(user_id="1001", nickname="请求者", group_id="3001")
-    await people.observe(
-        user_id="2002",
-        nickname="查无此人",
-        group_id="3001",
-        group_card="摄影师",
-    )
-    group_fact = await facts.remember(
-        MemoryFactCreate(
-            scope_type=MemoryScopeType.PERSON_GROUP,
-            subject_user_id="2002",
-            group_id="3001",
-            kind=MemoryKind.FACT,
-            memory_key="role:photographer",
-            category="role",
-            content="在本群负责摄影",
-            importance=3,
-            confidence=0.8,
-            source_type=MemorySourceType.AUTOMATIC,
-            authority=MemoryAuthority.THIRD_PARTY,
-        )
-    )
-    inbound = InboundMessage(
-        message_id="manual-member-read",
-        event_type="message:group:normal",
-        scope_type=ScopeType.GROUP,
-        sender=SenderIdentity(user_id="1001"),
-        text="查一下摄影师的记忆",
-        bot_user_id="8000",
-        group_id="3001",
-    )
-    tools = AgentToolService(
-        settings=make_settings("sqlite+aiosqlite:///:memory:"),
-        ledger=ledger,
-        memories=facts,
-        actions=AgentActionRepository(database),
-    )
-    runtime = ToolRuntime(
-        inbound=inbound,
-        gateway=None,
-        allow_generic_onebot=False,
-        actor_user_id="1001",
-        current_group_id="3001",
-    )
-
-    by_qq = json.loads(
-        await tools.execute(
-            "get_person_memories",
-            json.dumps({"user_id": "2002"}),
-            runtime,
-        )
-    )
-    by_name = json.loads(
-        await tools.execute(
-            "get_person_memories",
-            json.dumps({"display_name": "摄影师"}),
-            runtime,
-        )
-    )
-    assert by_qq["ok"] and by_qq["data"]["resolved_by"] == "user_id"
-    assert by_name["ok"] and by_name["data"]["resolved_by"] == "display_name"
-    assert by_name["evidence_state"]["source"] == "memory_tool"
-    assert by_name["evidence_state"]["source_refs"] == [f"M{group_fact.id}"]
-    assert by_name["evidence_state"]["delivery"] == "staged"
-    from qq_ai_bot.capabilities.results import ToolResultBudgeter, normalize_legacy_result
-    from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE
-
-    # Check the actual tool normalization/budget boundary, not only the raw
-    # service result: the model must receive the host's interpretation rule.
-    model_result = await ToolResultBudgeter(
-        max_characters=(
-            await tools._runtime_config.snapshot(user_id="1001", group_id="3001")
-        ).agent.tool_result_max_characters
-    ).render(normalize_legacy_result(by_name, provider_id="core", tool_name="get_person_memories"))
-    model_payload = json.loads(model_result.text)
-    assert model_payload["memory_grounding_policy"] == MEMORY_GROUNDING_RULE
-    assert model_payload["data"]["exhaustive"] is False
-    assert model_payload["data"]["result_scope"] == "bounded_query"
-    assert model_payload["data"]["returned_count"] == len(by_name["data"]["memories"])
-    conflicting = json.loads(
-        await tools.execute(
-            "get_person_memories",
-            json.dumps({"subject_ref": "current_speaker", "user_id": "2002"}),
-            runtime,
-        )
-    )
-    assert conflicting["ok"] is False
-    assert conflicting["error"] == "invalid_person_selector"
-    assert conflicting["retryable"] is False
-    assert {row["fact_id"] for row in by_qq["data"]["memories"]} == {group_fact.id}
-    assert {row["fact_id"] for row in by_name["data"]["memories"]} == {group_fact.id}
-
-    # A valid person selection does not grant access to an explicitly restricted group.
-    # Nor does that group's denial revoke the broader historical-person read policy.
-    await people.observe(user_id="1001", nickname="请求者", group_id="3002")
-    from unittest.mock import patch
-
-    with patch.object(tools, "_read_memories", side_effect=AssertionError("must not query")):
-        restricted = json.loads(
-            await tools.execute(
-                "get_person_memories",
-                json.dumps({"display_name": "摄影师", "group_id": "3002"}),
-                runtime,
-            )
-        )
-    assert restricted["error"] == "permission_denied"
-    assert restricted["retryable"] is False
-    assert restricted["data"] == {"denied_scope": "explicit_group", "query_executed": False}
-    assert restricted["evidence_state"]["source_refs"] == []
-    assert restricted["evidence_state"]["query_status"] == "denied"
-
-    private_runtime = replace(
-        runtime,
-        inbound=replace(inbound, scope_type=ScopeType.PRIVATE, group_id=None),
-        current_group_id=None,
-    )
-    private_name = json.loads(
-        await tools.execute(
-            "get_person_memories", json.dumps({"display_name": "摄影师"}), private_runtime
-        )
-    )
-    assert private_name["data"]["memories"] == by_name["data"]["memories"]
-    named_group = json.loads(
-        await tools.execute(
-            "get_group_memories", json.dumps({"group_name": "test-3001"}), private_runtime
-        )
-    )
-    assert named_group["ok"] and named_group["data"]["group_id"] == "3001"
-    no_default = json.loads(await tools.execute("get_group_memories", "{}", private_runtime))
-    assert not no_default["ok"] and no_default["error"] == "group_required"
-    current_default = json.loads(await tools.execute("get_group_memories", "{}", runtime))
-    assert current_default["ok"] and current_default["data"]["group_id"] == "3001"
-    named_person_group = json.loads(
-        await tools.execute(
-            "get_person_memories",
-            json.dumps({"display_name": "摄影师", "group_name": "test-3001"}),
-            private_runtime,
-        )
-    )
-    assert {row["fact_id"] for row in named_person_group["data"]["memories"]} == {group_fact.id}
-    from qq_ai_bot.memory.enums import MemorySubjectRole
-
-    query_args = json.dumps(
-        {
-            "user_id": "2002",
-            "query": "摄影",
-            "purpose": "verify",
-            "entities": ["摄影"],
-            "preferred_kinds": ["fact"],
-            "start_at": "2026-01-01T00:00:00+00:00",
-        }
-    )
-    with (
-        patch.object(tools._memory_context, "search", wraps=tools._memory_context.search) as search,
-        patch.object(
-            tools._memory_context,
-            "record_tool_read_outcome",
-            wraps=tools._memory_context.record_tool_read_outcome,
-        ) as read_outcomes,
-    ):
-        first_read = await tools.execute("get_person_memories", query_args, private_runtime)
-        second_read = await tools.execute("get_person_memories", query_args, private_runtime)
-        assert first_read == second_read
-        assert search.await_count == 1
-        intent = search.call_args.kwargs["intent"]
-        assert intent.entities == ("摄影",) and intent.purpose.value == "verify"
-        assert intent.preferred_kinds == (MemoryKind.FACT,)
-        assert intent.subjects == (MemorySubjectRole.REFERENCED_PERSON,)
-        assert intent.temporal.start_at.year == 2026
-        assert any(call.args[1] == "duplicate" for call in read_outcomes.await_args_list)
-    assert tools._memory_context.metrics.count("memory_read_duplicate") >= 1
-    # All three entrypoints carry the same explicit intent through the real Query
-    # Plane; only the authorized target differs.
-    advanced = json.loads(query_args)
-    del advanced["user_id"]
-    advanced["mode"] = "lexical"
-    advanced["end_at"] = "2027-01-01T00:00:00+00:00"
-    for tool_name in ("get_group_memories", "get_self_memories"):
-        with patch.object(
-            tools._memory_context, "search", wraps=tools._memory_context.search
-        ) as search:
-            response = json.loads(await tools.execute(tool_name, json.dumps(advanced), runtime))
-        assert response["ok"] is True
-        intent = search.call_args.kwargs["intent"]
-        assert intent.mode.value == "lexical"
-        assert intent.purpose.value == "verify"
-        assert intent.entities == ("摄影",)
-        assert intent.preferred_kinds == (MemoryKind.FACT,)
-        assert intent.temporal.constraint.value == "strict"
-        assert intent.temporal.end_at.year == 2027
-        assert response["data"]["effective_query"]["temporal_constraint"] == "strict"
-    for tool in tools.definitions(runtime):
-        if tool.name in {"get_person_memories", "get_group_memories", "get_self_memories"}:
-            assert len(tool.description) <= 240  # The actual provider uses this compact window.
-            assert "不能断言已列尽" in tool.description
-    assert tools.definitions(runtime) == tools.definitions(
-        replace(
-            runtime, inbound=replace(inbound, text="完全不同的查询", mentioned_user_ids=("2003",))
-        )
-    )
-
-    nonmember = json.loads(
-        await tools.execute(
-            "get_person_memories",
-            json.dumps({"user_id": "9999"}),
-            runtime,
-        )
-    )
-    assert not nonmember["ok"] and nonmember["error"] == "permission_denied"
-
-    await people.observe(
-        user_id="2003",
-        nickname="另一个人",
-        group_id="3001",
-        group_card="摄影师",
-    )
-    ambiguous = json.loads(
-        await tools.execute(
-            "get_person_memories",
-            json.dumps({"display_name": "摄影师"}),
-            runtime,
-        )
-    )
-    assert not ambiguous["ok"] and ambiguous["error"] == "ambiguous_person"
-    assert ambiguous["retryable"] is False
-    assert {item["user_id"] for item in ambiguous["data"]["candidates"]} == {"2002", "2003"}
-
-    # A large but valid overview should deliver complete ranked facts rather
-    # than force the model to repeatedly guess a smaller limit.
-    from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE
-
-    snapshot = await tools._runtime_config.snapshot(user_id="1001", group_id="3001")
-    bounded = replace(snapshot, agent=replace(snapshot.agent, tool_result_max_characters=2000))
-    rows = [{"memory_ref": f"M{index}", "content": "x" * 500} for index in range(1, 11)]
-    source = {"effective_query": {"mode": "overview"}, "memories": rows, "exhaustive": True}
-    with patch.object(tools, "_runtime", return_value=bounded):
-        rendered = json.loads(tools._memory_list_result(data=source))
-        assert rendered["ok"] and rendered["data"]["truncated"]
-        assert rendered["data"]["exhaustive"] is False
-        assert rendered["data"]["partial_reason"] == "response_character_budget"
-        count = rendered["data"]["returned_count"]
-        assert 0 < count < len(rows)
-        assert rendered["data"]["memories"] == rows[:count]
-        assert rendered["data"]["effective_query"] == source["effective_query"]
-        rendered["memory_grounding_policy"] = MEMORY_GROUNDING_RULE
-        assert len(json.dumps(rendered, ensure_ascii=False)) <= 2000
-        normalized_prefix = normalize_legacy_result(
-            {**rendered, "mutation_committed": False},
-            provider_id="core",
-            tool_name="get_person_memories",
-        )
-        budgeted_prefix = await ToolResultBudgeter(max_characters=2000).render(normalized_prefix)
-        assert not budgeted_prefix.truncated
-        assert json.loads(budgeted_prefix.text)["data"]["memories"] == rows[:count]
-        assert len(source["memories"]) == 10
-        too_large = json.loads(
-            tools._memory_list_result(data={"memories": [{"content": "x" * 4000}]})
-        )
-        assert too_large["error"] == "result_too_large"
-        assert (
-            json.loads(tools._memory_list_result(data={"memories": []}))["data"]["memories"] == []
-        )
 
 
 @pytest.mark.asyncio

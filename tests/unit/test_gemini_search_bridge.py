@@ -11,6 +11,10 @@ import httpx
 import pytest
 from tests.fakes import FakeWebSearchProvider
 
+# P10: explicit Invocation fixture contract; existing assertions are retained.
+from tests.support.agent_backend import StubAgentBackend
+from tests.support.model_executor import InjectedModelExecutor
+
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
 from qq_ai_bot.application.modules.web import HotWebSearchProvider, WebModule
 from qq_ai_bot.config import Settings
@@ -459,7 +463,6 @@ async def test_bridge_hot_switch_follows_chat_connection_without_native_main_too
         module.prepare(
             next_catalog,
             SimpleNamespace(api_key_for=lambda _: "secret"),
-            require_explicit=True,
         )
     )
     with web_model_task(ModelTask.CHAT_AGENT):
@@ -500,9 +503,9 @@ async def test_agent_runner_pins_web_backend_through_tool_execution(monkeypatch)
         response=WebSearchResponse("query", (SOURCE,), "new", 0, provider="new")
     )
     hot = HotWebSearchProvider(old)
-    runner = AgentRunner(FakeLLMProvider(), ConcurrencyManager(2))
+    runner = AgentRunner(InjectedModelExecutor(FakeLLMProvider()), ConcurrencyManager(2))
 
-    class Backend:
+    class Backend(StubAgentBackend):
         def pin_web_provider(self):
             return hot.pin()
 

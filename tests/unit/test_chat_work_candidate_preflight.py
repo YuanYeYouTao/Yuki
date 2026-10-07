@@ -33,7 +33,6 @@ async def test_chat_preparation_candidate_hint_is_read_only_and_reloaded(
     message = replace(
         inbound("检查普通上下文", message_id=f"candidate-{case}"),
         conversation_id=conversation.conversation_id,
-        legacy_conversation_key="private:9999:1001",
         person_id=person,
         presence_id=presence,
     )

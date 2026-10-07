@@ -1,3 +1,4 @@
+import type { CommandMethod } from "./control-methods";
 import { useState } from "react";
 import type { Row } from "./api";
 import type { PageProps } from "./pages";
@@ -17,7 +18,7 @@ export function Tools(props: PageProps) {
     !!plugin && allowed("read_plugin_runtime"),
   );
   function mutation(
-    method: string,
+    method: CommandMethod,
     row: Row,
     resource: string,
     action: string,

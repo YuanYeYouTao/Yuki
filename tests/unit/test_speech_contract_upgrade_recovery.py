@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select, update
+from tests.support.work_session import WorkSession
 from tests.unit.test_runtime_recovery import Sender, setup
 from tests.unit.test_speech_retirement_recovery import accept, old_message, snapshot
 
@@ -21,10 +22,10 @@ from qq_ai_bot.runtime.delivery_intents import reserve
 from qq_ai_bot.runtime.work_delivery import _frozen_plan_hash, resume_delivery_plan
 from qq_ai_bot.runtime.work_repository import WorkConflict
 from qq_ai_bot.runtime.work_schema_v1 import effects, journal
-from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
 from qq_ai_bot.services.agent_runner import AgentRunner
 from qq_ai_bot.services.concurrency import ConcurrencyManager
+from qq_ai_bot.services.turn_execution import TurnExecution
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 
 
@@ -49,7 +50,10 @@ def static_contract(version):
 
 async def original_delivery(database, tmp_path, values, state, *, guarded=False):
     control = await setup(database, tmp_path)
-    models = SimpleNamespace(execute=AsyncMock(side_effect=AssertionError("model must not run")))
+    models = SimpleNamespace(
+        profile_revision=lambda _: "fixture",
+        execute=AsyncMock(side_effect=AssertionError("model must not run")),
+    )
     runner = AgentRunner(models, ConcurrencyManager(1))
     runtime = SimpleNamespace(
         fixed_tools=static_contract(13),
@@ -58,6 +62,7 @@ async def original_delivery(database, tmp_path, values, state, *, guarded=False)
         work_control=control,
         runtime_config=SimpleNamespace(llm=ConfigFixture(), web=ConfigFixture()),
         compaction_brief=None,
+        script_api=None,
     )
     old_messages = (ChatMessage("system", "Main Agent contract version 12"),)
     new_messages = (ChatMessage("system", "Main Agent contract version 13"),)
@@ -101,7 +106,7 @@ async def original_delivery(database, tmp_path, values, state, *, guarded=False)
         await accept(control, 1, state=state)
     before = await snapshot(control)
     original_budget = dict(control.current)
-    result = await runner._run(new_messages, runtime, None)
+    result = await TurnExecution(runner, new_messages, runtime, None).activate()
     assert result.model_requests == result.tool_calls_used == 0
     assert result.suppress_delivery and result.text == ""
     models.execute.assert_not_awaited()

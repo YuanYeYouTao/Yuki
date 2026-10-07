@@ -105,6 +105,20 @@ class Settings(BaseSettings):
     social_transfer_directory: Path = Path("social-transfer")
     social_gateway_transfer_directory: str = ""
     sandbox_socket: Path = Path("/run/yuki-sandbox/manager.sock")
+    # Declaration mode is fixed at startup; dispatch still checks current authority.
+    code_mode_enabled: bool = False
+    # Code Mode native worker: explicit path and pinned digest.
+    code_mode_worker_path: Path | None = None
+    code_mode_worker_sha256: str = Field(default="", pattern=r"^([0-9a-f]{64})?$")
+    code_mode_launcher_path: Path | None = None
+    code_mode_launcher_sha256: str = Field(default="", pattern=r"^([0-9a-f]{64})?$")
+    code_mode_max_feed_seconds: float = Field(default=10.0, gt=0, le=120)
+    code_mode_max_memory_bytes: int = Field(default=64 * 1024 * 1024, ge=1 << 20, le=1 << 30)
+    code_mode_max_output_bytes: int = Field(default=64 * 1024, ge=1024, le=1 << 22)
+    code_mode_max_snapshot_bytes: int = Field(default=8 << 20, ge=1 << 16, le=1 << 27)
+    code_mode_request_timeout_seconds: float = Field(default=30.0, gt=0, le=600)
+    code_mode_max_worker_processes: int = Field(default=1, ge=1, le=32)
+    code_mode_foreground_reserved_processes: int = Field(default=0, ge=0, le=31)
 
     onebot_access_token: str = ""
     superusers_csv: str = Field(default="", validation_alias="SUPERUSERS")
@@ -143,7 +157,6 @@ class Settings(BaseSettings):
     llm_flash_api_key: str = Field(default="", repr=False)
     llm_flash_model: str = ""
     model_profiles_file: Path = Path("webui-config/model_profiles.toml")
-    model_profiles_legacy_compatibility: bool = False
     model_stats_recent_error_limit: int = 5
     system_prompt: str = (
         "你是一个运行在 QQ 中的 AI 助手。请只输出给用户的最终回答，不要输出隐藏的推理过程。"
@@ -158,7 +171,6 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite+aiosqlite:///./data/qq_ai_bot.db"
     control_operators_file: Path | None = None
-    processed_event_ttl_seconds: int = 86400
     processed_event_cleanup_seconds: int = 3600
     # Active request windows are token capacities, resolved again from hot config.
     context_window_tokens: int = Field(default=96000, ge=8192)
@@ -660,6 +672,14 @@ class Settings(BaseSettings):
             names = ", ".join(name.upper() for name in found)
             raise ValueError(f"removed 3.6 conversation history settings are not accepted: {names}")
         return value
+
+    @model_validator(mode="after")
+    def _validate_code_worker_settings(self) -> Self:
+        if self.code_mode_foreground_reserved_processes >= self.code_mode_max_worker_processes:
+            raise ValueError("code worker foreground reserve must be smaller than total capacity")
+        if bool(self.code_mode_launcher_path) != bool(self.code_mode_launcher_sha256):
+            raise ValueError("code worker launcher path and digest must be configured together")
+        return self
 
     @model_validator(mode="after")
     def _validate_work_storage_settings(self) -> Self:

@@ -49,16 +49,6 @@ class ModelRuntimeModule:
         settings = self._settings
         profiles = load_model_profile_catalog(
             settings.model_profiles_file,
-            allow_legacy_fallback=settings.model_profiles_legacy_compatibility,
-            legacy_provider=settings.llm_provider,
-            legacy_base_url=settings.llm_base_url,
-            legacy_model=settings.llm_model,
-            legacy_timeout_seconds=settings.llm_timeout_seconds,
-            legacy_max_retries=settings.llm_max_retries,
-            legacy_temperature=settings.llm_temperature,
-            legacy_max_output_tokens=settings.llm_max_output_tokens,
-            legacy_thinking_enabled=settings.llm_thinking_enabled,
-            legacy_reasoning_effort=settings.llm_reasoning_effort,
             environment=model_profile_environment(settings),
         )
         clients = ModelClientPool(

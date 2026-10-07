@@ -184,7 +184,6 @@ async def test_real_chat_preparation_uses_root_ids_and_preserves_business_flow(
         ),
         bot_user_id="80001",
         conversation_id=env.context.conversation_id,
-        legacy_conversation_key="bot:80001:group:20001",
         person_id=env.person,
         space_id=env.space,
         presence_id=env.presence,

@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import select
 from tests.conftest import make_settings
 from tests.support.gateway import napcat_registry
+from tests.support.model_profiles import write_fake_profiles
 
 from qq_ai_bot.container import ApplicationContainer
 from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
@@ -792,6 +793,7 @@ def test_production_container_wires_canonical_uow_from_rollup_repository(
     settings = make_settings(
         database.url,
         plugin_directory=plugin_dir,
+        model_profiles_file=write_fake_profiles(tmp_path / "models.toml"),
         plugin_system_enabled=False,
         bot_display_name="远野",
         default_timezone="America/New_York",

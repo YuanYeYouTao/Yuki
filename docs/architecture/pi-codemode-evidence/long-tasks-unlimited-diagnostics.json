@@ -1,0 +1,24 @@
+{
+  "source_report_sha256": "1a4ec76fcf33ac2dabd110c510efec2bf1e6272660dd749cdd701b4056bdfbc4",
+  "max_pending_futures": 16,
+  "replays": [
+    {
+      "case": "resumed_work/1/old/code",
+      "program_sha256": "56e0ec1f187b788a166d98d8e624d4c80c25b826b3eea8da83ef69fdfb3ee3bf",
+      "paid_calls": 0,
+      "scope": "same generated program replayed on native engine only; answers are pending futures, no business dispatch or SQLite",
+      "error_type": "RuntimeError",
+      "error_message": "code_wait_queue_full",
+      "attempted_future_answers": 17
+    },
+    {
+      "case": "resumed_work/0/old/code",
+      "program_sha256": "d0fead60d01a2bf55f0c5d708b5fa64949a10db53e92f9bfca7760f6a6ec63c2",
+      "paid_calls": 0,
+      "scope": "same generated program replayed on native engine only; answers are pending futures, no business dispatch or SQLite",
+      "error_type": "RuntimeError",
+      "error_message": "code_wait_queue_full",
+      "attempted_future_answers": 17
+    }
+  ]
+}

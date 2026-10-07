@@ -1,4 +1,4 @@
-<!-- release-baseline: version=3.9.0 schema=0097 -->
+<!-- release-baseline: version=3.9.0 schema=0099 -->
 
 中文（默认） · [English](README.en.md)
 
@@ -30,15 +30,16 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 
 ## 3.9.0 的主要变化
 
+- **默认 direct 构建**：保持同一主 Agent 循环和完整获准工具，镜像不包含 Monty binding、worker 或 launcher。Code Mode 是需显式选择镜像并启用的可选模式，启用前单独验证目标机器的资源余量。
 - **管理 WebUI 与共享执行 Runtime**：在手帐风格界面查看真实聊天、执行轨迹、工具回执、模型用量与工作区，管理模型连接和任务路由。聊天、SELF、插件、自动化及 Work 续跑共用主 Agent，WebUI 默认关闭。
 - **可恢复的长任务**：Work 保留原目标、累计预算、协议检查点和交付回执；上下文按真实请求容量整理，研究资料按需读取。终端等待、子任务和用户追加要求沿原任务接续，已确认的效果不因重启重做。
 - **Agent 按需取资料**：长期事实由 `search_memory` 按需检索，不再每轮自动注入。当前、引用、历史附件、工作区和获准工具图片统一交给原主模型的原生多模态输入。
 - **联网与模型错误反馈**：新安装默认开启模型搜索，保留显式禁用和各连接的能力边界；Gemini 明确拒绝工具格式且满足安全恢复条件时，可在原链内反馈给模型，最多纠正两次，不重置任务预算或盲重发消息。
 - **减少回复前的数据库等待**：历史读取、上下文准备和可丢诊断写入移出关键写事务；后台维护采用索引、有界分页和短事务。实际延迟仍受模型响应、工具请求和宿主资源影响。
-- **移除现有 MCP**：连接、工具目录、管理页面、SDK 和自动化入口一并退役；通用工具结果、媒体和回执继续保留。Plugin API 升至 **3.2**，数据库 head 为 **0097**，旧插件需适配并重新批准。
+- **移除现有 MCP**：连接、工具目录、管理页面、SDK 和自动化入口一并退役；通用工具结果、媒体和回执继续保留。Plugin API 升至 **3.3**，数据库 head 为 **0099**，旧插件需适配并重新批准。
 - **退出语音输出**：Genie 合成、声线/偏好、工具参数、SDK/管理功能、Worker 与发布依赖一并移除；入站/引用 ASR、历史语音和原回执保留。升级前先核旧执行、冷备语音事实与被引用文件，再迁移专属表；不自动重发或改发文字。
 
-这些是当前源码变化。各 Provider 的真实 API、自然聊天延迟和长期任务效果仍按各自验收记录核对；Code Mode / Pi 移植尚未合入。
+这些是当前源码变化。各 Provider 的真实 API、自然聊天延迟和长期任务效果仍按各自验收记录核对；可选 Code Mode 的隔离验证不代表生产容量或长期内存验收。
 
 ## 当前源码能做什么
 
@@ -137,7 +138,7 @@ docker compose up -d
 
 ## 升级与日常维护
 
-3.9.0 源码使用 Plugin API **3.2**，数据库单一 head 为 **0097**；3.8.4 正式包的 head 为 **0072**。升级仍以实际镜像随包迁移为准，应用版本号不能替代数据库检查，不能通过 `stamp` 跳过迁移。插件需移除 MCP 依赖、适配 API 3.2 并重新批准；旧 `llm.generate` / `agent.run` 已统一到主入口。
+3.9.0 源码使用 Plugin API **3.3**，数据库单一 head 为 **0099**；3.8.4 正式包的 head 为 **0072**。升级仍以实际镜像随包迁移为准，应用版本号不能替代数据库检查，不能通过 `stamp` 跳过迁移。插件需移除 MCP 依赖、适配 API 3.3 并重新批准；旧 `llm.generate` / `agent.run` 已统一到主入口。
 
 准备使用 3.9.0 开发提交时，先按[升级草案](docs/upgrade-3.9.0.md)核对旧 MCP 挂载、环境配置和管理权限；退役的管理授权会阻止严格校验通过。数据库提交新 head 后不能仅切回旧镜像，也不能用旧备份覆盖升级后的消息和回执。
 
@@ -185,7 +186,7 @@ uv run pytest
 | [开发约束](docs/architecture/development-contract.md) | 事件 ID、解耦边界、固定工具、续跑和事务原则 |
 | [Rollup](docs/architecture/conversation-rollup.md) | 长会话的历史压缩 |
 | [Memory](docs/architecture/memory-v2.md) | 记忆提取、检索和权限 |
-| [Plugin API 3.2](docs/plugin-development/index.md) | 插件开发与能力边界 |
+| [Plugin API 3.3](docs/plugin-development/index.md) | 插件开发与能力边界 |
 | [工具结果](docs/architecture/tool-results.md) | 结果预算、媒体与持久回执 |
 | [版本化发布](docs/operations/versioned-docker-release.md) | 镜像、下载包与发布流程 |
 | [CHANGELOG](CHANGELOG.md) | 历史变更 |

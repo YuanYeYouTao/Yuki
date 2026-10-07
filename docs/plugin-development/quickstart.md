@@ -18,7 +18,7 @@ name = "Hello"
 version = "0.1.0"
 description = "最小 Hello 插件"
 entrypoint = "hello_plugin:HelloPlugin"
-plugin_api = "3.2"
+plugin_api = "3.3"
 yuki_requires = ">=3.9.0,<4.0"
 permissions = ["command.register"]
 
@@ -101,14 +101,18 @@ PLUGIN_SYSTEM_ENABLED=true
 PLUGIN_DIRECTORY=plugins
 ```
 
-重启 Host，再执行：
+启动 Host 后，使用已有 Control 操作员凭据管理在线插件。通过环境注入 `YUKI_CONTROL_CREDENTIAL`，不要将凭据写进命令行或日志；`WEBUI_ORIGIN` 必须指向可访问的 Host Control 地址并与服务配置一致。客户端登录、使用 CSRF、读取最新 revision，随后提交原请求。
+
+审阅 `inspect` 的权限后显式批准：
 
 ```bash
 uv run qq-ai-bot-cli plugin discover
 uv run qq-ai-bot-cli plugin inspect com.example.hello
-uv run qq-ai-bot-cli plugin approve com.example.hello
+uv run qq-ai-bot-cli plugin approve com.example.hello --permission command.register
 uv run qq-ai-bot-cli plugin enable com.example.hello
 ```
+
+`approve` 不传 `--permission` 只批准空权限集合，不自动批准 Manifest 的全部请求。连接中断会保留并显示原请求编号；查原 Control 回执后再决定后续动作，不盲重发。`validate`、`test`、`docs` 仍可离线运行。`setup apply-pending` 在线时调用同一 Control 接口；仅在成功获取原应用排他锁后才进行停机 bootstrap。
 
 Manifest 哈希绑定批准状态。只要权限、入口、版本或其他 Manifest 字段变化，就必须重新审阅和批准。
 

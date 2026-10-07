@@ -1,10 +1,11 @@
+import type { QueryMethod } from "./control-methods";
 import { useState } from "react";
 import type { Page, Row } from "./api";
 import { useQuery } from "./hooks";
 import { useDisplayNames } from "./names";
 import type { NameKind } from "./names";
 
-const sources: Record<NameKind, [string, string, string]> = {
+const sources: Record<NameKind, [QueryMethod, string, string]> = {
   person: ["list_persons", "person_id", "未命名人物"],
   space: ["list_spaces", "space_id", "未命名群"],
   conversation: ["list_conversations", "conversation_id", "未命名会话"],

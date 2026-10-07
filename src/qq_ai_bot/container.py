@@ -144,7 +144,6 @@ class ApplicationContainer:
             self.user_profile_repository,
             self.runtime_config,
         )
-        self.processed_events = persistence.processed_events
         self.ledger = persistence.ledger
         self.memories = persistence.memories
         self.memory_context = persistence.memory_context
@@ -260,7 +259,6 @@ class ApplicationContainer:
         self.prompt_registry = conversation.prompt_registry
         self.admission_features = conversation.admission_features
         self.relationship_evaluator = conversation.relationship_evaluator
-        self.deduplication = conversation.deduplication
         self.rate_limiter = conversation.rate_limiter
         self.agent_tools = conversation.agent_tools
         from qq_ai_bot.social.service import SocialService
@@ -317,10 +315,13 @@ class ApplicationContainer:
         from qq_ai_bot.workspace.short_state import ShortState
 
         self.main_agent_contract = MainAgentContract(
-            self.chat, ShortState(self.workspace_service.store)
+            self.chat,
+            ShortState(self.workspace_service.store),
+            code_enabled=settings.code_mode_enabled,
         )
         self.agent_tools.short_state = self.main_agent_contract.state
         self.runtime.runner.main_contract = self.main_agent_contract
+        self.runtime.runner.code_mode_settings = settings
         from qq_ai_bot.runtime.subagent_repository import SubagentRepository
         from qq_ai_bot.runtime.subagent_scheduler import SubagentScheduler
         from qq_ai_bot.runtime.work_repository import WorkRepository
@@ -645,7 +646,6 @@ class ApplicationContainer:
             ),
             settings=settings,
             ledger=self.ledger,
-            scoped_events=self.scoped_events,
             conversation_scopes=self.conversation_scopes,
             conversation_rollups=self.conversation_rollups,
             effect_gate=self.conversation_effect_gate,
@@ -653,7 +653,6 @@ class ApplicationContainer:
             private_users=self.private_users,
             user_profiles=self.user_profiles,
             chat=self.chat,
-            deduplication=self.deduplication,
             rate_limiter=self.rate_limiter,
             concurrency=self.concurrency,
             onebot_connected=self.onebot_connected,
@@ -691,7 +690,6 @@ class ApplicationContainer:
         )
         self.processor.set_participation(self.semantic_participation)
         self.semantic_participation.set_promoter(self.processor.promote_committed_event)
-        self.runtime_foundation.provider_registry.freeze()
         self._cleanup_stop = asyncio.Event()
         self._cleanup_task: asyncio.Task[None] | None = None
         self._register_lifecycle()
@@ -1022,9 +1020,6 @@ class ApplicationContainer:
     async def _cleanup_loop(self) -> None:
         while not self._cleanup_stop.is_set():
             try:
-                deleted = await self.processed_events.cleanup_expired()
-                if deleted:
-                    logger.info("processed_events_cleaned count=%d", deleted)
                 runtime = await self.runtime_config.snapshot()
                 web_deleted = await self.web_sources.cleanup_expired(
                     retention_days=runtime.web.source_retention_days

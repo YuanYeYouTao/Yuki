@@ -114,6 +114,13 @@ class ExternalControlExecutor:
         )
         started = monotonic()
         problem: Problem | None = None
+        prepared: object = None
+        preparation_error: ManagementFailure | ManagementUnavailable | None = None
+        try:
+            prepared = adapter._management.prepare_external(command, operation, parsed)
+        except (ManagementFailure, ManagementUnavailable) as exc:
+            # Replay takes precedence over today's admission schema and size limits.
+            preparation_error = exc
         async with adapter._database.immediate_session() as session:
             existing = await adapter._load_receipt(session, principal, command)
             if existing is not None:
@@ -169,6 +176,8 @@ class ExternalControlExecutor:
             if busy is not None:
                 raise ControlCommandError(Problem(ProblemCode.PRECONDITION_FAILED))
             try:
+                if preparation_error is not None:
+                    raise preparation_error
                 await adapter._management.validate_external(session, command, operation, parsed)
             except ManagementUnavailable as exc:
                 raise ControlCommandError(Problem(ProblemCode.OPERATION_UNAVAILABLE)) from exc
@@ -226,7 +235,7 @@ class ExternalControlExecutor:
         # No session survives this boundary. Domain managers own their short transactions.
         try:
             mutation = await adapter._management.execute_external(
-                principal, command, operation, parsed
+                principal, command, operation, parsed, prepared=prepared
             )
             success = adapter._management_success(
                 mutation.resource_id,

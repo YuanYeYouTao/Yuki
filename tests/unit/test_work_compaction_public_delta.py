@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import select
 from tests.support.work_compaction import summary_json
+from tests.support.work_session import WorkSession
 from tests.unit.test_work_compaction_capacity import _runtime, _session
 
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ToolCall, ToolFunction
@@ -15,7 +16,6 @@ from qq_ai_bot.llm.gemini import GeminiProvider
 from qq_ai_bot.model_runtime.models import ModelExecutionPriority
 from qq_ai_bot.runtime.work_repository import WorkConflict
 from qq_ai_bot.runtime.work_schema_v1 import effects
-from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 
 

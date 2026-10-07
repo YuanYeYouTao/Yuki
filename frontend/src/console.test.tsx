@@ -8,6 +8,63 @@ import { Chat } from "./chat";
 import { displayTrace } from "./trace-display";
 import { Autonomy } from "./pages";
 
+it("renders code parent and child status without requests or missing-content inference", () => {
+  const fetch = vi.spyOn(globalThis, "fetch");
+  const { rerender } = render(
+    <TraceContent
+      row={{
+        kind: "code_composition_end",
+        payload: {
+          data: {
+            result: {
+              operation_id: "original-code-call",
+              status: "partial",
+              stop_reason: "unknown_effect",
+              result_ref: "authorized-result-reference",
+            },
+          },
+        },
+      }}
+    />,
+  );
+  expect(screen.getByText("代码组合")).toBeInTheDocument();
+  expect(screen.getByText("原调用 original-code-call")).toBeInTheDocument();
+  expect(screen.getByText("partial")).toBeInTheDocument();
+  expect(screen.getByText("停止原因 unknown_effect")).toBeInTheDocument();
+  rerender(
+    <TraceContent
+      row={{
+        kind: "code_child_start",
+        payload: {
+          data: {
+            operation_id: "original-code-call/c0",
+            parent_effect_key: "original-code-call",
+            tool: "send_message",
+            child_ordinal: 0,
+          },
+        },
+      }}
+    />,
+  );
+  expect(screen.getByText("业务子调用")).toBeInTheDocument();
+  expect(screen.getByText("父调用 original-code-call")).toBeInTheDocument();
+  expect(screen.getByText("工具 send_message · 子序号 0")).toBeInTheDocument();
+  rerender(
+    <TraceContent
+      row={{
+        kind: "code_child_end",
+        payload: null,
+        payload_status: "omitted_size",
+      }}
+    />,
+  );
+  expect(screen.queryByText("业务子调用")).not.toBeInTheDocument();
+  expect(
+    screen.getByText("正文超过记录上限，仅保留索引。"),
+  ).toBeInTheDocument();
+  expect(fetch).not.toHaveBeenCalled();
+});
+
 it("shows actual semantic dimensions and distinguishes them from admission", () => {
   render(
     <TraceContent
