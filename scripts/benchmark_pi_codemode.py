@@ -39,6 +39,63 @@ def historical_runner(*, code_mode: bool = False) -> tuple[type, str]:
     )
     source = result.stdout
     adapted = source.decode()
+    # APP-04 removed the legacy Provider shim. This experiment supplies an
+    # explicit TaskModelExecutor; reject the unsupported constructor branch
+    # locally instead of resurrecting a production compatibility symbol.
+    # Shared Code execution records child facts itself; a parent summary is not
+    # another business effect and need not carry an outer-call evidence entry.
+    replacements = {
+        (
+            "from qq_ai_bot.model_runtime.executor import "
+            "ModelCompleter, ModelExecutor, require_model_executor"
+        ): "from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor",
+        """            self._models = require_model_executor(
+                None,
+                provider=cast(ModelCompleter, model_executor),
+            )""": (
+            "            raise TypeError('historic benchmark requires explicit ModelExecutor')"
+        ),
+        "from qq_ai_bot.services.work_reporting import (": (
+            "from _yuki_benchmark_historic_reporting import ("
+        ),
+        """                    runtime.work_control.observe_result(
+                        call.function.name,
+                        result,
+                        _was_executed,
+                        side_effecting=self._is_side_effecting(tools, call, runtime),
+                        arguments=call.function.arguments,
+                    )""": """                    if call.id in coordinated.evidence:
+                        runtime.work_control.observe_evidence(
+                            coordinated.evidence[call.id]
+                        )""",
+    }
+    for old, new in replacements.items():
+        if adapted.count(old) != 1:
+            raise ValueError("historic_kernel_adapter_source_changed")
+        adapted = adapted.replace(old, new, 1)
+    # The historical loop already used ordered continuation_items; the two
+    # removed legacy planes were only cleared with empty tuples. Preserve that
+    # exact empty meaning rather than creating parallel continuation ownership.
+    for retired_plane in ("continuation_messages", "function_outputs"):
+        lines = adapted.splitlines(keepends=True)
+        clearing = [line for line in lines if line.strip() == f"{retired_plane}=(),"]
+        if len(clearing) != 3:
+            raise ValueError("historic_continuation_adapter_source_changed")
+        adapted = "".join(line for line in lines if line not in clearing)
+    # Preserve the original reporting policy beside the original loop. These
+    # functions live only in this isolated experiment module, never src aliases.
+    reporting_source = subprocess.run(
+        ["git", "show", f"{BASELINE}:src/qq_ai_bot/services/work_reporting.py"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+    ).stdout
+    reporting = ModuleType("_yuki_benchmark_historic_reporting")
+    exec(
+        compile(reporting_source, f"git:{BASELINE}:work_reporting.py", "exec"),
+        reporting.__dict__,
+    )
+    sys.modules[reporting.__name__] = reporting
     if code_mode:
         # The old version predates Code Mode. Attaching the helper alone left
         # snapshots orphaned: its iteration never resumed them or handled yield.
@@ -82,6 +139,7 @@ def historical_runner(*, code_mode: bool = False) -> tuple[type, str]:
     exec(compile(adapted, f"git:{BASELINE}:agent_runner.py", "exec"), module.__dict__)
     historic = module.AgentRunner
     historic.benchmark_adapter_sha256 = hashlib.sha256(adapted.encode()).hexdigest()
+    historic.benchmark_reporting_sha256 = hashlib.sha256(reporting_source).hexdigest()
     historic.benchmark_code_adapter = code_mode
     # Common kernels, with the advertised hooks rather than the current Pi loop.
     for name in (
@@ -288,6 +346,9 @@ async def compare_case(database: Any, tmp_path: Path, loop: str, mode: str, scen
                     getattr(type(runner), "benchmark_code_adapter", False)
                 ),
                 "historic_adapter_sha256": getattr(type(runner), "benchmark_adapter_sha256", None),
+                "historic_reporting_sha256": getattr(
+                    type(runner), "benchmark_reporting_sha256", None
+                ),
             }
         )
     await repo.release(control.lease)

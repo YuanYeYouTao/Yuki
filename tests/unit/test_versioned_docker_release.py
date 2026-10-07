@@ -292,6 +292,8 @@ def test_release_smoke_reads_alembic_version_inside_container(
     class FakeCompose:
         def run(self, *arguments: str, capture: bool = False) -> str:
             calls.append(arguments)
+            if arguments[-2:] == ("/app/scripts/verify_monty_packaging.py", "direct"):
+                return "direct packaging passed"
             if arguments[:4] == ("exec", "-T", "bot", "python"):
                 if "urllib.request" in arguments[-1]:
                     return (
@@ -311,6 +313,7 @@ def test_release_smoke_reads_alembic_version_inside_container(
     verify_bot(FakeCompose(), tmp_path, VERSION)  # type: ignore[arg-type]
 
     assert [call[:5] for call in calls] == [
+        ("exec", "-T", "bot", "python", "/app/scripts/verify_monty_packaging.py"),
         ("exec", "-T", "bot", "python", "-c"),
         ("exec", "-T", "bot", "python", "-c"),
     ]
@@ -332,6 +335,8 @@ def test_release_smoke_does_not_write_plugin_state_inside_container(
     class FakeCompose:
         def run(self, *arguments: str, capture: bool = False) -> str:
             calls.append(arguments)
+            if arguments[-2:] == ("/app/scripts/verify_monty_packaging.py", "direct"):
+                return "direct packaging passed"
             if arguments[:4] == ("exec", "-T", "bot", "python"):
                 if "pending.json" in arguments[-1]:
                     return ""
@@ -381,6 +386,8 @@ def test_release_smoke_does_not_mutate_running_plugin_setup(
     class FakeCompose:
         def run(self, *arguments: str, capture: bool = False) -> str:
             calls.append(arguments)
+            if arguments[-2:] == ("/app/scripts/verify_monty_packaging.py", "direct"):
+                return "direct packaging passed"
             if arguments[:4] == ("exec", "-T", "bot", "python"):
                 if "urllib.request" in arguments[-1]:
                     return next(health_payloads)

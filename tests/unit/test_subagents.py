@@ -491,6 +491,7 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
     settings = make_settings(
         database.url,
         runtime_work_enabled=True,
+        code_mode_enabled=True,
         enabled_groups_csv="20001",
         web_enabled=True,
         web_mode="native",
@@ -504,6 +505,7 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
             pytest.skip("tiered terminal business requires the pinned Monty worker/binding")
         settings = settings.model_copy(
             update={
+                "code_mode_enabled": True,
                 "code_mode_worker_path": BINARY,
                 "code_mode_worker_sha256": hashlib.sha256(BINARY.read_bytes()).hexdigest(),
                 "code_mode_launcher_path": worker().launcher_path,
@@ -542,7 +544,7 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
     protocol = "responses" if native else protocol
     client, wire = install_wire(chat, provider, protocol, native=native)
     chat.runtime.runner.main_contract = MainAgentContract(
-        chat, ShortState(WorkspaceStore(tmp_path / "state"))
+        chat, ShortState(WorkspaceStore(tmp_path / "state")), code_enabled=True
     )
     app = SimpleNamespace(
         database=database,
@@ -588,12 +590,11 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
     first_tools = main_requests[0].tools
     names = {t.name for t in first_tools}
     from qq_ai_bot.codemode.tool_visibility import DIRECT_TOOL_NAMES
-    from qq_ai_bot.runtime.subagent_tools import WORKER_REQUIRED_NAMES
 
     # Only the Provider projection shrinks; the complete worker API retains
     # exactly the original worker allowlist (with read-only discovery added).
-    assert names == WORKER_REQUIRED_NAMES & DIRECT_TOOL_NAMES
-    assert {t.name for t in executor.definitions} == WORKER_REQUIRED_NAMES
+    assert names == executor.required_names() & DIRECT_TOOL_NAMES
+    assert {t.name for t in executor.definitions} == executor.required_names()
     assert "yuki_terminal_exec" in executor.script_api.names
     # #262: the worker shares the three common direct terminal entrypoints;
     # its execution allowlist, fixed schemas and excluded authority stay exact.

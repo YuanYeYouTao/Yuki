@@ -74,7 +74,7 @@ P0/P1/P2为优先批次，不是漏洞等级。每项只列实际编码前置；
 - [x] MEM-03 · 已完成（源码及定向回归；集成验收、部署另记） · P2 · 清理仍暴露的旧Memory执行接口与过时文档，给出真实退出条件
 - [x] API-01 · 已完成（源码及定向回归；集成验收、部署另记） · P1 · 直接删除死内部 registry/result DTO
 - [x] API-02 · 已完成（源码及定向回归；集成验收、部署另记） · P1 · 删除动态 schema-rebuild 死链，只保留执行授权投影
-- [x] API-03 · 已完成（源码及定向回归；集成验收、部署另记） · P1 · 退出活执行路径的字符串结果猜测，历史解码仅留在原回执入口
+- [x] API-03 · 已完成（终审补齐 final 领域原回执分类；114+56 回归及差分通过，部署另记） · P1 · 退出活执行路径的字符串结果猜测，历史解码仅留在原回执入口
 - [x] RES-01 · 已完成（源码及定向回归；集成验收、部署另记） · P0 · 合并结果预算，删除“读回以后再摘要”的多层循环
 - [x] RES-02 · 已完成（源码及定向回归；集成验收、部署另记） · P1 · 删除“派生artifact发布失败升级成业务失败”路径
 - [x] FILE-01 · 已完成（源码及定向回归；集成验收、部署另记） · P2 · 迁附件不可变快照后删除可变 artifact 写入口
@@ -89,7 +89,7 @@ P0/P1/P2为优先批次，不是漏洞等级。每项只列实际编码前置；
 - [x] DB-04 · 已完成（源码及定向回归；集成验收、部署另记） · P1 · 删SQLAlchemyError→STATE_MISMATCH泛化，诊断删文本locked猜测
 - [x] CTL-02 · 已完成（源码及定向回归；集成验收、部署另记） · P1 · 控制面上传预检移出writer，并删第二次解码
 - [x] DB-05 · 已完成（源码及定向回归；集成验收、部署另记） · P2 · web来源入账删writer内URL/标题准备与无界历史物化
-- [x] MIG-01 · 已完成（源码及定向回归；集成验收、部署另记） · P1 · 冻结历史迁移，不删历史兼容升级逻辑
+- [x] MIG-01 · 已完成（0058/0060/0088 原停点结构及升级保留事实，Windows/Linux 各 3 项通过） · P1 · 冻结历史迁移，不删历史兼容升级逻辑
 - [x] APP-01 · 已完成（源码及定向回归；集成验收、部署另记） · P1 · 删空的 application ProviderRegistry，而非另建 registry
 - [x] APP-02 · 已完成（源码及定向回归；集成验收、部署另记） · P1 · 删 ApplicationModule 空契约与纯兼容 exports；健康模块须区分
 - [x] APP-03 · 已完成（源码及定向回归；集成验收、部署另记） · P2 · 退役无 TOML 的 LLM_* 路由；保留 v3 TOML 的 environment indirection
@@ -110,6 +110,9 @@ P0/P1/P2为优先批次，不是漏洞等级。每项只列实际编码前置；
 - [x] CLI-01 · 已完成（源码及定向回归；集成验收、部署另记） · P2 · 迁在线插件管理并删除 CLI 直写数据库
 - [x] CTX-06 · 已完成（源码及定向回归；集成验收、部署另记） · P0 · 运行状态置于当前真实发言之前
 - [x] PAR-01 · 已完成（源码及定向回归；集成验收、部署另记） · P1 · 合并同轮参与反馈准备并保留原回执事实
+
+- [ ] DEP-02 · 进行中 · P0 · 默认 direct 构建与生产部署，不加载 Code Mode
+- [ ] RES-03 · 进行中 · P1 · Yuki 内存增长检查与可复现泄漏优化
 
 ## 详细任务
 
@@ -1795,3 +1798,27 @@ main/Pi的SemanticParticipationService对dirty scope先sync+hydrate，随后所�
 仅当语义完全相同才跳过重复committed-effect应用；ordinary admission、late anchor、source撤销、generation、迟到completed-run不能被seen ID吞掉。legacy_allowed/admission还有即时caller，不是当然死代码。只合并dirty路径不会让不变驻留scope的30次SELECT自动归零；跨tick减读先证明所有更新、timestamp tie、迟到receipt和冷加载覆盖，不先建cursor/cache。
 
 验收receipt在hydrate前/后、run终态后迟到、caption/sequence父键、重复tick、同timestamp多行、generation/隐私撤销、2048窗口、冷加载、处理中新增dirty。分别计SELECT、hydrate、observer、snapshot写及语义一致性，不只断言SQL更少。现状probe不提供目标延迟收益。
+
+
+## 用户追加：默认 direct 与内存验收（2026-10-08）
+
+本节来自执行中的用户追加要求，优先于原提案默认启用 Code Mode 的安排。原 68 项保持原 ID；新增 DEP-02、RES-03，共 70 项。生产服务器约 1.6 GiB 内存，用户提供旧 Yuki 约 500 多 MB 的占用线索；不同时间、RSS/PSS/交换空间和进程树口径不可直接比较。本次测试容器 tmpfs 与镜像加载期间的过载不是产品内存泄漏的证明。
+
+### DEP-02 默认发行和生产采用完全不依赖 Code Mode 的 direct 构建
+
+- 唯一 owner：既有 Docker direct target、Settings 与 MainAgentContract；不另建 Agent loop。
+- 默认镜像、Compose、安装示例和发行入口采用 direct；包内没有 Monty binding、原生 worker 或 launcher。原生编译阶段仅在显式构建 codemode 时运行。
+- direct 声明当前作用域全部获准工具，仍逐次授权、保留 Work/子任务/终端/Memory/文件等能力；不因关闭 Code 删低频业务工具。
+- CODE_MODE_ENABLED 默认 false。可选 codemode 镜像与开关必须显式选择；既有 Code 回执仍按原 ID 读取和安全结束，不能恢复新 worker 或重派旧效果。
+- 生产采用 direct，不新增 Code 专用 AppArmor/seccomp 放行。既有专用策略可保留未使用，不影响其他服务。
+- 验收：默认构建无需原生构建层；镜像检查 binding 不可导入且 worker/launcher 不存在；默认配置/装配不构造 Code runtime；全工具可达与授权、历史 Code 安全恢复、实际部署健康分别核验。
+- Code 启用门：在目标机器余量下单 worker 的常驻/峰值/退出回收与正常 Bot、网关共存证据充分后再单独决定；隔离探针不等于容量验收，不自动启用。
+
+### RES-03 检查并修复可复现的 Yuki 内存持续增长
+
+- 唯一 owner：各现有缓存、会话、队列、任务、客户端池及子进程生命周期；不新增通用内存管理框架。
+- 先建立旧生产的只读内存基线，分别记录 Bot RSS/PSS/Swap、进程树、主机可用内存与负载；不采集含消息/凭据的堆转储，不发送额外 QQ 测试消息。
+- 离线检查长期 dict/set/list、缓存容量和过期回收、后台任务 finally、异常/取消后的会话与连接释放、worker/子进程树退出。区分合理保留、一次峰值、Python 分配与 OS RSS，不把单次 GC 后 RSS 不降当作泄漏。
+- 对可复现增长做有界重复工作负载：预热、稳定输入与高基数输入分开，比较多轮活对象/保留分配及峰值，核查取消/失败/关闭路径。仅修已经证明的生命周期缺陷；不为压 RSS 任意缩历史、预算或 unknown 回执保留期。
+- 允许直接删除完成后无消费者的临时状态；有业务 fence/generation 含义的状态不得盲目 LRU。保留原执行身份、迟到回执保护和 current source 边界。
+- 验收：记录发现、排除理由、真实修复与针对性回归，提交 direct 镜像运行资源证据；明确短测不能证明长期无泄漏，不报告虚构百分比收益。不在小内存生产机并行跑重测试或叠加大 tmpfs 与镜像解包。

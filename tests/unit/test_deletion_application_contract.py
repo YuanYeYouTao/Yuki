@@ -110,8 +110,13 @@ async def test_optional_direct_mode_keeps_complete_frozen_authorized_catalog(tmp
 
     app = await full_contract(tmp_path, code_enabled=False)
     try:
-        contract = app.runtime.runner.main_contract
+        from qq_ai_bot.services.main_agent_contract import MainAgentContract
+
+        configured = app.runtime.runner.main_contract
+        # An omitted mode must also select direct; production passes Settings explicitly.
+        contract = MainAgentContract(app.chat, configured.state)
         full = await contract.definitions()
+        assert await configured.model_definitions() == full
         assert await contract.model_definitions() == full
         names = {tool.name for tool in full}
         assert {"terminal_exec", "terminal_write", "terminal_control", "admin_set_config"} <= names

@@ -63,6 +63,7 @@ async def test_pending_vm_then_caller_proposal_resumes_without_duplicate_sends(
     settings = make_settings(
         database.url,
         runtime_work_enabled=True,
+        code_mode_enabled=True,
         code_mode_worker_path=BINARY,
         code_mode_worker_sha256=hashlib.sha256(BINARY.read_bytes()).hexdigest(),
         code_mode_launcher_path=worker().launcher_path,
@@ -72,7 +73,7 @@ async def test_pending_vm_then_caller_proposal_resumes_without_duplicate_sends(
     service = chat.runtime.main_turns
     runner = chat.runtime.runner
     runner.code_mode_settings = settings
-    runner.main_contract = MainAgentContract(chat, ShortState(env.store))
+    runner.main_contract = MainAgentContract(chat, ShortState(env.store), code_enabled=True)
     messages = (ChatMessage("user", "send three distinct items and finish"),)
     # Two child calls exhaust the first activation. The next activation must
     # resume the original VM before asking for complete, rather than rerun it.

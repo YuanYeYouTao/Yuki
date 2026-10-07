@@ -221,7 +221,16 @@ async def test_invalid_association_never_dispatches(database, tmp_path, argument
         "invalid", ToolFunction("send_message", json.dumps({"text": "reply", **arguments}))
     )
     receipt = json.loads(await control.session.execute(call, invoke, allow_pending=True))
-    assert receipt == {"ok": False, "executed": False, "error": error}
+    assert receipt == {
+        "ok": False,
+        "executed": False,
+        "data": {"executed": False},
+        "error_code": error,
+        "mutation_committed": False,
+        "provider_id": "core",
+        "retryable": False,
+        "tool_name": "send_message",
+    }
     assert not invoked
     assert not await control.effect_evidence()
     assert (await control.repository.get(control.current["id"]))["tool_calls"] == 0
@@ -514,8 +523,12 @@ async def test_another_work_input_is_rejected_before_any_dispatch(database, tmp_
             allow_pending=True,
         )
     )
-    assert receipt["error"] == "work_report_event_not_admitted"
+    assert receipt["error_code"] == "work_report_event_not_admitted"
+    assert receipt["ok"] is False and receipt["executed"] is False
+    assert receipt["data"] == {"executed": False}
+    assert receipt["mutation_committed"] is False and receipt["retryable"] is False
     assert calls == 0 and not await control.effect_evidence()
+    assert (await control.repository.get(control.current["id"]))["tool_calls"] == 0
 
 
 @pytest.mark.asyncio

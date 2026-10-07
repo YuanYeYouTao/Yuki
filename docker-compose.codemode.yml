@@ -1,6 +1,8 @@
-# Code worker isolation; load the reviewed AppArmor profile before creating bot.
+# Optional Code image and isolation; build --target codemode and verify first.
+# Default release images contain no Monty. Never enable this overlay with one.
 services:
   bot:
+    image: ${YUKI_CODE_IMAGE:?set an explicitly built and verified codemode image}
     environment:
       CODE_MODE_ENABLED: "true"
     security_opt:

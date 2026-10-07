@@ -26,8 +26,8 @@ FROZEN = tuple(ChatTool(**tool) for tool in INVENTORY["frozen_definitions"])
 def test_every_inventory_tool_has_one_exact_wrapper(row):
     api = project(FROZEN, INVENTORY["manifest_revision"])
     name = row["model_name"]
-    if name == "execute_code":
-        assert all(tool != name for tool in api.wrappers.values())  # No recursion.
+    if name in {"execute_code", "lookup_tools"}:
+        assert all(tool != name for tool in api.wrappers.values())  # Host-only entrypoints.
         return
     wrapper = encode_wrapper_name(name)
     assert api.tool_for(wrapper) == name
@@ -37,7 +37,7 @@ def test_every_inventory_tool_has_one_exact_wrapper(row):
 
 def test_projection_adds_no_aliases_or_unknown_routes():
     api = project(FROZEN, INVENTORY["manifest_revision"])
-    assert set(api.wrappers.values()) == {t.name for t in FROZEN} - {"execute_code"}
+    assert set(api.wrappers.values()) == {t.name for t in FROZEN} - {"execute_code", "lookup_tools"}
     for probe in ("yuki_", "__yuki_invoke", "yuki_db.execute", "send_message", "yuki_x00"):
         assert api.tool_for(probe) is None
 

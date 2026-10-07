@@ -61,6 +61,7 @@ async def test_self_code_uses_original_initiative_and_shared_main_service(
         database.url,
         runtime_work_enabled=True,
         enabled_groups_csv="2001",
+        code_mode_enabled=True,
         code_mode_worker_path=BINARY,
         code_mode_worker_sha256=hashlib.sha256(BINARY.read_bytes()).hexdigest(),
         code_mode_launcher_path=worker().launcher_path,
@@ -69,7 +70,7 @@ async def test_self_code_uses_original_initiative_and_shared_main_service(
     chat = build_harness(database, settings, provider).processor._chat
     state = ShortState(WorkspaceStore(tmp_path / "state"))
     chat._tools.short_state = state
-    chat.runtime.runner.main_contract = MainAgentContract(chat, state)
+    chat.runtime.runner.main_contract = MainAgentContract(chat, state, code_enabled=True)
     chat.runtime.runner.code_mode_settings = settings
     registry = GatewayConnectionRegistry(providers=builtin_provider_catalog())
     registry.connect(

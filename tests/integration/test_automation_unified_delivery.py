@@ -74,13 +74,16 @@ async def setup_run(
 
         settings.code_mode_launcher_path = pinned_worker().launcher_path
         settings.code_mode_launcher_sha256 = pinned_worker().launcher_sha256
+        settings.code_mode_enabled = True
         settings.code_mode_worker_path = worker
         settings.code_mode_worker_sha256 = hashlib.sha256(worker.read_bytes()).hexdigest()
     harness = build_harness(database, settings, provider)
     chat = harness.processor._chat
     chat._tools.social_service = env.service
     env.service.runtime_config = chat._runtime_config
-    contract = MainAgentContract(chat, ShortState(env.store))
+    contract = MainAgentContract(
+        chat, ShortState(env.store), code_enabled=settings.code_mode_enabled
+    )
     chat.runtime.runner.main_contract = contract
     chat.runtime.runner.code_mode_settings = settings
     repository = AutomationRepository(database)

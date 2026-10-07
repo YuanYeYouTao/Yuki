@@ -64,13 +64,13 @@ async def run_short_state_cases(database, tmp_path, context):
     assert not state.update({"slot": 1, "text": "stale", "expected_revision": 1})["ok"]
 
     provider = FakeLLMProvider()
-    harness = build_harness(database, make_settings(database.url), provider)
+    harness = build_harness(database, make_settings(database.url, code_mode_enabled=True), provider)
     chat = harness.processor._chat
     from qq_ai_bot.social.automation import register_social_automation
 
     registry = AutomationCapabilityRegistry()
     register_social_automation(registry, {})
-    contract = MainAgentContract(chat, state)
+    contract = MainAgentContract(chat, state, code_enabled=True)
     chat.runtime.runner.main_contract = contract
     chat._tools.short_state = state
     # The new deployment has a compact model view and an unchanged full
@@ -281,7 +281,7 @@ async def run_short_state_cases(database, tmp_path, context):
     # Real automation handler now composes through the main pipeline and shared
     # runner, without promoting its creator to a direct-message administrator.
     from qq_ai_bot.automation.handlers import AutomationCapabilityHandlers
-    from qq_ai_bot.prompting.contracts import CORE_CONTRACT
+    from qq_ai_bot.prompting.contracts import core_contract
 
     handlers = object.__new__(AutomationCapabilityHandlers)
     handlers._settings = harness.settings
@@ -305,7 +305,7 @@ async def run_short_state_cases(database, tmp_path, context):
     assert generated.data["text"] == "scheduled answer"
     request = provider.requests[-1]
     assert request.tools == declared
-    assert CORE_CONTRACT in request.messages[0].content
+    assert core_contract(code_enabled=True) in request.messages[0].content
     assert "scheduled work" not in request.messages[0].content
     assert '"origin":"scheduled_automation"' in request.messages[-1].content
     assert "runtime.time" in request.messages[-1].content

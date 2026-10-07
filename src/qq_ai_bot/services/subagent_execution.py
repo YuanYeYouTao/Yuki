@@ -36,7 +36,7 @@ from qq_ai_bot.runtime.activation_bindings import ActiveWorkBindings
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.subagent_repository import SubagentRepository
 from qq_ai_bot.runtime.subagent_schema import children
-from qq_ai_bot.runtime.subagent_tools import WORKER_NAMES, WORKER_PROMPT, WORKER_REQUIRED_NAMES
+from qq_ai_bot.runtime.subagent_tools import WORKER_NAMES, WORKER_REQUIRED_NAMES, worker_prompt
 from qq_ai_bot.runtime.work_activation import bind_work_activation
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
@@ -163,19 +163,26 @@ class SubagentExecution:
         self.definitions: tuple[ChatTool, ...] | None = None
         self.script_api: ScriptApi | None = None
 
+    @property
+    def code_enabled(self) -> bool:
+        contract = self.services.runner.main_contract
+        return contract is not None and contract.mode == "code"
+
+    def required_names(self) -> frozenset[str]:
+        return WORKER_REQUIRED_NAMES | (
+            {"execute_code", "lookup_tools"} if self.code_enabled else set()
+        )
+
     async def prepare(self, *, admission_enabled: bool) -> None:
         if self.definitions is None:
             self.definitions = tuple(
                 t for t in await self.services.load_tools() if t.name in WORKER_NAMES
             )
-        if admission_enabled and not WORKER_REQUIRED_NAMES <= frozenset(
+        if admission_enabled and not self.required_names() <= frozenset(
             t.name for t in self.definitions
         ):
             raise ValueError("incomplete_worker_tool_manifest")
-        if (
-            self.services.runner.main_contract is not None
-            and self.services.runner.main_contract.mode == "direct"
-        ):
+        if not self.code_enabled:
             self.script_api = None
             return
         if self.script_api is not None:
@@ -409,7 +416,7 @@ class SubagentExecution:
                         await self.prepare(admission_enabled=True)
                     assert self.definitions is not None
                     names = frozenset(t.name for t in self.definitions)
-                    if not WORKER_REQUIRED_NAMES <= names:
+                    if not self.required_names() <= names:
                         raise ValueError("incomplete_worker_tool_manifest")
                     backend = WorkerBackend(self.services.backend_factory(tool_runtime), names)
                     now = datetime.now(UTC)
@@ -422,7 +429,10 @@ class SubagentExecution:
                     )
                     result = await runner.run(
                         (
-                            ChatMessage(role="system", content=WORKER_PROMPT),
+                            ChatMessage(
+                                role="system",
+                                content=worker_prompt(code_enabled=self.code_enabled),
+                            ),
                             brief_message,
                         ),
                         replace(
@@ -438,10 +448,7 @@ class SubagentExecution:
                             work_control=control,
                             fixed_tools=model_definitions(
                                 self.definitions,
-                                enabled=(
-                                    runner.main_contract is None
-                                    or runner.main_contract.mode == "code"
-                                ),
+                                enabled=self.code_enabled,
                             ),
                             script_api=self.script_api,
                             compaction_brief=brief_message,

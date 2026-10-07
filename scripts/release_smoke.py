@@ -79,6 +79,8 @@ def validate_production_compose(deploy_directory: Path, version: str, compose: C
             )
         if services[service].get("platform") != "linux/amd64":
             raise SmokeError(f"{service} does not resolve to linux/amd64")
+    if services["bot"].get("environment", {}).get("CODE_MODE_ENABLED") != "false":
+        raise SmokeError("default release must explicitly select direct mode")
     snowluma = services["snowluma"]
     if snowluma["image"] != "motricseven7/snowluma:latest":
         raise SmokeError("SnowLuma image does not resolve to the configured official image")
@@ -236,6 +238,7 @@ def wait_healthy(compose: Compose, service: str, timeout_seconds: float = 120.0)
 
 def verify_bot(compose: Compose, deploy_directory: Path, version: str) -> None:
     wait_healthy(compose, "bot")
+    compose.run("exec", "-T", "bot", "python", "/app/scripts/verify_monty_packaging.py", "direct")
     health = _read_healthz(compose)
     _assert_core_health(health, version)
     migration_command = (

@@ -66,6 +66,7 @@ async def runner_env(database, tmp_path, responses, *, max_tool_calls=8):
     provider = FakeLLMProvider(lambda _: next(responses))
     settings = make_settings(
         database.url,
+        code_mode_enabled=True,
         code_mode_worker_path=BINARY,
         code_mode_worker_sha256=__import__("hashlib").sha256(BINARY.read_bytes()).hexdigest(),
         code_mode_launcher_path=worker().launcher_path,

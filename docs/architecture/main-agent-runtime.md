@@ -15,7 +15,8 @@ Runtime 不持有单一当前 Conversation；每次调用仍显式传递其原�
 legacy/semantic 自主机会均以正式 SELF 来源进入这条执行链；
 真实 QQ 小范围社交效果验收仍需单独记录。
 
-所有主入口共用的静态 `CORE_CONTRACT` 注入持续 Work 的默认 Code Mode 编排策略。
+所有主入口默认采用 direct 构建及静态工具政策，不加载 Code 引擎，当前作用域完整获准工具直接可达。
+显式启用 Code 的部署才注入持续 Work 的 Code Mode 编排策略。
 已知多步流程在脚本内读取、核验和聚合，只把必要结果交回模型；需要解释新证据时再交回
 模型决策。基础工具包括联网搜索与网页读取，短聊、基础单次操作及生命周期控制可直接
 调用；专用工具按需查询原 schema 后通过 Code Mode 使用。工作者使用同一分层，具体
@@ -140,9 +141,10 @@ Work 或假 initiative。`join/stay/quiet` 不必逐轮填写，没报不清空�
 真实发送效果保持原 Space/person 投递目标，讨论关联只使用原持久入场/source；来源失效或
 绑定缺失就保持未知，不能从后来当前话题补造。查询和反馈沿原主执行链，不增加逐轮审核模型。
 
-新建 `generated`、`agentic` 和 `auto` 任务统一编译为一个 `yuki.agent` 步骤，
-由同一主 Agent 显式调用 `send_message`。`generated` 只是保留的任务策略输入，不再走
-生成正文后追加 DSL 发送的路径；固定工具 schema、提示词前缀和 Provider 设置不因此改变。
+新建 `agentic` 和 `auto` 任务统一编译为一个 `yuki.agent` 步骤，
+由同一主 Agent 显式调用 `send_message`。`generated` 输入和 `yuki.generate` 新执行入口已退役；
+历史原回执按原 ID 读取，不再走生成正文后追加 DSL 发送的路径。固定工具 schema、
+提示词前缀和 Provider 设置不因此改变。
 静态字面量提醒由 DSL 调用 `social.send_message`，与主 Agent 使用相同的 Social
 路由、净化和持久发送回执，不进入模型循环。SELF 与用户创建的提醒走同一合同；
 SELF 只可投递到原群。`delivery=none` 只执行内部工作，不会产生可见提醒。

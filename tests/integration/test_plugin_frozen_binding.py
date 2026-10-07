@@ -119,7 +119,9 @@ async def run(*, native_child=False):
             )
             chat = build_harness(db, make_settings(db.url)).processor._chat
             chat.set_plugin_tools(adapter)
-            contract = MainAgentContract(chat, ShortState(WorkspaceStore(base / "workspace")))
+            contract = MainAgentContract(
+                chat, ShortState(WorkspaceStore(base / "workspace")), code_enabled=True
+            )
             chat.runtime.runner.main_contract = contract
             before = await contract.definitions()
             original_revision = contract.revision

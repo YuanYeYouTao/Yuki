@@ -21,7 +21,7 @@ Tool Kernel 分开管理工具目录、固定声明与执行授权。主 Agent �
 平台消息号会收到错误回执。声明变更随部署生成新的合同 revision，不沿用旧请求链。
 Provider 原生工具还有独立的协议和配置合同，不能只检查函数工具就声称整个请求相同。
 长期记忆的主 Agent 声明是统一 `search_memory`，事实和证据详情仍为独立工具；旧三个
-`get_*_memories` 列表名只在执行层兼容历史回执。插件只获 Person 或 Group 读权限时
+`get_*_memories` 执行入口已退出；已存回执只按原 call_id 读取，未知调用不取得重跑资格。插件只获 Person 或 Group 读权限时
 仍可使用 `search_memory`，后端按该次批准的 scope 限制候选和显式目标。
 
 `lookup_tools(query=...)` 搜索名称/说明或分页列出简短目录；`name` 精确读取单项原参数
@@ -65,7 +65,9 @@ flowchart LR
 `mutation_committed` 与投递成功、失败、未知状态按真实回执解释；它们不是自然语言
 “已经完成”的替代品。工作区、工具结果等 artifact 的保留期由各自存储合同决定。
 
-## 代码组合 `execute_code`
+## 可选代码组合 `execute_code`
+
+默认部署为 direct：不包含 Monty binding、worker 或 launcher，主 Agent 直接使用当前作用域完整获准工具。启用 Code 必须显式选择 codemode 镜像及配置；以下组合政策只用于已启用 Code 的固定合同。
 
 Code 模式冻结清单包含固定的 `execute_code` 和 `lookup_tools`（主合同 version 16，`yuki.codemode.api.v1`）。
 `terminal_exec`、`terminal_read`、`terminal_write`、`terminal_control`、`environment_status` 常驻固定直调视图；
@@ -93,7 +95,7 @@ Code Mode 的累计 suspension、内存、并发、快照和时间限制继续�
 业务次数来自配置 `agent.max_tool_calls`（默认 32），达到段额度时恢复原 composition；
 根预算仍累计，不存在固定 18 次的执行限制。
 
-主 Agent 与工作者共享 `CODE_MODE_POLICY`：有效 Work 内多个步骤已知、无需模型逐步
+启用 Code 时，主 Agent 与工作者共享 `CODE_MODE_POLICY`：有效 Work 内多个步骤已知、无需模型逐步
 解释新证据时，默认用 Code Mode 编排批量读取、过滤汇总、确定性循环、串行操作与原回执
 检查。脚本内部核验回执并聚合，最后只返回必要结果、摘要、ID 和证据引用；完整子工具
 回执仍留在原 effect，不重复追加给模型。单个独立简单操作、语义判断、普通聊天与交付、

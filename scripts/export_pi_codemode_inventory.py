@@ -113,7 +113,9 @@ async def export_inventory() -> dict[str, Any]:
             chat.set_admin_tools(_DeclarationService(CapabilityRegistry().definitions()))
             automation = AutomationToolService(SimpleNamespace(enabled=True))
             chat.set_automation_tools(_DeclarationService(automation.definitions()))
-            contract = MainAgentContract(chat, ShortState(WorkspaceStore(root / "state")))
+            contract = MainAgentContract(
+                chat, ShortState(WorkspaceStore(root / "state")), code_enabled=True
+            )
             tools = await contract.definitions()
             config = await chat._runtime_config.snapshot()
             runtime = ToolRuntime(
@@ -132,9 +134,8 @@ async def export_inventory() -> dict[str, Any]:
                 "frozen_definitions": [asdict(tool) for tool in tools],
                 "model_definitions": [asdict(tool) for tool in await contract.model_definitions()],
                 "external_inventory": {
-                    "mcp": "deployment-dependent; synthetic binding tests required",
                     "plugin": "deployment-dependent; synthetic binding tests required",
-                    "production_manifest": "not_collected; production access not authorized",
+                    "production_manifest": "not_collected; local synthetic inventory only",
                 },
             }
         finally:

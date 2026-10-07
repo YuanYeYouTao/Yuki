@@ -111,6 +111,7 @@ async def test_chat_code_requires_original_event_admission_and_resumes_same_work
         database.url,
         runtime_work_enabled=True,
         enabled_groups_csv="20001",
+        code_mode_enabled=True,
         code_mode_worker_path=BINARY,
         code_mode_worker_sha256=hashlib.sha256(BINARY.read_bytes()).hexdigest(),
         code_mode_launcher_path=worker().launcher_path,
@@ -131,7 +132,7 @@ async def test_chat_code_requires_original_event_admission_and_resumes_same_work
         return await write(arguments)
 
     short_state.execute = record_write
-    chat.runtime.runner.main_contract = MainAgentContract(chat, short_state)
+    chat.runtime.runner.main_contract = MainAgentContract(chat, short_state, code_enabled=True)
     chat.runtime.runner.code_mode_settings = settings
     inbound = InboundMessage(
         message_id="new-user-event",

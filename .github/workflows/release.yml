@@ -124,6 +124,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          target: direct
           platforms: linux/amd64
           push: true
           tags: ${{ env.BOT_IMAGE }}:bootstrap-amd64
@@ -170,7 +171,7 @@ jobs:
             --label "org.opencontainers.image.version=$VERSION"
             --label "org.opencontainers.image.licenses=MIT"
           )
-          docker buildx build "${common[@]}" --tag "$BOT_IMAGE:$VERSION" .
+          docker buildx build "${common[@]}" --target direct --tag "$BOT_IMAGE:$VERSION" .
           for image in "$BOT_IMAGE:$VERSION"; do
             test "$(docker image inspect "$image" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')" = "$VERSION"
             test "$(docker image inspect "$image" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$RELEASE_SHA"

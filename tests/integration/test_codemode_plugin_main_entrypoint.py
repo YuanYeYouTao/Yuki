@@ -67,6 +67,7 @@ async def test_sdk_code_owner_reentry_and_original_source(database, tmp_path, sc
     settings = make_settings(
         database.url,
         runtime_work_enabled=True,
+        code_mode_enabled=True,
         code_mode_worker_path=BINARY,
         code_mode_worker_sha256=hashlib.sha256(BINARY.read_bytes()).hexdigest(),
         code_mode_launcher_path=worker().launcher_path,
@@ -74,7 +75,7 @@ async def test_sdk_code_owner_reentry_and_original_source(database, tmp_path, sc
     )
     chat = build_harness(database, settings, provider).processor._chat
     state = ShortState(env.store)
-    chat.runtime.runner.main_contract = MainAgentContract(chat, state)
+    chat.runtime.runner.main_contract = MainAgentContract(chat, state, code_enabled=True)
     chat.runtime.runner.code_mode_settings = settings
     host = HostPluginContext(
         plugin_id="test.code.sdk",

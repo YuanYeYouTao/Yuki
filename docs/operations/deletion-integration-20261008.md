@@ -52,3 +52,18 @@
 最终历史容器边界再审 90 passed，260 组 Python/SQLite 差分一致。有效 typed 拒绝重放的测试后端补齐真实 side_effecting 布尔角色，联合 72 passed；没有为错型 null 角色放宽生产 unknown 保护。
 
 `bcb43a74` 源码的 direct 镜像确认不含 Monty binding、Settings 默认关闭 Code；codemode 镜像已在实际生产内核通过无 bind mount 的打包隔离探针，worker/launcher 全部来自镜像，见 [打包探针原件](deletion-codemode-packaged-20261008.json)。任务索引 68 项源码及专项验收均已标记；最终 CI、上线仍单独记录。
+
+
+## 用户要求的再次终审与追加范围
+
+逐项删除闭包补充见 [16 项主会话实现核对](deletion-final-review-20261008.md)。原 68 项保留原 ID，用户追加 DEP-02 默认 direct 发行/部署和 RES-03 内存检查优化，现共 70 项。任务索引以对应实现、验收和部署边界逐项更新。
+
+- API-03 补齐原生 final 领域回执与工具结果类别的区别：原传输 accepted 或明确未派发失败按原 kind/state/严格布尔读取；unknown、错型、缺事实与普通 tool 同形 payload 不获豁免。原 CI 隐私测试的消息派发始终为零，修正的是结算误报。完整 lifecycle 114 passed，三组退休/恢复 56 passed；两次独立 SQL/Python 差分 1600 与 2664 组均一致。历史字节及原 ID 不改写。
+- MIG-01 补齐精确 0058/0060/0088 停点：固定 Pi 原 Git 产生结构与当前同停点一致，原 Work/source/journal、预算与上限、accepted/unknown 效果及附件字节升级 0099 后保持。Windows 与 Linux 各 3 passed，原结构指纹跨平台一致。
+- 当前能力清单重新从源码生成，75 项且连续两次结果相同；移除已退役 run_python/set_voice_preference，纳入真实 Host lookup_tools，现行文档不再宣称旧 Memory 执行入口可用。原历史 P10 快照未改写。
+- 旧 benchmark 只在实验内显式适配已删除接口，仍加载固定原 loop/reporting，报告记录三种源/适配 SHA。12 个 assembly 场景完整覆盖：旧 5、新 7，另 1 项新进度分类单测；共 13 项定点通过，不冒称 13 个 assembly 或整文件全量。
+- CI efa3d3c7 为 4739 passed、239 skipped、9 failed：8 项旧展示断言已按 typed 合同修正，完整 Work communication 22 passed；另 1 项 final 领域结算误报由上述回执修正闭合。该次 CI 本身仍记录为失败；最终源码另跑 CI。
+
+共享主机测试期间出现高负载与换页压力，SSH 延迟和 Bot 健康超时；两只本次测试容器停止后 SSH 恢复，Bot 回到 healthy，Bot/SnowLuma 的原容器 ID、启动时间及重启计数未变。Manager 期间发生自动重启。未把未完成的服务器补验记为通过；原测试日志保留，剩余定点验收在本地 Linux 完成。后续不在约 1.6 GiB 内存的主机上叠加重测试、保留大 tmpfs 与镜像解包。
+
+部署准备再审补齐：冷备先验证原 Manager 作业终态，停 Bot/Manager 后仅按原 ID 暂停持久环境，核写入容器后复制并恢复原暂停；不重跑任务。切换前复验 overlay、候选源码及安装源码的完整哈希集合；断线按原意图和实际状态恢复，不盲重发。生产实际执行和最终健康仍待下节记录。

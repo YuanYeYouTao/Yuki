@@ -175,6 +175,7 @@ def test_settings_disable_code_mode_unless_explicitly_pinned(tmp_path):
         Settings(_env_file=None, code_mode_worker_sha256="not-a-digest")
     configured = Settings(
         _env_file=None,
+        code_mode_enabled=True,
         code_mode_worker_path=tmp_path / "monty",
         code_mode_worker_sha256="a" * 64,
         code_mode_max_worker_processes=2,

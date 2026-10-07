@@ -48,9 +48,9 @@ TASKS = ("batch_ledger", "dependency_chain", "resumed_work")
 
 def orchestration_guidance(mode: str, *, default_policy: bool = False) -> str:
     """Default-policy acceptance supplies the real contract, never a canned program."""
-    from qq_ai_bot.prompting.contracts import CORE_CONTRACT
+    from qq_ai_bot.prompting.contracts import core_contract
 
-    prefix = CORE_CONTRACT + "\n\n" if default_policy else ""
+    prefix = core_contract(code_enabled=mode == "code") + "\n\n" if default_policy else ""
     if mode == "direct":
         return prefix + (
             ("Experimental direct-call control: " if default_policy else "")
@@ -940,6 +940,7 @@ async def compare_case(
             "historic_source_sha256": historic_sha,
             "historic_code_adapter": bool(getattr(runner_kind, "benchmark_code_adapter", False)),
             "historic_adapter_sha256": getattr(runner_kind, "benchmark_adapter_sha256", None),
+            "historic_reporting_sha256": getattr(runner_kind, "benchmark_reporting_sha256", None),
             "success": success,
             "goal_completed": goal_completed,
             "artifact_acceptance": artifact_acceptance,

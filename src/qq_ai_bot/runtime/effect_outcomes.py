@@ -144,10 +144,54 @@ def execution_evidence(
 
 
 def historical_evidence(
-    receipt: dict[str, Any], *, state: str = "accepted", original_tool: str = "legacy_tool"
+    receipt: dict[str, Any],
+    *,
+    state: str = "accepted",
+    original_tool: str = "legacy_tool",
+    kind: str = "tool",
 ) -> dict[str, Any]:
     """Read original facts without promoting absent or malformed display data."""
     from qq_ai_bot.capabilities.results import normalize_legacy_result
+
+    # Final transport receipts predate and intentionally do not use tool outcomes.
+    # Only their exact domain/state proof can settle them; a tool row never gets this exemption.
+    if kind == "final" and not any(key in receipt for key in ("outcome", "result", "status", "ok")):
+        accepted = (
+            state == "accepted"
+            and receipt.get("transport_accepted") is True
+            and "error" not in receipt
+            and all(
+                receipt.get(key, expected) is expected
+                for key, expected in (
+                    ("pending", False),
+                    ("uncertain", False),
+                    ("executed", True),
+                    ("mutation_committed", True),
+                )
+            )
+        )
+        refused = (
+            state == "failed"
+            and receipt.get("error") == "delivery_not_dispatched"
+            and receipt.get("executed") is False
+            and receipt.get("mutation_committed") is False
+            and "transport_accepted" not in receipt
+            and receipt.get("pending", False) is False
+            and receipt.get("uncertain", False) is False
+        )
+        if accepted or refused:
+            return {
+                "tool": "final_delivery",
+                "side_effecting": True,
+                "ok": accepted,
+                "executed": accepted,
+                "mutation_committed": accepted,
+                "pending": False,
+                "uncertain": False,
+                "status": "succeeded" if accepted else "not_dispatched",
+                "transport_accepted": accepted,
+                "error_code": None if accepted else "delivery_not_dispatched",
+            }
 
     evidence = receipt.get("outcome")
     valid = isinstance(evidence, dict) and (

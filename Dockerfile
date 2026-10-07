@@ -73,6 +73,7 @@ FROM runtime-base AS direct
 ENV CODE_MODE_ENABLED=false
 
 FROM runtime-base AS codemode
+ENV CODE_MODE_ENABLED=true
 COPY --from=builder-code --chown=bot:bot /app/.venv /app/.venv
 COPY --from=monty /build/distribution/monty/target/release/monty /opt/yuki-monty/monty
 COPY --from=monty /build/distribution/monty-isolated /opt/yuki-monty/monty-isolated
@@ -82,4 +83,4 @@ COPY LICENSE /opt/yuki-monty/licenses/Yuki-LICENSE
 COPY vendor/monty/LICENSE /opt/yuki-monty/licenses/Monty-LICENSE
 COPY vendor/monty/TYPESHED-LICENSE /opt/yuki-monty/licenses/TYPESHED-LICENSE
 
-FROM codemode AS runtime
+FROM direct AS runtime

@@ -30,6 +30,7 @@ Yuki is an open-source, self-hosted social AI agent exploring what a persistent 
 
 ## Main changes in 3.9.0
 
+- **Direct build by default:** The same main-agent loop exposes the full authorized tool set without a Monty binding, worker, or launcher in the image. Code Mode requires an explicitly selected image and opt-in; validate resource headroom on the target host before enabling it.
 - **Management WebUI and a shared execution runtime:** The journal-style interface shows actual conversations, execution traces, tool receipts, model usage, and workspace files, and manages model connections and task routes. Chat, SELF, plugins, automation, and Work resumption share the main agent. WebUI is disabled by default.
 - **Recoverable long tasks:** Work retains its original goal, cumulative budget, protocol checkpoints, and delivery receipts. Context is condensed against actual request capacity, and research material is read on demand. Terminal waits, subtasks, and additional user requirements continue the original task; restarts do not repeat confirmed effects.
 - **Agent-directed retrieval:** The agent uses `search_memory` when past facts are needed instead of injecting them every turn. Current, quoted, historical, workspace, and authorized tool images enter the original main model's native multimodal input.
@@ -38,7 +39,7 @@ Yuki is an open-source, self-hosted social AI agent exploring what a persistent 
 - **Legacy MCP removal:** Connections, tool discovery, management pages, SDK capabilities, and automation entry points are retired together. Shared tool results, media, and receipts remain. Plugin API is now **3.3**, the database head is **0099**, and old plugins require adaptation and renewed approval.
 - **Speech output retirement:** Genie synthesis, voice profiles/preferences, tool parameters, SDK/management features, the Worker and release dependencies are removed. Incoming/quoted ASR, historical audio and original receipts remain. Reconcile old executions and verify a cold backup of speech facts and referenced files before migrating the dedicated tables; no automatic resend or conversion to text occurs.
 
-These describe the current source. Real provider API behavior, natural-chat latency, and long-task outcomes require their respective acceptance evidence. Code Mode / Pi integration has not been merged.
+These describe the current source. Real provider API behavior, natural-chat latency, and long-task outcomes require their respective acceptance evidence. Optional Code Mode isolation checks do not establish production capacity or long-term memory behavior.
 
 ## Current source capabilities
 

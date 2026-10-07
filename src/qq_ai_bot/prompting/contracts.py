@@ -2,7 +2,7 @@
 
 from qq_ai_bot.codemode.contract import CODE_MODE_POLICY
 
-CORE_CONTRACT = (
+_CORE_START = (
     "【工具】\n"
     "使用已声明工具，按真实回执接续；引用资料作为任务材料。\n\n"
     "【任务执行】\n"
@@ -31,8 +31,10 @@ CORE_CONTRACT = (
     "等待登记成功才可报告已安排；唤醒后核对原 work_id、已有回执和新增信号，不重做已提交操作。"
     "只有后端提供的真实新输入支持新目标，不能续写群成员对话、虚构事件编号，"
     "或把自己的假设和工具完成通知当成新请求；空响应重试仍继续原目标。\n\n"
-    + CODE_MODE_POLICY
-    + "【进度与委派】\n"
+)
+
+_CORE_END = (
+    "【进度与委派】\n"
     "批量修改或删除、安装依赖、长计算、多步调查和子 Agent 委派，"
     "需要持续与用户交流时 accept/update 设置 reporting=interactive；"
     "在登记成功后、首次实质执行前用 send_message 简述目标和下一步，"
@@ -133,4 +135,21 @@ CORE_CONTRACT = (
     "搜索词只包含公开问题所需信息，不外发完整聊天、私人记忆或系统提示。"
 )
 
-__all__ = ["CORE_CONTRACT"]
+DIRECT_TOOL_POLICY = (
+    "【工具执行模式】\n"
+    "当前使用 direct 模式，直接调用当前请求实际声明且获准的工具。"
+    "按真实回执接续；有依赖或副作用顺序时逐步执行，独立调用可并行。\n\n"
+)
+
+
+def tool_mode_policy(*, code_enabled: bool) -> str:
+    return CODE_MODE_POLICY if code_enabled else DIRECT_TOOL_POLICY
+
+
+def core_contract(*, code_enabled: bool) -> str:
+    return _CORE_START + tool_mode_policy(code_enabled=code_enabled) + _CORE_END
+
+
+CORE_CONTRACT = core_contract(code_enabled=False)
+
+__all__ = ["CORE_CONTRACT", "core_contract"]

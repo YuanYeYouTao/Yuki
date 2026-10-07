@@ -15,14 +15,38 @@ import subprocess
 import sys
 import tempfile
 from importlib.metadata import version
+from importlib.util import find_spec
 from pathlib import Path
 
-import pydantic_monty
-
-if len(sys.argv) != 2 or sys.argv[1] not in {"application", "validation"}:
-    raise SystemExit("usage: verify_monty_packaging.py application|validation")
+if len(sys.argv) != 2 or sys.argv[1] not in {"direct", "application", "validation"}:
+    raise SystemExit("usage: verify_monty_packaging.py direct|application|validation")
 role = sys.argv[1]
 root = Path("/opt/yuki-monty")
+if role == "direct":
+    from qq_ai_bot.config import Settings
+
+    assert find_spec("pydantic_monty") is None, "direct image contains Monty binding"
+    assert not root.exists(), "direct image contains worker/launcher distribution"
+    assert Settings(_env_file=None).code_mode_enabled is False, "direct default enables Code"
+    assert "pydantic_monty" not in sys.modules, "direct startup imported Monty binding"
+    print(
+        json.dumps(
+            {
+                "format": "yuki_container_packaging_v1",
+                "mode": "direct",
+                "verdict": "passed",
+                "binding_present": False,
+                "worker_present": False,
+                "launcher_present": False,
+                "code_mode_enabled": False,
+            },
+            indent=2,
+        )
+    )
+    raise SystemExit(0)
+
+import pydantic_monty  # noqa: E402 -- optional import after direct packaging gate
+
 artifacts = json.loads((root / "artifacts.json").read_text())
 audit = json.loads((root / "THIRD_PARTY_NOTICES.json").read_text())
 for name in ("worker", "launcher"):

@@ -4,6 +4,8 @@
 
 本指南对应测试分支兼容主线 `25cd6083` 后的开发源码。**3.9.0 尚未正式发布**，正式下载仍为 [3.8.4 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.4)。开发提交镜像已有各自运维记录，但应用版本号不代表可拉取的 `:3.9.0` 正式镜像。全部 102 个已合并 PR 与功能变化见 [发布说明草案](releases/v3.9.0.md)。
 
+默认构建、发行和部署使用 direct：镜像不包含 Monty binding、worker、launcher，Code Mode 默认关闭；当前作用域全部获准工具仍经同一 Agent loop 执行。Code 为显式 `--target codemode` 可选构建，启用前须完成目标主机隔离验收。模式切换沿原回执收尾旧 composition，不重置预算或重派发。
+
 ## 版本与迁移范围
 
 | 项目 | 3.8.4 正式包 | 当前 3.9.0 源码 |

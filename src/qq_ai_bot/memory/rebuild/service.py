@@ -8,6 +8,7 @@ import json
 import logging
 from dataclasses import dataclass, replace
 from typing import Any
+from weakref import WeakSet
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -274,7 +275,7 @@ class MemoryRebuildService:
         self.metrics = metrics or MemoryRebuildMetrics()
         self._active_in_flight_calls = 0
         self._in_flight_tasks: dict[str, set[asyncio.Task[Any]]] = {}
-        self._cancelled_runs: set[str] = set()
+        self._cancelled_tasks: WeakSet[asyncio.Task[Any]] = WeakSet()
 
     @property
     def active_in_flight_calls(self) -> int:
@@ -411,8 +412,8 @@ class MemoryRebuildService:
         )
         if not changed:
             raise RuntimeError("memory rebuild state changed concurrently")
-        self._cancelled_runs.add(run_id)
         for task in tuple(self._in_flight_tasks.get(run_id, ())):
+            self._cancelled_tasks.add(task)
             task.cancel()
         self.metrics.increment("rebuild_runs_cancelled")
         return await self._require(run_id, session=session)
@@ -678,7 +679,7 @@ class MemoryRebuildService:
                 )
             except asyncio.CancelledError:
                 await self.repository.defer_item(item_id, category="cancelled")
-                if run.public_id in self._cancelled_runs:
+                if asyncio.current_task() in self._cancelled_tasks:
                     return "deferred"
                 raise
             except (OSError, RuntimeError, TypeError, ValueError) as exc:

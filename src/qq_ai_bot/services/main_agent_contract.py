@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 
 class MainAgentContract:
-    def __init__(self, chat: Any, state: ShortState, *, code_enabled: bool = True) -> None:
+    def __init__(self, chat: Any, state: ShortState, *, code_enabled: bool = False) -> None:
         self.chat, self.state = chat, state
         self.mode = "code" if code_enabled else "direct"
         self._tools: tuple[ChatTool, ...] | None = None

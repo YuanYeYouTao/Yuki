@@ -7,13 +7,15 @@ from scripts.export_pi_codemode_inventory import export_inventory
 from qq_ai_bot.codemode.api_projection import NEVER_PROJECTED, project
 from qq_ai_bot.codemode.contract import CODE_MODE_POLICY, EXECUTE_CODE_TOOL
 from qq_ai_bot.domain.messages import ChatTool
-from qq_ai_bot.prompting.contracts import CORE_CONTRACT
-from qq_ai_bot.runtime.subagent_tools import WORKER_PROMPT
+from qq_ai_bot.prompting.contracts import CORE_CONTRACT, core_contract
+from qq_ai_bot.runtime.subagent_tools import WORKER_PROMPT, worker_prompt
 
 
 def test_main_and_worker_receive_one_shared_default_policy():
-    assert CORE_CONTRACT.count(CODE_MODE_POLICY) == 1
-    assert WORKER_PROMPT.count(CODE_MODE_POLICY) == 1
+    assert core_contract(code_enabled=True).count(CODE_MODE_POLICY) == 1
+    assert CODE_MODE_POLICY not in CORE_CONTRACT
+    assert worker_prompt(code_enabled=True).count(CODE_MODE_POLICY) == 1
+    assert CODE_MODE_POLICY not in WORKER_PROMPT
     assert "已接纳的有效 Work" in CODE_MODE_POLICY
     assert "无需模型逐步理解新证据" in CODE_MODE_POLICY
     assert "一对一机械包进脚本" in CODE_MODE_POLICY
@@ -59,7 +61,7 @@ async def test_default_policy_reaches_frozen_manifest_without_replacing_direct_t
 
 def test_real_acceptance_supplies_policy_without_a_program_or_forced_single_call():
     instruction = orchestration_guidance("code", default_policy=True)
-    assert instruction.count(CORE_CONTRACT) == 1
+    assert instruction.count(core_contract(code_enabled=True)) == 1
     assert "Choose your own approach and program" in instruction
     assert "Use exactly one execute_code" not in instruction
     assert "with this program" not in instruction

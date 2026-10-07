@@ -106,7 +106,7 @@ class Settings(BaseSettings):
     social_gateway_transfer_directory: str = ""
     sandbox_socket: Path = Path("/run/yuki-sandbox/manager.sock")
     # Declaration mode is fixed at startup; dispatch still checks current authority.
-    code_mode_enabled: bool = True
+    code_mode_enabled: bool = False
     # Code Mode native worker: explicit path and pinned digest.
     code_mode_worker_path: Path | None = None
     code_mode_worker_sha256: str = Field(default="", pattern=r"^([0-9a-f]{64})?$")

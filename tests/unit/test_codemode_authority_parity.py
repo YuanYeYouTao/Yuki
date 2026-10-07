@@ -31,11 +31,12 @@ INVENTORY = json.loads(
     ).read_text(encoding="utf-8")
 )
 # Lifecycle controls go through the Host control gate (tested separately) and
-# execute_code is never a wrapper; every other tool is a backend binding.
+# execution and lookup entrypoints are Host-only; other tools are backend bindings.
 BACKEND_TOOLS = [
     row["model_name"]
     for row in INVENTORY["tools"]
-    if row["model_name"] not in WORK_CONTROL_NAMES and row["model_name"] != "execute_code"
+    if row["model_name"] not in WORK_CONTROL_NAMES
+    and row["model_name"] not in {"execute_code", "lookup_tools"}
 ]
 
 

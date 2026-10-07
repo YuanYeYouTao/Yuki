@@ -18,13 +18,13 @@ from qq_ai_bot.domain.relationships import style_policy
 from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE, entity_memory_rule
 from qq_ai_bot.persistence.event_repository import ConversationReadVersion
 from qq_ai_bot.prompting import (
-    CORE_CONTRACT,
     PromptChannel,
     PromptCompiler,
     PromptContribution,
     PromptProgram,
     PromptTrust,
 )
+from qq_ai_bot.prompting.contracts import core_contract
 from qq_ai_bot.prompting.contributors import static_text
 from qq_ai_bot.prompting.models import CompiledPrompt, PromptMetrics
 from qq_ai_bot.prompting.serializer import serialized_messages_hash
@@ -84,7 +84,7 @@ class PromptComposer:
             ),
             static_text(
                 "core.contract",
-                CORE_CONTRACT,
+                core_contract(code_enabled=self._settings.code_mode_enabled),
                 channel=PromptChannel.INVARIANT,
                 priority=90,
             ),

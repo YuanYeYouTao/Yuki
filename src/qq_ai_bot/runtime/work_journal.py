@@ -606,10 +606,13 @@ class WorkJournal:
                 stored = json.loads(row["receipt_json"]) if row is not None else {}
                 capture.evidence = historical_evidence(
                     stored
-                    if row is not None and row["state"] == "accepted"
+                    if row is not None and (row["state"] == "accepted" or row["kind"] == "final")
                     else {"result": result},
-                    state="accepted",
+                    state=row["state"]
+                    if row is not None and row["kind"] == "final"
+                    else "accepted",
                     original_tool=original_tool,
+                    kind=row["kind"] if row is not None else "tool",
                 )
             return result
 

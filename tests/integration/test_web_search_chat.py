@@ -725,6 +725,7 @@ async def test_web_lookup_can_be_followed_by_superuser_onebot_tool(
     settings = web_settings(database).model_copy(
         update={
             "runtime_work_enabled": True,
+            "code_mode_enabled": True,
             "code_mode_worker_path": BINARY,
             "code_mode_worker_sha256": hashlib.sha256(BINARY.read_bytes()).hexdigest(),
             "code_mode_launcher_path": worker().launcher_path,

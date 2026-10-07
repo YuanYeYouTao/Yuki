@@ -1,5 +1,7 @@
 # Code Mode container isolation
 
+These policies are only for explicitly built `--target codemode` images. Default `runtime`/`direct` images contain no Monty and do not load these policies. Set `YUKI_CODE_IMAGE` explicitly when using the optional Compose overlay.
+
 The seccomp baseline is Moby profiles revision `2ceae35d351c156cb5a8efc0fdc4a08cf94569d8`, downloaded from [the official repository](https://github.com/moby/profiles/tree/2ceae35d351c156cb5a8efc0fdc4a08cf94569d8). Its Apache 2.0 license is `MOBY-PROFILES-LICENSE`. `scripts/build_codemode_seccomp.py --check` verifies both its exact SHA256 and the generated profile. AppArmor derives from the same revision's `apparmor/template.go` and retains the default Bot restrictions.
 
 `docker-compose.codemode.yml` adds this policy only to `bot`. Combine it with the existing deployment Compose files. It does not apply to a gateway, Manager, or other service. Before creating the Bot container, a host administrator must install the reviewed `yuki-bot-codemode.apparmor` profile under `/etc/apparmor.d/` and load it with `apparmor_parser -r`. The 2026-10-08 deployment-host canary installed this new profile; existing production containers continued using their original profiles. An absent profile fails container creation; do not substitute an unconfined profile.

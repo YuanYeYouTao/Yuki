@@ -37,6 +37,21 @@ Historical producers run in subprocesses with their exact archived sources;
 they do not share a live Bot database. Downgrade does not replace the live
 database with an older backup.
 
+## Default direct distribution and optional Code
+
+The normal Dockerfile build (`runtime`), release image, installer and base Compose use `direct`. They contain no Monty binding, worker or launcher and explicitly disable Code. Direct exposes all supported tools in the current scope through the same Agent loop and the same execution authorization. It needs none of the Code-specific seccomp/AppArmor setup below.
+
+Code remains an explicit optional distribution:
+
+```sh
+docker build --target codemode -t yuki:optional-code .
+# Run packaging and enforced native isolation acceptance before deployment.
+export YUKI_CODE_IMAGE=yuki:optional-code
+docker compose -f docker-compose.yml -f docker-compose.codemode.yml config
+```
+
+Only after the optional image passes its actual Host isolation and resource gate should its overlay be used to create Bot. Changing modes does not replay pending compositions; original IDs, durable child receipts and cumulative budgets remain the recovery authority. A direct image cannot be enabled into Code merely by changing an environment flag.
+
 ## Fixed distribution and Linux worker
 
 ```sh
@@ -58,7 +73,7 @@ validation used UID 501). The launcher accepts only the binding's literal `subpr
 argument, clears environment, and starts `/usr/bin/bwrap` with separate user,
 mount, PID, network, IPC and UTS namespaces, namespace UID/GID 65534, and no
 capabilities. It mounts only the native worker, read-only runtime libraries,
-proc/dev, an empty etc directory and transient tmp. It exposes no application
+device nodes and transient tmp; no procfs. It exposes no application
 state, workspace, Manager socket, Docker socket, credential or network bridge.
 There is no unrestricted Linux fallback if user namespaces or immutable files
 are unavailable. Do not bypass a failure with `--privileged` or an unrestricted
@@ -83,11 +98,12 @@ CODE_MODE_WORKER_PATH=/opt/yuki-monty/monty
 CODE_MODE_WORKER_SHA256=<artifacts.json worker.sha256>
 CODE_MODE_LAUNCHER_PATH=/opt/yuki-monty/monty-isolated
 CODE_MODE_LAUNCHER_SHA256=<artifacts.json launcher.sha256>
-CODE_MODE_MAX_WORKER_PROCESSES=2
-CODE_MODE_FOREGROUND_RESERVED_PROCESSES=1
+CODE_MODE_ENABLED=true
+CODE_MODE_MAX_WORKER_PROCESSES=1
+CODE_MODE_FOREGROUND_RESERVED_PROCESSES=0
 ```
 
-The 2/1 process defaults are a measured admission policy: an actual native
+The optional deployment starts with one worker and no reserved foreground slot. The earlier 2/1 concurrency experiment established a different measured admission policy: an actual native
 background worker holds one slot, a second background waits, and a foreground
 native worker starts in the reserved slot; cancelling a waiter leaks neither
 PID nor reservation. This establishes concurrency behavior, not a throughput

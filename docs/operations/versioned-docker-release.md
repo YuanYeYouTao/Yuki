@@ -20,6 +20,10 @@ Memory release check 读取项目版本与迁移图，不另存版本常量或�
 4. 发布提交同步更新 README 的正式版下载入口，并在流水线完成后核对链接、镜像和附件。只有推进开发基线时，不提前声称新镜像或安装包已发布。
 
 首次配置 GHCR 可使用 workflow 的 bootstrap 模式；该模式只准备镜像访问，不等于正式发布。
+默认 Bot 镜像使用 Dockerfile 的 `direct` target，`runtime` 也继承它：不包含 Monty binding、worker 或 launcher，`CODE_MODE_ENABLED=false`。安装器和默认 Compose 采用同一 direct 发行物，全部获准工具仍由原 Agent loop 直接声明，授权与恢复不变。发布 smoke 在镜像内执行 `scripts/verify_monty_packaging.py direct` 核验无 Monty 与默认关闭。
+
+Code Mode 是显式可选构建：使用 `docker build --target codemode`，按 [Code 运维](pi-codemode-operations.md) 通过原生隔离门禁后，显式设置 `YUKI_CODE_IMAGE` 并叠加 `docker-compose.codemode.yml`。默认发行不安装或加载 Code 专用 AppArmor/seccomp。
+
 当前 bootstrap、release 和 finalize 仅构建、拉取和校验 Bot 镜像；此前 Release 的 Genie-TTS Worker 资产保留历史归属，不作为新部署依赖。
 
 新部署的配置向导默认开启模型搜索，不要求新增 Tavily 密钥。Gemini 主 Agent

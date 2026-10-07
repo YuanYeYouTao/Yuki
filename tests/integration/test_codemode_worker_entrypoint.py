@@ -112,6 +112,7 @@ async def test_persistent_worker_code_retains_subset_owner_and_root_budget(
         enabled_groups_csv="20001",
         web_enabled=True,
         web_mode="native",
+        code_mode_enabled=True,
         code_mode_worker_path=BINARY,
         code_mode_worker_sha256=hashlib.sha256(BINARY.read_bytes()).hexdigest(),
         code_mode_launcher_path=worker().launcher_path,
@@ -122,7 +123,9 @@ async def test_persistent_worker_code_retains_subset_owner_and_root_budget(
         database, tmp_path / "results", retention_seconds=60
     )
     chat.runtime.runner.code_mode_settings = settings
-    chat.runtime.runner.main_contract = MainAgentContract(chat, ShortState(env.store))
+    chat.runtime.runner.main_contract = MainAgentContract(
+        chat, ShortState(env.store), code_enabled=True
+    )
     downstream = tmp_path / "worker-downstream.jsonl"
 
     async def sandbox_execute(name, arguments, **kwargs):

@@ -869,7 +869,7 @@ class AgentRunner:
         try:
             worker = (
                 PinnedWorker.from_settings(settings)
-                if settings is not None and getattr(settings, "code_mode_enabled", True)
+                if settings is not None and getattr(settings, "code_mode_enabled", False)
                 else None
             )
             limits = (

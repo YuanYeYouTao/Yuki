@@ -160,6 +160,7 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             make_settings(
                 database.url,
                 automation_enabled=True,
+                code_mode_enabled=True,
                 web_mode="tavily",
                 tavily_api_key="wire-test-key",
             ),
@@ -205,7 +206,7 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             {"onebot.send_private_message": forbidden_send}
         )
         handlers._gateway_factory = lambda context: None
-        contract = MainAgentContract(chat, state)
+        contract = MainAgentContract(chat, state, code_enabled=True)
         chat.runtime.runner.main_contract = contract
         handlers.main_contract = contract
         chat._tools.short_state = state

@@ -96,6 +96,7 @@ async def test_background_job_code_keeps_event_owner_and_current_plugin_grant(
         database.url,
         runtime_work_enabled=True,
         enabled_groups_csv="20001",
+        code_mode_enabled=True,
         code_mode_worker_path=BINARY,
         code_mode_worker_sha256=hashlib.sha256(BINARY.read_bytes()).hexdigest(),
         code_mode_launcher_path=pinned_worker().launcher_path,
@@ -104,7 +105,9 @@ async def test_background_job_code_keeps_event_owner_and_current_plugin_grant(
     harness = build_harness(database, settings, provider)
     chat = harness.processor._chat
     chat._tools.social_service = env.service
-    chat.runtime.runner.main_contract = MainAgentContract(chat, ShortState(env.store))
+    chat.runtime.runner.main_contract = MainAgentContract(
+        chat, ShortState(env.store), code_enabled=True
+    )
     chat.runtime.runner.code_mode_settings = settings
     worker = PluginBackgroundTurnWorker(
         repository=repository,

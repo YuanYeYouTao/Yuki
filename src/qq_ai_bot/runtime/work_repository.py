@@ -2456,6 +2456,41 @@ class WorkRepository:
         )
 
     @staticmethod
+    def _known_native_final_clause() -> Any:
+        receipt = effects.c.receipt_json
+
+        def field_type(name: str) -> Any:
+            return func.coalesce(func.json_type(receipt, "$." + name), "missing")
+
+        domain = and_(
+            effects.c.kind == "final",
+            field_type("outcome") == "missing",
+            field_type("result") == "missing",
+            field_type("status") == "missing",
+            field_type("ok") == "missing",
+        )
+        accepted = and_(
+            effects.c.state == "accepted",
+            field_type("transport_accepted") == "true",
+            field_type("error") == "missing",
+            field_type("pending").in_(("missing", "false")),
+            field_type("uncertain").in_(("missing", "false")),
+            field_type("executed").in_(("missing", "true")),
+            field_type("mutation_committed").in_(("missing", "true")),
+        )
+        refused = and_(
+            effects.c.state == "failed",
+            field_type("error") == "text",
+            func.coalesce(func.json_extract(receipt, "$.error"), "") == "delivery_not_dispatched",
+            field_type("executed") == "false",
+            field_type("mutation_committed") == "false",
+            field_type("transport_accepted") == "missing",
+            field_type("pending").in_(("missing", "false")),
+            field_type("uncertain").in_(("missing", "false")),
+        )
+        return and_(domain, or_(accepted, refused))
+
+    @staticmethod
     def _unknown_historical_outcome_clause() -> Any:
         receipt = effects.c.receipt_json
         kind = func.coalesce(func.json_type(receipt, "$.outcome"), "missing")
@@ -2534,7 +2569,10 @@ class WorkRepository:
                     ("missing", "true", "false")
                 ),
             )
-        return or_(*malformed, and_(absent, ~legacy_proven))
+        return and_(
+            ~WorkRepository._known_native_final_clause(),
+            or_(*malformed, and_(absent, ~legacy_proven)),
+        )
 
     @staticmethod
     def _unresolved_clause(*, pending: bool = True, uncertain: bool = True) -> Any:
@@ -2647,6 +2685,7 @@ class WorkRepository:
                     effects.c.effect_key,
                     effects.c.work_id,
                     effects.c.state,
+                    effects.c.kind,
                     effects.c.receipt_json,
                 ).where(self._effect_scope(identity))
                 if only_unresolved:
@@ -2668,7 +2707,7 @@ class WorkRepository:
                     from qq_ai_bot.runtime.effect_outcomes import historical_evidence
 
                     outcome = historical_evidence(
-                        json.loads(row["receipt_json"]), state=row["state"]
+                        json.loads(row["receipt_json"]), state=row["state"], kind=row["kind"]
                     )
                     outcome.update(effect_key=row["effect_key"], work_id=row["work_id"])
                     result.append(outcome)
