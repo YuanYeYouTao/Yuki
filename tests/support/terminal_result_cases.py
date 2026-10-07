@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from sqlalchemy import select
 
 from qq_ai_bot.automation.models import TurnOrigin
+from qq_ai_bot.capabilities.invocation import direct_invocations
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity, ToolCall, ToolFunction
@@ -80,8 +81,6 @@ async def check_terminal_result_recovery(database, tmp_path):
             gateway=None,
             allow_generic_onebot=False,
             runtime_config=snapshot,
-            actor_user_id="10001",
-            current_group_id="20001",
             turn_snapshot=ConversationTurnSnapshot(
                 state.id, state.runtime_scope_key, state.generation, event.id, token.version
             ),
@@ -112,8 +111,7 @@ async def check_terminal_result_recovery(database, tmp_path):
             call = ToolCall(
                 id=f"call-{index}", function=ToolFunction(name=name, arguments=json.dumps(args))
             )
-            backend.begin_batch((call,), runtime)
-            text = await backend.execute(name, call.function.arguments, runtime)
+            text = await backend.execute_call(direct_invocations((call,), runtime)[0])
             payload = json.loads(text)
             assert payload["ok"], payload
             assert len(text) <= snapshot.agent.tool_result_max_characters
@@ -157,17 +155,16 @@ async def check_terminal_result_recovery(database, tmp_path):
                     name="save_conversation_attachment_to_workspace", arguments=json.dumps(args)
                 ),
             )
-            backend.begin_batch((call,), runtime)
             payload = json.loads(
-                await backend.execute(call.function.name, call.function.arguments, runtime)
+                await backend.execute_call(direct_invocations((call,), runtime)[0])
             )
             assert payload["ok"] is bool(index), payload
             assert not backend._tools_closed
             assert backend.finalize("can continue", runtime) == "can continue"
             if not index:
-                assert payload["error"] == "tool_input_validation_failed", payload
+                assert payload["error_code"] == "tool_input_validation_failed", payload
 
         # The fixture now has an authenticated inbound sender, so the normal
         # explicit-send reminder applies; it must not alter the internal result.
-        assert backend.response_feedback("定时任务已经创建", runtime) is not None
+        assert not hasattr(backend, "response_feedback")
         assert backend.finalize("定时任务已经创建", runtime) == "定时任务已经创建"

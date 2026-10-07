@@ -11,14 +11,11 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
-from qq_ai_bot.domain.messages import ReasoningEffort
 from qq_ai_bot.model_runtime.models import (
     ModelCapability,
     ModelProfile,
-    ModelProtocol,
     ModelRoute,
     ModelTask,
-    StructuredOutputMode,
 )
 
 if TYPE_CHECKING:
@@ -67,7 +64,6 @@ class ModelProfileCatalog(BaseModel):
     profiles: dict[str, ModelProfile]
     routes: dict[ModelTask, ModelRoute]
     search_connection: str | None = None
-    compatibility_mode: bool = False
 
     @model_validator(mode="after")
     def _validate_routes(self) -> ModelProfileCatalog:
@@ -110,69 +106,12 @@ _DEFAULT_REQUIREMENTS: dict[ModelTask, frozenset[ModelCapability]] = {
 
 
 def load_model_profile_catalog(
-    path: Path,
-    *,
-    allow_legacy_fallback: bool = False,
-    legacy_provider: str,
-    legacy_base_url: str,
-    legacy_model: str,
-    legacy_timeout_seconds: float,
-    legacy_max_retries: int,
-    legacy_temperature: float,
-    legacy_max_output_tokens: int,
-    legacy_thinking_enabled: bool | None,
-    legacy_reasoning_effort: ReasoningEffort | None = None,
-    environment: Mapping[str, str] | None = None,
+    path: Path, *, environment: Mapping[str, str] | None = None
 ) -> ModelProfileCatalog:
-    """Load the selected TOML; legacy environment routing requires explicit opt-in."""
-
+    """Load an explicit, complete v3 TOML model configuration."""
     if not path.is_file():
-        if not allow_legacy_fallback:
-            raise ModelRuntimeConfigurationError(
-                f"model profile configuration is missing: {path}; "
-                "create webui-config/model_profiles.toml with guided setup, "
-                "or migrate the old config/model_profiles.toml before starting"
-            )
-        logger.warning(
-            "model_profiles_legacy_fallback_opt_in file=%s profile=main",
-            path,
-        )
-        # Legacy environment settings never opted into a provider-native tool.
-        capabilities = frozenset(ModelCapability) - {
-            ModelCapability.IMAGE_INPUT,
-            ModelCapability.NATIVE_WEB_SEARCH,
-        }
-        profile = ModelProfile(
-            id="main",
-            provider=legacy_provider,
-            protocol={
-                "anthropic": ModelProtocol.ANTHROPIC_MESSAGES,
-                "gemini": ModelProtocol.GEMINI,
-            }.get(legacy_provider.casefold(), ModelProtocol.CHAT_COMPLETIONS),
-            base_url=legacy_base_url,
-            api_key_env="LLM_API_KEY" if legacy_provider.casefold() != "fake" else "",
-            model=legacy_model or "fake",
-            timeout_seconds=legacy_timeout_seconds,
-            max_retries=legacy_max_retries,
-            default_temperature=legacy_temperature,
-            default_max_output_tokens=legacy_max_output_tokens,
-            thinking_enabled=legacy_thinking_enabled,
-            reasoning_effort=legacy_reasoning_effort,
-            structured_output_mode=StructuredOutputMode.FUNCTION_TOOL,
-            capabilities=capabilities,
-        )
-        routes = {
-            task: ModelRoute(
-                task=task,
-                profile_id="main",
-                required_capabilities=requirements,
-            )
-            for task, requirements in _DEFAULT_REQUIREMENTS.items()
-        }
-        return ModelProfileCatalog(
-            profiles={"main": profile},
-            routes=routes,
-            compatibility_mode=True,
+        raise ModelRuntimeConfigurationError(
+            f"model profile configuration is missing: {path}; create model_profiles.toml with setup"
         )
 
     try:
@@ -211,66 +150,6 @@ def parse_model_profile_catalog(
             raise ModelRuntimeConfigurationError(
                 f"retired model routes remain ({names}); {CURRENT_CONFIGURATION_HINT}"
             )
-        if (
-            ModelTask.MEMORY_SELF_REFLECTION.value not in raw_routes
-            and ModelTask.MEMORY_EXTRACTION.value in raw_routes
-        ):
-            logger.warning(
-                "model_route_compatibility task=memory_self_reflection source=memory_extraction"
-            )
-            raw_routes[ModelTask.MEMORY_SELF_REFLECTION.value] = raw_routes[
-                ModelTask.MEMORY_EXTRACTION.value
-            ]
-        if (
-            ModelTask.MEMORY_CONSOLIDATION.value not in raw_routes
-            and ModelTask.MEMORY_EXTRACTION.value in raw_routes
-        ):
-            logger.warning(
-                "model_route_compatibility task=memory_consolidation source=memory_extraction"
-            )
-            raw_routes[ModelTask.MEMORY_CONSOLIDATION.value] = raw_routes[
-                ModelTask.MEMORY_EXTRACTION.value
-            ]
-        if (
-            ModelTask.MEMORY_DREAM.value not in raw_routes
-            and ModelTask.MEMORY_CONSOLIDATION.value in raw_routes
-        ):
-            logger.warning(
-                "model_route_compatibility task=memory_dream source=memory_consolidation"
-            )
-            raw_routes[ModelTask.MEMORY_DREAM.value] = raw_routes[
-                ModelTask.MEMORY_CONSOLIDATION.value
-            ]
-        if ModelTask.MEMORY_ATTRIBUTION.value not in raw_routes:
-            source_task = next(
-                (task for task in (ModelTask.UTILITY_STRUCTURED,) if task.value in raw_routes),
-                None,
-            )
-            if source_task is not None:
-                logger.warning(
-                    "model_route_compatibility task=memory_attribution source=%s",
-                    source_task.value,
-                )
-                raw_routes[ModelTask.MEMORY_ATTRIBUTION.value] = raw_routes[source_task.value]
-        if ModelTask.CONVERSATION_COMPACTION.value not in raw_routes:
-            source_task = next(
-                (
-                    task
-                    for task in (
-                        ModelTask.MEMORY_DREAM,
-                        ModelTask.UTILITY_STRUCTURED,
-                        ModelTask.MEMORY_EXTRACTION,
-                    )
-                    if task.value in raw_routes
-                ),
-                None,
-            )
-            if source_task is not None:
-                logger.warning(
-                    "model_route_compatibility task=conversation_compaction source=%s",
-                    source_task.value,
-                )
-                raw_routes[ModelTask.CONVERSATION_COMPACTION.value] = raw_routes[source_task.value]
         routes = {
             ModelTask(task_name): ModelRoute(
                 task=ModelTask(task_name),

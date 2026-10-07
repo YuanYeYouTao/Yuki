@@ -97,7 +97,6 @@ class AutomationCapabilityHandlers:
 
     def mapping(self) -> dict[str, CapabilityHandler]:
         return {
-            "yuki.generate": self.agent,
             "yuki.agent": self.agent,
             "config.get": self.config_get,
             "config.set": self.config_set,
@@ -116,13 +115,13 @@ class AutomationCapabilityHandlers:
         completion_payload: str = "",
     ) -> CapabilityResult:
         snapshot = await self._runtime_config.snapshot(
-            user_id=context.creator_user_id or None,
+            user_id=context.authority.actor_user_id or None,
             group_id=context.current_group_id,
         )
         current_time = self._time.at(context.actual_started_at, context.timezone)
         runtime = AgentRuntime(
             origin=context.authority.origin,
-            actor_user_id=context.creator_user_id,
+            actor_user_id=context.authority.actor_user_id,
             actor_is_superuser=context.authority.actor_is_superuser,
             delegated_authority=context.authority.delegated_authority,
             conversation_key=context.conversation_key,
@@ -211,27 +210,23 @@ class AutomationCapabilityHandlers:
             allow_generic_onebot=context.authority.actor_is_superuser,
             allow_work_environment=True,
             read_scope=None,
-            external_target_id=context.current_group_id or context.creator_user_id,
+            external_target_id=context.current_group_id or context.authority.actor_user_id,
             conversation_key=context.conversation_key,
             execution_id=runtime.execution_id or "",
-            actor_user_id=context.creator_user_id,
             actor_is_superuser=context.authority.actor_is_superuser,
             allow_admin_actions=context.authority.actor_is_superuser,
             allow_automation=True,
-            current_group_id=context.current_group_id,
             runtime_config=snapshot,
             origin=context.authority.origin,
             conversation_id=context.canonical_conversation_id,
             scope_type=ScopeType.GROUP if context.current_group_id else ScopeType.PRIVATE,
-            bot_user_id=context.bot_user_id,
             person_id=context.canonical_creator_person_id,
             space_id=context.canonical_target_space_id,
-            presence_id=context.canonical_presence_id,
             before_model_request=validate_context,
             sandbox_source={
                 "origin": context.authority.origin.value,
                 "principal_kind": context.creator_kind,
-                "actor_user_id": context.creator_user_id,
+                "actor_user_id": context.authority.actor_user_id,
                 "presence_id": context.canonical_presence_id,
                 "space_id": context.canonical_target_space_id,
                 "bot_user_id": context.bot_user_id,
@@ -245,7 +240,7 @@ class AutomationCapabilityHandlers:
                 "execution_id": runtime.execution_id,
             },
             actor_context=ToolActor(
-                user_id=context.creator_user_id,
+                user_id=context.authority.actor_user_id,
                 bot_user_id=context.bot_user_id,
                 group_id=context.current_group_id,
                 origin=context.authority.origin,
@@ -330,7 +325,7 @@ class AutomationCapabilityHandlers:
             arguments["value"],
             scope_type=str(arguments["scope_type"]),
             scope_id=str(arguments["scope_id"]),
-            actor_user_id=context.creator_user_id,
+            actor_user_id=context.authority.actor_user_id,
             trigger_message_id=f"automation:{context.automation_id}:{context.automation_run_id}",
             conversation_key=context.conversation_key,
         )
@@ -398,7 +393,7 @@ class AutomationCapabilityHandlers:
         self, arguments: dict[str, Any], context: CapabilityExecutionContext
     ) -> CapabilityResult:
         user_id = str(arguments["user_id"])
-        if not context.authority.actor_is_superuser and user_id != context.creator_user_id:
+        if not context.authority.actor_is_superuser and user_id != context.authority.actor_user_id:
             raise AutomationExecutionError("person_scope_denied")
         rows = await self._memories.list_person(user_id, limit=int(arguments["limit"]))
         return CapabilityResult(
@@ -422,12 +417,12 @@ class AutomationCapabilityHandlers:
         user_id = arguments.get("user_id")
         group_id = arguments.get("group_id")
         if not context.authority.actor_is_superuser:
-            if user_id not in {None, context.creator_user_id}:
+            if user_id not in {None, context.authority.actor_user_id}:
                 raise AutomationExecutionError("person_scope_denied")
             if group_id not in {None, context.current_group_id}:
                 raise AutomationExecutionError("group_scope_denied")
             if user_id is None and group_id is None:
-                user_id = context.creator_user_id
+                user_id = context.authority.actor_user_id
         if context.canonical_conversation_id:
             keyword = str(arguments["keyword"]).casefold()
             after = _parse_time(arguments.get("after"))
@@ -479,7 +474,7 @@ class AutomationCapabilityHandlers:
         runtime_config: RuntimeConfigSnapshot | None = None,
     ) -> PromptComposition:
         snapshot = runtime_config or await self._runtime_config.snapshot(
-            user_id=context.creator_user_id or None,
+            user_id=context.authority.actor_user_id or None,
             group_id=context.current_group_id,
         )
         assembled = await prepare_context(

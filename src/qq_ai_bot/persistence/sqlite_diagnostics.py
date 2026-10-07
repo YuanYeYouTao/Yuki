@@ -319,9 +319,7 @@ def install_sqlite_diagnostics(engine: Engine) -> SQLiteDiagnostics:
             statement_done(
                 context.connection, context.execution_context, succeeded=False, error_code=code
             )
-        if (code is None or code & 255 not in {5, 6}) and "locked" not in str(
-            context.original_exception
-        ).lower():
+        if code is None or code & 255 not in {5, 6}:
             return
         now = time.monotonic()
         with diagnostics.lock:

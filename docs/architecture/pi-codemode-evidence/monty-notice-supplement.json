@@ -1,0 +1,251 @@
+{
+  "format": "yuki_monty_notice_supplement_v1",
+  "baseline_sha": "b54c666a3c46eb95ccb701ac29b8fbdea443a2ad",
+  "previous_audit_sha256": "78364a8ced8c0ed3871cc7ac6ea8ee4c00f04611456b7a318bfb0dbc169f4041",
+  "supplemented_audit_sha256": "0d93a64dbd9842a6796ad69f082fa0c532c3f298957af3a0f94b8380f21d33b0",
+  "archive_checksums_verified": 580,
+  "locked_packages": 598,
+  "target_packages": 352,
+  "notice_texts": 326,
+  "worker_sha256_unchanged": "af76448a14fe980c823f1c6092692f90a8ddc6341f236f17d6d47d72f49548e8",
+  "binding_wheel_sha256_unchanged": "5f77cfbcf15ca0e0bb405d6d586aeb98aacbbcfc10555ba0b882c1b73868aa6f",
+  "source_sha_unchanged": "3f9d6ef413fb951e5b80113b7088d535bd028fcb",
+  "resolved": [
+    {
+      "package": "quote-use-0.8.4",
+      "kind": "declared_mit_with_spdx_standard_text",
+      "notices": [
+        {
+          "source": "https://raw.githubusercontent.com/spdx/license-list-data/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/MIT.txt",
+          "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+          "kind": "declared_mit_with_spdx_standard_text"
+        }
+      ],
+      "archive_sha256": "9619db1197b497a36178cfc736dc96b271fe918875fbf1344c436a7e93d0321e"
+    },
+    {
+      "package": "quote-use-macros-0.8.4",
+      "kind": "declared_mit_with_spdx_standard_text",
+      "notices": [
+        {
+          "source": "https://raw.githubusercontent.com/spdx/license-list-data/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/MIT.txt",
+          "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+          "kind": "declared_mit_with_spdx_standard_text"
+        }
+      ],
+      "archive_sha256": "82ebfb7faafadc06a7ab141a6f67bcfb24cb8beb158c6fe933f2f035afa99f35"
+    },
+    {
+      "package": "r-efi-5.3.0",
+      "kind": "archive",
+      "notices": [
+        {
+          "source": "AUTHORS",
+          "sha256": "ff92bed461f50338dd703a9ba9aee496a425957873df1d91192776e4bdf5dda7",
+          "kind": "archive"
+        }
+      ],
+      "archive_sha256": "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
+    },
+    {
+      "package": "r-efi-6.0.0",
+      "kind": "archive",
+      "notices": [
+        {
+          "source": "AUTHORS",
+          "sha256": "d027e91dbc9cdbb2f1190068e498bd6b61cff022b6a032b191021ba658d96111",
+          "kind": "archive"
+        }
+      ],
+      "archive_sha256": "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
+    },
+    {
+      "package": "rustls-platform-verifier-android-0.1.1",
+      "kind": "verified_publication_source",
+      "notices": [
+        {
+          "source": "https://raw.githubusercontent.com/rustls/rustls-platform-verifier/669ace0a801ef4be8e0e23d9c534849497ee5782/LICENSE-MIT",
+          "sha256": "1c7cf76689c837a68ed8d704994e52a0f2940c087958f860d17f3186afbdcc0c",
+          "kind": "verified_publication_source"
+        },
+        {
+          "source": "https://raw.githubusercontent.com/rustls/rustls-platform-verifier/669ace0a801ef4be8e0e23d9c534849497ee5782/LICENSE-APACHE",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+          "kind": "verified_publication_source"
+        }
+      ],
+      "archive_sha256": "f87165f0995f63a9fbeea62b64d10b4d9d8e78ec6d7d51fb2125fda7bb36788f"
+    },
+    {
+      "package": "symbolic-common-12.18.3",
+      "kind": "verified_publication_source",
+      "notices": [
+        {
+          "source": "https://raw.githubusercontent.com/getsentry/symbolic/e21157c6e8ef2d9ffd55656ed41f6ada36ef66c8/LICENSE",
+          "sha256": "989aeccdc0127d426c2509116eff70f21b4552f08ebe9f468acc539cd121a692",
+          "kind": "verified_publication_source"
+        }
+      ],
+      "archive_sha256": "332615d90111d8eeaf86a84dc9bbe9f65d0d8c5cf11b4caccedc37754eb0dcfd"
+    },
+    {
+      "package": "winapi-i686-pc-windows-gnu-0.4.0",
+      "kind": "verified_publication_source",
+      "notices": [
+        {
+          "source": "https://raw.githubusercontent.com/retep998/winapi-rs/30ed8e3b86f4a8a55e68865843c19800f57bcd7f/LICENSE-MIT",
+          "sha256": "5b19674a1db628a475850a131956ed49521b744e3dda8f5a94141f9aba681219",
+          "kind": "verified_publication_source"
+        },
+        {
+          "source": "https://raw.githubusercontent.com/retep998/winapi-rs/30ed8e3b86f4a8a55e68865843c19800f57bcd7f/LICENSE-APACHE",
+          "sha256": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1",
+          "kind": "verified_publication_source"
+        }
+      ],
+      "archive_sha256": "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
+    },
+    {
+      "package": "winapi-x86_64-pc-windows-gnu-0.4.0",
+      "kind": "verified_publication_source",
+      "notices": [
+        {
+          "source": "https://raw.githubusercontent.com/retep998/winapi-rs/30ed8e3b86f4a8a55e68865843c19800f57bcd7f/LICENSE-MIT",
+          "sha256": "5b19674a1db628a475850a131956ed49521b744e3dda8f5a94141f9aba681219",
+          "kind": "verified_publication_source"
+        },
+        {
+          "source": "https://raw.githubusercontent.com/retep998/winapi-rs/30ed8e3b86f4a8a55e68865843c19800f57bcd7f/LICENSE-APACHE",
+          "sha256": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1",
+          "kind": "verified_publication_source"
+        }
+      ],
+      "archive_sha256": "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
+    }
+  ],
+  "source_correspondence": [
+    {
+      "package": "symbolic-common-12.18.3",
+      "repository": "https://github.com/getsentry/symbolic",
+      "notice_source_commit": "e21157c6e8ef2d9ffd55656ed41f6ada36ef66c8",
+      "archive_authored_files_matched": 9,
+      "matched_paths_and_git_blob_sha1_sha256": "210e4d3e846e01415d588c606f0e9e9f5ee554ee324a97abafd0212ce041339e",
+      "published_manifest_edit": null,
+      "generated_archive_files_retained_by_archive_checksum": [
+        {
+          "archive_path": "Cargo.lock",
+          "sha256": "2f3ecaf839391aaf64025dec2db334e5725e0ceaaf143fed2bfb8b6cfb4ad161"
+        },
+        {
+          "archive_path": "Cargo.toml",
+          "sha256": "3c66654300263adf0882324a57d50b553492ca9df126187218015b984b213daf"
+        }
+      ],
+      "scope": "All authored payload bytes match pinned source, with the explicit publish-only manifest edit if present."
+    },
+    {
+      "package": "rustls-platform-verifier-android-0.1.1",
+      "repository": "https://github.com/rustls/rustls-platform-verifier",
+      "notice_source_commit": "669ace0a801ef4be8e0e23d9c534849497ee5782",
+      "archive_authored_files_matched": 2,
+      "matched_paths_and_git_blob_sha1_sha256": "90546085a336cbaf0e0ee93a5603485a3d705e03ace796b6f403f806fb821417",
+      "published_manifest_edit": null,
+      "generated_archive_files_retained_by_archive_checksum": [
+        {
+          "archive_path": "Cargo.toml",
+          "sha256": "34de6835ef5df615acadc4071bb9d38565b23fbe5a9087a7cf30cc7ccfe02a20"
+        },
+        {
+          "archive_path": "maven/pom.xml",
+          "sha256": "5468629ab3793f4768c0527b8ecca25219a00b5d9503d1ad657cc664c87e9081"
+        },
+        {
+          "archive_path": "maven/rustls/rustls-platform-verifier/0.1.1/_remote.repositories",
+          "sha256": "df2cae67b1175c951353c484a675f9b56a57634e26b1b6cb38ddd74bd180c1ba"
+        },
+        {
+          "archive_path": "maven/rustls/rustls-platform-verifier/0.1.1/rustls-platform-verifier-0.1.1.aar",
+          "sha256": "667292cadd8fa589229dd0f716541236a761f29b774930868d218175633830fd"
+        },
+        {
+          "archive_path": "maven/rustls/rustls-platform-verifier/0.1.1/rustls-platform-verifier-0.1.1.pom",
+          "sha256": "5468629ab3793f4768c0527b8ecca25219a00b5d9503d1ad657cc664c87e9081"
+        },
+        {
+          "archive_path": "maven/rustls/rustls-platform-verifier/maven-metadata-local.xml",
+          "sha256": "151ab31e01d7ad176b02f2b9104d86450a383c4c16281e12eb87ed39ad6bf660"
+        }
+      ],
+      "scope": "Source correspondence for license lookup; generated Maven artifacts are not claimed to byte-match Git source."
+    },
+    {
+      "package": "winapi-i686-pc-windows-gnu-0.4.0",
+      "repository": "https://github.com/retep998/winapi-rs",
+      "notice_source_commit": "30ed8e3b86f4a8a55e68865843c19800f57bcd7f",
+      "archive_authored_files_matched": 1389,
+      "matched_paths_and_git_blob_sha1_sha256": "278de63086790eb32da35c60e20a564e62d8b14291222fb5723caa0d0351107b",
+      "published_manifest_edit": {
+        "only_difference": "published package version",
+        "source_version": "0.3.2",
+        "published_version": "0.4.0",
+        "source_blob_sha1": "11ffcebf2907b9649e35db99c0404eb6bfae303b",
+        "published_blob_sha1": "24c4997d263e6d25ec4913b602769c0bc4be9b6a"
+      },
+      "generated_archive_files_retained_by_archive_checksum": [
+        {
+          "archive_path": "Cargo.toml",
+          "sha256": "9652222664ffc7e2a26fdcdebdce0917a455b39d8fbcbf451bf0b011a3067bf7"
+        }
+      ],
+      "scope": "All authored payload bytes match pinned source, with the explicit publish-only manifest edit if present."
+    },
+    {
+      "package": "winapi-x86_64-pc-windows-gnu-0.4.0",
+      "repository": "https://github.com/retep998/winapi-rs",
+      "notice_source_commit": "30ed8e3b86f4a8a55e68865843c19800f57bcd7f",
+      "archive_authored_files_matched": 1418,
+      "matched_paths_and_git_blob_sha1_sha256": "cb7325176fb7c5e34fcd9c2d32a2c4ce140578c078298a297574ac44373608b0",
+      "published_manifest_edit": {
+        "only_difference": "published package version",
+        "source_version": "0.3.2",
+        "published_version": "0.4.0",
+        "source_blob_sha1": "b630ebef2e299002f363727599677d4613396a40",
+        "published_blob_sha1": "fe5a8d0a3eec54cab7b8afe7d81ef8d8c742fd49"
+      },
+      "generated_archive_files_retained_by_archive_checksum": [
+        {
+          "archive_path": "Cargo.toml",
+          "sha256": "a88605a11db5def9b6cf73398e83b3edb72228cb43ea935729fac5cd33cec22c"
+        }
+      ],
+      "scope": "All authored payload bytes match pinned source, with the explicit publish-only manifest edit if present."
+    }
+  ],
+  "upstream_notice_omissions": [
+    {
+      "package": "quote-use-0.8.4",
+      "declared_license": "MIT",
+      "archive_sha256": "9619db1197b497a36178cfc736dc96b271fe918875fbf1344c436a7e93d0321e",
+      "manifest_path": "quote-use-0.8.4/Cargo.toml.orig",
+      "manifest_license_field": "MIT",
+      "vcs_commit": "05096f346f8b17fba8a57a235b958917ad9d99e0",
+      "standard_text_source": "https://raw.githubusercontent.com/spdx/license-list-data/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/MIT.txt",
+      "copyright_notice_status": "not_supplied_by_upstream",
+      "note": "Standard MIT text is attached to the original MIT declaration; template placeholders are not package copyright attribution."
+    },
+    {
+      "package": "quote-use-macros-0.8.4",
+      "declared_license": "MIT",
+      "archive_sha256": "82ebfb7faafadc06a7ab141a6f67bcfb24cb8beb158c6fe933f2f035afa99f35",
+      "manifest_path": "quote-use-macros-0.8.4/Cargo.toml.orig",
+      "manifest_license_field": "MIT",
+      "vcs_commit": "05096f346f8b17fba8a57a235b958917ad9d99e0",
+      "standard_text_source": "https://raw.githubusercontent.com/spdx/license-list-data/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/MIT.txt",
+      "copyright_notice_status": "not_supplied_by_upstream",
+      "note": "Standard MIT text is attached to the original MIT declaration; template placeholders are not package copyright attribution."
+    }
+  ],
+  "standard_terms_are_not_upstream_copyright_attribution": true,
+  "scope": "License-text supplement to the exact previously built artifact hashes and dependency membership. No rebuild of the Monty worker or binding is claimed.",
+  "upstream_material_preserved": true
+}

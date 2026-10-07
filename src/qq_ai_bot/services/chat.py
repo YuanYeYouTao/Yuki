@@ -78,7 +78,7 @@ from qq_ai_bot.memory.runtime.turn_session import (
 )
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.targets import MemoryTargetResolver
-from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
+from qq_ai_bot.model_runtime.executor import ModelExecutor
 from qq_ai_bot.model_runtime.models import ModelProtocol, ModelTask
 from qq_ai_bot.persistence.event_repository import ConversationReadVersion
 from qq_ai_bot.persistence.repositories import (
@@ -104,7 +104,6 @@ from qq_ai_bot.runtime.work_activation import current_work_control
 from qq_ai_bot.services.agent_runner import (
     AgentRunner,
     AgentRunResult,
-    AgentRuntime,
 )
 from qq_ai_bot.services.agent_tools import AgentToolService, OneBotToolGateway, ToolRuntime
 from qq_ai_bot.services.chat_preparation_timings import (
@@ -120,6 +119,7 @@ from qq_ai_bot.services.effect_gate import (
     EffectGateTimeoutError,
     EffectPermitRejectedError,
 )
+from qq_ai_bot.services.invocation_context import InvocationContextFactory
 from qq_ai_bot.services.main_agent_backend import (
     _ARTIFACT_READER_NAME,
     MainAgentBackend,
@@ -138,7 +138,7 @@ from qq_ai_bot.services.turn_coordinator import (
 )
 from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.vision.models import VisualObservation
-from qq_ai_bot.web.models import WebMode, WebSearchResponse
+from qq_ai_bot.web.models import WebMode
 from qq_ai_bot.web.native_sources import recover_native_web_response
 from yuki_plugin_sdk.events import EventName
 
@@ -158,76 +158,11 @@ def _core_result_character_budget(runtime: RuntimeConfigSnapshot | None) -> int:
     return runtime.agent.tool_result_max_characters
 
 
-def _fit_artifact_page_result(
-    page: dict[str, object],
-    *,
-    max_characters: int,
-) -> ToolExecutionResult:
-    """Fit one artifact page into the model result budget without changing its handle."""
-
-    def outcome(candidate: dict[str, object]) -> ToolExecutionResult:
-        return ToolExecutionResult(
-            ok=True,
-            data=candidate,
-            provider_id=_ARTIFACT_PROVIDER_ID,
-            tool_name=_ARTIFACT_READER_NAME,
-        )
-
-    def rendered_size(candidate: dict[str, object]) -> int:
-        return len(
-            json.dumps(
-                outcome(candidate).model_payload(),
-                ensure_ascii=False,
-                default=str,
-            )
-        )
-
-    if rendered_size(page) <= max_characters:
-        return outcome(page)
-    content = page.get("content")
-    offset = page.get("offset")
-    total = page.get("total_characters")
-    if not isinstance(content, str) or not isinstance(offset, int) or not isinstance(total, int):
-        return ToolExecutionResult(
-            ok=False,
-            error_code="artifact_page_budget_exceeded",
-            public_message="Artifact 页面无法放入当前工具结果预算",
-            provider_id=_ARTIFACT_PROVIDER_ID,
-            tool_name=_ARTIFACT_READER_NAME,
-        )
-
-    best: dict[str, object] | None = None
-    low = 0
-    high = len(content)
-    while low <= high:
-        length = (low + high) // 2
-        next_offset = offset + length
-        candidate = {
-            **page,
-            "content": content[:length],
-            "next_offset": next_offset if next_offset < total else None,
-        }
-        if rendered_size(candidate) <= max_characters:
-            best = candidate
-            low = length + 1
-        else:
-            high = length - 1
-    if best is None or (content and not best.get("content")):
-        return ToolExecutionResult(
-            ok=False,
-            error_code="artifact_page_budget_exceeded",
-            public_message="Artifact 页面预算过小，无法返回有效内容",
-            provider_id=_ARTIFACT_PROVIDER_ID,
-            tool_name=_ARTIFACT_READER_NAME,
-        )
-    return outcome(best)
-
-
 class OutboundSender(Protocol):
     """Adapter-provided sender used by the business layer."""
 
     async def send(self, message: OutboundMessage) -> OutboundSendReceipt:
-        """Send one normal message and return proof of platform acceptance."""
+        """Send one message and return proof of platform acceptance."""
 
 
 class AdminToolService(Protocol):
@@ -244,7 +179,7 @@ class AdminToolService(Protocol):
         name: str,
         arguments_json: str,
         runtime: ToolRuntime,
-    ) -> str:
+    ) -> ToolExecutionResult:
         """Execute against authority derived from the current real event."""
 
 
@@ -253,7 +188,9 @@ class AutomationToolProvider(Protocol):
 
     def definitions(self) -> tuple[ChatTool, ...]: ...
 
-    async def execute(self, name: str, arguments_json: str, runtime: ToolRuntime) -> str: ...
+    async def execute(
+        self, name: str, arguments_json: str, runtime: ToolRuntime
+    ) -> ToolExecutionResult: ...
 
 
 class PluginToolProvider(Protocol):
@@ -283,7 +220,8 @@ class PluginToolProvider(Protocol):
         runtime: ToolRuntime,
         *,
         web_was_used: bool,
-    ) -> str: ...
+        expected_contract: str | None = None,
+    ) -> ToolExecutionResult: ...
 
 
 class ToolInvocationRecorder(Protocol):
@@ -347,8 +285,7 @@ class ChatService:
         self,
         *,
         settings: Settings,
-        provider: ModelCompleter | None = None,
-        model_executor: ModelExecutor | None = None,
+        model_executor: ModelExecutor,
         concurrency: ConcurrencyManager,
         ledger: EventLedgerRepository,
         people: PeopleRepository,
@@ -377,11 +314,7 @@ class ChatService:
             raise TypeError("memory_partition_lookup must provide callable resolve_from_scope")
         self._memory_partition_lookup = memory_partition_lookup
         self._settings = settings
-        models = require_model_executor(
-            model_executor,
-            provider=provider,
-            model=settings.llm_model or "fake",
-        )
+        models = model_executor
         self._models = models
         self._concurrency = concurrency
         self._ledger = ledger
@@ -554,7 +487,9 @@ class ChatService:
             definitions = self._tools.definitions(context)
             return definitions
 
-        async def core_execute(name: str, arguments: str, context: ToolRuntime) -> object:
+        async def core_execute(
+            name: str, arguments: str, context: ToolRuntime
+        ) -> ToolExecutionResult:
             return await self._tools.execute(name, arguments, context)
 
         registry.register(
@@ -573,7 +508,7 @@ class ChatService:
                 name: str,
                 arguments: str,
                 context: ToolRuntime,
-            ) -> object:
+            ) -> ToolExecutionResult:
                 del name
                 decoded = json.loads(arguments)
                 if not isinstance(decoded, dict):
@@ -605,6 +540,12 @@ class ChatService:
                     limit=limit,
                     query=query,
                     max_characters=max_characters,
+                    item_limit=(
+                        context.runtime_config.tooling.result_item_limit
+                        if context.runtime_config is not None
+                        and context.runtime_config.tooling is not None
+                        else None
+                    ),
                     access=access_from_runtime(
                         context,
                         generation=control.lease.generation
@@ -636,19 +577,15 @@ class ChatService:
                         provider_id=_ARTIFACT_PROVIDER_ID,
                         tool_name=_ARTIFACT_READER_NAME,
                     )
-                if result.get("mode") != "text":
-                    from qq_ai_bot.capabilities.media import result_images
+                from qq_ai_bot.capabilities.media import result_images
 
-                    return ToolExecutionResult(
-                        ok=True,
-                        data=result,
-                        images=result_images(result),
-                        provider_id=_ARTIFACT_PROVIDER_ID,
-                        tool_name=_ARTIFACT_READER_NAME,
-                    )
-                return _fit_artifact_page_result(
-                    result,
-                    max_characters=max_characters,
+                return ToolExecutionResult(
+                    ok=True,
+                    data=result,
+                    images=result_images(result),
+                    mutation_committed=False,
+                    provider_id=_ARTIFACT_PROVIDER_ID,
+                    tool_name=_ARTIFACT_READER_NAME,
                 )
 
             registry.register(
@@ -661,6 +598,8 @@ class ChatService:
                             description=(
                                 "读取工具产生的短期 Artifact。JSON 优先使用 inspect 查看结构、"
                                 "get 按路径读取、search 返回关键词命中的完整对象；旧文本使用 text。"
+                                "get 字符串按字符分页，offset/next_offset 单位为 characters；"
+                                "limit 默认 8000、上限 32000，实际页受当前结果预算约束。"
                                 "图片 Artifact 使用 image 将原图交给当前主模型原生查看。"
                             ),
                             parameters={
@@ -722,7 +661,7 @@ class ChatService:
                 name: str,
                 arguments: str,
                 context: ToolRuntime,
-            ) -> object:
+            ) -> ToolExecutionResult:
                 return await automation.execute(name, arguments, context)
 
             registry.register(
@@ -742,7 +681,7 @@ class ChatService:
                 name: str,
                 arguments: str,
                 context: ToolRuntime,
-            ) -> object:
+            ) -> ToolExecutionResult:
                 return await admin.execute(name, arguments, context)
 
             registry.register(
@@ -755,12 +694,27 @@ class ChatService:
             )
         if self._plugin_tools is not None:
             plugin = self._plugin_tools
+            fingerprint = getattr(plugin, "contract_fingerprint", None)
+            frozen_plugin_contracts = (
+                self.runtime.runner.main_contract.plugin_contracts
+                if self.runtime.runner.main_contract is not None
+                else {}
+            )
 
             async def plugin_execute(
                 name: str,
                 arguments: str,
                 context: ToolRuntime,
-            ) -> object:
+            ) -> ToolExecutionResult:
+                expected = frozen_plugin_contracts.get(name)
+                if expected is not None and callable(fingerprint):
+                    return await plugin.execute(
+                        name,
+                        arguments,
+                        context,
+                        web_was_used=web_was_used,
+                        expected_contract=expected,
+                    )
                 return await plugin.execute(
                     name,
                     arguments,
@@ -1251,10 +1205,7 @@ class ChatService:
                     allow_automation=not visual_input_present,
                     conversation_key=conversation_key,
                     trigger_message_id=inbound.message_id,
-                    actor_user_id=inbound.sender.user_id,
                     actor_is_superuser=inbound.sender.user_id in self._settings.superusers,
-                    current_group_id=inbound.group_id,
-                    mentioned_user_ids=inbound.mentioned_user_ids,
                     runtime_config=runtime_config,
                     origin=turn_origin,
                     read_only=False,
@@ -1288,18 +1239,9 @@ class ChatService:
                         answer_text=agent_result.text,
                     )
 
-                    async def save_native_response() -> None:
-                        await self._save_native_web_response(
-                            inbound=inbound,
-                            trigger_event_id=turn_snapshot.trigger_event_id
-                            if turn_snapshot
-                            else None,
-                            conversation_key=conversation_key,
-                            response=native_response,
-                            max_runs=runtime_config.web.source_max_runs_per_conversation,
-                        )
-
-                    await self.run_effect(turn_snapshot, save_native_response)
+                    # Native citations already belong to the response/protocol
+                    # journal. The legacy URL index only serves local web tools;
+                    # writing a duplicate here must not gate a confirmed send.
                     if not native_response.sources:
                         logger.warning(
                             "native_web_source_parse_failed conversation_hash=%s action_count=%d",
@@ -1383,33 +1325,19 @@ class ChatService:
             status = DeliveryStatus.COMPLETE
         else:
             status = DeliveryStatus.FAILED
-        await session.on_delivery_confirmed(
-            DeliverySummary(
-                final_agent_run_id=run_id,
-                status=status,
-                delivered_text=delivered_text,
+        try:
+            await session.on_delivery_confirmed(
+                DeliverySummary(
+                    final_agent_run_id=run_id, status=status, delivered_text=delivered_text
+                )
             )
-        )
-        await session.close()
-
-    async def _save_native_web_response(
-        self,
-        *,
-        inbound: InboundMessage,
-        trigger_event_id: int | None,
-        conversation_key: str,
-        response: WebSearchResponse,
-        max_runs: int,
-    ) -> None:
-        await self._web_sources.save_response(
-            conversation_key=conversation_key,
-            trigger_message_id=inbound.message_id,
-            trigger_event_id=trigger_event_id,
-            provider="deepseek_native",
-            response=response,
-            max_runs=max_runs,
-            **_trusted_conversation_write_kwargs(inbound),
-        )
+        except Exception as exc:
+            logger.warning(
+                "memory_attribution_handoff_failed category=%s coverage_incomplete=true",
+                type(exc).__name__,
+            )
+        finally:
+            await session.close()
 
     async def _record_tool_invocation(
         self,
@@ -1534,11 +1462,6 @@ class ChatService:
             participation = await self.participation_context(turn_snapshot.trigger_event_id)
             if participation:
                 context = replace(context, participation_context=participation)
-        if memory_session is not None:
-            memory_session.stage_prompt_selection(
-                context.injected_memory_ids,
-                context.memory_exposures,
-            )
         current = context.current_message
         if attachment_text:
             current = replace(
@@ -1583,7 +1506,6 @@ class ChatService:
                 runtime=runtime,
                 visual_observation=visual_observation,
                 visual_failure=visual_failure,
-                memory_exclusive_write=bool(memory_session and memory_session.exclusive_write),
                 allowed_capabilities=self.web_capabilities(runtime),
                 before_preparation=validate_preparation,
             )
@@ -1685,6 +1607,9 @@ class ChatService:
         conversation_key: str,
         initial_messages: tuple[ChatMessage, ...],
         runtime: ToolRuntime,
+        *,
+        invocation_goal: str | None = None,
+        invocation_source: dict[str, Any] | None = None,
     ) -> _CompletedAgentRun:
         config = runtime.runtime_config
         if config is None:
@@ -1729,39 +1654,23 @@ class ChatService:
         await emit_chat_preparation()
         result = await self.runtime.main_turns.run(
             initial_messages,
-            AgentRuntime(
-                origin=runtime.origin,
-                actor_user_id=runtime.actor_user_id,
-                actor_is_superuser=runtime.actor_is_superuser,
-                delegated_authority=None,
-                conversation_key=conversation_key,
-                current_group_id=runtime.current_group_id,
-                bot_user_id=runtime.effective_bot_user_id or "bot",
-                gateway=runtime.gateway,
-                runtime_config=config,
-                current_time=current_time,
-                allowed_capabilities=self.web_capabilities(config),
-                max_tool_calls=min(config.agent.max_tool_calls, runtime.max_tool_calls_override)
-                if runtime.max_tool_calls_override is not None
-                else config.agent.max_tool_calls,
-                max_model_requests=(
-                    min(
-                        config.agent.max_model_requests,
-                        runtime.max_model_requests_override,
+            replace(
+                InvocationContextFactory.from_tools(
+                    replace(runtime, conversation_key=conversation_key),
+                    current_time=current_time,
+                    allowed_capabilities=self.web_capabilities(config),
+                    max_tool_calls=min(config.agent.max_tool_calls, runtime.max_tool_calls_override)
+                    if runtime.max_tool_calls_override is not None
+                    else config.agent.max_tool_calls,
+                    max_model_requests=min(
+                        config.agent.max_model_requests, runtime.max_model_requests_override
                     )
                     if runtime.max_model_requests_override is not None
-                    else config.agent.max_model_requests
+                    else config.agent.max_model_requests,
                 ),
-                prompt_diagnostics=runtime.prompt_diagnostics,
                 before_model_request=before_model_request,
-                observation_boundary=runtime.observation_boundary,
-                canonical_conversation_id=runtime.effective_conversation_id,
-                execution_id=runtime.effective_execution_id,
-                source_event_id=runtime.effective_trigger_event_id,
-                visible_event_ids=runtime.visible_event_ids,
-                preparation_model_requests=runtime.prompt_diagnostics.preparation_model_requests
-                if runtime.prompt_diagnostics is not None
-                else 0,
+                invocation_goal=invocation_goal,
+                invocation_source=invocation_source,
             ),
             backend,
         )
@@ -1777,9 +1686,8 @@ class ChatService:
             snapshot.scope_key,
             snapshot.coordinator_version,
         ) and await self._conversation_scopes.generation_matches(
-            snapshot.scope_id,
+            snapshot.conversation_id,
             snapshot.generation,
-            scope_key=snapshot.scope_key,
         )
 
     async def run_effect(
@@ -1884,12 +1792,6 @@ class ChatService:
                     current_work_control.get(),
                     recovery_contract=await self.runtime.main_turns.recovery_contract(runtime),
                 )
-                if memory is not None and not control.current["model_requests"]:
-                    # A resumed journal retains its old projected memory verbatim. Do
-                    # not count newly fetched facts as exposed by that old request.
-                    memory.stage_prompt_selection(
-                        context.injected_memory_ids, context.memory_exposures
-                    )
                 composition = await self.runtime.main_turns.compose(
                     inbound=None,
                     context=context,
@@ -1911,7 +1813,7 @@ class ChatService:
                     memory_exposures=(
                         context.memory_exposures if not control.current["model_requests"] else ()
                     ),
-                    memory_intent=memory.prefetch_intent if memory is not None else None,
+                    memory_intent=None,
                     selection_query=trigger.instruction,
                     prompt_diagnostics=PromptRequestDiagnostics(
                         conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
@@ -2005,11 +1907,11 @@ class ChatService:
                 allow_automation=True,
                 conversation_key=conversation_key,
                 trigger_message_id=event.platform_message_id,
-                actor_user_id="",
                 actor_is_superuser=False,
-                current_group_id=event.group_id,
                 runtime_config=runtime,
                 origin=TurnOrigin.PLUGIN_BACKGROUND,
+                read_scope=identity,
+                target_presence_id=presence_id,
                 allow_work_environment=True,
                 tools_closed=False,
                 read_only=False,
@@ -2028,9 +1930,7 @@ class ChatService:
                     composition.read_version, before_model_request, composition.commit_projection
                 ),
                 scope_type=event.scope_type,
-                bot_user_id=event.bot_user_id,
                 conversation_id=conversation_id,
-                presence_id=presence_id,
                 person_id=person_id,
                 space_id=space_id,
                 external_target_id=trigger.target_id,
@@ -2049,7 +1949,29 @@ class ChatService:
                     turn_snapshot=turn_snapshot,
                     selection_query=tool_runtime.selection_query,
                 )
-            completed = await self._run_agent(conversation_key, composition.messages, tool_runtime)
+            external_source = (
+                {
+                    "owner": "plugin_background",
+                    "plugin_id": trigger.plugin_id,
+                    "trigger_event_id": event.id,
+                    "conversation_id": conversation_id,
+                    "generation": turn_snapshot.generation,
+                    "presence_id": presence_id,
+                    "space_id": space_id,
+                    "bot_user_id": event.bot_user_id,
+                }
+                if isinstance(trigger, ExternalEventTurnTrigger)
+                else None
+            )
+            completed = await self._run_agent(
+                conversation_key,
+                composition.messages,
+                tool_runtime,
+                invocation_goal=(trigger.agent_intent or "处理原插件事件")
+                if isinstance(trigger, ExternalEventTurnTrigger)
+                else None,
+                invocation_source=external_source,
+            )
             result = completed.result
             try:
                 rendered = sanitize_model_output(

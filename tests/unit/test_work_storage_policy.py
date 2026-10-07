@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 from tests.conftest import make_settings
+from tests.support.work_session import WorkSession
 from tests.unit.test_commands_and_chat import inbound
 from tests.unit.test_control_config_consistency import set_value, setup
 from tests.unit.test_work_protocol_continuity import _control
@@ -18,7 +19,6 @@ from qq_ai_bot.application.lifecycle import LifecycleRegistry
 from qq_ai_bot.application.modules.persistence import PersistenceModule
 from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.runtime.protocol_store import ProtocolStore
-from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 
@@ -163,7 +163,7 @@ async def test_global_storage_writes_require_actual_superuser(database, key, val
         source = replace(
             inbound("configure storage", user_id=user, message_id="boundary"), source_event_id=1
         )
-        return json.loads(
+        return (
             await service.execute(
                 "admin_set_config",
                 arguments,
@@ -174,10 +174,10 @@ async def test_global_storage_writes_require_actual_superuser(database, key, val
                     actor_is_superuser=authority,
                 ),
             )
-        )
+        ).model_payload()
 
     for asserted_authority in (False, True):
         result = await write("1001", asserted_authority)
-        assert not result["ok"] and result["error"] == "permission_denied"
+        assert not result["ok"] and result["error_code"] == "permission_denied"
     result = await write("9000", True)
     assert result["ok"] and result["data"]["after"] == value

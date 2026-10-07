@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "completed_at": "2026-10-05T16:10:23.628804+00:00",
+  "scope": "only this task-owned three complete/interrupted pytest roots and portable PowerShell download/runtime; gzip evidence and original worker/binding retained",
+  "deleted": [
+    {
+      "path": "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-native-media-compatibility-ef_4wjqz",
+      "evidence": "native-media-main-interrupted.json",
+      "allocated_bytes_before": 218013696,
+      "deleted": true
+    },
+    {
+      "path": "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-native-media-compatibility-final-0_1px138",
+      "evidence": "native-media-main-first.json",
+      "allocated_bytes_before": 7572791296,
+      "deleted": true
+    },
+    {
+      "path": "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-native-media-windows-final-5ki0h98z",
+      "evidence": "native-media-main-compatibility.json",
+      "allocated_bytes_before": 7595814912,
+      "deleted": true
+    },
+    {
+      "path": "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-powershell-check-b8dtaltz",
+      "evidence": "windows-deployment-verification.json",
+      "allocated_bytes_before": 272732160,
+      "deleted": true
+    }
+  ],
+  "allocated_bytes_sum": 15659352064,
+  "measurement": "du allocated bytes before removal; not instantaneous free-space delta",
+  "preserved": [
+    "development Monty worker and binding",
+    "shared pytest temporary root",
+    "user or production data",
+    "all original failed/interrupted evidence"
+  ]
+}

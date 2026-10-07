@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import select
 from tests.support.work_compaction import summary_json
+from tests.support.work_session import WorkSession
 from tests.unit.test_work_compaction_capacity import _grow, _runtime, _session, _snapshot, _steer
 from tests.unit.test_work_effect_results import owned_session
 
@@ -23,7 +24,6 @@ from qq_ai_bot.runtime.work_journal import decode_transcript
 from qq_ai_bot.runtime.work_recovery_schema import deliveries
 from qq_ai_bot.runtime.work_repository import WorkCapacityError
 from qq_ai_bot.runtime.work_schema_v1 import effects
-from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 
 

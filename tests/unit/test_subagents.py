@@ -270,7 +270,7 @@ async def test_shared_budget_reserves_parent_capacity_atomically(database, tmp_p
     with pytest.raises(WorkBudgetExceeded):
         await repo.checkpoint(parent_lease, parent["id"], None, models=1)
     # Exhaustion must not prevent heartbeats, durable receipt settlement or cancellation.
-    await repo.checkpoint(child_lease, identity, None, active_seconds=1)
+    await repo.checkpoint(child_lease, identity, {"durable_receipt_settled": True})
     assert await repo.renew(child_lease)
     async with database.sessions() as session:
         row = (await session.execute(select(budgets))).mappings().one()
@@ -420,8 +420,10 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
     elif scenario == "question":
         leading = [("subagent_message", {"text": "Which color?", "ask": True})]
     elif scenario == "compaction":
+        from tests.support.work_session import WorkSession
+
         from qq_ai_bot.domain.messages import ChatMessage
-        from qq_ai_bot.runtime.work_session import WorkSession
+        from qq_ai_bot.runtime.work_session import WorkSession as RuntimeWorkSession
 
         original_restore = WorkSession.restore
         grown = False
@@ -437,7 +439,7 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
                     transcript.append(ChatMessage("assistant", "Recent completed check."))
             return transcript
 
-        monkeypatch.setattr(WorkSession, "restore", restore_with_history)
+        monkeypatch.setattr(RuntimeWorkSession, "restore", restore_with_history)
         leading = [(None, None)]
     elif scenario == "business":
         leading = [("batch", None)]
@@ -450,15 +452,27 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
 
             return ChatResponse(summary_json(request.messages[-1].content), 0)
         if name == "batch":
+            # Specialized terminal calls are now Code Mode-only. Keep the
+            # original 40 downstream operations, root budget and resume oracle;
+            # only their model calling syntax changes under the new contract.
             return ChatResponse(
                 "",
                 0,
-                tool_calls=tuple(
+                tool_calls=(
                     ToolCall(
-                        f"exec-{index}",
-                        ToolFunction("terminal_exec", json.dumps({"command": f"printf {index}"})),
-                    )
-                    for index in range(40)
+                        "exec-batch",
+                        ToolFunction(
+                            "execute_code",
+                            json.dumps(
+                                {
+                                    "code": "for i in range(40):\n"
+                                    "    r = await yuki_terminal_exec("
+                                    "{'command': 'printf ' + str(i)})\n"
+                                    "    assert r['ok']\n'OK'"
+                                }
+                            ),
+                        ),
+                    ),
                 ),
             )
         return (
@@ -481,8 +495,27 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
         web_enabled=True,
         web_mode="native",
     )
+    if scenario == "business":
+        import hashlib
+
+        from tests.support.codemode_cases import BINARY, BINDING, worker
+
+        if not BINDING or not BINARY.is_file():
+            pytest.skip("tiered terminal business requires the pinned Monty worker/binding")
+        settings = settings.model_copy(
+            update={
+                "code_mode_worker_path": BINARY,
+                "code_mode_worker_sha256": hashlib.sha256(BINARY.read_bytes()).hexdigest(),
+                "code_mode_launcher_path": worker().launcher_path,
+                "code_mode_launcher_sha256": worker().launcher_sha256,
+            }
+        )
     harness = build_harness(database, settings, provider)
     chat = harness.processor._chat
+    if scenario == "business":
+        # The test assembly does not configure the runner's native engine;
+        # bind the same explicitly pinned settings as real worker entry tests.
+        chat.runtime.runner.code_mode_settings = settings
     from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
 
     chat._tool_artifacts = ToolArtifactRepository(
@@ -554,9 +587,17 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
     main_wire = wire[1:] if scenario == "compaction" else wire
     first_tools = main_requests[0].tools
     names = {t.name for t in first_tools}
+    from qq_ai_bot.codemode.tool_visibility import DIRECT_TOOL_NAMES
     from qq_ai_bot.runtime.subagent_tools import WORKER_REQUIRED_NAMES
 
-    assert names == WORKER_REQUIRED_NAMES
+    # Only the Provider projection shrinks; the complete worker API retains
+    # exactly the original worker allowlist (with read-only discovery added).
+    assert names == WORKER_REQUIRED_NAMES & DIRECT_TOOL_NAMES
+    assert {t.name for t in executor.definitions} == WORKER_REQUIRED_NAMES
+    assert "yuki_terminal_exec" in executor.script_api.names
+    # #262: the worker shares the three common direct terminal entrypoints;
+    # its execution allowlist, fixed schemas and excluded authority stay exact.
+    assert {"terminal_exec", "terminal_read", "environment_status"} <= names
     assert "subagent_message" in names and "search_memory" in names
     assert not names & {"send_group_message", "memory_change", "subagent_start", "report_progress"}
     await workers.message(lease, parent["id"], identity, "continue", "Check again")
@@ -587,13 +628,14 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
 
 @pytest.mark.asyncio
 async def test_cancel_fences_media_recovery_and_privacy_cleanup(database, tmp_path):
+    from tests.support.work_session import WorkSession
+
     from qq_ai_bot.domain.messages import ChatImage, ChatMessage, ProviderContinuation
     from qq_ai_bot.runtime.subagent_schema import media
     from qq_ai_bot.runtime.work_control import WorkControl
     from qq_ai_bot.runtime.work_journal import WorkJournal
     from qq_ai_bot.runtime.work_repository import WorkConflict
     from qq_ai_bot.runtime.work_schema_v1 import journal
-    from qq_ai_bot.runtime.work_session import WorkSession
     from qq_ai_bot.services.turn_transcript import TurnTranscript
 
     repo, workers, _parent_lease, _parent, identity = await stack(database, tmp_path)

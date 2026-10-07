@@ -279,7 +279,6 @@ async def test_real_ordinary_send_paid_compaction_continues_without_work_or_rese
         ),
         bot_user_id="80001",
         conversation_id=env.context.conversation_id,
-        legacy_conversation_key="bot:80001:group:20001",
         person_id=env.person,
         space_id=env.space,
         presence_id=env.presence,
@@ -295,11 +294,14 @@ async def test_real_ordinary_send_paid_compaction_continues_without_work_or_rese
     assert completed_runs[0].model_requests == len(main_calls) + len(summary_calls)
     assert completed_runs[0].tool_calls_used == send_count
     assert not sender.messages
-    assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == send_count
+    assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == send_count, [
+        getattr(item, "output", "") for item in main_calls[-1].continuation_items
+    ]
     assert (main_calls[-1].request_chain_id != main_calls[0].request_chain_id) == (mode == "valid")
     assert main_calls[-1].messages[: len(main_calls[0].messages)] == main_calls[0].messages
     assert main_calls[-1].tools == main_calls[0].tools
-    assert main_calls[0].tools == await chat.runtime.runner.main_contract.definitions()
+    # Ordinary compaction preserves the new fixed direct view, not the full API.
+    assert main_calls[0].tools == await chat.runtime.runner.main_contract.model_definitions()
     if mode == "valid":
         capsule = json.loads(
             next(

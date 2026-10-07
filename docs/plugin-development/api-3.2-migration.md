@@ -1,5 +1,7 @@
 # Plugin API 3.2 迁移
 
+> 本文记录语音退出时的历史合同。当前 Host 精确接受 API 3.3，完成本步骤后继续 [API 3.3 迁移](api-3.3-migration.md)。
+
 Plugin API 3.2 彻底退出语音合成与 QQ 语音发送 SDK。ASR、历史语音/转写、普通文件上传、
 文本、图片、表情和通知合同继续保留。MCP 的历史退出步骤见 [API 3.1](api-3.1-migration.md)。
 

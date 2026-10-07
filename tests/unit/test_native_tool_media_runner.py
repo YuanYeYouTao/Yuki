@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 from tests.conftest import build_harness, make_settings
+from tests.support.agent_backend import StubAgentBackend
 
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities.media import MediaResultText
@@ -38,7 +39,7 @@ PIXELS = "data:image/png;base64,aW1hZ2U="
 IMAGE = ChatImage(PIXELS, source="workspace", artifact_id="immutable", version="fixed")
 
 
-class Backend:
+class Backend(StubAgentBackend):
     media_max_bytes = 16_777_216
 
     def __init__(self):
@@ -57,8 +58,12 @@ class Backend:
     def is_side_effecting(self, *args):
         return False
 
-    async def execute(self, name, arguments, runtime):
-        self.executed.append(name)
+    # Test branch uses the typed original-call boundary.
+    def counts_toward_limit(self, *_args):
+        return True
+
+    async def execute_call(self, invocation):
+        self.executed.append(invocation.call.function.name)
         return MediaResultText('{"ok":true,"data":{"mode":"native_image"}}', (IMAGE,))
 
     async def validate_images(self, images, runtime):
@@ -246,7 +251,7 @@ async def test_tool_pixels_enter_original_main_model_after_all_paired_receipts(
         )
     assert result.text == "done" and len(wires) == 2
     assert backend.executed == ["inspect"]  # Same batch alias keeps its pixels.
-    assert backend.validated == [(IMAGE,)]
+    assert backend.validated == [(IMAGE,), (IMAGE,)]  # Revalidate before each model request.
     assert wires[0]["tools"] == wires[1]["tools"]
     encoded = json.dumps(wires[1])
     assert encoded.count(image_marker) == 1
@@ -337,3 +342,27 @@ async def test_restored_tool_pixels_and_new_input_share_dispatch_budget(database
     AgentRunner._check_request_media_budget((restored,), runtime, backend)
     with pytest.raises(WorkCapacityError, match="media_request_budget_exceeded"):
         AgentRunner._check_request_media_budget((restored, current), runtime, backend)
+
+
+async def test_worker_wrapper_retains_private_pixels_and_delegates_source_guard():
+    from types import SimpleNamespace
+
+    from qq_ai_bot.capabilities.invocation import direct_invocations
+    from qq_ai_bot.llm.base import LLMError
+    from qq_ai_bot.services.subagent_execution import WorkerBackend
+
+    backend = Backend()
+    backend.media_max_bytes = 123
+    worker = WorkerBackend(backend, frozenset({"inspect"}))
+    runtime = SimpleNamespace(work_control=None)
+    invocation = direct_invocations((ToolCall("image", ToolFunction("inspect", "{}")),), runtime)[0]
+    result = await worker.execute_call(invocation)
+    assert result.images == (IMAGE,) and worker.media_max_bytes == 123
+    await worker.validate_images(result.images, runtime)
+    assert backend.validated == [(IMAGE,)]
+    backend.validate_images = AsyncMock(side_effect=LLMError("source_deleted"))
+    with pytest.raises(LLMError, match="source_deleted"):
+        await worker.validate_images(result.images, runtime)
+    denied = direct_invocations((ToolCall("denied", ToolFunction("undeclared", "{}")),), runtime)[0]
+    assert json.loads(await worker.execute_call(denied))["error"] == "worker_tool_not_declared"
+    assert backend.executed == ["inspect"]

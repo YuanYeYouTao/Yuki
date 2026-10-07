@@ -9,19 +9,22 @@ branch_labels = None
 depends_on = None
 
 
-def upgrade() -> None:
-    from qq_ai_bot.persistence.models import (
-        MemorySelfReflectionCycleModel,
-        MemorySelfReflectionRequestModel,
-    )
+_TABLES = (
+    '\nCREATE TABLE IF NOT EXISTS memory_self_reflection_cycles (\n\tid VARCHAR(64) NOT NULL, \n\tsource_key VARCHAR(128) NOT NULL, \n\t"trigger" VARCHAR(16) NOT NULL, \n\tsource_event_id INTEGER, \n\tconversation_id VARCHAR(36), \n\tstatus VARCHAR(24) NOT NULL, \n\tcreated_at DATETIME NOT NULL, \n\tstarted_at DATETIME, \n\tcompleted_at DATETIME, \n\treport_json TEXT NOT NULL, \n\tdelivery_state VARCHAR(24) NOT NULL, \n\tdelivery_receipt_json TEXT, \n\tPRIMARY KEY (id), \n\tUNIQUE (source_key)\n)\n\n',
+    "\nCREATE TABLE IF NOT EXISTS memory_self_reflection_requests (\n\tid INTEGER NOT NULL, \n\tattempt_kind VARCHAR(24) DEFAULT 'initial' NOT NULL, \n\trun_id INTEGER NOT NULL, \n\tlocal_date VARCHAR(10) NOT NULL, \n\tcreated_at DATETIME NOT NULL, \n\tstatus VARCHAR(24) NOT NULL, \n\toutput_tokens INTEGER, \n\tPRIMARY KEY (id)\n)\n\n",
+    "CREATE INDEX IF NOT EXISTS ix_memory_self_reflection_requests_local_date ON memory_self_reflection_requests (local_date)",
+    "CREATE INDEX IF NOT EXISTS ix_memory_self_reflection_requests_run_id ON memory_self_reflection_requests (run_id)",
+)
 
+
+def upgrade() -> None:
     inspector = sa.inspect(op.get_bind())
     request_table_is_new = not inspector.has_table("memory_self_reflection_requests")
     run_columns = {c["name"] for c in inspector.get_columns("memory_self_reflection_runs")}
     state_columns = {c["name"] for c in inspector.get_columns("memory_self_reflection_states")}
     runtime_columns = {c["name"] for c in inspector.get_columns("memory_self_reflection_runtime")}
-    for model in (MemorySelfReflectionCycleModel, MemorySelfReflectionRequestModel):
-        model.__table__.create(op.get_bind(), checkfirst=True)
+    for statement in _TABLES:
+        op.execute(statement)
     for name, kind, default in (
         ("cycle_id", sa.String(64), None),
         ("attempt_count", sa.Integer(), "0"),

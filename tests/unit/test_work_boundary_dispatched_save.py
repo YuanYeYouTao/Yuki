@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy import text as sql_text
 from tests.conftest import MemorySender
 from tests.support.runtime_execution import make_work_resumer
+from tests.support.work_session import WorkSession
 from tests.unit.test_history_dispatch_ownership import _scene, _tool
 from tests.unit.test_work_reporting_runner_gemini_wire import gemini_wire
 
@@ -18,7 +19,7 @@ from qq_ai_bot.identity.canonical_repository import ensure_person
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import effects, journal, work
-from qq_ai_bot.runtime.work_session import WorkSession
+from qq_ai_bot.runtime.work_session import WorkSession as RuntimeWorkSession
 from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
 
 
@@ -74,7 +75,7 @@ async def test_dispatch_save_failure_does_not_publish_ambient_observation(
             raise WorkConflict("injected_dispatch_save_failure")
         return await save(self, phase, *args, **kwargs)
 
-    monkeypatch.setattr(WorkSession, "save", fail_dispatched)
+    monkeypatch.setattr(RuntimeWorkSession, "save", fail_dispatched)
     running = asyncio.create_task(harness.processor.handle(inbound, MemorySender()))
     text = "ambient-before-failed-dispatch-save"
     try:
@@ -173,7 +174,7 @@ async def test_business_resume_initial_selection_is_atomic_with_dispatched_journ
                 raise WorkConflict("injected_resume_dispatch_save_failure")
             return await save(self, phase, *args, **kwargs)
 
-        monkeypatch.setattr(WorkSession, "save", fail_initial)
+        monkeypatch.setattr(RuntimeWorkSession, "save", fail_initial)
     else:
         async with database.immediate_session() as writer:
             await writer.execute(

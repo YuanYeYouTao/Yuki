@@ -173,24 +173,9 @@ class MediaAnalysisRepository:
             },
         )
         async with self._database.sessions() as session, session.begin():
-            await session.execute(statement)
-            row = await session.scalar(
-                select(MediaAnalysisModel).where(
-                    MediaAnalysisModel.content_hash == content_hash,
-                    MediaAnalysisModel.analysis_mode == analysis_mode,
-                    MediaAnalysisModel.question_hash == normalized_question_hash,
-                    MediaAnalysisModel.model == model,
-                    MediaAnalysisModel.prompt_version == prompt_version,
-                )
-            )
-            if row is None:  # pragma: no cover - guarded by the insert above
-                raise RuntimeError("media analysis upsert did not return a row")
-            return self._record(row)
-
-    async def save_analysis(self, **values: Any) -> MediaAnalysisRecord:
-        """Compatibility spelling for service-layer integrations."""
-
-        return await self.save(**values)
+            row = (await session.scalars(statement.returning(MediaAnalysisModel))).one()
+            record = self._record(row)
+        return record
 
     async def associate_event(
         self,
@@ -415,18 +400,7 @@ class EmojiDescriptionRepository:
                         "last_used_at": timestamp,
                     },
                 )
-                await session.execute(statement)
-                row = await session.scalar(
-                    select(EmojiDescriptionModel).where(
-                        EmojiDescriptionModel.emoji_key == key,
-                        EmojiDescriptionModel.analysis_mode == analysis_mode,
-                        EmojiDescriptionModel.question_hash == normalized_question_hash,
-                        EmojiDescriptionModel.model == model,
-                        EmojiDescriptionModel.prompt_version == prompt_version,
-                    )
-                )
-                if row is None:  # pragma: no cover - guarded by the upsert above
-                    raise RuntimeError("emoji description upsert did not return a row")
+                row = (await session.scalars(statement.returning(EmojiDescriptionModel))).one()
                 records.append(self._record(row))
         return tuple(records)
 

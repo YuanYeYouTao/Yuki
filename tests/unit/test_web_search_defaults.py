@@ -109,7 +109,6 @@ async def test_native_default_backend_is_unavailable_until_an_explicit_connectio
         module.prepare(
             catalog,
             SimpleNamespace(api_key_for=lambda _: "selected-test-key"),
-            require_explicit=True,
         )
     )
     with web_model_task(ModelTask.CHAT_AGENT):
@@ -289,7 +288,7 @@ def test_provider_summary_cache_keeps_old_entries_readable(tmp_path):
 
 @pytest.mark.parametrize("escaped", [False, True])
 async def test_provider_summary_result_budget_keeps_grounding_sources(
-    database, monkeypatch, escaped
+    database, tmp_path, monkeypatch, escaped
 ):
     settings = make_settings(database.url, web_tool_result_max_characters=2400)
     harness = build_harness(database, settings)
@@ -315,14 +314,29 @@ async def test_provider_summary_result_budget_keeps_grounding_sources(
             * 500,
         )
     )
-    rendered = tools._web_result(data=result)
-    payload = json.loads(rendered)
-    assert len(rendered) <= 2400 and payload["ok"]
-    assert payload["data"]["external_untrusted"] and payload["data"]["truncated"]
-    assert [source["url"] for source in payload["data"]["sources"]] == [
+    from qq_ai_bot.capabilities.results import ToolResultBudgeter
+    from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+
+    complete = tools._web_result(data=result)
+    artifacts = ToolArtifactRepository(database, tmp_path / "artifacts", retention_seconds=60)
+    rendered = await ToolResultBudgeter(max_characters=2400, artifacts=artifacts).render(complete)
+    payload = json.loads(rendered.text)
+    assert len(rendered.text) <= 2400 and payload["ok"]
+    assert payload["truncated"] and rendered.artifact_id
+    restored = []
+    offset = 0
+    while True:
+        page = await artifacts.read(rendered.artifact_id, offset=offset, limit=2000)
+        restored.append(page["content"])
+        if page["next_offset"] is None:
+            break
+        offset = page["next_offset"]
+    original = json.loads("".join(restored))
+    assert original["data"]["external_untrusted"]
+    assert original["data"]["provider_summary"] == result["provider_summary"]
+    assert [source["url"] for source in original["data"]["sources"]] == [
         source.url for source in sources
     ]
-    assert len(payload["data"].get("provider_summary", "")) < 1000
 
 
 async def test_keyless_bridge_never_returns_or_caches_summary_without_grounding(tmp_path):

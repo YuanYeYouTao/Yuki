@@ -429,10 +429,8 @@ async def test_create_tool_compiles_and_confirms_database_persistence(database) 
         allow_automation=True,
         conversation_key="private:10001",
         trigger_message_id=inbound.message_id,
-        actor_user_id=inbound.sender.user_id,
-        current_group_id=inbound.group_id,
     )
-    result = json.loads(
+    result = (
         await AutomationToolService(service).execute(
             "automation_create",
             json.dumps(
@@ -448,7 +446,7 @@ async def test_create_tool_compiles_and_confirms_database_persistence(database) 
             ),
             runtime,
         )
-    )
+    ).model_payload()
 
     assert result["ok"] is True, result
     assert result["data"]["confirmation"] == "persisted"
@@ -479,13 +477,13 @@ async def test_create_tool_compiles_and_confirms_database_persistence(database) 
             selected.append(statement)
 
     event.listen(database.engine.sync_engine, "before_cursor_execute", capture_selects)
-    listed = json.loads(
+    listed = (
         await AutomationToolService(service).execute(
             "automation_list",
             "{}",
             runtime,
         )
-    )
+    ).model_payload()
     event.remove(database.engine.sync_engine, "before_cursor_execute", capture_selects)
     assert len(selected) == 1
     assert "LEFT OUTER JOIN identity_bindings" in selected[0]
@@ -504,13 +502,13 @@ async def test_create_tool_compiles_and_confirms_database_persistence(database) 
     selected.clear()
     event.listen(database.engine.sync_engine, "before_cursor_execute", capture_selects)
     try:
-        got = json.loads(
+        got = (
             await AutomationToolService(service).execute(
                 "automation_get",
                 json.dumps({"automation_id": other.id}),
                 runtime,
             )
-        )
+        ).model_payload()
     finally:
         event.remove(database.engine.sync_engine, "before_cursor_execute", capture_selects)
     assert len(selected) == 1
@@ -871,16 +869,14 @@ async def test_superuser_can_manage_another_creators_automation_without_taking_o
         allow_automation=True,
         conversation_key="private:9000",
         trigger_message_id=superuser_inbound.message_id,
-        actor_user_id="9000",
-        current_group_id=None,
     )
-    paused = json.loads(
+    paused = (
         await AutomationToolService(service).execute(
             "automation_pause",
             json.dumps({"automation_id": row.id}),
             runtime,
         )
-    )
+    ).model_payload()
     assert paused["ok"] is True
     assert paused["mutation_committed"] is True
     assert await service.resume(row.id, actor=superuser, conversation_key="private:9000")
@@ -893,7 +889,7 @@ async def test_superuser_can_manage_another_creators_automation_without_taking_o
 
 
 @pytest.mark.asyncio
-async def test_removed_dsl_step_blocks_but_current_actor_sees_new_capabilities(
+async def test_removed_dsl_step_blocks_and_new_capabilities_do_not_expand_original_grant(
     database,
 ) -> None:
     clock = FakeClock(datetime(2026, 7, 27, tzinfo=UTC))
@@ -911,11 +907,11 @@ async def test_removed_dsl_step_blocks_but_current_actor_sees_new_capabilities(
         _script(), actor=ToolActor.from_inbound(_inbound()), conversation_key="private:10001"
     )
     expanded = build_capability_registry()
-    expanded.register(replace(expanded.require("yuki.generate"), name="future.read"))
+    expanded.register(replace(expanded.require("web.search"), name="future.read"))
     snapshot = await AutomationExecutor(
         settings=settings, registry=expanded, repository=repository, time_service=time_service
     )._begin_execution(row)
-    assert "future.read" in snapshot.allowed
+    assert "future.read" not in snapshot.allowed
 
     removed = AutomationCapabilityRegistry()
     for definition in original.list():

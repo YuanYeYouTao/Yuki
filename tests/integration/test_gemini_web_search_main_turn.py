@@ -236,9 +236,11 @@ async def test_gemini_search_bridge_main_turn_with_trusted_receipt(
         bot_user_id="80001",
         group_id="20001",
         mentions_bot=True,
-        segments=({"type": "text", "data": {"text": QUESTION}},),
+        segments=(
+            {"type": "at", "data": {"qq": "80001"}},
+            {"type": "text", "data": {"text": QUESTION}},
+        ),
         conversation_id=identity.context.conversation_id,
-        legacy_conversation_key=ConversationScope.group("80001", "20001").key,
         person_id=identity.person,
         space_id=identity.space,
         presence_id=identity.presence,
@@ -269,7 +271,10 @@ async def test_gemini_search_bridge_main_turn_with_trusted_receipt(
     assert source_event is not None
     assert social.context.trigger_event_id == source_event.id
     assert social.context.origin == "social_tool"
-    assert social.context.call_id == SEND_CALL_ID
+    # Social receipts follow the Host operation (chain:sequence:call), not the
+    # response-local Provider call ID, so a later response's reused ID stays distinct.
+    assert social.context.call_id.endswith(f":{SEND_CALL_ID}")
+    assert social.context.call_id != SEND_CALL_ID
     assert social.context.actor.user_id == "10001"
     assert social.context.actor.event_id == source_event.id
     assert social.context.actor.source_key == f"event:{source_event.id}"
@@ -277,4 +282,5 @@ async def test_gemini_search_bridge_main_turn_with_trusted_receipt(
         conversation_key=ConversationScope.group("80001", "20001").key,
         trigger_event_id=source_event.id,
     )
+    # Explicit Host web_search retains its independent provenance ledger.
     assert [item.url for item in stored] == [SOURCE_URL]

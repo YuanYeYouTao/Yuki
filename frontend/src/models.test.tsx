@@ -243,3 +243,70 @@ it("explains loaded task routes with their provider and model", async () => {
   );
   expect(within(routeTable!).queryByText("deepseek-flash")).toBeNull();
 });
+
+it.each([
+  [100, 260, 60, 1, "已确认缓存占已记录输入 60.0%"],
+  [100, 60, 60, 0, "缓存命中率 60.0%"],
+  [100, 0, 0, 0, "缓存命中率 0.0%"],
+  [0, 200, 0, 1, "已确认缓存占已记录输入 —"],
+])(
+  "keeps overview and model cache coverage aligned (%s/%s/%s/%s)",
+  async (input, raw, reported, missing, label) => {
+    const row = {
+      calls: 2,
+      input_tokens: input,
+      cached_input_tokens: raw,
+      cache_reported_input_tokens: input,
+      cache_reported_cached_tokens: reported,
+      cache_unreported_calls: missing,
+      missing_usage_calls: missing,
+      output_tokens: 10,
+      total_tokens: input + 10,
+    };
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (url) =>
+        new Response(
+          JSON.stringify({
+            data: {
+              fields: String(url).endsWith("read_model_usage_summary")
+                ? {
+                    ...row,
+                    window: "24h",
+                    models: [
+                      {
+                        ...row,
+                        provider: "anthropic",
+                        model: "coverage-fixture",
+                      },
+                    ],
+                    buckets: [],
+                    model_buckets: [],
+                    profiles: [],
+                    tasks: [],
+                  }
+                : { profiles: [], routes: [] },
+              items: [],
+            },
+            problem: null,
+          }),
+        ),
+    );
+    render(
+      <Models
+        allowed={() => true}
+        act={() => {}}
+        refresh={0}
+        conversation=""
+      />,
+    );
+    expect(
+      (await screen.findAllByText(new RegExp(label.replace(".", "\\."))))
+        .length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(screen.queryByText(/260\.0%/)).not.toBeInTheDocument();
+    if (missing && input)
+      expect(
+        screen.getAllByText(/已报告子集命中率 60.0%/).length,
+      ).toBeGreaterThanOrEqual(2);
+  },
+);

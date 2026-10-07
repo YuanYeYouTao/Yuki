@@ -47,6 +47,8 @@ async def run_manifest_cases(state):
     chat = SimpleNamespace(
         _runtime_config=SimpleNamespace(snapshot=AsyncMock(side_effect=snapshot)),
         _build_tool_registry=build_registry,
+        # Faithful declaration fixture: this deployment has no plugin adapter.
+        _plugin_tools=None,
     )
     contract = MainAgentContract(chat, state)
     pending = asyncio.create_task(contract.definitions())
@@ -63,6 +65,7 @@ async def run_manifest_cases(state):
     assert contract._tools is None and not contract.revision
     failure = False
     first = await contract.definitions()
+    compact = await contract.model_definitions()
     assert contract.revision
 
     # Equal mappings with a different property order require a different revision.
@@ -70,6 +73,8 @@ async def run_manifest_cases(state):
     reordered = MainAgentContract(chat, state)
     assert await reordered.definitions() == first
     assert reordered.revision != contract.revision
+    # Invisible schema changes must still change the execution/recovery revision.
+    assert await reordered.model_definitions() == compact
     assert await contract.definitions() == first
 
     # Failure during serialization must not publish an incomplete frozen object.

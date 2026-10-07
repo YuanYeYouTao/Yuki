@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
+from tests.support.work_session import WorkSession
 from tests.unit.rollup_test_helpers import candidate_summary
 from tests.unit.test_conversation_rollup_370 import _append, _policy
 from tests.unit.test_work_journal_source_retry import _saved, _session
@@ -25,7 +26,6 @@ from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from qq_ai_bot.runtime.work_journal import decode_transcript
 from qq_ai_bot.runtime.work_schema_v1 import effects
-from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 

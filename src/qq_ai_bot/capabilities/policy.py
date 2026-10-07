@@ -15,33 +15,15 @@ from qq_ai_bot.capabilities.models import (
     CapabilityDescriptor,
     CapabilityEffect,
     CapabilityRisk,
-    CapabilityTrustSource,
 )
 from qq_ai_bot.runtime.contracts import MemoryCapabilityView
 
-_WRITE_EFFECTS = frozenset(
-    {
-        CapabilityEffect.WRITE_STATE,
-        CapabilityEffect.PLATFORM_SEND,
-        CapabilityEffect.PLATFORM_MUTATE,
-    }
-)
 _READ_EFFECTS = frozenset(
     {
         CapabilityEffect.READ_STATE,
         CapabilityEffect.EXTERNAL_READ,
     }
 )
-
-
-def is_memory_feedback_send(descriptor: CapabilityDescriptor) -> bool:
-    """The core explicit reply, not another provider's send or business write."""
-    return (
-        descriptor.model_name == "send_message"
-        and descriptor.namespace_id == "social.send"
-        and descriptor.effect is CapabilityEffect.PLATFORM_SEND
-        and descriptor.trust_source is CapabilityTrustSource.CORE
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,9 +57,6 @@ class CapabilityPolicyEngine:
             if context.memory_view is not None
             else frozenset()
         )
-        exclusive = (
-            context.memory_view.exclusive_namespace if context.memory_view is not None else None
-        )
         visible: list[CapabilityDescriptor] = []
         for descriptor in descriptors:
             same_actor_access = (
@@ -93,12 +72,6 @@ class CapabilityPolicyEngine:
                 continue
             if descriptor.namespace_id in hidden_namespaces:
                 continue
-            if exclusive is not None and descriptor.effect in _WRITE_EFFECTS:
-                if descriptor.namespace_id != exclusive and not (
-                    context.origin is TurnOrigin.USER_MESSAGE
-                    and is_memory_feedback_send(descriptor)
-                ):
-                    continue
             if descriptor.model_name == "read_tool_artifact" and not context.artifact_available:
                 continue
             if descriptor.risk is CapabilityRisk.DESTRUCTIVE and context.origin not in {

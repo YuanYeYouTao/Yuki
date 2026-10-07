@@ -1,0 +1,394 @@
+{
+  "attempted": 8,
+  "completed": 1,
+  "all_groups_same_input": true,
+  "all_groups_same_serialized_tools": true,
+  "groups": [
+    {
+      "task": "resumed_work",
+      "loop": "old",
+      "mode": "direct",
+      "completed": 0,
+      "attempted": 2,
+      "mean_completion_fraction": 0.08,
+      "median_seconds_completed_only": null,
+      "median_requests_completed_only": null,
+      "total_seconds_all_attempts": 106.88562329206616,
+      "total_known_peak_usd": 0.064686468,
+      "cost_per_completed_task_including_failures_usd": null,
+      "unknown_usage_calls": 0,
+      "physical_requests_all_attempts": 75,
+      "tokens_all_attempts": {
+        "input": 1541087,
+        "cached": 1411328,
+        "output": 14409
+      }
+    },
+    {
+      "task": "resumed_work",
+      "loop": "old",
+      "mode": "code",
+      "completed": 0,
+      "attempted": 2,
+      "mean_completion_fraction": 0.0,
+      "median_seconds_completed_only": null,
+      "median_requests_completed_only": null,
+      "total_seconds_all_attempts": 197.7257917500101,
+      "total_known_peak_usd": 0.102967356,
+      "cost_per_completed_task_including_failures_usd": null,
+      "unknown_usage_calls": 0,
+      "physical_requests_all_attempts": 99,
+      "tokens_all_attempts": {
+        "input": 2098877,
+        "cached": 1922176,
+        "output": 32020
+      }
+    },
+    {
+      "task": "resumed_work",
+      "loop": "new",
+      "mode": "direct",
+      "completed": 0,
+      "attempted": 2,
+      "mean_completion_fraction": 0.08,
+      "median_seconds_completed_only": null,
+      "median_requests_completed_only": null,
+      "total_seconds_all_attempts": 100.14427662524395,
+      "total_known_peak_usd": 0.064418016,
+      "cost_per_completed_task_including_failures_usd": null,
+      "unknown_usage_calls": 0,
+      "physical_requests_all_attempts": 71,
+      "tokens_all_attempts": {
+        "input": 1465008,
+        "cached": 1329536,
+        "output": 13166
+      }
+    },
+    {
+      "task": "resumed_work",
+      "loop": "new",
+      "mode": "code",
+      "completed": 1,
+      "attempted": 2,
+      "mean_completion_fraction": 1.0,
+      "median_seconds_completed_only": 14.153495125006884,
+      "median_requests_completed_only": 6,
+      "total_seconds_all_attempts": 97.71358333388343,
+      "total_known_peak_usd": 0.054506292,
+      "cost_per_completed_task_including_failures_usd": 0.054506292,
+      "unknown_usage_calls": 0,
+      "physical_requests_all_attempts": 50,
+      "tokens_all_attempts": {
+        "input": 1062275,
+        "cached": 962432,
+        "output": 15649
+      }
+    }
+  ],
+  "trials": [
+    {
+      "task": "resumed_work",
+      "repeat": 0,
+      "loop": "new",
+      "mode": "direct",
+      "completed": false,
+      "completion_fraction": 0.08,
+      "correct_artifacts": false,
+      "work_state": "queued",
+      "stopped_for_stall": true,
+      "failures": [],
+      "seconds_spent": 46.874539292184636,
+      "first_correct_artifact_seconds": 4.617176458006725,
+      "physical_requests": 33,
+      "tokens": {
+        "input": 676861,
+        "cached": 616448,
+        "output": 6013
+      },
+      "known_usage_peak_usd": 0.029038188,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 12,
+      "code_used": false,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0
+    },
+    {
+      "task": "resumed_work",
+      "repeat": 1,
+      "loop": "old",
+      "mode": "code",
+      "completed": false,
+      "completion_fraction": 0.0,
+      "correct_artifacts": false,
+      "work_state": "queued",
+      "stopped_for_stall": true,
+      "failures": [],
+      "seconds_spent": 98.48282475001179,
+      "first_correct_artifact_seconds": null,
+      "physical_requests": 48,
+      "tokens": {
+        "input": 1024049,
+        "cached": 933504,
+        "output": 16767
+      },
+      "known_usage_peak_usd": 0.052884924,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 15,
+      "code_used": true,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0
+    },
+    {
+      "task": "resumed_work",
+      "repeat": 1,
+      "loop": "old",
+      "mode": "direct",
+      "completed": false,
+      "completion_fraction": 0.08,
+      "correct_artifacts": false,
+      "work_state": "queued",
+      "stopped_for_stall": true,
+      "failures": [],
+      "seconds_spent": 55.11473458306864,
+      "first_correct_artifact_seconds": 3.0936034580226988,
+      "physical_requests": 40,
+      "tokens": {
+        "input": 823455,
+        "cached": 755456,
+        "output": 7400
+      },
+      "known_usage_peak_usd": 0.033812436,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 13,
+      "code_used": false,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0
+    },
+    {
+      "task": "resumed_work",
+      "repeat": 1,
+      "loop": "new",
+      "mode": "code",
+      "completed": false,
+      "completion_fraction": 1.0,
+      "correct_artifacts": true,
+      "work_state": "queued",
+      "stopped_for_stall": true,
+      "failures": [],
+      "seconds_spent": 83.56008820887655,
+      "first_correct_artifact_seconds": 15.743321083951741,
+      "physical_requests": 44,
+      "tokens": {
+        "input": 945670,
+        "cached": 851840,
+        "output": 13146
+      },
+      "known_usage_peak_usd": 0.04903524,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 22,
+      "code_used": true,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0
+    },
+    {
+      "task": "resumed_work",
+      "repeat": 0,
+      "loop": "new",
+      "mode": "code",
+      "completed": true,
+      "completion_fraction": 1.0,
+      "correct_artifacts": true,
+      "work_state": "completed",
+      "stopped_for_stall": false,
+      "failures": [],
+      "seconds_spent": 14.153495125006884,
+      "first_correct_artifact_seconds": 10.710031375056133,
+      "physical_requests": 6,
+      "tokens": {
+        "input": 116605,
+        "cached": 110592,
+        "output": 2503
+      },
+      "known_usage_peak_usd": 0.005471052,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 9,
+      "code_used": true,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0
+    },
+    {
+      "task": "resumed_work",
+      "repeat": 1,
+      "loop": "new",
+      "mode": "direct",
+      "completed": false,
+      "completion_fraction": 0.08,
+      "correct_artifacts": false,
+      "work_state": "queued",
+      "stopped_for_stall": true,
+      "failures": [],
+      "seconds_spent": 53.26973733305931,
+      "first_correct_artifact_seconds": 3.8943287080619484,
+      "physical_requests": 38,
+      "tokens": {
+        "input": 788147,
+        "cached": 713088,
+        "output": 7153
+      },
+      "known_usage_peak_usd": 0.035379828,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 14,
+      "code_used": false,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0
+    },
+    {
+      "task": "resumed_work",
+      "repeat": 0,
+      "loop": "old",
+      "mode": "code",
+      "completed": false,
+      "completion_fraction": 0.0,
+      "correct_artifacts": false,
+      "work_state": "queued",
+      "stopped_for_stall": true,
+      "failures": [],
+      "seconds_spent": 99.24296699999832,
+      "first_correct_artifact_seconds": null,
+      "physical_requests": 51,
+      "tokens": {
+        "input": 1074828,
+        "cached": 988672,
+        "output": 15253
+      },
+      "known_usage_peak_usd": 0.050082431999999996,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 15,
+      "code_used": true,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0
+    },
+    {
+      "task": "resumed_work",
+      "repeat": 0,
+      "loop": "old",
+      "mode": "direct",
+      "completed": false,
+      "completion_fraction": 0.08,
+      "correct_artifacts": false,
+      "work_state": "queued",
+      "stopped_for_stall": true,
+      "failures": [],
+      "seconds_spent": 51.77088870899752,
+      "first_correct_artifact_seconds": 3.9907680419273674,
+      "physical_requests": 35,
+      "tokens": {
+        "input": 717632,
+        "cached": 655872,
+        "output": 7009
+      },
+      "known_usage_peak_usd": 0.030874032,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 12,
+      "code_used": false,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0
+    }
+  ],
+  "completed_same_input_pairs": [],
+  "budget": {
+    "cumulative_ceiling_usd": null,
+    "prior_peak_usage_cost_usd": 1.6525391400000002,
+    "new_peak_usage_cost_usd": 0.2865781320000001,
+    "unsettled_reserved_usd": 0,
+    "cumulative_peak_exposure_usd": 1.9391172720000003,
+    "new_physical_calls": 295,
+    "prior_reports": [
+      {
+        "name": "p11-deepseek-initial.json",
+        "sha256": "df31f5706c7cd1eb4ed59d6fcf234d2bd50b8b05404a1cb15fe0093ac2b25a9d",
+        "calls": 24,
+        "peak_usd": 0.015519635999999998,
+        "unknown_usage": 0
+      },
+      {
+        "name": "p11-deepseek-retest.json",
+        "sha256": "ada5274713c2c6e7c8ce3d2e983a57f38af3f4a6a709cdadc47207ba02519a47",
+        "calls": 15,
+        "peak_usd": 0.013225956000000002,
+        "unknown_usage": 0
+      },
+      {
+        "name": "long-tasks-initial.json",
+        "sha256": "1480294e63d1411de5d9345f7304c0410b9b82e91e8929bd7ac44b525e789cd9",
+        "calls": 94,
+        "peak_usd": 0.10313278800000004,
+        "unknown_usage": 1
+      },
+      {
+        "name": "long-tasks-comparison.json",
+        "sha256": "836b522da5fe88dea5eb427ab3027fd39d30e59b6d804caaae1bef314a185e7e",
+        "calls": 400,
+        "peak_usd": 0.41440212000000015,
+        "unknown_usage": 0
+      },
+      {
+        "name": "long-tasks-unlimited.json",
+        "sha256": "1a4ec76fcf33ac2dabd110c510efec2bf1e6272660dd749cdd701b4056bdfbc4",
+        "calls": 388,
+        "peak_usd": 0.40770600000000023,
+        "unknown_usage": 0
+      },
+      {
+        "name": "long-tasks-recovery-retest.json",
+        "sha256": "70986236c3b7112c87c645664370a5ed07e3cec0725a6ecd6ea30a085af6fcc4",
+        "calls": 291,
+        "peak_usd": 0.30300023999999987,
+        "unknown_usage": 0
+      },
+      {
+        "name": "long-tasks-recovery-retest-v2.json",
+        "sha256": "45c917c34a0e7b8b2dca8389d7e54e69351b605c611bd35960640c269a25bdec",
+        "calls": 303,
+        "peak_usd": 0.39555239999999986,
+        "unknown_usage": 1
+      }
+    ],
+    "actual_invoice_verified": false,
+    "pricing_source": "https://api-docs.deepseek.com/quick_start/pricing/",
+    "peak_usd_per_million": {
+      "cache_hit": 0.006,
+      "cache_miss": 0.3,
+      "output": 1.2
+    }
+  },
+  "run_contract": {
+    "model": "deepseek-flash",
+    "baseline_commit": "b4fdef7d0e2f7ee68fd345605d0a8fadc50b5459",
+    "baseline_scope": "historic main iteration unchanged; common current invocation/code helpers, not an unmodified deployed old application",
+    "max_output_tokens": 32768,
+    "reasoning_effort": "low",
+    "completion_definition": "independent oracle correct, all required inputs read, report verified, no repeated committed writes, and original Work durably completed",
+    "stop_policy": "runtime pause/failure, or 10 consecutive activations with no new successful read/write path, semantic context note or same original code snapshot advancing across activations; no task time ceiling",
+    "business_scope": "temporary FileWorkspace, real SQLite/InvocationService/Monty, no production, gateway or real messaging",
+    "recovery_scope": "fresh Runner and WorkControl activations in same process; not an OS process crash or provider disconnect",
+    "harness_sha256": "a911c82c0a9b33efc0385d79ce5a2e4f45cd6e0bf069b1d874c7d19b0b5d0465",
+    "read_identity": "canonical synthetic person bound before accept and on every activation",
+    "receipt_errors_scope": "visible tool history per HTTP request; repeated history is not a new failed operation",
+    "runtime_source_sha256": {
+      "src/qq_ai_bot/codemode/engine_monty.py": "eef01e95f1c4a5d2adadfe5db70fe38ea3e8f27b9987062a1568f1a9a4d1b3de",
+      "src/qq_ai_bot/runtime/work_control.py": "a107a0777aa57fc2891ecf3d03f5ba2c0f5e9d0e82bdae5d1d6565394e11ad4a",
+      "tests/integration/test_codemode_runner.py": "ff914c3f6b180af073936b5df76c0a196aefe5baff1d52fce92995fbe118aee6"
+    }
+  },
+  "cost_basis": "public peak rates times observed wire usage; off-peak half these rates; not invoice. Unknown usage is separate.",
+  "time_basis": "completion medians exclude failures; failure time still appears in all-attempt totals. Observed sample counts appear in each group."
+}

@@ -157,14 +157,11 @@ async def test_self_adapter_builds_empty_person_context(database, monkeypatch):
         gateway=None,
         allow_generic_onebot=False,
         actor_context=env.context.actor,
-        actor_user_id="",
         origin=TurnOrigin.SELF_INITIATIVE,
         execution_id="work",
         initiative_run_id=env.source["initiative_run_id"],
         conversation_id=env.source["conversation_id"],
-        presence_id=env.source["presence_id"],
         space_id=env.source["space_id"],
-        current_group_id="2001",
     )
     captured = AsyncMock(return_value={"status": "succeeded"})
     monkeypatch.setattr(env.service, "execute", captured)

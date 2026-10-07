@@ -39,7 +39,13 @@ def model_failure_error_category(exc: BaseException) -> str:
     if name == "BackgroundModelPreempted":
         return "model_preempted"
     if isinstance(exc, ValueError):
-        return (
-            "model_summary_too_long" if str(exc) == "rollup_summary_too_long" else "model_quality"
-        )
+        reasons = {
+            "rollup_summary_too_long": "model_summary_too_long",
+            "rollup_carry_exceeds_input_capacity": "model_input_capacity",
+            "rollup_source_exceeds_input_capacity": "model_input_capacity",
+            "rollup_empty_source": "model_empty_source",
+            "rollup_summary_unexpected_tool_calls": "model_unexpected_tool_calls",
+            "rollup_summary_unsupplied_reference": "model_unsupplied_reference",
+        }
+        return reasons.get(str(exc), "model_invalid_candidate")
     return name

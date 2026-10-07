@@ -23,6 +23,7 @@ from qq_ai_bot.social.models import SocialError
 from qq_ai_bot.social.service import SocialContext, SocialService
 from qq_ai_bot.social.transfer import ArtifactTransfer
 from qq_ai_bot.workspace.store import WorkspaceStore
+from tests.support.workspace_snapshots import snapshot_bytes
 
 
 class Bot:
@@ -269,7 +270,7 @@ async def test_real_mentions_preserve_segments_and_replay(social_env, attachment
     env = social_env
     args = {"mentions": [{"target_id": env.person}]}
     if attachment:
-        artifact = env.store.write("hello.txt", b"hello")
+        artifact = snapshot_bytes(env.store, "hello.txt", b"hello")
         args.update(artifact_id=artifact["artifact_id"], attachment_kind=attachment)
     result = await env.service.execute("send_message", args, env.context)
     assert result["status"] == "succeeded"

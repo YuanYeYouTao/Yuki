@@ -30,6 +30,7 @@ class DelegatedAuthority(StrictModel):
     origin: TurnOrigin = TurnOrigin.SCHEDULED_AUTOMATION
     current_group_id: str | None = None
     principal_kind: str = "person"
+    canonical_creator_person_id: str | None = None
     canonical_conversation_id: str | None = None
     conversation_generation: int | None = None
     canonical_presence_id: str | None = None
@@ -57,6 +58,7 @@ class DelegatedAuthority(StrictModel):
 class AuthorityContext(StrictModel):
     origin: TurnOrigin
     actor_user_id: str
+    actor_person_id: str | None = None
     actor_is_superuser: bool
     bot_user_id: str
     principal_kind: str = "person"

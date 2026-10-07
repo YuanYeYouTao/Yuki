@@ -1,0 +1,44 @@
+{
+  "recorded_at": "2026-10-05T06:50:39.953235+00:00",
+  "application_base_commit": "c932655cded54951041ebdb942b4ae87f90be78a",
+  "checks": {
+    "ruff_check": "passed",
+    "ruff_format_check": "passed: 1138 files",
+    "mypy": "passed: 722 files"
+  },
+  "targeted": {
+    "passed": 65,
+    "seconds": 15.09,
+    "paid_calls": 0
+  },
+  "full_pytest": {
+    "command": "YUKI_MONTY_BINARY=\"$PWD/.venv/bin/yuki-monty-worker\" uv run --frozen pytest -q -p no:warnings tests",
+    "exit_code": 0,
+    "passed": 3303,
+    "skipped": 1,
+    "seconds": 670.48,
+    "skip_reason": "private production backup paths not provided"
+  },
+  "worker_sha256": "af76448a14fe980c823f1c6092692f90a8ddc6341f236f17d6d47d72f49548e8",
+  "regression_log_sha256": "f6eb40a57536246426c3deef69d84303bed6ccfdc528ebe37b049f05784d1f0d",
+  "owned_regression_fixtures_removed": true,
+  "paid_benchmark_results_separate": true,
+  "measurement_followup": {
+    "reason": "Path-only observer falsely stopped an advancing VM; new parent IDs must not reset stagnation.",
+    "pre_fix_regression": "70 repeated reads followed by valid work: stopped at 55 business calls, 1 failed / 15 deselected in 2.11s.",
+    "final_targeted": {
+      "passed": 77,
+      "seconds": 18.03,
+      "paid_calls": 0,
+      "new_case_business_calls": 97,
+      "new_case_http": 2
+    },
+    "static_checks_after_followup": "ruff check/format and mypy passed",
+    "full_run_scope": "3303 passed before measurement-only observer changes; product runtime source unchanged thereafter",
+    "runtime_source_sha256": {
+      "src/qq_ai_bot/codemode/engine_monty.py": "eef01e95f1c4a5d2adadfe5db70fe38ea3e8f27b9987062a1568f1a9a4d1b3de",
+      "src/qq_ai_bot/runtime/work_control.py": "a107a0777aa57fc2891ecf3d03f5ba2c0f5e9d0e82bdae5d1d6565394e11ad4a",
+      "tests/integration/test_codemode_runner.py": "ff914c3f6b180af073936b5df76c0a196aefe5baff1d52fce92995fbe118aee6"
+    }
+  }
+}

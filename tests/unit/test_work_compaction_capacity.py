@@ -1,6 +1,5 @@
 """Capacity replacement preserves original input and paired execution facts."""
 
-import hashlib
 import json
 from dataclasses import asdict, replace
 from types import SimpleNamespace
@@ -9,8 +8,12 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import select
 from tests.conftest import build_harness, make_settings
+
+# P10: fixed typed backend fixture, original assertions retained.
+from tests.support.agent_backend import StubAgentBackend
 from tests.support.social_identity_cases import social_env
 from tests.support.work_compaction import session_summary, summary_json
+from tests.support.work_session import WorkSession
 
 from qq_ai_bot.capabilities.results import ToolExecutionResult, ToolResultBudgeter
 from qq_ai_bot.domain.messages import (
@@ -33,7 +36,6 @@ from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkCapacityError, WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, journal
-from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.services.agent_runner import AgentRunner, AgentRuntime
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.main_agent_contract import MainAgentContract
@@ -133,22 +135,12 @@ async def _runtime(database, control, initial, provider, *, contract_workspace=N
 
 
 async def _seed_runner_contract(runner, runtime, session, initial):
+    # Capacity fixtures deliberately carry the complete execution declaration
+    # to stress fixed-input pressure. Seed the real recovery contract, including
+    # its full API revision, rather than duplicating the old hash formula.
     definitions = await runner.main_contract.definitions()
     runtime = replace(runtime, fixed_tools=definitions)
-    revision = getattr(runner._models, "profile_revision", None)
-    session.contract = hashlib.sha256(
-        json.dumps(
-            [
-                repr(definitions),
-                asdict(runtime.runtime_config.llm),
-                asdict(runtime.runtime_config.web),
-                revision(runner._task) if callable(revision) else "legacy",
-                [(item.role, item.content) for item in initial if item.role == "system"],
-            ],
-            sort_keys=True,
-            default=str,
-        ).encode()
-    ).hexdigest()
+    session.contract = runner.work_contract(runtime.runtime_config, initial, definitions)
     await session.save("paired")
     sequence = session.transcript.request()
     request = ChatRequest(
@@ -243,16 +235,16 @@ async def test_native_public_call_and_result_are_paired_after_compaction_and_res
     )
     runner, runtime = await _runtime(database, control, initial, provider)
     definition = ChatTool("read_probe", "Read evidence", {"type": "object"})
-    backend = SimpleNamespace(
+    execute = AsyncMock(return_value=output)
+    backend = StubAgentBackend(
         definitions=lambda *args, **kwargs: (definition,),
-        execute=AsyncMock(return_value=output),
-        begin_batch=lambda *args: None,
+        execute_call=execute,
         is_side_effecting=lambda *args: False,
         parallel_safe=lambda *args: False,
         exhausted=lambda *args: "",
     )
     await runner.run(initial, runtime, backend)
-    backend.execute.assert_awaited_once()
+    execute.assert_awaited_once()
     session = control.session
     effect_key = session.call_key(call.id)
     _grow(session.transcript)
@@ -286,7 +278,7 @@ async def test_native_public_call_and_result_are_paired_after_compaction_and_res
     material = json.loads(restored.transcript.request().messages[-1].content)
     assert material["execution_evidence"][0]["effect_key"] == effect_key
     assert await restored.journal.effect_result(effect_key) == output
-    backend.execute.assert_awaited_once()
+    execute.assert_awaited_once()
     await control.repository.release(control.lease)
 
 
@@ -306,9 +298,23 @@ async def test_rejected_candidate_keeps_original_paired_checkpoint(database, tmp
             tools=(ChatTool("large_fixed_contract", "x" * 120000, {"type": "object"}),),
         )
     error = ValueError if failure == "invalid_summary" else WorkCapacityError
+    # The business-resume guidance grew with explicit cumulative-note semantics;
+    # the default short summary can now genuinely shrink this small transcript.
+    # Keep testing rejection with a valid summary that retains the entire public
+    # request instead of assuming a particular guidance length cannot improve.
+    summary = (
+        " "
+        if failure == "invalid_summary"
+        else await session_summary(
+            session,
+            json.dumps(asdict(original), ensure_ascii=False)
+            if failure == "no_improvement"
+            else "Continue the original task.",
+        )
+    )
     with pytest.raises(error):
         await session.compact(
-            " " if failure == "invalid_summary" else await session_summary(session),
+            summary,
             target_tokens=20000,
             ceiling_tokens=20000,
             request_template=template,
@@ -341,6 +347,8 @@ async def test_auxiliary_output_reservation_rejects_source_before_dispatch(datab
     capacity = ModelCapacity(context_tokens=20000, output_tokens=4096)
     executor = SimpleNamespace(
         capacity=lambda _: capacity,
+        # P10's explicit capacity projection replaces the duck-typed fallback.
+        capacity_request=lambda _task, request: request,
         execute=AsyncMock(),
         structured_output_mode=lambda _: StructuredOutputMode.TEXT_JSON,
     )
@@ -395,6 +403,7 @@ async def test_tool_dense_source_compacts_without_duplicate_outputs(database, tm
     auxiliary = AsyncMock(side_effect=summarize)
     runner._models = SimpleNamespace(
         capacity=lambda _: ModelCapacity(),
+        capacity_request=lambda _task, request: request,
         execute=auxiliary,
         structured_output_mode=lambda _: StructuredOutputMode.TEXT_JSON,
     )

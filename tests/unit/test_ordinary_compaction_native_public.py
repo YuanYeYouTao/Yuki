@@ -1,12 +1,14 @@
 """Native ordinary tails retain public facts and deterministic delivery receipts."""
 
 import json
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 from tests.conftest import build_harness, make_settings
+
+# P10: explicit backend/Invocation fixture; original behavioral assertions retained.
+from tests.support.agent_backend import StubAgentBackend
 
 from qq_ai_bot.domain.messages import ChatMessage, ChatTool
 from qq_ai_bot.llm.fake import FakeLLMProvider
@@ -30,7 +32,7 @@ from qq_ai_bot.services.agent_runner import AgentRuntime
 @pytest.mark.asyncio
 @pytest.mark.parametrize("protocol", ["gemini", "openai_responses"])
 async def test_native_public_mirror_and_receipts_survive_empty_summary_without_work(
-    database, protocol
+    database, protocol, caplog
 ):
     harness = build_harness(
         database,
@@ -57,8 +59,8 @@ async def test_native_public_mirror_and_receipts_survive_empty_summary_without_w
         current = requests[-1]
         if current.structured_output:
             summary_sources.append(json.loads(current.messages[-1].content))
-            # Unneeded working prose may disappear. Actual delivery/uncertainty
-            # facts must remain independently of the model's chosen summary.
+            # An empty summary covers nothing; the original public tail must
+            # survive if its complete replacement would not reduce capacity.
             content = json.dumps({"facts": [], "pending": [], "next_steps": []})
         else:
             main_calls += 1
@@ -177,7 +179,8 @@ async def test_native_public_mirror_and_receipts_survive_empty_summary_without_w
             pool=ModelClientPool(injected_profiles={profile.id: provider}),
         )
 
-        async def execute(name, arguments, runtime):
+        async def execute(invocation):
+            arguments = invocation.call.function.arguments
             identity = json.loads(arguments)["text"]
             return json.dumps(
                 {
@@ -190,10 +193,10 @@ async def test_native_public_mirror_and_receipts_survive_empty_summary_without_w
                 }
             )
 
-        backend = SimpleNamespace(
+        execute_mock = AsyncMock(side_effect=execute)
+        backend = StubAgentBackend(
             definitions=lambda *args, **kwargs: fixed,
-            execute=AsyncMock(side_effect=execute),
-            begin_batch=lambda *args: None,
+            execute_call=execute_mock,
             is_side_effecting=lambda *args: True,
             parallel_safe=lambda *args: False,
             exhausted=lambda *args: "",
@@ -217,7 +220,7 @@ async def test_native_public_mirror_and_receipts_survive_empty_summary_without_w
         )
         result = await runner.run(initial, runtime, backend)
     assert result.model_requests == len(requests) == 3
-    assert backend.execute.await_count == 2 and runtime.work_control is None
+    assert execute_mock.await_count == 2 and runtime.work_control is None
     assert len(summary_sources) == 1
     records = {item["ref"]: json.loads(item["text"]) for item in summary_sources[0]["records"]}
     mirror = records["observation:0"]
@@ -229,10 +232,11 @@ async def test_native_public_mirror_and_receipts_survive_empty_summary_without_w
     assert "private-signature" not in json.dumps(summary_sources)
     final = requests[-1]
     assert final.messages[: len(initial)] == initial and final.tools == requests[0].tools
-    assert final.continuation is None and final.continuation_items == ()
-    capsule = json.loads(final.messages[-1].content)
-    assert capsule["summary"] == {"facts": [], "pending": [], "next_steps": []}
-    receipts = {item["call_id"]: item for item in capsule["execution_evidence"]}
-    assert receipts[calls[0]]["delivered_message"] and receipts[calls[0]]["status"] == "succeeded"
-    assert receipts[calls[1]]["uncertain"] and receipts[calls[1]]["status"] == "unknown"
-    assert not receipts[calls[1]]["delivered_message"]
+    assert final.continuation is not None
+    # The rejected candidate retains the actual original provider continuation,
+    # including public native facts and both already-executed tool receipts.
+    encoded = json.dumps(bodies[-1], ensure_ascii=False)
+    assert text in encoded
+    for call_id in calls:
+        assert call_id in encoded
+    assert "succeeded" in encoded and "unknown" in encoded

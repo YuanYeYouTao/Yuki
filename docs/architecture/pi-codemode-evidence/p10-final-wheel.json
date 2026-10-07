@@ -1,0 +1,14 @@
+{
+  "source": "extracted final wheel",
+  "typed_state_fields": 38,
+  "legacy_run_absent": true,
+  "production_callbacks_absent": true,
+  "wheel_sha256": "2cab6ec4e70f9969ca3e6b824775d9d0f9fe3df83dabc75ecd529659b08ae926",
+  "wheel_bytes": 15028257,
+  "pi_license_exact": true,
+  "webui_assets_present": true,
+  "turn_execution_source_exact": true,
+  "bot_started": false,
+  "paid_calls": 0,
+  "scope": "final Darwin wheel build/import; P09 container build evidence is separate"
+}

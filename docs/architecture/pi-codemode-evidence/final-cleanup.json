@@ -1,0 +1,45 @@
+{
+  "format": "yuki_final_cleanup_v1",
+  "vm": "yuki-final-20261005",
+  "vm_profile": {
+    "cpus": 4,
+    "memory_gib": 4,
+    "disk_gib_sparse_limit": 25,
+    "task_swap_gib": 4,
+    "host_directory_mounts": [],
+    "image_digest": "sha512:89a752d5c7d8e88bee39a57d88d496cca574f7d1e8df5df7a169825435f99feb11ed13ab27ec7bee96fe1584be4ff9479358fbca6cc859efa109f4aba18724c8"
+  },
+  "owned_paths_allocated_bytes_before_deletion": {
+    "/Users/huangjiawei/.lima/yuki-final-20261005": 11480158208,
+    "/Users/huangjiawei/Library/Caches/lima/download/by-url-sha256/c3e6af960bd3603760066fdc30a49d52b55e08f2e4dc7f4ffb9f0bd280aaed8f": 1639989248,
+    "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-final-linux-4w3j2m3t": 37056512
+  },
+  "allocation_measurement_note": "File allocation totals; shared/sparse filesystem accounting does not establish exactly how many bytes deletion frees.",
+  "free_bytes_before_cleanup": 41809305600,
+  "retained_mac_worker_sha256": "af76448a14fe980c823f1c6092692f90a8ddc6341f236f17d6d47d72f49548e8",
+  "preserved": [
+    "project/worktree",
+    "installed Mac native worker and binding",
+    "frontend build output",
+    "other Homebrew/Rust/Cargo packages and user caches",
+    "global Lima keys",
+    "all production/user state"
+  ],
+  "new_lima_formula_installed_by_this_final_verification": "2.2.0",
+  "status": "complete",
+  "task_vm_deleted": true,
+  "task_image_cache_deleted": true,
+  "task_staging_and_build_logs_deleted_after_evidence_saved": true,
+  "retained_mac_worker_present": true,
+  "new_lima_formula_uninstalled": true,
+  "other_formulae_autoremoval_disabled": true,
+  "retained_binding_version": "1.0.1",
+  "free_bytes_after_cleanup": 60061552640,
+  "own_full_pytest_run_directory_deleted": {
+    "path": "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/pytest-of-huangjiawei/pytest-285",
+    "creation_time": "2026-10-05T12:02:19.782605",
+    "allocated_bytes": 5897576448,
+    "prior_two_run_directories_preserved": true,
+    "own_pytest_current_alias_change_recovered": false
+  }
+}

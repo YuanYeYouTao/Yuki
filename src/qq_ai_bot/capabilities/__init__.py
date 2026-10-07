@@ -31,9 +31,7 @@ from qq_ai_bot.capabilities.provider import (
     ChatToolCapabilityProvider,
     InProcessToolProvider,
 )
-from qq_ai_bot.capabilities.registry import CapabilityRegistry
 from qq_ai_bot.capabilities.results import (
-    CapabilityResult,
     ToolArtifactWriter,
     ToolExecutionResult,
     ToolResultBudgeter,
@@ -49,8 +47,6 @@ __all__ = [
     "CapabilityPolicyContext",
     "CapabilityPolicyEngine",
     "CapabilityProvider",
-    "CapabilityRegistry",
-    "CapabilityResult",
     "CapabilityRisk",
     "CapabilityTrustSource",
     "ChatToolCapabilityProvider",

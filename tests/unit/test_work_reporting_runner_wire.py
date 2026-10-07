@@ -1,4 +1,4 @@
-"""Actual serializers retain the original prefix through reply and exit feedback."""
+"""Actual serializers retain the original prefix through a reply and explicit completion."""
 
 import json
 from itertools import pairwise
@@ -8,7 +8,6 @@ import pytest
 from tests.support.runtime_wire import install_wire
 from tests.unit.test_work_reporting_runner import START, case, new_event, response, run, tool
 
-from qq_ai_bot.domain.messages import ChatResponse
 from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
 from qq_ai_bot.model_runtime.executor import TaskModelExecutor
 from qq_ai_bot.model_runtime.models import (
@@ -97,7 +96,7 @@ def claude_wire(test_case):
 @pytest.mark.parametrize(
     "protocol", ["chat_completions", "responses", "native_responses", "anthropic_messages"]
 )
-async def test_reply_continues_same_work_and_exit_feedback_keeps_wire_prefix(
+async def test_reply_continues_same_work_and_explicit_exit_keeps_wire_prefix(
     database, tmp_path, protocol
 ):
     replies = []
@@ -128,7 +127,6 @@ async def test_reply_continues_same_work_and_exit_feedback_keeps_wire_prefix(
                 )
             ),
             response(tool("write_fixture", identity="write")),
-            ChatResponse("阶段说明后的内部正文", 0),
             response(tool("task_control", {"action": "complete"}, "complete")),
         ]
     )
@@ -155,13 +153,13 @@ async def test_reply_continues_same_work_and_exit_feedback_keeps_wire_prefix(
     try:
         result = await run(test_case)
         assert result.work_id == work_id and result.work_state == "completed"
-        assert test_case.control.requests_started == 5 and test_case.control.tools_started == 3
+        assert test_case.control.requests_started == 4 and test_case.control.tools_started == 3
         assert test_case.observed == ["send_message", "send_message", "write_fixture"]
         reports = await test_case.control.communication_reports(
             kind="reply", event_ids=(event_id,), delivered_only=True
         )
         assert len(reports) == 1
-        assert test_case.control.communication["final_feedback_given"] is True
+        assert "final_feedback_given" not in test_case.control.communication
         field = "input" if protocol in {"responses", "native_responses"} else "messages"
         for earlier, later in pairwise(captured):
             assert later["tools"] == earlier["tools"]
@@ -198,6 +196,6 @@ async def test_reply_continues_same_work_and_exit_feedback_keeps_wire_prefix(
                 )
             else:
                 assert later[field][: len(earlier[field])] == earlier[field]
-        assert "不能据此结束交互式 Work" in json.dumps(captured[-1], ensure_ascii=False)
+        assert "不能据此结束交互式 Work" not in json.dumps(captured[-1], ensure_ascii=False)
     finally:
         await client.aclose()

@@ -294,10 +294,14 @@ async def test_config_query_version_can_write_and_replay(database: Database) -> 
 
 
 @pytest.mark.asyncio
-async def test_container_assembles_live_control_services(database: Database) -> None:
+async def test_container_assembles_live_control_services(database: Database, tmp_path) -> None:
+    from tests.support.model_profiles import write_fake_profiles
+
     from qq_ai_bot.container import ApplicationContainer
 
-    settings = make_settings(database.url)
+    settings = make_settings(
+        database.url, model_profiles_file=write_fake_profiles(tmp_path / "models.toml")
+    )
     runtime = RuntimeConfigService(settings=settings, database=database)
     await runtime.initialize()
     container = ApplicationContainer(settings, database=database, runtime_config=runtime)
@@ -420,7 +424,7 @@ async def test_automation_operator_id_is_not_used_as_person(database: Database) 
             ControlCommand(
                 request_id=ctx.request_id,
                 expected_revision=0,
-                payload={"action": "create", "spec": {}},
+                payload={"action": "create", "spec": {"script": {}}},
             ),
         )
     assert exc.value.problem.code is ProblemCode.PRECONDITION_FAILED
@@ -433,7 +437,7 @@ async def test_automation_operator_id_is_not_used_as_person(database: Database) 
             ControlCommand(
                 request_id=no_person.request_id,
                 expected_revision=0,
-                payload={"action": "create", "spec": {}},
+                payload={"action": "create", "spec": {"script": {}}},
             ),
         )
     assert automation.actors == [ctx.principal.person_id.text]

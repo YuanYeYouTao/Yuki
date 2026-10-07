@@ -17,6 +17,8 @@ from qq_ai_bot.capabilities import (
     ToolProviderRegistry,
 )
 from qq_ai_bot.capabilities.coordinator import ToolInvocationCoordinator
+from qq_ai_bot.capabilities.invocation import direct_invocations
+from qq_ai_bot.capabilities.results import ToolExecutionResult
 from qq_ai_bot.capabilities.validation import JsonSchemaCapabilityValidator
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import (
@@ -30,7 +32,7 @@ from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.work_activation import current_work_control
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_schema_v1 import effects
-from qq_ai_bot.services.main_agent_backend import MainAgentBackend, UnsentFinalResponseError
+from qq_ai_bot.services.main_agent_backend import MainAgentBackend
 from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
 
 
@@ -152,6 +154,17 @@ async def backend_case(database, tmp_path, origin, receipt, *, tool_name="send_m
     tool_runtime = replace(
         tool_runtime,
         inbound=inbound,
+        actor_context=None
+        if inbound is not None
+        else replace(
+            tool_runtime.actor_context,
+            origin=origin,
+            principal_kind="self",
+            user_id="",
+            person_id=None,
+            event_id=None,
+            initiative_run_id="self-fixture",
+        ),
         origin=origin,
         space_id=env.space,
         runtime_config=await chat._runtime_config.snapshot(),
@@ -160,7 +173,17 @@ async def backend_case(database, tmp_path, origin, receipt, *, tool_name="send_m
 
     async def dispatch(name, arguments, runtime):
         dispatches.append((name, arguments))
-        return receipt
+        return ToolExecutionResult(
+            provider_id="core",
+            tool_name=name,
+            ok=bool(receipt.get("ok", True)),
+            data={
+                **receipt.get("data", {}),
+                "executed": receipt.get("data", {}).get("executed", True),
+            },
+            mutation_committed=receipt.get("ok", False),
+            uncertain=receipt.get("uncertain", False),
+        )
 
     registry = ToolProviderRegistry()
     registry.register(
@@ -187,6 +210,8 @@ async def backend_case(database, tmp_path, origin, receipt, *, tool_name="send_m
     backend._callable_tool_names = {tool_name}
     backend._capability_runtime = _runtime(*backend._catalog.entries)
     backend._capability_runtime.initial_exposure()
+    # The experiment binds typed Host Invocations rather than main's mutable
+    # begin_batch/execute fixture. Preserve all admission/usage/source assertions.
     runtime = SimpleNamespace(work_control=None, origin=origin, delegated_authority=None)
     return backend, runtime, work, dispatches
 
@@ -202,14 +227,13 @@ async def test_schema_rejection_keeps_call_receipt_and_attempt_budget_without_ex
     call = ToolCall(
         "original-rejected-call", ToolFunction("send_message", '{"unknown-secret":"private-value"}')
     )
-    backend.begin_batch((call,), runtime)
     result = await ToolInvocationCoordinator().execute_batch(
         (call,), backend, runtime, remaining_calls=1, max_parallel_calls=1
     )
     assert result.calls[0][0].id == call.id and result.calls[0][2] is False
     receipt = json.loads(result.calls[0][1])
     assert receipt["executed"] is False and receipt["mutation_committed"] is False
-    assert "text" in receipt["detail"] and "private-value" not in receipt["detail"]
+    assert "text" in receipt["public_message"] and "private-value" not in receipt["public_message"]
     assert result.executed_count == 0 and work.control.tools_started == 1
     assert dispatches == []
     async with database.sessions() as session:
@@ -266,7 +290,6 @@ async def test_new_input_race_before_binding_keeps_typed_nonexecution_and_origin
     invoke = AsyncMock()
     monkeypatch.setattr(type(entry.descriptor.binding), "invoke", invoke)
     call = ToolCall("original-race-call", ToolFunction("terminal_exec", '{"text":"fixture"}'))
-    backend.begin_batch((call,), runtime)
     token = current_work_control.set(work.control)
     try:
         result = await ToolInvocationCoordinator().execute_batch(
@@ -309,12 +332,9 @@ async def test_new_input_race_before_binding_keeps_typed_nonexecution_and_origin
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("origin", [TurnOrigin.USER_MESSAGE, TurnOrigin.SELF_INITIATIVE])
-async def test_unadmitted_send_does_not_consume_unsent_final_opportunity(
-    database, tmp_path, origin
-):
+async def test_unadmitted_send_has_no_execution_or_database_writes(database, tmp_path, origin):
     backend, runtime, _work, dispatches = await backend_case(database, tmp_path, origin, {})
     call = ToolCall("unadmitted", ToolFunction("send_message", "{}"))
-    backend.begin_batch((call,), runtime)
     statements = []
 
     def capture(_connection, _cursor, statement, *_args):
@@ -322,20 +342,18 @@ async def test_unadmitted_send_does_not_consume_unsent_final_opportunity(
 
     event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
     try:
-        result = await backend.execute("send_message", "{}", runtime)
+        result = await backend.execute_call(direct_invocations((call,), runtime)[0])
     finally:
         event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
     assert json.loads(result)["executed"] is False
     assert statements == [] and dispatches == []
-    assert backend.response_feedback("Internal answer", runtime)
-    with pytest.raises(UnsentFinalResponseError):
-        backend.response_feedback("Another internal answer", runtime)
+    assert not hasattr(backend, "response_feedback")
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("origin", [TurnOrigin.USER_MESSAGE, TurnOrigin.SELF_INITIATIVE])
 @pytest.mark.parametrize("status", ["succeeded", "failed", "unknown", "not_executed"])
-async def test_actual_send_receipt_controls_correction_without_retrying_failed_or_unknown(
+async def test_actual_send_receipt_is_returned_without_retrying_failed_or_unknown(
     database, tmp_path, origin, status
 ):
     receipt = {"ok": status == "succeeded", "data": {"status": status}}
@@ -345,11 +363,11 @@ async def test_actual_send_receipt_controls_correction_without_retrying_failed_o
         receipt["uncertain"] = True
     backend, runtime, _work, dispatches = await backend_case(database, tmp_path, origin, receipt)
     call = ToolCall("actual-attempt", ToolFunction("send_message", '{"text":"fixture"}'))
-    backend.begin_batch((call,), runtime)
-    await backend.execute("send_message", call.function.arguments, runtime)
+    observed = json.loads(await backend.execute_call(direct_invocations((call,), runtime)[0]))
+    assert observed["data"]["status"] == status
+    assert observed["ok"] is (status == "succeeded")
     assert len(dispatches) == 1
-    assert bool(backend.response_feedback("Internal answer", runtime)) == (status == "not_executed")
-    assert backend.response_feedback("NO_REPLY", runtime) is None
+    assert not hasattr(backend, "response_feedback")
     assert len(dispatches) == 1
 
 
@@ -359,12 +377,11 @@ async def test_tool_budget_rejection_does_not_mark_send_attempted(database, tmp_
         database, tmp_path, TurnOrigin.USER_MESSAGE, {}
     )
     call = ToolCall("budget-denied", ToolFunction("send_message", '{"text":"fixture"}'))
-    backend.begin_batch((call,), runtime)
     result = await ToolInvocationCoordinator().execute_batch(
         (call,), backend, runtime, remaining_calls=0, max_parallel_calls=1
     )
     assert result.executed_count == 0 and json.loads(result.calls[0][1])["executed"] is False
-    assert dispatches == [] and backend.response_feedback("Internal answer", runtime)
+    assert dispatches == []
 
 
 @pytest.mark.asyncio
@@ -379,10 +396,13 @@ async def test_later_schema_rejection_cannot_erase_an_earlier_send_attempt(
         database, tmp_path, TurnOrigin.USER_MESSAGE, receipt
     )
     first = ToolCall("first", ToolFunction("send_message", '{"text":"fixture"}'))
-    backend.begin_batch((first,), runtime)
-    await backend.execute("send_message", first.function.arguments, runtime)
+    await backend.execute_call(direct_invocations((first,), runtime)[0])
     denied = ToolCall("second", ToolFunction("send_message", "{}"))
-    backend.begin_batch((denied,), runtime)
-    assert json.loads(await backend.execute("send_message", "{}", runtime))["executed"] is False
-    assert backend.response_feedback("Internal answer", runtime) is None
+    assert (
+        json.loads(await backend.execute_call(direct_invocations((denied,), runtime)[0]))[
+            "executed"
+        ]
+        is False
+    )
+    assert not hasattr(backend, "response_feedback")
     assert len(dispatches) == 1

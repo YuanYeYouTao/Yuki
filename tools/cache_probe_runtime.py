@@ -156,11 +156,45 @@ class WorkDriver:
     async def record_read(self, call: ToolCall, result: dict[str, Any]) -> str:
         assert self.control is not None and self.control.session is not None
 
+        from qq_ai_bot.capabilities.invocation import (
+            Invocation,
+            InvocationIdentity,
+            TrustedInvocationContext,
+        )
+        from qq_ai_bot.capabilities.results import ToolExecutionResult
+        from qq_ai_bot.runtime.effect_outcomes import current_result_capture
+
+        session = self.control.session
+        invocation = Invocation(
+            InvocationIdentity(
+                session.call_key(call.id),
+                str(self.control.current["id"]),
+                session.transcript.chain_id,
+                session.sequence,
+                call.id,
+            ),
+            call,
+            TrustedInvocationContext(self.control, session.contract),
+        )
+
         async def invoke() -> str:
             self._read_invocations += 1
+            capture = current_result_capture.get()
+            if capture is not None:
+                capture.outcome = ToolExecutionResult(
+                    ok=True,
+                    data=result,
+                    provider_id="cache_probe",
+                    tool_name=call.function.name,
+                )
             return json.dumps(result, ensure_ascii=False)
 
-        recorded = await self.control.session.execute(call, invoke, side_effecting=False)
+        recorded = await session.execute(
+            call,
+            invoke,
+            invocation=invocation,
+            side_effecting=False,
+        )
         self._read_call, self._read_result = call, recorded
         self._read_key = self.control.session.call_key(call.id)
         return recorded

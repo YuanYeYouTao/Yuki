@@ -514,7 +514,9 @@ class PluginManager:
         start_called = False
         try:
             loaded = self._loader.load(available.root, available.manifest)
-            registrar = self._extensions.registrar(plugin_id, approved)
+            registrar = self._extensions.registrar(
+                plugin_id, approved, approval_revision=available.manifest.manifest_hash
+            )
             async with asyncio.timeout(self._start_timeout):
                 await loaded.instance.register(registrar)
             event_hooks = self._event_registrations(plugin_id)

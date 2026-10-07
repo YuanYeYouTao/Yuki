@@ -16,7 +16,7 @@ dependencies = [
     "pillow>=11,<13",
     "pydantic-settings>=2.7,<3",
     "pypdf>=6,<7",
-    "sqlalchemy>=2.0.36,<3",
+    "sqlalchemy[asyncio]>=2.0.36,<3",
     "tenacity>=9,<10",
     "tzdata>=2025.2",
     "yuki-semantic-participation @ https://github.com/YuanYeYouTao/Yuki-Semantic-Participation/archive/68bf033c37a524a2d377d2f67eaa25ce779c9e90.tar.gz",
@@ -25,6 +25,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    # Archived pre-retirement producers are executed only by migration tests.
+    "mcp==1.26.0",
     "mypy>=1.13,<2",
     "pytest>=8.3,<9",
     "pytest-asyncio>=0.24,<1",
@@ -73,6 +75,12 @@ plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 module = ["nonebot.*", "nonebot_adapter_onebot.*"]
+ignore_missing_imports = true
+
+# Built from the pinned Monty source by scripts/build_monty_worker.sh; optional
+# at import time so hosts without Code Mode still type-check and run.
+[[tool.mypy.overrides]]
+module = ["pydantic_monty", "pydantic_monty.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

@@ -10,6 +10,7 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import func, select, update
 from tests.conftest import make_settings
+from tests.support.model_executor import InjectedModelExecutor
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatRequest, ChatResponse
@@ -134,7 +135,7 @@ async def _service(
         jobs=MemoryJobRepository(database),
         facts=facts,
         ledger=ledger,
-        provider=provider,
+        model_executor=InjectedModelExecutor(provider),
         concurrency=ConcurrencyManager(2),
     )
     service = MemoryRebuildService(
@@ -762,3 +763,104 @@ async def test_extraction_failure_retries_with_persistent_backoff(database: Data
     async with database.sessions() as session:
         item = await session.scalar(select(MemoryRebuildItemModel))
     assert item is not None and item.attempts == 2 and item.status == "staged"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["usage", "receipt", "unknown_commit"])
+async def test_rebuild_commit_receipt_is_atomic_and_usage_cannot_replay(
+    database: Database, monkeypatch, failure: str
+) -> None:
+    from dataclasses import replace
+    from unittest.mock import AsyncMock
+
+    _settings, ledger, facts, _provider, service = await _service(database)
+    await _event(ledger, message_id="atomic-rebuild")
+    run = await service.plan(MemoryRebuildSelection(all_events=True), actor_user_id="9000")
+    await service.start(run.public_id, actor_user_id="9000")
+    worker = MemoryRebuildWorker(service, interval_seconds=1)
+    await worker.process_once()
+    await worker.process_once()
+    await service.set_review(run.public_id, "all", approved=True, actor_user_id="9000")
+    await service.commit(run.public_id, actor_user_id="9000")
+    original_resolve = service.processor.resolve
+
+    async def resolve(*args, **kwargs):
+        return replace(await original_resolve(*args, **kwargs), model_requests=1)
+
+    resolve_spy = AsyncMock(side_effect=resolve)
+    monkeypatch.setattr(service.processor, "resolve", resolve_spy)
+    injected = False
+    if failure == "usage":
+        monkeypatch.setattr(
+            service.repository,
+            "record_model_usage",
+            AsyncMock(side_effect=RuntimeError("usage unavailable")),
+        )
+    elif failure == "receipt":
+        original_finish = service.repository.finish_proposal
+
+        async def finish(*args, **kwargs):
+            nonlocal injected
+            if not injected:
+                injected = True
+                raise RuntimeError("before receipt commit")
+            await original_finish(*args, **kwargs)
+
+        monkeypatch.setattr(service.repository, "finish_proposal", finish)
+    else:
+        original_write = facts.repository.apply_evidence_write
+
+        async def uncertain(*args, **kwargs):
+            nonlocal injected
+            result = await original_write(*args, **kwargs)
+            if not injected:
+                injected = True
+                raise RuntimeError("commit returned no acknowledgement")
+            return result
+
+        monkeypatch.setattr(facts.repository, "apply_evidence_write", uncertain)
+    assert await worker.process_once() == 1
+    assert await worker.process_once() == 0
+    assert resolve_spy.await_count == 1
+    assert len(await facts.list_person("1001")) == 1
+    async with database.sessions() as session:
+        proposal = await session.scalar(select(MemoryRebuildProposalModel))
+        assert proposal.commit_status == MemoryRebuildCommitStatus.COMMITTED.value
+        assert proposal.attempts == 1
+        assert proposal.actual_fact_id is not None
+    assert (
+        await service.repository.get_run(run.public_id)
+    ).status is MemoryRebuildRunStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_rebuild_persistent_database_failure_stops_without_repeating_model(
+    database, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    from sqlalchemy.exc import OperationalError
+
+    _settings, ledger, facts, _provider, service = await _service(database)
+    await _event(ledger, message_id="persistent-database-failure")
+    run = await service.plan(MemoryRebuildSelection(all_events=True), actor_user_id="9000")
+    await service.start(run.public_id, actor_user_id="9000")
+    worker = MemoryRebuildWorker(service, interval_seconds=1)
+    await worker.process_once()
+    await worker.process_once()
+    await service.set_review(run.public_id, "all", approved=True, actor_user_id="9000")
+    await service.commit(run.public_id, actor_user_id="9000")
+    resolver = AsyncMock(wraps=service.processor.resolve)
+    monkeypatch.setattr(service.processor, "resolve", resolver)
+    database_write = AsyncMock(side_effect=OperationalError("write", {}, RuntimeError("disk")))
+    monkeypatch.setattr(facts.repository, "apply_evidence_write", database_write)
+    assert await worker.process_once() == 0
+    assert await worker.process_once() == 0
+    assert resolver.await_count == 1
+    assert database_write.await_count == 3
+    assert await facts.list_person("1001") == ()
+    assert (await service.repository.get_run(run.public_id)).status is MemoryRebuildRunStatus.FAILED
+    async with database.sessions() as reader:
+        proposal = await reader.scalar(select(MemoryRebuildProposalModel))
+        assert proposal.commit_status == "failed"
+        assert proposal.attempts == 1

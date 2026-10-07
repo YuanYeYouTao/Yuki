@@ -26,7 +26,7 @@ def provenance(group_id=None):
     )
 
 
-def test_generated_and_agentic_compile_the_same_delivery_contract():
+def test_auto_and_agentic_compile_the_same_delivery_contract():
     for case in (
         (None, "auto", "self_private"),
         ("20001", "auto", "current_group"),
@@ -54,9 +54,9 @@ def _assert_model_delivery(group_id, target, resolved):
             provenance(group_id),
             default_timezone="Asia/Shanghai",
         )
-        for strategy in (TaskStrategy.GENERATED, TaskStrategy.AGENTIC, TaskStrategy.AUTO)
+        for strategy in (TaskStrategy.AGENTIC, TaskStrategy.AUTO)
     ]
-    assert plans[0].script == plans[1].script == plans[2].script
+    assert plans[0].script == plans[1].script
     script = plans[0].script
     assert [(step.id, step.call) for step in script.steps] == [("execute", "yuki.agent")]
     arguments = definition.validate_arguments(script.steps[0].arguments)
@@ -104,7 +104,6 @@ def test_delivery_target_is_optional_only_on_the_internal_agent_dsl():
     assert task_schema["$defs"]["TaskStrategy"]["enum"] == [
         "auto",
         "static",
-        "generated",
         "agentic",
     ]
     assert "delivery_target" not in json.dumps(task_schema)

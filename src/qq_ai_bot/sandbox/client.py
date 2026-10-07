@@ -19,33 +19,6 @@ if TYPE_CHECKING:
 def sandbox_tools() -> tuple[ChatTool, ...]:
     return (
         ChatTool(
-            name="run_python",
-            result_cacheable=False,
-            description=(
-                "在 Yuki 持久 Linux 环境执行 Python 3.12。/workspace 与文件工具共用且可写，"
-                "文件、pip/npm 依赖长期保留。可经代理访问公网 HTTP/HTTPS。"
-                "input_artifact_ids 兼容复制至 /inputs/artifact_id；"
-                "旧文件映射查 /workspace/manifest.json。"
-                "产物写 /work/outputs，成功后发布变化文件为 artifact；也可使用 workspace_publish。"
-                "此兼容入口最多 120 秒；长任务/交互请用 terminal_exec。返回 run_id 后查询，不重跑。"
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "code": {"type": "string", "maxLength": 65536},
-                    "input_artifact_ids": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "maxItems": 20,
-                        "uniqueItems": True,
-                    },
-                    "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 120},
-                },
-                "required": ["code"],
-                "additionalProperties": False,
-            },
-        ),
-        ChatTool(
             name="get_code_run",
             result_cacheable=False,
             description=(
@@ -100,7 +73,7 @@ class SandboxClient:
             # Source never crosses into the execution container/Manager payload.
             prepared = await self.tasks.prepare(
                 request_id,
-                args if name == "run_python" else {"tool": name, "arguments": args},
+                {"tool": name, "arguments": args},
                 source,
             )
             if prepared is not None and prepared.status == "completed" and prepared.run_id is None:

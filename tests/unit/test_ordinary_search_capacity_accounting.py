@@ -104,7 +104,6 @@ async def test_ordinary_search_keeps_large_sources_external_without_capacity_sto
         ),
         bot_user_id="80001",
         conversation_id=env.context.conversation_id,
-        legacy_conversation_key="bot:80001:group:20001",
         person_id=env.person,
         space_id=env.space,
         presence_id=env.presence,
@@ -152,13 +151,19 @@ async def test_ordinary_search_keeps_large_sources_external_without_capacity_sto
             {"memory": [], "plugin_id": None, "delegation_id": None}, sort_keys=True
         ),
     )
-    original = await chat._tool_artifacts.read(
-        candidate_outcome["artifact_handle"],
-        limit=100000,
-        access=access,
-    )
-    assert original is not None and original["next_offset"] is None
-    archived = json.loads(original["content"])
+    parts = []
+    offset = 0
+    while True:
+        original = await chat._tool_artifacts.read(
+            candidate_outcome["artifact_handle"], offset=offset, limit=100000, access=access
+        )
+        assert original is not None
+        parts.append(original["content"])
+        if original["next_offset"] is None:
+            break
+        assert original["next_offset"] > offset
+        offset = original["next_offset"]
+    archived = json.loads("".join(parts))
     assert archived["data"]["sources"][0]["url"] == source.url
     assert archived["data"]["sources"][0]["relevant_content"] == body
     for earlier, later in pairwise(captured):

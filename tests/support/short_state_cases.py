@@ -9,6 +9,7 @@ import pytest
 
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.automation.registry import AutomationCapabilityRegistry
+from qq_ai_bot.capabilities.invocation import direct_invocations
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, ChatResponse, ToolCall, ToolFunction
 from qq_ai_bot.llm.fake import FakeLLMProvider
@@ -17,7 +18,7 @@ from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.main_agent_backend import MainAgentBackend
 from qq_ai_bot.services.main_agent_contract import MainAgentContract
 from qq_ai_bot.workspace.short_state import ShortState, encode
-from qq_ai_bot.workspace.store import WorkspaceError, WorkspaceStore
+from qq_ai_bot.workspace.store import WorkspaceStore
 from tests.conftest import build_harness, make_settings
 
 
@@ -33,7 +34,9 @@ async def run_short_state_cases(database, tmp_path, context):
         ChatMessage(role="assistant", content="past"),
     )
     initial = (*prefix, ChatMessage(role="user", content="数字是什么"))
-    frozen = await state.inject(initial)
+    from qq_ai_bot.prompting.serializer import append_dynamic_item
+
+    frozen = append_dynamic_item(initial, state.envelope(state.snapshot()))
     assert frozen[:2] == prefix
     assert "73" in frozen[-1].content
     concurrent = await asyncio.gather(
@@ -42,23 +45,22 @@ async def run_short_state_cases(database, tmp_path, context):
             for text in ("数字73，已揭晓", "数字73，等下继续")
         )
     )
-    assert sum(json.loads(result)["ok"] for result in concurrent) == 1
-    assert frozen[-1].content != (await state.inject(initial))[-1].content
-    before = state.snapshot()
-    with pytest.raises(WorkspaceError, match="capacity"):
-        state.update({"slot": 2, "text": "测" * 300, "expected_revision": 0})
-    assert state.snapshot() == before
-    assert len(encode(state.envelope(before)).encode()) <= 512
+    assert sum(result.ok for result in concurrent) == 1
+    assert (
+        frozen[-1].content
+        != append_dynamic_item(initial, state.envelope(state.snapshot()))[-1].content
+    )
+    assert state.update({"slot": 2, "text": "测" * 300, "expected_revision": 0})["ok"]
+    assert state.update({"slot": 3, "text": "a" * 300, "expected_revision": 0})["ok"]
     for invalid in (
         {"slot": True, "text": "x", "expected_revision": 0},
         {"slot": 1, "text": "x", "expected_revision": False},
     ):
-        assert not json.loads(await state.execute(encode(invalid)))["ok"]
+        assert not (await state.execute(encode(invalid))).ok
     with state.store._transaction() as db:
         db.execute("UPDATE short_state SET expires_at=0")
     assert state.snapshot()[0]["text"] == ""
     assert state.envelope(state.snapshot())["data"] == []
-    assert await state.inject(initial) == initial
     assert not state.update({"slot": 1, "text": "stale", "expected_revision": 1})["ok"]
 
     provider = FakeLLMProvider()
@@ -71,15 +73,20 @@ async def run_short_state_cases(database, tmp_path, context):
     contract = MainAgentContract(chat, state)
     chat.runtime.runner.main_contract = contract
     chat._tools.short_state = state
-    declared = await contract.definitions()
+    # The new deployment has a compact model view and an unchanged full
+    # execution catalog. Compare actual requests to the former, not the latter.
+    complete = await contract.definitions()
+    declared = await contract.model_definitions()
     assert "request_tools" not in {tool.name for tool in declared}
     revision = contract.revision
     assert len(revision) == 64
-    copied = await contract.definitions()
+    copied = await contract.model_definitions()
     copied[0].parameters["injected"] = True
-    assert await contract.definitions() == declared
+    assert await contract.model_definitions() == declared
     assert contract.revision == revision
-    assert {"update_short_state", "call_onebot_api", "send_message"} <= {t.name for t in declared}
+    assert {"update_short_state", "send_message", "lookup_tools"} <= {t.name for t in declared}
+    assert "call_onebot_api" not in {t.name for t in declared}
+    assert "call_onebot_api" in {t.name for t in complete}
     config = await chat._runtime_config.snapshot()
     runtime = AgentRuntime(
         origin=TurnOrigin.USER_MESSAGE,
@@ -109,17 +116,17 @@ async def run_short_state_cases(database, tmp_path, context):
                 gateway=None,
                 allow_generic_onebot=False,
                 origin=origin,
-                actor_user_id="10001",
                 runtime_config=config,
                 scope_type=ScopeType.PRIVATE,
-                bot_user_id="7777",
                 external_target_id="10001",
                 read_only=True,
             ),
         )
-        await chat.runtime.main_turns.run(await state.inject(initial), scoped, backend)
+        await chat.runtime.main_turns.run(
+            append_dynamic_item(initial, state.envelope(state.snapshot())), scoped, backend
+        )
         assert provider.requests[-1].tools == declared
-        assert await contract.definitions() == declared
+        assert await contract.model_definitions() == declared
         # Global state has no person/group/origin ACL, including actorless and read-only turns.
         call = ToolCall(
             id="state",
@@ -130,18 +137,14 @@ async def run_short_state_cases(database, tmp_path, context):
                 ),
             ),
         )
-        backend.begin_batch((call,), scoped)
-        assert json.loads(
-            await backend.execute(call.function.name, call.function.arguments, scoped)
-        )["ok"]
+        assert json.loads(await backend.execute_call(direct_invocations((call,), scoped)[0]))["ok"]
         denied = ToolCall(
             id="denied",
             function=ToolFunction(name="call_onebot_api", arguments='{"action":"x","params":{}}'),
         )
-        backend.begin_batch((denied,), scoped)
-        assert not json.loads(
-            await backend.execute(denied.function.name, denied.function.arguments, scoped)
-        )["ok"]
+        assert not json.loads(await backend.execute_call(direct_invocations((denied,), scoped)[0]))[
+            "ok"
+        ]
     automation = MainAgentBackend(
         chat,
         ToolRuntime(
@@ -149,7 +152,6 @@ async def run_short_state_cases(database, tmp_path, context):
             gateway=None,
             allow_generic_onebot=False,
             scope_type=ScopeType.PRIVATE,
-            bot_user_id="7777",
             external_target_id="10001",
             runtime_config=config,
         ),
@@ -157,14 +159,16 @@ async def run_short_state_cases(database, tmp_path, context):
     from tests.support.state_backend import ShortStateOnlyBackend
 
     await chat.runtime.main_turns.run(
-        await state.inject(initial),
+        append_dynamic_item(initial, state.envelope(state.snapshot())),
         replace(runtime, origin=TurnOrigin.SCHEDULED_AUTOMATION),
         automation,
     )
     assert provider.requests[-1].tools == declared
     assert "73" in provider.requests[-1].messages[-1].content
     await chat.runtime.main_turns.run(
-        await state.inject(initial), runtime, ShortStateOnlyBackend(state)
+        append_dynamic_item(initial, state.envelope(state.snapshot())),
+        runtime,
+        ShortStateOnlyBackend(state),
     )
     assert provider.requests[-1].tools == declared
 
@@ -199,7 +203,7 @@ async def run_short_state_cases(database, tmp_path, context):
     provider._responder = respond
     start = len(provider.requests)
     await chat.runtime.main_turns.run(
-        await state.inject(initial),
+        append_dynamic_item(initial, state.envelope(state.snapshot())),
         replace(runtime, max_model_requests=2),
         ShortStateOnlyBackend(state),
     )
@@ -209,7 +213,9 @@ async def run_short_state_cases(database, tmp_path, context):
     assert provider.requests[start + 1].tool_choice == "auto"
     provider._responder = lambda request: "91"
     await chat.runtime.main_turns.run(
-        await state.inject(initial), runtime, ShortStateOnlyBackend(state)
+        append_dynamic_item(initial, state.envelope(state.snapshot())),
+        runtime,
+        ShortStateOnlyBackend(state),
     )
     assert "91" in provider.requests[-1].messages[-1].content
 
@@ -226,7 +232,8 @@ async def run_short_state_cases(database, tmp_path, context):
         def is_side_effecting(self, name, arguments_json, runtime):
             return False
 
-        async def execute(self, name, arguments_json, runtime):
+        async def execute_call(self, invocation):
+            name = invocation.call.function.name
             assert name == "get_code_run"
             self.polls += 1
             return json.dumps(
@@ -262,7 +269,7 @@ async def run_short_state_cases(database, tmp_path, context):
 
     provider._responder = observe
     result = await chat.runtime.main_turns.run(
-        await state.inject(initial),
+        append_dynamic_item(initial, state.envelope(state.snapshot())),
         replace(runtime, max_tool_calls=5, max_model_requests=6),
         progress,
     )
@@ -288,11 +295,10 @@ async def run_short_state_cases(database, tmp_path, context):
     handlers._registry = registry
     handlers._gateway_factory = lambda context: None
     provider._responder = lambda request: "scheduled answer"
-    generated = await handlers.mapping()["yuki.generate"](
+    generated = await handlers.mapping()["yuki.agent"](
         {
             "instruction": "scheduled work",
             "context_profile": "none",
-            "max_characters": 200,
         },
         context,
     )
@@ -344,11 +350,10 @@ async def run_short_state_cases(database, tmp_path, context):
         )
         previous_requests = len(provider.requests)
         with pytest.raises(AutomationExecutionError) as caught:
-            await handlers.mapping()["yuki.generate"](
+            await handlers.mapping()["yuki.agent"](
                 {
                     "instruction": "scoped work",
                     "context_profile": "creator_private",
-                    "max_characters": 200,
                 },
                 scoped_context,
             )
@@ -380,11 +385,10 @@ async def run_short_state_cases(database, tmp_path, context):
     )
     previous_requests = len(provider.requests)
     waiting = asyncio.create_task(
-        handlers.mapping()["yuki.generate"](
+        handlers.mapping()["yuki.agent"](
             {
                 "instruction": "queued scoped work",
                 "context_profile": "creator_private",
-                "max_characters": 200,
             },
             scoped_context,
         )
@@ -411,7 +415,7 @@ async def run_short_state_cases(database, tmp_path, context):
     class UndeclaredBackend(ShortStateOnlyBackend):
         attempts = 0
 
-        async def execute(self, name, arguments_json, runtime):
+        async def execute_call(self, invocation):
             self.attempts += 1
             return '{"ok":true}'
 
@@ -437,5 +441,7 @@ async def run_short_state_cases(database, tmp_path, context):
         return "not available in this deployment"
 
     provider._responder = undeclared_response
-    await chat.runtime.main_turns.run(await state.inject(initial), runtime, late_backend)
+    await chat.runtime.main_turns.run(
+        append_dynamic_item(initial, state.envelope(state.snapshot())), runtime, late_backend
+    )
     assert late_backend.attempts == 0

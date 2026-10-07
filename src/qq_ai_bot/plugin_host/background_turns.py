@@ -315,7 +315,7 @@ class PluginBackgroundTurnWorker:
             ),
         )
         turn_snapshot = ConversationTurnSnapshot(
-            scope_id=context.scope_id,
+            conversation_id=context.conversation_id,
             scope_key=conversation_key,
             generation=job.generation,
             trigger_event_id=event.id,
@@ -361,7 +361,12 @@ class PluginBackgroundTurnWorker:
                     preserve_budget=True,
                 )
                 return
-            if result.work_state in {"suspended", "failed", "cancelled"}:
+            if result.work_state in {"failed", "cancelled"}:
+                await self._repository.abandon_turn(
+                    job.id, attempt=job.attempts, error_category="runtime_work_blocked"
+                )
+                return
+            if result.work_state == "suspended":
                 await self._repository.fail_turn(
                     job.id, attempt=job.attempts, error_category="runtime_work_blocked"
                 )

@@ -10,7 +10,7 @@ from time import monotonic
 from uuid import uuid4
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.admin.config_files import ConfigFileService
@@ -756,17 +756,6 @@ class ControlCommandAdapter:
             capability="control.plugin.config.mutate",
         )
 
-    async def mutate_workspace(
-        self, principal: ControlPrincipal, target: object, command: ControlCommand
-    ) -> ControlResult:
-        return await self._management_action(
-            principal,
-            target,
-            command,
-            operation=CommandOperation.WORKSPACE_MUTATE.value,
-            capability="control.workspace.mutate",
-        )
-
     async def mutate_environment_file(
         self, principal: ControlPrincipal, target: object, command: ControlCommand
     ) -> ControlResult:
@@ -862,7 +851,6 @@ class ControlCommandAdapter:
         if parsed is not None and (
             operation
             in {
-                CommandOperation.WORKSPACE_MUTATE.value,
                 CommandOperation.ENVIRONMENT_FILE_MUTATE.value,
                 CommandOperation.TERMINAL_MUTATE.value,
                 CommandOperation.MEMORY_MAINTENANCE.value,
@@ -1089,8 +1077,6 @@ class ControlCommandAdapter:
                 exc=exc,
                 started=started,
             )
-        except SQLAlchemyError as exc:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH)) from exc
         if pending is not None:
             raise ControlCommandError(pending)
         if result is None:
@@ -1149,8 +1135,6 @@ class ControlCommandAdapter:
                 )
         except ControlCommandError:
             raise
-        except SQLAlchemyError:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH)) from None
         raise ControlCommandError(problem)
 
     async def _load_receipt(

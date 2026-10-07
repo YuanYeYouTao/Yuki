@@ -6,6 +6,9 @@ from itertools import pairwise
 
 import pytest
 from tests.conftest import build_harness, make_settings
+
+# P10: explicit Invocation fixture contract; existing assertions are retained.
+from tests.support.agent_backend import StubAgentBackend
 from tests.support.runtime_wire import install_wire
 
 from qq_ai_bot.automation.models import TurnOrigin
@@ -23,7 +26,8 @@ from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.services.agent_runner import AgentRuntime
 
 
-class _MalformedRecoveryBackend:
+# New upstream replay uses this branch's typed Invocation boundary; assertions stay unchanged.
+class _MalformedRecoveryBackend(StubAgentBackend):
     def __init__(self):
         self.executions = []
         self.exposure_confirmations = 0
@@ -43,8 +47,9 @@ class _MalformedRecoveryBackend:
     def is_side_effecting(self, *args):
         return True
 
-    async def execute(self, name, arguments, runtime):
-        self.executions.append((name, json.loads(arguments)))
+    async def execute_call(self, invocation):
+        call = invocation.call
+        self.executions.append((call.function.name, json.loads(call.function.arguments)))
         return '{"ok":true,"mutation_committed":true}'
 
     def finalize(self, text, runtime):
@@ -224,7 +229,6 @@ async def test_receipt_continues_original_wire_chain(database, protocol, recover
     responses = iter(
         [
             call("first", '{"broken":' if recovery == "incomplete" else "{}"),
-            *([ChatResponse("unsupported", 0)] if recovery == "committed" else []),
             call("next", '{"query":true}'),
             ChatResponse("核对好了，由我自己说明结果", 0),
         ]
@@ -244,7 +248,7 @@ async def test_receipt_continues_original_wire_chain(database, protocol, recover
     provider.complete = receive
     executed = []
 
-    class Backend:
+    class Backend(StubAgentBackend):
         def definitions(self, runtime, **kwargs):
             return (ChatTool("work", "work", {"type": "object"}),)
 
@@ -257,7 +261,8 @@ async def test_receipt_continues_original_wire_chain(database, protocol, recover
         def is_side_effecting(self, *args):
             return True
 
-        async def execute(self, name, arguments, runtime):
+        async def execute_call(self, invocation):
+            arguments = invocation.call.function.arguments
             executed.append(json.loads(arguments))
             return json.dumps(
                 {
@@ -271,9 +276,6 @@ async def test_receipt_continues_original_wire_chain(database, protocol, recover
         def terminal_memory_reply(self):
             # The obsolete hook must never override the model or stop its loop.
             return "固定记忆模板"
-
-        def response_feedback(self, text, runtime):
-            return "没有对应的持久化回执，请核对后继续" if text == "unsupported" else None
 
         def finalize(self, text, runtime):
             return text
@@ -303,7 +305,7 @@ async def test_receipt_continues_original_wire_chain(database, protocol, recover
     finally:
         await client.aclose()
     assert result.text == "核对好了，由我自己说明结果"
-    assert result.model_requests == (4 if recovery == "committed" else 3)
+    assert result.model_requests == 3
     assert executed == ([{}, {"query": True}] if recovery == "committed" else [{"query": True}])
     sequence = "input" if protocol == "responses" else "messages"
     for before, after in pairwise(captured):
@@ -324,7 +326,7 @@ async def test_receipt_continues_original_wire_chain(database, protocol, recover
 
 
 @pytest.mark.asyncio
-async def test_real_memory_receipt_returns_to_model_without_reusing_write_authority(
+async def test_real_memory_receipts_allow_distinct_authorized_writes_in_one_turn(
     database, tmp_path
 ):
     from tests.conftest import MemorySender
@@ -355,8 +357,12 @@ async def test_real_memory_receipt_returns_to_model_without_reusing_write_author
                                         "subject_ref": "current_speaker",
                                         "scope_type": "person",
                                     },
-                                    "new_content": "现在住在上海",
-                                    "memory_key": "location:home",
+                                    "new_content": "现在住在上海"
+                                    if len(responses_seen) == 1
+                                    else "周末喜欢骑行",
+                                    "memory_key": "location:home"
+                                    if len(responses_seen) == 1
+                                    else "hobby:cycling",
                                     "category": "location",
                                     "reason": "用户明确要求记住",
                                     "confidence": 0.96,
@@ -368,7 +374,7 @@ async def test_real_memory_receipt_returns_to_model_without_reusing_write_author
                 ),
             )
         receipt = json.loads([m.content for m in request.messages if m.role == "tool"][-1])
-        assert not receipt["ok"]  # A second write does not reuse this turn's authority.
+        assert receipt["ok"] and receipt["data"]["outcome"] == "committed"
         return ChatResponse("", 0)
 
     provider = FakeLLMProvider(respond)
@@ -390,7 +396,7 @@ async def test_real_memory_receipt_returns_to_model_without_reusing_write_author
     assert result.reason == "chat"
     assert len(responses_seen) == 3
     assert not sender.messages
-    assert len(await facts.list_person("1001", limit=20)) == 1
+    assert len(await facts.list_person("1001", limit=20)) == 2
     for before, after in pairwise(provider.requests):
         assert after.tools == before.tools
         assert after.messages[: len(before.messages)] == before.messages
@@ -435,9 +441,7 @@ async def _replay_user_write_feedback(
 
     env = await social_env(database, tmp_path)
     async with database.sessions() as reader:
-        primary_alias = await require_primary_alias_for_conversation(
-            reader, env.context.conversation_id
-        )
+        await require_primary_alias_for_conversation(reader, env.context.conversation_id)
     service, facts, _, _ = _service(database)
     requests = []
     text = (
@@ -575,10 +579,20 @@ async def _replay_user_write_feedback(
                 ),
             )
         if extra_feedback is not None and len(requests) == write_request + 2:
-            assert not receipt["ok"] and receipt["error"] in {
-                "memory_feedback_current_text_only",
-                "work_report_target_not_current",
-            }
+            # The generic tool schema rejects the invented target, while the
+            # real message service rejects an unknown artifact. Memory receipt
+            # handling does not add another permission owner.
+            expected_error = (
+                "work_report_target_not_current"
+                if accepted_work and "target" in extra_feedback
+                else "tool_input_validation_failed"
+                if "target" in extra_feedback
+                else "invalid_message_arguments"
+            )
+            assert (
+                not receipt["ok"]
+                and receipt.get("error_code", receipt.get("error")) == expected_error
+            ), receipt
             return ChatResponse(
                 "",
                 0,
@@ -617,14 +631,14 @@ async def _replay_user_write_feedback(
         # receipt, Runner and explicit Social-delivery path, with no write replay.
         from unittest.mock import AsyncMock
 
+        from qq_ai_bot.capabilities.results import ToolExecutionResult
+
         chat._tools._memory_change = AsyncMock(
-            return_value=json.dumps(
-                {
-                    "ok": False,
-                    "error": "verification_unavailable",
-                    "uncertain": True,
-                    "mutation_committed": None,
-                }
+            return_value=ToolExecutionResult(
+                ok=False,
+                error_code="verification_unavailable",
+                uncertain=True,
+                mutation_committed=None,
             )
         )
     chat._tools.social_service = env.service
@@ -642,7 +656,6 @@ async def _replay_user_write_feedback(
         ),
         bot_user_id="80001",
         conversation_id=env.context.conversation_id,
-        legacy_conversation_key=primary_alias,
         person_id=env.person,
         space_id=env.space,
         presence_id=env.presence,

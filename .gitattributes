@@ -2,3 +2,7 @@
 *.sh text eol=lf
 Dockerfile text eol=lf
 frontend/** text=auto eol=lf
+*.patch text eol=lf
+
+*.apparmor text eol=lf
+deploy/security/*.json text eol=lf

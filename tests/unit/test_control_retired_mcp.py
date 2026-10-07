@@ -26,7 +26,7 @@ def test_retired_mcp_has_no_executable_or_catalog_surface():
     for name in ("mutate_mcp", "list_mcp_servers"):
         assert not hasattr(ControlCommandService, name)
         assert not hasattr(ControlQueryService, name)
-        with pytest.raises(StopIteration):
+        with pytest.raises(KeyError):
             method_capability(name)
     for capability in ("control.mcp.read", "control.mcp.mutate", "mcp.web_search"):
         assert not is_protocol_capability(capability)

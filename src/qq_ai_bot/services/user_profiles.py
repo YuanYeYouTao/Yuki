@@ -17,7 +17,7 @@ from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
-from qq_ai_bot.persistence.repositories import UserProfileRepository
+from qq_ai_bot.persistence.repositories import PeopleRepository
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ class UserProfileService:
 
     def __init__(
         self,
-        repository: UserProfileRepository,
+        repository: PeopleRepository,
         runtime_config: RuntimeConfigService | None = None,
     ) -> None:
         self._repository = repository
@@ -173,7 +173,7 @@ class UserProfileService:
             if runtime is not None:
                 initial_affection = runtime.relationship.initial_affection
                 initial_trust = runtime.relationship.initial_trust
-            await self._repository.upsert(
+            await self._repository.observe(
                 user_id=profile.user_id,
                 nickname=nickname,
                 group_id=profile.group_id,

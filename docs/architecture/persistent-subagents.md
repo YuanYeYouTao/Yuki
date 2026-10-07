@@ -7,6 +7,13 @@
 `subagent_message` 补充要求，通过 `subagent_control` 查询、取消或恢复同一目标。
 派生本身已经登记工作，工作者无需再次 `task_control.accept`。
 
+工作者与主 Agent 共享持续 Work 的默认 Code Mode 编排指引：无需逐步语义判断的已知
+多步流程在脚本内过滤和聚合，只返回必要结果与证据引用。基础单次操作、联网和生命周期
+控制可直接调用；终端、环境等专用能力按需查询后在脚本内执行。完整 API 保留原
+`WORKER_NAMES` 子集及新增的只读 `lookup_tools`；查询不继承主 Agent 的目录或授权。
+指引不扩展父任务授权或根预算；pending
+继续按原 run_id 等待，同一原 VM 在段边界续跑，不以新脚本重做已提交子调用。
+
 用户要求继续聊天不表示取消后台工作。主 Yuki 发言使用 `send_message`；
 `task_control.answer` 已不在公开工具 action 中。有未结束的子任务时，父任务保持等待，
 自动收尾不能将父任务标为失败，暂停的子任务也保留恢复入口。

@@ -4,13 +4,15 @@ import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 from pydantic import ValidationError
 from tests.conftest import build_harness, make_settings
+
+# P10: explicit backend/Invocation fixture; original behavioral assertions retained.
+from tests.support.agent_backend import StubAgentBackend
 
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
 from qq_ai_bot.application.modules.model_runtime import ModelRuntimeModule
@@ -424,14 +426,6 @@ def test_setup_generates_valid_vendor_catalog(tmp_path, protocol, vendor):
     )
     catalog = load_model_profile_catalog(
         path,
-        legacy_provider="fake",
-        legacy_base_url="",
-        legacy_model="fake",
-        legacy_timeout_seconds=1,
-        legacy_max_retries=0,
-        legacy_temperature=0,
-        legacy_max_output_tokens=1,
-        legacy_thinking_enabled=True,
         environment={"LLM_BASE_URL": "https://wire.invalid/v1", "LLM_MODEL": "thinking-model"},
     )
     main = catalog.profiles[
@@ -459,14 +453,6 @@ def test_setup_names_secondary_connection_by_task_role():
 def test_multi_vendor_example_loads_without_reading_secrets():
     catalog = load_model_profile_catalog(
         Path("config/model_profiles.providers.example.toml"),
-        legacy_provider="fake",
-        legacy_base_url="",
-        legacy_model="fake",
-        legacy_timeout_seconds=1,
-        legacy_max_retries=0,
-        legacy_temperature=0,
-        legacy_max_output_tokens=1,
-        legacy_thinking_enabled=True,
         environment={
             name: "https://wire.invalid/v1" if name.endswith("BASE_URL") else "thinking-model"
             for name in (
@@ -565,9 +551,9 @@ async def test_truncated_tool_call_recovers_without_executing(database, kind, em
         chat = harness.processor._chat
         tools = request().tools
         execute = AsyncMock(side_effect=AssertionError("truncated calls must not execute"))
-        backend = SimpleNamespace(
+        backend = StubAgentBackend(
             definitions=lambda *args, **kwargs: tools,
-            execute=execute,
+            execute_call=execute,
             finalize=lambda text, runtime: text,
         )
         runtime = AgentRuntime(
@@ -677,9 +663,7 @@ def test_responses_revision_ignores_empty_new_defaults_and_canonicalizes_sets():
     assert alternate.profile_revision(ModelTask.CHAT_AGENT) != expected
 
 
-@pytest.mark.parametrize(
-    "image_location", ["messages", "continuation_messages", "continuation_items"]
-)
+@pytest.mark.parametrize("image_location", ["messages", "continuation_items"])
 async def test_image_input_capability_covers_continuation_delta(image_location):
     profile = ModelProfile(
         id="text-only",
@@ -984,7 +968,7 @@ async def test_claude_conversation_cache_moves_after_tool_receipt_without_touchi
             replace(
                 original,
                 continuation=checkpoint,
-                function_outputs=(FunctionCallOutput("call-1", "result"),),
+                continuation_items=(FunctionCallOutput("call-1", "result"),),
             )
         )
         assert first["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}
@@ -1222,7 +1206,7 @@ async def test_gemini_native_search_preserves_server_tool_context_across_functio
             replace(
                 original,
                 continuation=answer.continuation,
-                function_outputs=(FunctionCallOutput("function-1", '{"ok": true}'),),
+                continuation_items=(FunctionCallOutput("function-1", '{"ok": true}'),),
             )
         )
         replay = json.dumps(wires[1]["contents"], ensure_ascii=False)
@@ -1704,11 +1688,26 @@ async def test_runtime_module_compatibility_uses_declared_vendor(
         llm_model="thinking-model",
         model_profiles_file=tmp_path / "absent.toml",
     )
+    import json
+
+    from qq_ai_bot.model_runtime.models import ModelTask
+
+    settings.model_profiles_file.write_text(
+        "schema_version = 3\n[profiles.main]\nprovider = "
+        + json.dumps(vendor)
+        + "\nprotocol = "
+        + json.dumps(protocol)
+        + '\nbase_url_env = "LLM_BASE_URL"\nmodel_env = "LLM_MODEL"\napi_key_env = "LLM_API_KEY"\n'
+        "timeout_seconds = 60\nmax_retries = 1\ndefault_temperature = 0.7\n"
+        "default_max_output_tokens = 2048\n"
+        'capabilities = ["tools", "structured_output", "reasoning"]\n[routes]\n'
+        + "".join(f'{task.value} = "main"\n' for task in ModelTask),
+        encoding="utf-8",
+    )
     bundle = ModelRuntimeModule(
         settings.model_runtime, database, lifecycle=LifecycleRegistry()
     ).build()
     try:
-        assert bundle.profiles.compatibility_mode
         assert getattr(bundle.chat_provider, "provider_name", "fake") == vendor
         assert bundle.executor.protocol(ModelTask.CHAT_AGENT).value == protocol
         assert bundle.chat_provider is bundle.clients.get(bundle.profiles.profiles["main"])

@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from tests.support.canonical_ingress import append_inbound
 
 
 @pytest.mark.parametrize("protocol", ["responses", "chat_completions"])
@@ -62,7 +63,6 @@ async def test_rollup_update_keeps_main_chain_and_observes_new_input(
     message = replace(
         inbound("为什么叫Yuki", message_id="real-work", group_id="2001", mentions_bot=True),
         conversation_id=conversation.conversation_id,
-        legacy_conversation_key="group:9999:2001",
         space_id=space,
         person_id=person,
         presence_id=presence,
@@ -99,7 +99,8 @@ async def test_rollup_update_keeps_main_chain_and_observes_new_input(
                             updated_at=datetime.now(UTC),
                         )
                     )
-                await harness.ledger.append_inbound(
+                await append_inbound(
+                    harness.ledger,
                     replace(
                         message,
                         message_id="during-rollup",
@@ -173,7 +174,11 @@ async def test_parallel_source_change_preserves_retry_owner_and_other_failures(
     async def fail(*_args):
         raise group
 
-    monkeypatch.setattr(runner, "_run", fail)
+    from qq_ai_bot.services.turn_execution import TurnExecution
+
+    # P10 retires _run; inject the same error at the typed activation boundary.
+    # The exception identity, source version and original Work recovery assertions remain.
+    monkeypatch.setattr(TurnExecution, "activate", fail)
     control = (
         SimpleNamespace(
             current={"id": "original-work"},

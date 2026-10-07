@@ -1,0 +1,17 @@
+{
+  "verdict": "passed",
+  "scope": "synthetic blue image and original tool receipt continuation through real Yuki Anthropic adapter",
+  "protocol": "anthropic_messages",
+  "model": "claude-sonnet-5-5",
+  "requests": 2,
+  "seconds": 18.499,
+  "observed_color": "blue",
+  "reported_input_tokens": [
+    338,
+    372
+  ],
+  "reported_output_tokens": [
+    26,
+    1
+  ]
+}

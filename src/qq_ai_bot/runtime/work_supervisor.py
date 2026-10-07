@@ -128,6 +128,27 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
         if current is not None and current["state"] == "cancelled":
             return _cancelled(control, dict(current))
         await control.repository._assert_lease(session, control.lease)
+        deferred = control.deferred_failure
+        if deferred is not None:
+            from qq_ai_bot.runtime.work_schema_v1 import inputs
+
+            failed = deferred.work
+            if (
+                failed is None
+                or current is None
+                or current["state"] != "running"
+                or current["generation"] != failed["generation"]
+                or current["revision"] != failed["revision"]
+                or current["model_requests"] != failed["model_requests"]
+                or current["tool_calls"] != failed["tool_calls"]
+                or await session.scalar(
+                    select(inputs.c.id)
+                    .where(inputs.c.work_id == identity, inputs.c.state == "pending")
+                    .limit(1)
+                )
+                is not None
+            ):
+                raise WorkConflict("deferred_failure_superseded")
         prior = (
             (await session.execute(select(recovery).where(recovery.c.work_id == identity)))
             .mappings()
@@ -194,6 +215,7 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
             raise WorkConflict("work_recovery_obsolete")
         if (
             state == "suspended"
+            and failure.code != "work_activation_interrupted"
             and not control.lease.work_id
             and control.source.get("delivery_contract") != "return_to_caller"
         ):

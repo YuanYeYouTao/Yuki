@@ -92,7 +92,6 @@ class ConversationRollupWorker:
                     self.metrics.lease_conflicts + self.metrics.source_conflicts
                 ),
                 "late_visual_total": self.metrics.late_visual_after_coverage,
-                "scoped_append_repair_total": self.metrics.scoped_append_repairs,
                 "counter_repair_total": self.metrics.counter_repairs,
                 "counter_reconcile_failure_total": (self.metrics.counter_reconcile_failures),
             }
@@ -142,7 +141,7 @@ class ConversationRollupWorker:
                 await self._idle()
                 continue
             self.metrics.jobs_claimed += 1
-            settlement_key = (claim.scope_id, claim.generation)
+            settlement_key = (claim.conversation_id, claim.generation)
             settled = asyncio.Event()
             self._service._settlements[settlement_key] = settled
             heartbeat = asyncio.create_task(self._heartbeat(claim))

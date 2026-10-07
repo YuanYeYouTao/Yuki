@@ -5,7 +5,6 @@ import sqlite3
 
 import pytest
 
-from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.workspace.short_state import ShortState
 from qq_ai_bot.workspace.store import WorkspaceError, WorkspaceStore
 
@@ -67,7 +66,11 @@ async def test_initialized_manifest_snapshot_is_read_only_with_another_writer(
             assert len(now_calls) == 1
     assert statements
     assert any(sql == "BEGIN" for sql in statements)
-    assert all(sql.lstrip().upper().startswith(("SELECT", "BEGIN", "COMMIT")) for sql in statements)
+    assert all(
+        sql.lstrip().upper().startswith(("SELECT", "BEGIN", "COMMIT"))
+        or sql == "PRAGMA table_info(artifact_snapshots)"
+        for sql in statements
+    )
     assert "BEGIN IMMEDIATE" not in statements
 
 
@@ -81,8 +84,7 @@ async def test_expired_snapshot_preserves_cas_and_conflict_receipt_hides_old_tex
     monkeypatch.setattr("qq_ai_bot.workspace.short_state.time.time", lambda: 1000)
     expected = [{"slot": 1, "text": "", "revision": 1, "expires_at": 1000}]
     assert state.snapshot() == expected
-    messages = (ChatMessage("user", "current"),)
-    assert await state.inject(messages) == messages
+    assert state.envelope(state.snapshot())["data"] == []
     rejected = state.update({"slot": 1, "text": "stale-resurrection", "expected_revision": 0})
     assert rejected == {"ok": False, "error": "revision_conflict", "records": expected}
     with state.store._transaction(write=False) as db:
@@ -92,7 +94,7 @@ async def test_expired_snapshot_preserves_cas_and_conflict_receipt_hides_old_tex
     assert accepted["records"] == [{"slot": 1, "text": "new", "revision": 2, "expires_at": 87400}]
 
 
-def test_failed_capacity_write_rolls_back_cleanup_but_reads_still_hide_expired_text(
+def test_visible_character_limit_rejects_before_write_and_preserves_expired_revision(
     tmp_path, monkeypatch
 ):
     state = ShortState(WorkspaceStore(tmp_path / "workspace"))
@@ -100,9 +102,16 @@ def test_failed_capacity_write_rolls_back_cleanup_but_reads_still_hide_expired_t
     with state.store._transaction() as db:
         db.execute("UPDATE short_state SET expires_at=1000")
     monkeypatch.setattr("qq_ai_bot.workspace.short_state.time.time", lambda: 1000)
-    with pytest.raises(WorkspaceError, match="short_state_capacity_exceeded"):
-        state.update({"slot": 2, "text": "测" * 300, "expected_revision": 0})
+    with pytest.raises(WorkspaceError, match="invalid_arguments"):
+        state.update({"slot": 2, "text": "测" * 301, "expected_revision": 0})
     with state.store._transaction(write=False) as db:
         stored = [dict(row) for row in db.execute("SELECT * FROM short_state")]
     assert stored == [{"slot": 1, "text": "expired", "revision": 1, "expires_at": 1000}]
     assert state.snapshot() == [{"slot": 1, "text": "", "revision": 1, "expires_at": 1000}]
+
+
+def test_three_full_length_slots_are_language_independent(tmp_path):
+    state = ShortState(WorkspaceStore(tmp_path / "workspace"))
+    for slot, text in enumerate(("中" * 300, "a" * 300, "😀" * 300), 1):
+        assert state.update({"slot": slot, "text": text, "expected_revision": 0})["ok"]
+    assert [len(row["text"]) for row in state.snapshot()] == [300, 300, 300]

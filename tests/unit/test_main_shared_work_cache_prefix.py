@@ -63,7 +63,9 @@ async def test_real_main_shared_history_switches_work_with_one_fixed_gemini_mani
     client, wires = gemini_wire(SimpleNamespace(provider=provider, runner=chat.runtime.runner))
     chat._models = chat.runtime.runner._models
     try:
-        declared = await chat.runtime.runner.main_contract.definitions()
+        # Compare the fixed Provider view; hidden execution schemas remain in
+        # the separate frozen API and do not alter this public cache prefix.
+        declared = await chat.runtime.runner.main_contract.model_definitions()
         first = await harness.processor.handle(replace(inbound, text="请进行W1"), MemorySender())
         assert first.reason == "chat" and len(provider.requests) == 2
         async with database.sessions() as reader:

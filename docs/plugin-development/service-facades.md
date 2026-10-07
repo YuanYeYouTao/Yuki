@@ -8,7 +8,7 @@
 | `messages` | 当前/回复/近期/搜索，以及受限发送 |
 | `people`, `groups` | 人物、别名、群和成员投影 |
 | `memory`, `relationship` | 结构记忆与关系服务 |
-| `llm`, `agent` | 一次生成或受控 Agent 运行 |
+| `agent` | 主 Agent 运行、原 Work 结果读取与续跑；`run` 显式选择 `context_profile` |
 | `agent_sessions` | 插件拥有的独立连续 AI 会话 |
 | `web`, `http` | Yuki 联网与白名单 HTTP |
 | `vision`, `media` | 当前真实媒体的受控分析 |
@@ -44,7 +44,7 @@
 
 Memory V2 的写入仍统一经过 Host `MemoryFactService`。插件 update 创建修正版本，delete 只做显式
 失效；插件不能直接访问 Repository、指定事实状态/authority、物理删除审计记录或绕过当前真实
-调用作用域。冲突审计与管理员 merge/resolve 不属于 Plugin API 3.2。
+调用作用域。冲突审计与管理员 merge/resolve 不属于 Plugin API 3.3。
 
 ## 独立 AI 会话：跑团示例
 
@@ -94,9 +94,9 @@ await ctx.messages.send_text(turn.text)
 
 ## Yuki 主 Agent 调用
 
-`ctx.llm.generate()`、`generate_with_context()` 和 `ctx.agent.run()` 均进入 Yuki 主 Agent，使用相同固定提示词、工具声明和 short_state 编译。旧的独立 system 提示词与随机会话键已移除，允许兼容性变化。调用必须绑定真实入站事件、canonical Conversation 和 Presence；缺少来源或来源已被会话重置淘汰时明确报错，不自动选择人物或群。后台任务应通过有明确目标的通知唤醒入口发起；独立计算使用 `agent_sessions`。
+`ctx.agent.run()` 是唯一的主 Agent 调用入口，使用固定提示词、工具声明和 short_state 编译。`context_profile` 显式选择 `none`、`current_user` 或 `current_group`；默认不加入人物或群资料。选择上下文还需要对应资料读取权限，聊天历史另外需要 `message.history.read`。
 
-`generate()` 返回文字，不自动投递；全局 short_state 工具仍可使用。`generate_with_context()` 需要对应权限，仅沿用所选人物/当前群的有限资料范围，聊天历史仅在批准 message.history.read 时按绑定会话载入 Rollup 和原文尾部。`agent.run()` 只执行插件获批且本轮允许的 capability 交集，不能传入超级管理员标志。固定工具声明不代表获准执行；递归调用这组生成接口会被拒绝。来源 generation 在每次模型请求前重新检查。
+调用必须绑定真实入站事件、canonical Conversation 和 Presence；缺少来源或来源已被会话重置淘汰时明确报错。执行能力取插件批准与本轮允许的交集，不能传入超级管理员标志；每次物理模型请求重新检查来源与权限。后台任务通过授权目标的通知入口发起，独立计算使用 `agent_sessions`。
 
 主调用复用 `MainAgentBackend`，Host 根据批准权限设置执行范围：
 
@@ -104,8 +104,8 @@ await ctx.messages.send_text(turn.text)
 |---|---|
 | `agent.run` | 持久工作区、终端、安装、文件发布和环境服务 |
 | `message.history.read` | 当前授权会话的近期记录、搜索、原文定位与网关补查 |
-| `memory.person.read` | `get_person_memories` |
-| `memory.group.read` | `get_group_memories` |
+| `memory.person.read` | `memory.search`（人物范围） |
+| `memory.group.read` | `memory.search`（群范围） |
 | `web.search` | `web_search` |
 | `web.read` | `read_webpage` |
 
@@ -130,12 +130,12 @@ OneBot `music` 消息段发送到触发插件的当前真实私聊或群聊。�
 资源 ID。任意 OneBot action 仍必须走权限更高的 `call_mutating_action`，不能借音乐卡片 Facade
 绕过。
 
-独立长期故事、跑团或游戏状态使用 `agent_sessions`；不要把大量连续历史塞进一次 `llm.generate()`。
+独立长期故事、跑团或游戏状态使用 `agent_sessions`；不要把大量连续历史塞进一次 `agent.run()`。
 
 ## 持续调用的状态
 
 Runtime 升级后，`agent.run` 返回 `state`、`work_id`、`pending`。
-`llm.generate` / `generate_with_context` 成功仍返回字符串，未完成返回包含上述字段的 `PluginResult`。
+每次调用均返回 `PluginResult`；调用方检查状态与结果，不把等待句柄当作生成正文。
 Host 等待约 5 秒后可返回持久任务句柄，生成由 Host 继续持有。
 `await ctx.agent.result(work_id)` 可在原回调退出后查询本插件的任务；检查批准版本、权限和 generation。
 同一合法 invocation 用同样参数接回原工作；不要将等待结果当正文发送。分段、恢复和重复查询不重置预算。

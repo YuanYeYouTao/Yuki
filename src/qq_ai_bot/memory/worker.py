@@ -32,7 +32,7 @@ from qq_ai_bot.memory.resolution import MemoryResolutionPolicy
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import SubjectResolutionContext
 from qq_ai_bot.memory.validation import MemoryClaimValidator
-from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
+from qq_ai_bot.model_runtime.executor import ModelExecutor
 from qq_ai_bot.persistence.people_repository import PeopleRepository
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.runtime.observability import (
@@ -75,8 +75,7 @@ class MemoryWorker:
         facts: MemoryFactService,
         ledger: EventLedgerRepository,
         people: PeopleRepository | None = None,
-        provider: ModelCompleter | None = None,
-        model_executor: ModelExecutor | None = None,
+        model_executor: ModelExecutor,
         concurrency: ConcurrencyManager,
         validator: MemoryClaimValidator | None = None,
         runtime_config: RuntimeConfigService | None = None,
@@ -93,11 +92,8 @@ class MemoryWorker:
         self._jobs = jobs
         self._facts = facts
         self._ledger = ledger
-        models = require_model_executor(
-            model_executor,
-            provider=provider,
-            model=settings.llm_model or "fake",
-        )
+        models = model_executor
+
         self._concurrency = concurrency
         self.metrics = metrics or MemoryLifecycleMetrics()
         candidates = candidate_resolver or MemoryConflictCandidateResolver(

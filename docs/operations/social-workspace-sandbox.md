@@ -166,9 +166,10 @@ use only successful returned artifacts. Polling never reruns code.
 
 See [persistent environment deployment and recovery](persistent-environment.md) for
 current limits, the pinned OpenSandbox execd, persistent home, package checkpoints,
-PTY sessions, services, and resource/network acceptance. The old ephemeral `Manager`
-class and `deploy/sandbox/Dockerfile` remain compatibility/rollback code; their
-`python-v1` lifecycle label cannot select a `persistent-v1` environment.
+PTY sessions, services, and resource/network acceptance. `PersistentManager` is the
+sole execution owner. New `run_python` submissions and the ephemeral `Manager`
+engine are retired; original terminal job IDs, historical results and completion
+acknowledgements remain readable.
 
 ## Deployment and rollback
 

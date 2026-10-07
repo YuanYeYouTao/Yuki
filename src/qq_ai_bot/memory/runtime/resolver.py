@@ -2,7 +2,7 @@
 
 Scope and the initial ``MemoryTurnContract`` are derived from host facts
 only — never from model output or a phrase dictionary.  Ordinary natural
-language always enters as passive; structured read/write commands are
+language uses the fixed authorized tool surface; structured read/write commands are
 supplied by the command router, not guessed from user text.
 """
 
@@ -17,10 +17,7 @@ from qq_ai_bot.memory.enums import MemoryRecallPurpose
 from qq_ai_bot.memory.runtime.contract import (
     MemoryTurnContract,
     active_read_contract,
-    dormant_contract,
-    exclusive_write_contract,
     forbidden_contract,
-    passive_contract,
 )
 from qq_ai_bot.runtime.authority import TurnAuthority, TurnSceneFacts
 from qq_ai_bot.runtime.keys import ResolvedMemoryScope
@@ -77,7 +74,6 @@ class MemoryAccessReason(StrEnum):
     STRUCTURED_WRITE_COMMAND = "structured_write_command"
     STRUCTURED_READ_COMMAND = "structured_read_command"
     ORDINARY_NATURAL_LANGUAGE = "ordinary_natural_language"
-    IMAGE_WRITE_DISABLED = "image_write_disabled"
     ORIGIN_WRITE_DENIED = "origin_write_denied"
     SELF_ORIGIN = "self_origin"
 
@@ -121,10 +117,10 @@ def resolve_memory_access(
         )
 
     origin = authority.origin
-    write_allowed = origin_allows_persistent_write(origin) and not scene.image_present
+    write_allowed = origin_allows_persistent_write(origin)
     if origin not in _MESSAGE_ORIGINS:
         return MemoryAccessDecision(
-            contract=dormant_contract(
+            contract=active_read_contract(
                 persistent_write_allowed=False,
             ),
             reason=MemoryAccessReason.ORIGIN_RESTRICTED,
@@ -134,17 +130,13 @@ def resolve_memory_access(
     if structured_command is MemoryStructuredCommand.WRITE:
         if write_allowed:
             return MemoryAccessDecision(
-                contract=exclusive_write_contract(),
+                contract=active_read_contract(MemoryRecallPurpose.CORRECT),
                 reason=MemoryAccessReason.STRUCTURED_WRITE_COMMAND,
                 retrieval_degraded=degraded,
             )
         return MemoryAccessDecision(
             contract=_passive_for_scene(scene, persistent_write_allowed=False),
-            reason=(
-                MemoryAccessReason.IMAGE_WRITE_DISABLED
-                if scene.image_present
-                else MemoryAccessReason.ORIGIN_WRITE_DENIED
-            ),
+            reason=MemoryAccessReason.ORIGIN_WRITE_DENIED,
             retrieval_degraded=degraded,
         )
 
@@ -156,9 +148,7 @@ def resolve_memory_access(
         )
 
     reason = MemoryAccessReason.ORDINARY_NATURAL_LANGUAGE
-    if scene.image_present:
-        reason = MemoryAccessReason.IMAGE_WRITE_DISABLED
-    elif not origin_allows_persistent_write(origin):
+    if not origin_allows_persistent_write(origin):
         reason = MemoryAccessReason.ORIGIN_WRITE_DENIED
     return MemoryAccessDecision(
         contract=_passive_for_scene(scene, persistent_write_allowed=write_allowed),
@@ -173,4 +163,4 @@ def _passive_for_scene(
     purpose = (
         MemoryRecallPurpose.CONTINUATION if scene.reply_present else MemoryRecallPurpose.BACKGROUND
     )
-    return passive_contract(purpose, persistent_write_allowed=persistent_write_allowed)
+    return active_read_contract(purpose, persistent_write_allowed=persistent_write_allowed)

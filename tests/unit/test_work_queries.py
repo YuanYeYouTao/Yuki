@@ -266,7 +266,15 @@ async def test_self_creator_is_not_presented_as_unknown_person(database, tmp_pat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("cursor", ["bad", "nan:" + str(uuid4()), "-1:" + str(uuid4()), "x" * 257])
+@pytest.mark.parametrize(
+    "cursor",
+    [
+        "bad",
+        "nan:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "-1:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "x" * 257,
+    ],
+)
 async def test_work_query_rejects_invalid_cursors(database, tmp_path, cursor):
     repository, lease, _ = await setup_work(database, tmp_path)
     with pytest.raises(ValueError, match="invalid_work_query_cursor"):

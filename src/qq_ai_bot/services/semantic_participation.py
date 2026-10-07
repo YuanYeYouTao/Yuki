@@ -1274,6 +1274,7 @@ class SemanticParticipationService:
         try:
             await self.work.accept(
                 lease,
+                initial_state="queued",
                 source_key=source_key,
                 source=source,
                 goal=instruction,
@@ -1333,6 +1334,7 @@ class SemanticParticipationService:
                     except _ScopeCapacityBusy:
                         pass
         pinned: dict[tuple[str, int], _Session] = {}
+        direct_by_scope = {}
 
         def retain(item: _Session) -> None:
             key = (item.scene.conversation_id, item.scene.generation)
@@ -1352,21 +1354,7 @@ class SemanticParticipationService:
                 except _ScopeCapacityBusy:
                     continue  # Keep this scope's dirty signal for the next available slot.
                 retain(item)
-                try:
-                    from qq_ai_bot.services.participation_feedback import sync_scope_effects
-
-                    await sync_scope_effects(self, item)
-                    await self._hydrate(item, direct)
-                except Exception as exc:
-                    self._failures += 1
-                    logger.warning("participation_hydration_failed category=%s", type(exc).__name__)
-                    continue
-                pending = self._dirty.get(conversation_id, {})
-                for event_id, flag in direct.items():
-                    if pending.get(event_id) == flag:
-                        pending.pop(event_id)
-                if not pending:
-                    self._dirty.pop(conversation_id, None)
+                direct_by_scope[(scene.conversation_id, scene.generation)] = direct
             # Eviction owns this same lock through checkpoint commit. Acquire it
             # only for the synchronous pin batch, never while advancing a scope.
             async with self._session_lock:
@@ -1376,7 +1364,8 @@ class SemanticParticipationService:
 
             async def advance(item: _Session) -> None:
                 async with semaphore:
-                    await self._advance_scene(item)
+                    key = (item.scene.conversation_id, item.scene.generation)
+                    await self._advance_scene(item, direct=direct_by_scope.get(key))
 
             results = await asyncio.gather(
                 *(advance(item) for item in pinned.values()), return_exceptions=True
@@ -1392,15 +1381,30 @@ class SemanticParticipationService:
             for item in pinned.values():
                 item.pins -= 1
 
-    async def _advance_scene(self, item: _Session) -> None:
+    async def _advance_scene(
+        self, item: _Session, *, direct: dict[int, bool] | None = None
+    ) -> None:
         scene = await self._scene(item.scene.conversation_id)
         if scene is None or scene.generation != item.scene.generation:
             return
         item.scene = scene
-        from qq_ai_bot.services.participation_feedback import sync_scope_effects
+        from qq_ai_bot.services.participation_feedback import _scope_social_rows, sync_scope_effects
 
-        await sync_scope_effects(self, item)
-        runtime = await self._hydrate(item)
+        rows = await _scope_social_rows(self, scene.conversation_id)
+        await sync_scope_effects(self, item, rows=rows)
+        runtime = await self._hydrate(item, direct)
+        if runtime is None:
+            return
+        # Hydration creates real SourceRefs; bind late anchors with the same
+        # bounded receipt window, while rechecking current sources and generation.
+        await sync_scope_effects(self, item, rows=rows, apply_committed=False)
+        if direct is not None:
+            dirty_pending = self._dirty.get(scene.conversation_id, {})
+            for event_id, flag in direct.items():
+                if dirty_pending.get(event_id) == flag:
+                    dirty_pending.pop(event_id)
+            if not dirty_pending:
+                self._dirty.pop(scene.conversation_id, None)
         await self._validate_boundaries(item)
         # Hydration and this local advancement use one preparation policy view.
         # After observer/external work below, _binding reads current policy again.

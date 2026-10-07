@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import select
 from tests.conftest import build_harness, make_settings
+from tests.support.background_authority import approve_background_plugin
 from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.capabilities.results import ToolExecutionResult, ToolResultBudgeter
@@ -32,6 +33,15 @@ async def test_plugin_wakeup_send_receipt_only_requires_actor_for_actual_archive
     database, tmp_path, monkeypatch, budget, artifacts_enabled
 ):
     env = await social_env(database, tmp_path)
+    # Background sends now recheck the current installation and canonical
+    # target grant at the actual Social claim, including this direct fixture.
+    await approve_background_plugin(
+        database,
+        plugin_id="test.result-access",
+        bot_user_id="80001",
+        group_id="20001",
+        creator_user_id="10001",
+    )
     scope = ConversationScope.group(env.bot.self_id, "20001")
     external = await env.service.writer.append_external(
         scope=scope,

@@ -5,12 +5,12 @@ from types import SimpleNamespace
 
 import pytest
 from tests.conftest import build_harness, make_settings
+from tests.support.work_session import WorkSession
 from tests.unit.test_work_protocol_continuity import _control
 
 from qq_ai_bot.capabilities.media import MediaResultText
 from qq_ai_bot.domain.messages import ChatImage, ChatMessage, ToolCall, ToolFunction
 from qq_ai_bot.runtime.work_journal import JournalUnavailable
-from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 
 
@@ -33,7 +33,11 @@ class Backend:
     def parallel_safe(self, *_args):
         return True
 
-    async def execute(self, *_args):
+    # Keep upstream assertions while using the typed invocation contract.
+    def counts_toward_limit(self, *_args):
+        return True
+
+    async def execute_call(self, invocation):
         self.invoked += 1
         if self.fail:
             raise Crash("before accepted")
@@ -47,7 +51,7 @@ async def _setup(database, tmp_path):
     await session.restore(TurnTranscript((ChatMessage("user", "select exact pixels"),)))
     session.sequence = 1
     runner = build_harness(database, make_settings(database.url)).processor._chat.runtime.runner
-    return control, session, runner, SimpleNamespace(work_control=control)
+    return control, session, runner, SimpleNamespace(work_control=control, script_api=None)
 
 
 async def _batch(runner, calls, backend, runtime, cache):

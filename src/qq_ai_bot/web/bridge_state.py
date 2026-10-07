@@ -1,6 +1,7 @@
 """Bounded retrieval cache, without network transactions."""
 
 import json
+import logging
 import sqlite3
 import time
 from contextlib import closing
@@ -16,6 +17,15 @@ class BridgeState:
         self.path = path
 
     def access(self, key: str, value: WebSearchResponse | None = None) -> WebSearchResponse | None:
+        try:
+            return self._access(key, value)
+        except (sqlite3.Error, OSError, ValueError, TypeError, KeyError) as exc:
+            logging.getLogger(__name__).warning(
+                "search_cache_unavailable category=%s", type(exc).__name__
+            )
+            return None
+
+    def _access(self, key: str, value: WebSearchResponse | None) -> WebSearchResponse | None:
         document = asdict(value) if value else None
         if document is not None and document.get("provider_summary") is None:
             # Unchanged provider cache keys remain readable by the previous decoder.

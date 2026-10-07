@@ -2,7 +2,6 @@
 
 import base64
 import os
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -37,93 +36,10 @@ def command(ctx, revision, payload):
     return ControlCommand(request_id=ctx.request_id, expected_revision=revision, payload=payload)
 
 
-async def test_artifact_upload_edit_conflict_delete_and_replay(database, tmp_path):
-    store = WorkspaceStore(tmp_path / "files")
-    service = WorkspaceService(store)
-    commands = ControlCommandService(ControlCommandAdapter(database, workspace_service=service))
-    ctx = context("control.workspace.mutate")
-    create = command(
-        ctx,
-        0,
-        {
-            "action": "upload",
-            "resource_id": "yuki",
-            "spec": {"name": "hello.txt", "base64": base64.b64encode(b"original").decode()},
-        },
-    )
-    original = await commands.mutate_workspace(ctx, create)
-    assert original.success and original.revision == 1
-    assert await commands.mutate_workspace(ctx, create) == original
-    assert len(store.list()["items"]) == 1
-    assert store.read_bytes(original.resource_id)[1] == b"original"
-    ctx = replace(ctx, request_id=RequestId.new())
-    changed = await commands.mutate_workspace(
-        ctx,
-        command(
-            ctx,
-            1,
-            {
-                "action": "edit",
-                "resource_id": original.resource_id,
-                "spec": {"name": "hello.txt", "text": "new"},
-            },
-        ),
-    )
-    assert changed.revision == 2 and store.read_bytes(original.resource_id)[1] == b"new"
-    ctx = replace(ctx, request_id=RequestId.new())
-    with pytest.raises(ControlCommandError) as conflict:
-        await commands.mutate_workspace(
-            ctx, command(ctx, 1, {"action": "delete", "resource_id": original.resource_id})
-        )
-    assert conflict.value.problem.code is ProblemCode.VERSION_CONFLICT
-    ctx = replace(ctx, request_id=RequestId.new())
-    deleted = await commands.mutate_workspace(
-        ctx, command(ctx, 2, {"action": "delete", "resource_id": original.resource_id})
-    )
-    assert deleted.success and not store.list()["items"]
-
-
-async def test_unknown_artifact_effect_keeps_original_fence(database, tmp_path):
-    store = WorkspaceStore(tmp_path / "files")
-    adapter = ControlCommandAdapter(database, workspace_service=WorkspaceService(store))
-    commands = ControlCommandService(adapter)
-    ctx = context("control.workspace.mutate")
-
-    def fail():
-        raise RuntimeError("final receipt unavailable")
-
-    adapter._after_audit_flush = fail
-    original = command(ctx, 0, {"action": "upload", "spec": {"name": "once.txt", "base64": "eA=="}})
-    result = await commands.mutate_workspace(ctx, original)
-    assert not result.success and result.operation.status.value == "unknown"
-    adapter._after_audit_flush = None
-    replay = await commands.mutate_workspace(ctx, original)
-    assert not replay.success and replay.operation.status.value == "unknown"
-    assert len(store.list()["items"]) == 1
-    fresh = replace(ctx, request_id=RequestId.new())
-    with pytest.raises(ControlCommandError) as fenced:
-        await commands.mutate_workspace(fresh, command(fresh, 0, original.payload))
-    assert fenced.value.problem.code is ProblemCode.PRECONDITION_FAILED
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {"action": "upload", "spec": {"name": "../bad", "base64": "eA=="}},
-        {"action": "upload", "spec": {"name": "bad", "base64": "%%%"}},
-        {"action": "upload", "spec": {"name": "bad", "base64": "eA==", "host_path": "x"}},
-    ],
-)
-async def test_upload_validation_happens_before_store_effect(database, tmp_path, payload):
-    store = WorkspaceStore(tmp_path / "files")
-    commands = ControlCommandService(
-        ControlCommandAdapter(database, workspace_service=WorkspaceService(store))
-    )
-    ctx = context("control.workspace.mutate")
-    with pytest.raises(ControlCommandError) as bad:
-        await commands.mutate_workspace(ctx, command(ctx, 0, payload))
-    assert bad.value.problem.code is ProblemCode.VALIDATION_ERROR
-    assert not store.root.exists()
+def test_retired_mutable_artifact_control_is_not_advertised():
+    with pytest.raises(ValueError, match="forbidden capability"):
+        context("control.workspace.mutate")
+    assert not hasattr(ControlCommandService, "mutate_workspace")
 
 
 async def test_terminal_original_request_once_and_completion_without_chat(
@@ -216,7 +132,6 @@ async def test_environment_content_authorization_precedes_socket_reads(
 async def test_terminal_submission_uses_authenticated_operator_and_denies_before_socket(
     database, tmp_path, monkeypatch
 ):
-    from qq_ai_bot.domain.identity import RequestId
 
     workspace = WorkspaceService(WorkspaceStore(tmp_path / "files"))
     workspace.sandbox = SandboxClient(Path("offline.sock"))

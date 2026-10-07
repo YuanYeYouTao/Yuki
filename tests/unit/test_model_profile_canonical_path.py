@@ -19,26 +19,10 @@ from qq_ai_bot.model_runtime.profiles import (
 )
 
 
-def _legacy_args() -> dict[str, object]:
-    return {
-        "legacy_provider": "deepseek",
-        "legacy_base_url": "https://api.example.invalid",
-        "legacy_model": "deepseek-flash",
-        "legacy_timeout_seconds": 2,
-        "legacy_max_retries": 0,
-        "legacy_temperature": 0.7,
-        "legacy_max_output_tokens": 2048,
-        "legacy_thinking_enabled": True,
-    }
-
-
 def test_missing_selected_model_file_does_not_restore_legacy_deepseek(tmp_path: Path) -> None:
     selected = tmp_path / "webui-config" / "model_profiles.toml"
-    with pytest.raises(ModelRuntimeConfigurationError, match="create webui-config"):
-        load_model_profile_catalog(selected, **_legacy_args())
-    legacy = load_model_profile_catalog(selected, allow_legacy_fallback=True, **_legacy_args())
-    assert legacy.compatibility_mode
-    assert legacy.profiles["main"].provider == "deepseek"
+    with pytest.raises(ModelRuntimeConfigurationError, match="configuration is missing"):
+        load_model_profile_catalog(selected)
 
 
 @pytest.mark.asyncio
@@ -49,7 +33,6 @@ async def test_runtime_requires_model_file_without_explicit_compatibility(
         database.url,
         llm_provider="deepseek",
         model_profiles_file=tmp_path / "absent.toml",
-        model_profiles_legacy_compatibility=False,
     )
     with pytest.raises(
         ModelRuntimeConfigurationError, match="model profile configuration is missing"

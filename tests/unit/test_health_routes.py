@@ -8,6 +8,7 @@ from typing import get_origin, get_type_hints
 import httpx
 import pytest
 from fastapi import FastAPI
+from tests.support.model_profiles import write_fake_profiles
 
 from qq_ai_bot import main
 from qq_ai_bot.health import HealthPayload
@@ -74,7 +75,12 @@ async def test_container_and_health_have_no_speech_dependency(database, tmp_path
     plugin_directory = tmp_path / "plugins"
     plugin_directory.mkdir()
     app = ApplicationContainer(
-        make_settings(database.url, plugin_directory=plugin_directory, plugin_system_enabled=False),
+        make_settings(
+            database.url,
+            plugin_directory=plugin_directory,
+            plugin_system_enabled=False,
+            model_profiles_file=write_fake_profiles(tmp_path / "models.toml"),
+        ),
         database=database,
     )
     try:

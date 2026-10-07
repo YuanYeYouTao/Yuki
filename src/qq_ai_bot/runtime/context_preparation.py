@@ -107,6 +107,8 @@ async def prepare_context[T](
     owned = control is not None and control.current is not None
     mode = ContextPreparationMode.DURABLE if owned else ContextPreparationMode.FOREGROUND
     recovery = await select_protocol_recovery(control, recovery_contract)
+    if control is not None:
+        control.protocol_recovery_preparation = recovery
     token = context_preparation_mode.set(mode)
     recovery_token = protocol_recovery_preparation.set(recovery)
     try:
@@ -127,7 +129,6 @@ async def prepare_context[T](
                 from qq_ai_bot.runtime.work_control import WorkInputsPreparing
 
                 control.ending = "waiting_external"
-                await control.meter_active_time()
                 await control.settle(delivered=False, pending_inputs=bool(await control.pending()))
                 raise WorkInputsPreparing("work_context_preparing") from requirement
             context_preparation_mode.set(ContextPreparationMode.FALLBACK)

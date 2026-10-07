@@ -65,6 +65,7 @@ class RegisteredExtension:
     canonical_name: str
     model_name: str | None
     registration: object
+    approval_revision: str = ""
 
 
 class ExtensionRegistry:
@@ -83,8 +84,12 @@ class ExtensionRegistry:
         self,
         plugin_id: str,
         approved_permissions: Iterable[PluginPermission],
+        *,
+        approval_revision: str = "",
     ) -> BoundPluginRegistrar:
-        return BoundPluginRegistrar(self, plugin_id, frozenset(approved_permissions))
+        return BoundPluginRegistrar(
+            self, plugin_id, frozenset(approved_permissions), approval_revision
+        )
 
     def list(
         self,
@@ -136,6 +141,7 @@ class ExtensionRegistry:
         registration: object,
         expose_to_model: bool = False,
         short_alias: str | None = None,
+        approval_revision: str = "",
     ) -> RegisteredExtension:
         canonical = f"{plugin_id}:{local_name}"
         if canonical in self._items:
@@ -148,7 +154,9 @@ class ExtensionRegistry:
             if alias in self._aliases:
                 raise RegistrationError(f"duplicate command alias: {short_alias}")
             self._aliases[alias] = canonical
-        item = RegisteredExtension(plugin_id, kind, canonical, model_name, registration)
+        item = RegisteredExtension(
+            plugin_id, kind, canonical, model_name, registration, approval_revision
+        )
         self._items[canonical] = item
         if model_name is not None:
             self._model_names[model_name] = canonical
@@ -161,10 +169,12 @@ class BoundPluginRegistrar(PluginRegistrar):
         registry: ExtensionRegistry,
         plugin_id: str,
         permissions: frozenset[PluginPermission],
+        approval_revision: str = "",
     ) -> None:
         self._registry = registry
         self._plugin_id = plugin_id
         self._permissions = permissions
+        self._approval_revision = approval_revision
 
     def register_tool(self, registration: ToolRegistration) -> None:
         self._require(PluginPermission.TOOL_REGISTER)
@@ -176,6 +186,7 @@ class BoundPluginRegistrar(PluginRegistrar):
             local_name=registration.metadata.name,
             registration=registration,
             expose_to_model=True,
+            approval_revision=self._approval_revision,
         )
 
     def register_command(self, registration: CommandRegistration) -> None:

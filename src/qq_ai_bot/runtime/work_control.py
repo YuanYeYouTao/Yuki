@@ -46,12 +46,14 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                 "update 也可仅保存 context_note：version=1，facts/unresolved/next_steps "
                 "每项含 text 和 refs（goal、input:ID、event:ID、effect:原键、"
                 "artifact:handle、child:ID）；线索不改变执行状态，研究原文按 artifact 回读。"
+                "分段前保存累积发现、必要中间值与下一步；业务续跑使用当前聊天和 note，"
+                "不会自动恢复此前整段工具往返。"
                 "wait 登记 conditions：time_due(after_seconds 或含时区 at)、conversation、"
                 "plugin_event(plugin_id,event_type)、owned_run(run_id)，"
                 "wait_mode=any/all，deadline_at 可选；信号到达续原 work_id。"
                 "wait_status 查询，cancel_wait 撤销。need_input 说明缺失信息；"
                 "complete 提出结束，后端核对未决执行和 artifact。"
-                "此工具与其他副作用分批调用。"
+                "所有 action（包括 get/list/update）必须独占一个工具批次，不能与其他工具同批调用。"
             ),
             parameters={
                 "type": "object",
@@ -141,21 +143,19 @@ class WorkControl:
     current: dict[str, Any] | None = None
     ending: str | None = None
     known_effects: list[dict[str, Any]] = field(default_factory=list)
-    corrections: int = 0
     final_delivery: bool = False
     requests_started: int = 0
+    deferred_failure: Any = None
+    protocol_recovery_preparation: Any = None
     segment_model_limit: int = 24
     tools_started: int = 0
     yield_segment: bool = False
     handoff_work_id: str | None = None
-    completion_delivered: bool = False
     settled: bool = False
     recovery_deferred: bool = False
     outcome: ActivationOutcome | None = None
     staged_attempt: str | None = None
     context_access: ArtifactAccess | None = None
-
-    metered_at: float = field(default_factory=time.monotonic)
 
     def bind_context_access(self, access: ArtifactAccess) -> None:
         """Bind the authenticated entrypoint; model arguments cannot call this."""
@@ -331,22 +331,7 @@ class WorkControl:
             or set(selected) - {"kind", "target_id"}
         ):
             raise ValueError("work_report_target_not_current")
-        if report["kind"] == "start":
-            previous = await self.communication_reports(kind="start")
-            if previous:
-                if await self.communication_reports(kind="start", delivered_only=True):
-                    raise ValueError("work_start_already_delivered")
-                raise ValueError("work_start_delivery_unconfirmed")
         return {"kind": report["kind"], "reply_to_event_ids": list(event_ids)}
-
-    async def meter_active_time(self) -> None:
-        now = time.monotonic()
-        elapsed, self.metered_at = max(0, now - self.metered_at), now
-        if self.current is not None and elapsed:
-            await self.repository.checkpoint(
-                self.lease, self.current["id"], None, active_seconds=elapsed
-            )
-            self.current["active_seconds"] += elapsed
 
     async def pending(self) -> list[dict[str, Any]]:
         if self.current is None:
@@ -371,12 +356,61 @@ class WorkControl:
         from qq_ai_bot.runtime.subagent_repository import SubagentRepository
 
         children = await SubagentRepository(self.repository).unfinished(self.current["id"])
-        unfinished = [r for r in children if r["state"] not in {"completed", "failed", "cancelled"}]
+        unfinished = children
         if any(r["state"] in {"queued", "running", "waiting_external"} for r in unfinished):
             return "waiting_external"
         if unfinished:
             return "suspended"
         return None
+
+    async def complete_internal(self, call_key: str) -> None:
+        """Settle an internal final using the existing complete receipt contract."""
+        try:
+            await self.validate()
+            if not await self.repository.valid(self.lease):
+                raise WorkConflict("work_activation_obsolete")
+            await self._control({"action": "complete"}, call_key, all_artifacts=True)
+            return
+        except (ValueError, WorkConflict):
+            pass
+        self.ending = await self.background_state()
+        if self.ending is None and await self.has_unresolved_effects(uncertain=False):
+            self.ending = "waiting_external"
+        if await self.has_unresolved_effects(pending=False):
+            self.ending = None
+
+    async def has_finite_model_budget(self) -> bool:
+        """Read the actual persistent root/run limit; never invent a default."""
+        if self.current is None:
+            return False
+        from sqlalchemy import select
+
+        from qq_ai_bot.runtime.subagent_schema import children
+        from qq_ai_bot.runtime.work_budget_schema import automation_budgets, budgets
+
+        async with self.repository.database.sessions() as session:
+            root = (
+                await session.scalar(
+                    select(children.c.root_id).where(children.c.work_id == self.current["id"])
+                )
+                or self.current["id"]
+            )
+            limit = await session.scalar(
+                select(budgets.c.model_limit).where(budgets.c.root_id == root)
+            )
+            if limit is not None:
+                return True
+            run_id = self.source.get("automation_run_id")
+            if self.source.get("owner") == "automation" and isinstance(run_id, int):
+                return (
+                    await session.scalar(
+                        select(automation_budgets.c.model_limit).where(
+                            automation_budgets.c.run_id == run_id
+                        )
+                    )
+                    is not None
+                )
+        return False
 
     async def effect_evidence(self) -> list[dict[str, Any]]:
         if self.current is None:
@@ -505,6 +539,60 @@ class WorkControl:
                 break
             payload = json.loads(item["payload_json"])
             text = str(payload.get("text", ""))
+            if payload.get("signal"):
+                # Wait metadata references the event ledger. Never resurrect the
+                # obsolete text embedded by older wait writers after deletion.
+                try:
+                    signal = json.loads(text)
+                except (TypeError, ValueError):
+                    signal = None
+                if isinstance(signal, dict) and signal.get("kind") == "work_signal":
+                    ids = []
+                    for condition in signal.get("conditions", []):
+                        matched = condition.get("matched") if isinstance(condition, dict) else None
+                        if isinstance(matched, dict):
+                            matched.pop("text", None)
+                            event_id = matched.get("event_id")
+                            if isinstance(event_id, int) and event_id not in ids:
+                                ids.append(event_id)
+                    from sqlalchemy import select
+
+                    from qq_ai_bot.conversation.canonical_db_models import (
+                        CanonicalConversationModel,
+                    )
+                    from qq_ai_bot.persistence.models import ChatEventModel
+
+                    async with self.repository.database.sessions() as reader:
+                        scope = await reader.get(
+                            CanonicalConversationModel, self.lease.conversation_id
+                        )
+                        events = (
+                            (
+                                await reader.scalars(
+                                    select(ChatEventModel).where(
+                                        ChatEventModel.id.in_(ids),
+                                        ChatEventModel.canonical_conversation_id
+                                        == self.lease.conversation_id,
+                                        ChatEventModel.suppression_status == "keeper",
+                                        ChatEventModel.id
+                                        > (scope.starts_after_event_id if scope else 0),
+                                    )
+                                )
+                            ).all()
+                            if scope and scope.generation == self.lease.generation
+                            else []
+                        )
+                    bodies = {event.id: event.content for event in events}
+                    signal["events"] = [
+                        {"event_id": identity, "text": bodies.get(identity, "原事件正文不可读")}
+                        for identity in ids
+                    ]
+                    text = json.dumps(signal, ensure_ascii=False)
+                    if self.session is not None:
+                        self.session.event_ids.extend(
+                            identity for identity in ids if identity in bodies
+                        )
+
             already_visible = item["event_id"] is not None and (
                 item["event_id"] in observed_event_ids
                 or (self.session is not None and item["event_id"] in self.session.public_event_ids)
@@ -549,8 +637,6 @@ class WorkControl:
             await self.repository.stage(self.lease, selected, attempt)
             self.staged_attempt = attempt
             self.ending = None
-            self.completion_delivered = False
-            self.corrections = 0
         return tuple(messages)
 
     async def confirm_inputs(self) -> None:
@@ -585,13 +671,7 @@ class WorkControl:
         if self.session is not None and not auxiliary:
             self.session.sequence += 1
 
-    async def charge_tools(self, count: int) -> None:
-        if self.current is not None and count:
-            await self.repository.checkpoint(self.lease, self.current["id"], None, tools=count)
-            self.current["tool_calls"] += count
-        self.tools_started += count
-
-    def observe_result(
+    def observe_historical_result(
         self,
         name: str,
         result: str,
@@ -600,16 +680,27 @@ class WorkControl:
         side_effecting: bool = True,
         arguments: str = "{}",
     ) -> None:
-        """Bounded model-view cache only; lifecycle reads durable effect facts."""
-        if name in WORK_CONTROL_NAMES or not executed:
+        """Restore the prior journal's original serialized result into its bounded view."""
+        if not executed:
             return
         from qq_ai_bot.capabilities.results import normalize_legacy_result
         from qq_ai_bot.runtime.effect_outcomes import execution_evidence
 
-        outcome = normalize_legacy_result(result, provider_id="display", tool_name=name)
-        entry = execution_evidence(
-            outcome, tool=name, side_effecting=side_effecting, arguments=arguments
+        self.observe_evidence(
+            execution_evidence(
+                normalize_legacy_result(result, provider_id="display", tool_name=name),
+                tool=name,
+                side_effecting=side_effecting,
+                arguments=arguments,
+            )
         )
+
+    def observe_evidence(self, evidence: dict[str, Any]) -> None:
+        """Bounded view of already accepted typed facts, never a result-text decoder."""
+        if evidence.get("tool") in WORK_CONTROL_NAMES or not evidence.get("executed"):
+            return
+        entry = dict(evidence)
+        side_effecting = entry.get("side_effecting") is True
         identity = entry.get("run_id")
         if identity:
             previous = [item for item in self.known_effects if item.get("run_id") == identity]
@@ -692,7 +783,9 @@ class WorkControl:
         except (ValueError, ProjectionConflict):
             pass
 
-    async def _control(self, args: dict[str, Any], call_key: str) -> dict[str, Any]:
+    async def _control(
+        self, args: dict[str, Any], call_key: str, *, all_artifacts: bool = False
+    ) -> dict[str, Any]:
         action = args.get("action")
         if not isinstance(action, str):
             raise ValueError("work_action_required")
@@ -825,10 +918,6 @@ class WorkControl:
 
                 note_plan = await validate_note(self, args["context_note"])
             if args.get("reporting") == "quiet" and self.reporting == "interactive":
-                if await self.communication_reports(kind="start") and not (
-                    await self.communication_reports(kind="start", delivered_only=True)
-                ):
-                    raise ValueError("work_start_delivery_unconfirmed")
                 raise ValueError("work_reporting_cannot_quiet_interactive")
             if goal is None:
                 if "reporting" not in args and "context_note" not in args:
@@ -933,9 +1022,7 @@ class WorkControl:
                 from qq_ai_bot.runtime.subagent_repository import SubagentRepository
 
                 children = await SubagentRepository(self.repository).unfinished(self.current["id"])
-                if any(
-                    row["state"] not in {"completed", "failed", "cancelled"} for row in children
-                ):
+                if children:
                     raise ValueError("work_has_unfinished_subagents")
             await self.reconcile_completed_children()
             if await self.has_unresolved_effects():
@@ -943,16 +1030,16 @@ class WorkControl:
             facts = await self.effect_evidence()
             kind = self.current["output_kind"]
             if kind == "artifact":
-                selected = args.get("artifact_ids")
                 known = {
                     identity
                     for effect in facts
                     if effect.get("ok") or effect.get("delivered_artifacts")
                     for identity in effect.get("artifacts", [])
                 }
+                selected = list(known) if all_artifacts else args.get("artifact_ids")
                 if (
                     not isinstance(selected, list)
-                    or not 1 <= len(selected) <= 8
+                    or not selected
                     or any(
                         not isinstance(identity, str) or identity not in known
                         for identity in selected
@@ -966,54 +1053,15 @@ class WorkControl:
                 }
                 if self.current["deliver_artifacts"] and not set(selected) <= delivered:
                     raise ValueError("work_completion_requires_artifact_delivery_receipt")
-                # Only a confirmed caption in this conversation replaces the
-                # final reply. Sending to somebody else still needs a report here.
-                from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-
-                async with self.repository.database.sessions() as session:
-                    conversation = await session.get(
-                        CanonicalConversationModel, self.lease.conversation_id
-                    )
-                if conversation is not None and not self.lease.work_id:
-                    target = {
-                        "kind": "space" if conversation.space_id else "person",
-                        "id": conversation.space_id or conversation.person_id,
-                    }
-                    explained = {
-                        identity
-                        for effect in facts
-                        if effect.get("caption_delivered")
-                        and effect.get("delivery_target") == target
-                        for identity in effect.get("delivered_artifacts", [])
-                    }
-                    self.completion_delivered = set(selected) <= explained
             elif (
                 kind == "answer"
                 and self.source.get("delivery_contract") != "return_to_caller"
                 and self.source.get("principal_kind") != "self"
             ):
-                from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-
-                async with self.repository.database.sessions() as session:
-                    conversation = await session.get(
-                        CanonicalConversationModel, self.lease.conversation_id
-                    )
-                if conversation is None:
-                    raise ValueError("work_delivery_conversation_missing")
-                target = {
-                    "kind": "space" if conversation.space_id else "person",
-                    "id": conversation.space_id or conversation.person_id,
-                }
-                self.completion_delivered = any(
-                    effect.get("delivered_message") and effect.get("delivery_target") == target
-                    for effect in facts
-                )
-                if self.reporting == "interactive":
-                    self.completion_delivered = bool(
-                        await self.communication_reports(kind="final", delivered_only=True)
-                    )
-                    if not self.completion_delivered:
-                        raise ValueError("work_completion_requires_final_delivery_receipt")
+                if self.reporting == "interactive" and not await self.communication_reports(
+                    kind="final", delivered_only=True
+                ):
+                    raise ValueError("work_completion_requires_final_delivery_receipt")
                 # Explicit completion may be silent. The model's final text is
                 # internal state; it never becomes a fallback outbound message.
                 self.final_delivery = True

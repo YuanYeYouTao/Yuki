@@ -7,6 +7,8 @@ import pytest
 from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError
 from tests.support.social_identity_cases import social_env
+from tests.support.work_session import WorkSession
+from tests.support.workspace_snapshots import snapshot_bytes
 
 from qq_ai_bot.capabilities.results import normalize_legacy_result
 from qq_ai_bot.domain.conversations import ConversationScope
@@ -17,7 +19,6 @@ from qq_ai_bot.runtime.effect_outcomes import current_result_capture
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import inputs, journal
-from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.runtime.work_wait import WorkWaitRepository
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 
@@ -99,7 +100,7 @@ async def test_metadata_update_preserves_goal_wait_and_checkpoint_communication(
         ]
         == "quiet"
     )
-    await control.patch_communication(start_feedback_given=True, input_feedback_through_id=4)
+    await control.patch_communication(input_feedback_through_id=4)
     waits = WorkWaitRepository(control.repository)
     await waits.register(
         control.lease,
@@ -133,7 +134,6 @@ async def test_metadata_update_preserves_goal_wait_and_checkpoint_communication(
     control.current = await control.repository.get(identity)
     assert control.communication == {
         "reporting": "interactive",
-        "start_feedback_given": True,
         "input_feedback_through_id": 4,
     }
     assert not json.loads(await control.execute("task_control", {"action": "update"}, "empty"))[
@@ -335,7 +335,7 @@ async def test_failed_start_cannot_be_retried_or_cleared_by_quiet(database, tmp_
             allow_pending=True,
         )
     )
-    assert retry["error"] == "work_start_delivery_unconfirmed" and attempts == 1
+    assert retry["ok"] is False and attempts == 2
     quiet = json.loads(
         await control.execute(
             "task_control",
@@ -346,7 +346,7 @@ async def test_failed_start_cannot_be_retried_or_cleared_by_quiet(database, tmp_
             "quiet",
         )
     )
-    assert quiet["error"] == "work_start_delivery_unconfirmed"
+    assert quiet["error"] == "work_reporting_cannot_quiet_interactive"
     assert control.reporting == "interactive"
 
 
@@ -552,7 +552,7 @@ async def test_reports_do_not_self_certify_a_state_change(database, tmp_path, ki
     assert incomplete["error"] == "work_completion_requires_execution_evidence"
 
     async def write():
-        return json.dumps({"ok": True, "data": env.store.write("state.txt", b"changed")})
+        return json.dumps({"ok": True, "data": snapshot_bytes(env.store, "state.txt", b"changed")})
 
     await session.execute(ToolCall("write", ToolFunction("workspace_write", "{}")), write)
     assert json.loads(await control.execute("task_control", {"action": "complete"}, "complete"))[
@@ -614,7 +614,7 @@ async def test_checkpoint_feedback_survives_contract_new_chain(database, tmp_pat
     initial = TurnTranscript((ChatMessage("user", "original task"),))
     await session.restore(initial, compaction_brief=ChatMessage("user", "original task"))
     assert not session.uses_recovery_transcript
-    await control.patch_communication(start_feedback_given=True, final_feedback_given=True)
+    await control.patch_communication(input_feedback_through_id=7)
     await session.save("paired")
     control.current = await control.repository.get(control.current["id"])
     changed = control.session = WorkSession(control, "new")
@@ -625,5 +625,6 @@ async def test_checkpoint_feedback_survives_contract_new_chain(database, tmp_pat
     material = json.loads(restored.request().messages[-1].content)
     assert material["work_id"] == control.current["id"]
     assert control.reporting == "interactive"
-    assert control.communication["start_feedback_given"]
-    assert control.communication["final_feedback_given"]
+    assert control.communication["input_feedback_through_id"] == 7
+    assert "start_feedback_given" not in control.communication
+    assert "final_feedback_given" not in control.communication

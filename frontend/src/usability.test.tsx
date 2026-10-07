@@ -48,11 +48,12 @@ it("truncates and restores long cells without losing their content", async () =>
 });
 
 it("renders a fetched image thumbnail and desktop preview", async () => {
+  // Node's Response reads the same bytes directly; jsdom Blob lacks stream().
   vi.stubGlobal(
     "fetch",
     vi.fn(
       async () =>
-        new Response(new Blob(["image"], { type: "image/png" }), {
+        new Response("image", {
           status: 200,
           headers: { "Content-Type": "image/png" },
         }),
@@ -79,7 +80,10 @@ it("renders a fetched image thumbnail and desktop preview", async () => {
 it("loads image bytes only when its preview approaches the viewport", async () => {
   const fetch = vi.fn(
     async () =>
-      new Response(new Blob(["image"], { type: "image/png" }), { status: 200 }),
+      new Response("image", {
+        status: 200,
+        headers: { "Content-Type": "image/png" },
+      }),
   );
   let reveal: ((entries: { isIntersecting: boolean }[]) => void) | undefined;
   vi.stubGlobal("fetch", fetch);

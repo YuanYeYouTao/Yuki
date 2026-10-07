@@ -70,7 +70,19 @@ class WorkspaceStore:
                     "revision INTEGER NOT NULL, created_at REAL NOT NULL, "
                     "modified_at REAL NOT NULL, expires_at REAL NOT NULL)"
                 )
-                db.execute("CREATE TABLE IF NOT EXISTS artifact_snapshots (id TEXT PRIMARY KEY)")
+                db.execute(
+                    "CREATE TABLE IF NOT EXISTS artifact_snapshots "
+                    "(id TEXT PRIMARY KEY, source_key TEXT)"
+                )
+                db.commit()
+            if "source_key" not in {
+                row[1] for row in db.execute("PRAGMA table_info(artifact_snapshots)")
+            }:
+                db.execute("BEGIN IMMEDIATE")
+                if "source_key" not in {
+                    row[1] for row in db.execute("PRAGMA table_info(artifact_snapshots)")
+                }:
+                    db.execute("ALTER TABLE artifact_snapshots ADD COLUMN source_key TEXT")
                 db.commit()
             db.execute("BEGIN IMMEDIATE" if write else "BEGIN")
             try:
@@ -176,41 +188,6 @@ class WorkspaceStore:
         ):
             raise WorkspaceError("invalid_artifact_name")
 
-    def prepare_batch(self, files: list[tuple[str, bytes]]) -> list[PreparedArtifact]:
-        """Run in a worker thread; only private pending files are visible here."""
-        for name, data in files:
-            self._validate_name(name)
-            if len(data) > self.max_file:
-                raise WorkspaceError("artifact_too_large")
-        self.cleanup()
-        return self._prepare_files(files)
-
-    def _prepare_files(
-        self, files: list[tuple[str, bytes]], *, digests: list[str] | None = None
-    ) -> list[PreparedArtifact]:
-        prepared = []
-        try:
-            for index, (name, data) in enumerate(files):
-                blob = f"{uuid4()}.blob"
-                pending = self.root / f"{uuid4()}.pending"
-                try:
-                    digest = digests[index] if digests else hashlib.sha256(data).hexdigest()
-                    with pending.open("xb") as stream:
-                        stream.write(data)
-                        stream.flush()
-                        os.fsync(stream.fileno())
-                except BaseException:
-                    self._unlink([pending])
-                    raise
-                prepared.append(PreparedArtifact(name, pending, blob, digest, len(data)))
-            return prepared
-        except BaseException:
-            self.discard_prepared(prepared)
-            raise
-
-    def discard_prepared(self, prepared: list[PreparedArtifact]) -> None:
-        self._unlink([item.pending for item in prepared])
-
     def _publish_file(self, item: PreparedArtifact) -> None:
         if item.pending.parent != self.root:
             raise WorkspaceError("unsafe_artifact")
@@ -219,141 +196,8 @@ class WorkspaceStore:
             raise WorkspaceError("unsafe_artifact")
         os.replace(item.pending, self._blob(item.blob))
 
-    def write(
-        self,
-        name: str,
-        data: bytes,
-        *,
-        artifact_id: str | None = None,
-        expected_revision: int | None = None,
-    ) -> dict[str, Any]:
-        self._validate_name(name)
-        if len(data) > self.max_file:
-            raise WorkspaceError("artifact_too_large")
-        self.cleanup()
-        digest = hashlib.sha256(data).hexdigest()
-        if artifact_id:
-            with self._transaction(write=False) as db:
-                observed = self._row(db, artifact_id)
-                unchanged = (
-                    observed["sha256"] == digest and observed["revision"] == expected_revision
-                )
-            if unchanged:
-                with self._transaction() as db:
-                    current = self._row(db, artifact_id)
-                    if current["immutable"]:
-                        raise WorkspaceError("artifact_is_immutable")
-                    if current["revision"] != expected_revision:
-                        raise WorkspaceError("version_conflict")
-                    # An unchanged revision also fences the read's content digest.
-                    if current["name"] != name:
-                        db.execute(
-                            "UPDATE artifacts SET name=?,revision=revision+1 WHERE id=?",
-                            (name, artifact_id),
-                        )
-                    return self._metadata(self._row(db, artifact_id))
-        prepared = self._prepare_files([(name, data)], digests=[digest])
-        item = prepared[0]
-        retired: list[Path] = []
-        try:
-            with self._transaction() as db:
-                self._prune_metadata(db)
-                old = self._row(db, artifact_id) if artifact_id else None
-                if old is not None and old["immutable"]:
-                    raise WorkspaceError("artifact_is_immutable")
-                if old is not None and expected_revision != old["revision"]:
-                    raise WorkspaceError("version_conflict")
-                if old is None and expected_revision is not None:
-                    raise WorkspaceError("invalid_revision")
-                total, count = db.execute(
-                    "SELECT coalesce(sum(size),0),count(*) FROM artifacts"
-                ).fetchone()
-                if total - (old["size"] if old else 0) + item.size > self.capacity or (
-                    old is None and count >= self.max_objects
-                ):
-                    raise WorkspaceError("workspace_full")
-                if old is not None and old["sha256"] == item.sha256:
-                    if old["name"] != name:
-                        db.execute(
-                            "UPDATE artifacts SET name=?,revision=revision+1 WHERE id=?",
-                            (name, artifact_id),
-                        )
-                    result = self._metadata(self._row(db, artifact_id or ""))
-                else:
-                    self._publish_file(item)
-                    now = time.time()
-                    identity = artifact_id or str(uuid4())
-                    db.execute(
-                        "INSERT OR REPLACE INTO artifacts "
-                        "(id,name,blob,sha256,size,revision,created_at,modified_at,expires_at) "
-                        "VALUES (?,?,?,?,?,?,?,?,?)",
-                        (
-                            identity,
-                            name,
-                            item.blob,
-                            item.sha256,
-                            item.size,
-                            old["revision"] + 1 if old else 1,
-                            old["created_at"] if old else now,
-                            now,
-                            now + self.ttl if self.ttl else 253402300799,
-                        ),
-                    )
-                    if old:
-                        retired.append(self._blob(old["blob"]))
-                    result = self._metadata(self._row(db, identity))
-            self._unlink(retired)
-            return result
-        finally:
-            self.discard_prepared(prepared)
-            # A lost commit acknowledgement does not prove rollback. Renamed
-            # blobs are reclaimed only by reference-checked GC, never here.
-
-    def publish_prepared_batch(self, prepared: list[PreparedArtifact]) -> list[dict[str, Any]]:
-        """Short synchronous finish; the whole batch becomes visible in one commit.
-
-        The preparer's thread owns pending-file disposal and subsequent bounded GC.
-        """
-        with self._transaction() as db:
-            self._prune_metadata(db)
-            total, count = db.execute(
-                "SELECT coalesce(sum(size),0),count(*) FROM artifacts"
-            ).fetchone()
-            if (
-                count + len(prepared) > self.max_objects
-                or total + sum(item.size for item in prepared) > self.capacity
-            ):
-                raise WorkspaceError("workspace_full")
-            identities = []
-            for item in prepared:
-                self._publish_file(item)
-                identity, now = str(uuid4()), time.time()
-                db.execute(
-                    "INSERT INTO artifacts "
-                    "(id,name,blob,sha256,size,revision,created_at,modified_at,expires_at) "
-                    "VALUES (?,?,?,?,?,1,?,?,?)",
-                    (
-                        identity,
-                        item.name,
-                        item.blob,
-                        item.sha256,
-                        item.size,
-                        now,
-                        now,
-                        now + self.ttl if self.ttl else 253402300799,
-                    ),
-                )
-                db.execute("INSERT INTO artifact_snapshots VALUES (?)", (identity,))
-                identities.append(identity)
-            return [self._metadata(self._row(db, identity)) for identity in identities]
-
-    def publish_batch(self, files: list[tuple[str, bytes]]) -> list[dict[str, Any]]:
-        prepared = self.prepare_batch(files)
-        try:
-            return self.publish_prepared_batch(prepared)
-        finally:
-            self.discard_prepared(prepared)
-            self.cleanup()
+        # A lost commit acknowledgement does not prove rollback. Renamed
+        # blobs are reclaimed only by reference-checked GC, never here.
 
     def read_bytes(
         self, artifact_id: str, *, max_bytes: int | None = None
@@ -386,7 +230,12 @@ class WorkspaceStore:
             return metadata, data
 
     def snapshot(
-        self, descriptor: int, name: str, *, artifact_id: str | None = None
+        self,
+        descriptor: int,
+        name: str,
+        *,
+        artifact_id: str | None = None,
+        source_key: str | None = None,
     ) -> dict[str, Any]:
         """Stream an already safely opened workspace file into an immutable artifact."""
         if not name or len(name) > 128 or any(c in name for c in "\\/:\x00"):
@@ -395,15 +244,9 @@ class WorkspaceStore:
         if not stat.S_ISREG(before.st_mode) or before.st_size > self.max_file:
             raise WorkspaceError("artifact_too_large")
         identity, blob = self._id(artifact_id) if artifact_id else str(uuid4()), f"{uuid4()}.blob"
-        with self._transaction(write=False) as db:
-            if (
-                artifact_id
-                and db.execute("SELECT 1 FROM artifacts WHERE id=?", (identity,)).fetchone()
-            ):
-                existing = self._row(db, identity)
-                if not existing["immutable"]:
-                    raise WorkspaceError("snapshot_identity_conflict")
-                return self._metadata(existing)
+        # Initialize and validate the existing manifest before preparing the file.
+        with self._transaction(write=False):
+            pass
         path = self.root / f"{uuid4()}.pending"
         digest = hashlib.sha256()
         total = 0
@@ -429,7 +272,16 @@ class WorkspaceStore:
                 self._prune_metadata(db)
                 if db.execute("SELECT 1 FROM artifacts WHERE id=?", (identity,)).fetchone():
                     existing = self._row(db, identity)
-                    if not existing["immutable"]:
+                    if (
+                        not existing["immutable"]
+                        or existing["name"] != name
+                        or existing["sha256"] != digest.hexdigest()
+                        or existing["size"] != total
+                        or db.execute(
+                            "SELECT source_key FROM artifact_snapshots WHERE id=?", (identity,)
+                        ).fetchone()[0]
+                        != source_key
+                    ):
                         raise WorkspaceError("snapshot_identity_conflict")
                     result = self._metadata(existing)
                 else:
@@ -457,17 +309,41 @@ class WorkspaceStore:
                             now + self.ttl if self.ttl else 253402300799,
                         ),
                     )
-                    db.execute("INSERT INTO artifact_snapshots VALUES (?)", (identity,))
+                    db.execute(
+                        "INSERT INTO artifact_snapshots (id,source_key) VALUES (?,?)",
+                        (identity, source_key),
+                    )
                     result = self._metadata(self._row(db, identity))
             return result
         finally:
             self._unlink([path])
 
-    def read(self, artifact_id: str, *, offset: int = 0) -> dict[str, Any]:
+    def read(
+        self,
+        artifact_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 32768,
+        expected_version: str | None = None,
+    ) -> dict[str, Any]:
         if type(offset) is not int or offset < 0:
             raise WorkspaceError("invalid_offset")
+        if type(limit) is not int or not 4 <= limit <= 32768:
+            raise WorkspaceError("invalid_limit")
         metadata, data = self.read_bytes(artifact_id)
-        page = data[offset : offset + 32768]
+        if expected_version is not None and metadata["sha256"] != expected_version:
+            raise WorkspaceError("version_conflict")
+        page = data[offset : offset + limit]
+        result = {
+            **metadata,
+            "version": metadata["sha256"],
+            "offset": offset,
+            "next_offset": offset + len(page),
+            "offset_unit": "bytes",
+            "truncated": offset + len(page) < len(data),
+            "eof": offset + len(page) >= len(data),
+            "external_untrusted": True,
+        }
         try:
             import codecs
 
@@ -475,16 +351,17 @@ class WorkspaceStore:
             value = decoder.decode(page, final=offset + len(page) >= len(data))
             consumed = len(page) - len(decoder.getstate()[0])
         except UnicodeDecodeError:
-            return {**metadata, "binary": True}
+            return {**result, "binary": True, "read_state": "binary", "text": None}
         if "\x00" in value:
-            return {**metadata, "binary": True}
+            return {**result, "binary": True, "read_state": "binary", "text": None}
         return {
-            **metadata,
+            **result,
+            "read_state": "inline",
             "text": value,
             "offset": offset,
             "next_offset": offset + consumed,
             "truncated": offset + consumed < len(data),
-            "external_untrusted": True,
+            "eof": offset + consumed >= len(data),
         }
 
     def list(

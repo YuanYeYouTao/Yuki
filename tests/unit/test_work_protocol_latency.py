@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 
 import pytest
 from sqlalchemy import delete, event, select, update
+from tests.support.work_session import WorkSession
 from tests.unit.test_work_protocol_continuity import _control
 
 from qq_ai_bot.domain.messages import (
@@ -21,7 +22,6 @@ from qq_ai_bot.runtime import protocol_store
 from qq_ai_bot.runtime.protocol_schema import objects, refs
 from qq_ai_bot.runtime.protocol_store import ProtocolStore, _finish_thread
 from qq_ai_bot.runtime.work_journal import encode_transcript
-from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 
 

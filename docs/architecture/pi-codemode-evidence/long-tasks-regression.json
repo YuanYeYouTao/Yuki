@@ -1,0 +1,9 @@
+{
+  "command": "YUKI_MONTY_BINARY=/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/.venv/bin/yuki-monty-worker uv run --frozen pytest -q -p no:warnings tests --basetemp <owned temporary fixtures>",
+  "exit_code": 0,
+  "seconds": 667.56087475,
+  "summary": "3298 passed, 1 skipped in 660.00s (0:11:00)",
+  "worker_sha256": "af76448a14fe980c823f1c6092692f90a8ddc6341f236f17d6d47d72f49548e8",
+  "ended_at": "2026-10-05T05:57:41.446664+00:00",
+  "owned_fixture_directory_removed": true
+}

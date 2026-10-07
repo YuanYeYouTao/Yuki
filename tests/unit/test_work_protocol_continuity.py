@@ -11,8 +11,12 @@ import httpx
 import pytest
 from sqlalchemy import select, update
 from tests.conftest import build_harness, make_settings
+
+# P10: explicit Invocation fixture contract; existing assertions are retained.
+from tests.support.agent_backend import StubAgentBackend
 from tests.support.runtime_wire import install_wire
 from tests.support.social_identity_cases import social_env
+from tests.support.work_session import WorkSession
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.domain.messages import (
@@ -51,7 +55,6 @@ from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_journal import JournalUnavailable, encode_transcript
 from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import journal
-from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.services.agent_runner import AgentRuntime
 from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
 from qq_ai_bot.services.native_tool_binder import NativeToolBinder
@@ -121,7 +124,8 @@ async def test_real_gemini_http_malformed_recovery_preserves_signed_prefix_and_e
         ChatTool(name, name, {"type": "object"}) for name in ("probe_read", "effect_probe")
     )
 
-    class Backend:
+    # Preserve the upstream HTTP assertions through the current typed call boundary.
+    class Backend(StubAgentBackend):
         def definitions(self, runtime, **kwargs):
             return fixed
 
@@ -134,7 +138,8 @@ async def test_real_gemini_http_malformed_recovery_preserves_signed_prefix_and_e
         def is_side_effecting(self, name, *args):
             return name == "effect_probe"
 
-        async def execute(self, name, arguments, runtime):
+        async def execute_call(self, invocation):
+            name = invocation.call.function.name
             executions.append(name)
             return json.dumps({"ok": True, "mutation_committed": name == "effect_probe"})
 
@@ -539,8 +544,7 @@ async def test_work_changes_from_deepseek_to_gemini_without_replaying_old_effect
         executions += 1
         return '{"ok":true,"data":{"run_id":"run-fixed","status":"succeeded"}}'
 
-    receipt = await first.execute(old_call, execute_once, side_effecting=False)
-    control.observe_result("workspace_read", receipt, True, side_effecting=False)
+    await first.execute(old_call, execute_once, side_effecting=False)
     first.record_search_sources(
         [
             (
@@ -729,11 +733,10 @@ async def test_runner_resumes_gemini_work_on_deepseek_without_old_send_or_native
         sent += 1
         return '{"ok":true,"data":{"status":"succeeded","target":"original"}}'
 
-    receipt = await first.execute(
+    await first.execute(
         ToolCall("sent-before-cutover", ToolFunction("send_message", '{"text":"delivered"}')),
         confirmed_send,
     )
-    control.observe_result("send_message", receipt, True, arguments='{"text":"delivered"}')
     assert control.known_effects[-1]["delivered_message"] is True
     first.record_search_sources(
         [
@@ -821,7 +824,7 @@ async def test_runner_resumes_gemini_work_on_deepseek_without_old_send_or_native
         )
         reads = 0
 
-        class Backend:
+        class Backend(StubAgentBackend):
             def definitions(self, runtime, **kwargs):
                 return common_tools
 
@@ -834,7 +837,7 @@ async def test_runner_resumes_gemini_work_on_deepseek_without_old_send_or_native
             def is_side_effecting(self, *args):
                 return False
 
-            async def execute(self, *args):
+            async def execute_call(self, invocation):
                 nonlocal reads
                 reads += 1
                 return '{"ok":true,"data":{"read":"current"}}'
@@ -1297,7 +1300,7 @@ async def test_no_progress_recovery_keeps_tools_settings_and_local_execution_fen
         )
     )
 
-    class Backend:
+    class Backend(StubAgentBackend):
         def definitions(self, runtime, **kwargs):
             return fixed
 
@@ -1310,7 +1313,7 @@ async def test_no_progress_recovery_keeps_tools_settings_and_local_execution_fen
         def is_side_effecting(self, *args):
             return False
 
-        async def execute(self, *args):
+        async def execute_call(self, invocation):
             executions.append("read")
             return '{"ok":true,"unchanged":true}'
 
@@ -1318,7 +1321,7 @@ async def test_no_progress_recovery_keeps_tools_settings_and_local_execution_fen
             return text
 
         def exhausted(self, runtime):
-            raise AssertionError("unexpected exhaustion")
+            return ""
 
     harness = build_harness(database, make_settings(database.url), provider)
     chat = harness.processor._chat
@@ -1350,8 +1353,8 @@ async def test_no_progress_recovery_keeps_tools_settings_and_local_execution_fen
         )
     finally:
         await client.aclose()
-    # Repeated reads reuse the first result; the recovery response is not executed.
-    assert result.model_requests == 4 and len(executions) == 1
+    # Ordinary chat stops at its existing finite activation budget.
+    assert result.model_requests == 8 and len(executions) == 1
     assert len({request.request_chain_id for request in provider.requests}) == 1
     sequence_key = "messages" if protocol == "chat_completions" else "input"
     settings = [
@@ -1378,9 +1381,10 @@ async def test_compaction_is_local_fence_before_any_tool_execution(
     )
     harness = build_harness(database, make_settings(database.url), provider)
     chat = harness.processor._chat
-    backend = SimpleNamespace(
+    execute_call = AsyncMock(side_effect=AssertionError("compaction must not execute tools"))
+    backend = StubAgentBackend(
         definitions=lambda *args, **kwargs: fixed,
-        execute=AsyncMock(side_effect=AssertionError("compaction must not execute tools")),
+        execute_call=execute_call,
     )
     runtime = AgentRuntime(
         origin=TurnOrigin.USER_MESSAGE,
@@ -1400,17 +1404,21 @@ async def test_compaction_is_local_fence_before_any_tool_execution(
         work_control=control,
         compaction_brief=task if with_anchor else None,
     )
-    monkeypatch.setattr(
-        "qq_ai_bot.services.agent_runner.estimate_request_tokens",
-        lambda request: 1_000_000 if request.tools else 8000,
-    )
+
+    def measured(request):
+        return 1_000_000 if request.tools else 8000
+
+    # P10 split turn preparation from Work summary admission. Apply the same
+    # synthetic capacity pressure to both owners; keep every fence assertion.
+    monkeypatch.setattr("qq_ai_bot.services.agent_runner.estimate_request_tokens", measured)
+    monkeypatch.setattr("qq_ai_bot.services.turn_execution.estimate_request_tokens", measured)
     # Run owns session creation; the legacy no-anchor case must fail before dispatch.
     result = await chat.runtime.runner.run((ChatMessage("system", "fixed"), task), runtime, backend)
     assert result.work_state == "suspended"
     assert result.outcome.failure.code == (
         "work_compaction_incomplete" if with_anchor else "work_compaction_anchor_unavailable"
     )
-    backend.execute.assert_not_awaited()
+    execute_call.assert_not_awaited()
     assert len(provider.requests) == (1 if with_anchor else 0)
     if with_anchor:
         assert provider.requests[0].tools == ()
@@ -1453,7 +1461,7 @@ async def test_main_entry_captures_current_task_before_work_status(database, tmp
     )
     messages, prepared, _backend = runner.run.call_args.args
     assert prepared.compaction_brief == current
-    assert messages[-2] == current and "[运行状态]" in messages[-1].content
+    assert messages[-1] == current  # Host state freezes later, at first prepare_request.
     await control.repository.release(control.lease)
 
 

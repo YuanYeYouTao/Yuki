@@ -1,0 +1,110 @@
+{
+  "issue": 262,
+  "branch": "codex/pi-codemode-experiment",
+  "base_commit": "43b80aceb7d5d51bb3f7fc9b2dcc02cf4b36eff3",
+  "scope": "local development, isolated tests, local commit; no push",
+  "main_contract_version": 15,
+  "execution_tools": 68,
+  "direct_tools": 42,
+  "direct_terminal_tools": [
+    "terminal_exec",
+    "terminal_read",
+    "environment_status"
+  ],
+  "native_worker": {
+    "path": ".venv/bin/yuki-monty-worker",
+    "sha256": "af76448a14fe980c823f1c6092692f90a8ddc6341f236f17d6d47d72f49548e8",
+    "binding_version": "1.0.1",
+    "skipped": false
+  },
+  "final_full": {
+    "passed": 4743,
+    "failed": 0,
+    "skipped": 1,
+    "seconds": 1051.98,
+    "exit_code": 0,
+    "skip_reason": "private production backup paths not provided",
+    "command": "YUKI_MONTY_BINARY=$PWD/.venv/bin/yuki-monty-worker UV_CACHE_DIR=/private/tmp/yuki-uv-cache-issue262 uv run --frozen --no-sync pytest -q -p no:warnings tests --tb=short -rs --basetemp=/private/tmp/y262-final"
+  },
+  "first_full": {
+    "passed": 4727,
+    "failed": 16,
+    "skipped": 1,
+    "seconds": 1145.73,
+    "exit_code": 1,
+    "failure_causes": {
+      "old_local_readback_charge_assertion": 1,
+      "old_hidden_terminal_worker_assertion": 15
+    }
+  },
+  "related_final": {
+    "passed": 52,
+    "seconds": 19.92,
+    "exit_code": 0
+  },
+  "worker_final": {
+    "passed": 35,
+    "seconds": 26.97,
+    "exit_code": 0
+  },
+  "static": {
+    "ruff_check_exit_code": 0,
+    "ruff_format_exit_code": 0,
+    "ruff_format_files": 1236,
+    "mypy_exit_code": 0,
+    "mypy_source_files": 715
+  },
+  "frozen_final_inputs": {
+    "files": 1272,
+    "sha256": "33f356911da19eb4a3c0e8543b74be5509b3c24a80dde4ea8ba694647ac83c95",
+    "changed_during_final_full": []
+  },
+  "log_sha256": {
+    "first-full.log": "2eb97c28184665c2d049a50d885379dd58e9d66cf20057b8e9b3978480e5592c",
+    "final-full.log": "2c9852892ec557d7e118c967366ac020e5d3d67dd0e73d11db8379b486c24d86",
+    "related-final.log": "6c5e95ab1c5054c29a84e37791237ef2fe52fed56f4bb1c59bde698cc38bc3c7",
+    "worker-final.log": "feabddc465b20bd55038a58600f6fbdfb7b4f2f3831fdbc00e7893949d684a22"
+  },
+  "hundred_file_oracle": {
+    "files": 100,
+    "segment_yields": 5,
+    "work_tools": 100,
+    "root_tools": 100,
+    "duplicate_file_reads": 0,
+    "checks": [
+      "file index",
+      "Unicode character count",
+      "source SHA256",
+      "VM weighted checksum of every character",
+      "bounded parent output"
+    ]
+  },
+  "not_run": [
+    "live paid API",
+    "real QQ sends",
+    "production access",
+    "Linux gVisor deployment",
+    "independent frontend npm checks (unchanged)"
+  ],
+  "cleanup": {
+    "first_full_fixture_allocated_size_observed": "8.2 GiB; removed after first run",
+    "remaining_own_temp_allocated_bytes_before_cleanup": 9431556096,
+    "removed_temp_roots": [
+      "/private/tmp/y262-a",
+      "/private/tmp/y262-b",
+      "/private/tmp/y262-c",
+      "/private/tmp/y262-d",
+      "/private/tmp/y262-e",
+      "/private/tmp/y262-oracle",
+      "/private/tmp/y262-oracle-final",
+      "/private/tmp/y262-oracle-verified",
+      "/private/tmp/y262-cache",
+      "/private/tmp/y262-worker",
+      "/private/tmp/y262-workers-final",
+      "/private/tmp/y262-joint",
+      "/private/tmp/y262-final",
+      "/private/tmp/yuki-uv-cache-issue262"
+    ],
+    "worker_and_user_files_preserved": true
+  }
+}

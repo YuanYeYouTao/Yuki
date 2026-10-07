@@ -16,7 +16,7 @@ from qq_ai_bot.conversation.hydrate import require_primary_alias_for_conversatio
 from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
 from qq_ai_bot.model_runtime.capacity import ModelCapacity, estimate_request_tokens
 from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.prompting.compiler import PromptCapacityError, PromptCompiler
+from qq_ai_bot.prompting.compiler import PromptCompiler
 from qq_ai_bot.prompting.models import (
     PromptChannel,
     PromptContribution,
@@ -35,9 +35,7 @@ async def test_processor_reports_real_capacity_stop_without_replay_or_new_work(
 ):
     env = await social_env(database, tmp_path)
     async with database.sessions() as reader:
-        primary_alias = await require_primary_alias_for_conversation(
-            reader, env.context.conversation_id
-        )
+        await require_primary_alias_for_conversation(reader, env.context.conversation_id)
     window = 96000
     input_budget = window if after_send else 8192
     estimates = []
@@ -49,6 +47,8 @@ async def test_processor_reports_real_capacity_stop_without_replay_or_new_work(
         return tokens
 
     monkeypatch.setattr("qq_ai_bot.services.agent_runner.estimate_request_tokens", measured)
+    # P10 moved main request preparation; retain pressure on both admissions.
+    monkeypatch.setattr("qq_ai_bot.services.turn_execution.estimate_request_tokens", measured)
 
     def transport(request):
         # Actual HTTP transport sees only requests admitted by the real guard.
@@ -138,7 +138,6 @@ async def test_processor_reports_real_capacity_stop_without_replay_or_new_work(
             ),
             bot_user_id="80001",
             conversation_id=env.context.conversation_id,
-            legacy_conversation_key=primary_alias,
             person_id=env.person,
             space_id=env.space,
             presence_id=env.presence,
@@ -194,19 +193,17 @@ def test_only_required_dynamic_capacity_is_typed_and_reported_as_capacity(case):
     program = PromptProgram(
         contributions=(contribution, contribution) if case == "duplicate" else (contribution,)
     )
+    if case == "required_capacity":
+        compiled = PromptCompiler().compile(program, dynamic_character_budget=0)
+        assert contribution in compiled.selected
+        return
     with pytest.raises(ValueError) as caught:
         PromptCompiler().compile(
             program, dynamic_character_budget=-1 if case == "negative_budget" else 0
         )
     failure = classify_failure(caught.value)
     status = failure_status_text(failure)
-    if case == "required_capacity":
-        assert type(caught.value) is PromptCapacityError
-        assert failure.code == "prompt_dynamic_capacity" and failure.stage == "capacity"
-        assert not failure.retryable
-        assert "上下文超过容量限制" in status and "本次请求未完整完成" in status
-    else:
-        assert type(caught.value) is ValueError
-        assert failure.code == "ValueError" and failure.stage == "activation"
-        assert "内部错误" in status
+    assert type(caught.value) is ValueError
+    assert failure.code == "ValueError" and failure.stage == "activation"
+    assert "内部错误" in status
     assert "secret" not in status

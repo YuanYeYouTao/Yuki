@@ -32,7 +32,6 @@ from qq_ai_bot.llm.base import LLMEmptyResponseError, LLMIncompleteResponseError
 from qq_ai_bot.model_runtime.capacity import (
     ModelCapacity,
     estimate_request_tokens,
-    estimate_text_tokens,
 )
 from qq_ai_bot.model_runtime.executor import BackgroundModelPreempted, ModelExecutor
 from qq_ai_bot.model_runtime.models import ModelExecutionPriority, ModelTask
@@ -86,8 +85,8 @@ class ConversationRollupService:
         )
         self._timeout_seconds = timeout_seconds
         rollup_max_output_tokens(config.summary_max_characters, self._config.max_output_tokens)
-        self._active: dict[tuple[int, int], asyncio.Task[str]] = {}
-        self._settlements: dict[tuple[int, int], asyncio.Event] = {}
+        self._active: dict[tuple[str, int], asyncio.Task[str]] = {}
+        self._settlements: dict[tuple[str, int], asyncio.Event] = {}
         self.metrics = metrics or ConversationRollupMetrics()
         self.metrics.max_output_tokens = self._config.max_output_tokens
 
@@ -106,7 +105,7 @@ class ConversationRollupService:
 
         if not self.candidate_uses_model(candidate):
             return self.emergency(candidate)
-        key = (candidate.scope_id, candidate.generation)
+        key = (candidate.conversation_id, candidate.generation)
         output_budget = (candidate.policy or self._config).max_output_tokens
         if key in self._active:
             raise RuntimeError("rollup_scope_already_executing")
@@ -164,16 +163,23 @@ class ConversationRollupService:
         cursor = 0
         index = 0
         while cursor < len(source):
-            # A non-ASCII character costs at most two tokens under the shared
-            # conservative ruler. Recompute after each complete generated carry.
-            reference_cost = estimate_text_tokens(
-                json.dumps(sorted(_allowed_source_ids(candidate)))
-            )
-            available = input_budget - estimate_text_tokens(previous) - reference_cost - 2048
-            chunk_size = min(policy.batch_max_characters, available // 2)
-            if chunk_size < 1:
+            low, high = 0, min(policy.batch_max_characters, len(source) - cursor)
+            while low < high:
+                middle = (low + high + 1) // 2
+                request = self._summary_request(
+                    candidate,
+                    source[cursor : cursor + middle],
+                    previous,
+                    chunk_index=index + 1,
+                    chunk_count=0,
+                )
+                if estimate_request_tokens(request) <= input_budget:
+                    low = middle
+                else:
+                    high = middle - 1
+            if not low:
                 raise ValueError("rollup_carry_exceeds_input_capacity")
-            chunk = source[cursor : cursor + chunk_size]
+            chunk = source[cursor : cursor + low]
             cursor += len(chunk)
             index += 1
             previous = await self._summarize_source(
@@ -186,17 +192,15 @@ class ConversationRollupService:
             )
         return previous
 
-    async def _summarize_source(
+    def _summary_request(
         self,
         candidate: RollupCandidate,
         source: str,
         previous: str,
         *,
-        required: bool,
         chunk_index: int,
         chunk_count: int,
-    ) -> str:
-        assert self._models is not None
+    ) -> ChatRequest:
         policy = candidate.policy or self._config
         limit = policy.summary_max_characters
         part = (
@@ -205,7 +209,7 @@ class ConversationRollupService:
             if chunk_count != 1
             else ""
         )
-        request = ChatRequest(
+        return ChatRequest(
             messages=(
                 ChatMessage(
                     role="system",
@@ -229,6 +233,23 @@ class ConversationRollupService:
             native_tools=(),
             structured_output=True,
             response_format=summary_response_format(),
+        )
+
+    async def _summarize_source(
+        self,
+        candidate: RollupCandidate,
+        source: str,
+        previous: str,
+        *,
+        required: bool,
+        chunk_index: int,
+        chunk_count: int,
+    ) -> str:
+        assert self._models is not None
+        policy = candidate.policy or self._config
+        limit = policy.summary_max_characters
+        request = self._summary_request(
+            candidate, source, previous, chunk_index=chunk_index, chunk_count=chunk_count
         )
         getter = getattr(self._models, "capacity", None)
         capacity = (
@@ -255,12 +276,6 @@ class ConversationRollupService:
                 else ModelExecutionPriority.MAINTENANCE,
                 canonical_conversation_id=candidate.conversation_id,
             )
-        logger.info(
-            "rollup_model_completed output_budget=%d completion_tokens=%s latency_seconds=%.3f",
-            policy.max_output_tokens,
-            response.completion_tokens,
-            response.latency_seconds,
-        )
         if response.status.value != "completed" or response.incomplete_reason:
             raise LLMIncompleteResponseError("rollup_provider_truncated")
         if response.tool_calls:
@@ -272,21 +287,18 @@ class ConversationRollupService:
             )
         if len(text) > limit:
             raise ValueError("rollup_summary_too_long")
-        lowered = text.casefold()
-        if (
-            not text
-            or len(text) > limit
-            or "data:image/" in lowered
-            or "base64://" in lowered
-            or lowered.startswith("provider error")
-        ):
-            raise ValueError("conversation rollup model output failed quality checks")
         structured = parse_summary(text)
         # Newly covered IDs are supplied by the locked candidate; older IDs must
         # come from its persisted structured carry. Legacy prose has no proven
         # citation set and cannot authorize invented IDs.
         if not summary_references(structured).issubset(_allowed_source_ids(candidate)):
             raise ValueError("rollup_summary_unsupplied_reference")
+        logger.info(
+            "rollup_candidate_validated output_budget=%d completion_tokens=%s latency_seconds=%.3f",
+            policy.max_output_tokens,
+            response.completion_tokens,
+            response.latency_seconds,
+        )
         return text
 
     def emergency(self, candidate: RollupCandidate) -> tuple[str, RollupKind]:
@@ -297,11 +309,6 @@ class ConversationRollupService:
         )
         self.metrics.extractive_fallbacks += 1
         return text, RollupKind.EMERGENCY
-
-    def extractive(self, candidate: RollupCandidate) -> tuple[str, RollupKind]:
-        """Foreground/read-compatible name. Writes emergency overlay, not semantic."""
-
-        return self.emergency(candidate)
 
     async def ensure_required_coverage(
         self,

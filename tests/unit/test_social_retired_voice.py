@@ -41,10 +41,14 @@ async def test_retired_key_presence_rejects_before_route_or_intent(
 @pytest.mark.parametrize(
     "status", [OperationStatus.SUCCEEDED, OperationStatus.UNCERTAIN, OperationStatus.EXECUTING]
 )
+@pytest.mark.parametrize(
+    "call_key", ["original-call", "x" * 128, "源" * 129], ids=["short", "128", "utf8-129"]
+)
 async def test_original_dispatched_voice_receipt_is_bound_without_normalization(
-    database, tmp_path, status
+    database, tmp_path, status, call_key
 ):
     env = await social_env(database, tmp_path)
+    env.context = replace(env.context, call_id=call_key)
     env.bot.calls.clear()
     args = {"text": "#62052>原声音", "voice": {"request_basis": "user_requested"}}
     receipt = await env.service.receipts.prepare(

@@ -238,6 +238,7 @@ async def test_actual_main_quiet_closing_observer_and_later_continuation(
         token = await chat._turn_coordinator.notify_message(scope.key)
         tool_runtime = replace(
             tool_runtime,
+            actor_context=None,
             inbound=_message(stop),
             turn_snapshot=ConversationTurnSnapshot(
                 state.id, scope.key, state.generation, stop.id, token.version
@@ -461,6 +462,7 @@ async def test_late_original_main_quiet_cannot_override_new_admitted_stay(
         token = await chat._turn_coordinator.notify_message(scope.key)
         original_runtime = replace(
             tool_runtime,
+            actor_context=None,
             inbound=_message(original),
             turn_snapshot=ConversationTurnSnapshot(
                 state.id, scope.key, state.generation, original.id, token.version
@@ -493,6 +495,7 @@ async def test_late_original_main_quiet_cannot_override_new_admitted_stay(
         await host.on_ordinary_admitted(frozen, prepared.admission)
         following_runtime = replace(
             original_runtime,
+            actor_context=None,
             inbound=_message(following),
             turn_snapshot=ConversationTurnSnapshot(
                 state.id, scope.key, state.generation, following.id, token.version
@@ -593,6 +596,7 @@ async def test_inflight_old_stop_keeps_new_main_intent_and_revalidates_source(
         token_a = await chat._turn_coordinator.notify_message(scope.key)
         runtime_a = replace(
             runtime,
+            actor_context=None,
             inbound=_message(stop),
             turn_snapshot=ConversationTurnSnapshot(
                 state.id, scope.key, state.generation, stop.id, token_a.version
@@ -616,6 +620,7 @@ async def test_inflight_old_stop_keeps_new_main_intent_and_revalidates_source(
         await host.on_ordinary_admitted(frozen_b, prepared_b.admission)
         runtime_b = replace(
             runtime,
+            actor_context=None,
             inbound=_message(later),
             turn_snapshot=ConversationTurnSnapshot(
                 state.id, scope.key, state.generation, later.id, token_b.version

@@ -85,7 +85,7 @@ function Editor({
                 conversation_id: conversation || null,
                 ...(maxRuns ? { max_runs: Number(maxRuns) } : {}),
               }
-            : script;
+            : { script };
         props.act({
           method: "mutate_automation",
           label: automationId == null ? "创建自动化" : "更新自动化脚本",

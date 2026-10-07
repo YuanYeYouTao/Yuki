@@ -17,12 +17,6 @@ class CapabilityArguments(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class GenerateArguments(CapabilityArguments):
-    instruction: str = Field(min_length=1, max_length=4000)
-    context_profile: Literal["none", "creator_private", "current_group"] = "none"
-    max_characters: int = Field(default=200, ge=1, le=4000)
-
-
 class AgentArguments(CapabilityArguments):
     instruction: str = Field(min_length=1, max_length=4000)
     context_profile: Literal["none", "creator_private", "current_group"] = "none"
@@ -219,14 +213,6 @@ def build_capability_registry(
             RetryPolicy,
         ]
     ] = (
-        (
-            "yuki.generate",
-            "调用主 Agent 完成生成目标，复用完整工具。",
-            GenerateArguments,
-            PermissionLevel.USER,
-            RiskClass.GENERATE,
-            RetryPolicy.TRANSIENT_ONCE,
-        ),
         (
             "yuki.agent",
             "以创建者当前权限运行主 Agent。",

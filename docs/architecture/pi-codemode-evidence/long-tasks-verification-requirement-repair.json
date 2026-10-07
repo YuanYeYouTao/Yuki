@@ -1,0 +1,17 @@
+{
+  "scope": "Clarify the existing required final report readback; oracle, inputs, limits and production code unchanged.",
+  "before_harness_sha256": "82c2526b2182befc298dbe82ce4e4dbee62f39d56b1854687825ebe58df1faa7",
+  "after_harness_sha256": "bcca12ae4d45a8c666885324660d2361c9500dd131f6e3fb454b460ed93a22bf",
+  "source_replacements": [
+    {
+      "before": "            \"without a header. Verify the saved file.\"\n",
+      "after": "            \"without a header. Read batch.tsv back with workspace_read and verify its text before \"\n            \"completing. File size and write receipts alone do not satisfy this readback.\"\n"
+    },
+    {
+      "before": "        \"in visit order, then TOTAL<TAB>sum. No header. Verify the saved report. \"\n",
+      "after": "        \"in visit order, then TOTAL<TAB>sum. No header. Read chain.tsv back with workspace_read \"\n        \"and verify its text before completing. File size and write receipts alone do not \"\n        \"satisfy this readback. \"\n"
+    }
+  ],
+  "affected_original_report": "long-tasks-handoff-recovery-final.json",
+  "interrupted": true
+}

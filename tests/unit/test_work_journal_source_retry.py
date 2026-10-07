@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import delete, select, update
+from tests.support.work_session import WorkSession
 from tests.unit.test_semantic_participation_host import _event_and_route
 from tests.unit.test_work_source_guard import _guard
 
@@ -21,7 +22,6 @@ from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_journal import decode_transcript
 from qq_ai_bot.runtime.work_repository import WorkConflict
 from qq_ai_bot.runtime.work_schema_v1 import journal
-from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 
 

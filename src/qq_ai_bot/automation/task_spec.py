@@ -13,7 +13,6 @@ from qq_ai_bot.automation.models import AutomationContext, Schedule, StrictModel
 class TaskStrategy(StrEnum):
     AUTO = "auto"
     STATIC = "static"
-    GENERATED = "generated"
     AGENTIC = "agentic"
 
 

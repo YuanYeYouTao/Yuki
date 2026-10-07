@@ -24,7 +24,9 @@ const cacheRate = (usage: Row) => {
 };
 const confirmedCacheShare = (usage: Row) => {
   const input = Number(usage.input_tokens || 0);
-  const cached = Number(usage.cached_input_tokens || 0);
+  // This numerator covers the same complete-input rows as the denominator.
+  // The raw cache total may also contain responses with unknown full input.
+  const cached = Number(usage.cache_reported_cached_tokens || 0);
   return input > 0 ? `${((cached / input) * 100).toFixed(1)}%` : "—";
 };
 function CacheReport({ usage }: { usage: Row }) {

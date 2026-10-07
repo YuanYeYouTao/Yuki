@@ -210,7 +210,14 @@ Work compaction 继续使用原任务 Profile 的超时。两类摘要的生成�
 `model_invocations` 一行表示一次逻辑模型调用，`calls` 继续按该行计数。`physical_request_count`
 只统计实际进入 HTTP 客户端的请求尝试，包括传输重试和 Claude 原生搜索暂停后的续发；
 路由、配置或本地校验失败不计入。`unknown_usage_request_count` 统计其中未获得上游总 Token
-报告的尝试，不能按零 Token 或零费用处理。历史调用的两个字段为 NULL，无法从原逻辑记录
+报告的尝试，不能按零 Token 或零费用处理。每次物理响应（包括兼容错误包）已明确报告的 usage 由 transport 记录，executor 是逻辑
+归并的唯一边界；同一次解析重复上报不重复计数，Claude pause 已汇总字段不会再叠加。
+输入/缓存字段只有全部物理尝试均报告该字段时才有完整总量，任一缺项保持 NULL，避免用部分
+输入与完整缓存构造错误覆盖率。输出/总 Token 保留已报告的小计，并同时记录未知物理请求
+数，不把小计称为完整账单。显式零仍为零，缺失仍为未知；这些合成兼容错误形状不
+证明官方错误响应格式或实际账单。
+
+历史调用的两个字段为 NULL，无法从原逻辑记录
 反推出真实 HTTP 次数。缓存率只使用上游明确报告缓存量的输入作分母，并同时保留未报告计数。
 
 原生搜索是否启用以当次请求合同记录；Google/Claude 的原生搜索可能另有工具费用，当前账本
@@ -218,6 +225,12 @@ Work compaction 继续使用原任务 Profile 的超时。两类摘要的生成�
 Gemini 独立搜索桥另记一条 `model_invocations.task=web_search`，归入当前连接与模型，
 记录上游返回的输入、输出、缓存 Token 和实际 HTTP 请求数；无可信 grounding 记失败，
 随后 Tavily 降级不伪装成 Gemini 命中。
+
+应用层 `provider_cache_shape_diagnostics` 只覆盖归一 messages/tools，明确排除 native
+continuation 正文。缓存前缀与首差异以各适配器最终 HTTP body 的 `WireRequestObserver`
+为准；相同 messages 的不同原生签名仍可能改变最终输入。代理上游最后一跳不在此观测内。
+WebUI 确认缓存比例使用 `cache_reported_cached_tokens` 与已记录完整 input 的同一覆盖集合；
+原始 `cached_input_tokens` 单独展示，不截到 100% 或由 TTL 子项猜缺项。
 
 ## 验证边界与协议来源
 

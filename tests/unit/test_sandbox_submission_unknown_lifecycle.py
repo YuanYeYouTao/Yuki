@@ -78,9 +78,8 @@ async def host_case(database, tmp_path):
     tool_runtime = replace(
         tool_runtime,
         inbound=inbound,
+        actor_context=None,
         origin=TurnOrigin.USER_MESSAGE,
-        actor_user_id="10001",
-        current_group_id="20001",
         space_id=env.space,
         runtime_config=await chat._runtime_config.snapshot(),
     )
@@ -94,7 +93,8 @@ async def host_case(database, tmp_path):
 
 
 async def invoke(work, backend, runtime, call):
-    backend.begin_batch((call,), runtime)
+    # The experimental backend binds the original Host Invocation directly;
+    # it has no mutable name/argument batch cache. All wire/receipt assertions stay.
     token = current_work_control.set(work.control)
     try:
         return await ToolInvocationCoordinator().execute_batch(
@@ -126,7 +126,6 @@ def terminal_receipt(request_id, status):
     "name,args",
     [
         ("terminal_exec", {"command": "printf offline"}),
-        ("run_python", {"code": "print('offline')"}),
         ("environment_packages", {"action": "install", "packages": ["fixture"]}),
     ],
 )

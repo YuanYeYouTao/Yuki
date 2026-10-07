@@ -9,6 +9,9 @@ import httpx
 import pytest
 from sqlalchemy import event, insert, select
 from tests.conftest import MemorySender, build_harness, make_settings
+
+# P10: explicit Invocation fixture contract; existing assertions are retained.
+from tests.support.agent_backend import StubAgentBackend
 from tests.support.fixed_contract_fixture import bind_main_contract
 from tests.support.runtime_wire import install_wire
 from tests.support.social_identity_cases import social_env
@@ -538,7 +541,6 @@ async def test_real_runner_records_tools_and_original_chat_delivery(
                 ),
                 bot_user_id="80001",
                 conversation_id=env.context.conversation_id,
-                legacy_conversation_key="bot:80001:group:20001",
                 person_id=env.person,
                 space_id=env.space,
                 presence_id=env.presence,
@@ -661,16 +663,18 @@ async def test_real_runner_records_tools_and_original_chat_delivery(
 async def test_tool_batch_retains_reused_denied_and_parallel_results(database):
     from types import SimpleNamespace
 
+    from tests.support.model_executor import InjectedModelExecutor
+
     from qq_ai_bot.services.agent_runner import AgentRunner
     from qq_ai_bot.services.concurrency import ConcurrencyManager
 
-    runner = AgentRunner(FakeLLMProvider(), ConcurrencyManager(2))
+    runner = AgentRunner(InjectedModelExecutor(FakeLLMProvider()), ConcurrencyManager(2))
     executed = []
     active = 0
     maximum = 0
     both_started = asyncio.Event()
 
-    class Backend:
+    class Backend(StubAgentBackend):
         def begin_batch(self, *args):
             pass
 
@@ -680,7 +684,8 @@ async def test_tool_batch_retains_reused_denied_and_parallel_results(database):
         def is_side_effecting(self, *args):
             return False
 
-        async def execute(self, name, arguments, runtime):
+        async def execute_call(self, invocation):
+            arguments = invocation.call.function.arguments
             nonlocal active, maximum
             active += 1
             maximum = max(maximum, active)
@@ -697,7 +702,8 @@ async def test_tool_batch_retains_reused_denied_and_parallel_results(database):
         ToolCall("second", ToolFunction("read", '{"item":2}')),
         ToolCall("denied", ToolFunction("unknown", "{}")),
     )
-    runtime = SimpleNamespace(work_control=None)
+    # This direct-only fixture has no separately frozen Code Mode API.
+    runtime = SimpleNamespace(work_control=None, script_api=None)
     cache = {}
     async with trace_span("turn", {}, recorder=TraceRecorder(database)):
         result = await runner._execute_tool_batch(

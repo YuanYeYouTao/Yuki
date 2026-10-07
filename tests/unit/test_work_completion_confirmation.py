@@ -8,6 +8,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import event, select, update
 from tests.support.social_identity_cases import social_env
+from tests.support.work_session import WorkSession
 
 from qq_ai_bot.domain.messages import ChatMessage, ToolCall, ToolFunction
 from qq_ai_bot.runtime.execution_receipts import ExecutionReceipts, current_receipts
@@ -15,7 +16,6 @@ from qq_ai_bot.runtime.work_activation import current_work_control
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import inputs
-from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.sandbox.client import SandboxClient
 from qq_ai_bot.sandbox.continuations import SandboxContinuationRepository
 from qq_ai_bot.sandbox.db_models import SandboxTaskContinuationModel, SandboxTaskRunModel

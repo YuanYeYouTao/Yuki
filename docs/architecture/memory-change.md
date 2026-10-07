@@ -1,41 +1,25 @@
 # `memory_change`：Yuki 自主记忆更改接口
 
-> 状态：Memory Mutation V2 已在 `codex/memory-mutation-service` 分支实现；本文前半保留设计
-> 推导，实际运行边界以“实施说明”一节和代码测试为准。
-> 目标读者：项目维护者、架构评审者和参与方案讨论的语言模型。
+当前主体、查询及写入合同见 [Memory](memory-v2.md) 和 [检索合同](memory-v2-retrieval.md)。
 
 ## 0. 实施说明
 
-- 模型侧只增加 `memory_change`，仅在真实 `user_message` 轮开放；参数不能携带 QQ 号、群号
-  或事件 ID，后端只接受当前发送者、当前群、真实 mention 和 reply author 别名。
-- `MemoryMutationService` 统一执行主体解析、权限、证据、版本、冲突、事务、回执和 Embedding
-  调度；Agent、生产 Memory Worker、确定性命令、管理员 Action、Plugin Memory Facade 和有界
-  lifecycle reflection 与可恢复后台反思 Worker 均接入该边界。
-- Alembic `0025` 新增 `memory_mutation_receipts`，分别保存请求幂等指纹和不含 operation 的
-  claim 指纹；Agent 与 Worker 对同一事件、目标、key、内容的判断只提交一次。
-- Alembic `0026` 新增 `memory_reflection_jobs`；后台有界扫描重复、争议和归属异常，持久领取、
-  退避重试并恢复超时任务，实际更改仍只能经 `MemoryMutationService` 提交。
-- 普通成员可影响本人 `person/person_group`、当前 `group` 和当前群他人的 `person_group`；
-  第三方来源始终记录为 `third_party`，高权威冲突可以实际落为 `contest`，不会冒充本人。
-- 结构化读取使用[历史共同群政策](memory-v2.md)：Person 可读范围包含私聊来源事实，
-  PersonGroup 限双方历史共同群。此读取授权不得用于 mutation 或 evidence；下文写入隔离不变。
-- 普通变更是版本化/状态化操作，不做物理删除；`forgetme` 仍沿用独立隐私删除路径。
-- 普通对话中的创建、纠正、撤回和恢复由 Main Agent 调用 `memory_change`；Memory Runtime 只在
-  真实 `user_message` 轮开放写事务。该路径跳过自动召回，首轮依据 capability metadata 只开放
-  已授权的 `memory/write_state` 能力；不依赖自然语言关键词硬编码。
-- 修改轮次的最终正文由聊天后端根据真实工具回执渲染。未调用、歧义、未找到、noop 或 contest
-  不得声称原请求已完成；`invalidate` 必须表述为撤回/失效且保留审计，不得表述为物理删除。
-- mutation 轮次只向主 Agent 暴露唯一写能力并追加有界执行契约；DeepSeek 的 wire payload
-  始终省略不受支持的 `tool_choice`，因此正确性必须来自能力隔离和后端完成门。
-- 通用工具候选裁剪不得移除 mutation 写能力。Agent 不知道内部 `memory_key` 时应使用
-  `old_content`；若误将用户可见标签填作 key，后端只可将其用于返回正文词法候选，再由 Agent
-  使用真实 `fact_id` 重试，不能直接模糊变更。
+- 主 Agent 固定声明 `memory_change`；每次执行根据真实 `user_message` 或获准
+  `autonomous_group` 来源、内部事件、当前权限、明确目标及证据核验。插件与工作者不能
+  借用主 Agent 写权限，SELF 仍按独立真实来源与可见性核验。
+- `MemoryMutationService` 拥有主体解析、版本、冲突、短事务与持久回执。一个请求可完成
+  多条不同的合法变更，也可先 noop 后修改另一目标；同 effect/幂等请求返回原回执。
+- 读取定位不限恰好一次；读写阶段不改变固定工具声明，不建立独占写会话或重建假回执。
+  模糊人物必须澄清；获准群内姓名解析只在唯一匹配及现有写入权限核验后成立。
+- 图片附件本身不禁止文字事实写入，也不自动成为可信证据。权威、目标和引用仍按原合同。
+- 模型依据实际工具回执组织最终正文；后台不重写成确定性回答。未调用、歧义、未找到、
+  noop 或 contest 不得冒充原目标完成；invalidate 是撤回/失效，保留审计，不是隐私物理删除。
+- Embedding 调度属于提交后的派生工作，失败不推翻已提交 mutation；取消和强事实写失败
+  仍传播。记忆工具结果进入后续模型请求才登记曝光，后台归因不阻塞已确认发送。
 
 ## 1. 摘要
 
-Yuki 当前拥有成熟的自动记忆抽取、冲突治理、版本化事实、证据、生命周期和检索系统，但普通
-聊天 Agent 只有记忆读取工具。用户可以通过确定性命令修改部分本人记忆，超级管理员可以通过
-管理员工具修改人物记忆；Yuki 自己在回复或反思时不能主动提交记忆变更。
+Yuki 当前拥有成熟的自动记忆抽取、冲突治理、版本化事实、证据、生命周期和检索系统，并以统一工具和领域服务处理主 Agent、确定性命令及后台记忆变更。
 
 本文建议新增一个核心 Agent 工具：
 
@@ -73,24 +57,10 @@ Memory V2 已经具备：
 - 本人显式 `correct`、`invalidate`、`restore` 命令；
 - 超级管理员 `memory.add/update/delete/prune` Action。
 
-### 2.2 当前缺口
+### 2.2 主 Agent 入口
 
-普通聊天 Agent 的核心记忆工具均为只读：
-
-```text
-get_person_memories
-get_group_memories
-get_memory_fact
-get_memory_evidence
-```
-
-这意味着：
-
-- Yuki 可以在回答中发现记忆可能有错，但不能直接修正；
-- 普通用户用自然语言纠错时，主要依赖后台抽取器稍后处理；
-- Yuki 无法在一次对话轮内明确告诉后端“我采用了哪个新版本”；
-- 争议、重复、归属错误和低置信度事实缺少 Agent 主动治理入口；
-- 管理员写接口不能直接作为 Yuki 自主记忆接口使用。
+当前统一 `search_memory`、`get_memory_fact`、`get_memory_evidence` 读取及 `memory_change`
+写入。三个旧列表执行名已退出；历史完成回执按原 call_id 保留，不依赖再次执行旧接口。
 
 ## 3. 设计目标
 

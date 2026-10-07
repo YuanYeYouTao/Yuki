@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 import tomlkit
+from tests.support.work_session import WorkSession
 
 from qq_ai_bot.domain.messages import ChatMessage, ToolCall, ToolFunction
 from qq_ai_bot.model_runtime.executor import TaskModelExecutor
@@ -24,7 +25,6 @@ from qq_ai_bot.model_runtime.routes import ModelRouter
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 
 

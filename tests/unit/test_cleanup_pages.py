@@ -7,29 +7,16 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import func, select, update
 
-from qq_ai_bot.persistence.event_repository import ProcessedEventRepository
 from qq_ai_bot.persistence.media_repository import MediaAnalysisRepository
-from qq_ai_bot.persistence.models import MediaAnalysisModel, ProcessedEventModel, WebSearchRunModel
+from qq_ai_bot.persistence.models import MediaAnalysisModel, WebSearchRunModel
 from qq_ai_bot.persistence.web_repository import WebSearchSourceRepository
 
 
-@pytest.mark.parametrize("kind", ["processed", "media", "web"])
+@pytest.mark.parametrize("kind", ["media", "web"])
 async def test_cleanup_has_bounded_page_and_rechecks_after_discovery(database, monkeypatch, kind):
     now = datetime(2026, 10, 1, tzinfo=UTC)
     old = now - timedelta(days=45)
-    if kind == "processed":
-        model = ProcessedEventModel
-        repository = ProcessedEventRepository(database)
-        rows = [
-            model(event_key=f"key-{i:04}", processed_at=old, expires_at=old) for i in range(140)
-        ]
-        primary_key = model.event_key
-        changed_values = {"expires_at": now + timedelta(days=1)}
-
-        async def cleanup():
-            return await repository.cleanup_expired(now=now)
-
-    elif kind == "media":
+    if kind == "media":
         model = MediaAnalysisModel
         repository = MediaAnalysisRepository(database)
         rows = [
@@ -77,7 +64,7 @@ async def test_cleanup_has_bounded_page_and_rechecks_after_discovery(database, m
     async with database.immediate_session() as session:
         session.add_all(rows)
         await session.flush()
-        protected_key = rows[0].event_key if kind == "processed" else rows[0].id
+        protected_key = rows[0].id
     original = database.immediate_session
     changed = False
 

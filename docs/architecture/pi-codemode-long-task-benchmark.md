@@ -1,0 +1,168 @@
+# 长任务隔离对照实测
+
+后续核查（2026-10-05）：本轮测试夹具和每段新建的 WorkControl 没有绑定 canonical
+读取身份，导致已保存的合法 context_note 在下一段不可见。因此下列数字作为原始测量
+保留，分段恢复完成率不能用于判断正常应用入口的新旧可靠性。代码队列超限升级为
+Work 暂停的问题也已在当前 Runner 中复现。修复后的重新测量另存新证据，不覆盖本文
+对应的原始 JSON；批量汇总的样本观察仍保留其原来的比较范围。
+后续修复、观察器误判与最终八组结果见[恢复重测报告](pi-codemode-recovery-retest.md)。
+
+2026-10-05，测试分支 `codex/pi-codemode-experiment`，应用基线 `de28cbb0`。
+使用真实 `deepseek-flash`、原生 Monty worker、临时 SQLite 和文件工作区，模型自行决定
+调用和程序。正式轮没有费用、累计模型请求或累计工具调用上限。
+
+**原始测量数字（恢复受装配缺口影响）：新版循环 + Code Mode 完整完成 5/6，历史循环 + 直接调用完成 3/6。
+批量计算的优势明确，分段恢复仍不稳定；依赖链上 Code Mode 没有比新版直接调用更快。**
+
+|对照组|完整完成|全部尝试费用估算（美元）|包含失败的每个完成任务费用（美元）|全部尝试耗时（秒）|HTTP 请求|
+|---|---|---|---|---|---|
+|历史循环 / 直接调用|3/6|0.153945|0.051315|329.29|137|
+|历史循环 / Code Mode 可用|4/6|0.054781|0.013695|126.31|81|
+|新版循环 / 直接调用|4/6|0.140377|0.035094|239.88|111|
+|新版循环 / Code Mode 可用|5/6|0.058602|0.011720|106.09|59|
+
+“全部尝试耗时”包含失败停止时间，是试验消耗，不是完成速度。四组任务类型相同；
+每个任务类型使用两个固定输入。所有尝试的 HTTP 用量都有返回，没有未知用量。
+总计 388 次 HTTP、峰值费率估算 **0.407706 美元**，正式运行约 13 分 28 秒。
+
+## 完成度和任务耗时
+
+主指标是独立答案正确、所需文件完整且 Work 已结算完成。失败的耗时不算完成时间。各组运行两次。
+
+表内“平均内容正确率”只比较预期输出行，不能代替完整完成。例如新版 Code Mode 的
+恢复任务两次内容都正确，但只有一次 Work 正式结算，完成率为 1/2。
+
+|任务|循环|工具模式|完成|平均内容正确率|完成耗时中位数（秒）|完成请求数中位数|两次峰值用量估算（美元）|
+|---|---|---|---|---|---|---|---|
+|batch_ledger|old|direct|1/2|88%|105.15|6|0.065169|
+|batch_ledger|old|code|2/2|100%|16.24|8.0|0.011897|
+|batch_ledger|new|direct|2/2|100%|53.48|7.5|0.046416|
+|batch_ledger|new|code|2/2|100%|14.03|6.0|0.014679|
+|dependency_chain|old|direct|2/2|100%|22.93|22.0|0.013127|
+|dependency_chain|old|code|2/2|100%|16.88|15.0|0.011014|
+|dependency_chain|new|direct|2/2|100%|10.08|6.0|0.010166|
+|dependency_chain|new|code|2/2|100%|10.55|7.0|0.007955|
+|resumed_work|old|direct|0/2|4%|—|—|0.075649|
+|resumed_work|old|code|0/2|4%|—|—|0.031871|
+|resumed_work|new|direct|0/2|6%|—|—|0.083796|
+|resumed_work|new|code|1/2|100%|21.46|7|0.035968|
+
+## 优势具体在哪里
+
+- **批量汇总：**新版 Code Mode 两次均完成，耗时 13.47、14.59 秒；相同输入的新版
+  直接调用为 62.06、44.90 秒，分别约快 4.61、3.08 倍，两次费用合计降低约 68.4%。
+  旧循环直接调用一次把 B 区金额 `27744` 算成 `28744`，虽然 Work 标记完成，独立答案
+  检查仍判为失败。相同输入 repeat=1 的旧循环直接调用成功用 105.15 秒，新版 Code
+  Mode 用 13.47 秒。不能把这个单个配对推广成所有任务都快 7.8 倍。
+- **依赖链：**四组都完成两次。新版 Code Mode 对比旧循环直接调用约快 2.0–2.3 倍，
+  但对比新版直接调用反而慢约 1.1%–8.2%，且多一次 HTTP。模型可以列举所有节点并批量
+  读取，因此这种任务的优势主要来自新循环与调用策略，不能全部归到 Code Mode。
+- **分段恢复：**只有新版 Code Mode 完成一次，经过 14 个激活、66 次业务调用、7 次
+  HTTP，21.46 秒。大量激活只恢复挂起程序而不再购买模型请求，12 份审计文件均只写
+  一次。这支持程序状态恢复的实际价值；另一输入失败，因此还没有证明稳定完成长任务。
+- **旧循环加 Code Mode 也有收益：**批量任务同样完成 2/2，费用甚至低于新版 Code
+  Mode。总体收益包括代码计算和减少模型反复处理数据，新循环并不保证每类任务都更省。
+
+## 失败记录
+
+- `batch_ledger/0/old/direct`：输出 3/4 行正确、Work 为 `completed`，独立答案失败。
+- 四个 direct 恢复样本：内容完成约 4%–8%，反复读取已有路径，连续十段无新增进展后
+  停止。仍为 `queued`，均未完成。旧循环 repeat=1 首份便签因引用错误被
+  `work_context_note_invalid_reference` 拒绝；随后改成合法 goal 引用的便签实际保存成功，
+  但下一段因测试缺少读取身份而不可见。原报告把连续 HTTP 请求历史中重复出现的同一
+  拒绝误计为两次拒绝，这里纠正解释，原始 HTTP 记录保持不变。
+- 两个 old/code 恢复样本：真实激活为 `suspended`，记录 `RuntimeError`。将各自末次
+  模型程序在原生 engine 上离线重放，均在第 17 个待定 future 触发
+  `code_wait_queue_full`；默认上限为 16。这是支持原因解释的局部复现，没有复跑完整
+  Work 或增加付费调用。新旧共用此上限，不能认定它是旧循环独有问题。
+- `resumed_work/1/new/code`：全部文件正确、无重复写，但后续持续读取，没有调用
+  `complete`，最终为 `queued`；曾将 `task_control(get)` 与另一工具同批提交而被拒绝。
+  连续十段无新增进展后停止，**未完成**。本次没有修改生产代码或提示词重跑来消除失败。
+
+这些失败没有因为用户取消费用上限而被删除。停止依据是宿主暂停/错误或无进展，
+没有样本因费用上限、累计请求额度或预设任务总时限被截断。
+
+## 用量与费用
+
+|对照组|输入 token（含缓存）|缓存命中 token|输出 token|
+|---|---|---|---|
+|历史循环 / 直接调用|2,829,961|2,651,648|70,451|
+|历史循环 / Code Mode 可用|1,580,626|1,502,336|18,567|
+|新版循环 / 直接调用|2,369,579|2,155,264|52,626|
+|新版循环 / Code Mode 可用|1,179,530|1,073,152|16,875|
+
+正式轮四组费用按同一公开峰值费率计算：每百万 token 缓存命中 $0.006、未命中 $0.30、
+输出 $1.20。非高峰价格为其一半；没有核对真实账单。缓存条件、网络响应与模型选用策略
+可能影响小样本差异。新版 Code Mode 包含失败后的每个完成任务费用约 $0.011720，
+历史循环直接调用为 $0.051315；这是此次混合任务样本的描述，不能作为生产成本预测。
+
+正式轮以前的 P11 与探索轮峰值费用/未知用量保守留额累计 $0.546281，其中探索轮有
+一次未知用量。正式轮新增 $0.407706，总暴露估算 $0.953987。以前的探索轮不混入正式
+完成率和耗时比较；累计费用也没有在重跑时归零。
+
+## 对照范围和复跑
+
+代码组允许混用直接工具；direct 组允许批量直接调用。旧循环使用固定历史主迭代及共同的新 Invocation/Code Mode 内核，仅作为隔离装配；不是原封不动的旧版部署。工具被限制为临时工作区读、列举、写和生命周期控制，没有终端、生产数据库、真实发送。恢复是同一进程中的新激活，不是进程崩溃。
+
+历史主循环取自 `b4fdef7d0e2f7ee68fd345605d0a8fadc50b5459`，加载方式沿用
+`scripts/benchmark_pi_codemode.py::historical_runner`，替换七个调用/Code Mode helper，
+共同核验权限和回执。该对照只能说明这里的隔离装配行为，不能还原旧生产版本的整体表现。
+Code 可用组 6 次中，新循环 6 次实际用了代码，旧循环 5 次；旧循环依赖链 repeat=1
+自行选择直接调用，仍保留在 Code 可用组。没有向模型提供预写程序或 oracle 答案。
+
+所有组固定完整 76 个工具声明，HTTP 声明 hash 相同。同一 task/repeat 四组输入 hash
+一致，每组使用独立工作区和数据库。允许读输入、列举和写任务指定的输出路径；其他
+写路径被拒绝，因此没有评估任意 scratch 文件策略。正式轮没有出现该输出路径拒绝。
+Root 总模型/工具预算为 `None`，每激活至多 60 个模型请求；业务单段配额为 80 或 5。
+每段新建 Runner/WorkControl，沿用原 Work、租约、预算和持久回执，并调用真实 supervisor
+结算；租约每 20 秒续约。执行顺序按固定种子打乱，未并行其他重型测试来测延迟。
+
+费用按 [DeepSeek 官方峰值费率](https://api-docs.deepseek.com/quick_start/pricing/)和 HTTP 返回用量估算，实际账单未核验。金额与请求总数不设上限。每个请求的输出上限为 32768 token，网络超时 600 秒。宿主的执行隔离和单段配额保持；跨段持续运行，遇到真实暂停/错误或连续十段没有新读取覆盖、写入路径或便签时记录未完成并停止该样本。
+
+24 份 CSV 共 480 条记录需跨文件去重汇总；依赖链需要正确走完 18 层分支；恢复任务包含 12 层分支、12 份审计文件，每五次业务调用结束一段。
+
+这是秒至分钟尺度的受控任务，未评估小时/天尺度任务、真实网络断连、OS 崩溃和生产
+入口。恢复任务故意每五次业务调用分段，属于高频分段压力测试；不能把它的失败率当作
+普通生产任务的失败概率。每种配置每任务仅两次，没有置信区间或显著性结论。
+
+正式执行命令（复跑会付费，需要继续适用的明确授权，并使用新的输出文件名）：
+
+```sh
+PYTHONPATH=. YUKI_MONTY_BINARY="$PWD/.venv/bin/yuki-monty-worker" \
+  uv run --frozen python scripts/benchmark_long_tasks.py \
+  --credentials /Volumes/huawei/项目实战/deepseek.md \
+  --authorize-paid --unlimited-cost --max-output-tokens 32768 --repeats 2 \
+  --prior-report docs/architecture/pi-codemode-evidence/p11-deepseek-initial.json \
+  --prior-report docs/architecture/pi-codemode-evidence/p11-deepseek-retest.json \
+  --prior-report docs/architecture/pi-codemode-evidence/long-tasks-initial.json \
+  --prior-report docs/architecture/pi-codemode-evidence/long-tasks-comparison.json \
+  --output docs/architecture/pi-codemode-evidence/long-tasks-unlimited.json
+```
+
+汇总命令只读证据，不购买请求；下面的 Markdown 输出应使用新文件，避免覆盖本文解读：
+
+```sh
+uv run --frozen python scripts/summarize_long_tasks.py \
+  docs/architecture/pi-codemode-evidence/long-tasks-unlimited.json \
+  --json-output /tmp/yuki-long-task-summary.json \
+  --markdown-output /tmp/yuki-long-task-table.md
+```
+
+原始证据与验证：
+
+- [正式逐次记录](pi-codemode-evidence/long-tasks-unlimited.json)：包括每次答案、调用、
+  HTTP 用量/延迟、原 Work 状态、输入/声明 hash。仅保留合成材料，没有密钥或原始 reasoning。
+- [结构化汇总](pi-codemode-evidence/long-tasks-summary.json)：分组完成率、失败消耗、
+  token、费用及成功样本的同输入配对。
+- [离线局部故障复现](pi-codemode-evidence/long-tasks-unlimited-diagnostics.json)。
+- `long-tasks-initial.json`、`long-tasks-comparison.json` 是探索原始记录；前者曾中断，后者
+  有两组请求额度截断且未使用正式 caller 结算，不能作为最终完整完成对照。
+  `long-tasks-recovery-diagnostics.json` 仅为探索期两行瞬时诊断，不能当作完整故障清单。
+- 付费装配执行器返回 `24 passed in 807.92s`，表示 24 次测量正常返回；独立任务
+  验收是 **16 完成 / 8 未完成**，不是 24 个任务都通过。
+- 本轮未改生产运行时代码、依赖锁或已有测试。全量回归状态见交付记录和
+  [验证记录](pi-codemode-evidence/long-tasks-regression.json)。
+- 全量回归 **3298 通过 / 1 跳过，660.00 秒**；跳过项需要私有生产备份，真实 Monty
+  worker 项均运行。ruff check、format（1138 文件）、mypy（722 源文件）通过。
+  汇总最后一次文案/元数据调整后另外重跑 10 项汇总测试，通过。
+  本轮临时工作区/数据库与全量自有夹具目录已删除，worker/binding 保留。

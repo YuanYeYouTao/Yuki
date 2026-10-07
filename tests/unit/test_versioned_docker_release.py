@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 import subprocess
 import tarfile
@@ -314,15 +313,12 @@ def test_release_smoke_reads_alembic_version_inside_container(
     assert [call[:5] for call in calls] == [
         ("exec", "-T", "bot", "python", "-c"),
         ("exec", "-T", "bot", "python", "-c"),
-        ("exec", "-T", "bot", "qq-ai-bot-cli", "plugin"),
-        ("exec", "-T", "bot", "qq-ai-bot-cli", "setup"),
     ]
-    pending = json.loads((tmp_path / "data/setup/pending.json").read_text(encoding="utf-8"))
-    assert pending == {"schema_version": 1, "selected_plugins": []}
+    assert not (tmp_path / "data/setup/pending.json").exists()
     assert not (tmp_path / "data/qq_ai_bot.db").exists()
 
 
-def test_release_smoke_writes_pending_inside_container_when_host_cannot(
+def test_release_smoke_does_not_write_plugin_state_inside_container(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[tuple[str, ...]] = []
@@ -361,10 +357,10 @@ def test_release_smoke_writes_pending_inside_container_when_host_cannot(
         for call in calls
         if call[:4] == ("exec", "-T", "bot", "python") and "pending.json" in call[-1]
     ]
-    assert pending_writes
+    assert not pending_writes
 
 
-def test_release_smoke_applies_builtin_plugin_pending(
+def test_release_smoke_does_not_mutate_running_plugin_setup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     plugin_root = tmp_path / "plugins/io.github.yuanyeyoutao.kun-game"
@@ -401,9 +397,9 @@ def test_release_smoke_applies_builtin_plugin_pending(
 
     verify_bot(FakeCompose(), tmp_path, VERSION)  # type: ignore[arg-type]
 
-    pending = json.loads((tmp_path / "data/setup/pending.json").read_text(encoding="utf-8"))
-    assert pending["selected_plugins"] == ["io.github.yuanyeyoutao.kun-game"]
-    assert ("up", "-d", "--no-deps", "--force-recreate", "bot") in calls
+    assert not (tmp_path / "data/setup/pending.json").exists()
+    assert ("up", "-d", "--no-deps", "--force-recreate", "bot") not in calls
+    assert not any("apply-pending" in call for call in calls)
 
 
 def test_release_smoke_cleans_root_owned_permission_fixture_in_container(

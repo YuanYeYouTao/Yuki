@@ -116,8 +116,8 @@ def validate_release_identity(root: Path, tag: str) -> str:
     plugin_api = _match_value(
         root / "src/yuki_plugin_sdk/api.py", _PLUGIN_API_PATTERN, "Plugin API version"
     )
-    if plugin_api != "3.2":
-        raise ReleaseValidationError(f"Plugin API must be 3.2, got {plugin_api}")
+    if plugin_api != "3.3":
+        raise ReleaseValidationError(f"Plugin API must be 3.3, got {plugin_api}")
     return tag_version
 
 

@@ -10,6 +10,7 @@ from sqlalchemy.dialects.sqlite import insert
 from tests.conftest import build_harness, make_settings
 from tests.support.runtime_execution import make_work_resumer
 from tests.support.social_identity_cases import social_env
+from tests.support.work_session import WorkSession
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.domain.messages import ChatMessage
@@ -22,8 +23,7 @@ from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_recovery_schema import deliveries, recovery
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
 from qq_ai_bot.runtime.work_scheduler import WorkScheduler
-from qq_ai_bot.runtime.work_schema_v1 import effects, inputs
-from qq_ai_bot.runtime.work_session import WorkSession
+from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, work
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 
 
@@ -62,7 +62,10 @@ async def _paused(database, tmp_path):
     assert await repository.prepare_effect(lease, identity, "business-effect", "tool")
     await repository.record_effect("business-effect", "accepted", {"automation_id": 93})
     await control.session.save("dispatched")
-    await repository.checkpoint(lease, identity, None, models=1, tools=1, active_seconds=7)
+    await repository.checkpoint(lease, identity, None, models=1, tools=1)
+    # Historical accounting survives recovery but is no longer updated by execution.
+    async with database.sessions() as session, session.begin():
+        await session.execute(update(work).where(work.c.id == identity).values(active_seconds=7))
     # A terminal child signal can still be pending when the original source changes.
     await repository.enqueue(
         lease.conversation_id, 1, "terminal-child", kind="completion", work_id=identity

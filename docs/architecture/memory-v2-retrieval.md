@@ -33,7 +33,7 @@ SELF 维持 global/current-private/current-group 可见性。
 ## 目标与意图
 
 主 Agent 只声明 `search_memory`，必填非空 query 默认 hybrid，purpose 默认 recall。
-原有三个 `get_*_memories` 仅保留执行层兼容旧回执，不进入新工具声明。
+原有三个 `get_*_memories` 执行入口已退出；完成回执仍按原 call_id 读取。未知旧调用先核原回执，不重跑。
 非法枚举和无效区间返回 invalid_arguments，不能静默丢弃。
 工具的 effective_query 摘要说明实际模式和时间约束，不包含未授权目标。
 
@@ -46,7 +46,7 @@ SELF 维持 global/current-private/current-group 可见性。
 `search_memory`，不另建短上下文或意图识别 Agent。姓名须通过显式目标解析，SELF 不代替姓名解析；权限拒绝不
 重试，歧义先澄清，空结果只允许有实质区别的补查。生产只记录脱敏参数形状，不存完整入参。
 
-旧自动预取内核仍是内部能力，不再决定正常主请求的长期事实注入。
+主会话预取与空曝光搬运已删除；Plugin/Admin 的统一查询服务仍保留各自真实调用。
 主动工具由正常完整 Main Agent 提供 purpose、entities、preferred kinds、绝对时间范围；
 后端仅为主动查询明确目标补缺省重点，不覆盖已提供 subjects；自动查询没有明确重点时留空，
 不能将所有有权读取目标或当前发言者自动当成主题。意图不能充当权限凭证。

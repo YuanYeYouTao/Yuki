@@ -13,6 +13,7 @@ import pytest
 from PIL import Image
 from pydantic import ValidationError
 from sqlalchemy import event, update
+from tests.support.model_executor import InjectedModelExecutor
 
 from qq_ai_bot.admin.models import EmojiRuntimeConfig, VisionRuntimeConfig
 from qq_ai_bot.automation.authority import PermissionLevel
@@ -676,7 +677,7 @@ async def test_llm_replacement_selects_only_an_existing_candidate(
 
     provider = FakeLLMProvider(lambda _request: json.dumps({"emoji_id": assets[1].id}))
     replacement = EmojiReplacementService(
-        provider,
+        model_executor=InjectedModelExecutor(provider),
         model="fake",
         max_prompt_characters=4000,
     )
@@ -686,7 +687,7 @@ async def test_llm_replacement_selects_only_an_existing_candidate(
 
     invalid_provider = FakeLLMProvider(lambda _request: "not a candidate")
     fallback = EmojiReplacementService(
-        invalid_provider,
+        model_executor=InjectedModelExecutor(invalid_provider),
         model="fake",
         max_prompt_characters=4000,
     )

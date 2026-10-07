@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.messages import ChatMessage
-from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
+from qq_ai_bot.model_runtime.executor import ModelExecutor
 from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.plugin_host.session_repository import (
     PluginAgentMessageRecord,
@@ -61,8 +61,7 @@ class PluginAgentSessionService:
     def __init__(
         self,
         *,
-        provider: ModelCompleter | None = None,
-        model_executor: ModelExecutor | None = None,
+        model_executor: ModelExecutor,
         concurrency: ConcurrencyManager,
         runtime_config: RuntimeConfigService,
         repository: PluginAgentSessionRepository,
@@ -73,11 +72,7 @@ class PluginAgentSessionService:
         self._concurrency = concurrency
         self._runtime_config = runtime_config
         self._repository = repository
-        models = require_model_executor(
-            model_executor,
-            provider=provider,
-            model="fake",
-        )
+        models = model_executor
         self._runner = AgentRunner(
             models,
             concurrency,

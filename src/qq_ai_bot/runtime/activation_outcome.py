@@ -6,6 +6,10 @@ import asyncio
 import sqlite3
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from qq_ai_bot.runtime.work_repository import WorkLease
 
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 
@@ -61,7 +65,14 @@ class WorkNoProgress(RuntimeError):
 
 
 class WorkRecoveryDeferred(RuntimeError):
-    """Recovery persistence failed; durable intents and the expiring lease remain authoritative."""
+    """The exited activation requires a new, valid owner to settle its failure."""
+
+    def __init__(
+        self, message: str, *, lease: WorkLease | None = None, work: dict[str, Any] | None = None
+    ) -> None:
+        super().__init__(message)
+        self.lease = lease
+        self.work = dict(work) if work is not None else None
 
 
 @dataclass(frozen=True)
@@ -89,10 +100,6 @@ def failure_status_text(failure: RuntimeFailure) -> str:
     """Operational status when no owned activation can recover; never provider details."""
     if failure.code == "WorkNoProgress":
         return {
-            "work_start_not_delivered": "工作开始说明尚未确认送达，已暂停并保留已有结果。",
-            "interactive_work_missing_exit": (
-                "工作尚未给出明确的完成或等待决定，已暂停并保留已有结果。"
-            ),
             "repeated_tool_results": "连续取得相同工具结果且没有进展，已暂停并保留已有结果。",
         }.get(
             str(failure.diagnostics.get("reason", "")),
@@ -115,8 +122,6 @@ def failure_status_text(failure: RuntimeFailure) -> str:
         if failure.code == "work_journal_source_changed":
             return "会话资料在处理期间变化，已保留已有结果；请先核对任务状态。"
         return "工作状态发生冲突，已保留已有结果；请稍后核对状态。"
-    if failure.code == "unsent_final_response":
-        return "这次回复没有发出，请稍后重试。"
     if failure.stage == "provider":
         if failure.code in {"LLMAuthenticationError", "LLMConfigurationError"}:
             return "AI 服务配置或认证异常，请联系管理员。"
@@ -162,15 +167,12 @@ def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFa
             diagnostics={"reason": reason}
             if reason
             in {
-                "work_start_not_delivered",
-                "interactive_work_missing_exit",
                 "repeated_tool_results",
             }
             else {},
         )
     if isinstance(exc, ContextBoundaryChanged):
         return RuntimeFailure("context_boundary_changed", "context", True)
-    from qq_ai_bot.prompting.compiler import PromptCapacityError
     from qq_ai_bot.runtime.work_journal import JournalUnavailable
     from qq_ai_bot.runtime.work_repository import WorkCapacityError, WorkConflict
 
@@ -178,11 +180,6 @@ def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFa
         code = str(exc)
         return RuntimeFailure(
             code if code in _JOURNAL_FAILURE_CODES else "work_journal_unavailable", "journal"
-        )
-
-    if isinstance(exc, PromptCapacityError):
-        return RuntimeFailure(
-            "prompt_dynamic_capacity", "capacity", diagnostics={"category": "capacity"}
         )
 
     if isinstance(exc, WorkCapacityError):
@@ -200,7 +197,6 @@ def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFa
     # dispatching/unknown effects remain protected by their durable receipts.
     from qq_ai_bot.gateway.registry import RegistryClosed
     from qq_ai_bot.identity.routing import RouteSendError
-    from qq_ai_bot.services.main_agent_backend import UnsentFinalResponseError
 
     if (
         isinstance(exc, RouteSendError)
@@ -208,8 +204,6 @@ def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFa
         and exc.__cause__.category == "disconnected"
     ):
         return RuntimeFailure("gateway_disconnected", "gateway", True, "not_sent")
-    if isinstance(exc, UnsentFinalResponseError):
-        return RuntimeFailure("unsent_final_response", "agent_output", certainty="not_sent")
     if isinstance(exc, LLMError):
         return RuntimeFailure(
             type(exc).__name__,

@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy import delete, select
 from tests.conftest import build_harness, make_settings
 from tests.support.work_compaction import summary_json
+from tests.support.work_session import WorkSession
 from tests.unit.test_semantic_participation_host import _event_and_route
 from tests.unit.test_work_compaction_capacity import _grow, _runtime
 from tests.unit.test_work_journal_source_retry import _change, _session
@@ -41,7 +42,6 @@ from qq_ai_bot.runtime.work_activation import current_work_control
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_journal import decode_transcript
 from qq_ai_bot.runtime.work_repository import WorkConflict
-from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
 from qq_ai_bot.services.context_assembler import ContextAssembler
 from qq_ai_bot.services.main_agent_contract import MainAgentContract

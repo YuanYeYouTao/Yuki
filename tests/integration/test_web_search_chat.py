@@ -63,7 +63,10 @@ def event(
         raw_text=text,
         group_id=group_id,
         mentions_bot=group_id is not None,
-        segments=({"type": "text", "data": {"text": text}},),
+        segments=(
+            *(({"type": "at", "data": {"qq": "8000"}},) if group_id else ()),
+            {"type": "text", "data": {"text": text}},
+        ),
     )
 
 
@@ -215,6 +218,8 @@ class WebThenOneBotLLM(LLMProvider):
         self.requests: list[ChatRequest] = []
         self._called_onebot = False
         self._web_called = False
+        self._accepted_work = False
+        self._looked_up = False
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
         self.requests.append(request)
@@ -238,7 +243,42 @@ class WebThenOneBotLLM(LLMProvider):
                     ),
                 ),
             )
-        assert "call_onebot_api" in names
+        # The same authorized OneBot binding now has a Code Mode-only model
+        # surface. Query its unchanged schema, accept Work, then invoke it once.
+        assert "call_onebot_api" not in names
+        if not self._looked_up:
+            self._looked_up = True
+            return ChatResponse(
+                "",
+                0,
+                tool_calls=(
+                    ToolCall(
+                        "lookup-onebot", ToolFunction("lookup_tools", '{"name":"call_onebot_api"}')
+                    ),
+                ),
+            )
+        if not self._accepted_work:
+            self._accepted_work = True
+            return ChatResponse(
+                "",
+                0,
+                tool_calls=(
+                    ToolCall(
+                        "accept-onebot",
+                        ToolFunction(
+                            "task_control",
+                            json.dumps(
+                                {
+                                    "action": "accept",
+                                    "goal": "联网后执行已授权发送",
+                                    "output_kind": "state_change",
+                                    "reporting": "quiet",
+                                }
+                            ),
+                        ),
+                    ),
+                ),
+            )
         if not self._called_onebot:
             self._called_onebot = True
             return ChatResponse(
@@ -248,10 +288,14 @@ class WebThenOneBotLLM(LLMProvider):
                     ToolCall(
                         id="authorized-onebot",
                         function=ToolFunction(
-                            name="call_onebot_api",
-                            arguments=(
-                                '{"action":"send_private_msg",'
-                                '"params":{"user_id":"12345678","message":"授权发送"}}'
+                            name="execute_code",
+                            arguments=json.dumps(
+                                {
+                                    "code": "r = await yuki_call_onebot_api("
+                                    "{'action':'send_private_msg',"
+                                    "'params':{'user_id':'12345678','message':'授权发送'}})\n"
+                                    "{'ok': r['ok']}"
+                                }
                             ),
                         ),
                     ),
@@ -391,7 +435,7 @@ def web_settings(database: Database):
 
 
 @pytest.mark.asyncio
-async def test_native_web_sources_are_persisted_without_implicit_rendering(
+async def test_native_web_sources_stay_in_original_response_without_secondary_index(
     database: Database,
 ) -> None:
     settings = make_settings(
@@ -448,7 +492,7 @@ async def test_native_web_sources_are_persisted_without_implicit_rendering(
         conversation_key="bot:8000:private:1001",
         trigger_event_id=source.id,
     )
-    assert [source.url for source in stored] == ["https://example.com/native-docs"]
+    assert stored == ()
 
 
 @pytest.mark.asyncio
@@ -661,10 +705,10 @@ async def test_web_failure_is_returned_to_llm_for_a_natural_answer(database: Dat
         sender,
     )
 
-    assert result.reason == "agent_output_failure"
+    assert result.reason == "chat"
     # The fake receives the search failure but never calls send_message. Its
     # unsent final response is not a model-provider availability failure.
-    assert sender.messages[0].text == "这次回复没有发出，请稍后重试。"
+    assert not sender.messages
 
 
 @pytest.mark.asyncio
@@ -672,24 +716,66 @@ async def test_web_lookup_can_be_followed_by_superuser_onebot_tool(
     database: Database, tmp_path
 ) -> None:
     llm = WebThenOneBotLLM()
+    import hashlib
+
+    from tests.support.codemode_cases import BINARY, BINDING
+
+    if not BINDING or not BINARY.is_file():
+        pytest.skip("OneBot tiered calling syntax requires the pinned Monty worker/binding")
+    settings = web_settings(database).model_copy(
+        update={
+            "runtime_work_enabled": True,
+            "code_mode_worker_path": BINARY,
+            "code_mode_worker_sha256": hashlib.sha256(BINARY.read_bytes()).hexdigest(),
+        }
+    )
     harness = build_harness(
         database,
-        web_settings(database),
+        settings,
         llm,
         web_provider=FakeWebSearchProvider(response=web_response()),
     )
     bind_main_contract(harness, tmp_path)
+    harness.processor._chat.runtime.runner.code_mode_settings = settings
     sender = ToolGatewaySender()
 
+    # Code Mode needs a real canonical Work source; the earlier direct-only
+    # fixture used an anonymous legacy event. Preserve the same superuser and
+    # gateway action while binding its genuine private conversation identity.
+    from dataclasses import replace
+
+    from sqlalchemy import select
+
+    from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
+    from qq_ai_bot.persistence.models import ChatEventModel
+    from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+
+    writer = ScopedEventLedgerUnitOfWork(database, config=RollupPolicyConfig())
+    await writer.append(
+        scope=ConversationScope.private("8000", "9000"),
+        platform_message_id="web-seed",
+        sender_user_id="9000",
+        direction="inbound",
+        content="canonical web context",
+    )
+    async with database.sessions() as session:
+        seed = await session.scalar(select(ChatEventModel))
+        inbound = replace(
+            event("联网查看后回答", message_id="web-admin", user_id="9000"),
+            person_id=seed.author_person_id,
+            presence_id=seed.ingress_presence_id,
+            conversation_id=seed.canonical_conversation_id,
+        )
+
     result = await harness.processor.handle(
-        event("联网查看后回答", message_id="web-admin", user_id="9000"),
+        inbound,
         sender,
     )
 
     assert result.reason == "chat"
     assert sender.api_calls == [
         ("send_private_msg", {"user_id": "12345678", "message": "授权发送"})
-    ]
+    ], [(m.tool_call_id, m.content) for m in llm.requests[-1].messages if m.role == "tool"]
     assert not sender.messages
 
 
@@ -734,7 +820,7 @@ async def test_spoken_search_phrase_exposes_web_search_in_native_first_mode(
         event("这个说法你搜下", message_id="spoken-search"),
         MemorySender(),
     )
-    assert result.reason == "agent_output_failure"
+    assert result.reason == "chat"
     assert llm.requests
     first = llm.requests[0]
     assert "web_search" in {tool.name for tool in first.tools}
@@ -868,7 +954,6 @@ async def test_native_failure_with_explicit_local_fallback_keeps_protocol_and_se
         ),
         bot_user_id="80001",
         conversation_id=env.context.conversation_id,
-        legacy_conversation_key=ConversationScope.group("80001", "20001").key,
         person_id=env.person,
         space_id=env.space,
         presence_id=env.presence,
@@ -918,6 +1003,7 @@ async def test_native_failure_with_explicit_local_fallback_keeps_protocol_and_se
         conversation_key="bot:80001:group:20001",
         trigger_event_id=source.id,
     )
+    # The explicit fallback Host tool still owns its source records.
     assert [item.url for item in stored] == ["https://example.com/deepseek-update"]
 
 
@@ -936,7 +1022,7 @@ async def test_public_url_keeps_stable_external_web_tools(
         event("https://docs.example.org/required-page", message_id="url-pin"),
         MemorySender(),
     )
-    assert result.reason == "agent_output_failure"
+    assert result.reason == "chat"
     assert llm.requests
     first = llm.requests[0]
     names = {tool.name for tool in first.tools}

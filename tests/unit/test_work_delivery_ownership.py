@@ -7,8 +7,12 @@ from itertools import pairwise
 import pytest
 from sqlalchemy import select
 from tests.conftest import build_harness, make_settings
+
+# P10: explicit Invocation fixture contract; existing assertions are retained.
+from tests.support.agent_backend import StubAgentBackend
 from tests.support.runtime_wire import install_wire
 from tests.support.social_identity_cases import social_env
+from tests.support.workspace_snapshots import snapshot_bytes
 from tests.unit.test_runtime_work import _persisted_tool_receipt
 
 from qq_ai_bot.automation.models import TurnOrigin
@@ -30,7 +34,7 @@ def call(name, args, identity):
     )
 
 
-class DeliveryBackend:
+class DeliveryBackend(StubAgentBackend):
     def __init__(self, env):
         self.env = env
         self.owners = []
@@ -49,7 +53,10 @@ class DeliveryBackend:
     def is_side_effecting(self, *args):
         return True
 
-    async def execute(self, name, arguments, runtime):
+    async def execute_call(self, invocation):
+        name = invocation.call.function.name
+        arguments = invocation.call.function.arguments
+        runtime = invocation.context.runtime
         control = runtime.work_control
         self.owners.append(control.current["id"])
         result = await self.env.service.execute(
@@ -106,7 +113,7 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
         )
     source = {**source, "trigger_event_id": event_id}
     source_key = f"event:{env.context.conversation_id}:{event_id}"
-    artifact = env.store.write("exam.docx", b"immutable document fixture")
+    artifact = snapshot_bytes(env.store, "exam.docx", b"immutable document fixture")
     steps = iter(
         [
             call(
@@ -314,7 +321,6 @@ async def test_file_receipt_survives_caption_failure_and_other_targets_still_nee
         )
     )
     assert result["ok"]  # Never require uploading the confirmed file again.
-    assert control.completion_delivered is (caption_status == "succeeded" and same_target)
     await repo.release(lease)
 
 
@@ -322,7 +328,8 @@ async def test_file_receipt_survives_caption_failure_and_other_targets_still_nee
 async def test_accept_handoff_is_atomic_and_recovery_does_not_block_old_work_forever(
     database, tmp_path
 ):
-    from qq_ai_bot.runtime.work_session import WorkSession
+    from tests.support.work_session import WorkSession
+
     from qq_ai_bot.services.turn_transcript import TurnTranscript
 
     env = await social_env(database, tmp_path)

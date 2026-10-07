@@ -13,11 +13,13 @@ from sqlalchemy.exc import OperationalError
 from tests.conftest import MemorySender, build_harness, make_settings
 from tests.integration.test_automation_unified_delivery import setup_run
 from tests.integration.test_web_search_chat import install_native_response_wire, native_response
+from tests.support.agent_backend import StubAgentBackend
 from tests.support.fixed_contract_fixture import bind_main_contract
 from tests.support.social_identity_cases import social_env
+from tests.support.work_session import WorkSession
 
 from qq_ai_bot.automation.models import RunStatus
-from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
+from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import (
     ChatMessage,
     ChatRequest,
@@ -59,7 +61,7 @@ from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_journal import decode_transcript, encode_transcript
 from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import work
-from qq_ai_bot.runtime.work_session import WorkSession
+from qq_ai_bot.runtime.work_session import WorkSession as RuntimeWorkSession
 from qq_ai_bot.services.agent_runner import AgentRuntime
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 from qq_ai_bot.web.models import WebMode
@@ -186,7 +188,6 @@ async def test_confirmed_send_native_empty_tail_stops_without_failure_or_paid_re
                 group_id="20001",
                 mentions_bot=True,
                 conversation_id=env.context.conversation_id,
-                legacy_conversation_key=ConversationScope.group("80001", "20001").key,
                 person_id=env.person,
                 space_id=env.space,
                 presence_id=env.presence,
@@ -306,7 +307,7 @@ async def test_completed_caller_native_empty_keeps_real_delivery_and_paid_privat
                 raise OperationalError("INSERT", {}, error)
             return await original_save(self, phase, *args, **kwargs)
 
-        monkeypatch.setattr(WorkSession, "save", fail_tail_checkpoint)
+        monkeypatch.setattr(RuntimeWorkSession, "save", fail_tail_checkpoint)
     try:
         result = await case.executor.execute(case.row, case.run)
     finally:
@@ -677,7 +678,7 @@ async def test_runner_suspends_paid_native_boundary_without_requeue_or_local_exe
                 raise OperationalError("INSERT", {}, error)
             return await original_save(self, phase, *args, **kwargs)
 
-        monkeypatch.setattr(WorkSession, "save", fail_received_checkpoint)
+        monkeypatch.setattr(RuntimeWorkSession, "save", fail_received_checkpoint)
     env = await social_env(database, tmp_path)
     repository = WorkRepository(database)
     lease = await repository.acquire(env.context.conversation_id, 1)
@@ -769,9 +770,13 @@ async def test_runner_suspends_paid_native_boundary_without_requeue_or_local_exe
             ),
             pool=ModelClientPool(injected_profiles={profile.id: provider}),
         )
-        backend = type("Backend", (), {})()
+        # Retain native guard assertions with the experiment's typed Invocations.
+        # with a complete inert backend instead of main's legacy execute fixture.
+        backend = StubAgentBackend()
         backend.definitions = lambda *args, **kwargs: fixed
-        backend.execute = AsyncMock(side_effect=AssertionError("ambiguous calls must not execute"))
+        backend.execute_call = AsyncMock(
+            side_effect=AssertionError("ambiguous calls must not execute")
+        )
         runtime = AgentRuntime(
             origin=TurnOrigin.USER_MESSAGE,
             actor_user_id="1001",
@@ -794,7 +799,7 @@ async def test_runner_suspends_paid_native_boundary_without_requeue_or_local_exe
             (ChatMessage("system", "fixed"), runtime.compaction_brief), runtime, backend
         )
     assert len(wire) == 1
-    backend.execute.assert_not_awaited()
+    backend.execute_call.assert_not_awaited()
     assert result.work_state == "suspended"
     assert not result.outcome.failure.retryable
     assert result.outcome.failure.code == (
@@ -943,9 +948,11 @@ async def test_native_transport_unknown_suspends_original_work_without_automatic
             ),
             pool=ModelClientPool(injected_profiles={profile.id: provider}),
         )
-        backend = type("Backend", (), {})()
+        # Retain native guard assertions with the experiment's typed Invocations.
+        # with a complete inert backend instead of main's legacy execute fixture.
+        backend = StubAgentBackend()
         backend.definitions = lambda *_args, **_kwargs: fixed
-        backend.execute = AsyncMock(side_effect=AssertionError("no tool execution"))
+        backend.execute_call = AsyncMock(side_effect=AssertionError("no tool execution"))
         before = (
             AsyncMock(side_effect=LLMUnavailableError("admission unavailable"))
             if failure == "predispatch"
@@ -973,7 +980,7 @@ async def test_native_transport_unknown_suspends_original_work_without_automatic
         result = await chat.runtime.runner.run(
             (ChatMessage("system", "fixed"), runtime.compaction_brief), runtime, backend
         )
-    backend.execute.assert_not_awaited()
+    backend.execute_call.assert_not_awaited()
     persisted = await repository.get(control.current["id"])
     assert persisted["tool_calls"] == 0
     if failure == "predispatch":

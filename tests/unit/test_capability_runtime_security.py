@@ -13,9 +13,6 @@ from qq_ai_bot.capabilities.catalog import (
 )
 from qq_ai_bot.capabilities.exposure import (
     NO_LONGER_AUTHORIZED,
-    SCHEMA_REVISION_CONFLICT,
-    DeclaredSchemaLedger,
-    stable_exposure_plan,
 )
 from qq_ai_bot.capabilities.models import (
     AuthorityContext,
@@ -132,58 +129,6 @@ def test_remote_ref_schema_is_quarantined() -> None:
     assert result.error_category == "capability_schema_quarantined"
 
 
-def test_undeclared_and_revoked_tools_are_rejected() -> None:
-    search = _entry(_descriptor("web_search", namespace="web.search"))
-    mutate = _entry(
-        _descriptor(
-            "memory_change",
-            namespace="memory.state.write",
-            effect=CapabilityEffect.WRITE_STATE,
-            risk=CapabilityRisk.MUTATE,
-        )
-    )
-    # Completions may shrink declared schemas; Responses keep revoked tools declared.
-    ledger = DeclaredSchemaLedger(registry_revision="abc", append_only=True)
-    ledger.declare(
-        (search, mutate),
-        callable_ids=frozenset({"web_search", "memory_change"}),
-    )
-    assert "web_search" in ledger.callable_ids
-    ledger.declare((mutate,), callable_ids=frozenset({"memory_change"}))
-    assert "web_search" in ledger.declared
-    assert "web_search" not in ledger.callable_ids
-    validator = JsonSchemaCapabilityValidator()
-    validator.admit((search, mutate))
-    assert "web_search" not in ledger.callable_ids
-    revoked = NO_LONGER_AUTHORIZED
-    assert revoked == "capability_no_longer_authorized"
-
-
-def test_append_only_schema_revision_conflict() -> None:
-    first = _entry(_descriptor("web_search", namespace="web.search", revision="1"))
-    second = _entry(_descriptor("web_search", namespace="web.search", revision="2"))
-    ledger = DeclaredSchemaLedger(registry_revision="abc", append_only=True)
-    assert ledger.declare((first,), callable_ids=frozenset({"web_search"})) is None
-    conflict = ledger.declare((second,), callable_ids=frozenset({"web_search"}))
-    assert conflict == SCHEMA_REVISION_CONFLICT
-    third = _entry(_descriptor("read_webpage", namespace="web.read", revision="1"))
-    blocked = ledger.declare((third,), callable_ids=frozenset({"web_search", "read_webpage"}))
-    assert blocked == SCHEMA_REVISION_CONFLICT
-
-
-def test_append_only_can_add_new_tools_without_dropping_old() -> None:
-    search = _entry(_descriptor("web_search", namespace="web.search"))
-    page = _entry(_descriptor("read_webpage", namespace="web.read"))
-    ledger = DeclaredSchemaLedger(registry_revision="abc", append_only=True)
-    ledger.declare(
-        (search,),
-        callable_ids=frozenset({"web_search"}),
-    )
-    ledger.declare((search, page), callable_ids=frozenset({"web_search", "read_webpage"}))
-    names = {tool.name for tool in ledger.declared_tools()}
-    assert names == {"web_search", "read_webpage"}
-
-
 def test_namespace_is_not_a_permission() -> None:
     plugin = _descriptor(
         "plugin__x__admin_set_config",
@@ -215,7 +160,7 @@ def test_image_turns_do_not_replace_execution_authority() -> None:
         effect=CapabilityEffect.PLATFORM_MUTATE,
         risk=CapabilityRisk.MUTATE,
     )
-    read = _descriptor("get_person_memories", namespace="memory.person.read")
+    read = _descriptor("search_memory", namespace="memory.person.read")
     environment = tuple(
         _descriptor(
             name,
@@ -223,7 +168,7 @@ def test_image_turns_do_not_replace_execution_authority() -> None:
             effect=CapabilityEffect.WRITE_STATE,
             risk=CapabilityRisk.MUTATE,
         )
-        for name in ("terminal_exec", "run_python", "workspace_write")
+        for name in ("terminal_exec", "terminal_exec", "workspace_write")
     )
     visible = CapabilityPolicyEngine().visible(
         (write, mutate, read, *environment),
@@ -236,47 +181,11 @@ def test_image_turns_do_not_replace_execution_authority() -> None:
     assert [item.model_name for item in visible] == [
         "memory_change",
         "call_onebot_api",
-        "get_person_memories",
+        "search_memory",
         "terminal_exec",
-        "run_python",
+        "terminal_exec",
         "workspace_write",
     ]
-
-
-def test_exclusive_write_hides_other_business_writes() -> None:
-    memory_write = _descriptor(
-        "memory_change",
-        namespace="memory.state.write",
-        effect=CapabilityEffect.WRITE_STATE,
-        risk=CapabilityRisk.MUTATE,
-    )
-    admin_write = _descriptor(
-        "admin_set_config",
-        namespace="admin.config.write",
-        effect=CapabilityEffect.WRITE_STATE,
-        risk=CapabilityRisk.MUTATE,
-        permissions=frozenset({"superuser"}),
-    )
-    view = MemoryCapabilityView(
-        eager_namespaces=(),
-        requestable_namespaces=("memory.state.write",),
-        hidden_namespaces=(),
-        exclusive_namespace="memory.state.write",
-        transition_revision=1,
-    )
-    visible = CapabilityPolicyEngine().visible(
-        (memory_write, admin_write),
-        CapabilityPolicyContext(
-            authority=AuthorityContext(
-                actor_user_id="u1",
-                is_superuser=True,
-                permissions=frozenset({"superuser"}),
-            ),
-            origin=TurnOrigin.USER_MESSAGE,
-            memory_view=view,
-        ),
-    )
-    assert [item.model_name for item in visible] == ["memory_change"]
 
 
 def test_read_only_origin_hides_destructive_and_writes() -> None:
@@ -365,7 +274,6 @@ def _runtime(
             origin=TurnOrigin.USER_MESSAGE,
             memory_view=memory_view,
         ),
-        append_only=append_only,
     )
 
 
@@ -402,123 +310,3 @@ def test_stable_declarations_are_complete_while_execution_remains_authorized() -
         False,
         "undeclared_tool",
     )
-
-
-def test_memory_exclusive_write_changes_grants_without_changing_declarations() -> None:
-    runtime = _runtime(
-        _entry(_descriptor("web_search", namespace="web.search")),
-        _entry(
-            _descriptor(
-                "memory_change",
-                namespace="memory.state.write",
-                effect=CapabilityEffect.WRITE_STATE,
-                risk=CapabilityRisk.MUTATE,
-            )
-        ),
-    )
-    runtime.initial_exposure()
-    names = [tool.name for tool in runtime.definitions()]
-    view = MemoryCapabilityView(
-        eager_namespaces=(),
-        requestable_namespaces=("memory.state.write",),
-        hidden_namespaces=(),
-        exclusive_namespace="memory.state.write",
-        transition_revision=1,
-    )
-    runtime.sync_memory_view(view)
-    assert [tool.name for tool in runtime.definitions()] == names
-    assert runtime.callable_capability_ids() == frozenset({"memory_change"})
-    assert runtime.validate_call("web_search", '{"query":"x"}') == (
-        False,
-        NO_LONGER_AUTHORIZED,
-    )
-
-
-def test_memory_exclusive_user_feedback_keeps_only_core_reply_and_original_declarations():
-    view = MemoryCapabilityView(
-        eager_namespaces=("memory.state.write",),
-        requestable_namespaces=(),
-        hidden_namespaces=(),
-        exclusive_namespace="memory.state.write",
-        transition_revision=1,
-    )
-    send = _descriptor(
-        "send_message",
-        namespace="social.send",
-        effect=CapabilityEffect.PLATFORM_SEND,
-        risk=CapabilityRisk.MUTATE,
-    )
-    entries = (
-        _entry(send),
-        _entry(
-            _descriptor(
-                "other_send", namespace="social.send", effect=CapabilityEffect.PLATFORM_SEND
-            )
-        ),
-        _entry(
-            _descriptor(
-                "poke_person", namespace="social.poke", effect=CapabilityEffect.PLATFORM_MUTATE
-            )
-        ),
-        _entry(
-            _descriptor(
-                "workspace_write", namespace="workspace.write", effect=CapabilityEffect.WRITE_STATE
-            )
-        ),
-        _entry(
-            _descriptor(
-                "memory_change", namespace="memory.state.write", effect=CapabilityEffect.WRITE_STATE
-            )
-        ),
-    )
-    runtime = _runtime(*entries)
-    runtime.initial_exposure()
-    original = runtime.definitions()
-    runtime.sync_memory_view(view)
-    assert runtime.definitions() == original
-    assert runtime.callable_capability_ids() == frozenset({"send_message", "memory_change"})
-    assert runtime.validate_call("send_message", '{"query":"feedback"}') == (True, None)
-    for name in ("other_send", "poke_person", "workspace_write"):
-        assert runtime.validate_call(name, '{"query":"x"}') == (False, NO_LONGER_AUTHORIZED)
-    for origin, read_only, descriptor in (
-        (TurnOrigin.USER_MESSAGE, True, send),
-        (TurnOrigin.SELF_INITIATIVE, False, send),
-        (TurnOrigin.SCHEDULED_AUTOMATION, False, send),
-        (TurnOrigin.PLUGIN_BACKGROUND, False, send),
-        (TurnOrigin.USER_MESSAGE, False, replace(send, trust_source=CapabilityTrustSource.PLUGIN)),
-        (TurnOrigin.USER_MESSAGE, False, replace(send, namespace="unrelated.send")),
-    ):
-        visible = CapabilityPolicyEngine().visible(
-            (descriptor,),
-            CapabilityPolicyContext(
-                authority=AuthorityContext(actor_user_id="u1", is_superuser=False),
-                origin=origin,
-                read_only=read_only,
-                memory_view=view,
-            ),
-        )
-        assert not visible
-
-
-def test_schema_conflict_rebuilds_only_without_side_effects() -> None:
-    first = _entry(_descriptor("web_search", namespace="web.search", revision="1"))
-    runtime = _runtime(first, append_only=True)
-    runtime.initial_exposure()
-    second = _entry(_descriptor("web_search", namespace="web.search", revision="2"))
-    runtime._plan = stable_exposure_plan(
-        catalog=UnifiedToolCatalog(entries=(second,), scopes=(), revision="abcd1234"),
-        requestable_ids=frozenset({"web_search"}),
-        memory_view=None,
-    )
-    assert runtime._apply_plan(runtime._plan) == SCHEMA_REVISION_CONFLICT
-    runtime.mark_side_effect()
-    assert runtime.can_rebuild_provider_chain() is False
-    assert runtime.rebuild_after_schema_conflict() is False
-
-    clean = _runtime(first, append_only=True)
-    clean.initial_exposure()
-    clean._plan = runtime._plan
-    assert clean._apply_plan(clean._plan) == SCHEMA_REVISION_CONFLICT
-    assert clean.rebuild_after_schema_conflict() is True
-    assert clean.consume_provider_chain_restart() is True
-    assert clean.consume_provider_chain_restart() is False

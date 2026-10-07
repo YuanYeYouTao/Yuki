@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from tests.support.workspace_snapshots import snapshot_bytes
 
 from qq_ai_bot.sandbox.client import sandbox_tools
 from qq_ai_bot.sandbox.environment_tools import SANDBOX_TOOLS
@@ -17,7 +18,7 @@ from qq_ai_bot.workspace.tools import WORKSPACE_TOOLS, workspace_tools
 
 def test_snapshots_are_persistent_immutable_and_old_schema_compatible(tmp_path: Path, monkeypatch):
     store = WorkspaceStore(tmp_path / "artifacts")
-    old = store.write("old.txt", b"old")
+    old = snapshot_bytes(store, "old.txt", b"old")
     source = tmp_path / "source.txt"
     source.write_bytes(b"snapshot")
     with source.open("rb") as stream:
@@ -27,8 +28,8 @@ def test_snapshots_are_persistent_immutable_and_old_schema_compatible(tmp_path: 
     store.cleanup()
     assert store.read(old["artifact_id"])["text"] == "old"
     assert store.read(frozen["artifact_id"])["text"] == "snapshot"
-    with pytest.raises(WorkspaceError, match="immutable"):
-        store.write("published.txt", b"new", artifact_id=frozen["artifact_id"], expected_revision=1)
+    with pytest.raises(WorkspaceError, match="snapshot_identity_conflict"):
+        snapshot_bytes(store, "published.txt", b"new", artifact_id=frozen["artifact_id"])
     with sqlite3.connect(store.root / "manifest.sqlite3") as db:
         assert len(db.execute("PRAGMA table_info(artifacts)").fetchall()) == 9
 
@@ -84,7 +85,7 @@ def test_migration_preserves_ids_collisions_and_reserved_names(tmp_path: Path):
 
     store = WorkspaceStore(tmp_path / "artifacts")
     originals = [
-        store.write(name, data)
+        snapshot_bytes(store, name, data)
         for name, data in [
             ("same.txt", b"one"),
             ("same.txt", b"two"),

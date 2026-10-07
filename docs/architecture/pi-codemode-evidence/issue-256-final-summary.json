@@ -1,0 +1,539 @@
+{
+  "attempted": 6,
+  "completed": 6,
+  "goal_completed": 6,
+  "all_groups_same_input": true,
+  "all_groups_same_serialized_tools": true,
+  "groups": [
+    {
+      "task": "batch_ledger",
+      "loop": "new",
+      "mode": "direct",
+      "completed": 1,
+      "attempted": 1,
+      "mean_completion_fraction": 1.0,
+      "median_seconds_completed_only": 98.20152816711925,
+      "median_requests_completed_only": 8,
+      "total_seconds_all_attempts": 98.20152816711925,
+      "total_known_peak_usd": 0.038828628,
+      "cost_per_completed_task_including_failures_usd": 0.038828628,
+      "unknown_usage_calls": 0,
+      "physical_requests_all_attempts": 8,
+      "tokens_all_attempts": {
+        "input": 308231,
+        "cached": 300288,
+        "output": 28870
+      }
+    },
+    {
+      "task": "batch_ledger",
+      "loop": "new",
+      "mode": "code",
+      "completed": 1,
+      "attempted": 1,
+      "mean_completion_fraction": 1.0,
+      "median_seconds_completed_only": 13.27640587510541,
+      "median_requests_completed_only": 5,
+      "total_seconds_all_attempts": 13.27640587510541,
+      "total_known_peak_usd": 0.004168908,
+      "cost_per_completed_task_including_failures_usd": 0.004168908,
+      "unknown_usage_calls": 0,
+      "physical_requests_all_attempts": 5,
+      "tokens_all_attempts": {
+        "input": 106437,
+        "cached": 103168,
+        "output": 2141
+      }
+    },
+    {
+      "task": "dependency_chain",
+      "loop": "new",
+      "mode": "direct",
+      "completed": 1,
+      "attempted": 1,
+      "mean_completion_fraction": 1.0,
+      "median_seconds_completed_only": 27.0150302501861,
+      "median_requests_completed_only": 22,
+      "total_seconds_all_attempts": 27.0150302501861,
+      "total_known_peak_usd": 0.007382639999999999,
+      "cost_per_completed_task_including_failures_usd": 0.007382639999999999,
+      "unknown_usage_calls": 0,
+      "physical_requests_all_attempts": 22,
+      "tokens_all_attempts": {
+        "input": 482552,
+        "cached": 477440,
+        "output": 2487
+      }
+    },
+    {
+      "task": "dependency_chain",
+      "loop": "new",
+      "mode": "code",
+      "completed": 1,
+      "attempted": 1,
+      "mean_completion_fraction": 1.0,
+      "median_seconds_completed_only": 7.4349720410536975,
+      "median_requests_completed_only": 3,
+      "total_seconds_all_attempts": 7.4349720410536975,
+      "total_known_peak_usd": 0.00298452,
+      "cost_per_completed_task_including_failures_usd": 0.00298452,
+      "unknown_usage_calls": 0,
+      "physical_requests_all_attempts": 3,
+      "tokens_all_attempts": {
+        "input": 62670,
+        "cached": 59520,
+        "output": 1402
+      }
+    },
+    {
+      "task": "resumed_work",
+      "loop": "new",
+      "mode": "direct",
+      "completed": 1,
+      "attempted": 1,
+      "mean_completion_fraction": 1.0,
+      "median_seconds_completed_only": 86.57401137496345,
+      "median_requests_completed_only": 32,
+      "total_seconds_all_attempts": 86.57401137496345,
+      "total_known_peak_usd": 0.035306016,
+      "cost_per_completed_task_including_failures_usd": 0.035306016,
+      "unknown_usage_calls": 0,
+      "physical_requests_all_attempts": 32,
+      "tokens_all_attempts": {
+        "input": 800980,
+        "cached": 766336,
+        "output": 16929
+      }
+    },
+    {
+      "task": "resumed_work",
+      "loop": "new",
+      "mode": "code",
+      "completed": 1,
+      "attempted": 1,
+      "mean_completion_fraction": 1.0,
+      "median_seconds_completed_only": 26.490286458050832,
+      "median_requests_completed_only": 7,
+      "total_seconds_all_attempts": 26.490286458050832,
+      "total_known_peak_usd": 0.00889278,
+      "cost_per_completed_task_including_failures_usd": 0.00889278,
+      "unknown_usage_calls": 0,
+      "physical_requests_all_attempts": 7,
+      "tokens_all_attempts": {
+        "input": 176025,
+        "cached": 170880,
+        "output": 5270
+      }
+    }
+  ],
+  "trials": [
+    {
+      "task": "dependency_chain",
+      "repeat": 0,
+      "loop": "new",
+      "mode": "code",
+      "completed": true,
+      "goal_completed": true,
+      "completion_fraction": 1.0,
+      "correct_artifacts": true,
+      "work_state": "completed",
+      "stopped_for_stall": false,
+      "failures": [],
+      "seconds_spent": 7.4349720410536975,
+      "first_correct_artifact_seconds": 5.885938416002318,
+      "physical_requests": 3,
+      "logical_requests": 3,
+      "context": {
+        "total_message_bytes": 63406,
+        "peak_message_bytes": 28336,
+        "total_tool_receipt_characters": 6307,
+        "measured": true
+      },
+      "tokens": {
+        "input": 62670,
+        "cached": 59520,
+        "output": 1402
+      },
+      "known_usage_peak_usd": 0.00298452,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 1,
+      "code_used": true,
+      "segment_tools": 80,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0,
+      "audit_order_verified": true
+    },
+    {
+      "task": "batch_ledger",
+      "repeat": 0,
+      "loop": "new",
+      "mode": "direct",
+      "completed": true,
+      "goal_completed": true,
+      "completion_fraction": 1.0,
+      "correct_artifacts": true,
+      "work_state": "completed",
+      "stopped_for_stall": false,
+      "failures": [],
+      "seconds_spent": 98.20152816711925,
+      "first_correct_artifact_seconds": 94.23949025012553,
+      "physical_requests": 8,
+      "logical_requests": 8,
+      "context": {
+        "total_message_bytes": 515287,
+        "peak_message_bytes": 103904,
+        "total_tool_receipt_characters": 79338,
+        "measured": true
+      },
+      "tokens": {
+        "input": 308231,
+        "cached": 300288,
+        "output": 28870
+      },
+      "known_usage_peak_usd": 0.038828628,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 1,
+      "code_used": false,
+      "segment_tools": 80,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0,
+      "audit_order_verified": true
+    },
+    {
+      "task": "batch_ledger",
+      "repeat": 0,
+      "loop": "new",
+      "mode": "code",
+      "completed": true,
+      "goal_completed": true,
+      "completion_fraction": 1.0,
+      "correct_artifacts": true,
+      "work_state": "completed",
+      "stopped_for_stall": false,
+      "failures": [],
+      "seconds_spent": 13.27640587510541,
+      "first_correct_artifact_seconds": 8.596984750125557,
+      "physical_requests": 5,
+      "logical_requests": 5,
+      "context": {
+        "total_message_bytes": 112550,
+        "peak_message_bytes": 29653,
+        "total_tool_receipt_characters": 12785,
+        "measured": true
+      },
+      "tokens": {
+        "input": 106437,
+        "cached": 103168,
+        "output": 2141
+      },
+      "known_usage_peak_usd": 0.004168908,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 1,
+      "code_used": true,
+      "segment_tools": 80,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0,
+      "audit_order_verified": true
+    },
+    {
+      "task": "resumed_work",
+      "repeat": 0,
+      "loop": "new",
+      "mode": "code",
+      "completed": true,
+      "goal_completed": true,
+      "completion_fraction": 1.0,
+      "correct_artifacts": true,
+      "work_state": "completed",
+      "stopped_for_stall": false,
+      "failures": [],
+      "seconds_spent": 26.490286458050832,
+      "first_correct_artifact_seconds": 10.916096250060946,
+      "physical_requests": 7,
+      "logical_requests": 7,
+      "context": {
+        "total_message_bytes": 256461,
+        "peak_message_bytes": 49126,
+        "total_tool_receipt_characters": 46945,
+        "measured": true
+      },
+      "tokens": {
+        "input": 176025,
+        "cached": 170880,
+        "output": 5270
+      },
+      "known_usage_peak_usd": 0.00889278,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 7,
+      "code_used": true,
+      "segment_tools": 5,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0,
+      "audit_order_verified": true
+    },
+    {
+      "task": "resumed_work",
+      "repeat": 0,
+      "loop": "new",
+      "mode": "direct",
+      "completed": true,
+      "goal_completed": true,
+      "completion_fraction": 1.0,
+      "correct_artifacts": true,
+      "work_state": "completed",
+      "stopped_for_stall": false,
+      "failures": [],
+      "seconds_spent": 86.57401137496345,
+      "first_correct_artifact_seconds": 9.451703582890332,
+      "physical_requests": 32,
+      "logical_requests": 32,
+      "context": {
+        "total_message_bytes": 1093850,
+        "peak_message_bytes": 52677,
+        "total_tool_receipt_characters": 30650,
+        "measured": true
+      },
+      "tokens": {
+        "input": 800980,
+        "cached": 766336,
+        "output": 16929
+      },
+      "known_usage_peak_usd": 0.035306016,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 6,
+      "code_used": false,
+      "segment_tools": 5,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0,
+      "audit_order_verified": true
+    },
+    {
+      "task": "dependency_chain",
+      "repeat": 0,
+      "loop": "new",
+      "mode": "direct",
+      "completed": true,
+      "goal_completed": true,
+      "completion_fraction": 1.0,
+      "correct_artifacts": true,
+      "work_state": "completed",
+      "stopped_for_stall": false,
+      "failures": [],
+      "seconds_spent": 27.0150302501861,
+      "first_correct_artifact_seconds": 24.513022208120674,
+      "physical_requests": 22,
+      "logical_requests": 22,
+      "context": {
+        "total_message_bytes": 560588,
+        "peak_message_bytes": 35727,
+        "total_tool_receipt_characters": 76967,
+        "measured": true
+      },
+      "tokens": {
+        "input": 482552,
+        "cached": 477440,
+        "output": 2487
+      },
+      "known_usage_peak_usd": 0.007382639999999999,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 1,
+      "code_used": false,
+      "segment_tools": 80,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0,
+      "audit_order_verified": true
+    }
+  ],
+  "completed_same_input_pairs": [
+    {
+      "task": "dependency_chain",
+      "repeat": 0,
+      "baseline_loop": "new",
+      "direct_seconds": 27.0150302501861,
+      "code_seconds": 7.4349720410536975,
+      "time_ratio_code_over_direct": 0.2752161286586929,
+      "direct_requests": 22,
+      "code_requests": 3,
+      "direct_tokens": {
+        "input": 482552,
+        "cached": 477440,
+        "output": 2487
+      },
+      "code_tokens": {
+        "input": 62670,
+        "cached": 59520,
+        "output": 1402
+      },
+      "direct_context": {
+        "total_message_bytes": 560588,
+        "peak_message_bytes": 35727,
+        "total_tool_receipt_characters": 76967,
+        "measured": true
+      },
+      "code_context": {
+        "total_message_bytes": 63406,
+        "peak_message_bytes": 28336,
+        "total_tool_receipt_characters": 6307,
+        "measured": true
+      },
+      "direct_peak_usd": 0.007382639999999999,
+      "code_peak_usd": 0.00298452
+    },
+    {
+      "task": "batch_ledger",
+      "repeat": 0,
+      "baseline_loop": "new",
+      "direct_seconds": 98.20152816711925,
+      "code_seconds": 13.27640587510541,
+      "time_ratio_code_over_direct": 0.13519551195284496,
+      "direct_requests": 8,
+      "code_requests": 5,
+      "direct_tokens": {
+        "input": 308231,
+        "cached": 300288,
+        "output": 28870
+      },
+      "code_tokens": {
+        "input": 106437,
+        "cached": 103168,
+        "output": 2141
+      },
+      "direct_context": {
+        "total_message_bytes": 515287,
+        "peak_message_bytes": 103904,
+        "total_tool_receipt_characters": 79338,
+        "measured": true
+      },
+      "code_context": {
+        "total_message_bytes": 112550,
+        "peak_message_bytes": 29653,
+        "total_tool_receipt_characters": 12785,
+        "measured": true
+      },
+      "direct_peak_usd": 0.038828628,
+      "code_peak_usd": 0.004168908
+    },
+    {
+      "task": "resumed_work",
+      "repeat": 0,
+      "baseline_loop": "new",
+      "direct_seconds": 86.57401137496345,
+      "code_seconds": 26.490286458050832,
+      "time_ratio_code_over_direct": 0.3059842790848389,
+      "direct_requests": 32,
+      "code_requests": 7,
+      "direct_tokens": {
+        "input": 800980,
+        "cached": 766336,
+        "output": 16929
+      },
+      "code_tokens": {
+        "input": 176025,
+        "cached": 170880,
+        "output": 5270
+      },
+      "direct_context": {
+        "total_message_bytes": 1093850,
+        "peak_message_bytes": 52677,
+        "total_tool_receipt_characters": 30650,
+        "measured": true
+      },
+      "code_context": {
+        "total_message_bytes": 256461,
+        "peak_message_bytes": 49126,
+        "total_tool_receipt_characters": 46945,
+        "measured": true
+      },
+      "direct_peak_usd": 0.035306016,
+      "code_peak_usd": 0.00889278
+    }
+  ],
+  "budget": {
+    "cumulative_ceiling_usd": null,
+    "prior_peak_usage_cost_usd": 1.0571836319999999,
+    "new_peak_usage_cost_usd": 0.09756349199999996,
+    "unsettled_reserved_usd": 0,
+    "cumulative_peak_exposure_usd": 1.1547471239999998,
+    "new_physical_calls": 77,
+    "prior_reports": [
+      {
+        "name": "long-tasks-handoff-final.json",
+        "sha256": "75723e8df10f96df61a88afb09153e4b85050f1ba21f9649749c46f3ad570bd3",
+        "calls": 285,
+        "peak_usd": 0.33698925599999985,
+        "unknown_usage": 0
+      },
+      {
+        "name": "issue-256-default-policy.json",
+        "sha256": "6702d033c57531d7fc4c704aa06b9860f2ad3355b1d2c26e18f9b5a3258415e7",
+        "calls": 75,
+        "peak_usd": 0.10226311200000004,
+        "unknown_usage": 0
+      },
+      {
+        "name": "issue-256-default-policy-final.json",
+        "sha256": "70a0ece88d4e2d5a884a225dda40351c8ce8b23263da2341d9ecad9b1392c526",
+        "calls": 133,
+        "peak_usd": 0.22926541200000003,
+        "unknown_usage": 0
+      },
+      {
+        "name": "issue-256-acceptance.json",
+        "sha256": "ee57019f0114a1847bce0bbb1cb8ae7fd5b9f79d6eeeef80b55171f85cc52eb6",
+        "calls": 175,
+        "peak_usd": 0.22409013600000005,
+        "unknown_usage": 0
+      },
+      {
+        "name": "issue-256-acceptance-v2.json",
+        "sha256": "4f18e2312e53195178b655e5682d6102b02c2582ecc6fbe5c4c0e03027070094",
+        "calls": 82,
+        "peak_usd": 0.16457571599999993,
+        "unknown_usage": 0
+      }
+    ],
+    "actual_invoice_verified": false,
+    "pricing_source": "https://api-docs.deepseek.com/quick_start/pricing/",
+    "peak_usd_per_million": {
+      "cache_hit": 0.006,
+      "cache_miss": 0.3,
+      "output": 1.2
+    }
+  },
+  "run_contract": {
+    "model": "deepseek-flash",
+    "baseline_commit": "b4fdef7d0e2f7ee68fd345605d0a8fadc50b5459",
+    "baseline_scope": "same current runtime, frozen declarations and synthetic inputs; experimental direct-call control compared with shared default orchestration guidance",
+    "max_output_tokens": 32768,
+    "reasoning_effort": "high",
+    "completion_definition": "independent oracle correct, all required inputs read, report verified, per-node audits committed before following the next node or writing the final chain, no repeated committed writes, and original Work durably completed",
+    "acceptance_definition": "success additionally requires the assigned tool mode; default-policy code trials must actually choose execute_code. goal_completed records task completion separately from orchestration acceptance",
+    "stop_policy": "runtime pause/failure, or 10 consecutive activations with no new successful read/write path, semantic context note or same original code snapshot advancing across activations; no task time ceiling",
+    "business_scope": "temporary FileWorkspace, real SQLite/InvocationService/Monty, no production, gateway or real messaging",
+    "recovery_scope": "fresh Runner and WorkControl activations in same process; not an OS process crash or provider disconnect",
+    "harness_sha256": "e7f55ec99f6c9a56657632dac911ad2b8541dd2ca45b2bf6a83576b1d72484b2",
+    "read_identity": "canonical synthetic person bound before accept and on every activation",
+    "receipt_errors_scope": "visible tool history per HTTP request; repeated history is not a new failed operation",
+    "runtime_source_sha256": {
+      "src/qq_ai_bot/codemode/engine_monty.py": "eef01e95f1c4a5d2adadfe5db70fe38ea3e8f27b9987062a1568f1a9a4d1b3de",
+      "src/qq_ai_bot/runtime/work_control.py": "80082bfa9c0446b8c6bef7bc19fc96166834fbfe634dbe03750548c35f5bfdfa",
+      "src/qq_ai_bot/runtime/work_session.py": "10f6968f7f8b20d7503739e1f2b26819a80987e80ed03a04388e4bfb1c58846e",
+      "src/qq_ai_bot/services/turn_execution.py": "f017298b9ac01dca47e0ac36c8910ebc72b7552ed3e78c7178b46a1d4722c247",
+      "src/qq_ai_bot/codemode/contract.py": "bae8b84d13c5323d27a708d64cc86efa931392747766fb9ef9800ca33bba5106",
+      "scripts/benchmark_pi_codemode.py": "684a249291ac296ed5ddd86c21fb84dca1db7a97b402366bf1022bf60f35c3a4",
+      "tests/integration/test_codemode_runner.py": "9a852cd49c8bda3a350faac8cda3c4846398dd8eca63e9a185c1cf3f6476d84b"
+    },
+    "segment_tools_override": null,
+    "default_code_policy": true,
+    "cost_estimate_basis": "Common Peak Flash tariff verified at https://api-docs.deepseek.com/quick_start/pricing/ on 2026-10-06; not a provider invoice or the actual time-of-day tariff. Token counts and elapsed time are observed separately.",
+    "context_measurement": "UTF-8 serialized messages and tool receipt characters per physical request; measured separately from the fixed tool declarations and provider reported prompt tokens; no raw reasoning retained"
+  },
+  "cost_basis": "public peak rates times observed wire usage; off-peak half these rates; not invoice. Unknown usage is separate.",
+  "time_basis": "completion medians exclude failures; failure time still appears in all-attempt totals. Observed sample counts appear in each group."
+}

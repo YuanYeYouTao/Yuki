@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy import delete, func, select, update
 from tests.conftest import build_harness, make_settings
 from tests.support.social_identity_cases import social_env
+from tests.support.work_session import WorkSession
 from tests.unit.test_self_initiative_memory import record, seed
 
 from qq_ai_bot.capabilities import (
@@ -19,13 +20,16 @@ from qq_ai_bot.capabilities import (
     InProcessToolProvider,
     ToolProviderRegistry,
 )
-from qq_ai_bot.capabilities.invocation import current_invocation
+from qq_ai_bot.capabilities.coordinator import ToolInvocationCoordinator
+from qq_ai_bot.capabilities.invocation import current_invocation, direct_invocations
+from qq_ai_bot.capabilities.results import ToolExecutionResult
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
     SpaceActiveRouteModel,
     SpaceBindingIngestRouteModel,
 )
 from qq_ai_bot.domain.messages import ChatMessage, ChatTool, ToolCall, ToolFunction
+from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
 from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_space
 from qq_ai_bot.identity.db_models import SpaceBindingModel
@@ -38,7 +42,7 @@ from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import effects
-from qq_ai_bot.runtime.work_session import WorkSession, defer_tool_audit
+from qq_ai_bot.runtime.work_session import defer_tool_audit
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.chat import ChatService
 from qq_ai_bot.services.main_agent_backend import MainAgentBackend
@@ -47,7 +51,7 @@ from qq_ai_bot.social.db_models import SocialOperationModel
 from qq_ai_bot.tool_results.recorder import ToolInvocationRepository
 
 
-async def active_work(database, tmp_path):
+async def active_work(database, tmp_path, *, reporting=None):
     env = await social_env(database, tmp_path)
     repo = WorkRepository(database)
     lease = await repo.acquire(env.context.conversation_id, 1)
@@ -57,7 +61,9 @@ async def active_work(database, tmp_path):
         assert await repo.valid(lease)
 
     control = WorkControl(repo, lease, "tool-audit", {}, validate)
-    control.current = await repo.accept(lease, source_key="tool-audit", source={}, goal="send")
+    control.current = await repo.accept(
+        lease, source_key="tool-audit", source={}, goal="send", reporting=reporting
+    )
     work = WorkSession(control, "contract")
     control.session = work
     work.transcript = TurnTranscript((ChatMessage("system", "test"),))
@@ -69,12 +75,85 @@ async def active_work(database, tmp_path):
         allow_generic_onebot=False,
         conversation_key="audit",
         trigger_event_id=source.id,
+        actor_context=ToolActor(
+            user_id="10001",
+            bot_user_id=env.bot.self_id,
+            group_id="20001",
+            origin=TurnOrigin.USER_MESSAGE,
+            instruction=source.content,
+            event_id=source.id,
+            execution_id=f"event:{source.id}",
+            person_id=env.person,
+            conversation_id=env.context.conversation_id,
+            presence_id=env.presence,
+        ),
         conversation_id=env.context.conversation_id,
-        presence_id=env.presence,
-        bot_user_id=env.bot.self_id,
         execution_id=f"event:{source.id}",
     )
     return env, work, runtime
+
+
+async def test_equal_sends_and_cross_response_ids_keep_distinct_social_operations(
+    database, tmp_path
+):
+    env, owner, runtime = await active_work(database, tmp_path)
+    chat = build_harness(database, make_settings(database.url)).processor._chat
+    runtime = replace(
+        runtime, runtime_config=await chat._runtime_config.snapshot(), space_id=env.space
+    )
+
+    async def dispatch(_name, _arguments, _runtime):
+        context = current_invocation.get()
+        assert context is not None
+        result = await env.service.execute(
+            "send_message",
+            {"target": {"kind": "space", "target_id": env.space}, "text": "same"},
+            replace(
+                env.context, call_id=context.call_id, trigger_event_id=runtime.trigger_event_id
+            ),
+        )
+        return ToolExecutionResult(ok=result["status"] == "succeeded", data=result)
+
+    registry = ToolProviderRegistry()
+    registry.register(
+        InProcessToolProvider(
+            provider_id="core",
+            source=CapabilityTrustSource.CORE,
+            definitions=lambda _: (ChatTool("send_message", "send", {"type": "object"}),),
+            execute=dispatch,
+        )
+    )
+    backend = MainAgentBackend(chat, runtime)
+    backend._catalog = registry.catalog(runtime)
+    backend._callable_tool_names = {"send_message"}
+    agent = SimpleNamespace(work_control=owner.control)
+    calls = tuple(ToolCall(i, ToolFunction("send_message", "{}")) for i in ("call_0", "call_1"))
+    coordinator = ToolInvocationCoordinator()
+
+    async def batch(selected):
+        return await coordinator.execute_batch(
+            selected,
+            backend,
+            agent,
+            remaining_calls=10,
+            max_parallel_calls=2,
+            manifest_revision="contract",
+        )
+
+    first = await batch(calls)
+    assert all(json.loads(value)["data"]["status"] == "succeeded" for _, value, _ in first.calls)
+    await batch(calls)  # Reentry queries both original receipts.
+    owner.sequence += 1
+    await batch(calls[:1])  # Same Provider ID in a later model response.
+    assert len([entry for entry in env.bot.calls if entry[0] == "send_group_msg"]) == 3
+    async with database.sessions() as reader:
+        original_ids = set(await reader.scalars(select(SocialOperationModel.tool_call_id)))
+        assert original_ids == {
+            f"{owner.transcript.chain_id}:0:call_0",
+            f"{owner.transcript.chain_id}:0:call_1",
+            f"{owner.transcript.chain_id}:1:call_0",
+        }
+        assert await reader.scalar(select(func.count()).select_from(effects)) == 3
 
 
 async def invoke_audit(recorder, runtime, call_key, result='{"ok":true}'):
@@ -135,7 +214,7 @@ async def test_social_success_and_original_work_call_survive_telemetry_failure(
             ),
         )
         assert social["status"] == "succeeded"
-        return {"ok": True, "data": social}
+        return ToolExecutionResult(ok=True, data=social)
 
     registry = ToolProviderRegistry()
     registry.register(
@@ -150,10 +229,9 @@ async def test_social_success_and_original_work_call_survive_telemetry_failure(
     backend._catalog = registry.catalog(runtime)
     backend._callable_tool_names = {"send_message"}
     agent = SimpleNamespace(work_control=work.control)
-    backend.begin_batch((call,), agent)
 
     async def invoke():
-        result = await backend.execute(call.function.name, call.function.arguments, agent)
+        result = await backend.execute_call(direct_invocations((call,), agent)[0])
         assert audit_calls == []
         return result
 
@@ -170,7 +248,7 @@ async def test_social_success_and_original_work_call_survive_telemetry_failure(
         assert effect["effect_key"] == key and effect["state"] == "accepted"
         assert json.loads(effect["receipt_json"])["result"] == result
         social = await session.scalar(select(SocialOperationModel))
-        assert social.status == "succeeded" and social.tool_call_id == call.id
+        assert social.status == "succeeded" and social.tool_call_id == key
         source = await session.scalar(select(MemoryToolReceiptModel))
         assert source.trigger_event_id == runtime.trigger_event_id
         assert source.canonical_space_id == env.space
@@ -454,7 +532,7 @@ async def test_event_receipt_source_rechecked_atomically_after_read_prepare(
             canonical_conversation_id=env.context.conversation_id,
             tool_call_id="original-call",
             execution_id="execution-1",
-            bot_user_id=source.bot_user_id,
+            bot_user_id=env.bot.self_id,
             result_excerpt="verified source",
         )
     async with original() as session:

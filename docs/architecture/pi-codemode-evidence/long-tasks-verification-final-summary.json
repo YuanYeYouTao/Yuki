@@ -1,0 +1,486 @@
+{
+  "attempted": 8,
+  "completed": 7,
+  "all_groups_same_input": true,
+  "all_groups_same_serialized_tools": true,
+  "groups": [
+    {
+      "task": "resumed_work",
+      "loop": "old",
+      "mode": "direct",
+      "completed": 1,
+      "attempted": 2,
+      "mean_completion_fraction": 1.0,
+      "median_seconds_completed_only": 748.4060911249835,
+      "median_requests_completed_only": 83,
+      "total_seconds_all_attempts": 1372.7096612497699,
+      "total_known_peak_usd": 0.635218572,
+      "cost_per_completed_task_including_failures_usd": 0.635218572,
+      "unknown_usage_calls": 0,
+      "physical_requests_all_attempts": 185,
+      "tokens_all_attempts": {
+        "input": 4534677,
+        "cached": 3750912,
+        "output": 314653
+      }
+    },
+    {
+      "task": "resumed_work",
+      "loop": "old",
+      "mode": "code",
+      "completed": 2,
+      "attempted": 2,
+      "mean_completion_fraction": 1.0,
+      "median_seconds_completed_only": 32.797347354120575,
+      "median_requests_completed_only": 6.5,
+      "total_seconds_all_attempts": 65.59469470824115,
+      "total_known_peak_usd": 0.025873307999999998,
+      "cost_per_completed_task_including_failures_usd": 0.012936653999999999,
+      "unknown_usage_calls": 0,
+      "physical_requests_all_attempts": 13,
+      "tokens_all_attempts": {
+        "input": 292817,
+        "cached": 266368,
+        "output": 13617
+      }
+    },
+    {
+      "task": "resumed_work",
+      "loop": "new",
+      "mode": "direct",
+      "completed": 2,
+      "attempted": 2,
+      "mean_completion_fraction": 1.0,
+      "median_seconds_completed_only": 58.382594021153636,
+      "median_requests_completed_only": 25.0,
+      "total_seconds_all_attempts": 116.76518804230727,
+      "total_known_peak_usd": 0.055571988,
+      "cost_per_completed_task_including_failures_usd": 0.027785994,
+      "unknown_usage_calls": 0,
+      "physical_requests_all_attempts": 50,
+      "tokens_all_attempts": {
+        "input": 1058531,
+        "cached": 987648,
+        "output": 23651
+      }
+    },
+    {
+      "task": "resumed_work",
+      "loop": "new",
+      "mode": "code",
+      "completed": 2,
+      "attempted": 2,
+      "mean_completion_fraction": 1.0,
+      "median_seconds_completed_only": 28.498387604020536,
+      "median_requests_completed_only": 7.0,
+      "total_seconds_all_attempts": 56.99677520804107,
+      "total_known_peak_usd": 0.017870664,
+      "cost_per_completed_task_including_failures_usd": 0.008935332,
+      "unknown_usage_calls": 0,
+      "physical_requests_all_attempts": 14,
+      "tokens_all_attempts": {
+        "input": 284914,
+        "cached": 274944,
+        "output": 11025
+      }
+    }
+  ],
+  "trials": [
+    {
+      "task": "resumed_work",
+      "repeat": 0,
+      "loop": "new",
+      "mode": "direct",
+      "completed": true,
+      "completion_fraction": 1.0,
+      "correct_artifacts": true,
+      "work_state": "completed",
+      "stopped_for_stall": false,
+      "failures": [],
+      "seconds_spent": 53.629340042127296,
+      "first_correct_artifact_seconds": 9.812656125053763,
+      "physical_requests": 25,
+      "tokens": {
+        "input": 516911,
+        "cached": 486656,
+        "output": 10882
+      },
+      "known_usage_peak_usd": 0.025054836,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 6,
+      "code_used": false,
+      "segment_tools": 5,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0
+    },
+    {
+      "task": "resumed_work",
+      "repeat": 1,
+      "loop": "old",
+      "mode": "code",
+      "completed": true,
+      "completion_fraction": 1.0,
+      "correct_artifacts": true,
+      "work_state": "completed",
+      "stopped_for_stall": false,
+      "failures": [],
+      "seconds_spent": 27.814067958155647,
+      "first_correct_artifact_seconds": 7.998309750109911,
+      "physical_requests": 5,
+      "tokens": {
+        "input": 106400,
+        "cached": 93824,
+        "output": 5809
+      },
+      "known_usage_peak_usd": 0.011306543999999998,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 12,
+      "code_used": true,
+      "segment_tools": 5,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0
+    },
+    {
+      "task": "resumed_work",
+      "repeat": 1,
+      "loop": "old",
+      "mode": "direct",
+      "completed": false,
+      "completion_fraction": 1.0,
+      "correct_artifacts": true,
+      "work_state": "queued",
+      "stopped_for_stall": true,
+      "failures": [],
+      "seconds_spent": 624.3035701247863,
+      "first_correct_artifact_seconds": 18.499282540986314,
+      "physical_requests": 102,
+      "tokens": {
+        "input": 2487445,
+        "cached": 2058496,
+        "output": 143441
+      },
+      "known_usage_peak_usd": 0.313164876,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 54,
+      "code_used": false,
+      "segment_tools": 5,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0
+    },
+    {
+      "task": "resumed_work",
+      "repeat": 1,
+      "loop": "new",
+      "mode": "code",
+      "completed": true,
+      "completion_fraction": 1.0,
+      "correct_artifacts": true,
+      "work_state": "completed",
+      "stopped_for_stall": false,
+      "failures": [],
+      "seconds_spent": 23.530556624988094,
+      "first_correct_artifact_seconds": 19.67005104199052,
+      "physical_requests": 8,
+      "tokens": {
+        "input": 154486,
+        "cached": 150144,
+        "output": 4380
+      },
+      "known_usage_peak_usd": 0.007459464,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 6,
+      "code_used": true,
+      "segment_tools": 5,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0
+    },
+    {
+      "task": "resumed_work",
+      "repeat": 0,
+      "loop": "new",
+      "mode": "code",
+      "completed": true,
+      "completion_fraction": 1.0,
+      "correct_artifacts": true,
+      "work_state": "completed",
+      "stopped_for_stall": false,
+      "failures": [],
+      "seconds_spent": 33.46621858305298,
+      "first_correct_artifact_seconds": 22.20298425015062,
+      "physical_requests": 6,
+      "tokens": {
+        "input": 130428,
+        "cached": 124800,
+        "output": 6645
+      },
+      "known_usage_peak_usd": 0.0104112,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 9,
+      "code_used": true,
+      "segment_tools": 5,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0
+    },
+    {
+      "task": "resumed_work",
+      "repeat": 1,
+      "loop": "new",
+      "mode": "direct",
+      "completed": true,
+      "completion_fraction": 1.0,
+      "correct_artifacts": true,
+      "work_state": "completed",
+      "stopped_for_stall": false,
+      "failures": [],
+      "seconds_spent": 63.135848000179976,
+      "first_correct_artifact_seconds": 27.82003750000149,
+      "physical_requests": 25,
+      "tokens": {
+        "input": 541620,
+        "cached": 500992,
+        "output": 12769
+      },
+      "known_usage_peak_usd": 0.030517152,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 7,
+      "code_used": false,
+      "segment_tools": 5,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0
+    },
+    {
+      "task": "resumed_work",
+      "repeat": 0,
+      "loop": "old",
+      "mode": "code",
+      "completed": true,
+      "completion_fraction": 1.0,
+      "correct_artifacts": true,
+      "work_state": "completed",
+      "stopped_for_stall": false,
+      "failures": [],
+      "seconds_spent": 37.7806267500855,
+      "first_correct_artifact_seconds": 10.467373583931476,
+      "physical_requests": 8,
+      "tokens": {
+        "input": 186417,
+        "cached": 172544,
+        "output": 7808
+      },
+      "known_usage_peak_usd": 0.014566764,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 12,
+      "code_used": true,
+      "segment_tools": 5,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0
+    },
+    {
+      "task": "resumed_work",
+      "repeat": 0,
+      "loop": "old",
+      "mode": "direct",
+      "completed": true,
+      "completion_fraction": 1.0,
+      "correct_artifacts": true,
+      "work_state": "completed",
+      "stopped_for_stall": false,
+      "failures": [],
+      "seconds_spent": 748.4060911249835,
+      "first_correct_artifact_seconds": 7.14452675008215,
+      "physical_requests": 83,
+      "tokens": {
+        "input": 2047232,
+        "cached": 1692416,
+        "output": 171212
+      },
+      "known_usage_peak_usd": 0.322053696,
+      "unknown_usage_calls": 0,
+      "unknown_usage_reserved_usd": 0,
+      "segments": 45,
+      "code_used": false,
+      "segment_tools": 5,
+      "repeated_committed_path_writes": 0,
+      "duplicate_operation_ids": 0
+    }
+  ],
+  "completed_same_input_pairs": [
+    {
+      "task": "resumed_work",
+      "repeat": 1,
+      "baseline_loop": "new",
+      "direct_seconds": 63.135848000179976,
+      "code_seconds": 23.530556624988094,
+      "time_ratio_code_over_direct": 0.37269724523096637,
+      "direct_requests": 25,
+      "code_requests": 8,
+      "direct_peak_usd": 0.030517152,
+      "code_peak_usd": 0.007459464
+    },
+    {
+      "task": "resumed_work",
+      "repeat": 0,
+      "baseline_loop": "old",
+      "direct_seconds": 748.4060911249835,
+      "code_seconds": 33.46621858305298,
+      "time_ratio_code_over_direct": 0.04471665714631942,
+      "direct_requests": 83,
+      "code_requests": 6,
+      "direct_peak_usd": 0.322053696,
+      "code_peak_usd": 0.0104112
+    },
+    {
+      "task": "resumed_work",
+      "repeat": 0,
+      "baseline_loop": "new",
+      "direct_seconds": 53.629340042127296,
+      "code_seconds": 33.46621858305298,
+      "time_ratio_code_over_direct": 0.6240281636276777,
+      "direct_requests": 25,
+      "code_requests": 6,
+      "direct_peak_usd": 0.025054836,
+      "code_peak_usd": 0.0104112
+    }
+  ],
+  "budget": {
+    "cumulative_ceiling_usd": null,
+    "prior_peak_usage_cost_usd": 3.625439232,
+    "new_peak_usage_cost_usd": 0.7345345320000003,
+    "unsettled_reserved_usd": 0,
+    "cumulative_peak_exposure_usd": 4.359973764,
+    "new_physical_calls": 262,
+    "prior_reports": [
+      {
+        "name": "p11-deepseek-initial.json",
+        "sha256": "df31f5706c7cd1eb4ed59d6fcf234d2bd50b8b05404a1cb15fe0093ac2b25a9d",
+        "calls": 24,
+        "peak_usd": 0.015519635999999998,
+        "unknown_usage": 0
+      },
+      {
+        "name": "p11-deepseek-retest.json",
+        "sha256": "ada5274713c2c6e7c8ce3d2e983a57f38af3f4a6a709cdadc47207ba02519a47",
+        "calls": 15,
+        "peak_usd": 0.013225956000000002,
+        "unknown_usage": 0
+      },
+      {
+        "name": "long-tasks-initial.json",
+        "sha256": "1480294e63d1411de5d9345f7304c0410b9b82e91e8929bd7ac44b525e789cd9",
+        "calls": 94,
+        "peak_usd": 0.10313278800000004,
+        "unknown_usage": 1
+      },
+      {
+        "name": "long-tasks-comparison.json",
+        "sha256": "836b522da5fe88dea5eb427ab3027fd39d30e59b6d804caaae1bef314a185e7e",
+        "calls": 400,
+        "peak_usd": 0.41440212000000015,
+        "unknown_usage": 0
+      },
+      {
+        "name": "long-tasks-unlimited.json",
+        "sha256": "1a4ec76fcf33ac2dabd110c510efec2bf1e6272660dd749cdd701b4056bdfbc4",
+        "calls": 388,
+        "peak_usd": 0.40770600000000023,
+        "unknown_usage": 0
+      },
+      {
+        "name": "long-tasks-recovery-retest.json",
+        "sha256": "70986236c3b7112c87c645664370a5ed07e3cec0725a6ecd6ea30a085af6fcc4",
+        "calls": 291,
+        "peak_usd": 0.30300023999999987,
+        "unknown_usage": 0
+      },
+      {
+        "name": "long-tasks-recovery-retest-v2.json",
+        "sha256": "45c917c34a0e7b8b2dca8389d7e54e69351b605c611bd35960640c269a25bdec",
+        "calls": 303,
+        "peak_usd": 0.39555239999999986,
+        "unknown_usage": 1
+      },
+      {
+        "name": "long-tasks-recovery-final.json",
+        "sha256": "6681313937bb55c11fe96198da3227acb8f1b9df873353db86d96144b0201a41",
+        "calls": 295,
+        "peak_usd": 0.2865781320000001,
+        "unknown_usage": 0
+      },
+      {
+        "name": "long-tasks-handoff-probe.json",
+        "sha256": "ca08419d24b44b20c463f541490d1dbe12d7167bcbb4766d5492e818daf0164a",
+        "calls": 100,
+        "peak_usd": 0.14363227199999998,
+        "unknown_usage": 0
+      },
+      {
+        "name": "long-tasks-handoff-stress.json",
+        "sha256": "64d6d77e29d40529df31db9131384d4612b6b25e0e96a61b12759cd008541567",
+        "calls": 237,
+        "peak_usd": 0.49646758799999996,
+        "unknown_usage": 1
+      },
+      {
+        "name": "long-tasks-handoff-closure-probe.json",
+        "sha256": "e622fac180fdbb724497585d837fd50a298c8ef3a5d91d392c0802eab6a46e2e",
+        "calls": 67,
+        "peak_usd": 0.09065591999999999,
+        "unknown_usage": 0
+      },
+      {
+        "name": "long-tasks-handoff-final.json",
+        "sha256": "75723e8df10f96df61a88afb09153e4b85050f1ba21f9649749c46f3ad570bd3",
+        "calls": 285,
+        "peak_usd": 0.33698925599999985,
+        "unknown_usage": 0
+      },
+      {
+        "name": "long-tasks-handoff-recovery-final.json",
+        "sha256": "668b861064d33308f6d435e617319026cf9f430564352fa684260361f3569a14",
+        "calls": 228,
+        "peak_usd": 0.6185769240000001,
+        "unknown_usage": 1
+      }
+    ],
+    "actual_invoice_verified": false,
+    "pricing_source": "https://api-docs.deepseek.com/quick_start/pricing/",
+    "peak_usd_per_million": {
+      "cache_hit": 0.006,
+      "cache_miss": 0.3,
+      "output": 1.2
+    }
+  },
+  "run_contract": {
+    "model": "deepseek-flash",
+    "baseline_commit": "b4fdef7d0e2f7ee68fd345605d0a8fadc50b5459",
+    "baseline_scope": "historic direct iteration unchanged; historic code iteration has two explicit yield/resume compatibility hooks; common current invocation/code helpers; not an unmodified deployed old application",
+    "max_output_tokens": 32768,
+    "reasoning_effort": "high",
+    "completion_definition": "independent oracle correct, all required inputs read, report verified, no repeated committed writes, and original Work durably completed",
+    "stop_policy": "runtime pause/failure, or 10 consecutive activations with no new successful read/write path, semantic context note or same original code snapshot advancing across activations; no task time ceiling",
+    "business_scope": "temporary FileWorkspace, real SQLite/InvocationService/Monty, no production, gateway or real messaging",
+    "recovery_scope": "fresh Runner and WorkControl activations in same process; not an OS process crash or provider disconnect",
+    "harness_sha256": "bcca12ae4d45a8c666885324660d2361c9500dd131f6e3fb454b460ed93a22bf",
+    "read_identity": "canonical synthetic person bound before accept and on every activation",
+    "receipt_errors_scope": "visible tool history per HTTP request; repeated history is not a new failed operation",
+    "runtime_source_sha256": {
+      "src/qq_ai_bot/codemode/engine_monty.py": "eef01e95f1c4a5d2adadfe5db70fe38ea3e8f27b9987062a1568f1a9a4d1b3de",
+      "src/qq_ai_bot/runtime/work_control.py": "a72bdba0e68aa070980c1db021c078cffb63636be8f99e74b1146ecf8be5f754",
+      "src/qq_ai_bot/runtime/work_session.py": "2b38aebb579ff92ff04ce81ba2cd0c799518cf80fbfe7e05a834a27bece3868b",
+      "src/qq_ai_bot/services/turn_execution.py": "8ff7b5b6861d50f3353edf7c9b370717c87daa6e216b17558ae12e1e284309a2",
+      "src/qq_ai_bot/codemode/contract.py": "8d7ea9ff09faec0eab226b1758a62fa0474c1b5e7b7b51d2565d219f86c1c38c",
+      "scripts/benchmark_pi_codemode.py": "de0491d76037da0c88ff6d022d46661b78ee3f1d31524dad56bff9d13e0c9e92",
+      "tests/integration/test_codemode_runner.py": "ff914c3f6b180af073936b5df76c0a196aefe5baff1d52fce92995fbe118aee6"
+    },
+    "segment_tools_override": 5
+  },
+  "cost_basis": "public peak rates times observed wire usage; off-peak half these rates; not invoice. Unknown usage is separate.",
+  "time_basis": "completion medians exclude failures; failure time still appears in all-attempt totals. Observed sample counts appear in each group."
+}

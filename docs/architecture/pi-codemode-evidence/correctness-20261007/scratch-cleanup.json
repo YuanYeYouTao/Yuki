@@ -1,0 +1,276 @@
+{
+  "scope": "Only current-task synthetic scratch roots and logs already retained verbatim as gzip; no ZIP attachment, shared pytest/uv roots, installed worker/wheel or user work removed",
+  "removed": [
+    {
+      "path": "/private/tmp/yuki-correctness-final-changed-20261007",
+      "allocated_bytes_before": 232312832
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-native-boundaries-20261007",
+      "allocated_bytes_before": 215080960
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-local-sockets-20261007",
+      "allocated_bytes_before": 207433728
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-native-boundaries-rerun-20261007",
+      "allocated_bytes_before": 217915392
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-final-full-20261007",
+      "allocated_bytes_before": 8721575936
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-expanded-20261007",
+      "allocated_bytes_before": 247209984
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-projection-plugin-20261007",
+      "allocated_bytes_before": 4947968
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-interleave-20261007",
+      "allocated_bytes_before": 32931840
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-full-20261007",
+      "allocated_bytes_before": 6112968704
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-external-pinning-20261007",
+      "allocated_bytes_before": 2486272
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-post-full-20261007",
+      "allocated_bytes_before": 209113088
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-freeze-pinning-final-20261007",
+      "allocated_bytes_before": 24666112
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-final-targeted-20261007",
+      "allocated_bytes_before": 162263040
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-receipts-20261007",
+      "allocated_bytes_before": 250167296
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-source-index-20261007",
+      "allocated_bytes_before": 181190656
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-kernel-release-20261007",
+      "allocated_bytes_before": 5742592
+    },
+    {
+      "path": "/private/tmp/yuki-compatibility-correctness-20261007",
+      "allocated_bytes_before": 403726336
+    },
+    {
+      "path": "/private/tmp/yuki-expanded-boundary-rerun-20261007",
+      "allocated_bytes_before": 311074816
+    },
+    {
+      "path": "/private/tmp/yuki-full-policy-20261007",
+      "allocated_bytes_before": 5709824
+    },
+    {
+      "path": "/private/tmp/yuki-harness-benchmark-compatibility-20261007",
+      "allocated_bytes_before": 167628800
+    },
+    {
+      "path": "/private/tmp/yuki-lookup-diagnostic-20261007",
+      "allocated_bytes_before": 2531328
+    },
+    {
+      "path": "/private/tmp/yuki-lookup-response-diagnostic-20261007",
+      "allocated_bytes_before": 2461696
+    },
+    {
+      "path": "/private/tmp/yuki-native-truncated-diagnostic-20261007",
+      "allocated_bytes_before": 2535424
+    },
+    {
+      "path": "/private/tmp/yuki-output-benchmark-final-20261007",
+      "allocated_bytes_before": 110538752
+    },
+    {
+      "path": "/private/tmp/yuki-query-lifecycle-final-20261007",
+      "allocated_bytes_before": 157032448
+    },
+    {
+      "path": "/private/tmp/yuki-rebase-compatibility-final-20261007",
+      "allocated_bytes_before": 129679360
+    },
+    {
+      "path": "/private/tmp/yuki-rebase-compatibility-rerun-20261007",
+      "allocated_bytes_before": 129507328
+    },
+    {
+      "path": "/private/tmp/yuki-truncated-boundary-diagnostic-20261007",
+      "allocated_bytes_before": 5070848
+    },
+    {
+      "path": "/private/tmp/yuki-truncated-native-final-20261007",
+      "allocated_bytes_before": 5074944
+    },
+    {
+      "path": "/private/tmp/yuki-rollup-original-branch-original",
+      "allocated_bytes_before": 5005312
+    },
+    {
+      "path": "/private/tmp/yuki-rollup-original-main",
+      "allocated_bytes_before": 4923392
+    },
+    {
+      "path": "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp",
+      "allocated_bytes_before": 282914816
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-expanded.log",
+      "retained": "yuki-correctness-expanded.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-frontend-lint-final.log",
+      "retained": "yuki-frontend-lint-final.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-ruff-check-last.log",
+      "retained": "yuki-ruff-check-last.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-final-full.log",
+      "retained": "yuki-correctness-final-full.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-expanded-boundary-rerun.log",
+      "retained": "yuki-expanded-boundary-rerun.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-live.log",
+      "retained": "yuki-correctness-live.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-native-guards.log",
+      "retained": "yuki-native-guards.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-frontend-format-final.log",
+      "retained": "yuki-frontend-format-final.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-mypy-last.log",
+      "retained": "yuki-mypy-last.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-query-lifecycle-final.log",
+      "retained": "yuki-query-lifecycle-final.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-frontend-build-final.log",
+      "retained": "yuki-frontend-build-final.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-frontend-format-final-rerun.log",
+      "retained": "yuki-frontend-format-final-rerun.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-final-targeted.log",
+      "retained": "yuki-correctness-final-targeted.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-output-benchmark-final.log",
+      "retained": "yuki-output-benchmark-final.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-freeze-pinning-final.log",
+      "retained": "yuki-correctness-freeze-pinning-final.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-rebase-compatibility-rerun.log",
+      "retained": "yuki-rebase-compatibility-rerun.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-plugin-native-final.log",
+      "retained": "yuki-correctness-plugin-native-final.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-post-full.log",
+      "retained": "yuki-correctness-post-full.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-mypy-final.log",
+      "retained": "yuki-mypy-final.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-final-changed.log",
+      "retained": "yuki-correctness-final-changed.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-projection-trigger-tests.log",
+      "retained": "yuki-projection-trigger-tests.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-harness-benchmark-compatibility.log",
+      "retained": "yuki-harness-benchmark-compatibility.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-full.log",
+      "retained": "yuki-correctness-full.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-ruff-format-last.log",
+      "retained": "yuki-ruff-format-last.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-compatibility-correctness.log",
+      "retained": "yuki-compatibility-correctness.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-local-sockets.log",
+      "retained": "yuki-correctness-local-sockets.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-plugin-native-rerun.log",
+      "retained": "yuki-correctness-plugin-native-rerun.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-external-pinning.log",
+      "retained": "yuki-correctness-external-pinning.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-frontend-correctness.log",
+      "retained": "yuki-frontend-correctness.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-rebase-compatibility-final.log",
+      "retained": "yuki-rebase-compatibility-final.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-frontend-models-final-rerun.log",
+      "retained": "yuki-frontend-models-final-rerun.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-source-index.log",
+      "retained": "yuki-correctness-source-index.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-kernel-release.log",
+      "retained": "yuki-correctness-kernel-release.log.gz"
+    },
+    {
+      "path": "/private/tmp/yuki-correctness-live-runner.py",
+      "retained": "bounded-live-runner.txt (credential path redacted)"
+    }
+  ],
+  "allocated_bytes_before": 18553421824,
+  "preserved": [
+    "original evidence ZIP and taskbook attachment",
+    ".venv worker and locally built Python wheel",
+    "shared uv and pytest roots",
+    "AppleDouble Git files"
+  ]
+}

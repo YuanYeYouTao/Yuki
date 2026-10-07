@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from weakref import WeakValueDictionary
 
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
@@ -18,14 +16,6 @@ class EffectGateTimeoutError(TimeoutError):
 
 class EffectPermitRejectedError(RuntimeError):
     """The generation or coordinator fence rejected an effect."""
-
-
-@dataclass(frozen=True, slots=True)
-class EffectPermit:
-    scope_id: int
-    generation: int
-    coordinator_version: int
-    effect_id: str
 
 
 FenceValidator = Callable[[ConversationTurnSnapshot], Awaitable[bool]]
@@ -65,16 +55,11 @@ class ConversationEffectGate:
         *,
         validate: FenceValidator,
         timeout_seconds: float,
-    ) -> AsyncIterator[EffectPermit]:
+    ) -> AsyncIterator[None]:
         """Validate inside the gate and issue a one-use linearization permit."""
 
         async with self.hold(snapshot.scope_key, timeout_seconds=timeout_seconds):
             if not await validate(snapshot):
                 self.superseded_rejections += 1
                 raise EffectPermitRejectedError("turn generation was superseded")
-            yield EffectPermit(
-                scope_id=snapshot.scope_id,
-                generation=snapshot.generation,
-                coordinator_version=snapshot.coordinator_version,
-                effect_id=uuid.uuid4().hex,
-            )
+            yield

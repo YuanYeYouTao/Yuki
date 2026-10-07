@@ -1,0 +1,103 @@
+{
+  "schema": 1,
+  "scope": "final main compatibility after migration drift regression correction",
+  "started_at": "2026-10-05T13:54:43.270611+00:00",
+  "experimental_parent": "3d1d983828207049cb5e0806ad01b5008c841591",
+  "main_parent": "de9d0e3ae1d682ec6411df4d628db4ba061a5fd8",
+  "worker_sha256": "af76448a14fe980c823f1c6092692f90a8ddc6341f236f17d6d47d72f49548e8",
+  "temporary_root": "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-main-compatibility-final-oeh2uzqm",
+  "status": "passed",
+  "prior_reports": [
+    "main-compatibility-regression.json",
+    "main-compatibility-regression-final.json",
+    "main-compatibility-verified.json"
+  ],
+  "checks": [
+    {
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "ruff",
+        "check",
+        "src",
+        "tests",
+        "scripts",
+        "migrations"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.08,
+      "log": "main-compatibility-accepted-check-0.log.gz",
+      "log_sha256": "7162964741fdb747d7ab27df2d1a1b64fa0636c4b7fe50ea8493de14cb62cbd4",
+      "tail": [
+        "All checks passed!"
+      ]
+    },
+    {
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "ruff",
+        "format",
+        "--check",
+        "src",
+        "tests",
+        "scripts",
+        "migrations"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.02,
+      "log": "main-compatibility-accepted-check-1.log.gz",
+      "log_sha256": "4a4dec6502acc882244db7c96fdff6fbf91f0aad6408871f3c77e27654a33ae7",
+      "tail": [
+        "1188 files already formatted"
+      ]
+    },
+    {
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "mypy"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.44,
+      "log": "main-compatibility-accepted-check-2.log.gz",
+      "log_sha256": "84e0a968e1f26a7cfcfbeb3fccc9b34f095e0360e34697116d67db8be47f1678",
+      "tail": [
+        "pyproject.toml: note: unused section(s): module = ['nonebot_adapter_onebot.*']",
+        "Success: no issues found in 724 source files"
+      ]
+    },
+    {
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "pytest",
+        "-q",
+        "-p",
+        "no:warnings",
+        "tests",
+        "--basetemp",
+        "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-main-compatibility-final-oeh2uzqm/pytest"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 821.18,
+      "log": "main-compatibility-accepted-check-3.log.gz",
+      "log_sha256": "4f51dfc2ec205adbe8d08bf95e81d6b3b721ca06dc8d3ecc2673f8fa71a266a7",
+      "tail": [
+        "........................................................................ [ 93%]",
+        "........................................................................ [ 95%]",
+        "........................................................................ [ 97%]",
+        "........................................................................ [ 99%]",
+        ".......................................                                  [100%]",
+        "=========================== short test summary info ============================",
+        "SKIPPED [1] tests/integration/test_legacy_profile_backup_replay.py:122: private production backup paths not provided",
+        "3926 passed, 1 skipped in 813.13s (0:13:33)"
+      ]
+    }
+  ],
+  "finished_at": "2026-10-05T14:08:25.013545+00:00"
+}

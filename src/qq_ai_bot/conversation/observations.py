@@ -285,13 +285,31 @@ class ContextObservationRepository:
                 for row in rows
                 if row.source_key.startswith("snapshot:") and row.id not in selected_ids
             }
-            pending = list(selected_ids)
+            payloads: dict[str, str] = {}
+            pending = set(selected_ids)
             covered: set[str] = set()
+            inspected: set[str] = set()
             while pending:
-                for identity, _ in parents_by_id.get(pending.pop(), ()):
-                    if identity not in covered:
-                        covered.add(identity)
-                        pending.append(identity)
+                summaries = sorted(
+                    identity
+                    for identity in pending
+                    if parents_by_id.get(identity) and identity not in inspected
+                )
+                pending = set()
+                for offset in range(0, len(summaries), 256):
+                    loaded = await session.execute(
+                        select(
+                            ContextObservationModel.id, ContextObservationModel.payload_json
+                        ).where(ContextObservationModel.id.in_(summaries[offset : offset + 256]))
+                    )
+                    payloads.update((identity, payload) for identity, payload in loaded.all())
+                for identity in summaries:
+                    inspected.add(identity)
+                    # The complete parent DAG above validates every source/version;
+                    # only actual summary refs establish replacement coverage.
+                    refs = summary_coverage(payloads[identity])
+                    covered.update(refs)
+                    pending.update(refs - inspected)
             needed = [
                 row
                 for row in rows
@@ -299,13 +317,11 @@ class ContextObservationRepository:
                 and row.id not in unselected_snapshots
                 and (not parents_by_id[row.id] or row.id in selected_ids)
             ]
-            payloads: dict[str, str] = {}
-            for offset in range(0, len(needed), 256):
+            missing_payloads = [row.id for row in needed if row.id not in payloads]
+            for offset in range(0, len(missing_payloads), 256):
                 loaded = await session.execute(
                     select(ContextObservationModel.id, ContextObservationModel.payload_json).where(
-                        ContextObservationModel.id.in_(
-                            [row.id for row in needed[offset : offset + 256]]
-                        )
+                        ContextObservationModel.id.in_(missing_payloads[offset : offset + 256])
                     )
                 )
                 payloads.update((identity, payload) for identity, payload in loaded.all())
@@ -674,5 +690,15 @@ def validate_summary(payload: dict[str, Any], observations: tuple[ContextObserva
             referenced.update(fact["refs"])
     if not found:
         raise ObservationSummaryError("empty_observation_summary")
-    if referenced != allowed:
-        raise ObservationSummaryError("incomplete_observation_summary_coverage")
+
+
+def summary_coverage(payload_json: str) -> frozenset[str]:
+    """Actual replacement refs, distinct from the complete provenance DAG."""
+    payload = json.loads(payload_json)
+    return frozenset(
+        ref.removeprefix("observation:")
+        for key in ("facts", "unresolved", "next_steps")
+        for fact in payload.get(key, ())
+        for ref in fact.get("refs", ())
+        if isinstance(ref, str) and ref.startswith("observation:")
+    )

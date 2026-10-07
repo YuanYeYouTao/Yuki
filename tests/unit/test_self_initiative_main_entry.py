@@ -109,6 +109,7 @@ async def test_self_main_segment_resume_preserves_real_wire_prefix_and_silent_co
     lease = await repo.acquire(source["conversation_id"], 1)
     item = await repo.accept(
         lease,
+        initial_state="queued",
         source_key=f"initiative:{source['initiative_run_id']}",
         source=source,
         goal=source["instruction"],
@@ -174,7 +175,8 @@ async def test_self_main_segment_resume_preserves_real_wire_prefix_and_silent_co
         # old provider's protocol tail on the current business input.
         assert "call-0" in resumed_wire and "call-23" in resumed_wire
         assert final["tool_calls"] == 24
-        assert {tool.name for tool in await contract.definitions()} == {
+        # SELF shares the fixed model projection while retaining its execution API.
+        assert {tool.name for tool in await contract.model_definitions()} == {
             tool["name"] if protocol == "responses" else tool["function"]["name"]
             for tool in captured[0]["tools"]
             if tool["type"] == "function"

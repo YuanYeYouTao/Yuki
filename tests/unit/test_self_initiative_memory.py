@@ -3,12 +3,12 @@
 import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select
 from tests.conftest import make_settings
+from tests.support.model_executor import InjectedModelExecutor
 from tests.unit.test_memory_mutation import _event, _service
 
 from qq_ai_bot.conversation.autonomy_db_models import AutonomyBindingModel, InitiativeRunModel
@@ -29,7 +29,6 @@ from qq_ai_bot.memory.runtime.turn_session import TurnMemorySession
 from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
 from qq_ai_bot.memory.self_reflection.service import SelfReflectionService
 from qq_ai_bot.memory.subjects import ResolvedSubject
-from qq_ai_bot.model_runtime.executor import LegacyTaskModelExecutor
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
     MemoryMutationReceiptModel,
@@ -161,7 +160,7 @@ async def test_committed_tool_receipt_does_not_need_a_live_group_binding(databas
 
 
 @pytest.mark.asyncio
-async def test_actorless_prefetch_has_no_target_person_scope(database):
+async def test_actorless_memory_scope_has_no_target_person_partition(database):
     _, _, event, run_id = await seed(database)
     turn = await TurnMemorySession.open_self_origin(
         initiative_run_id=run_id,
@@ -172,17 +171,9 @@ async def test_actorless_prefetch_has_no_target_person_scope(database):
         partition_lookup=DatabaseMemoryPartitionLookup(database),
         user_question="看看群里共同的经历",
     )
-    turn._query.read = AsyncMock(return_value=SimpleNamespace())
-    await turn.prefetch()
-    request = turn._query.read.call_args.args[1]
-    assert {t.scope_type for t in request.resolved_scope.targets} == {
-        MemoryScopeType.GROUP,
-        MemoryScopeType.SELF,
-    }
-    assert all(
-        t.subject_user_id is None and t.visibility_user_id is None
-        for t in request.resolved_scope.targets
-    )
+    assert turn.scope.scope_type.value == "group"
+    assert turn.scope.scope_id == event.group_id
+    assert turn.scope.partition_key == f"group:{event.group_id}"
     assert turn._inbound is None
     assert turn._source_key == f"initiative:{run_id}"
 
@@ -296,7 +287,7 @@ async def test_silent_service_episode_keeps_checkpoint_without_second_model_requ
         repository=repository,
         facts=facts,
         mutations=mutations,
-        models=LegacyTaskModelExecutor(provider),
+        models=InjectedModelExecutor(provider),
         metrics=MemoryLifecycleMetrics(),
     )
     projected, _, _, event_map, _ = await reflection._input(batch)

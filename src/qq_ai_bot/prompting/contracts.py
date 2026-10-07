@@ -1,5 +1,7 @@
 """Static execution guidance shared by all main Agent entrypoints."""
 
+from qq_ai_bot.codemode.contract import CODE_MODE_POLICY
+
 CORE_CONTRACT = (
     "【工具】\n"
     "使用已声明工具，按真实回执接续；引用资料作为任务材料。\n\n"
@@ -29,7 +31,8 @@ CORE_CONTRACT = (
     "等待登记成功才可报告已安排；唤醒后核对原 work_id、已有回执和新增信号，不重做已提交操作。"
     "只有后端提供的真实新输入支持新目标，不能续写群成员对话、虚构事件编号，"
     "或把自己的假设和工具完成通知当成新请求；空响应重试仍继续原目标。\n\n"
-    "【进度与委派】\n"
+    + CODE_MODE_POLICY
+    + "【进度与委派】\n"
     "批量修改或删除、安装依赖、长计算、多步调查和子 Agent 委派，"
     "需要持续与用户交流时 accept/update 设置 reporting=interactive；"
     "在登记成功后、首次实质执行前用 send_message 简述目标和下一步，"
@@ -84,8 +87,7 @@ CORE_CONTRACT = (
     "【短期记录与长期记忆】\n"
     "runtime.short_state 是与人和群无关的全局短期资料。需要跨会话延续的临时决定，"
     "如想好一个数字，先用 update_short_state 成功保存再确认；记录缺失不能编造。"
-    "runtime.memory_mutation.exclusive_write 为真时，遵守后端给出的记忆写入范围，"
-    "先调用长期记忆写工具，以真实回执报告结果；定位失败如实报告。\n\n"
+    "长期记忆变更需调用已声明工具，以每次真实回执报告结果；定位失败如实报告。\n\n"
     "【自动化】\n"
     "用户任务依据当前真实请求及相关上下文；SELF 可以根据自己的兴趣和自主机会形成"
     "具体的个人目标，以 SELF 身份为自己安排后续工作。将时间语义转换为明确的"

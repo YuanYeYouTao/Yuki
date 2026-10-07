@@ -31,7 +31,7 @@ def script(*steps: AutomationStep) -> AutomationScript:
     )
 
 
-def model(call: str = "yuki.generate") -> AutomationStep:
+def model(call: str = "yuki.agent") -> AutomationStep:
     return AutomationStep(
         id="compose",
         call=call,
@@ -143,7 +143,7 @@ def test_validator_rejects_direct_and_derived_model_delivery_including_plugins()
     derived = AutomationStep(
         id="lookup", call="web.search", arguments={"query": "${result.text}"}, save_as="web"
     )
-    for call in ("yuki.generate", "yuki.agent"):
+    for call in ("yuki.agent",):
         for declaration in (
             script(model(call), send()),
             script(model(call), send("前缀${result.text}")),

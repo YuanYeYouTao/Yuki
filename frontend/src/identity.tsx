@@ -334,7 +334,7 @@ export function Identity(props: PageProps) {
           ]}
           actions={(row) => (
             <>
-              {["start_presence", "stop_presence"].map((method) => (
+              {(["start_presence", "stop_presence"] as const).map((method) => (
                 <button
                   key={method}
                   className="btn-secondary"
@@ -396,9 +396,9 @@ export function Identity(props: PageProps) {
             />
           </>
         )}
-        {["person_active", "space_active", "space_binding_ingest"].map(
+        {(["person_active", "space_active", "space_binding_ingest"] as const).map(
           (kind) => {
-            const method = `list_${kind}_routes`;
+            const method = `list_${kind}_routes` as const;
             return (
               props.allowed(method) && (
                 <div key={kind}>

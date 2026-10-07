@@ -9,6 +9,8 @@ import pytest
 from qq_ai_bot.automation.executor import AutomationExecutionError, AutomationExecutor
 from qq_ai_bot.automation.models import RetryPolicy
 from qq_ai_bot.automation.registry import AutomationCapabilityRegistry
+from qq_ai_bot.capabilities.invocation import direct_invocations
+from qq_ai_bot.domain.messages import ToolCall, ToolFunction
 from qq_ai_bot.persistence.models import AutomationModel
 
 
@@ -59,7 +61,7 @@ async def guarded_agent_calls(handlers, context, provider):
     guarded = replace(context, revalidate_authority=revoked)
     before = len(provider.requests)
     with pytest.raises(AutomationExecutionError) as caught:
-        await handlers.mapping()["yuki.generate"](
+        await handlers.mapping()["yuki.agent"](
             {"instruction": "work", "context_profile": "none"}, guarded
         )
     assert caught.value.category == "automation_inactive"
@@ -72,5 +74,6 @@ async def guarded_agent_calls(handlers, context, provider):
         ),
     )
     for name in ("update_short_state",):
+        call = ToolCall(id="revoked", function=ToolFunction(name=name, arguments="{}"))
         with pytest.raises(AutomationExecutionError, match="automation_inactive"):
-            await backend.execute(name, "{}", None)
+            await backend.execute_call(direct_invocations((call,), None)[0])

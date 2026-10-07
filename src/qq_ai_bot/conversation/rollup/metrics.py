@@ -18,7 +18,6 @@ class ConversationRollupMetrics:
     foreground_batches: int = 0
     counter_repairs: int = 0
     counter_reconcile_failures: int = 0
-    scoped_append_repairs: int = 0
     max_output_tokens: int = 0
     timeout_seconds: float = 0
     model_timeouts: int = 0

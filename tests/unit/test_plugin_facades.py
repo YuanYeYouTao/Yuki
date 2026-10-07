@@ -13,6 +13,7 @@ from uuid import uuid4
 
 import pytest
 from tests.conftest import make_settings
+from tests.support.canonical_ingress import append_inbound
 
 from qq_ai_bot.admin.audit import AdminAuditService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
@@ -135,8 +136,10 @@ async def durable_invocation(database: Database, **kwargs: Any) -> PluginInvocat
     trusted = invocation(**kwargs)
     assert trusted.inbound is not None
     trusted = replace(trusted, inbound=replace(trusted.inbound, message_id=str(uuid4())))
-    event, _ = await EventLedgerRepository(database).append_inbound(
-        trusted.inbound, bot_user_id=trusted.bot_user_id
+    from tests.support.canonical_ingress import append_inbound
+
+    event, _ = await append_inbound(
+        EventLedgerRepository(database), trusted.inbound, bot_user_id=trusted.bot_user_id
     )
     async with database.immediate_session() as session:
         person = await find_identity_binding(session, trusted.actor_user_id)
@@ -162,7 +165,6 @@ async def durable_invocation(database: Database, **kwargs: Any) -> PluginInvocat
             space_id=space.space_id if space else None,
             conversation_id=conversation.conversation_id,
             presence_id=presence.id,
-            legacy_conversation_key=trusted.inbound.scope().key,
             source_event_id=event.id,
         ),
     )
@@ -216,7 +218,7 @@ async def test_plugin_memory_facade_writes_v2_fact_with_current_event_evidence_o
 ) -> None:
     ledger = EventLedgerRepository(database)
     message = inbound(user_id="10001")
-    event, _ = await ledger.append_inbound(message, bot_user_id="99999")
+    event, _ = await append_inbound(ledger, message, bot_user_id="99999")
     facts = MemoryFactService(MemoryFactRepository(database))
     audit = AdminAuditService(database)
     context = HostPluginContext(
@@ -860,7 +862,9 @@ async def test_sdk_send_stable_replay_is_not_content_deduplication(database: Dat
     from qq_ai_bot.capabilities.invocation import ToolInvocationContext, current_invocation
 
     token = current_invocation.set(
-        ToolInvocationContext(runtime=None, execution_id="host-execution", call_id="model-call")
+        ToolInvocationContext(
+            runtime=SimpleNamespace(effective_execution_id="host-execution"), call_id="model-call"
+        )
     )
     try:
         with first.bind(trusted):
@@ -1089,7 +1093,6 @@ def test_context_exposes_every_sdk_facade_but_not_dependency_bundle() -> None:
         "groups",
         "memory",
         "relationship",
-        "llm",
         "agent",
         "agent_sessions",
         "web",

@@ -18,6 +18,7 @@ from qq_ai_bot.runtime.activation_outcome import ContextBoundaryChanged
 from qq_ai_bot.runtime.context_preparation import prepare_context
 from qq_ai_bot.services.agent_runner import AgentRunResult, AgentRuntime, AgentToolBackend
 from qq_ai_bot.services.agent_tools import OneBotToolGateway, ToolRuntime
+from qq_ai_bot.services.invocation_context import InvocationContextFactory
 from qq_ai_bot.services.main_agent_backend import MainAgentBackend
 from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
 from qq_ai_bot.tool_results.access import access_from_runtime
@@ -291,9 +292,7 @@ async def _execute_plugin_main_turn(
             read_scope=inbound.scope(),
             read_target_id=inbound.space_id or inbound.person_id,
             trigger_event_id=invocation.source_event_id,
-            actor_user_id=runtime.actor_user_id,
             actor_is_superuser=runtime.actor_is_superuser,
-            current_group_id=runtime.current_group_id,
             runtime_config=runtime.runtime_config,
             origin=runtime.origin,
             memory_allowed_scopes=(
@@ -316,10 +315,8 @@ async def _execute_plugin_main_turn(
                 ).encode()
             ).hexdigest(),
             conversation_id=inbound.conversation_id,
-            presence_id=inbound.presence_id,
             person_id=inbound.person_id,
             space_id=inbound.space_id,
-            bot_user_id=inbound.bot_user_id,
             scope_type=inbound.scope_type,
             before_model_request=validate,
         )
@@ -356,12 +353,18 @@ async def _execute_plugin_main_turn(
                 result = await main.run(
                     composition.messages,
                     replace(
-                        runtime,
-                        conversation_key=invocation.conversation_key,
-                        execution_id=execution_id,
+                        InvocationContextFactory.from_tools(
+                            tool_runtime,
+                            current_time=runtime.current_time,
+                            allowed_capabilities=runtime.allowed_capabilities,
+                            max_tool_calls=runtime.max_tool_calls,
+                            max_model_requests=runtime.max_model_requests,
+                        ),
+                        delegated_authority=runtime.delegated_authority,
                         invocation_goal=instruction,
                         invocation_source={
                             "owner": "plugin_invocation",
+                            "actor_person_id": invocation.actor_person_id,
                             "plugin_id": host.plugin_id,
                             "approval_revision": host._services.approval_revision,
                             "trigger_event_id": invocation.source_event_id,

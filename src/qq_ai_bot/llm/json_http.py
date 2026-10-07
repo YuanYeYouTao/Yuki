@@ -35,6 +35,7 @@ from qq_ai_bot.model_runtime.request_accounting import current_provider_attempts
 class JSONHTTPProvider(LLMProvider):
     provider_name = "openai_compatible"
     protocol = "chat_completions"
+    transport_errors: tuple[type[httpx.TransportError], ...] = (httpx.TransportError,)
 
     def __init__(
         self,
@@ -136,7 +137,7 @@ class JSONHTTPProvider(LLMProvider):
                     type(value) is int and value >= 0 for value in usage.values()
                 ):
                     if attempts is not None:
-                        attempts.reported_usage(usage.get("total_tokens"))
+                        attempts.reported_usage(usage.get("total_tokens"), usage=usage)
                     exc.diagnostics = {**exc.diagnostics, "usage": usage}
                 raise
         return response
@@ -151,6 +152,7 @@ class JSONHTTPProvider(LLMProvider):
         started = time.perf_counter()
         # Provider-executed tools have no local receipt for uncertain transport outcomes.
         attempts = 1 if request.native_tools else self._max_retries + 1
+        retry_errors: tuple[type[Exception], ...] = (*self.transport_errors, RetryableProviderError)
 
         async def retry_sleep(seconds: float) -> None:
             with model_detail("retry_backoff"):
@@ -160,7 +162,7 @@ class JSONHTTPProvider(LLMProvider):
             async for attempt in AsyncRetrying(
                 stop=stop_after_attempt(attempts),
                 wait=wait_random_exponential(multiplier=0.25, max=2),
-                retry=retry_if_exception_type((httpx.TransportError, RetryableProviderError)),
+                retry=retry_if_exception_type(retry_errors),
                 reraise=True,
                 sleep=retry_sleep,
             ):
@@ -169,25 +171,59 @@ class JSONHTTPProvider(LLMProvider):
                     if work is not None and attempt.retry_state.attempt_number > 1:
                         with model_detail("retry_budget_preparation"):
                             await work.reserve_request(auxiliary=True)
-                    response = await self._post(request)
+                    from qq_ai_bot.model_runtime.request_accounting import (
+                        after_provider_request,
+                        before_provider_request,
+                    )
+
+                    account, finish = before_provider_request.get(), after_provider_request.get()
+                    if account is not None:
+                        await account()
+                    try:
+                        response = await self._post(request)
+                    except BaseException:
+                        if finish is not None:
+                            await finish("failed", None)
+                        raise
+                    if finish is not None:
+                        try:
+                            body = response.json()
+                        except ValueError:
+                            body = {}
+                        body = body if isinstance(body, dict) else {}
+                        usage = self._usage_diagnostics(body).get("usage", {})
+                        usage = usage if isinstance(usage, dict) else {}
+                        await finish(
+                            str(body.get("status", "unknown")), usage.get("completion_tokens")
+                        )
         except httpx.TimeoutException as exc:
             raise LLMTimeoutError("LLM request timed out") from exc
-        except (httpx.TransportError, RetryableProviderError) as exc:
+        except retry_errors as exc:
             raise LLMUnavailableError(
                 "LLM is temporarily unavailable",
                 diagnostics=getattr(exc, "diagnostics", {}),
             ) from exc
         counter = current_provider_attempts.get()
         try:
+            raw_body = response.json()
+        except ValueError:
+            raw_body = {}
+        diagnostics = self._usage_diagnostics(raw_body) if isinstance(raw_body, dict) else {}
+        reported_usage = diagnostics.get("usage", {})
+        if counter is not None and isinstance(reported_usage, dict):
+            counter.reported_usage(reported_usage.get("total_tokens"), usage=reported_usage)
+        try:
             with model_detail("provider_response_preparation"):
                 parsed = self._parse(response, request)
         except LLMError as exc:
+            if reported_usage:
+                exc.diagnostics = {**exc.diagnostics, "usage": reported_usage}
             usage = exc.diagnostics.get("usage")
             if counter is not None and isinstance(usage, dict):
-                counter.reported_usage(usage.get("total_tokens"))
+                counter.reported_usage(usage.get("total_tokens"), usage=usage)
             raise
         if counter is not None:
-            counter.reported_usage(parsed.total_tokens)
+            counter.reported_response(parsed)
         return replace(parsed, latency_seconds=time.perf_counter() - started)
 
     async def close(self) -> None:

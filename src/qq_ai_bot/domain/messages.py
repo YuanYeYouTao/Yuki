@@ -380,8 +380,6 @@ class ChatRequest:
     structured_output: bool = False
     native_tools: tuple[NativeToolDefinition, ...] = ()
     continuation: ProviderContinuation | None = None
-    function_outputs: tuple[FunctionCallOutput, ...] = ()
-    continuation_messages: tuple[ChatMessage, ...] = ()
     continuation_items: tuple[ChatMessage | FunctionCallOutput, ...] = ()
     conversation_prefix_hash: str = ""
     request_shape_hash: str = ""

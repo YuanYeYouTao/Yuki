@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy import select, text
 from tests.conftest import MemorySender
 from tests.support.runtime_execution import make_work_resumer
+from tests.support.work_session import WorkSession
 from tests.unit.test_history_dispatch_ownership import _scene, _tool
 from tests.unit.test_work_reporting_runner_gemini_wire import content_parts, gemini_wire
 
@@ -24,7 +25,7 @@ from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, journal, work
-from qq_ai_bot.runtime.work_session import WorkSession
+from qq_ai_bot.runtime.work_session import WorkSession as RuntimeWorkSession
 from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 
@@ -543,7 +544,7 @@ async def test_boundary_journal_writer_failure_rolls_back_projection_before_any_
             session_owner.append(self)
             paired_guard.append(deepcopy(self.source_guard.snapshot()))
 
-    monkeypatch.setattr(WorkSession, "save", record_save)
+    monkeypatch.setattr(RuntimeWorkSession, "save", record_save)
     running = asyncio.create_task(harness.processor.handle(inbound, MemorySender()))
     ambient_text = "ambient-writer-failure-不能提前消费"
     try:
@@ -679,7 +680,7 @@ async def test_committed_boundary_http_unknown_keeps_exact_native_checkpoint_and
         if phase == "dispatched" and len(provider.requests) == 3:
             dispatched_sessions.append(self)
 
-    monkeypatch.setattr(WorkSession, "save", record_save)
+    monkeypatch.setattr(RuntimeWorkSession, "save", record_save)
     running = asyncio.create_task(harness.processor.handle(inbound, MemorySender()))
     ambient_text = "ambient-http-unknown-已派发但未收到回复"
     repository = WorkRepository(database)

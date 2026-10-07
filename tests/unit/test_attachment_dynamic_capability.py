@@ -25,7 +25,7 @@ from qq_ai_bot.services.vision_service import VisionProcessingError
 
 
 @pytest.mark.asyncio
-async def test_ingress_pins_media_capability_until_agent_handoff():
+async def test_ingress_pins_media_capability_until_agent_handoff(database):
     from qq_ai_bot.model_runtime.executor import TaskModelExecutor
     from qq_ai_bot.model_runtime.models import (
         ModelCapability,
@@ -37,8 +37,7 @@ async def test_ingress_pins_media_capability_until_agent_handoff():
     from qq_ai_bot.model_runtime.pool import ModelClientPool
     from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
     from qq_ai_bot.model_runtime.routes import ModelRouter
-    from qq_ai_bot.services.chat import ChatService
-    from qq_ai_bot.services.processor import MessageProcessor, ProcessResult
+    from qq_ai_bot.services.processor import ProcessResult
 
     def catalog(name: str, *, image_input: bool) -> ModelProfileCatalog:
         capabilities = {ModelCapability.REASONING, ModelCapability.TOOLS}
@@ -84,12 +83,11 @@ async def test_ingress_pins_media_capability_until_agent_handoff():
             file="base64://" + base64.b64encode(stream.getvalue()).decode(),
         )
     )
-    chat = object.__new__(ChatService)
-    chat._models = executor
-    processor = object.__new__(MessageProcessor)
-    processor._chat = chat
-    processor._group_recovery = None
-    processor._canonical_ingress = None
+    from tests.conftest import build_harness, make_settings
+
+    message = replace(message, bot_user_id="8000", sender=SenderIdentity("1001"))
+    processor = build_harness(database, make_settings(database.url)).processor
+    processor._chat._models = executor
     entered = asyncio.Event()
     resume = asyncio.Event()
     observed: list[tuple[str, bool]] = []

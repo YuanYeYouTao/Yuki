@@ -18,7 +18,7 @@ from qq_ai_bot.persistence.models import (
     MembershipModel,
     RuntimeConfigOverrideModel,
 )
-from qq_ai_bot.persistence.repositories import UserProfileRepository
+from qq_ai_bot.persistence.repositories import PeopleRepository
 from qq_ai_bot.services.user_profiles import (
     ProfileResolution,
     UserProfileResolver,
@@ -33,7 +33,7 @@ async def test_profile_observation_reads_before_write_and_preserves_unchanged_re
         SpaceBindingModel,
     )
 
-    profiles = UserProfileRepository(database)
+    profiles = PeopleRepository(database)
     arguments = dict(
         user_id="1001", nickname="昵称", group_id="2001", group_card="名片", group_name="群名"
     )
@@ -75,7 +75,7 @@ async def test_first_profile_observations_share_relationship_membership_and_alia
     from qq_ai_bot.identity.db_models import IdentityBindingModel
     from qq_ai_bot.persistence.models import PersonAliasModel, PersonRelationshipModel
 
-    profiles = UserProfileRepository(database)
+    profiles = PeopleRepository(database)
     arguments = dict(user_id="1001", nickname="昵称", group_id="2001", group_card="名片")
     await asyncio.gather(profiles.observe(**arguments), profiles.observe(**arguments))
     async with database.sessions() as session:
@@ -195,7 +195,7 @@ async def test_optional_profile_lookup_deadline_keeps_capture_running(database, 
             finally:
                 cancelled.set()
 
-    service = UserProfileService(UserProfileRepository(database))
+    service = UserProfileService(PeopleRepository(database))
     profile = await asyncio.wait_for(
         service.capture(
             inbound("hello", message_id="deadline", nickname="事件昵称"), StalledResolver()
@@ -211,14 +211,14 @@ async def test_optional_profile_lookup_deadline_keeps_capture_running(database, 
 async def test_repository_keeps_distinct_group_cards_and_cascades_delete(
     database: Database,
 ) -> None:
-    repository = UserProfileRepository(database)
-    await repository.upsert(
+    repository = PeopleRepository(database)
+    await repository.observe(
         user_id="1001",
         nickname="昵称",
         group_id="2001",
         group_card="一群名片",
     )
-    await repository.upsert(
+    await repository.observe(
         user_id="1001",
         nickname="新昵称",
         group_id="2002",
@@ -231,7 +231,7 @@ async def test_repository_keeps_distinct_group_cards_and_cascades_delete(
     assert first.group_card == "一群名片"
     assert second is not None and second.group_card == "二群名片"
 
-    await repository.upsert(
+    await repository.observe(
         user_id="1001",
         nickname="新昵称",
         group_id="2001",
@@ -249,7 +249,7 @@ async def test_repository_keeps_distinct_group_cards_and_cascades_delete(
 
 @pytest.mark.asyncio
 async def test_group_capture_never_falls_back_to_private_nickname(database: Database) -> None:
-    service = UserProfileService(UserProfileRepository(database))
+    service = UserProfileService(PeopleRepository(database))
     await service.capture(inbound("hello", message_id="private", nickname="私聊秘密"))
 
     group_profile = await service.capture(
@@ -432,19 +432,19 @@ async def test_whoami_and_forgetme_are_caller_scoped(database: Database) -> None
         inbound("hello", message_id="chat", nickname="小明"),
         MemorySender(),
     )
-    await harness.profiles.upsert(
+    await harness.profiles.observe(
         user_id="1001",
         nickname="小明",
         group_id="2001",
         group_card="一群名片",
     )
-    await harness.profiles.upsert(
+    await harness.profiles.observe(
         user_id="1001",
         nickname="小明",
         group_id="2002",
         group_card="二群名片",
     )
-    await harness.profiles.upsert(user_id="1002", nickname="其他用户")
+    await harness.profiles.observe(user_id="1002", nickname="其他用户")
 
     private_whoami_sender = MemorySender()
     await harness.processor.handle(
@@ -539,7 +539,7 @@ async def test_v2_observe_without_carriers_and_group_metadata_uses_space(
     from qq_ai_bot.identity.db_models import CanonicalSpaceModel, SpaceBindingModel
     from qq_ai_bot.persistence.repositories import GroupSettingsRepository
 
-    profiles = UserProfileRepository(database)
+    profiles = PeopleRepository(database)
     groups = GroupSettingsRepository(database)
     await profiles.observe(
         user_id="1001",
@@ -604,7 +604,7 @@ async def test_v2_profile_alias_membership_inherit_across_bindings(
                 updated_at=now,
             )
         )
-    repo = UserProfileRepository(database)
+    repo = PeopleRepository(database)
     await repo.observe(
         user_id="1101",
         nickname="远野",
@@ -640,7 +640,7 @@ async def test_v2_missing_or_inactive_binding_fails_closed_without_external_id(
     from qq_ai_bot.identity.errors import CanonicalIdentityError
 
     now = datetime(2026, 8, 24, tzinfo=UTC)
-    repo = UserProfileRepository(database)
+    repo = PeopleRepository(database)
     with pytest.raises(CanonicalIdentityError) as missing:
         await repo.observe(user_id="1191", nickname="远野")
     assert "1191" not in str(missing.value)

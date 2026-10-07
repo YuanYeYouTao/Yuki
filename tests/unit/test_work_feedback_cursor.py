@@ -4,6 +4,7 @@ import json
 
 import pytest
 from sqlalchemy import func, select, update
+from tests.support.work_session import WorkSession
 from tests.unit.test_work_communication import append_input, control_env
 
 from qq_ai_bot.domain.conversations import ConversationScope
@@ -11,7 +12,6 @@ from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.runtime.work_control import WorkControl, WorkInputsPreparing
 from qq_ai_bot.runtime.work_schema_v1 import inputs, work
-from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 from qq_ai_bot.services.work_reporting import append_input_feedback, initialize_input_feedback
 

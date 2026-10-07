@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import asdict, replace
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import select, text
@@ -27,15 +29,39 @@ if TYPE_CHECKING:
     from qq_ai_bot.runtime.work_control import WorkControl
 
 
+def _source_value(value: object) -> object:
+    if hasattr(value, "_mapping"):
+        return ["row", [[str(key), _source_value(item)] for key, item in value._mapping.items()]]
+    if isinstance(value, (list, tuple)):
+        return [type(value).__name__, [_source_value(item) for item in value]]
+    if isinstance(value, (datetime, date)):
+        return [type(value).__name__, value.isoformat()]
+    if isinstance(value, bytes):
+        return ["bytes", value.hex()]
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return [type(value).__name__, value]
+    raise TypeError(f"unsupported_source_value:{type(value).__name__}")
+
+
+def _source_digest(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            _source_value(value), ensure_ascii=False, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 class WorkSourceGuard:
     def __init__(self, version: ConversationReadVersion) -> None:
         self.version = version
+        self.codec = 2
         self.fingerprint: str | None = None
         self.additional_events: dict[int, str] = {}
 
     def snapshot(self) -> dict[str, object]:
         """Persist the selected read dependencies, not newly prepared history."""
         return {
+            "codec": self.codec,
             "version": asdict(self.version),
             "fingerprint": self.fingerprint,
             "additional_events": self.additional_events,
@@ -52,6 +78,10 @@ class WorkSourceGuard:
         if "observation_sources" in data:
             data["observation_sources"] = tuple(tuple(item) for item in data["observation_sources"])
         result = cls(ConversationReadVersion(**data))
+        codec = payload.get("codec", 1)
+        if not isinstance(codec, int):
+            raise ValueError("work_source_guard_invalid")
+        result.codec = codec
         fingerprint = payload.get("fingerprint")
         result.fingerprint = fingerprint if isinstance(fingerprint, str) else None
         extra = payload.get("additional_events", {})
@@ -67,6 +97,8 @@ class WorkSourceGuard:
         observation_sources: tuple[tuple[str, int], ...] = (),
         event_ids: frozenset[int] = frozenset(),
     ) -> bool:
+        if self.codec != 2:
+            return False
         version = self.version
         if (control.lease.conversation_id, control.lease.generation) != (
             version.conversation_id,
@@ -159,7 +191,7 @@ class WorkSourceGuard:
                             or row.id <= version.starts_after_event_id
                         ):
                             return False
-                        digest = hashlib.sha256(repr(row).encode()).hexdigest()
+                        digest = _source_digest(row)
                         if (
                             row.id in self.additional_events
                             and self.additional_events[row.id] != digest
@@ -253,7 +285,7 @@ class WorkSourceGuard:
                     ):
                         return False
                 values: list[object] = [identity, rows, summary, original_observations, privacy]
-                fingerprint = hashlib.sha256(repr(values).encode()).hexdigest()
+                fingerprint = _source_digest(values)
                 if self.fingerprint is not None and self.fingerprint != fingerprint:
                     return False
                 # Only after proving the saved sources, extend this same read snapshot
@@ -278,7 +310,7 @@ class WorkSourceGuard:
                         return False
                     selected_version = replace(version, observation_sources=tuple(merged.items()))
                     values[3] = selected_version.observation_sources
-                    fingerprint = hashlib.sha256(repr(values).encode()).hexdigest()
+                    fingerprint = _source_digest(values)
                 revision = source.prompt_source_revision
         # All fingerprint sources advance this existing revision on mutation.
         # Recheck the lease and scalar dependencies in one fresh read snapshot.

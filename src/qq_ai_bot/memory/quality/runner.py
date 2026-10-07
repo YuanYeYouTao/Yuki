@@ -331,13 +331,31 @@ class MemoryQualityRunner:
             superuser=symbols["person_a"],
             consolidation_enabled=self._model_executor is not None,
         )
+        models: ModelExecutor
+        if self._model_executor is not None:
+            models = self._model_executor
+        else:
+            # Deterministic quality fixtures still use the real task router and pool.
+            from qq_ai_bot.model_runtime import ModelClientPool, ModelRouter, TaskModelExecutor
+            from qq_ai_bot.model_runtime.profiles import parse_model_profile_catalog
+
+            catalog = parse_model_profile_catalog(
+                'schema_version=3\n[profiles.quality]\nprovider="fake"\nmodel="quality"\n'
+                "timeout_seconds=60\nmax_retries=0\ndefault_temperature=0\n"
+                'default_max_output_tokens=8192\nstructured_output_mode="text_json"\n'
+                'capabilities=["reasoning","tools","structured_output"]\n[routes]\n'
+                + "".join(f'{task.value}="quality"\n' for task in ModelTask)
+            )
+            models = TaskModelExecutor(
+                router=ModelRouter(catalog),
+                pool=ModelClientPool(injected_profiles={"quality": provider}),
+            )
         worker = MemoryWorker(
             settings=settings,
             jobs=jobs,
             facts=facts,
             ledger=ledger,
-            provider=provider if self._model_executor is None else None,
-            model_executor=self._model_executor,
+            model_executor=models,
             concurrency=ConcurrencyManager(1),
         )
         pipeline_started = time.perf_counter()
@@ -596,7 +614,6 @@ class MemoryQualityRunner:
                 "llm_provider": "fake",
                 "llm_model": "memory-quality-fake-model",
                 "model_profiles_file": Path("__memory_quality_no_profiles__.toml"),
-                "model_profiles_legacy_compatibility": True,
                 "memory_batch_max_events": 12,
                 "memory_batch_max_wait_seconds": 0,
                 "memory_consolidation_enabled": consolidation_enabled,

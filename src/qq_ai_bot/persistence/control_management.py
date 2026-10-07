@@ -185,6 +185,33 @@ class ControlManagementGateway:
         self._memories = memories
         self._plugins = plugins
 
+    def prepare_external(
+        self,
+        command: ControlCommand,
+        operation: str,
+        parsed: ManagementActionPayload,
+    ) -> object:
+        if operation in {
+            CommandOperation.ENVIRONMENT_FILE_MUTATE.value,
+            CommandOperation.TERMINAL_MUTATE.value,
+        }:
+            from qq_ai_bot.persistence.control_workspace import arguments
+
+            if self._workspace_control.workspace is None:
+                raise ManagementUnavailable
+            prepared: object = None
+            try:
+                if parsed.resource_id != "environment" or command.expected_revision != 0:
+                    raise ValueError("invalid environment target")
+                self._workspace_control.transport()
+                prepared = arguments(
+                    parsed, terminal=operation == CommandOperation.TERMINAL_MUTATE.value
+                )
+            except (TypeError, ValueError):
+                raise ManagementFailure(ProblemCode.VALIDATION_ERROR) from None
+            return prepared
+        return None
+
     async def validate_external(
         self,
         session: AsyncSession,
@@ -193,42 +220,9 @@ class ControlManagementGateway:
         parsed: ManagementActionPayload,
     ) -> None:
         if operation in {
-            CommandOperation.WORKSPACE_MUTATE.value,
             CommandOperation.ENVIRONMENT_FILE_MUTATE.value,
             CommandOperation.TERMINAL_MUTATE.value,
         }:
-            from qq_ai_bot.domain.identity import RequestId
-            from qq_ai_bot.persistence.control_workspace import arguments, upload
-
-            if self._workspace_control.workspace is None:
-                raise ManagementUnavailable
-            try:
-                if operation == CommandOperation.WORKSPACE_MUTATE.value:
-                    if parsed.action == "upload":
-                        if parsed.resource_id != "yuki" or command.expected_revision != 0:
-                            raise ValueError("invalid upload target")
-                        upload(parsed)
-                    else:
-                        RequestId.parse(parsed.resource_id)
-                        if command.expected_revision < 1:
-                            raise ValueError("artifact revision required")
-                        if parsed.action == "edit":
-                            spec = parsed.spec or {}
-                            if (
-                                set(spec) != {"name", "text"}
-                                or any(type(v) is not str for v in spec.values())
-                                or len(str(spec["text"]).encode()) > 65536
-                            ):
-                                raise ValueError("invalid artifact edit")
-                        elif parsed.action != "delete" or parsed.spec is not None:
-                            raise ValueError("invalid artifact action")
-                else:
-                    if parsed.resource_id != "environment" or command.expected_revision != 0:
-                        raise ValueError("invalid environment target")
-                    self._workspace_control.transport()
-                    arguments(parsed, terminal=operation == CommandOperation.TERMINAL_MUTATE.value)
-            except (TypeError, ValueError):
-                raise ManagementFailure(ProblemCode.VALIDATION_ERROR) from None
             return
         if operation == CommandOperation.PLUGIN_CONFIGURE.value:
             if self._plugins is None:
@@ -247,6 +241,14 @@ class ControlManagementGateway:
         elif operation == CommandOperation.PLUGIN_MUTATE.value:
             if self._plugins is None:
                 raise ManagementUnavailable
+            if parsed.action == "discover":
+                if (
+                    parsed.resource_id != "yuki"
+                    or command.expected_revision != 0
+                    or parsed.spec is not None
+                ):
+                    raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
+                return
             if parsed.action not in {"approve", "enable", "disable", "doctor"}:
                 raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
             row = await session.get(PluginInstallationModel, parsed.resource_id)
@@ -281,17 +283,17 @@ class ControlManagementGateway:
         command: ControlCommand,
         operation: str,
         parsed: ManagementActionPayload,
+        prepared: object = None,
     ) -> ManagementMutation:
         if operation in {
-            CommandOperation.WORKSPACE_MUTATE.value,
             CommandOperation.ENVIRONMENT_FILE_MUTATE.value,
             CommandOperation.TERMINAL_MUTATE.value,
         }:
             from qq_ai_bot.workspace.store import WorkspaceError
 
             try:
-                resource, revision, status = await self._workspace_control.mutate(
-                    principal, command, parsed, operation
+                return await self._workspace_control.mutate(
+                    principal, command, parsed, operation, prepared=prepared
                 )
             except WorkspaceError as exc:
                 code = (
@@ -300,7 +302,6 @@ class ControlManagementGateway:
                     else ProblemCode.PRECONDITION_FAILED
                 )
                 raise ManagementFailure(code) from None
-            return ManagementMutation(resource, revision, status)
         if operation == CommandOperation.PLUGIN_CONFIGURE.value:
             if self._plugins is None:
                 raise ManagementUnavailable
@@ -336,6 +337,9 @@ class ControlManagementGateway:
             manager = self._plugins
             if manager is None:
                 raise ManagementUnavailable
+            if parsed.action == "discover":
+                await manager.discover()
+                return ManagementMutation("yuki", 1, "discovered")
             if parsed.action == "approve":
                 raw = parsed.spec.get("permissions") if parsed.spec else None
                 if raw is not None and (
@@ -809,14 +813,17 @@ class ControlManagementGateway:
             owner_id: object = principal.person_id.text if principal.person_id is not None else None
             conversation_id: object = None
             max_runs: object = None
-            script_payload: object = spec
-            if "script" in spec:
-                if set(spec) - {"script", "owner_id", "conversation_id", "max_runs"}:
-                    raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
-                owner_id = spec.get("owner_id", owner_id)
-                conversation_id = spec.get("conversation_id")
-                max_runs = spec.get("max_runs")
-                script_payload = spec["script"]
+            if "script" not in spec or set(spec) - {
+                "script",
+                "owner_id",
+                "conversation_id",
+                "max_runs",
+            }:
+                raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
+            owner_id = spec.get("owner_id", owner_id)
+            conversation_id = spec.get("conversation_id")
+            max_runs = spec.get("max_runs")
+            script_payload = spec["script"]
             if owner_id is None:
                 raise ManagementFailure(ProblemCode.PRECONDITION_FAILED)
             if (
@@ -856,11 +863,11 @@ class ControlManagementGateway:
         _require_revision(state_revision(existing.updated_at), command.expected_revision)
         try:
             if parsed.action == "update":
-                if parsed.spec is None:
+                if parsed.spec is None or set(parsed.spec) != {"script"}:
                     raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
                 row = await service.administer_update(
                     automation_id,
-                    dict(parsed.spec),
+                    parsed.spec["script"],
                     session=session,
                 )
             elif parsed.action in {"pause", "resume", "cancel", "run_now"}:

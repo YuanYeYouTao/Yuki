@@ -1,9 +1,10 @@
+import type { QueryMethod } from "./control-methods";
 import { useEffect, useState } from "react";
 import { query } from "./api";
 import type { Row } from "./api";
 
 export function useQuery<T>(
-  method: string,
+  method: QueryMethod,
   args: Row = {},
   refresh = 0,
   enabled = true,

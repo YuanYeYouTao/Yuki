@@ -1,10 +1,11 @@
+import type { CommandMethod } from "./control-methods";
 import { useEffect, useRef, useState } from "react";
 import { command, query } from "./api";
 import type { Command, Row } from "./api";
 import { ErrorNote, JsonNote } from "./components";
 
 export interface Intent {
-  method: string;
+  method: CommandMethod;
   label: string;
   revision: number;
   payload: Row;

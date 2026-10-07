@@ -10,17 +10,8 @@ from typing import Any, Protocol
 from qq_ai_bot.capabilities.media import MediaResultText, result_images
 from qq_ai_bot.capabilities.models import CapabilityDescriptor, CapabilityEffect
 from qq_ai_bot.domain.messages import ChatImage
+from qq_ai_bot.runtime.work_schema_v1 import MAX_WORK_RECORD_BYTES
 from qq_ai_bot.tool_results.access import ArtifactAccess
-
-
-@dataclass(frozen=True, slots=True)
-class CapabilityResult:
-    ok: bool
-    data: Any = None
-    error: str | None = None
-    public_message: str | None = None
-    retryable: bool = False
-    mutation_committed: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +33,15 @@ class ToolExecutionResult:
     evidence_state: dict[str, Any] | None = None
     memory_grounding_policy: str | None = None
     images: tuple[ChatImage, ...] = field(default=(), repr=False)
+
+    def __post_init__(self) -> None:
+        for name in ("ok", "retryable", "uncertain"):
+            if type(getattr(self, name)) is not bool:
+                raise TypeError(f"{name} must be a bool")
+        for name in ("mutation_committed", "finalize_after_commit"):
+            value = getattr(self, name)
+            if value is not None and type(value) is not bool:
+                raise TypeError(f"{name} must be a bool or None")
 
     def model_payload(self) -> dict[str, Any]:
         # Do not even copy pixels while building a public textual projection.
@@ -82,6 +82,7 @@ class ToolArtifactWriter(Protocol):
         limit: int = 8000,
         query: str = "",
         max_characters: int = 8000,
+        item_limit: int | None = None,
         access: ArtifactAccess | None = None,
     ) -> dict[str, Any] | None: ...
 
@@ -103,7 +104,7 @@ class ToolResultBudgeter:
         item_limit: int | None = None,
         artifacts: ToolArtifactWriter | None = None,
         artifact_retention_seconds: int | None = None,
-        max_receipt_bytes: int = 49152,
+        max_receipt_bytes: int = MAX_WORK_RECORD_BYTES * 3 // 4,
         artifact_access: ArtifactAccess | None = None,
         artifact_access_resolver: Callable[[], ArtifactAccess] | None = None,
     ) -> None:
@@ -178,8 +179,13 @@ class ToolResultBudgeter:
         if media_handle:
             payload["media_artifact_handle"] = media_handle
         text = json.dumps(payload, ensure_ascii=False, default=str)
+        artifact_page = (
+            result.provider_id == "artifacts" and result.tool_name == "read_tool_artifact"
+        )
         item_overflow = (
-            self._item_limit is not None and _largest_collection(payload) > self._item_limit
+            not artifact_page
+            and self._item_limit is not None
+            and _largest_collection(result.data) > self._item_limit
         )
         character_overflow = self._max_characters is not None and len(text) > self._max_characters
         byte_overflow = len(json.dumps({"result": text}, ensure_ascii=False).encode()) > (
@@ -218,14 +224,19 @@ class ToolResultBudgeter:
                 if self._artifact_access_resolver is not None
                 else self._artifact_access
             )
-            artifact_id = await self._artifacts.write_artifact(
-                provider_id=result.provider_id,
-                tool_name=result.tool_name,
-                content=text,
-                media_type="application/json",
-                retention_seconds=self._artifact_retention_seconds,
-                access=access,
-            )
+            try:
+                artifact_id = await self._artifacts.write_artifact(
+                    provider_id=result.provider_id,
+                    tool_name=result.tool_name,
+                    content=text,
+                    media_type="application/json",
+                    retention_seconds=self._artifact_retention_seconds,
+                    access=access,
+                )
+            except OSError:
+                # Optional presentation storage cannot reverse the original effect.
+                payload["artifact_error"] = "artifact_unavailable"
+                payload["result_unavailable"] = True
             if capture is not None:
                 capture.artifact_handle = artifact_id
         important: dict[str, object] = {}
@@ -243,12 +254,33 @@ class ToolResultBudgeter:
                 summary["important_fields"] = important
             summary["truncated"] = True
             summary["original_characters"] = len(text)
+            if payload.get("artifact_error"):
+                summary["artifact_error"] = payload["artifact_error"]
+                summary["result_unavailable"] = True
         progress = _workspace_progress(result)
         summary.update(_execution_envelope(result))
         if media_handle:
             summary["media_artifact_handle"] = media_handle
         if progress:
             summary["progress"] = progress
+        file_page = (
+            result.provider_id == "core"
+            and result.tool_name == "workspace_read"
+            and isinstance(result.data, dict)
+            and isinstance(result.data.get("text"), str)
+        )
+        if file_page:
+            # A directory/preview is not file text, and must not look like EOF.
+            summary.pop("progress", None)
+            summary["data"] = {
+                **{
+                    key: value
+                    for key, value in progress.items()
+                    if key not in {"output_preview", "preview_truncated"}
+                },
+                "read_state": "externalized",
+                "text": None,
+            }
         rendered = json.dumps(summary, ensure_ascii=False, default=str)
         if (self._max_characters is not None and len(rendered) > self._max_characters) or len(
             json.dumps({"result": rendered}, ensure_ascii=False).encode()
@@ -258,6 +290,8 @@ class ToolResultBudgeter:
                 "truncated": True,
                 "original_characters": len(text),
                 "artifact_handle": artifact_id,
+                "artifact_error": payload.get("artifact_error"),
+                "result_unavailable": payload.get("result_unavailable"),
                 "media_artifact_handle": media_handle,
                 "public_message": result.public_message[:1000] if result.public_message else None,
                 "retryable": result.retryable,
@@ -267,7 +301,8 @@ class ToolResultBudgeter:
                 "root_type": summary.get("root_type"),
                 "available_operations": summary.get("available_operations"),
                 "important_fields": (important or None) if not artifact_id else None,
-                "progress": progress or None,
+                "progress": (progress or None) if not file_page else None,
+                **({"data": summary["data"]} if file_page else {}),
                 **_execution_envelope(result),
             }
             rendered = json.dumps(
@@ -279,6 +314,28 @@ class ToolResultBudgeter:
             artifact_id=artifact_id,
             truncated=True,
         )
+
+
+def artifact_page_fits(
+    value: object, max_characters: int, *, max_receipt_bytes: int = MAX_WORK_RECORD_BYTES * 3 // 4
+) -> bool:
+    """Size the exact final read-only envelope, including escaped journal bytes."""
+    try:
+        payload = ToolExecutionResult(
+            ok=True,
+            data=value,
+            mutation_committed=False,
+            provider_id="artifacts",
+            tool_name="read_tool_artifact",
+        ).model_payload()
+        rendered = json.dumps(payload, ensure_ascii=False, default=str)
+        return (
+            len(rendered) <= max_characters
+            and len(json.dumps({"result": rendered}, ensure_ascii=False).encode())
+            <= max_receipt_bytes
+        )
+    except (RecursionError, ValueError):
+        return False
 
 
 def process_receipt(result: ToolExecutionResult) -> dict[str, Any]:
@@ -341,6 +398,13 @@ def _workspace_progress(result: ToolExecutionResult) -> dict[str, Any]:
             "truncated",
             "path",
             "version",
+            "size",
+            "offset",
+            "next_offset",
+            "offset_unit",
+            "eof",
+            "read_state",
+            "binary",
             "artifact_id",
             "error",
             "retryable",
@@ -388,7 +452,10 @@ def normalize_legacy_result(
     provider_id: str,
     tool_name: str,
 ) -> ToolExecutionResult:
-    """Convert old string/dict tool results into the kernel result contract."""
+    """Decode persisted historical receipts; never use for live provider dispatch."""
+
+    if not isinstance(value, (str, dict)):
+        raise TypeError("historical receipt must be serialized text or an object")
 
     payload: object = value
     images = result_images(value)
@@ -404,7 +471,10 @@ def normalize_legacy_result(
             )
     if isinstance(payload, dict):
         raw = dict(payload)
-        ok = bool(raw.pop("ok", True))
+        for key in ("ok", "mutation_committed", "finalize_after_commit", "retryable", "uncertain"):
+            if key in raw and raw[key] is not None and type(raw[key]) is not bool:
+                raise ValueError(f"invalid_historical_receipt_boolean:{key}")
+        ok = raw.pop("ok", True)
         error = raw.pop("error_code", raw.pop("error", None))
         public = raw.pop("public_message", raw.pop("detail", None))
         committed_value = raw.pop("mutation_committed", None)
@@ -421,9 +491,6 @@ def normalize_legacy_result(
             and tool_name
             in {
                 "search_memory",
-                "get_person_memories",
-                "get_group_memories",
-                "get_self_memories",
                 "get_memory_fact",
                 "get_memory_evidence",
             }
@@ -436,9 +503,6 @@ def normalize_legacy_result(
             and tool_name
             in {
                 "search_memory",
-                "get_person_memories",
-                "get_group_memories",
-                "get_self_memories",
                 "get_memory_fact",
                 "get_memory_evidence",
                 "web_search",

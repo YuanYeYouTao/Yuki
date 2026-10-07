@@ -467,14 +467,26 @@ class PhysicalRequests:
 
 
 async def isolated_application(root: Path) -> tuple[ApplicationContainer, tuple[Any, ...]]:
+    # Assembly uses a complete isolated catalog; the selected probe provider is
+    # pinned explicitly later, without a production legacy environment fallback.
+    profiles_path = root / "models.toml"
+    profiles_path.write_text(
+        'schema_version = 3\n[profiles.main]\nprovider = "fake"\n'
+        'protocol = "chat_completions"\nmodel = "fake"\n'
+        'base_url = "https://test.invalid/v1"\napi_key_env = ""\n'
+        "timeout_seconds = 60\nmax_retries = 0\n"
+        "default_temperature = 0.7\ndefault_max_output_tokens = 2048\n"
+        'capabilities = ["tools", "structured_output", "reasoning"]\n'
+        "[routes]\n" + "".join(f'{task.value} = "main"\n' for task in ModelTask),
+        encoding="utf-8",
+    )
     # model_validate does not read .env or inherit BaseSettings environment values.
     settings = Settings.model_validate(
         {
             "database_url": f"sqlite+aiosqlite:///{(root / 'probe.sqlite3').as_posix()}",
             "llm_provider": "fake",
             "llm_model": "fake",
-            "model_profiles_file": root / "absent.toml",
-            "model_profiles_legacy_compatibility": True,
+            "model_profiles_file": profiles_path,
             "workspace_directory": root / "workspace",
             "conversation_media_cache_directory": root / "media",
             "social_transfer_directory": root / "social-transfer",

@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from qq_ai_bot.emoji.models import EmojiAsset
 from qq_ai_bot.llm.base import LLMError
-from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
+from qq_ai_bot.model_runtime.executor import ModelExecutor
 from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.model_runtime.structured import StructuredTaskError, StructuredTaskRunner
 
@@ -27,9 +27,8 @@ class EmojiReplacementService:
 
     def __init__(
         self,
-        provider: ModelCompleter | None = None,
         *,
-        model_executor: ModelExecutor | None = None,
+        model_executor: ModelExecutor,
         model: str,
         max_prompt_characters: int = 131_072,
     ) -> None:
@@ -37,11 +36,7 @@ class EmojiReplacementService:
             raise ValueError("replacement model must not be empty")
         if max_prompt_characters <= 0:
             raise ValueError("replacement prompt budget must be positive")
-        self._models = require_model_executor(
-            model_executor,
-            provider=provider,
-            model=model,
-        )
+        self._models = model_executor
         self._structured = StructuredTaskRunner(self._models)
         self._model = model
         # Candidate metadata resource limit, independent of conversation windows.

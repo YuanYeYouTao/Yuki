@@ -355,7 +355,7 @@ class ConfigFileService:
                         if self._web_module is not None:
                             try:
                                 pending_search = self._web_module.prepare(
-                                    pending_catalog, pending_pool, require_explicit=True
+                                    pending_catalog, pending_pool
                                 )
                             except Exception:
                                 await pending_pool.close()

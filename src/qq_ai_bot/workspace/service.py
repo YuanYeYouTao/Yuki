@@ -6,7 +6,7 @@ import asyncio
 import base64
 import logging
 from typing import Any
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from qq_ai_bot.conversation.media_service import ConversationMediaError, ConversationMediaService
 from qq_ai_bot.domain.messages import ChatImage
@@ -43,11 +43,6 @@ class WorkspaceService:
             await asyncio.gather(self._task, return_exceptions=True)
             self._task = None
 
-    async def upload_file(self, name: str, data: bytes, *, request_id: str) -> dict[str, Any]:
-        """Publish operator bytes through the same store and environment checkout."""
-        metadata = await asyncio.to_thread(self.store.write, name, data)
-        return await self._checkout(metadata, request_id)
-
     async def _cleanup(self) -> None:
         while True:
             await asyncio.sleep(60)
@@ -66,6 +61,23 @@ class WorkspaceService:
         runtime: Any = None,
         request_id: str | None = None,
     ) -> dict[str, Any]:
+        if request_id is None:
+            from hashlib import sha256
+
+            from qq_ai_bot.capabilities.invocation import current_invocation
+
+            invocation = current_invocation.get()
+            request_id = (
+                sha256(
+                    (
+                        f"workspace:{invocation.runtime.conversation_key}:"
+                        f"{invocation.execution_key}:"
+                        f"{invocation.call_id}"
+                    ).encode()
+                ).hexdigest()
+                if invocation
+                else str(uuid4())
+            )
         if name == "workspace_inspect":
             if self.visual_inspector is None:
                 raise WorkspaceError("visual_inspection_unavailable")
@@ -125,30 +137,20 @@ class WorkspaceService:
                 if self.sandbox is None:
                     raise WorkspaceError("environment_unavailable")
                 destination = str(args["destination"])
-                data = await asyncio.to_thread(path.read_bytes)
-                metadata = await asyncio.to_thread(self.store.write, destination, data)
-                if request_id is None:
-                    request_id = str(uuid4())
+
+                def snapshot_attachment() -> dict[str, Any]:
+                    with path.open("rb") as stream:
+                        return self.store.snapshot(
+                            stream.fileno(),
+                            destination,
+                            artifact_id=str(uuid5(NAMESPACE_URL, f"yuki:attachment:{request_id}")),
+                            source_key=f"attachment:{scope_id}:{int(args['event_id'])}:{int(args['attachment_index'])}",
+                        )
+
+                metadata = await asyncio.to_thread(snapshot_attachment)
                 return await self._checkout(metadata, request_id)
             except ConversationMediaError as exc:
                 raise WorkspaceError(str(exc)) from exc
-        if request_id is None:
-            from hashlib import sha256
-
-            from qq_ai_bot.capabilities.invocation import current_invocation
-
-            invocation = current_invocation.get()
-            request_id = (
-                sha256(
-                    (
-                        f"workspace:{invocation.conversation_key}:"
-                        f"{invocation.execution_key}:"
-                        f"{invocation.call_id}"
-                    ).encode()
-                ).hexdigest()
-                if invocation
-                else str(uuid4())
-            )
         if "path" in args and "artifact_id" in args:
             raise WorkspaceError("choose_path_or_artifact_id")
         if (
@@ -177,21 +179,9 @@ class WorkspaceService:
                 self.store.read,
                 str(args["artifact_id"]),
                 offset=int(args.get("offset", 0)),
+                limit=int(args.get("limit", 32768)),
+                expected_version=args.get("expected_version"),
             )
-        if name == "workspace_write":
-            previous = (
-                await asyncio.to_thread(self.store.read, args["artifact_id"])
-                if args.get("artifact_id")
-                else {}
-            )
-            metadata = await asyncio.to_thread(
-                self.store.write,
-                str(args["name"]),
-                str(args["text"]).encode(),
-                artifact_id=args.get("artifact_id"),
-                expected_revision=args.get("expected_revision"),
-            )
-            return await self._checkout(metadata, request_id, previous.get("sha256"))
         if name == "workspace_delete":
             return await asyncio.to_thread(
                 self.store.delete, str(args["artifact_id"]), int(args["expected_revision"])

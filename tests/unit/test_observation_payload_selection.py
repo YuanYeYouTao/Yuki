@@ -48,7 +48,16 @@ async def test_observation_payloads_exclude_covered_parents_and_unselected_candi
                 **common,
                 id="selected-root",
                 source_key="fixture:root",
-                payload_json='{"text":"selected summary"}',
+                payload_json=json.dumps(
+                    {
+                        "facts": [
+                            {
+                                "text": "selected summary",
+                                "refs": ["observation:" + identity for identity in parents],
+                            }
+                        ]
+                    }
+                ),
                 parent_sources_json=json.dumps([[identity, 1] for identity in parents]),
                 summary_view_key=arguments["view_key"],
             )
@@ -113,10 +122,10 @@ async def test_observation_payloads_exclude_covered_parents_and_unselected_candi
         for sql, params in statements
         if sql.startswith("SELECT") and "model_context_observations.payload_json" in sql
     ]
-    assert len(payload_queries) == 1
-    assert set(payload_queries[0][1]) == {"selected-root", "new-work-note"}
+    assert len(payload_queries) == 2
+    assert [set(params) for _, params in payload_queries] == [{"selected-root"}, {"new-work-note"}]
     payload_bytes = sum(len(row.payload_json.encode("utf-8")) for row in rows)
-    assert payload_bytes < 100
+    assert payload_bytes < 10000
     print(
         "observation_payload_io",
         {
@@ -197,7 +206,16 @@ async def test_changed_or_invalid_selected_root_never_covers_valid_notes(
                         **common,
                         id="root-" + name,
                         source_key="summary:" + name,
-                        payload_json=json.dumps({"text": "summary-" + name}),
+                        payload_json=json.dumps(
+                            {
+                                "facts": [
+                                    {
+                                        "text": "summary-" + name,
+                                        "refs": ["observation:parent-" + name],
+                                    }
+                                ]
+                            }
+                        ),
                         parent_sources_json=json.dumps([["parent-" + name, 1]]),
                         summary_view_key=arguments["view_key"],
                     ),

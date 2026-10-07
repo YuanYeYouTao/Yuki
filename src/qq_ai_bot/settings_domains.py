@@ -92,7 +92,6 @@ class ModelRuntimeSettings(DomainSettings):
     llm_flash_api_key: str
     llm_flash_model: str
     model_profiles_file: Path
-    model_profiles_legacy_compatibility: bool = False
     global_llm_concurrency: int = Field(gt=0)
     model_stats_recent_error_limit: int = Field(gt=0)
 
@@ -106,7 +105,6 @@ class ConversationSettings(DomainSettings):
     work_compaction_target_ratio: float = Field(default=0.50, gt=0, lt=1)
     conversation_rollup_trigger_ratio: float = Field(default=0.90, gt=0, lt=1)
     conversation_rollup_target_ratio: float = Field(default=0.60, gt=0, lt=1)
-    processed_event_ttl_seconds: int = Field(gt=0)
     processed_event_cleanup_seconds: int = Field(gt=0)
     context_metadata_budget_ratio: float = Field(gt=0, lt=1)
     per_user_requests_per_minute: int = Field(gt=0)

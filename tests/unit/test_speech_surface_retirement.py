@@ -73,7 +73,7 @@ def test_admin_action_schema_rejects_retired_speech_arguments(retired_field):
 
 
 def test_retired_sdk_and_control_contracts_cannot_dispatch():
-    assert PLUGIN_API_VERSION == "3.2"
+    assert PLUGIN_API_VERSION == "3.3"
     assert not any(feature.startswith("speech.") for feature in DEFAULT_FEATURES)
     for module, symbol in (
         (context, "SpeechFacade"),
@@ -92,7 +92,7 @@ def test_retired_sdk_and_control_contracts_cannot_dispatch():
         ("list_speech_profiles", ControlQueryService),
     ):
         assert not hasattr(service, method)
-        with pytest.raises(StopIteration):
+        with pytest.raises(KeyError):
             method_capability(method)
     for capability in ("control.speech.read", "control.speech.mutate"):
         assert not is_protocol_capability(capability)
@@ -140,7 +140,7 @@ def test_retired_sdk_event_is_not_a_current_event(event):
 async def test_api_31_is_rejected_before_plugin_import(tmp_path):
     root = _plugin_dir(tmp_path)
     path = root / "plugin.toml"
-    path.write_text(path.read_text(encoding="utf-8").replace('"3.2"', '"3.1"'), encoding="utf-8")
+    path.write_text(path.read_text(encoding="utf-8").replace('"3.3"', '"3.1"'), encoding="utf-8")
     marker = root / "imported"
     (root / "echo_plugin.py").write_text(
         f"from pathlib import Path\nPath({str(marker)!r}).touch()\n", encoding="utf-8"
@@ -290,6 +290,6 @@ def test_bundled_manifests_require_the_first_api_32_host(relative):
 
     root = Path(__file__).resolve().parents[2] / relative
     manifest = load_manifest(root, yuki_version="3.9.0")
-    assert manifest.plugin_api == "3.2" and manifest.yuki_requires == ">=3.9.0,<4.0"
+    assert manifest.plugin_api == "3.3" and manifest.yuki_requires == ">=3.9.0,<4.0"
     with pytest.raises(ManifestValidationError, match="Yuki"):
         load_manifest(root, yuki_version="3.8.3")

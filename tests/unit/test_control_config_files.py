@@ -311,8 +311,7 @@ async def test_hot_model_save_failure_closes_prepared_resources_and_keeps_loaded
             self.closed = True
 
     class Web:
-        def prepare(self, _catalog, _pool, *, require_explicit):
-            assert require_explicit
+        def prepare(self, _catalog, _pool):
             return Search()
 
         def activate(self, _provider):

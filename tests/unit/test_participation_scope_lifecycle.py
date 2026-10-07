@@ -20,11 +20,13 @@ async def test_tick_pins_waiters_and_retries_capacity_dirty_without_duplicate_co
     started, release = asyncio.Event(), asyncio.Event()
     entered = []
 
-    async def delayed(item):
+    original_advance = host._advance_scene
+
+    async def delayed(item, *, direct=None):
         entered.append(item)
         started.set()
         await release.wait()
-        await host._save(item)
+        await original_advance(item, direct=direct)
 
     host._advance_scene = delayed
     task = None
@@ -114,7 +116,7 @@ async def test_tick_pin_batch_waits_for_in_progress_cache_eviction(database, tmp
                 await release_save.wait()
             await original_save(item)
 
-        async def advance(item):
+        async def advance(item, *, direct=None):
             advancing.set()
             await release_advance.wait()
 

@@ -118,7 +118,6 @@ class PromptComposer:
         scope_type: ScopeType | None = None,
         include_plugin_context: bool = True,
         short_state: list[dict[str, Any]] | None = None,
-        memory_exclusive_write: bool = False,
     ) -> PromptComposition:
         contributions: list[PromptContribution] = [
             *self._static_contributions(),
@@ -153,20 +152,6 @@ class PromptComposer:
                     required=True,
                 )
             )
-        for identity, enabled, data in (
-            ("runtime.memory_mutation", memory_exclusive_write, {"exclusive_write": True}),
-        ):
-            if enabled:
-                contributions.append(
-                    PromptContribution(
-                        id=identity,
-                        channel=PromptChannel.RUNTIME,
-                        trust=PromptTrust.TRUSTED,
-                        priority=90,
-                        payload=data,
-                        required=True,
-                    )
-                )
         if inbound is not None and inbound.sender.user_id in self._settings.superusers:
             contributions.append(
                 PromptContribution(
@@ -356,7 +341,7 @@ class PromptComposer:
         compiled: CompiledPrompt,
     ) -> PromptComposition:
         snapshot = {
-            "scope_id": context.prompt_scope_id,
+            "conversation_id": context.prompt_conversation_id,
             "scope_key": context.prompt_scope_key,
             "generation": context.prompt_generation,
             "coverage": context.prompt_effective_coverage,

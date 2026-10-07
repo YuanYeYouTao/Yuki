@@ -95,9 +95,7 @@ async def activate_work(
         if lease is None:
             raise WorkConflict("conversation_activation_busy")
         control = WorkControl(repository, lease, source_key, source, validate, resolve_child)
-        async with bind_work_activation(
-            control, bindings=bindings, scope_key=scope_key, meter_active_time=resume_execution
-        ):
+        async with bind_work_activation(control, bindings=bindings, scope_key=scope_key):
             # Authority is reconstructed by the caller, not copied out of a prior work.
             # A different actor cannot silently take over the original actor's goal.
             control.current = _select_work_candidate(
@@ -138,7 +136,6 @@ async def bind_work_activation(
     release: Callable[[], Awaitable[None]] | None = None,
     bindings: ActiveWorkBindings | None = None,
     scope_key: str | None = None,
-    meter_active_time: bool = True,
 ) -> AsyncIterator[WorkControl]:
     """Own one already-acquired root or child lease until activation exit.
 
@@ -170,7 +167,6 @@ async def bind_work_activation(
             async with supervise_lease(
                 lambda: repository.renew(lease),
                 lambda: repository.lease_expiry(lease),
-                meter=control.meter_active_time if meter_active_time else None,
             ):
                 yield control
         except BaseException as exc:
@@ -184,8 +180,6 @@ async def bind_work_activation(
                     and control.current is not None
                     and not control.recovery_deferred
                 ):
-                    if not control.settled:
-                        await control.meter_active_time()
                     if finish is not None:
                         await finish(control)
                     elif not control.settled:
@@ -222,6 +216,8 @@ async def _recover_activation(control: WorkControl, exc: BaseException) -> None:
         )
 
         if control.recovery_deferred:
-            raise WorkRecoveryDeferred("owned_activation_recovery_deferred") from exc
+            raise WorkRecoveryDeferred(
+                "owned_activation_recovery_deferred", lease=control.lease, work=control.current
+            ) from exc
         if control.settled:
             raise WorkActivationHandled("owned_activation_recovered") from exc

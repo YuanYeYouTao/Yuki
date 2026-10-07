@@ -6,14 +6,11 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import and_, delete, func, or_, select, text
-from sqlalchemy.engine import CursorResult
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.memory.eligibility import MemoryEventEligibilityPolicy
 from qq_ai_bot.memory.rebuild.models import (
     MemoryRebuildPlanStatistics,
@@ -24,7 +21,6 @@ from qq_ai_bot.persistence.models import (
     AgentActionModel,
     ChatEventModel,
     MemoryJobModel,
-    ProcessedEventModel,
 )
 from qq_ai_bot.persistence.repository_helpers import _event_record, keeper_event_clause
 from qq_ai_bot.persistence.repository_records import (
@@ -309,15 +305,6 @@ class EventLedgerRepository:
             automation_run_id=automation_run_id,
             caused_by_event_id=caused_by_event_id,
         )
-        return result.event, result.created
-
-    async def append_inbound(
-        self, message: InboundMessage, *, bot_user_id: str
-    ) -> tuple[EventRecord, bool]:
-        scoped_message = message
-        if message.bot_user_id != bot_user_id:
-            scoped_message = replace(message, bot_user_id=bot_user_id)
-        result = await self._writer.append_inbound(scoped_message)
         return result.event, result.created
 
     async def find_by_platform_message(
@@ -906,48 +893,3 @@ class AgentActionRepository:
                     created_at=datetime.now(UTC),
                 )
             )
-
-
-class ProcessedEventRepository:
-    """Durable idempotency repository."""
-
-    def __init__(self, database: Database) -> None:
-        self._database = database
-
-    async def claim(self, event_key: str, *, expires_at: datetime) -> bool:
-        try:
-            async with self._database.sessions() as session, session.begin():
-                session.add(
-                    ProcessedEventModel(
-                        event_key=event_key,
-                        processed_at=datetime.now(UTC),
-                        expires_at=expires_at,
-                    )
-                )
-            return True
-        except IntegrityError:
-            return False
-
-    async def cleanup_expired(self, *, now: datetime | None = None, limit: int = 128) -> int:
-        cutoff = now or datetime.now(UTC)
-        if not 1 <= limit <= 128:
-            raise ValueError("cleanup page must be between 1 and 128")
-        async with self._database.sessions() as session:
-            keys = tuple(
-                await session.scalars(
-                    select(ProcessedEventModel.event_key)
-                    .where(ProcessedEventModel.expires_at <= cutoff)
-                    .order_by(ProcessedEventModel.expires_at, ProcessedEventModel.event_key)
-                    .limit(limit)
-                )
-            )
-        if not keys:
-            return 0
-        async with self._database.immediate_session() as session:
-            result = await session.execute(
-                delete(ProcessedEventModel).where(
-                    ProcessedEventModel.event_key.in_(keys),
-                    ProcessedEventModel.expires_at <= cutoff,
-                )
-            )
-            return int(cast(CursorResult[Any], result).rowcount or 0)

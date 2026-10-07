@@ -24,9 +24,7 @@ def checkpoint_items(request: ChatRequest, provider: str, protocol: str) -> list
 
 
 def ordered_delta(request: ChatRequest) -> tuple[ChatMessage | FunctionCallOutput, ...]:
-    if request.continuation_items and (request.function_outputs or request.continuation_messages):
-        raise LLMInvalidRequestError("mixed ordered and legacy continuation inputs")
-    return request.continuation_items or (*request.function_outputs, *request.continuation_messages)
+    return request.continuation_items
 
 
 def integer(value: object) -> int | None:

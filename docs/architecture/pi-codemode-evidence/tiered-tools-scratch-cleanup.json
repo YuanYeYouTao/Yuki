@@ -1,0 +1,78 @@
+{
+  "recorded_at": "2026-10-06T17:50:17.725118+00:00",
+  "scope": "Only scratch directories created for this task; no shared caches, runtime, user workspace or credentials removed. Full verification and comparison directories were already removed by their orchestrators.",
+  "directories": [
+    {
+      "path": "/tmp/yuki-tier-initial",
+      "existed": true,
+      "allocated_bytes": 136105984,
+      "removed": true
+    },
+    {
+      "path": "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-tiered-focus-umfxmes2",
+      "existed": true,
+      "allocated_bytes": 210341888,
+      "removed": true
+    },
+    {
+      "path": "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-tiered-debug-r3zv37px",
+      "existed": true,
+      "allocated_bytes": 34938880,
+      "removed": true
+    },
+    {
+      "path": "/tmp/yuki-tiered-recheck-20261007",
+      "existed": true,
+      "allocated_bytes": 29609984,
+      "removed": true
+    },
+    {
+      "path": "/tmp/yuki-tiered-native-denial-20261007",
+      "existed": true,
+      "allocated_bytes": 10665984,
+      "removed": true
+    },
+    {
+      "path": "/tmp/yuki-tiered-native-final-20261007",
+      "existed": true,
+      "allocated_bytes": 10665984,
+      "removed": true
+    },
+    {
+      "path": "/tmp/yuki-tiered-compat-20261007",
+      "existed": true,
+      "allocated_bytes": 233156608,
+      "removed": true
+    },
+    {
+      "path": "/tmp/yuki-tiered-web-diagnose-20261007",
+      "existed": true,
+      "allocated_bytes": 2510848,
+      "removed": true
+    },
+    {
+      "path": "/tmp/yuki-tiered-web-final-20261007",
+      "existed": true,
+      "allocated_bytes": 2490368,
+      "removed": true
+    },
+    {
+      "path": "/tmp/yuki-tiered-web-source-20261007",
+      "existed": true,
+      "allocated_bytes": 2490368,
+      "removed": true
+    },
+    {
+      "path": "/tmp/yuki-tiered-web-bound-20261007",
+      "existed": true,
+      "allocated_bytes": 2940928,
+      "removed": true
+    },
+    {
+      "path": "/tmp/yuki-tiered-gemini-diagnose-20261007",
+      "existed": true,
+      "allocated_bytes": 2957312,
+      "removed": true
+    }
+  ]
+}

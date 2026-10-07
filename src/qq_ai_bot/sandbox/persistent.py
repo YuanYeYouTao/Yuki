@@ -18,14 +18,16 @@ import re
 import secrets
 import shlex
 import shutil
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any, cast
-from uuid import UUID, uuid4, uuid5
+from uuid import uuid4
 
+from qq_ai_bot.sandbox.completions import CompletionOutbox
 from qq_ai_bot.sandbox.environment_tools import EXECUTION_TOOLS
 from qq_ai_bot.sandbox.execd import Execd
-from qq_ai_bot.sandbox.manager import TERMINAL, Manager, identifier
+from qq_ai_bot.sandbox.manager import TERMINAL, identifier
 from qq_ai_bot.workspace.files import MAX_CONTROL_UPLOAD, FileWorkspace
 from qq_ai_bot.workspace.store import WorkspaceError, WorkspaceStore
 
@@ -37,7 +39,7 @@ LOG_BUDGET = 128 * 1024 * 1024
 LOGGER = logging.getLogger(__name__)
 
 
-class PersistentManager(Manager):
+class PersistentManager:
     def __init__(
         self,
         root: Path,
@@ -51,7 +53,24 @@ class PersistentManager(Manager):
         testing: bool = False,
         name: str = "yuki-environment",
     ) -> None:
-        super().__init__(root, store, image, network, proxy)
+        self.root, self.store, self.image = root.resolve(), store, image
+        self.network, self.proxy = network, proxy
+        self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=4)
+        self.current: str | None = None
+        self.cancelled: set[str] = set()
+        self._waiters: dict[str, set[asyncio.Event]] = {}
+        self.ready = False
+        self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.db = sqlite3.connect(self.root / "jobs.sqlite3")
+        self.db.row_factory = sqlite3.Row
+        self.db.execute(
+            "CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, "
+            "request_id TEXT UNIQUE NOT NULL, payload_hash TEXT NOT NULL, "
+            "payload TEXT NOT NULL, state TEXT NOT NULL, result TEXT NOT NULL, "
+            "created REAL NOT NULL)"
+        )
+        self.completions = CompletionOutbox(self.db)
+        self.db.commit()
         self.home = home.resolve()
         self.runtime, self.testing = runtime, testing
         if not re.fullmatch(r"yuki-environment(?:-[a-z0-9-]+)?", name):
@@ -86,6 +105,90 @@ class PersistentManager(Manager):
         self.layer_bytes = 0
         self.last_layer_check = 0.0
         self.base_image_size = int(self.setting("base_image_size", "0"))
+
+    async def command(self, *args: str, deadline_seconds: float = 30) -> tuple[int, bytes]:
+        proc = await asyncio.create_subprocess_exec(
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+        )
+        kept = bytearray()
+        assert proc.stdout is not None
+        try:
+            async with asyncio.timeout(deadline_seconds):
+                while chunk := await proc.stdout.read(8192):
+                    if len(kept) < 32769:
+                        kept.extend(chunk[: 32769 - len(kept)])
+                code = await proc.wait()
+        except BaseException:
+            proc.kill()
+            await proc.wait()
+            raise
+        return code, bytes(kept)
+
+    def _finish_receipt(self, identity: str, state: str, result: dict[str, Any]) -> bool:
+        if state not in {*TERMINAL, "running"}:
+            raise ValueError("invalid_job_state")
+        with self.db:
+            changed = self.db.execute(
+                "UPDATE jobs SET state=?, result=? WHERE id=? "
+                "AND state IN ('queued','running') RETURNING request_id",
+                (state, json.dumps(result), identity),
+            ).fetchone()
+            if changed is None:
+                return False
+            if state in TERMINAL:
+                self.completions.record(
+                    identity,
+                    changed[0],
+                    {
+                        **result,
+                        "run_id": identity,
+                        "status": state,
+                        "pending": False,
+                        "external_untrusted": True,
+                    },
+                )
+        for waiter in self._waiters.get(identity, ()):
+            waiter.set()
+        return True
+
+    async def wait_result(self, identity: str, *, wait_seconds: float = 4.5) -> dict[str, Any]:
+        """Wait within the socket deadline; observation cancellation leaves the job alive."""
+        result = self.get(identity)
+        if result.get("error") or result.get("status") in TERMINAL:
+            return result
+        changed = asyncio.Event()
+        waiters = self._waiters.setdefault(identity, set())
+        waiters.add(changed)
+        try:
+            async with asyncio.timeout(wait_seconds):
+                while True:
+                    changed.clear()
+                    result = self.get(identity)
+                    if result.get("error") or result.get("status") in TERMINAL:
+                        return result
+                    await changed.wait()
+        except TimeoutError:
+            return self.get(identity)
+        finally:
+            waiters.discard(changed)
+            if not waiters:
+                self._waiters.pop(identity, None)
+
+    async def serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            async with asyncio.timeout(30):
+                raw = await reader.readline()
+                request = json.loads(raw)
+                if not isinstance(request, dict):
+                    raise ValueError("invalid_request")
+                result = await self.handle(request)
+                writer.write(json.dumps(result).encode() + b"\n")
+                await writer.drain()
+        except (ValueError, OSError, TimeoutError):
+            writer.write(b'{"error":"invalid_request"}\n')
+        finally:
+            writer.close()
+            await writer.wait_closed()
 
     def setting(self, key: str, default: str = "") -> str:
         row = self.db.execute("SELECT value FROM environment_state WHERE key=?", (key,)).fetchone()
@@ -202,7 +305,7 @@ class PersistentManager(Manager):
                     (state, json.dumps(result), identity),
                 ).rowcount
             return bool(changed)
-        changed = super().finish(identity, state, result)
+        changed = self._finish_receipt(identity, state, result)
         if changed and state in TERMINAL:
             with self.db:
                 # Hash/source receipts survive; finished executable payloads need
@@ -384,13 +487,6 @@ class PersistentManager(Manager):
             result.update(self.output(identity))
             if row["kind"] == "environment_packages" and record["status"] == "succeeded":
                 await self.checkpoint(identity, result)
-            if row["kind"] == "run_python" and record["status"] == "succeeded":
-                try:
-                    result["artifacts"] = await asyncio.to_thread(self.export_python, identity)
-                except (WorkspaceError, OSError) as exc:
-                    result["artifact_error"] = (
-                        str(exc) if isinstance(exc, WorkspaceError) else type(exc).__name__
-                    )
             self.finish(identity, record["status"], result)
             connection = self.connections.pop(identity, None)
             if connection:
@@ -444,26 +540,6 @@ class PersistentManager(Manager):
         }
         if kind == "service":
             spec["timeout_seconds"] = 0
-        if kind == "run_python":
-            (root / "code.py").write_text(args["code"], encoding="utf-8")
-            (root / "code.py").chmod(0o444)
-            spec.update(cwd="/work", argv=["python", f"/var/lib/yuki-runtime/{identity}/code.py"])
-            # Compatibility imports remain files in the same persistent environment.
-            inputs = FileWorkspace(self.home / "inputs")
-            for artifact_id in args.get("input_artifact_ids", []):
-                _, content = self.store.read_bytes(identifier(artifact_id))
-                try:
-                    old = inputs.read(artifact_id)["version"]
-                except FileNotFoundError:
-                    old = None
-                inputs.write(artifact_id, content, expected_version=old)
-            outputs = FileWorkspace(self.home / "work" / "outputs")
-            baseline = {
-                item["path"]: outputs.read(item["path"])["version"]
-                for item in outputs.listing(limit=100)["items"]
-                if item["kind"] == "file"
-            }
-            (root / "outputs-before.json").write_text(json.dumps(baseline))
         if kind == "environment_packages":
             action = args["action"]
             packages = " ".join(shlex.quote(item) for item in args.get("packages", []))
@@ -548,33 +624,6 @@ class PersistentManager(Manager):
             if code:
                 raise RuntimeError("package_dispatch_unknown")
 
-    def export_python(self, identity: str) -> list[dict[str, Any]]:
-        root = self.runtime_root / identity
-        completed = root / "published.json"
-        if completed.exists():
-            return cast(list[dict[str, Any]], json.loads(completed.read_text()))
-        baseline = json.loads((root / "outputs-before.json").read_text())
-        output = FileWorkspace(self.home / "work" / "outputs")
-        artifacts: list[dict[str, Any]] = []
-        page = output.listing(limit=100)
-        for item in page["items"]:
-            if item["kind"] != "file":
-                continue
-            path = item["path"]
-            with output.open_file(path) as fd:
-                version, _ = output.fingerprint(fd)
-                if baseline.get(path) == version:
-                    continue
-                if len(artifacts) >= 20:
-                    raise WorkspaceError("output_limit_use_workspace_publish")
-                artifacts.append(
-                    self.store.snapshot(
-                        fd, Path(path).name, artifact_id=str(uuid5(UUID(identity), path))
-                    )
-                )
-        completed.write_text(json.dumps(artifacts))
-        return artifacts
-
     async def checkpoint(self, identity: str, result: dict[str, Any]) -> None:
         marker = f"checkpoint:{identity}"
         if self.setting(marker):
@@ -613,16 +662,7 @@ class PersistentManager(Manager):
             await self.command("docker", "image", "rm", obsolete)
 
     def validate_execution(self, method: str, args: dict[str, Any]) -> None:
-        if method == "run_python":
-            if not isinstance(args.get("code"), str) or len(args["code"].encode()) > 65536:
-                raise ValueError("invalid_code")
-            inputs = args.get("input_artifact_ids", [])
-            if not isinstance(inputs, list) or len(inputs) > 20:
-                raise ValueError("invalid_inputs")
-            for item in inputs:
-                identifier(item)
-            args.setdefault("timeout_seconds", 30)
-        elif method == "environment_packages":
+        if method == "environment_packages":
             if args.get("action") not in {"install", "remove", "repair"}:
                 raise ValueError("invalid_package_action")
             packages = args.get("packages", [])
@@ -766,7 +806,12 @@ class PersistentManager(Manager):
                 path, cursor=args.get("cursor", ""), limit=args.get("limit", 50)
             )
         if method == "workspace_read":
-            return self.files.read(path, offset=args.get("offset", 0))
+            return self.files.read(
+                path,
+                offset=args.get("offset", 0),
+                limit=args.get("limit", 32768),
+                expected_version=args.get("expected_version"),
+            )
         if method in {"workspace_media_read", "workspace_media_validate"}:
             # Private Host/Manager operations, never tool declarations. Read
             # from a safely opened workspace FD, outside any SQLite writer.
@@ -883,7 +928,7 @@ class PersistentManager(Manager):
                 ).fetchone()
                 if row:
                     return (
-                        json.loads(row["result"])
+                        {**json.loads(row["result"]), "external_untrusted": True}
                         if row["digest"] == digest
                         else {"error": "idempotency_conflict"}
                     )
@@ -1098,7 +1143,21 @@ class PersistentManager(Manager):
                     else args.get("action", "")
                 )
                 return await self.control(str(args.get("run_id")), action, args.get("text", ""))
-            return await super().handle(request)
+            if method == "list_code_completions":
+                return self.completions.pending(args.get("limit", 20), args.get("after", 0))
+            if method == "ack_code_completion":
+                return self.completions.acknowledge(identifier(args.get("run_id")))
+            if method == "get_code_run_by_request":
+                original_id = args.get("request_id")
+                if not isinstance(original_id, str) or not 1 <= len(original_id) <= 256:
+                    return {"error": "invalid_request_id"}
+                prior = self.db.execute(
+                    "SELECT id FROM jobs WHERE request_id=?", (original_id,)
+                ).fetchone()
+                return self.get(prior["id"]) if prior else {"error": "unknown_request"}
+            if method == "get_code_run":
+                return await self.wait_result(identifier(args.get("run_id")))
+            return {"error": "unknown_method"}
         except (WorkspaceError, ValueError, KeyError, TypeError) as exc:
             return {
                 "error": str(exc)

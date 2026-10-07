@@ -69,7 +69,7 @@ class RecordingModel:
         self.fail_at = fail_at
         self.output_budgets: list[int | None] = []
 
-    async def execute(self, _task, request, *, priority=None):
+    async def execute(self, _task, request, *, priority=None, canonical_conversation_id=None):
         del priority
         self.output_budgets.append(request.max_output_tokens)
         body = request.messages[-1].content
@@ -85,7 +85,9 @@ class RecordingModel:
 
 def candidate() -> RollupCandidate:
     events = (replace(event(), content="new-source " * 100 + "LAST_CONSTRAINT", segments=()),)
-    return RollupCandidate(1, 1, 0, 0, "", events, 1, 100, "source-fingerprint")
+    return RollupCandidate(
+        "11111111-1111-4111-8111-111111111111", 1, 0, 0, "", events, 1, 100, "source-fingerprint"
+    )
 
 
 @pytest.mark.asyncio
@@ -120,7 +122,7 @@ async def test_source_chunks_fit_actual_compaction_profile_input_budget() -> Non
         def capacity(self, _task):
             return ModelCapacity(input_tokens=3000)
 
-        async def execute(self, task, request, *, priority=None):
+        async def execute(self, task, request, *, priority=None, canonical_conversation_id=None):
             assert estimate_request_tokens(request) <= 3000
             return await super().execute(task, request, priority=priority)
 
@@ -128,9 +130,12 @@ async def test_source_chunks_fit_actual_compaction_profile_input_budget() -> Non
     service = ConversationRollupService(
         models=model, config=RollupPolicyConfig(batch_max_characters=32_768), timeout_seconds=2
     )
-    await service.summarize_candidate(candidate())
+    large = replace(
+        candidate(), events=(replace(event(), content="new-source " * 2000, segments=()),)
+    )
+    await service.summarize_candidate(large)
     assert len(model.sources) > 1
-    assert "".join(model.sources) == serialize_compaction_source_events(candidate().events)
+    assert "".join(model.sources) == serialize_compaction_source_events(large.events)
 
 
 def test_emergency_view_discloses_missing_history_and_internal_source_range() -> None:
@@ -230,7 +235,7 @@ async def test_durable_prerequisite_keeps_actual_request_budget_until_deadline(d
     repository = ConversationRollupRepository(database, policy)
     snapshot = await repository.load_prompt_snapshot(scope)
     owner = WorkRepository(database)
-    lease = await owner.acquire(snapshot.conversation_id, 1)
+    lease = await owner.acquire(snapshot.scope.id, 1)
     item = await owner.accept(
         lease, source_key="capacity-prerequisite", source={}, goal="keep task"
     )

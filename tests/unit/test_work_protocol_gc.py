@@ -2,13 +2,13 @@
 
 import pytest
 from sqlalchemy import select
+from tests.support.work_session import WorkSession
 from tests.unit.test_work_protocol_continuity import _control
 
 from qq_ai_bot.admin.models import WorkStorageRuntimeConfig
 from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.runtime.protocol_schema import objects, refs
 from qq_ai_bot.runtime.protocol_store import ProtocolStore
-from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 
 

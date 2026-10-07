@@ -14,7 +14,7 @@ from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
 from qq_ai_bot.conversation.rollup.renderer import rollup_source_projection
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
-from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, InboundMessage, SenderIdentity
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.event_prompt import (
@@ -141,7 +141,7 @@ def _assembled(
             raw_history_window_shifted=False,
         ),
         rollup_text=rollup_text,
-        prompt_scope_id=1,
+        prompt_conversation_id="00000000-0000-4000-8000-000000000001",
         prompt_scope_key="private:8000:1001",
         prompt_generation=1,
         prompt_effective_coverage=0,
@@ -493,7 +493,7 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     ordinary._time.current_in_timezone = MagicMock(return_value=_time())
     ordinary_identity = ordinary_event.scope
     turn = ConversationTurnSnapshot(
-        scope_id=1,
+        conversation_id="test-conversation-1",
         scope_key=ordinary_identity.key,
         generation=1,
         trigger_event_id=ordinary_event.id,
@@ -567,7 +567,11 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
         message.content or "" for message in wakeup_context.history_messages
     )
     assert wakeup_context.rollup_text == ordinary_context.rollup_text == snapshot.rollup_text
-    assert wakeup_context.prompt_scope_id == ordinary_context.prompt_scope_id == turn.scope_id
+    assert (
+        wakeup_context.prompt_conversation_id
+        == ordinary_context.prompt_conversation_id
+        == turn.conversation_id
+    )
     assert wakeup_context.prompt_scope_key == ordinary_context.prompt_scope_key == turn.scope_key
     assert wakeup_context.prompt_generation == ordinary_context.prompt_generation == turn.generation
     assert (
@@ -698,10 +702,8 @@ async def test_external_wakeup_and_ordinary_turn_send_the_same_provider_shape(
 ) -> None:
     from types import SimpleNamespace
 
-    from qq_ai_bot.services.main_agent_backend import MainAgentBackend
     from qq_ai_bot.services.main_agent_contract import MainAgentContract
 
-    monkeypatch.setattr(MainAgentBackend, "response_feedback", lambda *_args: None)
     provider = FakeLLMProvider(lambda _request: "ok")
     harness = build_harness(database, make_settings(database.url), provider)
     chat = harness.processor._chat
@@ -732,16 +734,15 @@ async def test_external_wakeup_and_ordinary_turn_send_the_same_provider_shape(
         "allow_automation": True,
         "conversation_key": "canonical:conv-stable:generation:1",
         "actor_is_superuser": False,
-        "current_group_id": None,
         "runtime_config": runtime_config,
         "tools_closed": False,
         "read_only": False,
         "visible_event_ids": frozenset({1, 2}),
         "selection_query": "same capability-neutral query",
         "scope_type": ScopeType.PRIVATE,
-        "bot_user_id": "8000",
+        "read_scope": ConversationScope.private("8000", "1001"),
         "conversation_id": "conv-stable",
-        "presence_id": "presence-stable",
+        "target_presence_id": "presence-stable",
         "person_id": "person-stable",
         "external_target_id": "1001",
     }
@@ -749,7 +750,6 @@ async def test_external_wakeup_and_ordinary_turn_send_the_same_provider_shape(
         inbound=ordinary_inbound,
         trigger_message_id="ordinary-current",
         trigger_event_id=1,
-        actor_user_id="1001",
         origin=TurnOrigin.USER_MESSAGE,
         **shared,
     )
@@ -757,7 +757,6 @@ async def test_external_wakeup_and_ordinary_turn_send_the_same_provider_shape(
         inbound=None,
         trigger_message_id="external-current",
         trigger_event_id=2,
-        actor_user_id="",
         origin=TurnOrigin.PLUGIN_BACKGROUND,
         **shared,
     )
@@ -882,9 +881,7 @@ async def test_plugin_wakeup_can_end_without_creating_a_fake_reply(
         runtime_config=runtime_config,
         origin=TurnOrigin.PLUGIN_BACKGROUND,
         scope_type=ScopeType.PRIVATE,
-        bot_user_id="8000",
         conversation_id="conv-stable",
-        presence_id="presence-stable",
         person_id="person-stable",
         external_target_id="1001",
     )
@@ -931,27 +928,17 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
         conversation_key="canonical:space-100:generation:1",
         trigger_message_id="external-current",
         trigger_event_id=2,
-        actor_user_id="",
         runtime_config=runtime_config,
         origin=TurnOrigin.PLUGIN_BACKGROUND,
         scope_type=ScopeType.GROUP,
-        bot_user_id="8000",
         conversation_id="space-100",
-        presence_id="presence-stable",
         space_id="space-100",
-        current_group_id="group-100",
         external_target_id="group-100",
+        read_scope=ConversationScope.group("8000", "group-100"),
     )
     tools._memories.list_group = AsyncMock(return_value=())  # type: ignore[method-assign]
     tools._ledger.search = AsyncMock(return_value=())  # type: ignore[method-assign]
-    recent = json.loads(await tools.execute("get_recent_chat_history", "{}", group_runtime))
-    group_memory = json.loads(
-        await tools.execute(
-            "get_group_memories",
-            '{"group_id":"group-100"}',
-            group_runtime,
-        )
-    )
+    recent = (await tools.execute("get_recent_chat_history", "{}", group_runtime)).model_payload()
     actual_record = EventRecord(
         id=123,
         visual_summary="",
@@ -971,96 +958,67 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     )
     assert around_tool.parameters["required"] == ["event_id"]
     assert "platform_message_id" not in around_tool.parameters["properties"]
-    invalid_history = json.loads(
+    invalid_history = (
         await tools.execute(
             "get_chat_history_around", '{"platform_message_id":"history-attachment"}', group_runtime
         )
-    )
+    ).model_payload()
     assert not invalid_history["ok"]
     assert tools._ledger.list_scope_around.await_count == 0
-    actual_history = json.loads(
+    actual_history = (
         await tools.execute(
             "get_chat_history_around", json.dumps({"event_id": actual_record.id}), group_runtime
         )
-    )
+    ).model_payload()
     assert actual_history["ok"]
     assert actual_history["data"]["events"][0]["attachments"] == [
         {"attachment_index": 0, "kind": "video", "name": "clip.mp4"}
     ]
     tools._ledger.list_scope_around = AsyncMock(return_value=(None, (), ()))
-    around = json.loads(
+    around = (
         await tools.execute("get_chat_history_around", '{"event_id":999}', group_runtime)
-    )
-    scoped_search = json.loads(
+    ).model_payload()
+    scoped_search = (
         await tools.execute(
             "search_chat_history",
             '{"keyword":"release","user_id":"9999","group_id":"other-group"}',
             group_runtime,
         )
-    )
-    relationship = json.loads(
+    ).model_payload()
+    relationship = (
         await tools.execute(
             "get_relationship",
             '{"user_id":"1001"}',
             group_runtime,
         )
-    )
+    ).model_payload()
 
     assert recent["ok"] is True
     assert recent["data"]["source"] == "ledger"
     assert recent["data"]["events"] == []
-    assert group_memory == {
-        "ok": True,
-        "evidence_state": {
-            "source": "memory_tool",
-            "query_status": "empty",
-            "returned_count": 0,
-            "truncated": False,
-            "partial_failure": False,
-            "source_refs": [],
-            "delivery": "staged",
-        },
-        "data": {
-            "group_id": "group-100",
-            "memories": [],
-            "returned_count": 0,
-            "result_scope": "bounded_query",
-            "exhaustive": False,
-            "effective_query": {
-                "mode": "overview",
-                "purpose": "recall",
-                "start_at": None,
-                "end_at": None,
-                "temporal_constraint": None,
-                "interval": "start_inclusive_end_exclusive",
-            },
-        },
-    }
-    assert around["error"] == "not_found"
-    assert scoped_search["error"] == "history_scope_denied"
-    valid_search = json.loads(
+    assert around["error_code"] == "not_found"
+    assert scoped_search["error_code"] == "history_scope_denied"
+    valid_search = (
         await tools.execute("search_chat_history", '{"keyword":"release"}', group_runtime)
-    )
-    assert valid_search == {
-        "ok": True,
-        "data": {"events": [], "returned_count": 0, "truncated": False},
-    }
+    ).model_payload()
+    assert valid_search["ok"] is True
+    assert valid_search["data"] == {"events": [], "returned_count": 0, "truncated": False}
     tools._ledger.search = AsyncMock(return_value=[replace(actual_record, content="x" * 1000)] * 12)
-    longer_search = json.loads(
+    longer_search = (
         await tools.execute("search_chat_history", '{"keyword":"release"}', group_runtime)
-    )
+    ).model_payload()
     assert longer_search["ok"]
     assert longer_search["data"]["returned_count"] == 12
     assert not longer_search["data"]["truncated"]
     tools._ledger.search = AsyncMock(return_value=[replace(actual_record, content="x" * 2000)] * 20)
-    bounded_search = json.loads(
+    bounded_search = (
         await tools.execute("search_chat_history", '{"keyword":"release"}', group_runtime)
-    )
+    ).model_payload()
     assert bounded_search["ok"]
     assert bounded_search["data"]["truncated"]
     assert 0 < bounded_search["data"]["returned_count"] < 20
     assert bounded_search["data"]["returned_count"] == len(bounded_search["data"]["events"])
-    assert relationship["error"] == "permission_denied"
+    assert relationship["error_code"] == "permission_denied"
     gateway.call_api.assert_not_awaited()
     assert tools._ledger.search.await_args.kwargs["group_id"] == "group-100"
     assert tools._ledger.search.await_args.kwargs["user_id"] is None
@@ -1153,7 +1111,7 @@ def _covered_external_turn(
     )
     assembler._memory_context.retrieve_for_targets = AsyncMock()
     turn = ConversationTurnSnapshot(
-        scope_id=1,
+        conversation_id="test-conversation-1",
         scope_key="bot:8000:private:1001",
         generation=1,
         trigger_event_id=event.id,

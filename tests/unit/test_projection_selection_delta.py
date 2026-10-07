@@ -309,7 +309,9 @@ async def test_each_selected_summary_retains_its_own_parent_handles(database, tm
                     **common,
                     id=identity,
                     source_key=identity,
-                    payload_json=json.dumps({"text": identity}),
+                    payload_json=json.dumps(
+                        {"facts": [{"text": identity, "refs": ["observation:parent"]}]}
+                    ),
                 )
             )
         await artifact_store.add_refs(writer, "observation", "parent", (handle,))

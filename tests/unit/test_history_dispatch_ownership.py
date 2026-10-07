@@ -58,7 +58,6 @@ async def _scene(database, tmp_path, provider, *, request_limit=24):
         group_id="20001",
         mentions_bot=True,
         conversation_id=env.context.conversation_id,
-        legacy_conversation_key="bot:80001:group:20001",
         person_id=env.person,
         presence_id=env.presence,
         space_id=env.space,

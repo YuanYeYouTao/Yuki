@@ -22,7 +22,6 @@ async def lease_heartbeat(
     *,
     seconds: float,
     interval: float,
-    meter: Callable[[], Awaitable[None]] | None = None,
     clock: Callable[[], float] = time.time,
 ) -> None:
     """Retry only identified SQLITE_BUSY while the last confirmed lease is valid."""
@@ -61,10 +60,6 @@ async def lease_heartbeat(
                 # never invents extra lease time while SQLite waits for a writer.
                 deadline = started + seconds
                 break
-            if meter is not None:
-                stage = "meter"
-                async with asyncio.timeout(max(0, deadline - clock())):
-                    await meter()
     except Exception as exc:
         original = exc.__cause__ or exc
         logger.warning(
@@ -73,9 +68,6 @@ async def lease_heartbeat(
             type(original).__name__,
             getattr(getattr(original, "orig", None), "sqlite_errorcode", None),
         )
-        # Meter persistence is not replayed here: a failed commit can be unknown.
-        if stage == "meter":
-            raise WorkConflict("work_heartbeat_meter_failed") from exc
         raise
 
 
@@ -86,16 +78,13 @@ async def supervise_lease(
     *,
     seconds: float = 60,
     interval: float = 15,
-    meter: Callable[[], Awaitable[None]] | None = None,
     clock: Callable[[], float] = time.time,
 ) -> AsyncIterator[None]:
     """Interrupt the parent on pulse failure and expose it to existing recovery."""
     owner = asyncio.current_task()
     assert owner is not None
     pulse = asyncio.create_task(
-        lease_heartbeat(
-            renew, expiry, seconds=seconds, interval=interval, meter=meter, clock=clock
-        ),
+        lease_heartbeat(renew, expiry, seconds=seconds, interval=interval, clock=clock),
         name="lease-heartbeat",
     )
     interrupted = False

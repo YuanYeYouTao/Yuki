@@ -69,7 +69,7 @@ def projection_hash(event: EventRecord) -> str:
 
 def source_fingerprint(
     *,
-    scope_id: int,
+    conversation_id: str,
     generation: int,
     source_coverage: int,
     source_rollup_revision: int,
@@ -77,7 +77,7 @@ def source_fingerprint(
     events: tuple[EventRecord, ...],
 ) -> str:
     payload = {
-        "scope_id": scope_id,
+        "conversation_id": conversation_id,
         "generation": generation,
         "source_coverage": source_coverage,
         "source_rollup_revision": source_rollup_revision,
@@ -108,21 +108,6 @@ def truncate_conversation_tail(
     marker = "[… earlier conversation compacted …]\n"
     remaining = max(1, max_characters - len(marker))
     return (marker + source[-remaining:])[:max_characters]
-
-
-def extractive_compact(
-    previous_summary: str,
-    events: tuple[EventRecord, ...],
-    *,
-    max_characters: int,
-) -> str:
-    """Read-compatible alias. New tail truncation must use truncate_conversation_tail()."""
-
-    return truncate_conversation_tail(
-        previous_summary,
-        events,
-        max_characters=max_characters,
-    )
 
 
 def render_rollup_message(

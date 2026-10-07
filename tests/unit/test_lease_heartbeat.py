@@ -18,7 +18,6 @@ from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.runtime.activation_outcome import WorkActivationHandled
 from qq_ai_bot.runtime.lease_heartbeat import lease_heartbeat, supervise_lease
 from qq_ai_bot.runtime.work_activation import activate_work
-from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_journal import WorkJournal
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import effects, journal
@@ -34,14 +33,23 @@ def sqlite_error(code):
 @pytest.mark.asyncio
 async def test_busy_renewal_recovers_before_confirmed_expiry():
     renewed = asyncio.Event()
-    renew = AsyncMock(side_effect=[sqlite_error(sqlite3.SQLITE_BUSY_SNAPSHOT), True])
+    attempts = 0
+
+    async def renew_once():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise sqlite_error(sqlite3.SQLITE_BUSY_SNAPSHOT)
+        renewed.set()
+        return True
+
+    renew = AsyncMock(side_effect=renew_once)
     pulse = asyncio.create_task(
         lease_heartbeat(
             renew,
             AsyncMock(return_value=time.time() + 2),
             seconds=2,
             interval=0.001,
-            meter=AsyncMock(side_effect=renewed.set),
         )
     )
     try:
@@ -53,7 +61,7 @@ async def test_busy_renewal_recovers_before_confirmed_expiry():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["busy_expiry", "locked", "obsolete", "meter"])
+@pytest.mark.parametrize("mode", ["busy_expiry", "locked", "obsolete"])
 async def test_pulse_failure_interrupts_parent_with_visible_failure(mode, caplog):
     failure = {
         "busy_expiry": sqlite_error(sqlite3.SQLITE_BUSY),
@@ -62,7 +70,6 @@ async def test_pulse_failure_interrupts_parent_with_visible_failure(mode, caplog
         "meter": None,
     }[mode]
     renew = AsyncMock(side_effect=failure, return_value=mode == "meter")
-    meter = AsyncMock(side_effect=RuntimeError("meter fixture")) if mode == "meter" else None
     expected = {
         "busy_expiry": "expired",
         "locked": "renew_failed",
@@ -76,7 +83,6 @@ async def test_pulse_failure_interrupts_parent_with_visible_failure(mode, caplog
             AsyncMock(return_value=time.time() + 0.03),
             seconds=0.03,
             interval=0.001,
-            meter=meter,
         ):
             await asyncio.Event().wait()
             continued = True
@@ -105,7 +111,7 @@ async def test_external_cancellation_remains_cancellation():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["renew", "meter"])
+@pytest.mark.parametrize("failure", ["renew"])
 async def test_original_work_journal_budget_and_unknown_effect_survive_heartbeat_failure(
     database, tmp_path, monkeypatch, failure
 ):
@@ -148,12 +154,6 @@ async def test_original_work_journal_budget_and_unknown_effect_survive_heartbeat
         return supervise_lease(wait_then_renew, expiry, **kwargs)
 
     monkeypatch.setattr(activation_module, "supervise_lease", fast_supervision)
-    if failure == "meter":
-
-        async def broken_meter(self):
-            raise RuntimeError("meter fixture")
-
-        monkeypatch.setattr(WorkControl, "meter_active_time", broken_meter)
 
     async def validate():
         pass

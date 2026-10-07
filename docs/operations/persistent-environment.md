@@ -39,9 +39,7 @@ whole batch's metadata. Artifact reads/listings use read transactions; reads ope
 and validate the selected regular, single-link file descriptor before releasing
 SQLite, then read and verify its content hash. Cleanup discovers files outside the
 writer, rechecks their metadata/references in a short transaction and unlinks at
-most 128 unreferenced blobs after commit. The legacy Manager prepares files in a
-worker thread, then publishes and finishes its job on the original event loop
-without an intervening cancellation point; its jobs connection never crosses threads.
+most 128 unreferenced blobs after commit.
 Publication errors discard only private pending files. A commit error can occur
 after a successful commit, so renamed blobs remain until reference-checked GC
 proves they are unreferenced; an uncertain result does not delete committed files.
@@ -51,8 +49,9 @@ incremental byte cursors through `terminal_read`. `terminal_write` sends raw inp
 `terminal_control` interrupts/cancels/closes. A real PTY running Bash retains shell
 variables, functions and directory; execd's ordinary Bash sessions are not used as
 a substitute. Normal default timeout is 1,800 seconds; zero means no timer and the
-maximum explicit timer is 86,400 seconds. `run_python` retains its 120-second legacy
-contract and publishes changed `/work/outputs` files after successful execution.
+maximum explicit timer is 86,400 seconds. Python work uses `terminal_exec` and explicit
+`workspace_publish` immutable snapshots. New `run_python` submissions are rejected; original
+run IDs, historical results, and completion acknowledgements remain readable.
 
 The in-container supervisor stores bounded output and exit records independently
 of the Manager connection. The host persists launch intent/session identity before

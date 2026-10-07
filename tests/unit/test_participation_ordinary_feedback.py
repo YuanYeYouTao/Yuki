@@ -49,9 +49,7 @@ async def ordinary_backend(database, content, *, callback=None):
         group_id="20001",
         source_event_id=1,
     )
-    tool_runtime = ToolRuntime(
-        inbound, None, False, runtime_config=config, current_group_id="20001"
-    )
+    tool_runtime = ToolRuntime(inbound, None, False, runtime_config=config)
     runtime = AgentRuntime(
         origin=TurnOrigin.USER_MESSAGE,
         actor_user_id="10001",
@@ -243,6 +241,7 @@ async def test_actual_host_observes_no_send_hint_and_only_quiet_rechecks_origina
         token = await chat._turn_coordinator.notify_message(scope.key)
         tool_runtime = replace(
             tool_runtime,
+            actor_context=None,
             inbound=_message(event),
             turn_snapshot=ConversationTurnSnapshot(
                 state.id, scope.key, state.generation, event.id, token.version

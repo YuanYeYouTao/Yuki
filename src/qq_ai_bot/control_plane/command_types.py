@@ -1284,6 +1284,7 @@ def _require_management_semantics(
         if resource_id != _material_resource(material):
             raise _mismatch()
         expected_statuses = {
+            "discover": {"discovered"},
             "approve": {"approved"},
             "enable": {"approved", "running"},
             "disable": {"disabled"},

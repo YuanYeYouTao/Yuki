@@ -115,10 +115,10 @@ class OneBotSender:
                 )
                 return parse_onebot_send_receipt(result)
             payload = Message()
-            if message.reply_to_message_id:
-                if not message.reply_to_message_id.isdigit():
-                    raise ValueError("reply target must be a numeric OneBot message ID")
-                payload += MessageSegment.reply(int(message.reply_to_message_id))
+            if message.reply_to_message_id is not None:
+                from qq_ai_bot.adapters.onebot.message_id import parse_message_id
+
+                payload += MessageSegment.reply(parse_message_id(message.reply_to_message_id))
             if message.text:
                 payload += MessageSegment.text(message.text)
             for media in message.media:

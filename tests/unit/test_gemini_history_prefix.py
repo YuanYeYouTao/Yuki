@@ -161,7 +161,6 @@ async def test_native_checkpoint_preserves_public_prefix_across_ordinary_turns(
             group_id="2002",
             mentions_bot=True,
             conversation_id=conversation.conversation_id,
-            legacy_conversation_key="bot:9999:group:2002",
             person_id=person,
             presence_id=presence,
             space_id=space,
@@ -204,10 +203,16 @@ async def test_native_checkpoint_preserves_public_prefix_across_ordinary_turns(
         assert result.reason == "chat" and len(wire) == 5
         first_parts = wire[0]["contents"][0]["parts"]
         if runtime_enabled:
-            # Runtime/Work status is an execution-local tail, never part of the
-            # frozen public chat. Its same-activation position stays untouched.
-            assert "original-runtime-state" in json.dumps(first_parts[-1])
-            first_parts = first_parts[:-1]
+            # The Host observation precedes the complete current input. Public
+            # projection preserves only the original model-seen chat material.
+            host_indices = [
+                i
+                for i, part in enumerate(first_parts)
+                if "initial_runtime_context" in part.get("text", "")
+            ]
+            assert len(host_indices) == 1 and host_indices[0] < len(first_parts) - 1
+            assert "original-runtime-state" in json.dumps(first_parts[host_indices[0]])
+            first_parts = [part for i, part in enumerate(first_parts) if i != host_indices[0]]
         assert wire[3]["contents"][0]["parts"][: len(first_parts)] == first_parts
         assert len(wire[3]["contents"][0]["parts"]) > len(first_parts)
         assert wire[3]["systemInstruction"] == wire[0]["systemInstruction"]

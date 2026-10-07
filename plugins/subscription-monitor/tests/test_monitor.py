@@ -94,7 +94,7 @@ async def test_baseline_keyword_filter_and_agent_only_publication_survive_restar
     assert "08:00 UTC" in request.summary and "https://example.com/posts/hit" in request.summary
     assert "重置时间" in request.agent_intent and "send_message" in request.agent_intent
     assert context.messages.sent == []
-    assert context.llm.calls == [] and context.agent.calls == []
+    assert context.agent.calls == []
     _, state = await poller.load_state("updates")
     assert state.filtered == 2 and state.accepted == 1 and not state.pending
     await due(context)

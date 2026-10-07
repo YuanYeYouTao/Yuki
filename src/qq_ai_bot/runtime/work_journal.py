@@ -633,6 +633,29 @@ class WorkJournal:
                     "replay_forbidden": True,
                 }
             )
+        value = json.loads(row["receipt_json"])
+        invocation = value.get("invocation", {})
+        reference = invocation.get("original_domain_ref")
+        if invocation.get("version") == 1 and isinstance(reference, str):
+            from qq_ai_bot.runtime.effect_queries import RuntimeEffectQueries
+
+            original = await RuntimeEffectQueries(
+                self.repository.database
+            ).inspect_social_operation(
+                reference=reference, work_id=row["work_id"], operation_key=key
+            )
+            if original is not None:
+                return json.dumps(
+                    {
+                        "ok": original["status"] == "succeeded",
+                        "data": original,
+                        "original_domain_ref": reference,
+                        "uncertain": original["status"] == "uncertain",
+                        "work_effect_state": row["state"],
+                        "replay_forbidden": True,
+                    },
+                    ensure_ascii=False,
+                )
         from hashlib import sha256
 
         from qq_ai_bot.sandbox.db_models import SandboxTaskRunModel
@@ -665,6 +688,36 @@ class WorkJournal:
             },
             ensure_ascii=False,
         )
+
+    async def unsettled_composition(self, work_id: str | None, key: str) -> dict[str, Any] | None:
+        """Only a recognized, still-open parent of this Work may resume its program."""
+        if work_id is None:
+            return None
+        async with self.repository.database.sessions() as session:
+            row = (
+                (
+                    await session.execute(
+                        select(effects.c.state, effects.c.receipt_json).where(
+                            effects.c.effect_key == key,
+                            effects.c.work_id == work_id,
+                            effects.c.kind == "code_composition",
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if row is None or row["state"] not in {"prepared", "unknown"}:
+            # Settled (partial/interrupted/completed) parents pair from their receipt.
+            return None
+        composition = json.loads(row["receipt_json"]).get("composition")
+        if not isinstance(composition, dict) or composition.get("version") != 1:
+            return None  # Unrecognized versions keep the conservative generic path.
+        return {
+            "operation_id": key,
+            "snapshot_revision": int(composition.get("snapshot_revision", 0)),
+            "snapshot_ref": composition.get("snapshot_ref"),
+        }
 
     async def record_effect(
         self,

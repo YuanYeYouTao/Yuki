@@ -105,7 +105,6 @@ async def test_delivery_failure_keeps_normal_answer(
     message = replace(
         inbound("发给我", message_id="send-failure"),
         conversation_id=conversation.conversation_id,
-        legacy_conversation_key="private:9999:1001",
         person_id=person,
         presence_id=presence,
     )
@@ -182,7 +181,7 @@ async def test_command_image_delivery_records_only_confirmed_shared_media(
 
 
 @pytest.mark.asyncio
-async def test_only_mutation_access_appends_the_write_receipt_contract(database) -> None:
+async def test_write_receipt_contract_is_fixed_without_exclusive_session_state(database) -> None:
     from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
     from qq_ai_bot.prompting.contracts import CORE_CONTRACT
     from qq_ai_bot.prompting.serializer import strip_dynamic_prefix
@@ -202,19 +201,18 @@ async def test_only_mutation_access_appends_the_write_receipt_contract(database)
             metrics=ContextMetrics(0, 0, len(history), 6, False),
         )
         variants = []
-        for exclusive in (False, True):
+        for _ in range(2):
             composed = await chat.runtime.main_turns.compose(
                 inbound=None,
                 context=context,
                 runtime=runtime,
                 visual_observation=None,
                 visual_failure=False,
-                memory_exclusive_write=exclusive,
             )
             variants.append(composed.messages)
             tail = composed.messages[-1].content
             assert strip_dynamic_prefix(tail) == context.current_message.content
-            assert ('"exclusive_write":true' in tail) == exclusive
+            assert "exclusive_write" not in tail
             assert "runtime.automation_intent" not in tail
             assert composed.metrics.total_characters == sum(
                 len(message.content or "") for message in composed.messages
@@ -465,7 +463,7 @@ async def test_superuser_can_persistently_toggle_private_users(database: Databas
         inbound("hello", message_id="new-private-user", user_id="12345678"),
         target_sender,
     )
-    assert allowed.reason == "agent_output_failure"
+    assert allowed.reason == "chat"
 
     disabled_sender = MemorySender()
     await harness.processor.handle(
@@ -507,7 +505,7 @@ async def test_superuser_can_toggle_any_group_by_id(database: Database) -> None:
         ),
         MemorySender(),
     )
-    assert enabled.reason == "agent_output_failure"
+    assert enabled.reason == "chat"
 
     await harness.processor.handle(
         inbound(
@@ -709,8 +707,8 @@ async def test_empty_model_response_is_user_safe(database: Database) -> None:
     assert result.reason == "empty_llm_response"
     assert "空内容" in sender.messages[0].text
 
-    # History mention annotations are not transport instructions. Correct once
-    # within the existing request budget; never leak the placeholder as a fake @.
+    # Unsent internal text never becomes transport, including fake mention syntax.
+    # No courtesy correction requests are generated.
     for repair in (False, True):
 
         def mention_response(request: ChatRequest, repair: bool = repair) -> str | ChatResponse:
@@ -726,13 +724,10 @@ async def test_empty_model_response_is_user_safe(database: Database) -> None:
         await mention_harness.processor.handle(
             inbound("at ice", message_id=f"mention-placeholder-{repair}"), mention_sender
         )
-        assert len(mention_provider.requests) == (3 if repair else 2)
-        assert mention_provider.requests[0].tools == mention_provider.requests[1].tools
+        assert len(mention_provider.requests) == 1
+        assert not mention_sender.messages
         assert all("[提及" not in str(message.text) for message in mention_sender.messages)
         assert all("@完了" not in str(message.text) for message in mention_sender.messages)
-        assert any(
-            "模型未能完成这次回复" in message.text for message in mention_sender.messages
-        ) is (not repair)
 
 
 @pytest.mark.asyncio
@@ -779,6 +774,9 @@ async def test_mutation_turn_uses_auto_with_only_write_tool_and_receipt_contract
     sender = MemorySender()
     message = inbound("撤回一条测试配置", message_id="mutation-auto-write-only")
 
+    admitted = await harness.processor._canonical_ingress.pre_admit(None, message)
+    message = admitted.message
+    appended = await harness.processor._canonical_uow.append_inbound(message, admitted)
     await harness.processor._chat.respond(
         message,
         message.scope(),
@@ -792,9 +790,7 @@ async def test_mutation_turn_uses_auto_with_only_write_tool_and_receipt_contract
             )
         ),
         turn_snapshot=ConversationTurnSnapshot(
-            scope_id=(
-                appended := await harness.processor._scoped_events.append_inbound(message)
-            ).scope.id,
+            conversation_id=appended.scope.id,
             scope_key=message.scope().key,
             generation=appended.scope.generation,
             trigger_event_id=appended.event.id,
@@ -826,11 +822,10 @@ async def test_unused_planner_fallback_no_longer_blocks_the_agent(
         sender,
     )
 
-    # This fixture has no SocialService transport, so the explicit-send contract
-    # correctly rejects the model's unsent final after context assembly.
-    assert result.reason == "agent_output_failure"
-    assert len(provider.requests) == 2
-    assert sender.messages[0].text == "这次回复没有发出，请稍后重试。"
+    # Internal final ends the turn without implicit transport or correction.
+    assert result.reason == "chat"
+    assert len(provider.requests) == 1
+    assert not sender.messages
 
 
 @pytest.mark.asyncio
@@ -850,9 +845,9 @@ async def test_ordinary_chat_always_assembles_agent_context(
         sender,
     )
 
-    assert result.reason == "agent_output_failure"
-    assert len(provider.requests) == 2
-    assert sender.messages[0].text == "这次回复没有发出，请稍后重试。"
+    assert result.reason == "chat"
+    assert len(provider.requests) == 1
+    assert not sender.messages
     request = provider.requests[0]
     assert "event_bound_memory_refs" in request.messages[-1].content
     assert "available_memory_subjects" not in request.messages[-1].content

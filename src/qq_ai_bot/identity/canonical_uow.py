@@ -294,7 +294,10 @@ class CanonicalIngressUnitOfWork:
         return NewGenerationResult(
             event=appended.event,
             scope=appended.scope,
-            generation_changed=appended.scope.last_generation_change_event_id == appended.event.id,
+            generation_changed=(
+                appended.created
+                and appended.scope.last_generation_change_event_id == appended.event.id
+            ),
         )
 
 

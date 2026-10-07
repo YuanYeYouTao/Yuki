@@ -20,7 +20,7 @@ from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.admin.permission_catalog import CapabilityReport, PermissionCatalogService
 from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.capabilities.results import normalize_legacy_result
+from qq_ai_bot.capabilities.results import ToolExecutionResult
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
@@ -134,9 +134,6 @@ _MEMORY_READ_TOOL: ContextVar[str] = ContextVar("memory_read_tool", default="")
 _OBSERVED_MEMORY_READS = frozenset(
     {
         "search_memory",
-        "get_person_memories",
-        "get_group_memories",
-        "get_self_memories",
         "get_memory_fact",
     }
 )
@@ -164,11 +161,8 @@ class ToolRuntime:
     conversation_key: str = ""
     trigger_message_id: str = ""
     trigger_event_id: int | None = None
-    actor_user_id: str = ""
     actor_context: ToolActor | None = None
     actor_is_superuser: bool = False
-    current_group_id: str | None = None
-    mentioned_user_ids: tuple[str, ...] = ()
     runtime_config: RuntimeConfigSnapshot | None = None
     origin: TurnOrigin = TurnOrigin.USER_MESSAGE
     tools_closed: bool = False
@@ -196,17 +190,55 @@ class ToolRuntime:
     before_model_request: Callable[[], Awaitable[None]] | None = None
     observation_boundary: ContextBoundaryReader | None = None
     scope_type: ScopeType | None = None
-    bot_user_id: str | None = None
     conversation_id: str | None = None
-    presence_id: str | None = None
     person_id: str | None = None
     space_id: str | None = None
     external_target_id: str | None = None
+    target_presence_id: str | None = None
     memory_read_cache: dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
     context_plugin_id: str | None = None
     context_read_contract: str | None = None
     # Display metadata from this preparation only; never a source/permission grant.
     prepared_timezone: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.inbound is not None:
+            incoming = replace(
+                ToolActor.from_inbound(self.inbound),
+                event_id=self.effective_trigger_event_id,
+                origin=self.origin,
+            )
+            if self.actor_context is not None and self.actor_context != incoming:
+                raise PermissionError("tool_actor_context_mismatch")
+            object.__setattr__(self, "actor_context", incoming)
+
+    @property
+    def actor_user_id(self) -> str:
+        return self.actor_context.user_id if self.actor_context is not None else ""
+
+    @property
+    def current_group_id(self) -> str | None:
+        if self.actor_context is not None:
+            return self.actor_context.group_id
+        return self.read_scope.group_id if self.read_scope is not None else None
+
+    @property
+    def mentioned_user_ids(self) -> tuple[str, ...]:
+        return self.actor_context.mentioned_user_ids if self.actor_context is not None else ()
+
+    @property
+    def bot_user_id(self) -> str | None:
+        if self.actor_context is not None:
+            return self.actor_context.bot_user_id
+        return self.read_scope.bot_user_id if self.read_scope is not None else None
+
+    @property
+    def presence_id(self) -> str | None:
+        return (
+            self.actor_context.presence_id
+            if self.actor_context is not None
+            else self.target_presence_id
+        )
 
     @property
     def effective_trigger_event_id(self) -> int | None:
@@ -255,19 +287,9 @@ class ToolRuntime:
 
     def require_actor(self) -> ToolActor:
         if self.inbound is not None:
-            incoming = ToolActor.from_inbound(self.inbound)
-            if (
-                (self.actor_user_id and incoming.user_id != self.actor_user_id)
-                or (
-                    self.current_group_id is not None and incoming.group_id != self.current_group_id
-                )
-                or (
-                    incoming.event_id is not None
-                    and incoming.event_id != self.effective_trigger_event_id
-                )
-            ):
-                raise PermissionError("tool_actor_context_mismatch")
-            return replace(incoming, event_id=self.effective_trigger_event_id, origin=self.origin)
+            if self.actor_context is None:
+                raise PermissionError("tool_actor_unavailable")
+            return self.actor_context
         actor: ToolActor | None = self.actor_context
         if self.origin is TurnOrigin.SELF_INITIATIVE or (
             self.origin is TurnOrigin.SCHEDULED_AUTOMATION
@@ -279,7 +301,6 @@ class ToolRuntime:
                 or actor.principal_kind != "self"
                 or actor.origin is not self.origin
                 or actor.user_id
-                or self.actor_user_id
                 or self.actor_is_superuser
                 or actor.person_id is not None
                 or self.person_id is not None
@@ -298,8 +319,6 @@ class ToolRuntime:
                 )
                 or actor.execution_id != self.execution_id
                 or actor.conversation_id != self.effective_conversation_id
-                or actor.presence_id != self.effective_presence_id
-                or actor.group_id != self.current_group_id
                 or self.effective_trigger_event_id is not None
             ):
                 raise PermissionError("self_actor_context_mismatch")
@@ -308,8 +327,6 @@ class ToolRuntime:
             actor is None
             or actor.origin is not TurnOrigin.SCHEDULED_AUTOMATION
             or self.origin is not TurnOrigin.SCHEDULED_AUTOMATION
-            or actor.user_id != self.actor_user_id
-            or actor.group_id != self.current_group_id
             or not actor.execution_id
             or actor.execution_id != self.execution_id
             or actor.conversation_id != self.effective_conversation_id
@@ -885,7 +902,7 @@ class AgentToolService:
         name: str,
         arguments_json: str,
         runtime: ToolRuntime,
-    ) -> str:
+    ) -> ToolExecutionResult:
         """Execute one tool and return JSON, including safe model-readable errors."""
 
         snapshot = runtime.runtime_config or await self._runtime_config.snapshot(
@@ -935,9 +952,7 @@ class AgentToolService:
 
                     work_control = current_work_control.get()
                     if work_control is not None and work_control.session is not None:
-                        request_id = sha256(
-                            work_control.session.call_key(invocation.call_id).encode()
-                        ).hexdigest()
+                        request_id = sha256(invocation.call_id.encode()).hexdigest()
                     result = await self.sandbox_client.execute(
                         name,
                         arguments,
@@ -968,9 +983,8 @@ class AgentToolService:
                             error="sandbox_submission_unknown",
                             detail="沙箱提交结果未确认；核对原执行回执，不能重新提交。",
                             uncertain=True,
-                            defer_budget=True,
                         )
-                    return self._result(data=result, defer_budget=True)
+                    return self._result(data=result)
 
                 if name in WORKSPACE_TOOLS:
                     from qq_ai_bot.workspace.store import WorkspaceError
@@ -991,10 +1005,16 @@ class AgentToolService:
                     if self.workspace_service is None:
                         return self._result(error="workspace_unavailable", detail="工作区未连接")
                     try:
+                        from qq_ai_bot.capabilities.invocation import current_invocation
+
+                        invocation = current_invocation.get()
                         workspace_result = await self.workspace_service.execute(
-                            name, arguments, runtime=runtime
+                            name,
+                            arguments,
+                            runtime=runtime,
+                            request_id=invocation.call_id if invocation is not None else None,
                         )
-                        return self._result(data=workspace_result, defer_budget=True)
+                        return self._result(data=workspace_result)
                     except (WorkspaceError, ValueError, OSError) as exc:
                         category = (
                             str(exc) if isinstance(exc, WorkspaceError) else type(exc).__name__
@@ -1098,9 +1118,6 @@ class AgentToolService:
                         return self._result(error=str(exc), detail=detail)
                 if name in {
                     "search_memory",
-                    "get_person_memories",
-                    "get_group_memories",
-                    "get_self_memories",
                 }:
                     self._log_memory_read_intent(arguments, parse_memory_tool_intent(arguments))
                 if name == "get_my_capabilities":
@@ -1115,15 +1132,6 @@ class AgentToolService:
                     return await self._relationship(arguments, runtime)
                 if name == "search_memory":
                     result = await self._search_memory(arguments, runtime)
-                    return await self._capture_memory_tool_result(result, runtime)
-                if name == "get_person_memories":
-                    result = await self._person_memories(arguments, runtime)
-                    return await self._capture_memory_tool_result(result, runtime)
-                if name == "get_self_memories":
-                    result = await self._self_memories(arguments, runtime)
-                    return await self._capture_memory_tool_result(result, runtime)
-                if name == "get_group_memories":
-                    result = await self._group_memories(arguments, runtime)
                     return await self._capture_memory_tool_result(result, runtime)
                 if name == "get_memory_fact":
                     result = await self._memory_fact(arguments, runtime)
@@ -1167,7 +1175,9 @@ class AgentToolService:
             _MEMORY_READ_CACHE.reset(cache_token)
             _RUNTIME_SNAPSHOT.reset(token)
 
-    def _my_capabilities(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
+    def _my_capabilities(
+        self, arguments: dict[str, Any], runtime: ToolRuntime
+    ) -> ToolExecutionResult:
         """Return only the report derived from this authoritative inbound event."""
 
         try:
@@ -1217,7 +1227,7 @@ class AgentToolService:
             raise PermissionError("actor_permission_changed")
         return self._permission_catalog.report_for_actor(actor, category=category, query=query)
 
-    async def _recent_history(self, runtime: ToolRuntime) -> str:
+    async def _recent_history(self, runtime: ToolRuntime) -> ToolExecutionResult:
         rows = await self._ledger.list_scope_recent(
             runtime.conversation_scope(),
             limit=min(runtime.history_limit or 20, self._settings.recent_history_tool_limit),
@@ -1308,7 +1318,7 @@ class AgentToolService:
                 parts.append(f"[{kind}]")
         return "".join(parts).strip()[:_HISTORY_TEXT_MAX]
 
-    async def _search(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
+    async def _search(self, arguments: dict[str, Any], runtime: ToolRuntime) -> ToolExecutionResult:
         keyword = arguments.get("keyword")
         if not isinstance(keyword, str) or not keyword.strip():
             return self._result(error="invalid_keyword", detail="keyword 必须是非空字符串")
@@ -1364,7 +1374,7 @@ class AgentToolService:
         self,
         arguments: dict[str, Any],
         runtime: ToolRuntime,
-    ) -> str:
+    ) -> ToolExecutionResult:
         event_id = arguments.get("event_id")
         if isinstance(event_id, bool) or not isinstance(event_id, int) or event_id <= 0:
             return self._result(error="invalid_event_id", detail="event_id 必须是正整数")
@@ -1413,7 +1423,7 @@ class AgentToolService:
         self,
         arguments: dict[str, Any],
         runtime: ToolRuntime,
-    ) -> str:
+    ) -> ToolExecutionResult:
         query = arguments.get("query")
         if not isinstance(query, str) or not query.strip() or len(query) > 400:
             raise ValueError("query 必须是 1～400 字符的非空字符串")
@@ -1600,69 +1610,11 @@ class AgentToolService:
             }
         )
 
-    async def _person_memories(
-        self,
-        arguments: dict[str, Any],
-        runtime: ToolRuntime,
-    ) -> str:
-        selection = await self._resolve_person_memory_selection(arguments, runtime)
-        if isinstance(selection, _ToolFailure):
-            return self._result(error=selection.code, detail=selection.detail, data=selection.data)
-        group_id = await self._read_group_selector(arguments, runtime, default_current=False)
-        if isinstance(group_id, _ToolFailure):
-            return self._result(error=group_id.code, detail=group_id.detail, data=group_id.data)
-        targets = selection.targets
-        if group_id is not None:
-            requester = self._social_requester(runtime)
-            if requester is not None:
-                targets = (
-                    await self._memory_reads.person(requester, selection.user_id, group_id=group_id)
-                ).targets
-            else:
-                targets = tuple(target for target in targets if target.group_id == group_id)
-            if not targets:
-                return self._result(
-                    error="permission_denied",
-                    detail=(
-                        "本次指定群范围没有双方的历史关系授权。该拒绝仅适用于指定群范围，"
-                        "不能推断此人的所有记忆均不可读或不存在；不要自动换范围重试。"
-                    ),
-                    data={"denied_scope": "explicit_group", "query_executed": False},
-                )
-        query, _mode = self._memory_query(arguments)
-        result = await self._read_memories(
-            arguments,
-            runtime=runtime,
-            text=query or "",
-            targets=targets,
-            requested_limit=self._memory_requested_limit(arguments),
-            default_overview=query is None,
-        )
-        return self._memory_list_result(
-            data={
-                "user_id": selection.user_id,
-                "resolved_by": selection.resolved_by,
-                "effective_query": effective_query_summary(parse_memory_tool_intent(arguments)),
-                **(
-                    {"subject_ref": selection.subject_ref}
-                    if selection.subject_ref is not None
-                    else {}
-                ),
-                "memories": [
-                    {
-                        **self._memory_json(hit.fact, retrieval_reason=hit.selection_reason),
-                        "match": match_projection(hit, result, self._runtime()),
-                    }
-                    for hit in result.hits
-                ],
-            }
-        )
-
     async def _relationship(
         self,
         arguments: dict[str, Any],
         runtime: ToolRuntime,
-    ) -> str:
+    ) -> ToolExecutionResult:
         try:
             runtime.require_actor()
         except PermissionError:
@@ -2012,97 +1964,6 @@ class AgentToolService:
             )
         return matches[0]
 
-    async def _group_memories(
-        self,
-        arguments: dict[str, Any],
-        runtime: ToolRuntime,
-    ) -> str:
-        group_id = await self._read_group_selector(arguments, runtime, default_current=True)
-        if isinstance(group_id, _ToolFailure):
-            return self._result(error=group_id.code, detail=group_id.detail, data=group_id.data)
-        if group_id is None:
-            return self._result(error="group_required", detail="私聊查询群记忆请指定群名或群号")
-        query, _mode = self._memory_query(arguments)
-        requester = self._social_requester(runtime)
-        if requester is not None:
-            targets = (await self._memory_reads.group(requester, group_id)).targets
-        elif (
-            runtime.effective_scope_type is ScopeType.GROUP and runtime.current_group_id == group_id
-        ):
-            targets = (
-                MemoryEntityTarget(
-                    role=MemoryTargetRole.CURRENT_GROUP,
-                    scope_type=MemoryScopeType.GROUP,
-                    group_id=group_id,
-                    block_id="current_group",
-                ),
-            )
-        else:
-            targets = ()
-        if not targets:
-            return self._result(error="permission_denied", detail="没有该群的历史成员关系授权")
-        result = await self._read_memories(
-            arguments,
-            runtime=runtime,
-            text=query or "",
-            targets=targets,
-            requested_limit=self._memory_requested_limit(arguments),
-            default_overview=query is None,
-        )
-        return self._memory_list_result(
-            data={
-                "group_id": group_id,
-                "effective_query": effective_query_summary(parse_memory_tool_intent(arguments)),
-                "memories": [
-                    {
-                        **self._memory_json(hit.fact, retrieval_reason=hit.selection_reason),
-                        "match": match_projection(hit, result, self._runtime()),
-                    }
-                    for hit in result.hits
-                ],
-            }
-        )
-
-    async def _self_memories(
-        self,
-        arguments: dict[str, Any],
-        runtime: ToolRuntime,
-    ) -> str:
-        if not self._settings.self_memory_enabled:
-            return self._result(error="self_memory_unavailable", detail="自我记忆功能未启用")
-        query, _mode = self._memory_query(arguments)
-        target = await self._visible_self_memory_target(runtime)
-        if target is None:
-            return self._result(error="self_memory_unavailable", detail="当前会话不能读取自我记忆")
-        result = await self._read_memories(
-            arguments,
-            runtime=runtime,
-            text=query or "",
-            targets=(target,),
-            requested_limit=self._memory_requested_limit(arguments),
-            default_overview=query is None,
-        )
-        visible_hits = tuple(
-            hit for hit in result.hits if hit.fact.scope_type is MemoryScopeType.SELF
-        )
-        return self._memory_list_result(
-            data={
-                "effective_query": effective_query_summary(parse_memory_tool_intent(arguments)),
-                "visible_scope": (
-                    "global_and_current_private"
-                    if runtime.effective_scope_type is ScopeType.PRIVATE
-                    else "global_and_current_group"
-                ),
-                "memories": [
-                    {
-                        **self._self_memory_json(hit.fact, retrieval_reason=hit.selection_reason),
-                        "match": match_projection(hit, result, self._runtime()),
-                    }
-                    for hit in visible_hits
-                ],
-            }
-        )
-
     async def _visible_self_memory_target(self, runtime: ToolRuntime) -> MemoryEntityTarget | None:
         if runtime.inbound is not None:
             targets = await self._memory_context.resolve_targets(
@@ -2139,7 +2000,7 @@ class AgentToolService:
             target = None
         return target
 
-    def _memory_list_result(self, *, data: dict[str, Any]) -> str:
+    def _memory_list_result(self, *, data: dict[str, Any]) -> ToolExecutionResult:
         """Fit ranked whole facts into the existing response budget, never fake an empty search."""
         remaining = list(data["memories"])
         payload = {
@@ -2159,8 +2020,12 @@ class AgentToolService:
             # Account for the normalized envelope as well as the service payload.
             # Otherwise preserving the grounding rule can overflow downstream and
             # turn complete facts into an artifact/summary after this prefix fits.
-            model_wire = normalize_legacy_result(
-                {**wire, "mutation_committed": False},
+            model_wire = ToolExecutionResult(
+                ok=True,
+                data=payload,
+                mutation_committed=False,
+                evidence_state=cast(dict[str, Any], wire["evidence_state"]),
+                memory_grounding_policy=MEMORY_GROUNDING_RULE if remaining else None,
                 provider_id="core",
                 tool_name=_MEMORY_READ_TOOL.get() or "search_memory",
             ).model_payload()
@@ -2281,7 +2146,9 @@ class AgentToolService:
         del default_overview
         return parse_memory_tool_intent(arguments)
 
-    async def _memory_fact(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
+    async def _memory_fact(
+        self, arguments: dict[str, Any], runtime: ToolRuntime
+    ) -> ToolExecutionResult:
         fact_id = arguments.get("fact_id")
         if isinstance(fact_id, bool) or not isinstance(fact_id, int) or fact_id <= 0:
             raise ValueError("fact_id 必须是正整数")
@@ -2299,7 +2166,9 @@ class AgentToolService:
         )
         return self._result(data={"memory": projection})
 
-    async def _memory_evidence(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
+    async def _memory_evidence(
+        self, arguments: dict[str, Any], runtime: ToolRuntime
+    ) -> ToolExecutionResult:
         fact_id = arguments.get("fact_id")
         limit = arguments.get("limit", 10)
         if isinstance(fact_id, bool) or not isinstance(fact_id, int) or fact_id <= 0:
@@ -2329,7 +2198,7 @@ class AgentToolService:
         self,
         arguments: dict[str, Any],
         runtime: ToolRuntime,
-    ) -> str:
+    ) -> ToolExecutionResult:
         service = self._memory_mutations
         if service is None or runtime.origin not in _MEMORY_CHANGE_ORIGINS:
             return self._result(error="memory_change_unavailable", detail="当前轮不能变更记忆")
@@ -2649,13 +2518,10 @@ class AgentToolService:
 
     async def _capture_memory_tool_result(
         self,
-        result: str,
+        result: ToolExecutionResult,
         runtime: ToolRuntime,
-    ) -> str:
-        try:
-            payload = json.loads(result)
-        except json.JSONDecodeError:
-            return result
+    ) -> ToolExecutionResult:
+        payload = result.model_payload()
         fact_ids: list[int] = []
 
         def visit(value: object) -> None:
@@ -2683,9 +2549,13 @@ class AgentToolService:
                 if _MEMORY_READ_DUPLICATE.get()
                 else ("success" if unique_ids else "empty")
             )
-        elif payload.get("error") in {"ambiguous_person", "ambiguous_subject", "ambiguous_group"}:
+        elif payload.get("error_code") in {
+            "ambiguous_person",
+            "ambiguous_subject",
+            "ambiguous_group",
+        }:
             outcome = "ambiguous"
-        elif payload.get("error") == "permission_denied":
+        elif payload.get("error_code") == "permission_denied":
             outcome = "permission_denied"
         else:
             outcome = "unavailable"
@@ -2702,7 +2572,11 @@ class AgentToolService:
                 await self._memory_context.mark_tool_injected(runtime.memory_turn_id, unique_ids)
             if runtime.memory_exposure_registry is not None:
                 runtime.memory_exposure_registry.register_tool_payload(payload)
-        return rendered
+        return replace(
+            result,
+            evidence_state=payload["evidence_state"],
+            memory_grounding_policy=payload.get("memory_grounding_policy"),
+        )
 
     async def _record_memory_tool_outcome(
         self, runtime: ToolRuntime, outcome: str, *, result_count: int = 0
@@ -2741,7 +2615,9 @@ class AgentToolService:
                 type(exc).__name__,
             )
 
-    async def _call_onebot(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
+    async def _call_onebot(
+        self, arguments: dict[str, Any], runtime: ToolRuntime
+    ) -> ToolExecutionResult:
         actor = runtime.require_actor()
         if not runtime.allow_generic_onebot or not runtime.actor_is_superuser:
             return self._result(error="permission_denied", detail="当前执行主体不是超级管理员")
@@ -2774,7 +2650,9 @@ class AgentToolService:
         await self._record_onebot_send(action, params, result, actor)
         return self._result(data={"action": action, "result": result})
 
-    async def _web_search(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
+    async def _web_search(
+        self, arguments: dict[str, Any], runtime: ToolRuntime
+    ) -> ToolExecutionResult:
         provider, sources = self._web_dependencies()
         query = arguments.get("query")
         if not isinstance(query, str):
@@ -2815,7 +2693,9 @@ class AgentToolService:
         await self._persist_web_response(response, runtime, sources)
         return self._web_result(data=self._web_response_json(response))
 
-    async def _read_webpage(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
+    async def _read_webpage(
+        self, arguments: dict[str, Any], runtime: ToolRuntime
+    ) -> ToolExecutionResult:
         provider, sources = self._web_dependencies()
         raw_url = arguments.get("url")
         if not isinstance(raw_url, str):
@@ -3112,38 +2992,18 @@ class AgentToolService:
         detail: str = "",
         retryable: bool = False,
         uncertain: bool = False,
-        defer_budget: bool = False,
-    ) -> str:
-        if error:
-            payload = {
-                "ok": False,
-                "error": error,
-                "detail": detail,
-                "retryable": retryable,
-            }
-            if uncertain:
-                payload["uncertain"] = True
-            if data is not None:
-                payload["data"] = data
-        else:
-            payload = {"ok": True, "data": data}
-        rendered = json.dumps(payload, ensure_ascii=False, default=str)
-        from qq_ai_bot.capabilities.media import MediaResultText, result_images
+    ) -> ToolExecutionResult:
+        from qq_ai_bot.capabilities.media import result_images
 
-        images = result_images(data) if not error else ()
-        limit = self._runtime().agent.tool_result_max_characters
-        # File/terminal responses are already bounded by their transport. Preserve
-        # the original value for the shared budgeter and its pageable artifacts.
-        if defer_budget or len(rendered) <= limit:
-            return MediaResultText(rendered, images) if images else rendered
-        return json.dumps(
-            {
-                "ok": False,
-                "error": "result_too_large",
-                "detail": "工具结果超过本轮字符上限，请缩小查询范围",
-                "original_characters": len(rendered),
-            },
-            ensure_ascii=False,
+        return ToolExecutionResult(
+            ok=error is None,
+            data=data,
+            error_code=error,
+            public_message=detail or None,
+            retryable=retryable,
+            uncertain=uncertain,
+            mutation_committed=None if uncertain or error is None else False,
+            images=result_images(data) if error is None else (),
         )
 
     def _web_result(
@@ -3152,68 +3012,9 @@ class AgentToolService:
         data: Any = None,
         error: str | None = None,
         detail: str = "",
-    ) -> str:
-        payload: dict[str, Any] = (
-            {"ok": False, "error": error, "detail": detail} if error else {"ok": True, "data": data}
-        )
-        payload["evidence_state"] = evidence_state(payload, "web_tool")
-        limit = self._runtime().web.tool_result_max_characters
-        rendered = json.dumps(payload, ensure_ascii=False, default=str)
-        if len(rendered) <= limit:
-            return rendered
-        if isinstance(data, dict):
-            summary = data.get("provider_summary")
-            # Keep the actual grounding sources ahead of generated synthesis.
-            while len(rendered) > limit and isinstance(summary, str) and summary:
-                keep = max(0, len(summary) - (len(rendered) - limit))
-                summary = summary[:keep]
-                data["truncated"] = True
-                if summary:
-                    data["provider_summary"] = summary
-                else:
-                    data.pop("provider_summary", None)
-                    data.pop("provider_summary_instruction", None)
-                payload["evidence_state"] = evidence_state(payload, "web_tool")
-                rendered = json.dumps(payload, ensure_ascii=False, default=str)
-        sources = data.get("sources") if isinstance(data, dict) else None
-        if isinstance(sources, list):
-            while len(rendered) > limit and sources:
-                changed = False
-                for source in reversed(sources):
-                    if not isinstance(source, dict):
-                        continue
-                    content = source.get("relevant_content")
-                    if isinstance(content, str) and len(content) > 256:
-                        data["truncated"] = True
-                        source["relevant_content"] = content[: max(256, len(content) // 2)]
-                        changed = True
-                    snippet = source.get("snippet")
-                    if len(rendered) > limit and isinstance(snippet, str) and len(snippet) > 160:
-                        data["truncated"] = True
-                        source["snippet"] = snippet[: max(160, len(snippet) // 2)]
-                        changed = True
-                    payload["evidence_state"] = evidence_state(payload, "web_tool")
-                    rendered = json.dumps(payload, ensure_ascii=False, default=str)
-                    if len(rendered) <= limit:
-                        break
-                if len(rendered) > limit and not changed:
-                    if len(sources) > 1:
-                        data["truncated"] = True
-                        sources.pop()
-                    else:
-                        break
-                payload["evidence_state"] = evidence_state(payload, "web_tool")
-                rendered = json.dumps(payload, ensure_ascii=False, default=str)
-        if len(rendered) > limit:
-            rendered = json.dumps(
-                {
-                    "ok": False,
-                    "error": "result_too_large",
-                    "detail": "工具结果超过长度限制",
-                },
-                ensure_ascii=False,
-            )
-        return rendered
+    ) -> ToolExecutionResult:
+        result = self._result(data=data, error=error, detail=detail)
+        return replace(result, evidence_state=evidence_state(result.model_payload(), "web_tool"))
 
     @staticmethod
     def _runtime() -> RuntimeConfigSnapshot:

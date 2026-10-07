@@ -1,0 +1,27 @@
+{
+  "original_report": "issue-256-acceptance-v2.json",
+  "report_sha256": "4f18e2312e53195178b655e5682d6102b02c2582ecc6fbe5c4c0e03027070094",
+  "offline_replay": "Original model-generated calls/program, real temporary FileWorkspace/SQLite/InvocationService/Monty, mocked provider and synthetic large private reasoning. No paid request.",
+  "source_sha256": "b265e40f4e3e188e7e0a3e2204bbee1420f6eaefdead24ffe2a659e69b1ca264",
+  "observed_before_fix": {
+    "tests": {
+      "failed": 1,
+      "seconds": 2.51
+    },
+    "goal_files_correct": true,
+    "audit_order_correct": true,
+    "business_calls": 39,
+    "work_state": "suspended",
+    "failure": "ValueError: profile long-task-benchmark does not support: structured_output",
+    "frames": [
+      "services/agent_runner.py:479",
+      "services/turn_execution.py:390",
+      "services/turn_execution.py:989",
+      "services/agent_runner.py:359",
+      "model_runtime/executor.py:572",
+      "model_runtime/routes.py:31"
+    ]
+  },
+  "classification": "Benchmark profile assembly omitted an already-supported provider capability. Production route correctly refused it; no product routing or VM semantics changed.",
+  "regression": "test_unpaid_long_task_assembly[new-code-resumed_work-0-False-True-True] exercises real compaction, original accepted parent receipt, interleaved audits, no repeated writes and cumulative model/tool accounting."
+}

@@ -38,11 +38,10 @@ from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     GroupSettingsRepository,
     MediaAnalysisRepository,
+    PeopleRepository,
     PrivateUserSettingsRepository,
-    ProcessedEventRepository,
     RelationshipJobRepository,
     RelationshipRepository,
-    UserProfileRepository,
     WebSearchSourceRepository,
 )
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
@@ -55,8 +54,7 @@ class PersistenceBundle:
     runtime_config: RuntimeConfigService
     groups: GroupSettingsRepository
     private_users: PrivateUserSettingsRepository
-    people: UserProfileRepository
-    processed_events: ProcessedEventRepository
+    people: PeopleRepository
     ledger: EventLedgerRepository
     scoped_events: ScopedEventLedgerUnitOfWork
     conversation_scopes: ConversationScopeRepository
@@ -114,7 +112,7 @@ class PersistenceModule:
             "initial_trust": settings.relationship_initial_trust,
         }
         memory_rebuilds = MemoryRebuildRepository(database)
-        people = UserProfileRepository(
+        people = PeopleRepository(
             database,
             **initial,
             memory_rebuilds=memory_rebuilds,
@@ -203,7 +201,6 @@ class PersistenceModule:
             groups=GroupSettingsRepository(database),
             private_users=PrivateUserSettingsRepository(database, **initial),
             people=people,
-            processed_events=ProcessedEventRepository(database),
             ledger=ledger,
             scoped_events=scoped_events,
             conversation_scopes=ConversationScopeRepository(database),

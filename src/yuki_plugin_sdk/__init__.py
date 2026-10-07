@@ -1,4 +1,4 @@
-"""Public Yuki Plugin API 3.2 with lazy imports and no Host side effects."""
+"""Public Yuki Plugin API 3.3 with lazy imports and no Host side effects."""
 
 from __future__ import annotations
 

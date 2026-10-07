@@ -1,0 +1,30 @@
+[
+  {
+    "source_sha": "0f24a3b590d103eb547483161fb5873d5a78d032",
+    "label": "branch-original",
+    "command": [
+      "/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/.venv/bin/python",
+      "-c",
+      "import qq_ai_bot; from pathlib import Path; assert Path(qq_ai_bot.__file__).resolve().is_relative_to(Path('/private/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/branch-original')); print(\"SOURCE_IMPORT\",qq_ai_bot.__file__); import pytest; raise SystemExit(pytest.main(['/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/prefix/test_rollup_envelope.py', '-q', '-p', 'no:warnings', '--tb=short', '--basetemp=/private/tmp/yuki-rollup-original-branch-original']))"
+    ],
+    "exit_code": 0,
+    "seconds": 3.4695064581464976,
+    "log": "original-branch-original-rollup.log.gz",
+    "log_sha256": "76ed8ed5f3cee354a2f8599eea890dd879dfa081aa63dea1046fddfa243c99af",
+    "assertion_meaning": "pass confirms original summary relabelling defect; not repaired acceptance"
+  },
+  {
+    "source_sha": "25cd6083015924bf80405ca7c346f84a995f6ebb",
+    "label": "main",
+    "command": [
+      "/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/.venv/bin/python",
+      "-c",
+      "import qq_ai_bot; from pathlib import Path; assert Path(qq_ai_bot.__file__).resolve().is_relative_to(Path('/private/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/main')); print(\"SOURCE_IMPORT\",qq_ai_bot.__file__); import pytest; raise SystemExit(pytest.main(['/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/prefix/test_rollup_envelope.py', '-q', '-p', 'no:warnings', '--tb=short', '--basetemp=/private/tmp/yuki-rollup-original-main']))"
+    ],
+    "exit_code": 0,
+    "seconds": 3.2075889171101153,
+    "log": "original-main-rollup.log.gz",
+    "log_sha256": "90cd755c8c7a139bf6ba2088c4d8b4e4bdc1a7af0571640dc09ed77af0064866",
+    "assertion_meaning": "pass confirms original summary relabelling defect; not repaired acceptance"
+  }
+]

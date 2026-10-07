@@ -1,0 +1,115 @@
+{
+  "format": "yuki_monty_linux_isolation_v1",
+  "platform": "Linux-6.1.0-50-cloud-arm64-aarch64-with-glibc2.36",
+  "worker_sha256": "fc4ee999669c5f520f6d37333b13e341fc4a00493785e0a6e6b6133dfe435241",
+  "launcher_sha256": "bc3dd9cd7d1d0f0c11fe294c5e586ca30a28f4281271ee9cda3db800abd07c63",
+  "bwrap_sha256": "ff5add553bea12a45c18ebe6c67d3ed637052b869a1ca2fc5d74a6a2e8c5cce6",
+  "verdict": "passed",
+  "worker": {
+    "host_uid": 501,
+    "worker_namespace_uid": 65534,
+    "namespaces": {
+      "user": {
+        "host": "user:[4026531837]",
+        "worker": "user:[4026532352]"
+      },
+      "mnt": {
+        "host": "mnt:[4026531841]",
+        "worker": "mnt:[4026532288]"
+      },
+      "pid": {
+        "host": "pid:[4026531836]",
+        "worker": "pid:[4026532291]"
+      },
+      "net": {
+        "host": "net:[4026531840]",
+        "worker": "net:[4026532293]"
+      },
+      "ipc": {
+        "host": "ipc:[4026531839]",
+        "worker": "ipc:[4026532290]"
+      },
+      "uts": {
+        "host": "uts:[4026531838]",
+        "worker": "uts:[4026532289]"
+      }
+    },
+    "uid_map": [
+      [
+        65534,
+        501,
+        1
+      ]
+    ],
+    "gid_map": [
+      [
+        65534,
+        1000,
+        1
+      ]
+    ],
+    "environment": {
+      "PWD": "/tmp"
+    },
+    "mountinfo": "344 313 0:49 /newroot / rw,nosuid,nodev,relatime - tmpfs tmpfs rw,uid=501,gid=1000,inode64\n345 344 254:1 /opt/yuki-monty/monty /worker/monty ro,nosuid,nodev,relatime master:1 - ext4 /dev/vda1 rw,discard,errors=remount-ro\n346 344 254:1 /usr/lib /usr/lib ro,nosuid,nodev,relatime master:1 - ext4 /dev/vda1 rw,discard,errors=remount-ro\n347 344 254:1 /usr/lib /lib ro,nosuid,nodev,relatime master:1 - ext4 /dev/vda1 rw,discard,errors=remount-ro\n348 344 0:50 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw\n349 344 0:51 / /dev rw,nosuid,nodev,relatime - tmpfs tmpfs rw,mode=755,uid=501,gid=1000,inode64\n416 349 0:5 /null /dev/null rw,nosuid,relatime master:2 - devtmpfs udev rw,size=1969308k,nr_inodes=492327,mode=755,inode64\n417 349 0:5 /zero /dev/zero rw,nosuid,relatime master:2 - devtmpfs udev rw,size=1969308k,nr_inodes=492327,mode=755,inode64\n418 349 0:5 /full /dev/full rw,nosuid,relatime master:2 - devtmpfs udev rw,size=1969308k,nr_inodes=492327,mode=755,inode64\n419 349 0:5 /random /dev/random rw,nosuid,relatime master:2 - devtmpfs udev rw,size=1969308k,nr_inodes=492327,mode=755,inode64\n420 349 0:5 /urandom /dev/urandom rw,nosuid,relatime master:2 - devtmpfs udev rw,size=1969308k,nr_inodes=492327,mode=755,inode64\n421 349 0:5 /tty /dev/tty rw,nosuid,relatime master:2 - devtmpfs udev rw,size=1969308k,nr_inodes=492327,mode=755,inode64\n422 349 0:52 / /dev/pts rw,nosuid,noexec,relatime - devpts devpts rw,mode=620,ptmxmode=666\n423 344 0:53 / /tmp rw,nosuid,nodev,relatime - tmpfs tmpfs rw,mode=755,uid=501,gid=1000,inode64\n",
+    "network_interfaces": [
+      "lo"
+    ],
+    "limits": "Limit                     Soft Limit           Hard Limit           Units     \nMax cpu time              30                   30                   seconds   \nMax file size             4194304              4194304              bytes     \nMax data size             unlimited            unlimited            bytes     \nMax stack size            8388608              unlimited            bytes     \nMax core file size        0                    0                    bytes     \nMax resident set          unlimited            unlimited            bytes     \nMax processes             15385                15385                processes \nMax open files            32                   32                   files     \nMax locked memory         514859008            514859008            bytes     \nMax address space         536870912            536870912            bytes     \nMax file locks            unlimited            unlimited            locks     \nMax pending signals       15385                15385                signals   \nMax msgqueue size         819200               819200               bytes     \nMax nice priority         0                    0                    \nMax realtime priority     0                    0                    \nMax realtime timeout      unlimited            unlimited            us        \n",
+    "status": "Name:\tmonty\nUmask:\t0022\nState:\tS (sleeping)\nTgid:\t23494\nNgid:\t0\nPid:\t23494\nPPid:\t23493\nTracerPid:\t0\nUid:\t501\t501\t501\t501\nGid:\t1000\t1000\t1000\t1000\nFDSize:\t64\nGroups:\t1000 \nNStgid:\t23494\t2\nNSpid:\t23494\t2\nNSpgid:\t23493\t1\nNSsid:\t23493\t1\nVmPeak:\t  173712 kB\nVmSize:\t  108196 kB\nVmLck:\t       0 kB\nVmPin:\t       0 kB\nVmHWM:\t    4040 kB\nVmRSS:\t    4040 kB\nRssAnon:\t     648 kB\nRssFile:\t    3392 kB\nRssShmem:\t       0 kB\nVmData:\t   16792 kB\nVmStk:\t     132 kB\nVmExe:\t   22640 kB\nVmLib:\t    2344 kB\nVmPTE:\t      76 kB\nVmSwap:\t       0 kB\nHugetlbPages:\t       0 kB\nCoreDumping:\t0\nTHP_enabled:\t1\nThreads:\t2\nSigQ:\t0/15385\nSigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\nSigBlk:\t0000000000000000\nSigIgn:\t0000000081001000\nSigCgt:\t0000000100000440\nCapInh:\t0000000000000000\nCapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapBnd:\t0000000000000000\nCapAmb:\t0000000000000000\nNoNewPrivs:\t1\nSeccomp:\t0\nSeccomp_filters:\t0\nSpeculation_Store_Bypass:\tvulnerable\nSpeculationIndirectBranch:\tunknown\nCpus_allowed:\tf\nCpus_allowed_list:\t0-3\nMems_allowed:\t0001\nMems_allowed_list:\t0\nvoluntary_ctxt_switches:\t1\nnonvoluntary_ctxt_switches:\t0\n",
+    "process_ids": [
+      23492,
+      23493,
+      23494
+    ],
+    "native_pid": 23494
+  },
+  "infinite_loop": "engine_time_limit",
+  "terminated_process_ids": [
+    23492,
+    23493,
+    23494,
+    23496,
+    23497,
+    23499
+  ],
+  "termination": "all_original_process_ids_gone",
+  "parent_death": {
+    "owner_signal": "SIGKILL",
+    "process_ids": [
+      23509,
+      23510,
+      23511
+    ],
+    "verdict": "passed"
+  },
+  "host_policy": {
+    "max_native_workers": 2,
+    "background_limit": 1,
+    "observed_peak_native_workers": 2,
+    "native_high_water_rss_kib": [
+      4088,
+      4040
+    ],
+    "queued_cancellation_created_no_worker": true,
+    "all_capacity_process_ids_gone": [
+      23520,
+      23521,
+      23522,
+      23524,
+      23525,
+      23526
+    ],
+    "measurement_scope": "two suspended synthetic scripts; not production capacity sizing",
+    "host_watchdog": {
+      "configured_seconds": 0.5,
+      "elapsed_seconds": 0.5024167960000341,
+      "failure_category": "limit_time",
+      "all_process_ids_gone": [
+        23531,
+        23532,
+        23533
+      ]
+    }
+  }
+}

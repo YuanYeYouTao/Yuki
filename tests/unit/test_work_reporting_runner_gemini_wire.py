@@ -7,7 +7,7 @@ import httpx
 import pytest
 from tests.unit.test_work_reporting_runner import START, case, new_event, response, tool
 
-from qq_ai_bot.domain.messages import ChatMessage, ChatResponse
+from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.llm.gemini import GeminiProvider
 from qq_ai_bot.model_runtime.executor import TaskModelExecutor
 from qq_ai_bot.model_runtime.models import (
@@ -129,7 +129,6 @@ async def test_gemini_reply_continues_original_work_and_explicit_exit_keeps_sign
                 )
             ),
             response(tool("write_fixture", identity="write")),
-            ChatResponse("阶段说明后的内部正文", 0),
             response(tool("task_control", {"action": "complete"}, "complete")),
         ]
     )
@@ -153,14 +152,14 @@ async def test_gemini_reply_continues_original_work_and_explicit_exit_keeps_sign
         )
         assert result.work_id == work_id and result.work_state == "completed"
         assert test_case.control.current["id"] == work_id
-        assert test_case.control.requests_started == len(captured) == 5
+        assert test_case.control.requests_started == len(captured) == 4
         assert test_case.control.tools_started == 3
         assert test_case.observed == ["send_message", "send_message", "write_fixture"]
         reports = await test_case.control.communication_reports(
             kind="reply", event_ids=(event_id,), delivered_only=True
         )
         assert len(reports) == 1
-        assert test_case.control.communication["final_feedback_given"] is True
+        assert "final_feedback_given" not in test_case.control.communication
         assert captured[0]["systemInstruction"] == {"parts": [{"text": "固定主 Agent 合同"}]}
         declarations = captured[0]["tools"][0]["functionDeclarations"]
         assert declarations == [
@@ -194,7 +193,6 @@ async def test_gemini_reply_continues_original_work_and_explicit_exit_keeps_sign
         receipts = [part["functionResponse"] for _, part in parts if "functionResponse" in part]
         assert [receipt["id"] for receipt in receipts] == ["start", "reply", "write"]
         serialized = json.dumps(captured[-1], ensure_ascii=False)
-        assert "阶段说明后的内部正文" in serialized
-        assert "不能据此结束交互式 Work" in serialized
+        assert "不能据此结束交互式 Work" not in serialized
     finally:
         await client.aclose()

@@ -27,10 +27,10 @@ from qq_ai_bot.capabilities import (
     estimate_chat_tool_tokens,
     resolve_mutation_commit,
 )
+from qq_ai_bot.capabilities.invocation import Invocation
 from qq_ai_bot.capabilities.results import normalize_legacy_result
 from qq_ai_bot.domain.messages import ChatTool, ToolCall, ToolFunction
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.services.chat import _fit_artifact_page_result
 from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
 
 
@@ -113,8 +113,8 @@ def test_conditional_mutation_result_preserves_explicit_commit_state() -> None:
     assert core_read.evidence_state == evidence
     assert plugin_claim.evidence_state is None
     for provider, tool, expected in (
-        ("core", "get_person_memories", "bounded read"),
-        ("plugin", "get_person_memories", None),
+        ("core", "search_memory", "bounded read"),
+        ("plugin", "search_memory", None),
         ("core", "web_search", None),
     ):
         normalized = normalize_legacy_result(
@@ -216,7 +216,7 @@ async def test_catalog_selection_schema_budget_and_binding_are_provider_neutral(
 
     async def execute(name: str, arguments: str, _context: object) -> object:
         calls.append((name, arguments))
-        return {"ok": True, "data": name}
+        return ToolExecutionResult(ok=True, data=name)
 
     registry = ToolProviderRegistry()
     registry.register(
@@ -225,7 +225,7 @@ async def test_catalog_selection_schema_budget_and_binding_are_provider_neutral(
             source=CapabilityTrustSource.CORE,
             definitions=lambda _context: (
                 _tool("search_chat_history", "搜索聊天历史"),
-                _tool("get_person_memories", "读取人物记忆"),
+                _tool("search_memory", "读取人物记忆"),
             ),
             execute=execute,
         )
@@ -271,8 +271,16 @@ class _BatchBackend:
         del runtime
         return name.startswith("read")
 
-    async def execute(self, name: str, arguments: str, runtime: object) -> str:
-        del arguments, runtime
+    def counts_toward_limit(self, name: str, runtime: object) -> bool:
+        return True
+
+    def is_side_effecting(self, name: str, arguments: str, runtime: object) -> bool:
+        return not self.parallel_safe(name, runtime)
+
+    # The branch's coordinator owns typed Invocation; retain the original
+    # concurrency, ordering and response-control assertions on that interface.
+    async def execute_call(self, invocation: Invocation) -> str:
+        name = invocation.call.function.name
         self.active += 1
         self.maximum_active = max(self.maximum_active, self.active)
         await asyncio.sleep(0.01 if name.startswith("read_slow") else 0)
@@ -430,32 +438,35 @@ async def test_artifact_reader_result_never_creates_nested_artifact(
     assert len(tuple(root.glob("*.json"))) == 1
 
 
-def test_artifact_pages_fit_budget_and_reconstruct_without_gaps() -> None:
+@pytest.mark.asyncio
+async def test_artifact_pages_fit_budget_and_reconstruct_without_gaps(database, tmp_path) -> None:
     source = ('中文\\"menu"\n' * 600) + "end"
-    reconstructed: list[str] = []
+    store = ToolArtifactRepository(database, tmp_path / "pages", retention_seconds=60)
+    handle = await store.write_artifact(
+        provider_id="core", tool_name="example", media_type="text/plain", content=source
+    )
+    reconstructed = []
     offset = 0
     while offset < len(source):
-        raw_end = min(len(source), offset + 32_000)
-        page = {
-            "handle": "stable-handle",
-            "offset": offset,
-            "next_offset": raw_end if raw_end < len(source) else None,
-            "total_characters": len(source),
-            "content": source[offset:raw_end],
-            "query_matched": None,
-        }
-        fitted = _fit_artifact_page_result(page, max_characters=700)
-        assert fitted.ok is True
-        assert len(json.dumps(fitted.model_payload(), ensure_ascii=False, default=str)) <= 700
-        assert isinstance(fitted.data, dict)
-        assert fitted.data["handle"] == "stable-handle"
-        assert fitted.data["offset"] == offset
-        content = fitted.data["content"]
-        assert isinstance(content, str) and content
+        page = await store.read(handle, offset=offset, limit=32000, max_characters=700)
+        assert page is not None and "error_code" not in page
+        fitted = ToolExecutionResult(
+            ok=True,
+            data=page,
+            provider_id="artifacts",
+            tool_name="read_tool_artifact",
+            mutation_committed=False,
+        )
+        rendered = await ToolResultBudgeter(max_characters=700, artifacts=store).render(fitted)
+        assert not rendered.truncated
+        assert page["handle"] == handle
+        assert page["offset"] == offset
+        content = page["content"]
+        assert content
         reconstructed.append(content)
-        next_offset = fitted.data["next_offset"]
+        next_offset = page["next_offset"]
+        assert next_offset is None or next_offset > offset
         offset = len(source) if next_offset is None else int(next_offset)
-
     assert "".join(reconstructed) == source
 
 

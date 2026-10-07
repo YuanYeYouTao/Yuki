@@ -27,9 +27,7 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
 ):
     env = await social_env(database, tmp_path)
     async with database.sessions() as reader:
-        primary_alias = await require_primary_alias_for_conversation(
-            reader, env.context.conversation_id
-        )
+        await require_primary_alias_for_conversation(reader, env.context.conversation_id)
     steps = iter(
         [
             *(
@@ -58,8 +56,6 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
             *(
                 [
                     ("body", {}),
-                    ("task_control", {"action": "fail", "reason": "仍有余项，明确停止"}),
-                    ("final", {}),
                 ]
                 if accepted
                 else []
@@ -80,8 +76,6 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
             raise error("unusable response after a real successful delivery")
         if name == "body":
             return ChatResponse("这仍然只是内部阶段结果", 0)
-        if name == "final":
-            return ChatResponse("NO_REPLY", 0)
         return ChatResponse(
             "",
             0,
@@ -108,7 +102,6 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
         ),
         bot_user_id="80001",
         conversation_id=env.context.conversation_id,
-        legacy_conversation_key=primary_alias,
         person_id=env.person,
         space_id=env.space,
         presence_id=env.presence,
@@ -117,8 +110,8 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
     result = await harness.processor.handle(message, sender)
     assert result.reason == "chat"
     assert not sender.messages
-    assert len(provider.requests) == (6 if accepted else 2)
-    assert ownership == ([False, True, True, True, True, True] if accepted else [False, False])
+    assert len(provider.requests) == (4 if accepted else 2)
+    assert ownership == ([False, True, True, True] if accepted else [False, False])
     assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
     async with database.sessions() as reader:
         outgoing = (
@@ -132,9 +125,11 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
         works = (await reader.execute(select(work))).mappings().all()
     assert len(outgoing) == 1 and outgoing[0].content == "已确认的原消息"
     if accepted:
-        assert len(works) == 1 and works[0]["state"] == "failed"
-        assert works[0]["model_requests"] == 6 and works[0]["sent_messages"] == 1
-        assert "不能据此结束交互式 Work" in str(provider.requests[-2].messages)
+        # A confirmed start report is not a final delivery receipt. The single
+        # completion attempt suspends conservatively without etiquette retries.
+        assert len(works) == 1 and works[0]["state"] == "suspended"
+        assert works[0]["model_requests"] == 4 and works[0]["sent_messages"] == 1
+        assert "不能据此结束交互式 Work" not in str(provider.requests[-1].messages)
     else:
         assert not works
     assert provider.requests[1].tools == provider.requests[0].tools

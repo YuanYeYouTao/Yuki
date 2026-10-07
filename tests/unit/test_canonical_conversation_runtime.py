@@ -199,8 +199,8 @@ async def test_memory_partition_stays_off_conversation_id_and_refuses_legacy_rep
 
 
 @pytest.mark.asyncio
-async def test_plugin_api_is_3_2_and_host_state_uses_primary_alias() -> None:
-    assert PLUGIN_API_VERSION == "3.2"
+async def test_plugin_api_is_3_3_and_host_state_uses_primary_alias() -> None:
+    assert PLUGIN_API_VERSION == "3.3"
     now = datetime.now(UTC)
     current = CurrentMessage(
         message_id="1",
@@ -216,7 +216,6 @@ async def test_plugin_api_is_3_2_and_host_state_uses_primary_alias() -> None:
         sender=SenderIdentity(user_id="1001"),
         text="hi",
         bot_user_id="8000",
-        legacy_conversation_key="private:8000:1001",
         person_id="person-1",
     )
     invocation = PluginInvocation(
@@ -226,7 +225,7 @@ async def test_plugin_api_is_3_2_and_host_state_uses_primary_alias() -> None:
         bot_user_id="8000",
         inbound=inbound,
     )
-    assert invocation.conversation_key == "private:8000:1001"
+    assert invocation.conversation_key == "bot:8000:private:1001"
 
 
 def test_plugin_command_adapter_uses_primary_legacy_key() -> None:
@@ -235,12 +234,12 @@ def test_plugin_command_adapter_uses_primary_legacy_key() -> None:
 
     inbound = InboundMessage(
         message_id="cmd-1",
+        legacy_conversation_key="bot:8000:private:1001",
         event_type="message:test",
         scope_type=ScopeType.PRIVATE,
         sender=SenderIdentity(user_id="1001"),
         text="/ai plugin run demo ping",
         bot_user_id="8001",
-        legacy_conversation_key="bot:8000:private:1001",
     )
     identity = ConversationScope.private("8001", "1001")
     assert plugin_conversation_key(inbound, identity) == "bot:8000:private:1001"
@@ -281,12 +280,12 @@ def test_plugin_facade_uses_inbound_legacy_key_and_fails_closed_without_primary(
     primary = ConversationScope.private("8000", "1001").key
     hydrated = InboundMessage(
         message_id="facade-v2",
+        legacy_conversation_key=primary,
         event_type="message:test",
         scope_type=ScopeType.PRIVATE,
         sender=SenderIdentity(user_id="1001"),
         text="hi",
         bot_user_id="8001",
-        legacy_conversation_key=primary,
         conversation_id="conv-1",
     )
     invocation = PluginInvocation(
@@ -361,7 +360,7 @@ async def test_plugin_host_state_does_not_split_on_subject(database: Database) -
         plugin_id="demo.plugin",
         name="Demo",
         version="1.0.0",
-        plugin_api="3.2",
+        plugin_api="3.3",
         yuki_requires=">=3.0.0,<4.0",
         manifest_hash=("ab" * 32),
         entrypoint="plugin:Demo",
@@ -1031,17 +1030,15 @@ async def _swap_keeper_behind_earlier_duplicate(database: Database, keeper_id: i
         return clone.id
 
 
-@pytest.mark.asyncio
-@pytest.mark.asyncio
 def _turn(
     *,
     scope_key: str,
     transport_scope_key: str | None = None,
-    scope_id: int = 7,
+    conversation_id: str = "00000000-0000-4000-8000-000000000007",
     generation: int = 1,
 ) -> ConversationTurnSnapshot:
     return ConversationTurnSnapshot(
-        scope_id=scope_id,
+        conversation_id=conversation_id,
         scope_key=scope_key,
         generation=generation,
         trigger_event_id=3,
@@ -1056,14 +1053,14 @@ def test_turn_matches_hydrated_scope_when_primary_equals_current() -> None:
     assert turn.transport_scope_key is None
     assert turn_matches_hydrated_scope(
         turn,
-        scope_id=7,
+        conversation_id="00000000-0000-4000-8000-000000000007",
         generation=1,
         transport_key=key,
         runtime_key=key,
     )
     assert turn_matches_hydrated_scope(
         turn,
-        scope_id=7,
+        conversation_id="00000000-0000-4000-8000-000000000007",
         generation=1,
         transport_key=key,
         runtime_key=None,
@@ -1077,7 +1074,7 @@ def test_turn_matches_hydrated_scope_rejects_secondary_when_primary_equals_curre
     assert turn.transport_scope_key is None
     assert not turn_matches_hydrated_scope(
         turn,
-        scope_id=7,
+        conversation_id="00000000-0000-4000-8000-000000000007",
         generation=1,
         transport_key=secondary,
         runtime_key=primary,
@@ -1090,7 +1087,7 @@ def test_turn_matches_hydrated_scope_when_primary_differs_from_current() -> None
     turn = _turn(scope_key=primary, transport_scope_key=current)
     assert turn_matches_hydrated_scope(
         turn,
-        scope_id=7,
+        conversation_id="00000000-0000-4000-8000-000000000007",
         generation=1,
         transport_key=current,
         runtime_key=primary,
@@ -1103,14 +1100,14 @@ def test_turn_matches_hydrated_scope_rejects_forged_primary_or_wrong_transport()
     turn = _turn(scope_key=primary, transport_scope_key=current)
     assert not turn_matches_hydrated_scope(
         turn,
-        scope_id=7,
+        conversation_id="00000000-0000-4000-8000-000000000007",
         generation=1,
         transport_key=current,
         runtime_key="bot:9999:private:1001",
     )
     assert not turn_matches_hydrated_scope(
         turn,
-        scope_id=7,
+        conversation_id="00000000-0000-4000-8000-000000000007",
         generation=1,
         transport_key="bot:8002:private:1001",
         runtime_key=primary,
@@ -1121,7 +1118,7 @@ def test_turn_matches_hydrated_scope_rejects_transport_key_mismatch() -> None:
     turn = _turn(scope_key="bot:8000:private:1001")
     assert not turn_matches_hydrated_scope(
         turn,
-        scope_id=7,
+        conversation_id="00000000-0000-4000-8000-000000000007",
         generation=1,
         transport_key="bot:8000:private:1002",
         runtime_key=None,

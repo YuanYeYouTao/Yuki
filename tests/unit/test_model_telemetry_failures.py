@@ -53,7 +53,6 @@ from qq_ai_bot.model_runtime.request_accounting import (
 from qq_ai_bot.model_runtime.routes import ModelRouter
 from qq_ai_bot.runtime.activation_outcome import classify_failure, failure_status_text
 from qq_ai_bot.runtime.work_repository import WorkConflict
-from qq_ai_bot.services.main_agent_backend import UnsentFinalResponseError
 
 
 def test_disconnected_presence_can_retry_without_reclassifying_route_denials():
@@ -598,12 +597,7 @@ def test_failure_status_uses_existing_runtime_classification():
         assert "secret" not in status
 
 
-def test_unsent_final_is_agent_output_failure_not_provider_failure():
-    failure = classify_failure(UnsentFinalResponseError("private model text"))
-    assert (failure.code, failure.stage, failure.certainty) == (
-        "unsent_final_response",
-        "agent_output",
-        "not_sent",
-    )
-    assert "没有发出" in failure_status_text(failure)
-    assert "private model text" not in failure_status_text(failure)
+def test_internal_final_has_no_second_feedback_failure_family():
+    from qq_ai_bot.services.main_agent_backend import MainAgentBackend
+
+    assert not hasattr(MainAgentBackend, "response_feedback")

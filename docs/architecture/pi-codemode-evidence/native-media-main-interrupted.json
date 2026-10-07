@@ -1,0 +1,103 @@
+{
+  "schema": 1,
+  "scope": "main f2d06f12 native media plus typed Invocation and Code Mode compatibility",
+  "started_at": "2026-10-05T15:15:50.186629+00:00",
+  "experimental_parent": "c4afe62ddfd633383e15070b52103904e1dae2a4",
+  "main_parent": "f2d06f12e73894f8df7c78880a77b9539753b556",
+  "worker_sha256": "af76448a14fe980c823f1c6092692f90a8ddc6341f236f17d6d47d72f49548e8",
+  "temporary_root": "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-native-media-compatibility-ef_4wjqz",
+  "status": "interrupted",
+  "checks": [
+    {
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "ruff",
+        "check",
+        "src",
+        "tests",
+        "scripts",
+        "migrations"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.17,
+      "log": "native-media-main-interrupted-check-0.log.gz",
+      "log_sha256": "f3af4d142827f5aad2eb0c72d556d325488a57fb6219aac10afeb51085667d53",
+      "tail": [
+        "All checks passed!"
+      ]
+    },
+    {
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "ruff",
+        "format",
+        "--check",
+        "src",
+        "tests",
+        "scripts",
+        "migrations"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.03,
+      "log": "native-media-main-interrupted-check-1.log.gz",
+      "log_sha256": "7756692fd56898e0c0e7f49896d6d1684cce7ec32d4dbb264e830ed62699679b",
+      "tail": [
+        "1200 files already formatted"
+      ]
+    },
+    {
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "mypy"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.54,
+      "log": "native-media-main-interrupted-check-2.log.gz",
+      "log_sha256": "8586aedb794bc6b31dd069106717eaedc8242220e2f3f4b6c7dd50d18bfbe1ac",
+      "tail": [
+        "pyproject.toml: note: unused section(s): module = ['nonebot_adapter_onebot.*']",
+        "Success: no issues found in 726 source files"
+      ]
+    },
+    {
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "pytest",
+        "-q",
+        "-p",
+        "no:warnings",
+        "tests",
+        "--basetemp",
+        "/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-native-media-compatibility-ef_4wjqz/pytest"
+      ],
+      "exit_code": 130,
+      "elapsed_seconds": 43.51,
+      "log": "native-media-main-interrupted-check-3.log.gz",
+      "log_sha256": "02e0dfe4eb6160d32b1518c41dd496595df9081d9555cecf855da68cd81c8880",
+      "tail": [
+        "  File \"/opt/anaconda3/lib/python3.12/json/__init__.py\", line 238, in dumps",
+        "    **kw).encode(obj)",
+        "          ^^^^^^^^^^^",
+        "  File \"/opt/anaconda3/lib/python3.12/json/encoder.py\", line 202, in encode",
+        "    chunks = list(chunks)",
+        "             ^^^^^^^^^^^^",
+        "  File \"/opt/anaconda3/lib/python3.12/json/encoder.py\", line 430, in _iterencode",
+        "    yield from _iterencode_list(o, _current_indent_level)",
+        "  File \"/opt/anaconda3/lib/python3.12/json/encoder.py\", line 303, in _iterencode_list",
+        "    yield buf + _encoder(value)",
+        "                ^^^^^^^^^^^^^^^",
+        "KeyboardInterrupt"
+      ]
+    }
+  ],
+  "finished_at": "2026-10-05T15:16:34.457819+00:00",
+  "reason": "Stopped after finding worker wrapper media source guard delegation gap."
+}

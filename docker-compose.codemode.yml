@@ -1,0 +1,8 @@
+# Code worker isolation; load the reviewed AppArmor profile before creating bot.
+services:
+  bot:
+    environment:
+      CODE_MODE_ENABLED: "true"
+    security_opt:
+      - seccomp=./deploy/security/yuki-codemode-seccomp.json
+      - apparmor=yuki-bot-codemode

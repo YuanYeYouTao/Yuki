@@ -9,6 +9,7 @@ from typing import Any, ClassVar
 from qq_ai_bot.automation.compiler import ExecutionPlan
 from qq_ai_bot.automation.models import AutomationDirectoryEntry, AutomationRecord
 from qq_ai_bot.automation.service import AutomationService
+from qq_ai_bot.capabilities.results import ToolExecutionResult
 from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.time.formatting import local_iso
@@ -116,7 +117,7 @@ def _task_intent_schema() -> dict[str, object]:
             "timezone": {"type": "string", "minLength": 1, "maxLength": 64},
             "strategy": {
                 "type": "string",
-                "enum": ["auto", "static", "generated", "agentic"],
+                "enum": ["auto", "static", "agentic"],
                 "description": "纯提醒用 static；运行时需要模型或工具时用 agentic。",
             },
             "constraints": {
@@ -304,7 +305,9 @@ class AutomationToolService:
             return definitions
         return tuple(tool for tool in definitions if tool.name.startswith("time_"))
 
-    async def execute(self, name: str, arguments_json: str, runtime: ToolRuntime) -> str:
+    async def execute(
+        self, name: str, arguments_json: str, runtime: ToolRuntime
+    ) -> ToolExecutionResult:
         if not self._valid_runtime(runtime):
             return _result(error="permission_context_mismatch", detail="自动化工具缺少可信执行主体")
         actor = runtime.require_actor()
@@ -553,14 +556,11 @@ def _result(
     detail: str = "",
     public_message: str | None = None,
     mutation_committed: bool | None = None,
-) -> str:
-    payload: dict[str, object] = {"ok": error is None}
-    if error is None:
-        payload["data"] = data
-        if public_message is not None:
-            payload["public_message"] = public_message
-        if mutation_committed is not None:
-            payload["mutation_committed"] = mutation_committed
-    else:
-        payload.update({"error": error, "detail": detail})
-    return json.dumps(payload, ensure_ascii=False, default=str)
+) -> ToolExecutionResult:
+    return ToolExecutionResult(
+        ok=error is None,
+        data=data,
+        error_code=error,
+        public_message=public_message or detail or None,
+        mutation_committed=mutation_committed if error is None else False,
+    )

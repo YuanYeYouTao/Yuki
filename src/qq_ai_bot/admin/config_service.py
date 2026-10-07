@@ -1903,9 +1903,9 @@ class RuntimeConfigService:
         async with optional_session(self._database, session, write=False) as active:
             if scope is ConfigScopeType.USER:
                 resolved = await resolve_user_config_scope(active, scope_id)
-                return resolved.storage_scope_id, resolved.person_id, None
+                return resolved.person_id, resolved.person_id, None
             resolved_group = await resolve_group_config_scope(active, scope_id)
-            return resolved_group.storage_scope_id, None, resolved_group.space_id
+            return resolved_group.space_id, None, resolved_group.space_id
 
     def _validate_write(
         self,

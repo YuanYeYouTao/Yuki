@@ -379,7 +379,11 @@ async def test_automation_detail_revision_can_update_the_same_owner_without_deli
         ControlCommand(
             request_id=ctx.request_id,
             expected_revision=detail.fields["revision"],
-            payload={"action": "update", "resource_id": created.resource_id, "spec": script},
+            payload={
+                "action": "update",
+                "resource_id": created.resource_id,
+                "spec": {"script": script},
+            },
         ),
     )
     updated = await queries.read_automation(content, int(created.resource_id))
