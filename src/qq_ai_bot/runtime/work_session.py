@@ -1704,6 +1704,25 @@ class WorkSession:
             )
         # The original Host operation, including a composition child's identity.
         operation_key = invocation.identity.operation_id
+
+        def refuse(error_code: str, detail: str = "") -> str:
+            from qq_ai_bot.capabilities.results import ToolExecutionResult
+            from qq_ai_bot.runtime.effect_outcomes import current_result_capture
+
+            outcome = ToolExecutionResult(
+                ok=False,
+                provider_id="core",
+                tool_name=call.function.name,
+                data={"executed": False},
+                mutation_committed=False,
+                error_code=error_code,
+                public_message=detail,
+            )
+            capture = current_result_capture.get()
+            if capture is not None:
+                capture.outcome = outcome
+            return json.dumps(outcome.model_payload(), ensure_ascii=False)
+
         report = None
         report_target = None
         if call.function.name == "send_message":
@@ -1725,13 +1744,11 @@ class WorkSession:
                     if report is not None:
                         report_target = await control.communication_target()
             except ValueError as exc:
-                return json.dumps({"ok": False, "executed": False, "error": str(exc)})
+                return refuse(str(exc))
         if control.current is None:
             return await invoke()
         if not allow_pending and await control.pending():
-            return json.dumps(
-                {"ok": False, "executed": False, "error": "new_input_before_execution"}
-            )
+            return refuse("new_input_before_execution")
         if not allow_pending:
             await control.validate()
         if (
@@ -1739,15 +1756,7 @@ class WorkSession:
             and not allow_pending
             and await control.has_unresolved_effects(pending=False)
         ):
-            return json.dumps(
-                {
-                    "ok": False,
-                    "error": "unresolved_prior_effect",
-                    "executed": False,
-                    "detail": "先查询原执行结果；结果未知时不能继续副作用。",
-                },
-                ensure_ascii=False,
-            )
+            return refuse("unresolved_prior_effect", "先查询原执行结果；结果未知时不能继续副作用。")
         key = operation_key
         if not await control.repository.prepare_effect(
             control.lease,

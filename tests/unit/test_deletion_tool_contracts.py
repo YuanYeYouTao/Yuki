@@ -401,3 +401,70 @@ async def test_coordinator_execution_budget_uses_typed_fact_not_display(executed
     assert result.calls[0][2] is executed
     assert result.executed_count == int(executed)
     assert result.evidence[call.id]["executed"] is executed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("executed", [True, False])
+async def test_replayed_original_outcome_controls_budget_without_redispatch(
+    database, tmp_path, executed
+):
+    from tests.support.agent_backend import StubAgentBackend
+    from tests.unit.test_tool_effect_audit import active_work
+
+    from qq_ai_bot.capabilities.coordinator import ToolInvocationCoordinator
+    from qq_ai_bot.domain.messages import ToolCall, ToolFunction
+    from qq_ai_bot.runtime.effect_outcomes import current_result_capture
+
+    _, work, _ = await active_work(database, tmp_path)
+    calls = []
+
+    async def execute(invocation):
+        calls.append(invocation.identity.operation_id)
+        capture = current_result_capture.get()
+        assert capture is not None
+        capture.outcome = ToolExecutionResult(
+            ok=executed,
+            data={"executed": executed},
+            mutation_committed=executed,
+            provider_id="core",
+            tool_name=invocation.call.function.name,
+        )
+        return json.dumps({"ok": not executed, "executed": not executed})
+
+    backend = StubAgentBackend(execute_call=execute)
+    call = ToolCall("original", ToolFunction("send_message", "{}"))
+    for _ in range(2):
+        result = await ToolInvocationCoordinator().execute_batch(
+            (call,),
+            backend,
+            SimpleNamespace(work_control=work.control),
+            remaining_calls=1,
+            max_parallel_calls=1,
+        )
+        assert result.calls[0][2] is executed
+        assert result.executed_count == int(executed)
+        assert result.evidence[call.id]["executed"] is executed
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_host_predispatch_rejection_needs_no_display_fact():
+    from unittest.mock import AsyncMock
+
+    from tests.support.agent_backend import StubAgentBackend
+
+    from qq_ai_bot.capabilities.coordinator import ToolInvocationCoordinator
+    from qq_ai_bot.domain.messages import ToolCall, ToolFunction
+
+    execute = AsyncMock()
+    reject = AsyncMock(return_value="host refused before dispatch")
+    result = await ToolInvocationCoordinator().execute_batch(
+        (ToolCall("original", ToolFunction("send_message", "{}")),),
+        StubAgentBackend(execute_call=execute),
+        SimpleNamespace(work_control=None),
+        remaining_calls=1,
+        max_parallel_calls=1,
+        before_execute=reject,
+    )
+    execute.assert_not_awaited()
+    assert result.executed_count == 0 and result.calls[0][2] is False

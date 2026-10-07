@@ -124,20 +124,20 @@ class ToolReceiptView:
 
 
 def receipt_view(
-    raw: str, *, operation_id: str, executed: bool, reused: bool = False
+    raw: str, *, evidence: dict[str, Any], operation_id: str, executed: bool, reused: bool = False
 ) -> ToolReceiptView:
-    """Project the authoritative receipt string; it is stored, not this view."""
+    """Project display data with execution state from typed or original durable evidence."""
     try:
         value = json.loads(raw)
     except ValueError:
         value = {"ok": False, "error": "tool_result_not_json"}
     if not isinstance(value, dict):
         value = {"ok": True, "data": value}
-    ok = value.get("ok") is True
-    uncertain = bool(value.get("uncertain"))
+    ok = evidence.get("ok") is True
+    uncertain = evidence.get("uncertain") is True
     data = value.get("data")
-    pending = bool(isinstance(data, dict) and data.get("pending")) or bool(value.get("pending"))
-    error_code = value.get("error") or value.get("error_code")
+    pending = evidence.get("pending") is True
+    error_code = evidence.get("error_code")
     error = None
     if not ok:
         error = {
@@ -151,7 +151,7 @@ def receipt_view(
         status = "pending"
     elif ok:
         status = "succeeded"
-    elif value.get("executed") is False or not executed:
+    elif evidence.get("executed") is False or not executed:
         status = "not_executed"
     else:
         status = "failed"
@@ -165,7 +165,7 @@ def receipt_view(
         result_ref=value.get("artifact_handle")
         if isinstance(value.get("artifact_handle"), str)
         else None,
-        executed=executed and value.get("executed") is not False,
+        executed=executed and evidence.get("executed") is not False,
         reused=reused,
         pending=pending,
         uncertain=uncertain,

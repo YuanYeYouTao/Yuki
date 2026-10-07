@@ -16,6 +16,7 @@ class ResultCapture:
     effect_key: str
     outcome: ToolExecutionResult | None = None
     artifact_handle: str | None = None
+    evidence: dict[str, Any] | None = None
 
 
 current_result_capture: ContextVar[ResultCapture | None] = ContextVar(
@@ -135,7 +136,74 @@ def execution_evidence(
         or status in {"uncertain", "unknown"},
         "status": status,
         "error_code": outcome.error_code,
+        "retryable": outcome.retryable,
         "mutation_committed": outcome.mutation_committed,
         "executed": body.get("executed", True),
         **({"process": process} if process else {}),
     }
+
+
+def historical_evidence(receipt: dict[str, Any], *, state: str = "accepted") -> dict[str, Any]:
+    """Read original facts without promoting absent or malformed display data."""
+    from qq_ai_bot.capabilities.results import normalize_legacy_result
+
+    evidence = receipt.get("outcome")
+    valid = isinstance(evidence, dict) and (
+        type(evidence.get("ok")) is bool
+        or evidence.get("pending") is True
+        or evidence.get("uncertain") is True
+        or evidence.get("side_effecting") is False
+    )
+    if isinstance(evidence, dict):
+        for key in ("ok", "pending", "uncertain", "side_effecting", "executed", "retryable"):
+            if key in evidence and type(evidence[key]) is not bool:
+                valid = False
+        if (
+            "mutation_committed" in evidence
+            and evidence["mutation_committed"] is not None
+            and type(evidence["mutation_committed"]) is not bool
+        ):
+            valid = False
+    if valid and isinstance(evidence, dict):
+        result = dict(evidence)
+    elif evidence is None or evidence == {}:
+        payload = receipt.get("result")
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except ValueError:
+                payload = None
+        try:
+            if (
+                not isinstance(payload, dict)
+                or type(payload.get("ok")) is not bool
+                or payload.get("truncated") is True
+            ):
+                raise ValueError("historical_outcome_unknown")
+            body = payload.get("data", payload)
+            if isinstance(body, dict) and isinstance(body.get("progress"), dict):
+                body = body["progress"]
+            if isinstance(body, dict):
+                if body.get("truncated") is True or any(
+                    key in body and type(body[key]) is not bool
+                    for key in ("pending", "uncertain", "executed")
+                ):
+                    raise ValueError("historical_outcome_unknown")
+            result = execution_evidence(
+                normalize_legacy_result(payload, provider_id="historical", tool_name="legacy_tool"),
+                tool="legacy_tool",
+                side_effecting=True,
+            )
+        except (TypeError, ValueError):
+            result = {"ok": False, "uncertain": True, "side_effecting": True, "executed": True}
+    else:
+        # Retain original identifiers and explicit pending facts for reconciliation.
+        result = dict(evidence) if isinstance(evidence, dict) else {}
+        result.update(ok=False, uncertain=True, side_effecting=True, executed=True)
+    if result.get("status") in {"unknown", "uncertain"}:
+        result.update(ok=False, uncertain=True)
+    elif result.get("status") in {"running", "queued", "waiting"}:
+        result["pending"] = True
+    if state in {"prepared", "unknown"} and result.get("side_effecting") is not False:
+        result["uncertain"] = True
+    return result

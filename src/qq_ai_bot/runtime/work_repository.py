@@ -2456,16 +2456,136 @@ class WorkRepository:
         )
 
     @staticmethod
+    def _unknown_historical_outcome_clause() -> Any:
+        receipt = effects.c.receipt_json
+        kind = func.coalesce(func.json_type(receipt, "$.outcome"), "missing")
+        value = func.json_extract(receipt, "$.outcome")
+        absent = or_(kind.in_(("missing", "null")), value == "{}")
+        malformed: list[Any] = [~kind.in_(("object", "missing", "null"))]
+        for field in (
+            "ok",
+            "pending",
+            "uncertain",
+            "side_effecting",
+            "executed",
+            "retryable",
+            "mutation_committed",
+        ):
+            allowed = (
+                ("missing", "true", "false", "null")
+                if field == "mutation_committed"
+                else ("missing", "true", "false")
+            )
+            malformed.append(
+                ~func.coalesce(func.json_type(receipt, "$.outcome." + field), "missing").in_(
+                    allowed
+                )
+            )
+        meaningful = or_(
+            func.coalesce(func.json_type(receipt, "$.outcome.ok"), "missing").in_(
+                ("true", "false")
+            ),
+            func.coalesce(func.json_type(receipt, "$.outcome.pending"), "missing") == "true",
+            func.coalesce(func.json_type(receipt, "$.outcome.uncertain"), "missing") == "true",
+            func.coalesce(func.json_type(receipt, "$.outcome.side_effecting"), "missing")
+            == "false",
+        )
+        malformed.append(and_(~absent, ~meaningful))
+        raw = func.json_extract(receipt, "$.result")
+        safe = case((func.json_valid(raw) == 1, raw), else_="{}")
+        legacy_proven = and_(
+            func.json_type(safe) == "object",
+            func.coalesce(func.json_type(safe, "$.ok"), "missing").in_(("true", "false")),
+            func.coalesce(func.json_extract(safe, "$.truncated"), 0) != 1,
+        )
+        for field in ("mutation_committed", "finalize_after_commit", "retryable", "uncertain"):
+            legacy_proven = and_(
+                legacy_proven,
+                func.coalesce(func.json_type(safe, "$." + field), "missing").in_(
+                    ("missing", "null", "true", "false")
+                ),
+            )
+        body = case(
+            (func.json_type(safe, "$.data") == "object", func.json_extract(safe, "$.data")),
+            else_=safe,
+        )
+        body = case(
+            (func.json_type(body, "$.progress") == "object", func.json_extract(body, "$.progress")),
+            else_=body,
+        )
+        legacy_proven = and_(
+            legacy_proven, func.coalesce(func.json_extract(body, "$.truncated"), 0) != 1
+        )
+        for field in ("pending", "uncertain", "executed"):
+            legacy_proven = and_(
+                legacy_proven,
+                func.coalesce(func.json_type(body, "$." + field), "missing").in_(
+                    ("missing", "true", "false")
+                ),
+            )
+        return or_(*malformed, and_(absent, ~legacy_proven))
+
+    @staticmethod
     def _unresolved_clause(*, pending: bool = True, uncertain: bool = True) -> Any:
         clauses = []
         if pending:
-            clauses.append(func.json_extract(effects.c.receipt_json, "$.outcome.pending") == 1)
+            clauses.append(
+                or_(
+                    func.json_extract(effects.c.receipt_json, "$.outcome.pending") == 1,
+                    func.json_extract(effects.c.receipt_json, "$.outcome.status").in_(
+                        ("running", "queued", "waiting")
+                    ),
+                )
+            )
         if uncertain:
             clauses.extend(
                 (
                     func.json_extract(effects.c.receipt_json, "$.outcome.uncertain") == 1,
+                    func.json_extract(effects.c.receipt_json, "$.outcome.status").in_(
+                        ("unknown", "uncertain")
+                    ),
                     and_(
                         effects.c.state.in_(("prepared", "unknown")),
+                    ),
+                )
+            )
+        malformed = WorkRepository._unknown_historical_outcome_clause()
+        if uncertain:
+            clauses.append(malformed)
+        raw = func.json_extract(effects.c.receipt_json, "$.result")
+        legacy = case((func.json_valid(raw) == 1, raw), else_="{}")
+        body = case(
+            (func.json_type(legacy, "$.data") == "object", func.json_extract(legacy, "$.data")),
+            else_=legacy,
+        )
+        body = case(
+            (func.json_type(body, "$.progress") == "object", func.json_extract(body, "$.progress")),
+            else_=body,
+        )
+        legacy_absent = or_(
+            func.coalesce(func.json_type(effects.c.receipt_json, "$.outcome"), "missing").in_(
+                ("missing", "null")
+            ),
+            func.json_extract(effects.c.receipt_json, "$.outcome") == "{}",
+        )
+        if pending:
+            clauses.append(
+                and_(
+                    legacy_absent,
+                    or_(
+                        func.json_extract(body, "$.pending") == 1,
+                        func.json_extract(body, "$.status").in_(("running", "queued", "waiting")),
+                    ),
+                )
+            )
+        if uncertain:
+            clauses.append(
+                and_(
+                    legacy_absent,
+                    or_(
+                        func.json_extract(legacy, "$.uncertain") == 1,
+                        func.json_extract(body, "$.uncertain") == 1,
+                        func.json_extract(body, "$.status").in_(("unknown", "uncertain")),
                     ),
                 )
             )
@@ -2486,7 +2606,7 @@ class WorkRepository:
         # Only a recognized parent is aggregate state, never a business leaf.
         # Legacy/unknown versions retain the conservative historical fence.
         return and_(
-            WorkRepository._lifecycle_role_clause(),
+            or_(WorkRepository._lifecycle_role_clause(), malformed),
             unresolved,
             or_(
                 effects.c.kind != "code_composition",
@@ -2516,7 +2636,7 @@ class WorkRepository:
                     effects.c.effect_key,
                     effects.c.work_id,
                     effects.c.state,
-                    func.json_extract(effects.c.receipt_json, "$.outcome").label("outcome"),
+                    effects.c.receipt_json,
                 ).where(self._effect_scope(identity))
                 if only_unresolved:
                     query = query.where(self._unresolved_clause())
@@ -2534,29 +2654,11 @@ class WorkRepository:
                 if not rows:
                     break
                 for row in rows:
-                    outcome = json.loads(row["outcome"] or "{}")
-                    if not outcome:
-                        from qq_ai_bot.capabilities.results import normalize_legacy_result
-                        from qq_ai_bot.runtime.effect_outcomes import execution_evidence
+                    from qq_ai_bot.runtime.effect_outcomes import historical_evidence
 
-                        raw = await session.scalar(
-                            select(effects.c.receipt_json).where(
-                                effects.c.effect_key == row["effect_key"]
-                            )
-                        )
-                        legacy = normalize_legacy_result(
-                            json.loads(raw or "{}").get("result", {}),
-                            provider_id="legacy",
-                            tool_name="legacy_tool",
-                        )
-                        outcome = execution_evidence(
-                            legacy, tool="legacy_tool", side_effecting=True
-                        )
-                    if (
-                        row["state"] in {"prepared", "unknown"}
-                        and outcome.get("side_effecting") is not False
-                    ):
-                        outcome["uncertain"] = True
+                    outcome = historical_evidence(
+                        json.loads(row["receipt_json"]), state=row["state"]
+                    )
                     outcome.update(effect_key=row["effect_key"], work_id=row["work_id"])
                     result.append(outcome)
                 cursor = rows[-1]["effect_key"]

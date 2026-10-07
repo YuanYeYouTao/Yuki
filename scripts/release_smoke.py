@@ -25,7 +25,6 @@ _MODEL_TASKS = (
     "memory_attribution",
     "relationship_evaluation",
     "emoji_replacement",
-    "automation_text_generation",
     "automation_agent",
     "plugin_agent_session",
     "utility_structured",

@@ -41,6 +41,12 @@ class Backend:
         self.invoked += 1
         if self.fail:
             raise Crash("before accepted")
+        from qq_ai_bot.capabilities.results import ToolExecutionResult
+        from qq_ai_bot.runtime.effect_outcomes import current_result_capture
+
+        capture = current_result_capture.get()
+        assert capture is not None
+        capture.outcome = ToolExecutionResult(ok=True, images=(self.image,))
         return MediaResultText('{"ok":true}', (self.image,))
 
 

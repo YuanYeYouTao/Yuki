@@ -985,7 +985,7 @@ async def test_provider_change_keeps_prepared_sequence_unknown_despite_delivered
             forbidden_send,
             side_effecting=True,
         )
-        assert json.loads(blocked)["error"] == "unresolved_prior_effect"
+        assert json.loads(blocked)["error_code"] == "unresolved_prior_effect"
     assert invoked == 0
     current = await control.repository.get(control.current["id"])
     assert (current["model_requests"], current["tool_calls"]) == (

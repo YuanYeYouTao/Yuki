@@ -21,6 +21,7 @@ from qq_ai_bot.capabilities.coordinator import (
 )
 from qq_ai_bot.capabilities.invocation import Invocation
 from qq_ai_bot.capabilities.media import result_images
+from qq_ai_bot.capabilities.results import ToolExecutionResult
 from qq_ai_bot.codemode.contract import EXECUTE_CODE_NAME
 from qq_ai_bot.domain.messages import (
     ChatImage,
@@ -49,6 +50,11 @@ from qq_ai_bot.model_runtime.structured import (
     tool_free_structured_output_mode,
 )
 from qq_ai_bot.runtime.activation_outcome import ActivationOutcome
+from qq_ai_bot.runtime.effect_outcomes import (
+    ResultCapture,
+    current_result_capture,
+    execution_evidence,
+)
 from qq_ai_bot.runtime.execution_receipts import ExecutionReceipts, current_receipts
 from qq_ai_bot.runtime.work_control import WORK_CONTROL_NAMES, WorkControl
 from qq_ai_bot.runtime.work_repository import WorkCapacityError
@@ -71,6 +77,29 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 # Never a tool result: the outer code call stays unpaired for its original owner.
 CODE_COMPOSITION_YIELDED = "\x00yuki.code.yielded"
+
+
+@dataclass(frozen=True, slots=True)
+class ReusableToolResult:
+    """A turn-local display paired with the execution fact that permits reuse."""
+
+    display: str
+    evidence: dict[str, Any]
+
+
+def _unexecuted_tool_result(name: str, error: str) -> str:
+    """Publish a pre-dispatch refusal before formatting its public result."""
+    capture = current_result_capture.get()
+    if capture is not None:
+        capture.outcome = ToolExecutionResult(
+            ok=False,
+            error_code=error,
+            data={"executed": False},
+            mutation_committed=False,
+            provider_id="runtime",
+            tool_name=name,
+        )
+    return json.dumps({"ok": False, "executed": False, "error": error})
 
 
 class _RequestNotStarted(Exception):
@@ -623,7 +652,7 @@ class AgentRunner:
         *,
         remaining_calls: int,
         max_parallel_calls: int,
-        reusable_results: dict[tuple[str, str], str],
+        reusable_results: dict[tuple[str, str], ReusableToolResult],
         cacheable_names: frozenset[str],
         declared_names: frozenset[str],
         chain_id: str = "",
@@ -867,7 +896,7 @@ class AgentRunner:
             # Children use the full frozen execution API, independently of the
             # compact Provider declaration. Worker APIs are already restricted.
             if api is None or call.function.name not in api.schemas:
-                return json.dumps({"ok": False, "executed": False, "error": "tool_not_declared"})
+                return _unexecuted_tool_result(call.function.name, "tool_not_declared")
 
             async def invoke() -> str:
                 return await tools.execute_call(invocation)
@@ -876,9 +905,7 @@ class AgentRunner:
 
         async def execute_control(call: ToolCall, key: str) -> tuple[str, bool]:
             if api is None:
-                return json.dumps(
-                    {"ok": False, "executed": False, "error": "tool_not_declared"}
-                ), False
+                return _unexecuted_tool_result(call.function.name, "tool_not_declared"), False
             return await self._execute_control_call(
                 call, tools, runtime, frozenset(api.schemas), key
             )
@@ -919,13 +946,13 @@ class AgentRunner:
             or tools is None
             or not tools.work_control_allowed(call.function.name)
         ):
-            return json.dumps({"ok": False, "error": "work_control_unavailable"}), False
+            return _unexecuted_tool_result(call.function.name, "work_control_unavailable"), False
         try:
             arguments = json.loads(call.function.arguments)
             if not isinstance(arguments, dict):
                 raise ValueError("arguments must be an object")
         except (ValueError, TypeError):
-            return json.dumps({"ok": False, "error": "invalid_work_arguments"}), False
+            return _unexecuted_tool_result(call.function.name, "invalid_work_arguments"), False
         action = arguments.get("action")
         if (
             call.function.name == "task_control"
@@ -933,7 +960,7 @@ class AgentRunner:
             and action in {"get", "list"}
             and not tools.work_query_allowed(action)
         ):
-            return json.dumps({"ok": False, "error": "work_query_not_authorized"}), False
+            return _unexecuted_tool_result(call.function.name, "work_query_not_authorized"), False
         return await control.execute(call.function.name, arguments, key), True
 
     async def _execute_tool_batch_impl(
@@ -944,7 +971,7 @@ class AgentRunner:
         *,
         remaining_calls: int,
         max_parallel_calls: int,
-        reusable_results: dict[tuple[str, str], str],
+        reusable_results: dict[tuple[str, str], ReusableToolResult],
         cacheable_names: frozenset[str],
         declared_names: frozenset[str],
         chain_id: str = "",
@@ -1039,23 +1066,37 @@ class AgentRunner:
                     reused_count=0,
                 )
             call = calls[0]
-            result, executed = await self._execute_control_call(
-                call,
-                tools,
-                runtime,
-                declared_names,
-                runtime.work_control.session.call_key(call.id)
-                if runtime.work_control is not None and runtime.work_control.session
-                else f"{runtime.work_control.lease.owner}:{call.id}"
-                if runtime.work_control is not None
-                else call.id,
-            )
+            capture = ResultCapture("", call.id)
+            token = current_result_capture.set(capture)
+            try:
+                result, executed = await self._execute_control_call(
+                    call,
+                    tools,
+                    runtime,
+                    declared_names,
+                    runtime.work_control.session.call_key(call.id)
+                    if runtime.work_control is not None and runtime.work_control.session
+                    else f"{runtime.work_control.lease.owner}:{call.id}"
+                    if runtime.work_control is not None
+                    else call.id,
+                )
+            finally:
+                current_result_capture.reset(token)
+            fact = capture.evidence
+            if fact is None and capture.outcome is not None:
+                fact = execution_evidence(
+                    capture.outcome,
+                    tool=call.function.name,
+                    side_effecting=True,
+                    arguments=call.function.arguments,
+                )
             return CoordinatedToolResult(
                 calls=((call, result, executed),),
                 # Lifecycle controls use the model and message budgets, not
                 # the caller's delegated business-tool execution allowance.
                 executed_count=0,
                 reused_count=0,
+                evidence={call.id: fact} if fact is not None else {},
             )
 
         metadata_results: dict[str, str] = {}
@@ -1101,6 +1142,7 @@ class AgentRunner:
         signatures = {call.id: self._tool_call_signature(call) for call in calls}
         first_call_by_signature: dict[tuple[str, str], ToolCall] = {}
         reused_by_id: dict[str, str] = {}
+        reused_evidence: dict[str, dict[str, Any]] = {}
         rejected_by_id: dict[str, str] = dict(metadata_results)
         aliases: dict[str, str] = {}
         unique_calls: list[ToolCall] = []
@@ -1140,7 +1182,8 @@ class AgentRunner:
                 ):
                     cached = None
             if cached is not None:
-                reused_by_id[call.id] = cached
+                reused_by_id[call.id] = cached.display
+                reused_evidence[call.id] = cached.evidence
                 continue
             representative = None if side_effecting else first_call_by_signature.get(signature)
             if representative is not None:
@@ -1150,46 +1193,16 @@ class AgentRunner:
                 first_call_by_signature[signature] = call
             unique_calls.append(call)
 
-        if tools is not None:
-            write_calls = [call for call in unique_calls if call.function.name == "memory_change"]
-            if write_calls:
-                conflicting = [
-                    call
-                    for call in unique_calls
-                    if call.function.name != "memory_change"
-                    and self._is_side_effecting(tools, call, runtime)
-                ]
-                non_delivery_conflicts = [
-                    call for call in conflicting if call.function.name != "send_message"
-                ]
-                if non_delivery_conflicts:
-                    await save_response()
-                    violation = json.dumps(
-                        {
-                            "ok": False,
-                            "error": "memory_mutation_exclusive_violation",
-                            "detail": "记忆写入批次不能夹带其他副作用工具。",
-                        },
-                        ensure_ascii=False,
+        if any(call.function.name == "memory_change" for call in unique_calls):
+            # Multiple authorized mutations remain legal. A message already
+            # authored in this batch cannot have observed their actual results.
+            for call in unique_calls:
+                if call.function.name == "send_message":
+                    rejected_by_id[call.id] = _unexecuted_tool_result(
+                        call.function.name, "delivery_requires_observed_result"
                     )
-                    return CoordinatedToolResult(
-                        calls=tuple((call, violation, False) for call in calls),
-                        executed_count=0,
-                        reused_count=0,
-                    )
-                for call in conflicting:
-                    rejected_by_id[call.id] = json.dumps(
-                        {
-                            "ok": False,
-                            "error": "delivery_requires_observed_result",
-                            "executed": False,
-                            "detail": "先观察记忆写入的真实回执，再决定要发送的内容。",
-                        },
-                        ensure_ascii=False,
-                    )
-                unique_calls = [
-                    call for call in unique_calls if call.function.name != "send_message"
-                ]
+            unique_calls = [call for call in unique_calls if call.function.name != "send_message"]
+
         if session is not None:
             session.pending_readonly_keys = {
                 call.id: session.readonly_result_keys[signatures[call.id]]
@@ -1247,18 +1260,26 @@ class AgentRunner:
             )
 
         for call, result, executed in coordinated.calls:
-            if not executed or not self._tool_result_reusable(result):
+            fact = coordinated.evidence.get(call.id)
+            if not executed or fact is None:
                 continue
             signature = signatures[call.id]
-            if self._successful_side_effect(tools, call, result, runtime):
+            if fact.get("mutation_committed") is True or (
+                self._is_side_effecting(tools, call, runtime)
+                and (fact.get("mutation_committed") is not False or fact.get("uncertain") is True)
+            ):
                 reusable_results.clear()
                 if session is not None:
                     session.readonly_result_keys.clear()
             elif (
                 not self._is_side_effecting(tools, call, runtime)
                 and call.function.name in cacheable_names
+                and fact.get("ok") is True
+                and fact.get("pending") is False
+                and fact.get("uncertain") is False
+                and fact.get("retryable") is False
             ):
-                reusable_results[signature] = result
+                reusable_results[signature] = ReusableToolResult(result, fact)
                 if session is not None:
                     session.readonly_result_keys[signature] = session.call_key(call.id)
 
@@ -1266,7 +1287,15 @@ class AgentRunner:
             calls=tuple(ordered),
             executed_count=coordinated.executed_count,
             reused_count=len(reused_by_id) + len(aliases),
-            evidence=coordinated.evidence,
+            evidence={
+                **coordinated.evidence,
+                **reused_evidence,
+                **{
+                    alias: coordinated.evidence[original]
+                    for alias, original in aliases.items()
+                    if original in coordinated.evidence
+                },
+            },
         )
 
     @staticmethod
@@ -1283,50 +1312,6 @@ class AgentRunner:
                 separators=(",", ":"),
             )
         return call.function.name, normalized
-
-    @staticmethod
-    def _tool_result_pending(result: str) -> bool:
-        try:
-            payload = json.loads(result)
-        except json.JSONDecodeError:
-            return False
-        if not isinstance(payload, dict) or payload.get("ok") is not True:
-            return False
-        data = payload.get("data")
-        return isinstance(data, dict) and data.get("pending") is True
-
-    @classmethod
-    def _tool_result_reusable(cls, result: str) -> bool:
-        try:
-            payload = json.loads(result)
-        except json.JSONDecodeError:
-            return False
-        return bool(
-            isinstance(payload, dict)
-            and payload.get("ok") is True
-            and payload.get("retryable") is not True
-            and not cls._tool_result_pending(result)
-        )
-
-    @staticmethod
-    def _successful_side_effect(
-        tools: AgentToolBackend | None,
-        call: ToolCall,
-        result: str,
-        runtime: AgentRuntime,
-    ) -> bool:
-        if tools is None:
-            return False
-        try:
-            payload = json.loads(result)
-        except json.JSONDecodeError:
-            payload = None
-        if not isinstance(payload, dict) or payload.get("ok") is not True:
-            return False
-        committed = payload.get("mutation_committed")
-        if committed is not None:
-            return committed is True
-        return tools.is_side_effecting(call.function.name, call.function.arguments, runtime)
 
     @staticmethod
     def _is_side_effecting(

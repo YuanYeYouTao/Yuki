@@ -106,7 +106,7 @@ async def test_large_uncertain_survives_projection_and_seventy_reads(database, t
     blocked = await execute(
         session, store, "next-mutation", ToolExecutionResult(ok=True, tool_name="mutate")
     )
-    assert json.loads(blocked)["error"] == "unresolved_prior_effect"
+    assert json.loads(blocked)["error_code"] == "unresolved_prior_effect"
 
 
 @pytest.mark.asyncio
@@ -400,7 +400,7 @@ async def test_migrated_active_work_completes_from_original_file_caption_without
             lambda: None,
             side_effecting=True,
         )
-        assert json.loads(blocked)["error"] == "unresolved_prior_effect"
+        assert json.loads(blocked)["error_code"] == "unresolved_prior_effect"
         assert await resumed.journal.effect_result(key) == result
         return
     assert completed["ok"] is True and completed["ending_proposed"] == "completed", completed

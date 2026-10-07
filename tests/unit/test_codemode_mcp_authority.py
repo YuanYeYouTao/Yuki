@@ -53,5 +53,5 @@ async def test_original_unknown_effect_is_never_replayed_and_reads_do_not_own_mu
         rejected = await owner.execute(
             ToolCall("new-write", call.function), invoke, side_effecting=True
         )
-        assert json.loads(rejected)["error"] == "unresolved_prior_effect"
+        assert json.loads(rejected)["error_code"] == "unresolved_prior_effect"
         assert len(external.read_text().splitlines()) == 1

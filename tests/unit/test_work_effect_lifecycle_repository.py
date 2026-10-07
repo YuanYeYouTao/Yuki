@@ -638,3 +638,42 @@ async def test_interrupted_second_page_retains_exact_unsettled_originals(
     assert not await repo.has_unresolved_effects(lease, identity)
     assert len(await repo.effect_evidence(lease, identity)) == 129
     assert await repo.get(identity) == original_work
+
+
+@pytest.mark.parametrize(
+    "stored,unknown",
+    [
+        ({"result": "opaque success"}, True),
+        ({"outcome": {"side_effecting": True}}, True),
+        ({"outcome": {"status": "unknown"}}, True),
+        ({"outcome": {"ok": True, "status": "unknown"}}, True),
+        ({"result": "{}"}, True),
+        ({"result": '{"ok":true,"truncated":true}'}, True),
+        ({"result": '{"ok":true}'}, False),
+        ({"result": '{"ok":true,"uncertain":true}'}, True),
+        ({"result": '{"ok":false,"executed":false}'}, False),
+        ({"outcome": {"ok": "false", "side_effecting": False}}, True),
+        ({"outcome": {"ok": True, "side_effecting": True, "uncertain": "false"}}, True),
+        (
+            {"outcome": {"ok": True, "side_effecting": True, "pending": False, "uncertain": False}},
+            False,
+        ),
+    ],
+)
+async def test_historical_unknown_reader_and_atomic_debt_agree_without_rewriting(
+    owned, stored, unknown
+):
+    repo, lease, identity = owned
+    await repo.prepare_effect(lease, identity, "history", "tool")
+    raw = json.dumps(stored)
+    async with repo.database.immediate_session() as writer:
+        await writer.execute(
+            update(effects)
+            .where(effects.c.effect_key == "history")
+            .values(state="accepted", receipt_json=raw)
+        )
+    facts = await repo.effect_evidence(lease, identity)
+    assert bool(facts[0].get("uncertain")) is unknown
+    assert await repo.has_unresolved_effects(lease, identity) is unknown
+    assert bool(await repo.effect_evidence(lease, identity, only_unresolved=True)) is unknown
+    assert (await read_receipt(repo, "history"))["receipt_json"] == raw

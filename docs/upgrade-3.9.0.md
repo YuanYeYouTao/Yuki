@@ -56,6 +56,12 @@
 - **持久环境**为单独部署的可选组件。保留工作区 volume、原 Manager 和运行回执，核对 Bot 与 Manager 使用同一目录；普通部署包不会自动安装 gVisor 或新 Manager。见[持久环境说明](operations/persistent-environment.zh-CN.md)。
 - **管理 WebUI**默认关闭；按[WebUI 合同](architecture/webui-console.md)设置身份、认证与管理授权。既有配置保存、热切换和实际请求生效分别核对。
 
+### generated 模型路由退役
+
+`generated` / `yuki.generate` 已退出新执行，`automation_text_generation` 不再是可配置的模型任务。升级实际 `webui-config/model_profiles.toml` 时，仅从 `[routes]` 删除 `automation_text_generation = ...` 这一项；保留其他文件字节、Profile、连接、密钥引用和有效路由，不用新模板覆盖现有配置，也不把旧路由自动改成 `automation_agent`。新版本会明确拒绝仍含此退役路由的完整旧 TOML，不静默忽略。当前自动任务按已有 `automation_agent` 主 Agent 合同执行。
+
+历史 `model_invocations.task`、统计和错误记录继续保留并读取原字符串；不改写旧账单，不据此重跑旧自动任务。备份已核验后，由操作者对实际配置作上述单项删除，再用目标版本 parser 验证。
+
 ### MCP 退出与管理授权
 
 1. 清理旧 MCP 环境变量、`.mcp.json` 挂载、配置和专属服务定义；对照实际生效的 Compose 链，而不只检查模板。已存在的未知调用不取得重放资格。

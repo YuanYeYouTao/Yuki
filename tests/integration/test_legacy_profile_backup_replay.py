@@ -218,7 +218,10 @@ async def test_production_backup_preserves_five_legacy_works_without_gateway(
                     )
                 )
                 assert not invoked and outcome["executed"] is False
-                assert outcome["error"] in {"unresolved_prior_effect", "new_input_before_execution"}
+                assert outcome["error_code"] in {
+                    "unresolved_prior_effect",
+                    "new_input_before_execution",
+                }
             await repository.release(lease)
     finally:
         await database.close()

@@ -51,3 +51,20 @@
 
 - 最终稳定源码下 agent_receipt_loop：25 passed；两条 reported_failed/unknown 定向 2 passed。失败发送 fake 直接产出同一 typed 失败，避免先捕获成功后只替换 display 造成矛盾；真实 WorkSession 一致性拒绝不放宽。
 - Linux `test_subagents.py -k business`：3 passed（chat_completions / responses / native responses），真实 pinned worker + launcher，40 原终端调用在 32 次段预算后沿原执行恢复；Windows对应3 skip已用此实际结果补齐。
+
+## 部署主机隔离 canary 验收
+
+DEP-01 在实际 Ubuntu 6.8/AppArmor 4.0 主机新增专用 `yuki-bot-codemode` enforced profile，未改现有 Bot/SnowLuma 容器、Docker 全局设置或 sysctl。固定 launcher 删除不需要的 `/proc` 挂载，保留六 namespace；Host 从原进程 ID 检查隔离。worker 实际 label 为 `yuki-bot-codemode//launcher//&yuki-bot-codemode//launcher//worker (enforce)`，全部 capability 为零、NoNewPrivs=1、Seccomp=2；取消、父进程死亡及 0.5 秒独立 watchdog 均通过。完整证据见 `deletion-codemode-isolation-20261008.json` 和 `deploy/security/README.md` 的精确二进制/策略 hash。
+
+同组合原生应用矩阵覆盖 worker、worker_entrypoint、memory_authority、lifecycle/interleaved/output/native_boundary_crash recovery、resource_policy、runner、subagents，共 130 个不同节点都有通过记录。初次 113 pass/17 fail 中旧源码与缺失公共 config fixture 已同步；受影响组重跑 23 pass/1 database create_schema setup timeout，随后原资源限制与原 60 秒超时下完整 runner 新进程 11 pass（23.04 秒），闭合该 setup 超时。不得称为一次全量 130 pass。最终 kernel audit 自矩阵创建起无 canary AppArmor DENIED。MEM-01 真实同一请求两次合法记忆写入及原 effect 幂等、31 个 subagents 场景均通过。
+
+这些结果使用旧 image 加只读新版 launcher 挂载，证明实际主机组合策略与原生运行链；不替代最终重建 image 自身的隔离探针、正式 Bot 部署和真实线上验收。原始日志保留于 `/opt/yuki-qqbot/deletion-canary-20261008/evidence/`。
+
+## 终审补漏：活结果与旧政策
+
+- 删除 Runner 的 `_tool_result_pending`、`_tool_result_reusable`、`_successful_side_effect` 展示 JSON 反推链。缓存使用同轮原类型化 evidence；别名和跨批复用保留该原事实，缺失事实不缓存。已提交或无法证明未修改的副作用使旧只读缓存失效，不新增持久缓存账本。
+- WorkControl 同一结果出口发布 typed outcome；模型 `task_control.complete` 的 caller 待返回标志只接受原 evidence。内部 caller 的两处完成重验直接使用本次共同控制入口的 ending，先清旧 proposal 的 completed 状态，展示成功不能掩盖新失败，展示失败也不能否认原成功。
+- Runner 的记忆写入独占批次拒绝删除，允许多条合法记忆与其他获准操作；同批 `send_message` 的原观察边界保留，无论记忆成功或失败均不预先发送，下一模型请求观察真实回执后再决定内容。实际执行仍按原副作用串行边界。Code 的对应独占预拒删除，真实记忆 mutation/unknown 后停止由工具组保留。当前 main-agent-runtime 文档中的旧未发送纠正轮、memory 独占轮及 SELF 强制反馈链同步删除。
+- `test_runtime_typed_presentation`：15 passed，覆盖成功/失败展示相反、pending/retryable/uncertain、commit 反向展示与未知、缓存别名事实、同批记忆与其他合法操作、caller 新结算。readonly 原回执/崩溃恢复、caller completion 和 deletion 合同联合 50 passed（当时新用例 13 项），completion/no-progress 另 26 passed。4 个修改的运行时源码 mypy 与 ruff 通过。
+- Work query authority 与 main agent entrypoints：21 passed。删除符号最后扫描仅保留冻结 schema 的历史 `active_seconds` 列；metered_at、start/final_feedback_given、UnsentFinalResponseError、stop_before_tools 和活 matched.text 路径无命中。
+- 观察边界收窄复核后 `test_runtime_typed_presentation` 为 19 passed：新增成功/失败记忆写入均阻止同批发送、多记忆不阻断、后续请求可发送；CodeHost API 缺失/未声明业务和 API 缺失控制三个拒绝出口均发布 typed 未执行事实。未恢复旧独占状态机或单写配额。

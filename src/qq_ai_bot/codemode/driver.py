@@ -34,6 +34,7 @@ from qq_ai_bot.capabilities.invocation import (
     counts_toward_business_limit,
 )
 from qq_ai_bot.capabilities.media import MediaResultText, result_images
+from qq_ai_bot.capabilities.results import ToolExecutionResult
 from qq_ai_bot.codemode.api_projection import ScriptApi, ToolReceiptView, receipt_view
 from qq_ai_bot.codemode.contract import (
     ADMISSION_CLOSING_ERRORS,
@@ -53,6 +54,11 @@ from qq_ai_bot.codemode.limits import CodeModeLimits
 from qq_ai_bot.codemode.snapshot_binding import load_boundary, load_output, persist_boundary
 from qq_ai_bot.domain.messages import ToolCall, ToolFunction
 from qq_ai_bot.execution_trace.recorder import record_trace, trace_span
+from qq_ai_bot.runtime.effect_outcomes import (
+    ResultCapture,
+    current_result_capture,
+    execution_evidence,
+)
 from qq_ai_bot.runtime.protocol_store import CodeSnapshotBinding
 from qq_ai_bot.runtime.work_control import WORK_CONTROL_NAMES
 from qq_ai_bot.runtime.work_repository import WorkConflict
@@ -117,6 +123,7 @@ class _Child:
     dispatched: bool = False
     receipt: str | None = None
     view: ToolReceiptView | None = None
+    evidence: dict[str, Any] = field(default_factory=dict)
     stop: dict[str, Any] | None = None
 
 
@@ -305,7 +312,10 @@ class CodeModeDriver:
                 if child.dispatched and child.receipt is None:
                     child.receipt = await self._original_receipt(child)
                     child.view = receipt_view(
-                        child.receipt, operation_id=child.operation_id, executed=True
+                        child.receipt,
+                        evidence=child.evidence,
+                        operation_id=child.operation_id,
+                        executed=True,
                     )
             return await self._settle(state, stop=_Stop(STOP_SNAPSHOT, "code_engine_unavailable"))
         if not composition.get("snapshot_ref"):
@@ -356,9 +366,9 @@ class CodeModeDriver:
                     raise _Stop(
                         STOP_HOST_CONTROL, child.operation_id, {"control": _loads(child.receipt)}
                     )
-                if child.klass.kind == "memory_write" and child.dispatched:
-                    raise _Stop(STOP_MEMORY, child.operation_id)
                 self._closing(child)
+                if child.klass.kind == "memory_write" and child.view and child.view.executed:
+                    raise _Stop(STOP_MEMORY, child.operation_id)
         except _Stop as stop:
             return await self._settle(state, stop=stop)
         return await self._drive(state, restore=(dump, composition["boundary_call"], counters))
@@ -542,29 +552,6 @@ class CodeModeDriver:
 
     async def _dispatch_all(self, state: _State, pending: list[_Child]) -> None:
         """Bounded read stretches; sends, writes, memory and control are barriers."""
-        memory = [c for c in pending if c.klass.kind == "memory_write" and c.receipt is None]
-        if memory:
-            # Same rules as a direct batch (T07/C07): a memory write never shares
-            # a step with other effects, and a send must wait for its receipt.
-            others = [
-                c
-                for c in pending
-                if c.receipt is None and c.klass.side_effecting and c.klass.kind != "memory_write"
-            ]
-            if state.side_effect_done or [c for c in others if c.klass.kind != "send"]:
-                for child in [*memory, *others]:
-                    await self._not_dispatched(
-                        child,
-                        "memory_mutation_exclusive_violation",
-                        detail="记忆写入不能与同一脚本中的其他副作用共存。",
-                    )
-            else:
-                for child in others:
-                    await self._not_dispatched(
-                        child,
-                        "delivery_requires_observed_result",
-                        detail="先观察记忆写入的真实回执，再决定要发送的内容。",
-                    )
         index = 0
         while index < len(pending):
             child = pending[index]
@@ -639,7 +626,11 @@ class CodeModeDriver:
             # Restored child: the original receipt only, never a second dispatch.
             child.receipt = await self._original_receipt(child)
             child.view = receipt_view(
-                child.receipt, operation_id=child.operation_id, executed=True, reused=True
+                child.receipt,
+                evidence=child.evidence,
+                operation_id=child.operation_id,
+                executed=True,
+                reused=True,
             )
             self.usage.reused_receipts += 1
             self._closing(child)
@@ -647,7 +638,12 @@ class CodeModeDriver:
         if child.dispatched:
             # T2 committed before a crash: possibly sent. Never re-run.
             child.receipt = await self._original_receipt(child)
-            child.view = receipt_view(child.receipt, operation_id=child.operation_id, executed=True)
+            child.view = receipt_view(
+                child.receipt,
+                evidence=child.evidence,
+                operation_id=child.operation_id,
+                executed=True,
+            )
             raise _Stop(STOP_UNKNOWN_EFFECT, child.operation_id)
         call = ToolCall(f"c{child.ordinal}", ToolFunction(child.tool, child.arguments))
         if child.klass.kind == "control":
@@ -677,19 +673,28 @@ class CodeModeDriver:
         )
         from qq_ai_bot.runtime.work_budget import WorkBudgetExceeded
 
+        capture = ResultCapture(
+            control.current["id"] if control.current else "", child.operation_id
+        )
+        token = current_result_capture.set(capture)
         try:
             child.receipt = await self.host.execute_business(invocation, child.klass.side_effecting)
+            child.evidence = self._captured_evidence(child, capture)
         except WorkBudgetExceeded as exc:
             # T2 rolled back: nothing dispatched or charged. WorkSession stored the
             # original not-executed receipt; the script ends here.
             child.receipt = await self._original_receipt(child)
             child.state = "settled"
             child.view = receipt_view(
-                child.receipt, operation_id=child.operation_id, executed=False
+                child.receipt,
+                evidence=child.evidence,
+                operation_id=child.operation_id,
+                executed=False,
             )
             self.usage.rejected_before_dispatch += 1
             raise _Stop(STOP_BUDGET, child.operation_id) from exc
         finally:
+            current_result_capture.reset(token)
             self._inflight -= int(charged)
         # Admission is the durable T2 marker, never a counter delta that another
         # concurrent sibling could have moved.
@@ -699,12 +704,17 @@ class CodeModeDriver:
             self.usage.rejected_before_dispatch += 1
         child.dispatched = admitted
         child.state = "settled"
-        child.view = receipt_view(child.receipt, operation_id=child.operation_id, executed=admitted)
-        if child.klass.side_effecting and admitted and child.view.status != "not_executed":
+        child.view = receipt_view(
+            child.receipt,
+            evidence=child.evidence,
+            operation_id=child.operation_id,
+            executed=admitted,
+        )
+        if child.klass.side_effecting and child.view.executed:
             state.side_effect_done = True
-        if child.klass.kind == "memory_write" and admitted:
-            raise _Stop(STOP_MEMORY, child.operation_id)
         self._closing(child)
+        if child.klass.kind == "memory_write" and child.view.executed:
+            raise _Stop(STOP_MEMORY, child.operation_id)
 
     async def _dispatch_control(self, child: _Child, call: ToolCall) -> None:
         control = self.control
@@ -718,11 +728,17 @@ class CodeModeDriver:
             raise _Stop(STOP_UNKNOWN_EFFECT, child.operation_id)
         child.dispatched = True
         ending_before, handoff_before = control.ending, control.handoff_work_id
-        result, executed = await self.host.execute_control(call, child.operation_id)
+        capture = ResultCapture(control.current["id"], child.operation_id)
+        token = current_result_capture.set(capture)
+        try:
+            result, executed = await self.host.execute_control(call, child.operation_id)
+            child.evidence = self._captured_evidence(child, capture)
+        finally:
+            current_result_capture.reset(token)
         terminal = (
             control.ending != ending_before
             or control.handoff_work_id != handoff_before
-            or (self._terminal_control(child, receipt=result))
+            or (self._terminal_control(child))
         )
         stop = (
             {
@@ -740,28 +756,22 @@ class CodeModeDriver:
             {
                 "result": result,
                 **({"code_stop": stop} if stop is not None else {}),
-                "outcome": {
-                    "tool": child.tool,
-                    "side_effecting": False,
-                    "ok": _ok(result),
-                    "pending": False,
-                    "uncertain": False,
-                    "executed": executed,
-                },
+                "outcome": child.evidence,
             },
         )
         child.receipt = result
         child.state = "settled"
-        child.view = receipt_view(result, operation_id=child.operation_id, executed=executed)
+        child.view = receipt_view(
+            result, evidence=child.evidence, operation_id=child.operation_id, executed=executed
+        )
         self.usage.control_calls += 1
         if terminal:
             raise _Stop(STOP_HOST_CONTROL, child.operation_id, {"control": _loads(result)})
         self._closing(child)
 
-    async def _not_dispatched(
-        self, child: _Child, error: str = "", *, receipt: str | None = None, detail: str = ""
-    ) -> None:
-        payload = receipt or _refusal(error, **({"detail": detail} if detail else {}))
+    async def _not_dispatched(self, child: _Child, error: str = "") -> None:
+        payload = _refusal(error)
+        child.evidence = {"ok": False, "executed": False, "error_code": error}
         # The intent is settled as never dispatched; no budget was admitted.
         await self.control.repository.record_effect(
             child.operation_id,
@@ -770,7 +780,9 @@ class CodeModeDriver:
         )
         child.receipt = payload
         child.state = "settled"
-        child.view = receipt_view(payload, operation_id=child.operation_id, executed=False)
+        child.view = receipt_view(
+            payload, evidence=child.evidence, operation_id=child.operation_id, executed=False
+        )
         self.usage.rejected_before_dispatch += 1
 
     def _closing(self, child: _Child) -> None:
@@ -819,16 +831,14 @@ class CodeModeDriver:
         metadata = json.loads(raw).get("invocation", {})
         return bool(metadata.get("dispatch_started"))
 
-    def _terminal_control(self, child: _Child, *, receipt: str | None = None) -> bool:
+    def _terminal_control(self, child: _Child) -> bool:
         if child.tool != "task_control":
             return False
         try:
             action = json.loads(child.arguments).get("action")
         except (ValueError, AttributeError):
             return False
-        return action in TERMINAL_CONTROL_ACTIONS and _ok(
-            receipt if receipt is not None else child.receipt or ""
-        )
+        return action in TERMINAL_CONTROL_ACTIONS and child.evidence.get("ok") is True
 
     # -- settlement ----------------------------------------------------------------
 
@@ -898,23 +908,26 @@ class CodeModeDriver:
                 raise WorkConflict("code_media_source_missing")
             result = MediaResultText(result, images)
         assert control.session is not None
+        evidence = execution_evidence(
+            ToolExecutionResult(
+                ok=body.get("ok") is True,
+                data={"executed": executed},
+                provider_id="core",
+                tool_name="execute_code",
+            ),
+            tool="execute_code",
+            side_effecting=state.side_effect_done,
+        )
+        evidence["stop_reason"] = body.get("stop_reason")
         await control.session.journal.record_effect(
             state.parent_key,
             "accepted",
-            {
-                "result": result,
-                "outcome": {
-                    "tool": "execute_code",
-                    "side_effecting": state.side_effect_done,
-                    "ok": bool(body.get("ok")),
-                    "pending": False,
-                    "uncertain": False,
-                    "executed": executed,
-                    "stop_reason": body.get("stop_reason"),
-                },
-            },
+            {"result": result, "outcome": evidence},
             media_source=state.media_source,
         )
+        capture = current_result_capture.get()
+        if capture is not None:
+            capture.evidence = evidence
         return result
 
     async def _bounded_result(self, body: dict[str, Any], parent_key: str) -> str:
@@ -1123,6 +1136,7 @@ class CodeModeDriver:
                 child.receipt = await self._original_receipt(child)
                 child.view = receipt_view(
                     child.receipt,
+                    evidence=child.evidence,
                     operation_id=child.operation_id,
                     executed=bool(
                         row.get("outcome", {}).get("executed", metadata.get("dispatch_started"))
@@ -1130,12 +1144,34 @@ class CodeModeDriver:
                 )
                 child.stop = row.get("code_stop")
             state.children[(child.feed_index, child.engine_call_id)] = child
-            if child.klass.side_effecting and row["state"] == "accepted":
+            if child.klass.side_effecting and child.view and child.view.executed:
                 state.side_effect_done = True
 
     async def _original_receipt(self, child: _Child) -> str:
         assert self.control.session is not None
-        return await self.control.session.journal.effect_result(child.operation_id)
+        capture = ResultCapture(
+            self.control.current["id"] if self.control.current else "", child.operation_id
+        )
+        token = current_result_capture.set(capture)
+        try:
+            result = await self.control.session.journal.effect_result(child.operation_id)
+            child.evidence = self._captured_evidence(child, capture)
+            return result
+        finally:
+            current_result_capture.reset(token)
+
+    @staticmethod
+    def _captured_evidence(child: _Child, capture: ResultCapture) -> dict[str, Any]:
+        if capture.evidence is not None:
+            return capture.evidence
+        if capture.outcome is None:
+            raise TypeError("Code child execution did not publish typed evidence")
+        return execution_evidence(
+            capture.outcome,
+            tool=child.tool,
+            side_effecting=child.klass.side_effecting,
+            arguments=child.arguments,
+        )
 
     async def _parent_row(self) -> dict[str, Any] | None:
         from sqlalchemy import select
@@ -1206,11 +1242,6 @@ def _loads(value: str) -> Any:
         return json.loads(value)
     except ValueError:
         return value
-
-
-def _ok(value: str) -> bool:
-    loaded = _loads(value)
-    return isinstance(loaded, dict) and loaded.get("ok") is True
 
 
 def is_control_tool(name: str) -> bool:

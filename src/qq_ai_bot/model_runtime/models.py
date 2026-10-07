@@ -27,7 +27,6 @@ class ModelTask(StrEnum):
     MEMORY_ATTRIBUTION = "memory_attribution"
     RELATIONSHIP_EVALUATION = "relationship_evaluation"
     EMOJI_REPLACEMENT = "emoji_replacement"
-    AUTOMATION_TEXT_GENERATION = "automation_text_generation"
     AUTOMATION_AGENT = "automation_agent"
     PLUGIN_AGENT_SESSION = "plugin_agent_session"
     UTILITY_STRUCTURED = "utility_structured"

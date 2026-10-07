@@ -594,6 +594,24 @@ class WorkJournal:
             )
 
     async def effect_result(self, key: str) -> str:
+        def recorded_result(result: str) -> str:
+            # This is the original persisted receipt reader, never a live adapter.
+            from qq_ai_bot.runtime.effect_outcomes import (
+                current_result_capture,
+                historical_evidence,
+            )
+
+            capture = current_result_capture.get()
+            if capture is not None:
+                stored = json.loads(row["receipt_json"]) if row is not None else {}
+                capture.evidence = historical_evidence(
+                    stored
+                    if row is not None and row["state"] == "accepted"
+                    else {"result": result},
+                    state="accepted",
+                )
+            return result
+
         async with self.repository.database.sessions() as session:
             row = (
                 (await session.execute(select(effects).where(effects.c.effect_key == key)))
@@ -616,22 +634,26 @@ class WorkJournal:
                         images = tuple(ChatImage(**image) for image in hydrate(payload, blobs))
                     except (OSError, ValueError, KeyError, TypeError) as exc:
                         raise JournalUnavailable("work_effect_media_missing") from exc
-                    return MediaResultText(value["result"], images)
-                return str(value["result"])
+                    return recorded_result(MediaResultText(value["result"], images))
+                return recorded_result(str(value["result"]))
             if value.get("transport_accepted"):
-                return json.dumps({"ok": True, "receipt": value, "replay_forbidden": True})
+                return recorded_result(
+                    json.dumps({"ok": True, "receipt": value, "replay_forbidden": True})
+                )
         if row is None or (
             row["state"] == "failed"
             and json.loads(row["receipt_json"]).get("error") == "never_dispatched"
         ):
-            return json.dumps(
-                {
-                    "ok": False,
-                    "executed": False,
-                    "uncertain": False,
-                    "error": "never_dispatched",
-                    "replay_forbidden": True,
-                }
+            return recorded_result(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "executed": False,
+                        "uncertain": False,
+                        "error": "never_dispatched",
+                        "replay_forbidden": True,
+                    }
+                )
             )
         value = json.loads(row["receipt_json"])
         invocation = value.get("invocation", {})
@@ -645,16 +667,18 @@ class WorkJournal:
                 reference=reference, work_id=row["work_id"], operation_key=key
             )
             if original is not None:
-                return json.dumps(
-                    {
-                        "ok": original["status"] == "succeeded",
-                        "data": original,
-                        "original_domain_ref": reference,
-                        "uncertain": original["status"] == "uncertain",
-                        "work_effect_state": row["state"],
-                        "replay_forbidden": True,
-                    },
-                    ensure_ascii=False,
+                return recorded_result(
+                    json.dumps(
+                        {
+                            "ok": original["status"] == "succeeded",
+                            "data": original,
+                            "original_domain_ref": reference,
+                            "uncertain": original["status"] == "uncertain",
+                            "work_effect_state": row["state"],
+                            "replay_forbidden": True,
+                        },
+                        ensure_ascii=False,
+                    )
                 )
         from hashlib import sha256
 
@@ -665,28 +689,32 @@ class WorkJournal:
             task = await session.get(SandboxTaskRunModel, request_id)
             if task is not None and task.run_id:
                 completion = json.loads(task.completion_json or "{}")
-                return json.dumps(
-                    {
-                        "ok": True,
-                        "data": {
-                            **completion,
-                            "run_id": task.run_id,
-                            "request_id": request_id,
-                            "pending": task.status != "completed",
-                            "detail": "已恢复原执行标识，查询该 run_id，不重新执行命令。",
+                return recorded_result(
+                    json.dumps(
+                        {
+                            "ok": True,
+                            "data": {
+                                **completion,
+                                "run_id": task.run_id,
+                                "request_id": request_id,
+                                "pending": task.status != "completed",
+                                "detail": "已恢复原执行标识，查询该 run_id，不重新执行命令。",
+                            },
                         },
-                    },
-                    ensure_ascii=False,
+                        ensure_ascii=False,
+                    )
                 )
-        return json.dumps(
-            {
-                "ok": False,
-                "error": "execution_outcome_unknown",
-                "uncertain": True,
-                "replay_forbidden": True,
-                "detail": "核对原执行回执或产物；禁止再次执行原副作用。",
-            },
-            ensure_ascii=False,
+        return recorded_result(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": "execution_outcome_unknown",
+                    "uncertain": True,
+                    "replay_forbidden": True,
+                    "detail": "核对原执行回执或产物；禁止再次执行原副作用。",
+                },
+                ensure_ascii=False,
+            )
         )
 
     async def unsettled_composition(self, work_id: str | None, key: str) -> dict[str, Any] | None:

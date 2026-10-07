@@ -75,3 +75,18 @@ Bot sandbox_task_runs 634 全 completed；Manager jobs succeeded 556 / failed 59
 - `.cache/api-linux-entrypoints3.log`：Chat 8 + Automation 8 + Plugin SDK 4 个真实 Monty 公共入口共 20 passed。恢复后的原工具回执由 Host initial_runtime_context 明确 observations 信封读取；原 ID、结果数量、一次副作用和预算断言保持。SDK 测试等待已存在主任务达到量子边界，不重派发。
 
 - 最终全量残差复核：`.cache/api-sandbox-final2.log` 15 passed；`.cache/api-kernel-work-final.log` Tool kernel + Work execution receipt regressions + Work execution dependencies 完整 39 passed。旧 get_person_memories 的预算断言迁到当前 search_memory；真实未知接纳、原 request 恢复及错误来源隔离断言保持。
+
+
+## 最终跨模块审查追加
+
+Coordinator 的 executed_count 原仍读取展示 JSON；现只读 typed execution evidence。WorkSession 的三类前置拒绝直接发布 ToolExecutionResult。历史 WorkJournal.effect_result 优先传递原 durable outcome；仅缺 outcome 的旧回执使用历史 decoder，不改写其文本或数据库。新增 display/typed 相反的双向断言、同 ID 历史回放不重派断言和 Host 前置拒绝断言。该轮 8 个完整文件 144 passed（`.cache/api-typed-budget2.log`）；3 个相关源文件 mypy 已通过（`.cache/api-typed-final-mypy.log`）。
+
+生产只读准备已验证现有 Control login/session 均 HTTP 200；沿用现有启用 operator，不创建凭据、不增权。两启用插件原 API 3.1 批准范围分别 Kun Game 6 项、GitHub Monitor 9 项，和目标 manifest 声明相符；网易 API 3.0 保持 disabled/invalid/空批准。凭据值未写入本记录。Manager 实际 systemd 路径与原 jobs/home/workspace/socket 均保持，执行升级由主会话负责。
+
+
+## 最终追加 AUTO 与 Code 删除闭包
+
+- AUTO-01：无执行 caller 的 automation_text_generation 从 live ModelTask、默认能力要求、setup 分组、两个 TOML example、release smoke 和前端任务标签删除。旧完整 TOML 明确拒绝该路由；升级文档要求只移除退役行，保留其他配置字节。历史 invocation task 字符串原样读取，不改历史账单。配置/首次安装/发布回归 44 passed（`.cache/api-retired-route.log`）。
+- API-03 Code：Script receipt_view 必须传 typed 或原 durable evidence；展示 JSON 只提供数据/分页信息。child/control 执行在现有 ResultCapture 内采事实，原父 composition outcome 同时供持久回执和当前运行读取；停止条件不再用展示 ok/uncertain 推断。历史按 Journal 的统一严格 reader，不回写旧回执。
+- MEM-01 Code：删除整脚本 memory_mutation_exclusive_violation 预拒绝；顺序允许已发生其他效果后写记忆，仍在真实执行后返回模型。未知 memory 效果优先走 unknown_effect 围栏，后续 send 不派发。
+- `.cache/api-code-typed-unit.log` 251 passed（projection、authority parity、execution trace）。`.cache/api-code-typed-linux.log` 的 runner/interleaved 19 例通过；其中新增 control unknown 用例状态期望修为既有 partial 后，`.cache/api-code-typed-public.log` control/Chat/Automation/Plugin 共 30 passed。最后包含 unknown memory 反例的完整 control gate 11 passed（`.cache/api-code-memory-final.log`）。Code/route 五源文件及最终 Code 两源文件 mypy、相关 ruff 通过。

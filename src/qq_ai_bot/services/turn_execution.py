@@ -63,6 +63,7 @@ from qq_ai_bot.services.agent_runner import (
     AgentRunResult,
     AgentRuntime,
     AgentToolBackend,
+    ReusableToolResult,
     _RequestNotStarted,
 )
 from qq_ai_bot.services.context_boundary import ContextBoundary
@@ -103,7 +104,7 @@ class TurnState:
     continuation_native_tools: tuple[NativeToolDefinition, ...] = ()
     previous_batch_fingerprint: tuple[tuple[str, str, str], ...] | None = None
     repeated_batch_count: int = 0
-    reusable_tool_results: dict[tuple[str, str], str] = field(default_factory=dict)
+    reusable_tool_results: dict[tuple[str, str], ReusableToolResult] = field(default_factory=dict)
     input_feedback_watermark: int = 0
     stage_feedback_batch: str | None = None
     pending_stage_feedback: str | None = None
@@ -428,7 +429,9 @@ class TurnExecution:
             if control.session is not None
             else {}
         )
-        receipt = await control.execute(
+        # The prior proposal cannot survive a failed fresh receipt check.
+        control.ending = None
+        await control.execute(
             "task_control",
             {
                 "action": "complete",
@@ -438,7 +441,7 @@ class TurnExecution:
             },
             "caller-result-revalidate",
         )
-        if json.loads(receipt).get("ok") is not True:
+        if control.ending != "completed":
             control.ending = None
             if control.session is not None:
                 control.session.progress.pop("caller_completion_pending_result", None)
@@ -517,12 +520,12 @@ class TurnExecution:
                 and control.ending is None
             ):
                 # The saved proposal is evidence, never completion authority.
-                receipt = await control.execute(
+                await control.execute(
                     "task_control",
                     {"action": "complete", "artifact_ids": proposed.get("artifact_ids", [])},
                     "caller-completion-revalidate",
                 )
-                if json.loads(receipt).get("ok") is True:
+                if control.ending == "completed":
                     self.state.transcript.append(
                         ChatMessage(
                             role="system",
@@ -1603,27 +1606,25 @@ class TurnExecution:
         if any(result == CODE_COMPOSITION_YIELDED for _, result, _ in batch):
             return End(await self._code_yield(request_index + 1))
         for call, result, _was_executed in batch:
-            try:
-                outcome = json.loads(result)
-            except json.JSONDecodeError:
-                outcome = {}
+            fact = self.state.coordinated.evidence.get(call.id, {})
             if (
                 call.function.name == "web_search"
-                and isinstance(outcome, dict)
-                and outcome.get("ok") is True
+                and fact.get("ok") is True
                 and self.runtime.work_control is not None
                 and self.runtime.work_control.session is not None
             ):
-                data = outcome.get("data")
+                # Source snippets remain presentation material. Only the accepted
+                # typed fact decides whether this execution succeeded.
+                try:
+                    display = json.loads(result)
+                except ValueError:
+                    display = None
+                data = display.get("data") if isinstance(display, dict) else None
                 sources = data.get("sources") if isinstance(data, dict) else None
                 if isinstance(sources, list):
                     self.runtime.work_control.session.record_search_sources(
                         [
-                            (
-                                source["url"],
-                                source.get("title", ""),
-                                source.get("snippet", ""),
-                            )
+                            (source["url"], source.get("title", ""), source.get("snippet", ""))
                             for source in sources
                             if isinstance(source, dict)
                             and isinstance(source.get("url"), str)
@@ -1637,18 +1638,14 @@ class TurnExecution:
                     request_index=request_index + 1,
                     tool=call.function.name,
                     reused=not _was_executed,
-                    ok=isinstance(outcome, dict) and outcome.get("ok") is True,
+                    ok=fact.get("ok") is True,
                 )
                 self.state.staged_evidence_results += 1
             logger.info(
                 "agent_tool_complete tool=%s ok=%s error=%s reused=%s",
                 call.function.name,
-                outcome.get("ok") if isinstance(outcome, dict) else None,
-                (
-                    outcome.get("error") or outcome.get("error_code")
-                    if isinstance(outcome, dict)
-                    else None
-                ),
+                fact.get("ok"),
+                fact.get("error_code"),
                 not _was_executed,
             )
             self.state.transcript.append_result(call.id, result)
@@ -1664,11 +1661,10 @@ class TurnExecution:
                 "output": result,
                 "executed": was_executed,
             }
-            fact = self.state.coordinated.evidence.get(call.id)
+            fact = self.state.coordinated.evidence.get(call.id, {})
             if (
                 was_executed
-                and fact is not None
-                and fact["executed"]
+                and fact.get("executed") is True
                 and (fact["side_effecting"] or fact["run_id"] or fact["artifacts"])
             ):
                 # This is a turn-local model view of the existing execution
@@ -1685,10 +1681,10 @@ class TurnExecution:
                 control.ending == "completed"
                 and control.source.get("delivery_contract") == "return_to_caller"
             ):
-                for call, result, _ in batch:
+                for call, _result, _ in batch:
                     if (
                         call.function.name == "task_control"
-                        and json.loads(result).get("ok") is True
+                        and self.state.coordinated.evidence.get(call.id, {}).get("ok") is True
                     ):
                         arguments = json.loads(call.function.arguments)
                         if arguments.get("action") == "complete":
@@ -1720,7 +1716,10 @@ class TurnExecution:
                 if (
                     batch
                     and persisted_progress.get("fingerprint") == batch_hash
-                    and not any(self.runner._tool_result_pending(result) for _, result, _ in batch)
+                    and not any(
+                        self.state.coordinated.evidence.get(call.id, {}).get("pending") is True
+                        for call, _, _ in batch
+                    )
                 )
                 else 0
             )

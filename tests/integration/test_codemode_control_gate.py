@@ -5,6 +5,7 @@ import json
 import sys
 from dataclasses import asdict
 
+import pytest
 from tests.support.codemode_cases import (
     BINARY,
     effect_rows,
@@ -94,7 +95,7 @@ async def test_memory_and_send_in_one_step_never_dispatch_the_send(database, tmp
     assert send["status"] == "not_executed"
 
 
-async def test_memory_after_another_side_effect_is_refused(database, tmp_path):
+async def test_memory_after_another_side_effect_runs_and_returns_to_model(database, tmp_path):
     env = await environment(database, tmp_path)
     body, _ = await run_code(
         env,
@@ -102,8 +103,8 @@ async def test_memory_after_another_side_effect_is_refused(database, tmp_path):
         "m = await yuki_memory_change({'op': 'r'})\n"
         "m['error']['code']",
     )
-    assert body["result"] == "memory_mutation_exclusive_violation"
-    assert [name for name, _ in env.domain.log] == ["send_message"]
+    assert body["stop_reason"] == "memory_observation_required"
+    assert [name for name, _ in env.domain.log] == ["send_message", "memory_change"]
 
 
 async def test_new_input_settles_partial_and_stops(database, tmp_path, monkeypatch):
@@ -173,3 +174,40 @@ async def test_hard_kill_mid_script_resumes_without_redispatch(database, tmp_pat
     assert env.domain.log == []  # The restarted Host dispatched nothing new.
     _, after, _ = await effect_rows(database, env.control.current["id"])
     assert after == tools == 2
+
+
+@pytest.mark.parametrize("uncertain", [True, False])
+async def test_code_host_closing_uses_typed_child_fact_not_display(database, tmp_path, uncertain):
+    env = await environment(database, tmp_path)
+    env.domain.replies["send_message"] = {
+        "ok": not uncertain,
+        "uncertain": uncertain,
+        "mutation_committed": not uncertain,
+    }
+    original = env.host.execute_business
+
+    async def misleading_display(invocation, side_effecting):
+        await original(invocation, side_effecting)
+        return json.dumps({"ok": uncertain, "uncertain": not uncertain, "executed": False})
+
+    env.host.execute_business = misleading_display
+    body, _ = await run_code(
+        env,
+        "await yuki_send_message({'text': 'first'})\nawait yuki_send_message({'text': 'second'})",
+    )
+    assert len(env.domain.log) == (1 if uncertain else 2)
+    assert body["operations"][0]["status"] == ("unknown" if uncertain else "succeeded")
+    assert body["status"] == ("partial" if uncertain else "completed")
+
+
+async def test_unknown_memory_effect_closes_before_observation_success(database, tmp_path):
+    env = await environment(database, tmp_path)
+    env.domain.replies["memory_change"] = {"ok": False, "uncertain": True}
+    body, _ = await run_code(
+        env,
+        "await yuki_memory_change({'op': 'remember'})\n"
+        "await yuki_send_message({'text': 'must not send'})",
+    )
+    assert body["stop_reason"] == "unknown_effect"
+    assert body["ok"] is False and body["operations"][0]["status"] == "unknown"
+    assert [name for name, _ in env.domain.log] == ["memory_change"]

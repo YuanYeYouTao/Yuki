@@ -215,7 +215,7 @@ async def test_unknown_mutation_blocks_following_mutations_and_completion(databa
     following = await execute(
         session, store, "following", ToolExecutionResult(ok=True, tool_name="write")
     )
-    assert json.loads(following)["error"] == "unresolved_prior_effect"
+    assert json.loads(following)["error_code"] == "unresolved_prior_effect"
     assert await complete(control) == {"ok": False, "error": "work_has_unresolved_execution"}
 
 

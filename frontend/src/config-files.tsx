@@ -39,7 +39,6 @@ export const taskNames: Record<string, string> = {
   memory_attribution: "记忆归属",
   relationship_evaluation: "关系评估",
   emoji_replacement: "表情替换",
-  automation_text_generation: "自动化文案",
   automation_agent: "自动化执行",
   plugin_agent_session: "插件会话",
   utility_structured: "结构化任务",

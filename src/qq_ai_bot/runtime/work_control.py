@@ -53,7 +53,7 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                 "wait_mode=any/all，deadline_at 可选；信号到达续原 work_id。"
                 "wait_status 查询，cancel_wait 撤销。need_input 说明缺失信息；"
                 "complete 提出结束，后端核对未决执行和 artifact。"
-                "所有 action（包括 get/list/update）必须独占一个工具批次，不能与其他工具同批调用。"
+                "get/list/wait_status 是只读查询；其余生命周期 action 必须独占一个工具批次。"
             ),
             parameters={
                 "type": "object",
@@ -714,6 +714,9 @@ class WorkControl:
         self.known_effects[:] = self.known_effects[-64:]
 
     async def execute(self, name: str, args: dict[str, Any], call_key: str) -> str:
+        from qq_ai_bot.capabilities.results import ToolExecutionResult
+        from qq_ai_bot.runtime.effect_outcomes import current_result_capture
+
         try:
             await self.validate()
             if not await self.repository.valid(self.lease):
@@ -726,9 +729,25 @@ class WorkControl:
                 result = await execute_subagent(self, name, args, call_key)
             else:
                 raise ValueError("unknown_work_control")
-            return json.dumps({"ok": True, **result}, ensure_ascii=False)
+            payload = {"ok": True, **result}
+            outcome = ToolExecutionResult(
+                ok=payload["ok"] is True,
+                data=result,
+                tool_name=name,
+                provider_id="work_control",
+            )
         except (ValueError, WorkConflict) as exc:
-            return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+            payload = {"ok": False, "error": str(exc)}
+            outcome = ToolExecutionResult(
+                ok=False,
+                error_code=str(exc),
+                tool_name=name,
+                provider_id="work_control",
+            )
+        capture = current_result_capture.get()
+        if capture is not None:
+            capture.outcome = outcome
+        return json.dumps(payload, ensure_ascii=False)
 
     async def update_context_note(
         self,

@@ -172,7 +172,7 @@ async def test_unconfirmed_submission_keeps_unknown_fence_identity_and_attempt_b
     )
     blocked = await invoke(work, backend, runtime, following)
     assert blocked.executed_count == 0 and blocked.calls[0][2] is False
-    assert json.loads(blocked.calls[0][1])["error"] == "unresolved_prior_effect"
+    assert json.loads(blocked.calls[0][1])["error_code"] == "unresolved_prior_effect"
     assert len(wire) == 2 and work.control.tools_started == 1
     completion = json.loads(
         await work.control.execute("task_control", {"action": "complete"}, "complete-after-unknown")

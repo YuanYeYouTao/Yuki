@@ -153,18 +153,16 @@ class ToolInvocationCoordinator:
                 )
             finally:
                 current_result_capture.reset(token)
-            if capture.outcome is not None:
+            if capture.evidence is not None:
+                facts[call.id] = capture.evidence
+            elif capture.outcome is not None:
                 facts[call.id] = execution_evidence(
                     capture.outcome,
                     tool=call.function.name,
                     side_effecting=side_effecting,
                     arguments=call.function.arguments,
                 )
-            try:
-                receipt = json.loads(results[call.id])
-            except ValueError:
-                receipt = None
-            if isinstance(receipt, dict) and receipt.get("executed") is False:
+            if facts.get(call.id, {}).get("executed") is False:
                 rejected_ids.add(call.id)
                 if counts_toward_limit(call):
                     counted_executions -= 1

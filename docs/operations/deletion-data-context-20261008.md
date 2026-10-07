@@ -63,3 +63,30 @@
 - `test_derived_text_transactions` 的旧 reset 调用迁真实 canonical ingress/UOW，5 passed，包括 late audio 与 reset 竞争。
 - `test_no_work_after_send_recovery` 4 passed：普通聊天原送达后结束；已接纳 Work 只有 start 报告时，空响应的现有重试后只尝试一次 completion 并保守 suspended，不把内部正文冒作 final 交付，不追加礼仪模型重试或重复发送。
 - 0091 真实旧 producer 新增 Memory/artifact 保留链也 1 passed。
+
+## 发布前删除闭包终审
+
+- MEM-01 删除 `MemoryLocatorRetryExhaustedError`：全仓仅定义，没有生产、测试或历史 reader caller；旧 locator 恰一次重试规则已经删除。
+- 修正 resolver 注释，图片不再被描述为一律禁止明确文字事实写入；逐次真实来源、主体与 evidence/effect 围栏仍是唯一授权。
+- 经主会话确认，删除 `LocalAutonomousParticipationPolicy.score` 的 3.5.3 薄兼容别名：生产唯一实例调用 evaluate，score 全仓零 caller。保留 `score_candidate` 的 AutonomousCandidate → AutonomousAdmissionScore 协议接口，不扩张本轮删除范围。
+- 保留项有真实职责：extractive_fallbacks 统计实际 emergency overlay；旧 narrative reader 明示来源未验证，维持已存摘要可读；canonical legacy alias 表保存既有 transport → canonical owner 映射，不用它替代业务 UUID 或生成新身份；media prefetch 是获准媒体下载，不是已删除的 Memory 自动预取。
+
+## 生产备份副本演练（通过）
+
+- 只读原备份：`/opt/yuki-qqbot/backups/deletion-rehearsal-20261007T192151Z/qq_ai_bot.db`，1,239,056,384 bytes，SHA256 `866e7d6eb2a8c6e2d715aefb994d3465fb5ee5feaab9077339d863a95e748bff`。独立 `upgrade.sqlite3` 以 exclusive create 创建，后续只复用哈希仍相同的既有副本，不覆盖原件。
+- 隔离镜像 `yuki:deletion-code`，network none、cap-drop ALL、no-new-privileges，Python entrypoint，仅只读源码与备份目录挂载，没有启动 Bot/模型/外部工具。
+- 原 head=0096、quick_check=ok、FK violation=0；135 个保留非 SQLite 内部表（含 FTS shadow 表）按原列、主键或全列稳定排序流式 SHA256/count。alembic_version 单独断言版本迁移；Speech 配置键定向删除单独计数。
+- 原已无 MCP 两表；真实 Speech 退役表行数：generations=108、profiles=1、references=6、person preferences=0；Speech 配置键=0。未伪造空表补齐。
+- 首次 Alembic 在 Settings 读取缺失 persona 文件时退出，尚未打开数据库；保留错误日志。补隔离 persona 环境后，整副本 SHA 与原备份一致才续跑；0096→0099 Alembic 已 exit 0，后验现已全部通过。
+- 本地证据：`.cache/production-rehearsal/`，含全部保留表原列/count/hash、脚本及每次日志。不下载原备份，不输出业务行内容。
+
+最终结果：`upgrade-evidence.json.status=passed`。135 个保留非内部表的原列稳定排序 SHA256/count 全部一致；head=0099，新增两列初值均 NULL，quick_check=ok，FK=0，生产同款 `require_canonical_schema` 检查通过。原备份前后 SHA256 同为 `866e7d6eb2a8c6e2d715aefb994d3465fb5ee5feaab9077339d863a95e748bff`。最后续迁移及后验耗时 543.35 秒。四个原存在 Speech 表按预期退役，两 MCP 表原先已不存在。没有模型、网络工具或 QQ 副作用；只完成独立副本演练，不能据此宣称生产已迁移或已部署。
+
+
+### Typed outcome 独立终审补充
+
+- 发现并修复历史 accepted 回执缺 outcome、任意展示文本、截断结果及布尔错型被误还原成功的问题。`historical_evidence` 是原回执读取边界，journal 与 repository 共用；SQL unresolved/CAS 同时识别缺证据、错型、历史 pending/unknown。明确标准 `{ok: true/false}` 历史结果继续可读；原始 receipt 文案、内部 ID 与数据库字节不重写。
+- 非空字典不代表事实完整：只有 side_effecting 或 unknown status 而无可证明结果必须保守；原 run_id 与明确 pending 保留供原执行查证。
+- 验证：历史 effect repository/results + caller completion 共 85 passed；最终新增缺字段边界与 readonly 身份参数共 22 passed。证据 `.cache/history-outcome-final.log`、`.cache/history-outcome-edges.log`。
+- Host predispatch 拒绝仍保留原 attempt 预算，typed `executed=false` 只排除实际执行业务计数；不退款、不重置原预算。对应既有 `test_schema_rejection_keeps_call_receipt_and_attempt_budget_without_execution` 合同不改。
+- 缓存仅复用明确成功、非 pending/uncertain/retryable 的只读结果，沿原 Work/chain effect key；副作用结果不缓存且不能证明未修改时清除只读缓存。未发现此次 typed 迁移新增的重执行或副作用复用路径。

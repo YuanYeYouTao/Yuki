@@ -39,7 +39,7 @@ def model_profile_environment(settings: Settings | ModelRuntimeSettings) -> dict
 logger = logging.getLogger(__name__)
 
 PROFILE_SCHEMA_VERSION = 3
-RETIRED_MODEL_ROUTES = frozenset({"planner", "tool_selection"})
+RETIRED_MODEL_ROUTES = frozenset({"planner", "tool_selection", "automation_text_generation"})
 CURRENT_CONFIGURATION_HINT = "regenerate model_profiles.toml with qq-ai-bot-cli setup"
 
 
@@ -97,7 +97,6 @@ _DEFAULT_REQUIREMENTS: dict[ModelTask, frozenset[ModelCapability]] = {
     ModelTask.MEMORY_ATTRIBUTION: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
     ModelTask.RELATIONSHIP_EVALUATION: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
     ModelTask.EMOJI_REPLACEMENT: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
-    ModelTask.AUTOMATION_TEXT_GENERATION: frozenset(),
     ModelTask.AUTOMATION_AGENT: frozenset({ModelCapability.TOOLS}),
     ModelTask.PLUGIN_AGENT_SESSION: frozenset({ModelCapability.TOOLS}),
     ModelTask.UTILITY_STRUCTURED: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
@@ -148,7 +147,8 @@ def parse_model_profile_catalog(
         if retired:
             names = ", ".join(sorted(retired))
             raise ModelRuntimeConfigurationError(
-                f"retired model routes remain ({names}); {CURRENT_CONFIGURATION_HINT}"
+                f"retired model routes remain ({names}); remove these entries from [routes] "
+                "and preserve the other profiles and routes"
             )
         routes = {
             ModelTask(task_name): ModelRoute(

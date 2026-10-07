@@ -105,7 +105,8 @@ def resolve_memory_access(
 
     ``retrieval_enabled=false`` never becomes FORBIDDEN; it only marks the
     decision as retrieval-degraded so the query plane can use overview
-    fallback.  Image turns keep readable context and deny write.
+    fallback. Images do not change explicit text-write authority; every mutation
+    still validates its source, target, evidence, and original effect receipt.
     """
 
     degraded = not retrieval_enabled

@@ -694,6 +694,12 @@ async def test_tool_batch_retains_reused_denied_and_parallel_results(database):
             await asyncio.wait_for(both_started.wait(), timeout=2)
             executed.append(json.loads(arguments))
             active -= 1
+            from qq_ai_bot.capabilities.results import ToolExecutionResult
+            from qq_ai_bot.runtime.effect_outcomes import current_result_capture
+
+            capture = current_result_capture.get()
+            assert capture is not None
+            capture.outcome = ToolExecutionResult(ok=True)
             return '{"ok":true}'
 
     calls = (
