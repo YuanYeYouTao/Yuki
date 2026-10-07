@@ -136,7 +136,7 @@ async def _call(
 
 
 async def test_plugin_passes_host_contract_and_lifecycle() -> None:
-    report = await run_plugin_contract_tests(PLUGIN_ROOT, yuki_version="3.1.0")
+    report = await run_plugin_contract_tests(PLUGIN_ROOT, yuki_version="3.9.0")
     assert report.passed is True
     assert report.checks == (
         "manifest",

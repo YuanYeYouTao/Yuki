@@ -40,7 +40,7 @@ async def session_repository(database):
         plugin_id="metadata.session",
         name="Metadata",
         version="1.0.0",
-        plugin_api="3.1",
+        plugin_api="3.2",
         yuki_requires=">=3.0.0,<4.0",
         manifest_hash="ab" * 32,
         entrypoint="plugin:Metadata",

@@ -394,7 +394,26 @@ async def test_derived_audio_updates_revision_and_survives_migration_rollback(
     # Current ORM metadata includes 0089 observation tables and replacement
     # Rollup triggers. Apply its real empty-owner downgrade first, rather than
     # declaring those newer structures to be part of the 0055 fixture.
-    await asyncio.to_thread(command.stamp, config, "head")
+    # This is a pre-retirement structure fixture, not a database whose speech
+    # facts have already been removed by the irreversible 0097 migration.
+    import runpy
+
+    baseline = runpy.run_path("migrations/versions/0048_canonical_3_8_baseline.py")
+    bridge = runpy.run_path("migrations/versions/0049_canonical_only_bridge.py")
+    retired_tables = ("speech_voice_profiles", "speech_voice_references", "speech_generations")
+    async with database.engine.begin() as connection:
+        # The historical fixture needs the real frozen pre-retirement tables;
+        # current create_all intentionally no longer includes this domain.
+        for statement in baseline["_SCHEMA_STATEMENTS"]:
+            if any(
+                statement.startswith(f"CREATE TABLE {name} (") or f" ON {name} (" in statement
+                for name in retired_tables
+            ):
+                await connection.execute(text(statement))
+        await connection.execute(text(bridge["_TABLE_DDL"]["person_speech_preferences"]))
+        for statement in bridge["_TABLE_INDEX_DDL"]["person_speech_preferences"]:
+            await connection.execute(text(statement))
+    await asyncio.to_thread(command.stamp, config, "0096")
     await asyncio.to_thread(command.downgrade, config, "0088")
     # create_schema uses current triggers. Reconstruct the stamped 0055
     # fixture before exercising its downgrade/upgrade, rather than leaving

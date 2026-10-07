@@ -493,35 +493,6 @@ export function Assets({ allowed, act, refresh }: PageProps) {
           )}
         />
       </Section>
-      <Section title="语音">
-        <QueryList
-          method="list_speech_profiles"
-          refresh={refresh}
-          columns={[
-            ["profile_id", "音色"],
-            ["status", "状态", status],
-            ["enabled", "启用", status],
-            ["revision", "版本"],
-          ]}
-          actions={(row) => (
-            <button
-              className="btn-secondary"
-              disabled={!allowed("mutate_speech")}
-              onClick={() =>
-                action(
-                  "mutate_speech",
-                  row,
-                  "profile_id",
-                  row.enabled ? "disable" : "enable",
-                  row.enabled ? "禁用音色" : "启用音色",
-                )
-              }
-            >
-              {row.enabled ? "禁用" : "启用"}
-            </button>
-          )}
-        />
-      </Section>
     </>
   );
 }

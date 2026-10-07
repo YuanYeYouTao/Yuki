@@ -61,8 +61,6 @@ def validate_production_compose(deploy_directory: Path, version: str, compose: C
     rendered = json.loads(
         compose.run(
             "--profile",
-            "speech",
-            "--profile",
             "napcat",
             "--profile",
             "snowluma",
@@ -75,7 +73,6 @@ def validate_production_compose(deploy_directory: Path, version: str, compose: C
     services: dict[str, dict[str, Any]] = rendered["services"]
     expected = {
         "bot": f"ghcr.io/yuanyeyoutao/yuki-qqbot:{version}",
-        "genie-tts-worker": f"ghcr.io/yuanyeyoutao/yuki-genie-tts-worker:{version}",
     }
     for service, image in expected.items():
         if services[service]["image"] != image:
@@ -100,13 +97,6 @@ def validate_production_compose(deploy_directory: Path, version: str, compose: C
             "/app/plugins",
             "/app/napcat-config",
             "/app/snowluma-data",
-        },
-        "genie-tts-worker": {
-            "/data/speech/genie_data",
-            "/data/speech/voices",
-            "/data/speech/cache",
-            "/data/speech/japanese_frontend",
-            "/run/yuki-speech",
         },
         "napcat": {"/app/.config/QQ", "/app/napcat/config", "/app/napcat/plugins"},
         "snowluma": {
@@ -185,9 +175,6 @@ capabilities = ["tools", "structured_output", "long_context", "reasoning"]
         deploy_directory / "snowluma-qq-config/.release-smoke-config": "snowluma-qq-config",
         deploy_directory / "snowluma-qq-data/.release-smoke-data": "snowluma-qq-data",
         deploy_directory / "snowluma-extra-accounts/.release-smoke-data": "snowluma-extra-accounts",
-        deploy_directory
-        / "data/speech/genie_data/chinese-hubert-base/.release-smoke": "offline-directory",
-        deploy_directory / "data/speech/genie_data/speaker_encoder.onnx": "offline-file-sentinel",
     }
     for path, value in sentinels.items():
         if path.exists():
@@ -450,10 +437,6 @@ def verify_persistence(
     database_size = database.stat().st_size
     compose.run("up", "-d", "--no-deps", "--force-recreate", "bot")
     wait_healthy(compose, "bot")
-    compose.run(
-        "--profile", "speech", "up", "-d", "--no-deps", "--force-recreate", "genie-tts-worker"
-    )
-    wait_healthy(compose, "genie-tts-worker")
     if not database.exists() or database.stat().st_size < database_size:
         raise SmokeError("database did not survive container recreation")
     for path, value in sentinels.items():
@@ -500,14 +483,10 @@ def run_smoke(deploy_directory: Path, version: str, *, full: bool) -> None:
         compose.run("up", "-d", "--no-deps", "bot")
         verify_bot(compose, deploy_directory, version)
         if full:
-            compose.run("--profile", "speech", "up", "-d", "--no-deps", "genie-tts-worker")
-            wait_healthy(compose, "genie-tts-worker")
             verify_persistence(compose, deploy_directory, sentinels)
             verify_napcat_mount_recreation(compose, deploy_directory)
     finally:
         compose.run(
-            "--profile",
-            "speech",
             "--profile",
             "napcat",
             "--profile",

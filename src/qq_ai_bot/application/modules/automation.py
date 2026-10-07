@@ -31,7 +31,6 @@ from qq_ai_bot.persistence.repositories import (
 )
 from qq_ai_bot.services.main_agent_contract import MainAgentContract
 from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
-from qq_ai_bot.speech.service import SpeechService
 from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.web.base import WebSearchProvider
 
@@ -64,7 +63,6 @@ class AutomationModule:
         web_provider: WebSearchProvider | None,
         emoji_repository: EmojiRepository,
         emoji_storage: EmojiStorage,
-        speech: SpeechService,
         presence_router: PresenceRouter,
     ) -> None:
         self._settings = settings
@@ -80,7 +78,6 @@ class AutomationModule:
         self._web_provider = web_provider
         self._emoji_repository = emoji_repository
         self._emoji_storage = emoji_storage
-        self._speech = speech
         self._presence_router = presence_router
 
     def build(self) -> AutomationBundle:

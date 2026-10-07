@@ -22,7 +22,6 @@ from yuki_plugin_sdk.registrar import (
     EventHookRegistration,
     PluginRegistrar,
     ToolRegistration,
-    TTSProviderRegistration,
 )
 
 DEFAULT_RESERVED_COMMAND_ALIASES: frozenset[str] = frozenset(
@@ -57,7 +56,6 @@ class ExtensionKind(StrEnum):
     EMOJI_SELECTION_SIGNAL = "emoji_selection_signal"
     CONFIG_SCHEMA = "config_schema"
     BACKGROUND_SERVICE = "background_service"
-    TTS_PROVIDER = "speech.tts_provider.v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,17 +279,6 @@ class BoundPluginRegistrar(PluginRegistrar):
             plugin_id=self._plugin_id,
             kind=ExtensionKind.BACKGROUND_SERVICE,
             local_name=registration.metadata.name,
-            registration=registration,
-        )
-
-    def register_tts_provider(self, registration: TTSProviderRegistration) -> None:
-        self._require(PluginPermission.SPEECH_PROVIDER_REGISTER)
-        if re.fullmatch(r"[a-z][a-z0-9_]{0,63}", registration.name) is None:
-            raise RegistrationError("invalid TTS provider name")
-        self._registry._add(
-            plugin_id=self._plugin_id,
-            kind=ExtensionKind.TTS_PROVIDER,
-            local_name=registration.name,
             registration=registration,
         )
 

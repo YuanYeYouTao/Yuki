@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import time
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -109,6 +110,9 @@ class JournalSnapshot:
     pending_calls: tuple[dict[str, str], ...] = ()
     pending_sequence: int = 0
     task_material: dict[str, Any] | None = None
+    # A delivery-only view survives a static contract change, without replaying
+    # the old provider transcript, pending response or private continuation.
+    delivery_record: dict[str, Any] | None = None
 
 
 class WorkJournal:
@@ -134,6 +138,12 @@ class WorkJournal:
         loaded = await self._load(
             lease, work_id, contract, retain_source=source_control is not None
         )
+        if (
+            loaded.reason == "source_changed"
+            and loaded.delivery_record
+            and (loaded.record is None or source_control is None)
+        ):
+            raise WorkConflict("work_journal_source_changed")
         if loaded.reason != "source_changed" or loaded.record is None or source_control is None:
             return loaded
         # The read/file-hydration session above is closed before the guard opens
@@ -148,6 +158,8 @@ class WorkJournal:
         except (KeyError, TypeError, ValueError) as exc:
             raise JournalUnavailable("work_journal_corrupt") from exc
         if not await guard.check(source_control):
+            if loaded.delivery_record:
+                raise WorkConflict("work_journal_source_changed")
             return replace(loaded, record=None, compaction_anchor=None)
         if loaded.record["contract"] != contract:
             return replace(
@@ -191,6 +203,53 @@ class WorkJournal:
                 raise JournalUnavailable("work_journal_corrupt") from exc
             if not isinstance(payload, dict) or not isinstance(payload.get("metadata", {}), dict):
                 raise JournalUnavailable("work_journal_corrupt")
+            delivery_record = None
+            metadata = payload["metadata"]
+            progress = metadata.get("progress", {})
+            if (
+                row["phase"] in {"delivery", "delivered"}
+                and isinstance(progress, dict)
+                and (progress.get("delivery_plan"))
+            ):
+                owner = (
+                    await session.execute(
+                        select(work.c.conversation_id, work.c.generation).where(
+                            work.c.id == work_id
+                        )
+                    )
+                ).one_or_none()
+                if owner is None or tuple(owner) != (lease.conversation_id, lease.generation):
+                    raise WorkConflict("work_journal_source_control_mismatch")
+                origin = metadata.get(
+                    "delivery_origin",
+                    {
+                        "work_id": work_id,
+                        "chain_id": row["chain_id"],
+                        "sequence": metadata.get("sequence", 0),
+                    },
+                )
+                if (
+                    not isinstance(origin, dict)
+                    or set(origin) != {"work_id", "chain_id", "sequence"}
+                    or origin.get("work_id") != work_id
+                    or not isinstance(origin.get("chain_id"), str)
+                    or not origin["chain_id"]
+                    or len(origin["chain_id"]) > 36
+                    or ":" in origin["chain_id"]
+                    or type(origin.get("sequence")) is not int
+                    or origin["sequence"] < 0
+                ):
+                    raise JournalUnavailable("work_journal_corrupt")
+                delivery_record = {
+                    "phase": row["phase"],
+                    "origin": deepcopy(origin),
+                    "plan": deepcopy(progress["delivery_plan"]),
+                    "ending": metadata.get("ending"),
+                    "event_ids": metadata.get("event_ids", []),
+                    "source_keys": metadata.get("source_keys", []),
+                    "input_ids": metadata.get("input_ids", []),
+                    "source_guard": metadata.get("source_guard"),
+                }
             contract_changed = row["contract"] != contract
             pending_calls: tuple[dict[str, str], ...] = ()
             pending_sequence = 0
@@ -260,6 +319,8 @@ class WorkJournal:
                 )
             try:
                 refs = references(payload)
+                if delivery_record is not None:
+                    refs |= references(delivery_record)
                 if any(not isinstance(digest, str) for digest in refs):
                     raise ValueError("invalid media reference")
             except (TypeError, ValueError) as exc:
@@ -278,6 +339,8 @@ class WorkJournal:
                     raise JournalUnavailable("work_journal_media_missing") from exc
                 try:
                     payload = hydrate(payload, blobs)
+                    if delivery_record is not None:
+                        delivery_record = hydrate(delivery_record, blobs)
                     result["payload_json"] = json.dumps(payload, ensure_ascii=False)
                 except (ValueError, KeyError) as exc:
                     raise JournalUnavailable("work_journal_media_missing") from exc
@@ -295,6 +358,7 @@ class WorkJournal:
                     task_material=progress.get("task_material")
                     if isinstance(progress, dict)
                     else None,
+                    delivery_record=delivery_record,
                 )
             if contract_changed:
                 return JournalSnapshot(
@@ -310,6 +374,7 @@ class WorkJournal:
                     task_material=progress.get("task_material")
                     if isinstance(progress, dict)
                     else None,
+                    delivery_record=delivery_record,
                 )
             return JournalSnapshot("resume", result, row["chain_id"])
 

@@ -99,8 +99,9 @@ async def test_reply_indexes_upgrade_downgrade_metadata_and_full_query_plans(
             )
             plans.append(plan)
         assert not any("TEMP B-TREE" in row[3] for plan in plans for row in plan)
-    await asyncio.to_thread(command.upgrade, config, "head")
-    await require_canonical_schema(url)
+    # This rollback exercises only the retained index chain, before the
+    # deliberately irreversible 0097 retirement.
+    await asyncio.to_thread(command.upgrade, config, "0096")
     await asyncio.to_thread(command.downgrade, config, "0091")
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT * FROM runtime_protocol_objects").fetchall() == before
@@ -117,6 +118,9 @@ async def test_reply_indexes_upgrade_downgrade_metadata_and_full_query_plans(
                 is None
             )
     await asyncio.to_thread(command.upgrade, config, "0092")
+
+    await asyncio.to_thread(command.upgrade, config, "head")
+    await require_canonical_schema(url)
 
 
 @pytest.mark.parametrize("action", ["upgrade", "downgrade"])

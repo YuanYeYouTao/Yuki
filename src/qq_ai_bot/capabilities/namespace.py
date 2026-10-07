@@ -203,27 +203,7 @@ CORE_NAMESPACES: tuple[CapabilityNamespace, ...] = (
         aliases=("禁言", "踢人"),
         tags=("qq", "write"),
     ),
-    _ns("reply", "回复效果", description="语音、表情、引用与布局", tags=("reply",)),
-    _ns(
-        "reply.voice",
-        "语音回复",
-        description="生成本轮语音",
-        aliases=("语音", "朗读"),
-        tags=("reply",),
-    ),
-    _ns(
-        "reply.voice.preference",
-        "语音偏好",
-        description="持久语音偏好",
-        tags=("reply", "voice"),
-    ),
-    _ns(
-        "reply.voice.preference.write",
-        "写入语音偏好",
-        description="通过 set_voice_preference 写入人物语音偏好",
-        aliases=("语音偏好", "默认音色"),
-        tags=("reply", "voice", "write"),
-    ),
+    _ns("reply", "回复效果", description="表情、引用与布局", tags=("reply",)),
     _ns(
         "reply.emoji",
         "表情回复",

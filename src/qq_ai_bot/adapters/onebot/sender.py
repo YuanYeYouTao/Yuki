@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-from pathlib import Path
 from typing import Any, cast
 
 from nonebot.adapters.onebot.v11 import Bot, Message, MessageEvent, MessageSegment
@@ -45,11 +44,11 @@ class OneBotRouteSender:
         if message.text:
             payload.append({"type": "text", "data": {"text": message.text}})
         for media in message.media:
-            if media.kind not in {AttachmentKind.AUDIO, AttachmentKind.IMAGE}:
+            if media.kind is not AttachmentKind.IMAGE:
                 raise ValueError("unsupported_persisted_delivery_media")
             payload.append(
                 {
-                    "type": "record" if media.kind is AttachmentKind.AUDIO else "image",
+                    "type": "image",
                     "data": {"file": "base64://" + base64.b64encode(media.content).decode("ascii")},
                 }
             )
@@ -130,13 +129,6 @@ class OneBotSender:
                     if media.emoji_id:
                         segment.data["sub_type"] = 1
                     payload += segment
-                elif media.kind is AttachmentKind.AUDIO:
-                    if media.local_path is None:
-                        raise ValueError("audio media is missing its local file")
-                    content = await asyncio.to_thread(Path(media.local_path).read_bytes)
-                    encoded = base64.b64encode(content).decode("ascii")
-                    payload += MessageSegment.record(file=f"base64://{encoded}")
-                    del content, encoded
                 else:
                     raise ValueError("unsupported outbound media kind")
             if not payload:

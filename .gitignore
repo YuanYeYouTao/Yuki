@@ -14,13 +14,6 @@ build/
 *.egg-info/
 data/*
 !data/.gitkeep
-!data/speech/
-data/speech/*
-!data/speech/japanese_frontend/
-!data/speech/japanese_frontend/lexicon.toml
-!data/speech/japanese_frontend/models/
-data/speech/japanese_frontend/models/*
-!data/speech/japanese_frontend/models/.gitkeep
 logs/
 /workspace/
 /social-transfer/
@@ -48,3 +41,7 @@ artifacts/memory-quality/*.log
 /docs/operations/static-review-*.md
 /frontend/node_modules/
 /src/qq_ai_bot/webui/assets/
+
+# AOCI agent host integration (machine-bound; do not commit)
+.codex/config.toml
+.codex/config.toml.backup.*

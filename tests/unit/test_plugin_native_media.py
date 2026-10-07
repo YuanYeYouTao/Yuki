@@ -56,7 +56,7 @@ async def environment(database, tmp_path, *, permissions=None, handler=None):
                         plugin_id=plugin_id,
                         name=plugin_id,
                         version="1.0",
-                        plugin_api="3.1",
+                        plugin_api="3.2",
                         yuki_requires="*",
                         manifest_hash="original-manifest",
                         entrypoint="test:plugin",

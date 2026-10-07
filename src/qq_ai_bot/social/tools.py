@@ -41,6 +41,7 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
     ) -> ChatTool:
         return ChatTool(
             name=name,
+            schema_version="2" if name == "send_message" else "1",
             description=description,
             parameters={
                 "type": "object",
@@ -131,20 +132,6 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
                         },
                     },
                     "required": ["kind"],
-                    "additionalProperties": False,
-                },
-                "voice": {
-                    "type": "object",
-                    "description": "将 text 合成为语音并立即发送；若还要文字，请再单独发送一条。",
-                    "properties": {
-                        "style_hint": {"type": "string", "maxLength": 128},
-                        "language": {"type": "string", "enum": ["auto", "zh", "jp"]},
-                        "request_basis": {
-                            "type": "string",
-                            "enum": ["user_requested", "agent_initiated"],
-                        },
-                    },
-                    "required": ["request_basis"],
                     "additionalProperties": False,
                 },
                 "emoji": {

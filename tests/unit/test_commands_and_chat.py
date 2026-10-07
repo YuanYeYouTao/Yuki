@@ -146,6 +146,42 @@ def inbound(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("send_fails", [False, True])
+async def test_command_image_delivery_records_only_confirmed_shared_media(
+    database, monkeypatch, send_fails
+):
+    from unittest.mock import AsyncMock
+
+    from qq_ai_bot.domain.messages import AttachmentKind, OutboundMedia, OutboundMessage
+    from qq_ai_bot.services.command_service import CommandExecution
+
+    harness = build_harness(database, make_settings(database.url))
+    image = OutboundMessage(
+        text="command image",
+        media=(OutboundMedia(AttachmentKind.IMAGE, content=b"pixels", mime_type="image/png"),),
+    )
+    commands = harness.processor._commands
+    assert not hasattr(commands, "mark_media_sent")
+    monkeypatch.setattr(
+        commands, "execute", AsyncMock(return_value=CommandExecution("", outbound=image))
+    )
+    message = inbound("/ai help", message_id="command-image")
+    sender = MemorySender(fail=send_fails)
+    result = await harness.processor.handle(message, sender)
+    assert result.reason == "command_help"
+    assert result.sent_messages == int(not send_fails)
+    assert sender.calls == 1
+    assert sender.messages == ([] if send_fails else [image])
+    events = await harness.ledger.list_scope_recent(scope=message.scope(), limit=10)
+    outgoing = [event for event in events if event.direction == "outbound"]
+    assert len(outgoing) == int(not send_fails)
+    if outgoing:
+        assert outgoing[0].content == "command image"
+        assert [segment["type"] for segment in outgoing[0].segments] == ["text", "image"]
+    assert not harness.provider.requests
+
+
+@pytest.mark.asyncio
 async def test_only_mutation_access_appends_the_write_receipt_contract(database) -> None:
     from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
     from qq_ai_bot.prompting.contracts import CORE_CONTRACT
@@ -265,7 +301,7 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     )
     admin_text = admin_sender.messages[0].text
     assert "当前权限：超级管理员" in admin_text
-    assert "可修改运行时配置参数：233 项" in admin_text
+    assert "可修改运行时配置参数：216 项" in admin_text
     for key in (
         "context.window_tokens",
         "context.work_window_tokens",
@@ -282,7 +318,7 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     ):
         assert key in admin_text
         assert key not in user_text
-    assert "管理员业务接口：44 项，其中修改型 33 项" in admin_text
+    assert "管理员业务接口：33 项，其中修改型 26 项" in admin_text
     assert "conversation.autonomous_batch_limit" in admin_text
     assert "relationship.set_affection" in admin_text
     assert "受保护配置（13 项，不可修改）" in admin_text

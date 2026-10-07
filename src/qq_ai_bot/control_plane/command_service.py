@@ -262,13 +262,6 @@ class ControlCommandService:
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
-    async def mutate_speech(self, context: object, command: object) -> ControlResult:
-        authorized = _require_context(context)
-        _require_capability(authorized, method_capability("mutate_speech"))
-        return await self._port.mutate_speech(
-            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
-        )
-
     async def cancel_operation(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
         _require_capability(authorized, method_capability("cancel_operation"))

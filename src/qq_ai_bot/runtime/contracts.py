@@ -68,7 +68,6 @@ class DeliverySummary:
     final_agent_run_id: str
     status: DeliveryStatus
     delivered_text: str
-    delivered_voice_text: str = ""
     emoji_only: bool = False
     transport_receipt_ids: tuple[str, ...] = ()
 

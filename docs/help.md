@@ -1,6 +1,6 @@
-# Yuki 3.8 使用与运维帮助
+# Yuki 使用与运维帮助
 
-Yuki 3.8 只支持 canonical runtime，当前源码 Alembic head 为 `0051`，Plugin API 为 `2.0`。永久 Yuki、
+当前源码为未发布的 Yuki 3.9.0，Alembic head 为 `0097`，Plugin API 为 `3.2`，只支持 canonical runtime。永久 Yuki、
 Person、Binding、Space、Presence 和 canonical Conversation 的关系见
 [当前架构](architecture/canonical-runtime.md)。
 
@@ -19,8 +19,9 @@ Windows PowerShell：
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-两个安装器默认安装 `3.8.1`。引导配置会询问主模型、可选 Flash/Embedding/Web/Vision、QQ
-Provider、Plugin、Automation 与 Speech。密钥输入不回显，程序不会在线试用 API key。
+两个源码安装器的默认版本为 `3.9.0`，不表示该版本已正式发布。引导配置会询问主模型、
+可选 Flash/Embedding/Web/Vision、QQ Provider、Plugin 与 Automation，不再配置 Genie。
+密钥输入不回显，程序不会在线试用 API key。
 
 日常运维：
 
@@ -101,7 +102,7 @@ Gemini 的 Google 内置搜索、Interactions、Live 和 TTS 尚未接入。用�
 - 所有生成模型至少 low 思考，保留更高档位；后台任务不再关闭思考。
   Profile 必须声明 reasoning 能力，不能靠禁用它绕过最低合同；不支持时显式失败。
   视觉使用原生思考预算，详见 [最低思考合同](architecture/model-reasoning-policy.md)。
-- Web、Embedding、Vision 和 Speech 都是可选能力；不可用时应有界降级，不影响纯文本主路径。
+- Web、Embedding 和 Vision 都是可选能力；不可用时应有界降级，不影响纯文本主路径。
 - secret 只能写入或查询“是否已配置”，不能通过控制面读回。
 
 修改配置后先检查：
@@ -175,17 +176,17 @@ Memory。
 不会把群里的每条语音都提交识别。触发回复的消息可以包含语音，也可以引用一条语音。
 Yuki 会根据转写内容回复，之后可以回忆或搜索这条语音。识别不成功会明确提示，不会猜测。
 
-`ASR_ENABLED` 独立于发送语音的 `SPEECH_ENABLED`。默认使用 `qwen3-asr-flash`，复用现有千问
+`ASR_ENABLED` 控制入站和引用语音识别；Genie 合成及专属语音发送功能已退出，通用管理员 OneBot 接口仍遵守原权限合同。默认使用 `qwen3-asr-flash`，复用现有千问
 连接。缺少可用连接时会说明服务未配置。详见 [配置与验收](speech/recognition.md)。
 
 ## 工具、权限与控制面
 
-主 Agent 只看到当前 Principal 被授予且本轮允许的工具。Capability 决定 metadata、外部 ID、
-正文、mutation 与 destructive 操作的不同权限。
+主 Agent 使用启动时冻结的固定完整工具声明，执行处按当前 Principal 核验授权。
+Capability 决定 metadata、外部 ID、正文、mutation 与 destructive 操作的不同权限。
 
-Control Plane 提供 CLI、QQ command 和未来 WebUI 共用的 Query/Command 服务。未来 WebUI 只能
-把登录身份转换为 `ControlPrincipal` 与 `DecisionContext`，不能直接访问 ORM、数据库或
-Gateway。3.8 尚未提供管理 HTTP API、登录或前端。
+Control Plane 提供 CLI、QQ command 和 WebUI 共用的 Query/Command 服务。WebUI
+把登录身份转换为 `ControlPrincipal` 与 `DecisionContext`，不直接访问 ORM、数据库或
+Gateway；当前功能边界见 [WebUI 合同](architecture/webui-console.md)。
 
 高风险边界：
 
@@ -197,9 +198,9 @@ Gateway。3.8 尚未提供管理 HTTP API、登录或前端。
 在 QQ 中使用 `/ai help` 与 `/ai capabilities` 查看当前可用命令和能力；实际结果以当前
 Principal、会话和运行配置为准。
 
-## Plugin API 3.1
+## Plugin API 3.2
 
-当前 Host 只接受精确声明 Plugin API `3.1` 的插件。插件可以使用固定 primary `conversation_key`，也可读取可选的
+当前 Host 只接受精确声明 Plugin API `3.2` 的插件，Genie 专属 facade、事件及权限已移除。插件可以使用固定 primary `conversation_key`，也可读取可选的
 person、space、conversation 和 presence ID。插件不能自报超级管理员，也不能绕过
 Control Plane、Capability 或 Gateway Registry。
 
@@ -216,21 +217,20 @@ Web、Memory read 和 history read 仍可使用。
 - [Plugin 开发索引](plugin-development/index.md)
 - [架构](plugin-development/architecture.md)
 - [权限与安全](plugin-development/security.md)
-- [从旧 Plugin API 迁移](plugin-development/api-3.0-migration.md)
+- [从旧 Plugin API 迁移](plugin-development/api-3.2-migration.md)
 
-## Emoji、Vision 与 Speech
+## Emoji 与 Vision
 
 - Emoji 资产有独立生命周期、审核和作用域；见 [Emoji 文档](emoji-system/architecture.md)。
 - Vision 是可选 Provider，失败时不会把任意外部 URL 当作可信媒体。
-- Speech 使用独立 Genie-TTS Worker；默认关闭，见 [Speech 文档](speech/architecture.md)。
 
 这些扩展都服从同一 Principal、Capability、审计、路由和 canonical owner 规则。
 
 ## 数据与升级
 
-全新 3.8 数据库执行 `0048 -> 0049 -> 0050 -> 0051`。历史 bridge 只接受已经完成 canonical v2
-的旧 `0048`；已有 canonical `0050` 直接升级到 `0051`。
-更早数据库和 v1/backfill/cutover 中间态不支持。
+当前完整迁移链至 `0097`。历史 `0048` bridge 的来源限制仍有效，不能用版本号或
+手工 stamp 跳过来源校验。`0097` 退役四张 Genie 表及固定配置键，执行前必须核原
+Work/发送回执及被引用 WAV，保全专属事实；不能把生成表当作纯缓存。
 
 升级前停止所有写入，并按同一时点备份：
 
@@ -238,14 +238,12 @@ Web、Memory read 和 history read 仍可使用。
 - `qq_ai_bot.db-wal`
 - `qq_ai_bot.db-shm`
 - 配置、Compose 文件、镜像 digest 和 Provider 登录目录
-- `plugins/github-monitor/` 与 `data/plugin_artifacts/`
+- 宿主插件、协议对象、工具 artifacts、持久 Work 证据及被引用音频
 
-`0049` 不提供 downgrade；`0050` 是追加式因果迁移，`0051` 是追加式 Memory 观测迁移。生产失败
-时仍应恢复完整快照，不能手工
-stamp revision、git revert 数据
-或只恢复主 DB。3.8.0 升级时还必须在停写状态运行会话 uncovered recount/check、
-受控替换 GitHub Monitor 并通过离线 queue doctor，详见
-[3.8.1 升级指南](upgrade-3.8.1.md)。
+`0097` 明确拒绝 downgrade，优先向前修补。换回旧镜像不会恢复已删事实；恢复历史
+快照也不能覆盖升级后新消息、文件和回执。不要手工 stamp revision 或只恢复主 DB。
+当前权限清退、旧执行核对、冷备、插件 API 更新及切换步骤见
+[3.9.0 升级指南](upgrade-3.9.0.md)。
 
 ## 故障排查
 
@@ -286,6 +284,6 @@ historical 0048 bridge。pre-3.8 数据库不能通过关闭检查强行启动�
 
 ## 发布与版本
 
-发布流程见 [版本化 Docker Release](operations/versioned-docker-release.md)，3.8 说明见
-[发布说明](releases/v3.8.1.md)。正式镜像与 Release 只能由通过 Quality、迁移矩阵、release
+发布流程见 [版本化 Docker Release](operations/versioned-docker-release.md)，当前开发草案见
+[3.9.0 说明](releases/v3.9.0.md)，旧版本记录见 [3.8.1 说明](releases/v3.8.1.md)。正式镜像与 Release 只能由通过 Quality、迁移矩阵、release
 smoke 和匿名拉取验证的 tag 生成。

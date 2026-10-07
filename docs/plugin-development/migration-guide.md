@@ -1,10 +1,10 @@
-# 从内部扩展迁移到 Plugin API 3.1
+# 从内部扩展迁移到 Plugin API 3.2
 
 Yuki 不会把记忆、关系、权限、视觉、联网、自动化核心或 AgentRunner 改成插件。只迁移真正可选、边界清晰的本地扩展。从 Plugin API 2.x 升级见 [API 3.0 迁移](api-3.0-migration.md)。
 
 ## 映射
 
-| 旧做法 | Plugin API 3.1 |
+| 旧做法 | Plugin API 3.2 |
 |---|---|
 | 直接注册 NoneBot matcher | 确定性 `CommandRegistration` 或 Agent `ToolRegistration` |
 | 导入 `ApplicationContainer` | `PluginContext` 的最小 Facade |

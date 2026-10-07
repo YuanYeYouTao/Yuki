@@ -51,8 +51,6 @@ SUPERUSER_CAPABILITIES: frozenset[str] = USER_CAPABILITIES | frozenset(
         "control.plugin.mutate",
         "control.emoji.read",
         "control.emoji.mutate",
-        "control.speech.read",
-        "control.speech.mutate",
         "control.operation.read",
         "control.operation.cancel",
         "control.operation.retry",

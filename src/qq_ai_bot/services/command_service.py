@@ -45,7 +45,6 @@ from qq_ai_bot.services.policies import CommandName, command_requires_superuser
 from qq_ai_bot.services.profile_commands import ProfileCommandHandler
 from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
 from qq_ai_bot.services.vision_service import VisionService
-from qq_ai_bot.speech.admin import SpeechAdminService
 
 _NUMERIC_PLATFORM_ID = re.compile(r"[1-9][0-9]{4,19}")
 
@@ -86,7 +85,6 @@ class CommandService:
         turn_coordinator: ConversationTurnCoordinator | None = None,
         plugin_commands: PluginCommandAdapter | None = None,
         emoji_admin: EmojiAdminService | None = None,
-        speech_admin: SpeechAdminService | None = None,
         model_invocations: ModelInvocationRepository | None = None,
         memory_rebuild: MemoryRebuildService | None = None,
     ) -> None:
@@ -104,7 +102,6 @@ class CommandService:
         self._turn_coordinator = turn_coordinator
         self._plugin_commands = plugin_commands
         self._emoji_admin = emoji_admin
-        self._speech_admin = speech_admin
         self._model_invocations = model_invocations
         self._memory_rebuild = memory_rebuild
         self._control = ControlAccess(people._database, superuser_ids=settings.superusers)
@@ -178,8 +175,6 @@ class CommandService:
             return operation not in {"", "list", "show", "permissions", "doctor"}
         if command is CommandName.EMOJI:
             return operation not in {"", "list", "show", "stats", "doctor"}
-        if command is CommandName.VOICE:
-            return operation in {"use", "reload", "cache", "test"}
         return False
 
     async def execute(
@@ -254,14 +249,6 @@ class CommandService:
             )
             automation_last_text = automation_last_run.isoformat() if automation_last_run else "无"
             automation_next_text = automation_next_run.isoformat() if automation_next_run else "无"
-            speech_status: dict[str, object] = {}
-            if self._speech_admin is not None:
-                speech_status = await self._speech_admin.status_data(
-                    await self._runtime_config.snapshot(
-                        user_id=message.sender.user_id,
-                        group_id=message.group_id,
-                    )
-                )
             rollup_lines = render_rollup_status_lines(rollup_status, scope_key=conversation_key)
             text = (
                 f"OneBot 连接：{'已连接' if self._onebot_connected() else '未连接'}\n"
@@ -284,16 +271,6 @@ class CommandService:
                 f"活跃自动化任务：{automation_count}\n"
                 f"最近自动化执行：{automation_last_text}\n"
                 f"最近待执行时间：{automation_next_text}\n"
-                f"本地语音：{'已启用' if speech_status.get('enabled') else '未启用'}\n"
-                f"语音 Provider：{speech_status.get('provider', '未初始化')}\n"
-                f"语音 Worker："
-                f"{'已就绪' if speech_status.get('worker_ready') else '未就绪'}\n"
-                f"默认声线：{speech_status.get('default_profile') or '未设置'}\n"
-                f"可用语音风格：{speech_status.get('style_count', 0)}\n"
-                f"语音队列深度：{speech_status.get('queue_depth', 0)}\n"
-                f"最近语音生成：{speech_status.get('last_generation_at') or '无'}\n"
-                f"最近语音耗时："
-                f"{speech_status.get('last_generation_latency_seconds') or '无'}\n"
                 f"服务版本：{__version__}"
             )
         elif command is CommandName.STOP:
@@ -431,28 +408,6 @@ class CommandService:
                     argument=argument,
                     gateway=gateway,
                 )
-        elif command is CommandName.VOICE:
-            if self._speech_admin is None:
-                text = "本地语音服务未初始化。"
-            else:
-                try:
-                    speech_result = await self._speech_admin.execute(
-                        actor=actor,
-                        message=message,
-                        argument=argument,
-                        runtime=await self._runtime_config.snapshot(
-                            user_id=message.sender.user_id,
-                            group_id=message.group_id,
-                        ),
-                    )
-                except (LookupError, ValueError, PermissionError, RuntimeError, OSError) as exc:
-                    text = str(exc)
-                else:
-                    return CommandExecution(
-                        text=speech_result.text,
-                        record_reply=record_reply,
-                        outbound=speech_result.outbound,
-                    )
         elif command is CommandName.MODEL:
             if argument.strip().casefold() != "stats":
                 text = "格式错误，请使用 /ai model stats。"
@@ -528,17 +483,12 @@ class CommandService:
             "/ai plugin list|show|permissions|approve|enable|disable|doctor|run\n"
             "/ai emoji list|show|adopt|unadopt|reject|ban|pin|reanalyze\n"
             "/ai emoji stats|cleanup|doctor|import\n"
-            "/ai voice status|profiles|show|use|styles|test|reload|cache cleanup\n"
             "/ai model stats（超级管理员）\n"
             "/ai on|off（超级管理员，当前群；on 可恢复暂停的群路由）\n"
             "/ai group <群号> on|off（超级管理员）\n"
             "/ai private <QQ号> on|off（超级管理员；阻止/恢复私聊）\n"
             "超级管理员可在 memory/preference 操作名后加 user <QQ号>。"
         )
-
-    async def mark_media_sent(self, message: OutboundMessage) -> None:
-        if self._speech_admin is not None:
-            await self._speech_admin.mark_sent(message)
 
     @staticmethod
     def _parse_access_switch(argument: str) -> tuple[str, bool] | None:

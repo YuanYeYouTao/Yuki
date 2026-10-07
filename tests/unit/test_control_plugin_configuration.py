@@ -147,7 +147,7 @@ name = "Configuration fixture"
 version = "1.0.0"
 description = "Offline control regression"
 entrypoint = "fixture:Fixture"
-plugin_api = "3.1"
+plugin_api = "3.2"
 yuki_requires = ">=3.8"
 permissions = ["plugin.config.read", "storage.private"]
 ''',

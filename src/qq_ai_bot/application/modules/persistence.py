@@ -47,8 +47,6 @@ from qq_ai_bot.persistence.repositories import (
 )
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from qq_ai_bot.persistence.turn_observations import RuntimeTurnObservationRepository
-from qq_ai_bot.speech.preference_repository import VoicePreferenceRepository
-from qq_ai_bot.speech.repository import SpeechGenerationRepository, VoiceProfileRepository
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,9 +75,6 @@ class PersistenceBundle:
     media_analyses: MediaAnalysisRepository
     emoji_descriptions: EmojiDescriptionRepository
     emoji_repository: EmojiRepository
-    voice_preferences: VoicePreferenceRepository
-    voice_profiles: VoiceProfileRepository
-    speech_generations: SpeechGenerationRepository
     relationships: RelationshipRepository
     relationship_jobs: RelationshipJobRepository
     turn_observations: RuntimeTurnObservationRepository
@@ -239,9 +234,6 @@ class PersistenceModule:
             media_analyses=MediaAnalysisRepository(database),
             emoji_descriptions=EmojiDescriptionRepository(database),
             emoji_repository=EmojiRepository(database),
-            voice_preferences=VoicePreferenceRepository(database),
-            voice_profiles=VoiceProfileRepository(database),
-            speech_generations=SpeechGenerationRepository(database),
             relationships=RelationshipRepository(
                 database,
                 **initial,

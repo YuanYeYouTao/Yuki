@@ -818,23 +818,6 @@ class ControlCommandAdapter:
             ),
         )
 
-    async def mutate_speech(
-        self,
-        principal: ControlPrincipal,
-        target: object,
-        command: ControlCommand,
-    ) -> ControlResult:
-        return await self._management_action(
-            principal,
-            target,
-            command,
-            operation=CommandOperation.SPEECH_MUTATE.value,
-            capability="control.speech.mutate",
-            invoke=lambda session, principal, command, parsed: self._management.mutate_speech(
-                session, command, parsed
-            ),
-        )
-
     async def cancel_operation(
         self,
         principal: ControlPrincipal,

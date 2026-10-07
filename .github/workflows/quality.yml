@@ -227,26 +227,3 @@ jobs:
           docker compose -f docker-compose.yml -f docker-compose.dev.yml config --quiet
       - name: Build runtime image
         run: docker compose -f docker-compose.yml -f docker-compose.dev.yml build bot
-      - name: Build network-isolated speech worker image
-        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile speech build genie-tts-worker
-
-  speech-worker:
-    needs: baseline
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: services/genie_tts_worker
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          version: "0.11.31"
-          enable-cache: true
-      - name: Install worker test dependencies
-        run: uv sync --frozen --extra dev
-      - name: Ruff
-        run: uv run ruff check src tests
-      - name: Mypy
-        run: uv run mypy src
-      - name: Fake Genie and Unix socket tests
-        run: uv run pytest -q

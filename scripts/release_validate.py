@@ -73,19 +73,6 @@ def validate_release_identity(root: Path, tag: str) -> str:
         rendered = ", ".join(f"{name}={value}" for name, value in versions.items())
         raise ReleaseValidationError(f"release versions do not match: {rendered}")
 
-    worker_version = project_version(root / "services/genie_tts_worker")
-    if worker_version != "1.9.0":
-        raise ReleaseValidationError(
-            f"Genie-TTS Worker component version must remain 1.9.0, got {worker_version}"
-        )
-    worker_lock_version = locked_project_version(
-        root / "services/genie_tts_worker", "genie-tts-worker"
-    )
-    if worker_lock_version != worker_version:
-        raise ReleaseValidationError(
-            "Genie-TTS Worker pyproject.toml and uv.lock versions do not match: "
-            f"{worker_version} != {worker_lock_version}"
-        )
     # This early release gate runs without project dependencies installed.
     # Read literal Alembic revision metadata from the shipped migrations.
     revisions: set[str] = set()
@@ -129,8 +116,8 @@ def validate_release_identity(root: Path, tag: str) -> str:
     plugin_api = _match_value(
         root / "src/yuki_plugin_sdk/api.py", _PLUGIN_API_PATTERN, "Plugin API version"
     )
-    if plugin_api != "3.1":
-        raise ReleaseValidationError(f"Plugin API must be 3.1, got {plugin_api}")
+    if plugin_api != "3.2":
+        raise ReleaseValidationError(f"Plugin API must be 3.2, got {plugin_api}")
     return tag_version
 
 

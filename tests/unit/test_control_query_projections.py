@@ -87,7 +87,6 @@ _READ_CAPS = (
     "control.automation.read",
     "control.plugin.read",
     "control.emoji.read",
-    "control.speech.read",
 )
 _COUNT_TABLES = (
     "persons",

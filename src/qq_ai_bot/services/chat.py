@@ -136,8 +136,6 @@ from qq_ai_bot.services.turn_coordinator import (
     TurnSupersededError,
     TurnToken,
 )
-from qq_ai_bot.speech.models import VoicePreferenceMode
-from qq_ai_bot.speech.preference_service import VoicePreferenceService
 from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.vision.models import VisualObservation
 from qq_ai_bot.web.models import WebMode, WebSearchResponse
@@ -366,7 +364,6 @@ class ChatService:
         context_assembler: ContextAssembler | None = None,
         prompt_composer: PromptComposer | None = None,
         turn_coordinator: ConversationTurnCoordinator | None = None,
-        voice_preferences: VoicePreferenceService | None = None,
         event_publisher: LifecycleEventPublisher | None = None,
         tool_artifacts: ToolArtifactWriter | None = None,
         tool_invocations: ToolInvocationRecorder | None = None,
@@ -461,7 +458,6 @@ class ChatService:
                 settings.conversation_interrupt_autonomous_on_new_message
             ),
         )
-        self._voice_preferences = voice_preferences
         self._event_publisher = event_publisher
         self.observe_main_response: Callable[..., Awaitable[None]] | None = None
         self.participation_context: Callable[[int], Awaitable[dict[str, object] | None]] | None = (
@@ -1241,7 +1237,6 @@ class ChatService:
                 )
                 if self._memory_context is not None and memory_session is not None:
                     self._memory_context.metrics.record_runtime_access(memory_session.contract)
-                voice_delivery_allowed = await self._voice_delivery_allowed(inbound.sender.user_id)
                 runtime = ToolRuntime(
                     inbound=inbound,
                     gateway=gateway,
@@ -1266,7 +1261,6 @@ class ChatService:
                     turn_token=turn_token,
                     turn_snapshot=turn_snapshot,
                     visible_event_ids=visible_event_ids,
-                    voice_delivery_allowed=voice_delivery_allowed,
                     selection_query=content,
                     memory_turn_id=memory_turn_id,
                     memory_exposures=automatic_memory_exposures,
@@ -1397,13 +1391,6 @@ class ChatService:
             )
         )
         await session.close()
-
-    async def _voice_delivery_allowed(self, user_id: str) -> bool:
-        if self._voice_preferences is not None:
-            mode = await self._voice_preferences.current_mode(user_id)
-            if mode is VoicePreferenceMode.TEXT_ONLY:
-                return False
-        return True
 
     async def _save_native_web_response(
         self,
@@ -2168,28 +2155,16 @@ class ChatService:
 
     @staticmethod
     def _ledger_content(message: OutboundMessage) -> str:
-        """Return only user-visible or spoken content, never internal voice metadata."""
+        """Return only the user-visible text of a confirmed outbound message."""
 
-        spoken_text = next((media.spoken_text for media in message.media if media.spoken_text), "")
-        return message.text or spoken_text
+        return message.text
 
     @staticmethod
     def _ledger_media_segment(media: OutboundMedia) -> dict[str, object]:
-        if media.kind is AttachmentKind.AUDIO:
-            return {
-                "type": "record",
-                "data": {
-                    "summary": media.summary[:2000],
-                    "mime_type": media.mime_type,
-                    "duration_milliseconds": media.duration_milliseconds,
-                    "profile_id": media.voice_profile_id or "",
-                    "reference_key": media.voice_reference_key or "",
-                    "target_language": media.voice_language or "",
-                    "generation_id": media.generation_id,
-                },
-            }
+        if media.kind not in {AttachmentKind.IMAGE, AttachmentKind.FILE}:
+            raise ValueError("unsupported outbound media kind")
         return {
-            "type": "image",
+            "type": media.kind.value,
             "data": {
                 "emoji_id": media.emoji_id or "",
                 "summary": media.summary[:2000],

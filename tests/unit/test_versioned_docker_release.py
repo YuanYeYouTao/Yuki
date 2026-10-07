@@ -139,7 +139,7 @@ def test_bundle_contains_only_deployment_files_and_expected_assets(tmp_path: Pat
     assert f"{prefix}docker-compose.yml" in names
     assert f"{prefix}.env.example" in names
     assert f"{prefix}config/persona.md" in names
-    assert f"{prefix}data/speech/japanese_frontend/lexicon.toml" in names
+    assert not any(name.startswith(f"{prefix}data/speech/") for name in names)
     assert f"{prefix}napcat-data/" in names
     assert f"{prefix}webui-config/" in names
     assert f"{prefix}workspace/" in names
@@ -189,9 +189,10 @@ def test_production_and_development_compose_are_separated() -> None:
     development = (ROOT / "docker-compose.dev.yml").read_text(encoding="utf-8")
     assert "build:" not in production
     assert "ghcr.io/yuanyeyoutao/yuki-qqbot:${YUKI_VERSION:?missing}" in production
-    assert "ghcr.io/yuanyeyoutao/yuki-genie-tts-worker:${YUKI_VERSION:?missing}" in production
-    assert production.count("platform: linux/amd64") == 3
-    assert production.count("pull_policy: missing") == 2
+    assert "genie" not in production
+    assert "speech" not in production
+    assert production.count("platform: linux/amd64") == 2
+    assert production.count("pull_policy: missing") == 1
     assert ".mcp.json" not in production
     assert 'profiles: ["napcat"]' in production
     assert 'profiles: ["snowluma"]' in production
@@ -209,14 +210,13 @@ def test_production_and_development_compose_are_separated() -> None:
     assert "3000:3000" not in production
     assert "3001:3001" not in production
     assert "image: yuki-qqbot:dev" in development
-    assert "image: yuki-genie-tts-worker:dev" in development
-    assert development.count("pull_policy: build") == 2
-    assert development.count("build:") == 2
+    assert "genie" not in development
+    assert "speech" not in development
+    assert development.count("pull_policy: build") == 1
+    assert development.count("build:") == 1
 
 
-@pytest.mark.parametrize(
-    "dockerfile", [ROOT / "Dockerfile", ROOT / "services/genie_tts_worker/Dockerfile"]
-)
+@pytest.mark.parametrize("dockerfile", [ROOT / "Dockerfile"])
 def test_oci_revision_label_does_not_invalidate_system_dependency_layers(
     dockerfile: Path,
 ) -> None:
@@ -228,17 +228,14 @@ def test_oci_revision_label_does_not_invalidate_system_dependency_layers(
     )
 
 
-def test_release_smoke_uses_non_model_genie_import_sentinels(tmp_path: Path) -> None:
+def test_release_smoke_preserves_shared_data_without_speech_directories(tmp_path: Path) -> None:
     (tmp_path / ".env.example").write_text("YUKI_VERSION=3.7.0\n", encoding="utf-8")
 
     sentinels = prepare_deployment(tmp_path)
 
-    hubert_sentinel = tmp_path / "data/speech/genie_data/chinese-hubert-base/.release-smoke"
-    speaker_sentinel = tmp_path / "data/speech/genie_data/speaker_encoder.onnx"
-    assert sentinels[hubert_sentinel] == "offline-directory"
-    assert sentinels[speaker_sentinel] == "offline-file-sentinel"
-    assert hubert_sentinel.read_text(encoding="utf-8") == "offline-directory"
-    assert speaker_sentinel.read_text(encoding="utf-8") == "offline-file-sentinel"
+    assert sentinels[tmp_path / "data/.release-smoke-data"] == "data"
+    assert sentinels[tmp_path / "napcat-data/.release-smoke-login"] == "napcat-login"
+    assert not (tmp_path / "data/speech").exists()
     assert not (tmp_path / ".mcp.json").exists()
     assert "PLUGIN_SYSTEM_ENABLED=true" in (tmp_path / ".env").read_text(encoding="utf-8")
 
@@ -437,12 +434,16 @@ def test_release_workflow_has_bootstrap_quality_smoke_and_all_assets() -> None:
     quality = (ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8")
     assert "workflow_call:" in quality
     assert "force_docker: true" in workflow
-    assert workflow.count(":bootstrap-amd64") == 2
+    assert workflow.count(":bootstrap-amd64") == 1
     assert "finalize_version:" in workflow
-    assert "Verify immutable public version images" in workflow
+    assert "Verify immutable public Bot version image" in workflow
     assert "org.opencontainers.image.revision" in workflow
     assert "yuki-source-free-anonymous" in workflow
-    assert workflow.count('YUKI_VERSION="$VERSION" docker compose --profile speech pull') == 2
+    assert workflow.count('YUKI_VERSION="$VERSION" docker compose pull bot') == 2
+    assert "WORKER_IMAGE" not in workflow
+    assert "genie" not in workflow
+    assert "speech" not in workflow
+    assert "speech-worker" not in quality
     assert "--require-main-ancestor" in workflow
     assert "--platform linux/amd64" in workflow
     assert '--deploy-dir "$deploy_dir" --version "$VERSION" --full' in workflow

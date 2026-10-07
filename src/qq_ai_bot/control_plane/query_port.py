@@ -40,7 +40,6 @@ from qq_ai_bot.control_plane.query_types import (
     SpaceBindingIngestRouteView,
     SpaceBindingView,
     SpaceView,
-    SpeechProfileView,
     SystemSnapshot,
     YukiSummaryView,
 )
@@ -282,5 +281,3 @@ class ControlQueryPort(Protocol):
         reveal_first_seen_person: bool,
         reveal_first_seen_space: bool,
     ) -> Page[EmojiAssetView]: ...
-
-    async def list_speech_profiles(self, request: PageRequest) -> Page[SpeechProfileView]: ...

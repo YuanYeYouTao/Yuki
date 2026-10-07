@@ -20,7 +20,6 @@ from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.social.agent_adapter import invoke_social
 from qq_ai_bot.social.db_models import SocialOperationModel
 from qq_ai_bot.social.models import SocialError
-from qq_ai_bot.speech.delivery import VoiceDeliveryService
 
 
 @pytest.mark.asyncio
@@ -182,22 +181,6 @@ async def test_historical_or_deleted_event_reference_never_reconstructs_content_
 async def test_plugin_background_media_uses_only_real_target_without_actor(database, tmp_path):
     env = await social_env(database, tmp_path)
     assert await env.router.cas_takeover_person(env.person) in {"taken", "unchanged"}
-    audio = tmp_path / "voice.wav"
-    audio.write_bytes(b"offline-audio")
-    speech = SimpleNamespace(
-        synthesize=AsyncMock(
-            return_value=SimpleNamespace(
-                generation_id=7,
-                profile_id="default",
-                reference_key="ref",
-                target_language="zh",
-                duration_milliseconds=500,
-            )
-        ),
-        audio_path=lambda _: audio,
-        mark_sent=AsyncMock(),
-    )
-    env.service.speech_delivery = VoiceDeliveryService(speech)
     selector = SimpleNamespace(
         select=AsyncMock(return_value=EmojiSelectionResult(emoji_id="emoji"))
     )
@@ -218,14 +201,6 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
         storage=SimpleNamespace(read=lambda _: b"offline-image"),
     )
     snapshot = SimpleNamespace(
-        speech=SimpleNamespace(
-            enabled=True,
-            agent_delivery_enabled=True,
-            private_enabled=True,
-            group_enabled=True,
-            default_profile="default",
-            split_sentence=True,
-        ),
         emoji=SimpleNamespace(enabled=True),
         vision=SimpleNamespace(),
     )
@@ -260,12 +235,10 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
             runtime_config=snapshot,
             conversation_key=scope.key,
         )
-        for media in ("voice", "emoji"):
+        for media in ("emoji",):
             args = {
                 "text": "#62052>Yuki已收到",
-                media: (
-                    {"request_basis": "agent_initiated"} if media == "voice" else {"goal": "开心"}
-                ),
+                media: {"goal": "开心"},
             }
             token = current_invocation.set(
                 ToolInvocationContext(runtime, call_id=f"{target_kind}-{media}")
@@ -273,9 +246,7 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
             try:
                 result = await invoke_social(env.service, "send_message", args, runtime)
                 assert result["status"] == "succeeded"
-                assert result["delivered_text"] == (
-                    "ゆき已收到" if media == "voice" else "Yuki已收到"
-                )
+                assert result["delivered_text"] == "Yuki已收到"
                 assert env.bot.calls[-1][0] == f"send_{target_kind}_msg"
                 count = len(env.bot.calls)
                 assert await invoke_social(env.service, "send_message", args, runtime) == result
@@ -298,9 +269,6 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
         request = selector.select.await_args.args[0]
         assert request.group_id == scope.group_id
         assert request.private_peer_user_id == scope.private_peer_user_id
-        speech_request = speech.synthesize.await_args.args[0]
-        assert speech_request.canonical_conversation_id == conversation_id
-        assert speech_request.conversation_key == scope.key
 
 
 @pytest.mark.asyncio

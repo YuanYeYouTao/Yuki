@@ -1,6 +1,6 @@
 """Typed delivery accounting for one turn.
 
-Every outbound item is recorded individually so that voice-only, emoji-only,
+Every outbound item is recorded individually so that emoji-only,
 "transport accepted but ledger write failed" and partial deliveries are all
 representable.  ``sent_messages`` style aggregates are derived from the items;
 they are never stored redundantly.
@@ -16,7 +16,6 @@ class DeliveryItemKind(StrEnum):
     """What kind of payload one outbound item carried."""
 
     TEXT = "text"
-    VOICE = "voice"
     EMOJI = "emoji"
     MEDIA = "media"
 
@@ -91,12 +90,12 @@ class DeliveryOutcome:
 
     @property
     def agent_body_delivered(self) -> bool:
-        """True when the agent's actual reply body (text/voice) went out."""
+        """True when the agent's actual reply body (text) went out."""
 
         return any(
             item.transport_accepted
             and item.source is DeliveryItemSource.AGENT_REPLY
-            and item.kind in (DeliveryItemKind.TEXT, DeliveryItemKind.VOICE)
+            and item.kind is DeliveryItemKind.TEXT
             for item in self.items
         )
 

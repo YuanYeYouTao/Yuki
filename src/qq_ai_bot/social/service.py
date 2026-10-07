@@ -11,7 +11,6 @@ import random
 import time
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
 
@@ -72,7 +71,6 @@ class SocialContext:
     runtime_snapshot: Any = None
     turn_token: Any = None
     conversation_key: str = ""
-    voice_delivery_allowed: bool = True
     inbound: Any = None
     # Backend-only proof from the current private inbound event, never tool arguments.
     reply_message_id: str | None = None
@@ -99,7 +97,6 @@ class SocialService:
         self._directory_checked_at = float("-inf")
         self.runtime_config: RuntimeConfigService | None = None
         self.transfer: ArtifactTransfer | None = None
-        self.speech_delivery: Any = None
         self.emoji_delivery: Any = None
 
     async def _validate_self_context(
@@ -202,9 +199,18 @@ class SocialService:
             raise SocialError(str(exc)) from exc
 
     @staticmethod
+    def _message_arguments(args: dict[str, Any]) -> dict[str, Any]:
+        """Reject retired and unknown keys before narrowing to message fields."""
+        outer_fields = {"target", "reply_to_event_id", "work_report"}
+        if set(args) - (SocialMessage.model_fields.keys() | outer_fields):
+            raise SocialError("invalid_message_arguments")
+        return {key: value for key, value in args.items() if key in SocialMessage.model_fields}
+
+    @staticmethod
     def _canonical_send_arguments(args: dict[str, Any]) -> dict[str, Any]:
         """Normalize model-owned text once before receipts or transport planning."""
 
+        SocialService._message_arguments(args)
         canonical = dict(args)
         raw_text = canonical.get("text", "")
         if isinstance(raw_text, str):
@@ -221,9 +227,7 @@ class SocialService:
             canonical.get(key) for key in ("artifact_id", "emoji", "mentions")
         ):
             raise SocialError("empty_message_after_sanitization")
-        SocialMessage.model_validate(
-            {key: value for key, value in canonical.items() if key in SocialMessage.model_fields}
-        )
+        SocialMessage.model_validate(SocialService._message_arguments(canonical))
         return canonical
 
     @staticmethod
@@ -707,10 +711,8 @@ class SocialService:
         if prior is not None and prior.action == "send_message":
             # Calls created before sequence support retain their original receipt.
             return await self.execute("send_message", args, replace(context, sequence_part_index=0))
-        message = SocialMessage.model_validate(
-            {key: value for key, value in args.items() if key in SocialMessage.model_fields}
-        )
-        if not message.text or any((message.artifact_id, message.voice, message.emoji)):
+        message = SocialMessage.model_validate(self._message_arguments(args))
+        if not message.text or any((message.artifact_id, message.emoji)):
             return await self.execute("send_message", args, replace(context, sequence_part_index=0))
         snapshot = context.runtime_snapshot
         if snapshot is None and self.runtime_config is not None:
@@ -802,6 +804,22 @@ class SocialService:
     async def execute(
         self, name: str, args: dict[str, Any], context: SocialContext
     ) -> dict[str, Any]:
+        if name == "send_message" and "voice" in args:
+            # Retired calls may already have crossed the dispatch boundary. Bind
+            # those facts to the original payload before applying today's schema.
+            prior = await self.receipts.find(context.turn_id, context.call_id)
+            if prior is not None and prior.status is not OperationStatus.PREPARED:
+                await self.receipts.prepare(
+                    source_turn_id=context.turn_id,
+                    tool_call_id=context.call_id,
+                    source_conversation_id=context.conversation_id,
+                    action=name,
+                    target=prior.target,
+                    payload=args,
+                )
+                await self._record_work_delivery(prior)
+                return await self._receipt_result(prior, context)
+            raise SocialError("invalid_message_arguments")
         await self._validate_self_context(context)
         if _self_scene(context):
             if name not in {
@@ -962,14 +980,7 @@ class SocialService:
         message = (
             None
             if name == "poke_person"
-            else SocialMessage.model_validate(
-                {
-                    key: value
-                    for key, value in args.items()
-                    if key
-                    in {"text", "artifact_id", "attachment_kind", "mentions", "voice", "emoji"}
-                }
-            )
+            else SocialMessage.model_validate(self._message_arguments(args))
         )
         route_target = target
         if name == "poke_person":
@@ -1107,7 +1118,7 @@ class SocialService:
                         else None
                     ),
                 )
-        if message is not None and (message.voice is not None or message.emoji is not None):
+        if message is not None and message.emoji is not None:
             prior = await self.receipts.find(context.turn_id, context.call_id)
             if prior is not None and prior.status is not OperationStatus.PREPARED:
                 return await self._effect(
@@ -1130,113 +1141,59 @@ class SocialService:
                 if target.kind == "person"
                 else ConversationScope.group(route.sender_account_id, route.external_target_id)
             )
-            if message.voice is not None:
-                if self.speech_delivery is None:
-                    raise SocialError("speech_unavailable")
-                speech_config = context.runtime_snapshot.speech
-                if not speech_config.enabled or not speech_config.agent_delivery_enabled:
-                    raise SocialError("speech_unavailable")
-                if not context.voice_delivery_allowed:
-                    raise SocialError("voice_delivery_disabled")
-                from qq_ai_bot.speech.models import VoiceMode
+            assert message.emoji is not None
+            if self.emoji_delivery is None:
+                raise SocialError("emoji_unavailable")
+            if not context.runtime_snapshot.emoji.enabled:
+                raise SocialError("emoji_unavailable")
+            from qq_ai_bot.emoji.models import (
+                EmojiDeliveryRequest,
+                EmojiPlacement,
+                EmojiPreparationStatus,
+                EmojiReplyMode,
+            )
 
-                prepared = await self.speech_delivery.prepare(
-                    scope=media_scope,
-                    canonical_conversation_id=context.conversation_id,
-                    response_text=message.text,
-                    runtime=context.runtime_snapshot,
-                    token=context.turn_token,
-                    conversation_key=context.conversation_key,
-                    mode=VoiceMode.VOICE,
-                    style_hint=message.voice.style_hint,
-                    language_hint=message.voice.language,
-                )
-                if prepared is None:
-                    raise SocialError("speech_unavailable")
-                media = prepared.message.media[0]
-                if media.local_path is None:
-                    raise SocialError("speech_media_unavailable")
-                data = await asyncio.to_thread(Path(media.local_path).read_bytes)
-                quoted = [segment for segment in params["message"] if segment["type"] == "reply"]
-                params["message"] = [
-                    *quoted,
-                    {
-                        "type": "record",
-                        "data": {"file": "base64://" + base64.b64encode(data).decode("ascii")},
+            prepared_emoji = await self.emoji_delivery.prepare(
+                EmojiDeliveryRequest(
+                    mode=EmojiReplyMode.PREFERRED,
+                    placement=EmojiPlacement.AFTER_TEXT,
+                    goal=message.emoji.goal,
+                    emotion=message.emoji.emotion,
+                    explicit_request=True,
+                ),
+                scope=media_scope,
+                response_text=message.text,
+                runtime=context.runtime_snapshot,
+            )
+            if (
+                prepared_emoji.status is not EmojiPreparationStatus.READY
+                or prepared_emoji.message is None
+            ):
+                raise SocialError("emoji_" + prepared_emoji.reason_code)
+            media = prepared_emoji.message.media[0]
+            params["message"].append(
+                {
+                    "type": "image",
+                    "data": {
+                        "file": "base64://" + base64.b64encode(media.content).decode("ascii"),
+                        "sub_type": 1,
                     },
-                ]
-                del data
-                ledger_segments = (
-                    *quoted,
-                    {
-                        "type": "record",
-                        "data": {
-                            "summary": media.summary,
-                            "mime_type": media.mime_type,
-                            "duration_milliseconds": media.duration_milliseconds,
-                            "profile_id": media.voice_profile_id or "",
-                            "reference_key": media.voice_reference_key or "",
-                            "target_language": media.voice_language or "",
-                            "generation_id": media.generation_id,
-                        },
+                }
+            )
+            ledger_segments = (
+                *params["message"][:-1],
+                {
+                    "type": "image",
+                    "data": {
+                        "emoji_id": media.emoji_id or "",
+                        "summary": media.summary[:2000],
+                        "mime_type": media.mime_type,
+                        "animated": media.animated,
                     },
-                )
-                content = media.spoken_text or message.text
-                outbound = prepared.message
-            else:
-                assert message.emoji is not None
-                if self.emoji_delivery is None:
-                    raise SocialError("emoji_unavailable")
-                if not context.runtime_snapshot.emoji.enabled:
-                    raise SocialError("emoji_unavailable")
-                from qq_ai_bot.emoji.models import (
-                    EmojiDeliveryRequest,
-                    EmojiPlacement,
-                    EmojiPreparationStatus,
-                    EmojiReplyMode,
-                )
-
-                prepared_emoji = await self.emoji_delivery.prepare(
-                    EmojiDeliveryRequest(
-                        mode=EmojiReplyMode.PREFERRED,
-                        placement=EmojiPlacement.AFTER_TEXT,
-                        goal=message.emoji.goal,
-                        emotion=message.emoji.emotion,
-                        explicit_request=True,
-                    ),
-                    scope=media_scope,
-                    response_text=message.text,
-                    runtime=context.runtime_snapshot,
-                )
-                if (
-                    prepared_emoji.status is not EmojiPreparationStatus.READY
-                    or prepared_emoji.message is None
-                ):
-                    raise SocialError("emoji_" + prepared_emoji.reason_code)
-                media = prepared_emoji.message.media[0]
-                params["message"].append(
-                    {
-                        "type": "image",
-                        "data": {
-                            "file": "base64://" + base64.b64encode(media.content).decode("ascii"),
-                            "sub_type": 1,
-                        },
-                    }
-                )
-                ledger_segments = (
-                    *params["message"][:-1],
-                    {
-                        "type": "image",
-                        "data": {
-                            "emoji_id": media.emoji_id or "",
-                            "summary": media.summary[:2000],
-                            "mime_type": media.mime_type,
-                            "animated": media.animated,
-                        },
-                    },
-                )
-                content = message.text
-                outbound = prepared_emoji.message
+                },
+            )
+            content = message.text
+            outbound = prepared_emoji.message
             receipt = await self._effect(
                 name,
                 args,
@@ -1251,19 +1208,16 @@ class SocialService:
             )
             if receipt.get("status") == OperationStatus.SUCCEEDED:
                 try:
-                    if message.voice is not None:
-                        await self.speech_delivery.record_success(outbound)
-                    else:
-                        await self.emoji_delivery.record_send_accepted(
-                            outbound, source="agent_delivery"
+                    await self.emoji_delivery.record_send_accepted(
+                        outbound, source="agent_delivery"
+                    )
+                    if context.inbound is not None:
+                        await self.emoji_delivery.record_success(
+                            outbound,
+                            inbound=context.inbound,
+                            source="agent",
+                            ledger_recorded=True,
                         )
-                        if context.inbound is not None:
-                            await self.emoji_delivery.record_success(
-                                outbound,
-                                inbound=context.inbound,
-                                source="agent",
-                                ledger_recorded=True,
-                            )
                 except Exception:
                     # A post-send metric must never turn a durable success into
                     # an apparent failure that tempts the model to resend.
@@ -1586,7 +1540,7 @@ class SocialService:
                 ) != str(receipt.target.id):
                     return result
             segments = json.loads(event.segments_json)
-            # Speech's spoken text is its visible content. File/image placeholders
+            # Historical speech's spoken text is visible content. File/image placeholders
             # are ledger descriptions, not text the Agent actually sent.
             text = (
                 event.content

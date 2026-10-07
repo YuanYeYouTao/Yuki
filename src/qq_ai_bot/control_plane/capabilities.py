@@ -634,18 +634,6 @@ CONTROL_CAPABILITY_DESCRIPTORS: Final[tuple[ControlCapabilityDescriptor, ...]] =
         CapabilitySensitivity.MUTATE,
         mutating=True,
     ),
-    _descriptor(
-        "control.speech.read",
-        CapabilityFamily.CONTROL,
-        CapabilitySensitivity.METADATA_READ,
-        mutating=False,
-    ),
-    _descriptor(
-        "control.speech.mutate",
-        CapabilityFamily.CONTROL,
-        CapabilitySensitivity.MUTATE,
-        mutating=True,
-    ),
 )
 
 CONTROL_CAPABILITY_IDS: Final[frozenset[str]] = frozenset(

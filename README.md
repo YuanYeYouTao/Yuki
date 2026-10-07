@@ -1,4 +1,4 @@
-<!-- release-baseline: version=3.9.0 schema=0096 -->
+<!-- release-baseline: version=3.9.0 schema=0097 -->
 
 中文（默认） · [English](README.en.md)
 
@@ -35,7 +35,8 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 - **Agent 按需取资料**：长期事实由 `search_memory` 按需检索，不再每轮自动注入。当前、引用、历史附件、工作区和获准工具图片统一交给原主模型的原生多模态输入。
 - **联网与模型错误反馈**：新安装默认开启模型搜索，保留显式禁用和各连接的能力边界；Gemini 明确拒绝工具格式且满足安全恢复条件时，可在原链内反馈给模型，最多纠正两次，不重置任务预算或盲重发消息。
 - **减少回复前的数据库等待**：历史读取、上下文准备和可丢诊断写入移出关键写事务；后台维护采用索引、有界分页和短事务。实际延迟仍受模型响应、工具请求和宿主资源影响。
-- **移除现有 MCP**：连接、工具目录、管理页面、SDK 和自动化入口一并退役；通用工具结果、媒体和回执继续保留。Plugin API 升至 **3.1**，数据库 head 为 **0096**，旧插件需适配并重新批准。
+- **移除现有 MCP**：连接、工具目录、管理页面、SDK 和自动化入口一并退役；通用工具结果、媒体和回执继续保留。Plugin API 升至 **3.2**，数据库 head 为 **0097**，旧插件需适配并重新批准。
+- **退出语音输出**：Genie 合成、声线/偏好、工具参数、SDK/管理功能、Worker 与发布依赖一并移除；入站/引用 ASR、历史语音和原回执保留。升级前先核旧执行、冷备语音事实与被引用文件，再迁移专属表；不自动重发或改发文字。
 
 这些是当前源码变化。各 Provider 的真实 API、自然聊天延迟和长期任务效果仍按各自验收记录核对；Code Mode / Pi 移植尚未合入。
 
@@ -44,12 +45,12 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 | 能力 | 使用方式 |
 | --- | --- |
 | 长期聊天与记忆 | 在群聊、私聊中持续交流，查询旧事，明确要求记住、纠正或删除事实 |
-| 图片、语音和附件 | 发送图片、语音、视频或文档；同一会话内可不引用原附件继续追问 |
+| 图片、语音和附件 | 接收图片、语音、视频或文档；同一会话内可不引用原附件继续追问 |
 | QQ 社交操作 | 查询成员、结构化 @、发送群消息或私聊、撤回自己的消息；目标与权限由后端校验 |
 | 搜索与插件 | 使用配置好的联网工具和获准插件处理外部信息 |
 | 持久工作环境 | 保存项目与文件，运行 Python、Node.js 或 Shell，安装依赖并交付结果 |
 | 后台任务与自动化 | 启动作业后继续聊天，随后查询进度；按已授予的权限执行定时任务和续跑 |
-| 语音与表情 | 可选 Genie-TTS 语音发送，以及表情包检索、分类和发送 |
+| 表情与语音识别 | 表情包检索、分类和发送；入站语音识别保留 |
 
 这些能力取决于部署配置、模型能力和授权范围。任务被接纳、执行完成和消息发送分别有状态记录；调用工具不等于结果已经交付。
 
@@ -77,7 +78,7 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 ## 图片、语音、文件与联网
 
 - **图片与视频**：当前、引用和历史附件，以及 Agent 选取的工作区或获准工具图片，共用原主模型的原生图片输入。历史附件按内部事件索引、会话和缓存有效期核验；缺少图片能力时明确报告未读，不隐式换模型或调用独立 Qwen 视觉摘要。MP4/MOV 视频通过 FFmpeg 抽帧进入同一个主 Agent，不分析音轨，也不保证覆盖所有瞬间。后台表情分类和插件显式视觉能力仍可使用独立视觉连接。
-- **接收语音**：私聊、符合回复策略的群聊及引用语音经 Qwen ASR 转写，进入聊天历史、搜索和 Rollup。可复用千问连接，与 Genie-TTS 语音发送独立配置。见[语音识别说明](docs/speech/recognition.md)。
+- **接收语音**：私聊、符合回复策略的群聊及引用语音经 Qwen ASR 转写，进入聊天历史、搜索和 Rollup。可复用千问连接，不依赖本地合成服务；语音合成与发送已退役。见[语音识别说明](docs/speech/recognition.md)。
 - **文件阅读**：支持文本、代码、CSV/JSON、PDF 文字、DOCX 和 XLSX 的有界提取。扫描 PDF 不做 OCR，表格公式不重算，宏和附件中的代码不会因阅读而执行。在同一会话中，后续提问可不引用原附件；Yuki 按需读取 24 小时临时缓存。
 - **联网**：新安装未设置联网开关时默认 `WEB_MODE=native`；显式 `disabled` 继续禁用，既有连接的搜索选择不被改写。开启不代表任意模型支持搜索：原生搜索需要连接声明实际能力，Gemini 可显式使用独立搜索桥；外部 `web_search` 需要配置后端。外部搜索默认使用 Tavily，也可设置 `WEB_MODE=tavily`、`WEB_SEARCH_BACKEND=deepseek_anthropic` 使用 [DeepSeek 搜索桥](docs/deepseek-search-bridge.md)，Tavily 密钥仅用于可选失败兜底。DeepSeek 主 Agent 当前不声明原生搜索。协议和配置边界见[模型供应商说明](docs/architecture/model-providers.md)。
 
@@ -132,11 +133,11 @@ docker compose up -d
 
 还需完成 QQ 登录，并按所选插件和语音组件的说明进行初始化。首次部署和从旧版升级见 [3.8.4 升级指南](docs/upgrade-3.8.4.md)。已有部署应保留原项目名、Compose 覆盖文件和挂载配置。
 
-正式镜像为 `ghcr.io/yuanyeyoutao/yuki-qqbot:3.8.4`；可选 TTS Worker 镜像为 `ghcr.io/yuanyeyoutao/yuki-genie-tts-worker:3.8.4`。发布包提供 `SHA256SUMS`。单独下载的环境模板附件名为 `default.env.example`，压缩包内仍为 `.env.example`。
+正式镜像为 `ghcr.io/yuanyeyoutao/yuki-qqbot:3.8.4`。历史 3.8.4 的 TTS Worker 资产仍属该旧版本，不适用于当前源码。发布包提供 `SHA256SUMS`。单独下载的环境模板附件名为 `default.env.example`，压缩包内仍为 `.env.example`。
 
 ## 升级与日常维护
 
-3.9.0 源码使用 Plugin API **3.1**，数据库单一 head 为 **0096**；3.8.4 正式包的 head 为 **0072**。升级仍以实际镜像随包迁移为准，应用版本号不能替代数据库检查，不能通过 `stamp` 跳过迁移。插件需移除 MCP 依赖、适配 API 3.1 并重新批准；旧 `llm.generate` / `agent.run` 已统一到主入口。
+3.9.0 源码使用 Plugin API **3.2**，数据库单一 head 为 **0097**；3.8.4 正式包的 head 为 **0072**。升级仍以实际镜像随包迁移为准，应用版本号不能替代数据库检查，不能通过 `stamp` 跳过迁移。插件需移除 MCP 依赖、适配 API 3.2 并重新批准；旧 `llm.generate` / `agent.run` 已统一到主入口。
 
 准备使用 3.9.0 开发提交时，先按[升级草案](docs/upgrade-3.9.0.md)核对旧 MCP 挂载、环境配置和管理权限；退役的管理授权会阻止严格校验通过。数据库提交新 head 后不能仅切回旧镜像，也不能用旧备份覆盖升级后的消息和回执。
 
@@ -184,9 +185,8 @@ uv run pytest
 | [开发约束](docs/architecture/development-contract.md) | 事件 ID、解耦边界、固定工具、续跑和事务原则 |
 | [Rollup](docs/architecture/conversation-rollup.md) | 长会话的历史压缩 |
 | [Memory](docs/architecture/memory-v2.md) | 记忆提取、检索和权限 |
-| [Plugin API 3.1](docs/plugin-development/index.md) | 插件开发与能力边界 |
+| [Plugin API 3.2](docs/plugin-development/index.md) | 插件开发与能力边界 |
 | [工具结果](docs/architecture/tool-results.md) | 结果预算、媒体与持久回执 |
-| [语音发送](docs/speech/operations.md) | Genie-TTS 部署与运维 |
 | [版本化发布](docs/operations/versioned-docker-release.md) | 镜像、下载包与发布流程 |
 | [CHANGELOG](CHANGELOG.md) | 历史变更 |
 

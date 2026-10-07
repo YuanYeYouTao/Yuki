@@ -106,7 +106,6 @@ _METHODS: tuple[tuple[Literal["query", "command"], str, str], ...] = (
     ("query", "read_plugin_observation", "control.plugin.config.content.read"),
     ("command", "configure_plugin", "control.plugin.config.mutate"),
     ("query", "list_emoji_assets", "control.emoji.read"),
-    ("query", "list_speech_profiles", "control.speech.read"),
     ("command", "enable_person", "identity.person.enable"),
     ("command", "disable_person", "identity.person.disable"),
     ("command", "attach_identity_binding", "identity.binding.attach"),
@@ -131,7 +130,6 @@ _METHODS: tuple[tuple[Literal["query", "command"], str, str], ...] = (
     ("command", "mutate_automation", "control.automation.mutate"),
     ("command", "mutate_plugin", "control.plugin.mutate"),
     ("command", "mutate_emoji", "control.emoji.mutate"),
-    ("command", "mutate_speech", "control.speech.mutate"),
     ("command", "cancel_operation", "control.operation.cancel"),
     ("command", "retry_operation", "control.operation.retry"),
 )

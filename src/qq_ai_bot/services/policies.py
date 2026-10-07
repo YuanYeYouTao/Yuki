@@ -32,7 +32,6 @@ class CommandName(StrEnum):
     AUTOMATION = "automation"
     PLUGIN = "plugin"
     EMOJI = "emoji"
-    VOICE = "voice"
     MODEL = "model"
 
 

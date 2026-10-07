@@ -1,4 +1,4 @@
-"""Reviewed configuration for incoming voice, separate from TTS preferences."""
+"""Reviewed configuration for incoming speech recognition."""
 
 from qq_ai_bot.admin.config_spec_helpers import _configured, _field, _spec
 from qq_ai_bot.admin.models import ConfigApplyMode, ConfigSpec
@@ -22,7 +22,7 @@ def asr_config_specs() -> tuple[ConfigSpec, ...]:
                 (
                     "enabled",
                     "语音识别开关",
-                    "自动识别触发回复的语音消息；独立于发送语音开关。",
+                    "自动识别触发回复的语音消息；独立保留，不依赖语音输出。",
                     "boolean",
                 ),
                 ("base_url", "语音识别地址", "留空时与 API Key 一起复用现有千问连接。", "string"),

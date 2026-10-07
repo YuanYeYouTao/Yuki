@@ -69,8 +69,6 @@ from qq_ai_bot.plugin_host.db_models import PluginInstallationModel, PluginNotif
 from qq_ai_bot.plugin_host.manager import PluginManager
 from qq_ai_bot.plugin_host.notification_repository import PluginNotificationRepository
 from qq_ai_bot.plugin_host.ownership import PluginOwnershipError
-from qq_ai_bot.speech.db_models import SpeechVoiceProfileModel
-from qq_ai_bot.speech.repository import VoiceProfileRepository
 from qq_ai_bot.workspace.service import WorkspaceService
 from yuki_plugin_sdk.permissions import PluginPermission
 
@@ -965,40 +963,6 @@ class ControlManagementGateway:
             parsed.resource_id,
             await _persist_revision(session, stored, current.updated_at),
             updated.status.value,
-        )
-
-    async def mutate_speech(
-        self,
-        session: AsyncSession,
-        command: ControlCommand,
-        parsed: ManagementActionPayload,
-    ) -> ManagementMutation:
-        self._require_settings()
-        repository = VoiceProfileRepository(self._database)
-        current = await repository.get_profile(parsed.resource_id, session=session)
-        if current is None:
-            raise ManagementFailure(ProblemCode.NOT_FOUND)
-        _require_revision(state_revision(current.updated_at), command.expected_revision)
-        try:
-            if parsed.action == "enable":
-                updated = await repository.set_enabled(
-                    parsed.resource_id, enabled=True, session=session
-                )
-            elif parsed.action == "disable":
-                updated = await repository.set_enabled(
-                    parsed.resource_id, enabled=False, session=session
-                )
-            else:
-                raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
-        except LookupError as exc:
-            raise ManagementFailure(ProblemCode.NOT_FOUND) from exc
-        stored = await session.get(SpeechVoiceProfileModel, parsed.resource_id)
-        if stored is None:
-            raise ManagementFailure(ProblemCode.STATE_MISMATCH)
-        return ManagementMutation(
-            parsed.resource_id,
-            await _persist_revision(session, stored, current.updated_at),
-            "enabled" if updated.enabled else "disabled",
         )
 
     async def cancel_operation(

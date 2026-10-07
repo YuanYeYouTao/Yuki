@@ -13,7 +13,6 @@ from qq_ai_bot.application.modules.runtime_foundation import (
     RuntimeFoundationBundle,
     RuntimeFoundationModule,
 )
-from qq_ai_bot.application.modules.speech import SpeechBundle, SpeechModule
 from qq_ai_bot.application.modules.web import WebBundle, WebModule
 
 __all__ = [
@@ -37,8 +36,6 @@ __all__ = [
     "PluginModule",
     "RuntimeFoundationBundle",
     "RuntimeFoundationModule",
-    "SpeechBundle",
-    "SpeechModule",
     "WebBundle",
     "WebModule",
 ]

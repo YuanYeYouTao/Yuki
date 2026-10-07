@@ -44,8 +44,9 @@ async def test_cleanup_index_real_round_trip_matches_metadata_and_covers_discove
             ("2026-01-01",),
         )
         before = {table: db.execute(f"SELECT * FROM {table}").fetchall() for _, table, _ in INDEXES}
-    await asyncio.to_thread(command.upgrade, config, "head")
-    await require_canonical_schema(url)
+    # Index rollback belongs to the reversible pre-retirement chain. Current
+    # startup validation still runs after the final real upgrade below.
+    await asyncio.to_thread(command.upgrade, config, "0096")
     async with database.engine.connect() as connection:
         metadata_sql = {
             name: await connection.scalar(

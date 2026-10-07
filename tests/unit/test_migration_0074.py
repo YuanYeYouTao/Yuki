@@ -4,7 +4,6 @@ import sqlite3
 
 from alembic import command
 from alembic.config import Config
-from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect
 
 from qq_ai_bot.execution_trace.db_models import ExecutionTraceEntryModel, ExecutionTraceStateModel
@@ -25,11 +24,11 @@ def test_upgrade_preserves_business_rows_and_matches_metadata(tmp_path, monkeypa
             "'', '{}', '{}', 1, 0, '2026-09-27')"
         )
         previous = db.execute("SELECT * FROM admin_operation_events").fetchall()
-    command.upgrade(config, "head")
+    # Current trace metadata includes later indexes; stop before the destructive
+    # 0097 retirement so this diagnostic-only downgrade remains a real round trip.
+    command.upgrade(config, "0096")
     with sqlite3.connect(path) as db:
-        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            ScriptDirectory.from_config(config).get_current_head(),
-        )
+        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0096",)
         assert db.execute("SELECT * FROM admin_operation_events").fetchall() == previous
         assert db.execute("SELECT count(*) FROM execution_trace_entries").fetchone() == (0,)
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []

@@ -12,7 +12,7 @@ on:
         default: false
         type: boolean
       finalize_version:
-        description: Resume a version whose immutable images were pushed before final verification failed
+        description: Resume a version whose immutable Bot image was pushed before final verification failed
         required: false
         type: string
 
@@ -26,7 +26,6 @@ concurrency:
 
 env:
   BOT_IMAGE: ghcr.io/yuanyeyoutao/yuki-qqbot
-  WORKER_IMAGE: ghcr.io/yuanyeyoutao/yuki-genie-tts-worker
 
 jobs:
   validate:
@@ -136,24 +135,9 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ needs.validate.outputs.version }}
             org.opencontainers.image.licenses=MIT
-      - name: Publish Genie-TTS Worker bootstrap package
-        uses: docker/build-push-action@v6
-        with:
-          context: services/genie_tts_worker
-          platforms: linux/amd64
-          push: true
-          tags: ${{ env.WORKER_IMAGE }}:bootstrap-amd64
-          build-args: |
-            YUKI_VERSION=${{ needs.validate.outputs.version }}
-            VCS_REF=${{ github.sha }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ needs.validate.outputs.version }}
-            org.opencontainers.image.licenses=MIT
       - name: Explain required one-time visibility step
         run: |
-          echo "Bootstrap images were published. In GitHub Packages settings, make both packages Public"
+          echo "The Bot image was published. In GitHub Packages settings, make the Bot package Public"
           echo "before pushing the formal v${{ needs.validate.outputs.version }} tag."
 
   release:
@@ -172,7 +156,7 @@ jobs:
           python-version: "3.12"
       - uses: docker/setup-buildx-action@v3
 
-      - name: Build amd64 release images locally
+      - name: Build amd64 Bot release image locally
         shell: bash
         run: |
           set -euo pipefail
@@ -187,8 +171,7 @@ jobs:
             --label "org.opencontainers.image.licenses=MIT"
           )
           docker buildx build "${common[@]}" --tag "$BOT_IMAGE:$VERSION" .
-          docker buildx build "${common[@]}" --tag "$WORKER_IMAGE:$VERSION" services/genie_tts_worker
-          for image in "$BOT_IMAGE:$VERSION" "$WORKER_IMAGE:$VERSION"; do
+          for image in "$BOT_IMAGE:$VERSION"; do
             test "$(docker image inspect "$image" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')" = "$VERSION"
             test "$(docker image inspect "$image" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$RELEASE_SHA"
             test "$(docker image inspect "$image" --format '{{index .Config.Labels "org.opencontainers.image.source"}}')" = "https://github.com/$GITHUB_REPOSITORY"
@@ -240,14 +223,13 @@ jobs:
             fi
           }
           publish_version "$BOT_IMAGE"
-          publish_version "$WORKER_IMAGE"
 
       - name: Verify anonymous version pulls and Bot startup
         shell: bash
         run: |
           set -euo pipefail
           docker logout ghcr.io
-          docker image rm --force "$BOT_IMAGE:$VERSION" "$WORKER_IMAGE:$VERSION" || true
+          docker image rm --force "$BOT_IMAGE:$VERSION" || true
           anonymous_root="$RUNNER_TEMP/yuki-source-free-anonymous"
           mkdir -p "$anonymous_root"
           unzip -q "dist/yuki-$VERSION-deploy.zip" -d "$anonymous_root"
@@ -256,7 +238,7 @@ jobs:
           test ! -e "$anonymous_deploy_dir/pyproject.toml"
           (
             cd "$anonymous_deploy_dir"
-            YUKI_VERSION="$VERSION" docker compose --profile speech pull
+            YUKI_VERSION="$VERSION" docker compose pull bot
           )
           python scripts/release_smoke.py --deploy-dir "$anonymous_deploy_dir" --version "$VERSION"
 
@@ -271,11 +253,8 @@ jobs:
         run: |
           set -euo pipefail
           docker pull "$BOT_IMAGE:$VERSION"
-          docker pull "$WORKER_IMAGE:$VERSION"
           docker tag "$BOT_IMAGE:$VERSION" "$BOT_IMAGE:latest"
-          docker tag "$WORKER_IMAGE:$VERSION" "$WORKER_IMAGE:latest"
           docker push "$BOT_IMAGE:latest"
-          docker push "$WORKER_IMAGE:latest"
 
       - name: Verify public version and latest digests
         shell: bash
@@ -283,9 +262,8 @@ jobs:
           set -euo pipefail
           docker logout ghcr.io
           docker image rm --force \
-            "$BOT_IMAGE:$VERSION" "$BOT_IMAGE:latest" \
-            "$WORKER_IMAGE:$VERSION" "$WORKER_IMAGE:latest" || true
-          for image in "$BOT_IMAGE" "$WORKER_IMAGE"; do
+            "$BOT_IMAGE:$VERSION" "$BOT_IMAGE:latest" || true
+          for image in "$BOT_IMAGE"; do
             version_digest="$(docker buildx imagetools inspect --raw "$image:$VERSION" | sha256sum | cut -d' ' -f1)"
             latest_digest="$(docker buildx imagetools inspect --raw "$image:latest" | sha256sum | cut -d' ' -f1)"
             test "$version_digest" = "$latest_digest"
@@ -355,12 +333,12 @@ jobs:
           python -m scripts.build_release_bundle --version "$VERSION" --output-dir dist
           test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 8
 
-      - name: Verify immutable public version images
+      - name: Verify immutable public Bot version image
         shell: bash
         run: |
           set -euo pipefail
           docker logout ghcr.io || true
-          for image in "$BOT_IMAGE" "$WORKER_IMAGE"; do
+          for image in "$BOT_IMAGE"; do
             docker pull "$image:$VERSION"
             revision="$(docker image inspect "$image:$VERSION" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
             image_version="$(docker image inspect "$image:$VERSION" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')"
@@ -386,7 +364,7 @@ jobs:
           test ! -e "$deploy_dir/pyproject.toml"
           (
             cd "$deploy_dir"
-            YUKI_VERSION="$VERSION" docker compose --profile speech pull
+            YUKI_VERSION="$VERSION" docker compose pull bot
           )
           python scripts/release_smoke.py --deploy-dir "$deploy_dir" --version "$VERSION"
 
@@ -401,9 +379,7 @@ jobs:
         run: |
           set -euo pipefail
           docker tag "$BOT_IMAGE:$VERSION" "$BOT_IMAGE:latest"
-          docker tag "$WORKER_IMAGE:$VERSION" "$WORKER_IMAGE:latest"
           docker push "$BOT_IMAGE:latest"
-          docker push "$WORKER_IMAGE:latest"
 
       - name: Verify public version and latest digests
         shell: bash
@@ -411,9 +387,8 @@ jobs:
           set -euo pipefail
           docker logout ghcr.io
           docker image rm --force \
-            "$BOT_IMAGE:$VERSION" "$BOT_IMAGE:latest" \
-            "$WORKER_IMAGE:$VERSION" "$WORKER_IMAGE:latest" || true
-          for image in "$BOT_IMAGE" "$WORKER_IMAGE"; do
+            "$BOT_IMAGE:$VERSION" "$BOT_IMAGE:latest" || true
+          for image in "$BOT_IMAGE"; do
             version_digest="$(docker buildx imagetools inspect --raw "$image:$VERSION" | sha256sum | cut -d' ' -f1)"
             latest_digest="$(docker buildx imagetools inspect --raw "$image:latest" | sha256sum | cut -d' ' -f1)"
             test "$version_digest" = "$latest_digest"

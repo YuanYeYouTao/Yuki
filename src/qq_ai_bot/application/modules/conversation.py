@@ -56,7 +56,6 @@ from qq_ai_bot.services.relationship_evaluator import (
 )
 from qq_ai_bot.services.relationship_worker import RelationshipWorker
 from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
-from qq_ai_bot.speech.preference_service import VoicePreferenceService
 from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.web.base import WebSearchProvider
 
@@ -100,7 +99,6 @@ class ConversationModule:
         effect_gate: ConversationEffectGate,
         time_service: TimeContextService,
         web_provider: WebSearchProvider | None,
-        voice_preferences: VoicePreferenceService,
         memory_embeddings: MemoryEmbeddingRuntime,
         tool_artifacts: ToolArtifactWriter | None = None,
         tool_invocations: ToolInvocationRecorder | None = None,
@@ -115,7 +113,6 @@ class ConversationModule:
         self._effect_gate = effect_gate
         self._time_service = time_service
         self._web_provider = web_provider
-        self._voice_preferences = voice_preferences
         self._memory_embeddings = memory_embeddings
         self._tool_artifacts = tool_artifacts
         self._tool_invocations = tool_invocations
@@ -196,7 +193,6 @@ class ConversationModule:
             web_sources=persistence.web_sources,
             runtime_config=self._runtime_config,
             permission_catalog=self._permission_catalog,
-            voice_preferences=self._voice_preferences,
         )
         memory_attribution_worker = MemoryAttributionWorker(
             models=models,
@@ -241,7 +237,6 @@ class ConversationModule:
             time_service=self._time_service,
             prompt_composer=PromptComposer(settings, prompt_registry),
             turn_coordinator=self._turns,
-            voice_preferences=self._voice_preferences,
             tool_artifacts=self._tool_artifacts,
             tool_invocations=self._tool_invocations,
             rollup_repository=persistence.conversation_rollups,

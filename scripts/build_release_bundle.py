@@ -33,10 +33,6 @@ _EMPTY_DIRECTORIES = (
     "workspace",
     "social-transfer",
     "webui-config",
-    "data/speech/cache",
-    "data/speech/genie_data",
-    "data/speech/voices",
-    "data/speech/japanese_frontend/models",
     "plugins",
     "napcat-data",
     "napcat-config",
@@ -104,9 +100,8 @@ def select_bundle_files(files: Iterable[str], version: str) -> dict[str, str]:
             if "tests" in pure.parts or "__pycache__" in pure.parts or pure.suffix == ".pyc":
                 continue
             selected[path] = path
-        if path == "data/.gitkeep" or path.startswith("data/speech/japanese_frontend/"):
-            if "__pycache__" not in pure.parts and pure.suffix != ".pyc":
-                selected[path] = path
+        if path == "data/.gitkeep":
+            selected[path] = path
     _validate_selected_paths(selected.values())
     return selected
 

@@ -268,16 +268,6 @@ class PromptComposer:
                     required=True,
                 )
             )
-        if runtime.speech.enabled:
-            contributions.append(
-                PromptContribution(
-                    id="runtime.speech",
-                    channel=PromptChannel.RUNTIME,
-                    trust=PromptTrust.TRUSTED,
-                    priority=40,
-                    payload={"available": True},
-                )
-            )
         history = self._conversation_history(context)
         remaining = (
             runtime.context.window_tokens * 3

@@ -163,16 +163,6 @@ class PluginResourceLimits(StrictModel):
     prompt_characters: int = Field(default=2_000, ge=0, le=16_000)
 
 
-class GeneratedSpeechHandle(StrictModel):
-    """Opaque Host-owned speech result; it never exposes a local path."""
-
-    handle_id: str = Field(min_length=1, max_length=128)
-    generation_id: int = Field(ge=1)
-    profile_id: str = Field(min_length=1, max_length=128)
-    duration_milliseconds: int = Field(ge=0)
-    expires_at: datetime | None = None
-
-
 class NotificationTarget(StrictModel):
     target_type: Literal["group", "private"]
     target_id: str = Field(min_length=1, max_length=64)

@@ -171,13 +171,11 @@ def test_bot_identity_is_configurable_and_aliases_are_stably_deduplicated() -> N
         {
             "BOT_DISPLAY_NAME": "Mika",
             "BOT_ALIASES": "Mika,mika,米卡, MIKA ",
-            "BOT_VOICE_NAME": "みか",
         }
     )
 
     assert settings.bot_display_name == "Mika"
     assert settings.bot_aliases == ("Mika", "米卡")
-    assert settings.bot_voice_name == "みか"
     assert settings.bot_identity.display_name == "Mika"
 
 

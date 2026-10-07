@@ -109,7 +109,6 @@ class QueryResourceKind(StrEnum):
     PLUGIN_BACKGROUND = "plugin_background"
     PARTICIPATION_FEEDBACK = "participation_feedback"
     EMOJI = "emoji"
-    SPEECH = "speech"
     CHAT_EVENT = "chat_event"
     EXECUTION_TRACE = "execution_trace"
     SOCIAL_RECEIPT = "social_receipt"
@@ -1417,21 +1416,6 @@ class EmojiAssetView:
             raise TypeError("first_seen_person_id must be PersonId or None")
         if self.first_seen_space_id is not None and type(self.first_seen_space_id) is not SpaceId:
             raise TypeError("first_seen_space_id must be SpaceId or None")
-
-
-@final
-@dataclass(frozen=True, slots=True)
-class SpeechProfileView:
-    profile_id: str
-    status: str
-    enabled: bool
-    revision: int
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "revision", _require_int(self.revision, "revision", minimum=1))
-        require_opaque_token(self.profile_id, name="profile_id", max_length=128)
-        require_opaque_token(self.status, name="status", max_length=32)
-        _require_bool(self.enabled, "enabled")
 
 
 @dataclass(frozen=True, slots=True)

@@ -25,7 +25,6 @@ from qq_ai_bot.settings_domains import (
     OneBotSettings,
     PluginSettings,
     RelationshipSettings,
-    SpeechSettings,
     ToolingSettings,
     VisionSettings,
     WebSettings,
@@ -48,7 +47,6 @@ class BotIdentity:
 
     display_name: str
     aliases: tuple[str, ...]
-    voice_name: str
 
 
 class Settings(BaseSettings):
@@ -123,12 +121,6 @@ class Settings(BaseSettings):
     bot_aliases_csv: str = Field(
         default="Yuki,yuki,由纪",
         validation_alias="BOT_ALIASES",
-    )
-    bot_voice_name: str = Field(
-        default="ゆき",
-        min_length=1,
-        max_length=128,
-        validation_alias="BOT_VOICE_NAME",
     )
     bot_persona_file: Path | None = Field(default=None, validation_alias="BOT_PERSONA_FILE")
 
@@ -515,8 +507,7 @@ class Settings(BaseSettings):
     webui_workspace_directory: Path | None = None
     emoji_preview_max_dimension: int = 512
 
-    # Local speech uses a separate, network-isolated Genie-TTS worker.  Optional
-    # limits deliberately use None to mean "no speech-specific limit".
+    # Incoming speech recognition remains independent of outgoing media delivery.
     asr_enabled: bool = True
     asr_base_url: str = ""
     asr_api_key: str = Field(default="", repr=False)
@@ -526,27 +517,6 @@ class Settings(BaseSettings):
     asr_max_duration_seconds: int = Field(default=180, gt=0, le=300)
     asr_global_concurrency: int = Field(default=2, ge=1, le=16)
     asr_queue_max_pending: int = Field(default=8, ge=1, le=64)
-
-    speech_enabled: bool = False
-    speech_provider: str = "genie"
-    speech_socket_path: Path = Path("/run/yuki-speech/genie.sock")
-    speech_root: Path = Path("/data/speech")
-    genie_data_dir: Path = Path("/data/speech/genie_data")
-    speech_default_profile: str = ""
-    speech_worker_start_timeout_seconds: float = 30.0
-    speech_worker_request_timeout_seconds: float = 120.0
-    speech_agent_delivery_enabled: bool = True
-    speech_default_mode: str = "optional"
-    speech_split_sentence: bool = True
-    speech_max_synthesis_characters: int | None = None
-    speech_queue_max_pending: int | None = None
-    speech_cache_retention_hours: int | None = None
-    speech_private_enabled: bool = True
-    speech_group_enabled: bool = True
-    speech_automation_enabled: bool = True
-    speech_plugin_enabled: bool = True
-    speech_text_fallback_enabled: bool = True
-    speech_jp_katakana_enabled: bool = True
 
     automation_enabled: bool = False
     default_timezone: str = "Asia/Shanghai"
@@ -598,23 +568,6 @@ class Settings(BaseSettings):
             raise ValueError("EMOJI_REPLACEMENT_MODE must be off, score, llm, or hybrid")
         return normalized
 
-    @field_validator(
-        "speech_max_synthesis_characters",
-        "speech_queue_max_pending",
-        "speech_cache_retention_hours",
-        mode="before",
-    )
-    @classmethod
-    def _optional_positive_speech_limit(cls, value: object) -> object:
-        if value is None or (isinstance(value, str) and not value.strip()):
-            return None
-        if isinstance(value, bool):
-            raise ValueError("speech limit must be a positive integer or empty")
-        converted = int(value) if isinstance(value, str) else value
-        if not isinstance(converted, int) or converted <= 0:
-            raise ValueError("speech limit must be a positive integer or empty")
-        return converted
-
     @field_validator("memory_rebuild_max_events_per_run", mode="before")
     @classmethod
     def _optional_memory_rebuild_limit(cls, value: object) -> object:
@@ -627,23 +580,7 @@ class Settings(BaseSettings):
             raise ValueError("MEMORY_REBUILD_MAX_EVENTS_PER_RUN must be positive or empty")
         return converted
 
-    @field_validator("speech_provider")
-    @classmethod
-    def _speech_provider(cls, value: str) -> str:
-        normalized = value.strip().casefold()
-        if normalized != "genie":
-            raise ValueError("SPEECH_PROVIDER must be genie")
-        return normalized
-
-    @field_validator("speech_default_mode")
-    @classmethod
-    def _speech_default_mode(cls, value: str) -> str:
-        normalized = value.strip().casefold()
-        if normalized not in {"text", "voice", "text_and_voice", "optional"}:
-            raise ValueError("SPEECH_DEFAULT_MODE must be text, voice, text_and_voice, or optional")
-        return normalized
-
-    @field_validator("bot_display_name", "bot_voice_name")
+    @field_validator("bot_display_name")
     @classmethod
     def _single_line_bot_name(cls, value: str) -> str:
         normalized = value.strip()
@@ -832,7 +769,6 @@ class Settings(BaseSettings):
             self.web,
             self.vision,
             self.emoji,
-            self.speech,
             self.asr,
             self.automation,
             self.tooling,
@@ -912,10 +848,6 @@ class Settings(BaseSettings):
         return EmojiSettings.model_validate(self)
 
     @cached_property
-    def speech(self) -> SpeechSettings:
-        return SpeechSettings.model_validate(self)
-
-    @cached_property
     def asr(self) -> ASRSettings:
         return ASRSettings.model_validate(self)
 
@@ -969,7 +901,6 @@ class Settings(BaseSettings):
         return BotIdentity(
             display_name=self.bot_display_name,
             aliases=self.bot_aliases,
-            voice_name=self.bot_voice_name,
         )
 
     @property

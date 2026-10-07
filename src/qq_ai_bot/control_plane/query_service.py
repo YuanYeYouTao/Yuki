@@ -43,7 +43,6 @@ from qq_ai_bot.control_plane.query_types import (
     SpaceBindingIngestRouteView,
     SpaceBindingView,
     SpaceView,
-    SpeechProfileView,
     SystemSnapshot,
     YukiSummaryView,
 )
@@ -666,10 +665,3 @@ class ControlQueryService:
             reveal_first_seen_person=authorized.principal.allows("identity.person.read"),
             reveal_first_seen_space=authorized.principal.allows("identity.space.read"),
         )
-
-    async def list_speech_profiles(
-        self, context: object, request: PageRequest
-    ) -> Page[SpeechProfileView]:
-        authorized = _require_context(context)
-        _require_capability(authorized, method_capability("list_speech_profiles"))
-        return await self._port.list_speech_profiles(request)

@@ -45,11 +45,6 @@ class PluginPermission(StrEnum):
     EMOJI_SELECT = "emoji.select"
     EMOJI_MANAGE = "emoji.manage"
     EMOJI_HOOK = "emoji.hook"
-    SPEECH_PROFILE_READ = "speech.profile.read"
-    SPEECH_GENERATE = "speech.generate"
-    SPEECH_SEND = "speech.send"
-    SPEECH_MANAGE = "speech.manage"
-    SPEECH_PROVIDER_REGISTER = "speech.provider.register"
     AUTOMATION_READ = "automation.read"
     AUTOMATION_MANAGE_SELF = "automation.manage_self"
     AUTOMATION_ACTION_REGISTER = "automation.action.register"
@@ -83,8 +78,6 @@ HIGH_RISK_PERMISSIONS: frozenset[PluginPermission] = frozenset(
         PluginPermission.AGENT_SESSION,
         PluginPermission.NOTIFICATION_AGENT,
         PluginPermission.EMOJI_MANAGE,
-        PluginPermission.SPEECH_MANAGE,
-        PluginPermission.SPEECH_PROVIDER_REGISTER,
     }
 )
 

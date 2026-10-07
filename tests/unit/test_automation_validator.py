@@ -69,6 +69,9 @@ def _validator() -> AutomationValidator:
 
 
 def test_ordinary_user_can_create_owner_scoped_automation() -> None:
+    send = build_capability_registry().require("social.send_message")
+    assert send.schema_version == 2
+    assert "voice" not in send.input_schema["properties"]
     result = _validator().validate(
         _script(), _provenance(), now_utc=datetime(2026, 7, 27, tzinfo=UTC)
     )
@@ -84,15 +87,26 @@ def test_ordinary_user_cannot_target_another_qq() -> None:
         )
 
 
-def test_static_voice_uses_social_send_message() -> None:
-    payload = _script().model_dump(mode="json")
-    payload["steps"][0]["arguments"]["voice"] = {"request_basis": "agent_initiated"}
-    validated = _validator().validate(
-        AutomationScript.model_validate(payload),
-        _provenance(),
-        now_utc=datetime(2026, 7, 27, tzinfo=UTC),
+@pytest.mark.parametrize("voice", [None, {}, False, "wrong", {"request_basis": "agent_initiated"}])
+def test_static_voice_is_rejected_before_handler_execution(voice) -> None:
+    from unittest.mock import AsyncMock
+
+    handler = AsyncMock()
+    registry = build_capability_registry({"social.send_message": handler})
+    validator = AutomationValidator(
+        settings=make_settings("sqlite+aiosqlite:///:memory:", automation_enabled=True),
+        registry=registry,
     )
-    assert validated.required_capabilities == ("social.send_message",)
+    payload = _script().model_dump(mode="json")
+    payload["steps"][0]["arguments"]["voice"] = voice
+    with pytest.raises(ValueError, match="capability 参数不符合 Schema"):
+        validator.validate(
+            AutomationScript.model_validate(payload),
+            _provenance(),
+            now_utc=datetime(2026, 7, 27, tzinfo=UTC),
+        )
+    handler.assert_not_called()
+    handler.assert_not_awaited()
 
 
 def test_superuser_static_send_still_requires_current_conversation() -> None:

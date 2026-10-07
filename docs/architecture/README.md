@@ -58,6 +58,11 @@ Agent 自主选取历史附件、工作区与工具图片后交给原主模型�
 
 本文是开发导航，不是上线证明；实际部署状态须核对当前镜像、数据库版本与部署记录。
 
+语音输出退役范围及保全门槛见
+[Genie 语音输出移除任务书](genie-speech-output-removal-taskbook-2026-10-07.md)。
+本地实现已撤去 TTS、声线及输出入口，保留 ASR 和历史音频；旧投递按原回执恢复，
+生产冷备、权限清退、迁移和部署尚未执行。
+
 当前模式的错误反馈、执行事实、恢复及非阻断汇报修复见
 [Harness 修复任务书](harness-feedback-and-codemode-compatibility-taskbook-2026-10-06.md)。
 Code Mode 移植延后；本轮复用原 journal/效果回执，数据库防回归与实际交付分别核验。

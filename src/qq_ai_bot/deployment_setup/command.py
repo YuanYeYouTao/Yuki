@@ -27,7 +27,6 @@ from qq_ai_bot.deployment_setup.service import (
     build_model_profiles,
     commit_configuration,
     compose_profiles_with_features,
-    discover_speech_profiles,
     infer_main_protocol,
     load_plugin_setup_states,
     model_profiles_use_flash,
@@ -51,7 +50,6 @@ _SECTIONS = (
     "vision",
     "plugin",
     "automation",
-    "speech",
     "gateway",
 )
 _PERSISTENT_DIRECTORIES = (
@@ -59,10 +57,6 @@ _PERSISTENT_DIRECTORIES = (
     "workspace",
     "social-transfer",
     "data/setup",
-    "data/speech/cache",
-    "data/speech/genie_data",
-    "data/speech/voices",
-    "data/speech/japanese_frontend/models",
     "config",
     "webui-config",
     "plugins",
@@ -246,7 +240,6 @@ def _run_page_state_machine(
         "vision": "Vision",
         "plugin": "Plugin",
         "automation": "Automation",
-        "speech": "Speech",
         "gateway": "QQ Gateway Provider",
     }
     handlers = {
@@ -257,7 +250,6 @@ def _run_page_state_machine(
         "vision": _page_vision,
         "plugin": _page_plugin,
         "automation": _page_automation,
-        "speech": _page_speech,
         "gateway": _page_gateway,
     }
     pages = tuple(_WizardPage(section, titles[section]) for section in sections)
@@ -550,43 +542,6 @@ def _page_automation(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> N
     environment["DEFAULT_TIMEZONE"] = timezone
 
 
-def _page_speech(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
-    environment = draft.environment
-    ui.info("Speech 使用本地 Genie 模型，不会自动下载大型模型。")
-    enabled = ui.confirm(
-        "启用 Speech？",
-        default=_as_bool(environment.get("SPEECH_ENABLED", "false")),
-    )
-    environment["SPEECH_ENABLED"] = _bool_text(enabled)
-    environment["COMPOSE_PROFILES"] = compose_profiles_with_features(
-        environment,
-        gateways=selected_gateway_providers(environment),
-        speech_enabled=enabled,
-    )
-    if not enabled:
-        return
-    speech_root = paths.root / "data/speech"
-    genie_data = speech_root / "genie_data"
-    if not genie_data.is_dir() or not any(genie_data.iterdir()):
-        raise SetupValidationError(
-            "Speech 模型目录为空：请先把 Genie 模型放入 data/speech/genie_data，"
-            "或在当前页面选择关闭"
-        )
-    candidates = discover_speech_profiles(speech_root)
-    if not candidates:
-        raise SetupValidationError(
-            "没有合法声线档案：请检查 data/speech/voices/<profile>/profile.toml"
-        )
-    default_profile = environment.get("SPEECH_DEFAULT_PROFILE", "")
-    if default_profile not in {item.profile_id for item in candidates}:
-        default_profile = candidates[0].profile_id
-    environment["SPEECH_DEFAULT_PROFILE"] = ui.choose(
-        "默认声线",
-        tuple((item.profile_id, f"{item.display_name} ({item.profile_id})") for item in candidates),
-        default=default_profile,
-    )
-
-
 def _page_gateway(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
     del paths
     environment = draft.environment
@@ -605,7 +560,6 @@ def _page_gateway(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None
     environment["COMPOSE_PROFILES"] = compose_profiles_with_features(
         environment,
         gateways=gateways,
-        speech_enabled=_as_bool(environment.get("SPEECH_ENABLED", "false")),
     )
     if "snowluma" in gateways:
         ui.info("SnowLuma 首次启动后，请在本机 WebUI 手动确认协议并扫码登录。")
@@ -707,9 +661,6 @@ def _select_sections(ui: TerminalUI, draft: _SetupDraft) -> tuple[str, ...]:
         ),
         "automation": _feature_label(
             "Automation", _as_bool(draft.environment.get("AUTOMATION_ENABLED", "false"))
-        ),
-        "speech": _feature_label(
-            "Speech", _as_bool(draft.environment.get("SPEECH_ENABLED", "false"))
         ),
         "gateway": "QQ Gateway（" + ", ".join(selected_gateway_providers(draft.environment)) + "）",
     }
@@ -854,7 +805,6 @@ def _render_summary(
         "Vision": _as_bool(environment.get("VISION_ENABLED", "false")),
         "Plugin": _as_bool(environment.get("PLUGIN_SYSTEM_ENABLED", "false")),
         "Automation": _as_bool(environment.get("AUTOMATION_ENABLED", "false")),
-        "Speech": _as_bool(environment.get("SPEECH_ENABLED", "false")),
     }
     for name, enabled in states.items():
         (ui.success if enabled else ui.disabled)(f"{name}：{'开启' if enabled else '关闭'}")
@@ -863,8 +813,6 @@ def _render_summary(
         ui.line("Plugin 待应用：" + (", ".join(pending_plugins) if pending_plugins else "全部关闭"))
     if states["Automation"]:
         ui.line(f"默认时区：{environment.get('DEFAULT_TIMEZONE', '未配置')}")
-    if states["Speech"]:
-        ui.line(f"默认声线：{environment.get('SPEECH_DEFAULT_PROFILE', '未配置')}")
     ui.line("QQ Gateway：" + ", ".join(selected_gateway_providers(environment)))
 
 
@@ -886,7 +834,6 @@ def _render_health(
         ("vision_configured", "Vision"),
         ("plugin_system_enabled", "Plugin"),
         ("automation_enabled", "Automation"),
-        ("speech_enabled", "Speech"),
     ):
         if bool(health.get(key)):
             enabled.append(label)

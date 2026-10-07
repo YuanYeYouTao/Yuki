@@ -83,6 +83,7 @@ class WorkSession:
         self.sequence = 0
         self.recovered_delivery: str | None = None
         self.recovered_phase: str | None = None
+        self.delivery_origin: dict[str, Any] | None = None
         self.progress: dict[str, Any] = {}
         self.compaction_anchor: TurnTranscript | None = None
         self.handoff_work_id: str | None = None
@@ -185,6 +186,26 @@ class WorkSession:
                         ),
                     )
                 )
+            if loaded.delivery_record is not None:
+                delivery = loaded.delivery_record
+                self.progress["delivery_plan"] = deepcopy(delivery["plan"])
+                self.delivery_origin = deepcopy(delivery["origin"])
+                self.event_ids = list(delivery["event_ids"])
+                self.source_keys = list(delivery["source_keys"])
+                self.input_ids = list(delivery["input_ids"])
+                if delivery["source_guard"]:
+                    from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
+
+                    self.source_guard = WorkSourceGuard.restore(delivery["source_guard"])
+                    if not await self.source_guard.check(control):
+                        raise WorkConflict("work_journal_source_changed")
+                if not self._source_present():
+                    raise WorkConflict("work_journal_source_changed")
+                self.recovered_phase = self.recovered_delivery = delivery["phase"]
+                control.ending = (
+                    delivery["ending"] if delivery["phase"] == "delivered" else "suspended"
+                )
+                control.final_delivery = delivery["phase"] == "delivered"
         if not row and control.current and loaded and loaded.reason != "fresh":
             await control.refresh_effects()
             evidence = control.known_effects
@@ -273,6 +294,7 @@ class WorkSession:
             self.compaction_anchor = _decode_compaction_anchor(saved_anchor)
             self.handoff_work_id = metadata.get("handoff_work_id")
             self.progress = dict(metadata.get("progress", {}))
+            self.delivery_origin = metadata.get("delivery_origin")
             if metadata.get("source_guard"):
                 from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
 
@@ -281,11 +303,19 @@ class WorkSession:
             self.event_ids = list(metadata.get("event_ids", []))
             self.source_keys = list(metadata.get("source_keys", []))
             self.input_ids = list(metadata.get("input_ids", []))
+            if (
+                self.delivery_origin is not None
+                and row["phase"] in {"delivery", "delivered"}
+                and not self._source_present()
+            ):
+                raise WorkConflict("work_journal_source_changed")
+            if row["phase"] in {"delivery", "delivered"} and self.progress.get("delivery_plan"):
+                await self.validate_delivery_source()
             await control.refresh_effects()
             if (
                 row["phase"] in {"delivery", "delivered"}
                 and self._source_present()
-                and not await control.pending()
+                and (self.delivery_origin is not None or not await control.pending())
             ):
                 self.recovered_delivery = row["phase"]
                 control.ending = (
@@ -1224,6 +1254,21 @@ class WorkSession:
         assert self.transcript is not None
         return f"{self.transcript.chain_id}:{self.sequence}:{call_id}"
 
+    def delivery_call_key(self, call_id: str) -> str:
+        """Only persisted delivery uses its original chain/sequence across upgrades."""
+        origin = self.delivery_origin
+        if origin is None:
+            return self.call_key(call_id)
+        current = self.control.current
+        if current is None or origin.get("work_id") != current["id"]:
+            raise WorkConflict("delivery_intent_conflict")
+        return f"{origin['chain_id']}:{origin['sequence']}:{call_id}"
+
+    async def validate_delivery_source(self) -> None:
+        """Recheck the original selected sources outside any delivery writer."""
+        if self.source_guard is not None and not await self.source_guard.check(self.control):
+            raise WorkConflict("work_journal_source_changed")
+
     async def _pending_result_key(self, call: dict[str, Any], original: str) -> str:
         """Follow only a Host-persisted readonly link owned by this original Work."""
         key = call.get("readonly_result_key")
@@ -1370,6 +1415,11 @@ class WorkSession:
                         publication=publication,
                         metadata={
                             "sequence": self.sequence,
+                            **(
+                                {"delivery_origin": self.delivery_origin}
+                                if self.delivery_origin is not None
+                                else {}
+                            ),
                             "event_ids": list(
                                 dict.fromkeys(self.event_ids[:1] + self.event_ids[-255:])
                             ),

@@ -250,7 +250,6 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
                 for kind, label in (
                     (AttachmentKind.IMAGE, "wire-image"),
                     (AttachmentKind.FILE, "wire-file"),
-                    (AttachmentKind.AUDIO, "wire-voice"),
                 ):
                     await chat._record_outbound_message(
                         message,
@@ -260,6 +259,19 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
                         OutboundSendReceipt(platform_message_id=f"{protocol.value}-{label}"),
                         origin=TurnOrigin.USER_MESSAGE.value,
                     )
+                # Historical record facts remain visible without constructing a new AUDIO send.
+                await chat._ledger.append(
+                    bot_user_id=message.bot_user_id,
+                    platform_message_id=f"{protocol.value}-wire-voice",
+                    scope_type=message.scope_type,
+                    sender_user_id=message.bot_user_id,
+                    direction="outbound",
+                    content="wire-voice",
+                    segments=({"type": "record", "data": {"summary": "historical audio"}},),
+                    private_peer_user_id=message.sender.user_id,
+                    sender_is_bot=True,
+                    origin=TurnOrigin.USER_MESSAGE.value,
+                )
                 await chat._record_outbound_message(
                     message,
                     OutboundMessage(text="wire-file-caption"),

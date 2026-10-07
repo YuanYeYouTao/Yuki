@@ -380,29 +380,6 @@ class EmojiRuntimeConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class SpeechRuntimeConfig:
-    """Effective local speech policy for one turn."""
-
-    enabled: bool
-    provider: str
-    socket_path: str
-    root: str
-    genie_data_dir: str
-    default_profile: str
-    agent_delivery_enabled: bool
-    default_mode: str
-    split_sentence: bool
-    max_synthesis_characters: int | None
-    queue_max_pending: int | None
-    cache_retention_hours: int | None
-    private_enabled: bool
-    group_enabled: bool
-    automation_enabled: bool
-    plugin_enabled: bool
-    text_fallback_enabled: bool
-
-
-@dataclass(frozen=True, slots=True)
 class RuntimeConfigSnapshot:
     """One internally consistent runtime view for an incoming message."""
 
@@ -416,7 +393,6 @@ class RuntimeConfigSnapshot:
     relationship: RelationshipRuntimeConfig
     vision: VisionRuntimeConfig
     emoji: EmojiRuntimeConfig
-    speech: SpeechRuntimeConfig
     conversation: ConversationRuntimeConfig
     tooling: ToolingRuntimeConfig | None = None
     work_storage: WorkStorageRuntimeConfig = WorkStorageRuntimeConfig()

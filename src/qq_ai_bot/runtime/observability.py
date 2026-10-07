@@ -7,7 +7,7 @@ the id travels as ambient context (a ``ContextVar``), following the same
 convention as OpenTelemetry context propagation.
 
 Assumption (declared, load-bearing): one turn == one asyncio task tree.
-Tasks spawned within a turn (speech synthesis, attribution enqueue) inherit
+Tasks spawned within a turn (media preparation, attribution enqueue) inherit
 the correlation, which is the desired attribution.  Entry points that start
 work *not* belonging to the current turn (autonomous scheduler loops, plugin
 background workers) must bind a fresh correlation for each unit of work; if

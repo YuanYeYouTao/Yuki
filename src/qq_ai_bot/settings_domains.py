@@ -512,29 +512,6 @@ class ASRSettings(DomainSettings):
     asr_queue_max_pending: int = Field(ge=1, le=64)
 
 
-class SpeechSettings(DomainSettings):
-    speech_enabled: bool
-    speech_provider: str
-    speech_socket_path: Path
-    speech_root: Path
-    genie_data_dir: Path
-    speech_default_profile: str
-    speech_worker_start_timeout_seconds: float = Field(gt=0)
-    speech_worker_request_timeout_seconds: float = Field(gt=0)
-    speech_agent_delivery_enabled: bool
-    speech_default_mode: str
-    speech_split_sentence: bool
-    speech_max_synthesis_characters: int | None = Field(default=None, gt=0)
-    speech_queue_max_pending: int | None = Field(default=None, gt=0)
-    speech_cache_retention_hours: int | None = Field(default=None, gt=0)
-    speech_private_enabled: bool
-    speech_group_enabled: bool
-    speech_automation_enabled: bool
-    speech_plugin_enabled: bool
-    speech_text_fallback_enabled: bool
-    speech_jp_katakana_enabled: bool
-
-
 class AutomationSettings(DomainSettings):
     automation_enabled: bool
     default_timezone: str

@@ -81,7 +81,9 @@ _ROUTE_UPDATE_BEFORE_KEYS: Final[frozenset[str]] = frozenset(
 )
 _FAILURE_AFTER_KEYS: Final[frozenset[str]] = frozenset({"problem"})
 _MANAGEMENT_STATE_KEYS: Final[frozenset[str]] = frozenset({"resource", "revision", "status"})
-_MANAGEMENT_OPERATIONS: Final[frozenset[str]] = frozenset(
+# Includes retired operations solely to validate persisted result/audit payloads.
+# Executable operations are declared by CommandOperation and the Control surface.
+_MANAGEMENT_RESULT_OPERATIONS: Final[frozenset[str]] = frozenset(
     {
         "control.config.file.save",
         "control.plugin.configure",
@@ -193,7 +195,6 @@ class CommandOperation(StrEnum):
     TERMINAL_MUTATE = "control.terminal.mutate"
     WORK_MUTATE = "control.work.mutate"
     EMOJI_MUTATE = "control.emoji.mutate"
-    SPEECH_MUTATE = "control.speech.mutate"
     OPERATION_CANCEL = "control.operation.cancel"
     OPERATION_RETRY = "control.operation.retry"
 
@@ -893,7 +894,7 @@ def _project_effective_shape(
         return _project_route_effective(
             routed[1], state, resource_id=resource_id, revision=revision
         )
-    if operation in _MANAGEMENT_OPERATIONS:
+    if operation in _MANAGEMENT_RESULT_OPERATIONS:
         return _project_management_effective(state, resource_id=resource_id, revision=revision)
     raise _mismatch()
 
@@ -1311,7 +1312,7 @@ def _require_management_semantics(
         if action == "ban" and status != "banned":
             raise _mismatch()
         return
-    if operation == CommandOperation.SPEECH_MUTATE.value:
+    if operation == "control.speech.mutate":
         if action not in {"enable", "disable"}:
             raise _mismatch()
         if resource_id != _material_resource(material):
@@ -1431,7 +1432,7 @@ def _require_operation_semantics(
             raise _mismatch()
         _require_state_uuid(semantic_target_id, PresenceId)
         return
-    if operation in _MANAGEMENT_OPERATIONS:
+    if operation in _MANAGEMENT_RESULT_OPERATIONS:
         _require_management_semantics(
             operation,
             state,
@@ -1503,7 +1504,7 @@ def validate_success_audit_before(raw: object, *, operation: str) -> dict[str, J
         if routed[0] == CommandOperation.ROUTE_SET.value and payload == {}:
             return {}
         return _require_route_update_before(payload)
-    if operation in _MANAGEMENT_OPERATIONS:
+    if operation in _MANAGEMENT_RESULT_OPERATIONS:
         if payload == {}:
             return {}
         _require_exact_keys(payload, frozenset({"revision"}))
@@ -1563,7 +1564,7 @@ def validate_failure_audit_before(raw: object, *, operation: str) -> dict[str, J
         return _require_presence_update_before(payload)
     if _route_operation(operation) is not None:
         return _require_route_update_before(payload)
-    if operation in _MANAGEMENT_OPERATIONS:
+    if operation in _MANAGEMENT_RESULT_OPERATIONS:
         return {}
     raise _mismatch()
 
@@ -1660,6 +1661,6 @@ def success_audit_target_type(operation: str) -> str:
         return "space_binding_ingest_route"
     if "space_active" in operation:
         return "space_active_route"
-    if operation in _MANAGEMENT_OPERATIONS:
+    if operation in _MANAGEMENT_RESULT_OPERATIONS:
         return failure_audit_target_type(operation)
     raise _mismatch()

@@ -289,10 +289,7 @@ async def test_persisted_delivery_keeps_original_text_media_and_verified_connect
         OutboundMessage(
             text="旧交付",
             reply_to_message_id="17",
-            media=(
-                OutboundMedia(AttachmentKind.IMAGE, content=b"image"),
-                OutboundMedia(AttachmentKind.AUDIO, content=b"audio"),
-            ),
+            media=(OutboundMedia(AttachmentKind.IMAGE, content=b"image"),),
         )
     )
     assert receipt.platform_message_id == "901"
@@ -304,7 +301,24 @@ async def test_persisted_delivery_keeps_original_text_media_and_verified_connect
                 {"type": "reply", "data": {"id": "17"}},
                 {"type": "text", "data": {"text": "旧交付"}},
                 {"type": "image", "data": {"file": "base64://aW1hZ2U="}},
-                {"type": "record", "data": {"file": "base64://YXVkaW8="}},
             ],
         },
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("group", [False, True])
+async def test_persisted_audio_is_rejected_before_gateway_dispatch(group):
+    bot = SimpleNamespace(call_api=AsyncMock(return_value={"message_id": 901}))
+    sender = OneBotRouteSender(bot, group=group, target_id="42")
+    with pytest.raises(ValueError, match="unsupported_persisted_delivery_media"):
+        await sender.send(
+            OutboundMessage(
+                text="not a text fallback",
+                media=(
+                    OutboundMedia(AttachmentKind.IMAGE, content=b"image"),
+                    OutboundMedia(AttachmentKind.AUDIO, content=b"audio"),
+                ),
+            )
+        )
+    bot.call_api.assert_not_awaited()

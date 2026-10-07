@@ -49,7 +49,7 @@ async def test_production_sources_share_core_without_sharing_turn_state(database
                 version="1.0.0",
                 description="Verify shared Host execution dependencies",
                 entrypoint="fixture:Plugin",
-                plugin_api="3.1",
+                plugin_api="3.2",
                 yuki_requires=">=3.9.0",
             ),
             frozenset(),

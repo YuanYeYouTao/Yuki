@@ -90,7 +90,6 @@ from qq_ai_bot.plugin_host.db_models import (
 )
 from qq_ai_bot.runtime.observability import hash_conversation_key
 from qq_ai_bot.services.canonical_owners import resolve_live_person_id
-from qq_ai_bot.speech.db_models import PersonSpeechPreferenceModel, SpeechGenerationModel
 
 
 @dataclass(frozen=True, slots=True)
@@ -781,11 +780,6 @@ class PeopleRepository:
             )
         )
         await session.execute(
-            delete(PersonSpeechPreferenceModel).where(
-                PersonSpeechPreferenceModel.canonical_person_id == person_id,
-            )
-        )
-        await session.execute(
             delete(PersonTimeSettingModel).where(
                 PersonTimeSettingModel.canonical_person_id == person_id,
             )
@@ -974,7 +968,7 @@ class PeopleRepository:
         RESTRICT: chat_events, conversation_scopes, web_search_runs,
         tool_invocations, runtime_turn_observations,
         plugin_notification_outbox, plugin_background_turn_jobs,
-        speech_generations and model_invocations.
+        model_invocations.
         CASCADE: canonical rollup / job / emergency overlay.
         Deferred NO ACTION: conversation aliases (deleted later).
 
@@ -999,15 +993,11 @@ class PeopleRepository:
         )
         plain_hashes = tuple(hash_conversation_key(key) for key in alias_keys)
         observation_match = [RuntimeTurnObservationModel.canonical_person_id == person_id]
-        speech_match = []
         tool_match = []
         web_match = []
         if conversation_ids:
             observation_match.append(
                 RuntimeTurnObservationModel.canonical_conversation_id.in_(conversation_ids)
-            )
-            speech_match.append(
-                SpeechGenerationModel.canonical_conversation_id.in_(conversation_ids)
             )
             tool_match.append(ToolInvocationModel.canonical_conversation_id.in_(conversation_ids))
             web_match.append(WebSearchRunModel.canonical_conversation_id.in_(conversation_ids))
@@ -1015,7 +1005,6 @@ class PeopleRepository:
             observation_match.append(
                 RuntimeTurnObservationModel.conversation_key_hash.in_(plain_hashes)
             )
-            speech_match.append(SpeechGenerationModel.conversation_key_hash.in_(plain_hashes))
             tool_match.append(ToolInvocationModel.conversation_key_hash.in_(plain_hashes))
         if alias_keys:
             web_match.append(WebSearchRunModel.conversation_key.in_(alias_keys))
@@ -1038,8 +1027,6 @@ class PeopleRepository:
             )
         )
         await session.execute(delete(ExecutionTraceEntryModel))
-        if speech_match:
-            await session.execute(delete(SpeechGenerationModel).where(or_(*speech_match)))
         if tool_match:
             await session.execute(delete(ToolInvocationModel).where(or_(*tool_match)))
         if web_match:

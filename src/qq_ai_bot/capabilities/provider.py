@@ -61,7 +61,6 @@ _ORIGIN_OVERRIDES: dict[str, frozenset[TurnOrigin]] = {
     "poke_person": _SOCIAL_ORIGINS,
     "get_group_members": _SOCIAL_ORIGINS | frozenset({TurnOrigin.SELF_INITIATIVE}),
     "recall_own_message": _SOCIAL_ORIGINS,
-    "set_voice_preference": _DIRECT_ORIGINS,
 }
 
 _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
@@ -161,11 +160,6 @@ _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
         CapabilityEffect.PLATFORM_MUTATE,
         CapabilityRisk.MUTATE,
     ),
-    "set_voice_preference": (
-        "reply.voice.preference.write",
-        CapabilityEffect.WRITE_STATE,
-        CapabilityRisk.MUTATE,
-    ),
 }
 
 _CORE_USE_WHEN: dict[str, tuple[str, ...]] = {
@@ -179,8 +173,7 @@ _CORE_USE_WHEN: dict[str, tuple[str, ...]] = {
     "web_search": ("搜索", "联网", "查资料", "最新新闻", "搜下", "上网"),
     "read_webpage": ("打开网页", "阅读链接", "看这个URL"),
     "call_onebot_api": ("禁言", "踢人", "QQ群操作"),
-    "send_message": ("发消息", "回复", "语音", "表情", "引用这条"),
-    "set_voice_preference": ("以后用语音", "默认语音", "不要语音"),
+    "send_message": ("发消息", "回复", "表情", "引用这条"),
     "read_tool_artifact": ("读取工具结果", "artifact"),
 }
 
@@ -285,8 +278,7 @@ _CORE_SEARCH_TAGS: dict[str, tuple[str, ...]] = {
     ),
     "read_webpage": ("网页", "链接", "URL", "打开网页", "读取页面", "看这个链接"),
     "call_onebot_api": ("QQ群", "好友", "禁言", "踢人", "群设置", "QQ操作"),
-    "send_message": ("发消息", "回复", "语音", "表情", "来张图"),
-    "set_voice_preference": ("以后用语音", "默认语音", "不要语音", "语音偏好"),
+    "send_message": ("发消息", "回复", "表情", "来张图"),
 }
 
 _ADMIN_READ = frozenset({"admin_get_config", "admin_get_history"})

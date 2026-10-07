@@ -112,7 +112,7 @@ async def _history(
                 plugin_id="soft-history",
                 name="test source hold",
                 version="1",
-                plugin_api="3.1",
+                plugin_api="3.2",
                 yuki_requires="*",
                 manifest_hash="a" * 64,
                 entrypoint="test.py",

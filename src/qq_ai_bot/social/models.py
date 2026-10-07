@@ -35,14 +35,6 @@ class SocialMention(BaseModel):
     binding_id: UUID | None = None
 
 
-class SocialVoice(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    style_hint: str = Field(default="", max_length=128)
-    language: Literal["auto", "zh", "jp"] = "auto"
-    request_basis: Literal["user_requested", "agent_initiated"]
-
-
 class SocialEmoji(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -56,7 +48,6 @@ class SocialMessage(BaseModel):
     text: str = Field(default="", max_length=12000, repr=False)
     artifact_id: UUID | None = None
     attachment_kind: Literal["image", "file"] | None = None
-    voice: SocialVoice | None = None
     emoji: SocialEmoji | None = None
     mentions: list[SocialMention] = Field(default_factory=list, max_length=20)
 
@@ -71,10 +62,8 @@ class SocialMessage(BaseModel):
             raise ValueError("message_empty")
         if (self.artifact_id is None) != (self.attachment_kind is None):
             raise ValueError("attachment_kind_required")
-        if sum((self.artifact_id is not None, self.voice is not None, self.emoji is not None)) > 1:
+        if sum((self.artifact_id is not None, self.emoji is not None)) > 1:
             raise ValueError("message_media_conflict")
-        if self.voice is not None and (not self.text.strip() or self.mentions):
-            raise ValueError("voice_text_required")
         return self
 
 

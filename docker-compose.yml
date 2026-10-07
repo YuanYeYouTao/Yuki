@@ -34,8 +34,6 @@ services:
       - ./workspace:/app/workspace
       - ./social-transfer:/app/social-transfer
       - /run/yuki-sandbox:/run/yuki-sandbox:ro
-      - ./data/speech:/data/speech
-      - speech-runtime:/run/yuki-speech
       - ./napcat-config:/app/napcat-config
       - ./snowluma-data:/app/snowluma-data
       - ./config:/app/config:ro
@@ -54,45 +52,6 @@ services:
       retries: 5
       start_period: 15s
     stop_grace_period: 20s
-
-  genie-tts-worker:
-    profiles: ["speech"]
-    image: ghcr.io/yuanyeyoutao/yuki-genie-tts-worker:${YUKI_VERSION:?missing}
-    platform: linux/amd64
-    pull_policy: missing
-    init: true
-    restart: unless-stopped
-    network_mode: none
-    environment:
-      GENIE_DATA_DIR: /data/speech/genie_data
-      HF_HUB_OFFLINE: "1"
-      TRANSFORMERS_OFFLINE: "1"
-      HF_HUB_DISABLE_TELEMETRY: "1"
-      SPEECH_JP_KATAKANA_ENABLED: ${SPEECH_JP_KATAKANA_ENABLED:-true}
-      SPEECH_JP_KATAKANA_ASSET_DIR: /data/speech/japanese_frontend/models
-      SPEECH_JP_KATAKANA_LEXICON: /data/speech/japanese_frontend/lexicon.toml
-    command:
-      - --socket
-      - /run/yuki-speech/genie.sock
-      - --data-dir
-      - /data/speech/genie_data
-      - --speech-root
-      - /data/speech
-      - --idle-recycle-seconds
-      - ${SPEECH_WORKER_IDLE_RECYCLE_SECONDS:-300}
-    volumes:
-      - ./data/speech/genie_data:/data/speech/genie_data:ro
-      - ./data/speech/voices:/data/speech/voices:ro
-      - ./data/speech/cache:/data/speech/cache
-      - ./data/speech/japanese_frontend:/data/speech/japanese_frontend:ro
-      - speech-runtime:/run/yuki-speech
-    healthcheck:
-      test: ["CMD", "python", "-c", "import os; raise SystemExit(not os.path.exists('/run/yuki-speech/genie.sock'))"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 20s
-    stop_grace_period: 30s
 
   napcat:
     profiles: ["napcat"]
@@ -161,6 +120,3 @@ networks:
   qq-ai-bot-network:
     name: qq-ai-bot-network
     driver: bridge
-
-volumes:
-  speech-runtime:

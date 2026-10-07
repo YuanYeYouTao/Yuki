@@ -18,8 +18,8 @@ name = "Hello"
 version = "0.1.0"
 description = "最小 Hello 插件"
 entrypoint = "hello_plugin:HelloPlugin"
-plugin_api = "3.1"
-yuki_requires = ">=3.5.3,<4.0"
+plugin_api = "3.2"
+yuki_requires = ">=3.9.0,<4.0"
 permissions = ["command.register"]
 
 [limits]

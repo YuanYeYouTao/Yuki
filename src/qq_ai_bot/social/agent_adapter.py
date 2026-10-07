@@ -49,7 +49,6 @@ async def invoke_social(
             runtime_snapshot=getattr(runtime, "runtime_config", None),
             turn_token=getattr(runtime, "turn_token", None),
             conversation_key=getattr(runtime, "conversation_key", ""),
-            voice_delivery_allowed=bool(getattr(runtime, "voice_delivery_allowed", True)),
         )
         try:
             return await service.execute(name, arguments, context)
@@ -105,7 +104,6 @@ async def invoke_social(
             runtime_snapshot=getattr(runtime, "runtime_config", None),
             turn_token=getattr(runtime, "turn_token", None),
             conversation_key=getattr(runtime, "conversation_key", ""),
-            voice_delivery_allowed=bool(getattr(runtime, "voice_delivery_allowed", True)),
         )
         try:
             return await service.execute(name, arguments, context)
@@ -202,7 +200,6 @@ async def invoke_social(
         runtime_snapshot=getattr(runtime, "runtime_config", None),
         turn_token=getattr(runtime, "turn_token", None),
         conversation_key=getattr(runtime, "conversation_key", ""),
-        voice_delivery_allowed=bool(getattr(runtime, "voice_delivery_allowed", True)),
         inbound=inbound,
     )
     try:

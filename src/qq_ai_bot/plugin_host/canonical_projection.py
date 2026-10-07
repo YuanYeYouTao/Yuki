@@ -1,4 +1,4 @@
-"""Host-only canonical identity projection for Plugin API 3.1 SDK contexts.
+"""Host-only canonical identity projection for Plugin API 3.2 SDK contexts.
 
 Plugins, manifests, and caller payloads never supply these fields. The Host
 copies trusted ingress/runtime stamps or an already-bound automation context.

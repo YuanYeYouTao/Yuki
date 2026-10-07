@@ -71,8 +71,6 @@ from qq_ai_bot.sandbox.environment_tools import EXECUTION_TOOLS, READ_TOOLS, SAN
 from qq_ai_bot.services.context_boundary import ContextBoundaryReader
 from qq_ai_bot.services.evidence_state import evidence_state
 from qq_ai_bot.services.turn_coordinator import TurnToken
-from qq_ai_bot.speech.models import VoicePreferenceMode
-from qq_ai_bot.speech.preference_service import VoicePreferenceService
 from qq_ai_bot.time.formatting import local_iso
 from qq_ai_bot.web.base import WebSearchError, WebSearchProvider, normalize_public_url
 from qq_ai_bot.web.models import (
@@ -182,7 +180,6 @@ class ToolRuntime:
     turn_token: TurnToken | None = None
     turn_snapshot: ConversationTurnSnapshot | None = None
     visible_event_ids: frozenset[int] = frozenset()
-    voice_delivery_allowed: bool = True
     selection_query: str = ""
     max_model_requests_override: int | None = None
     max_tool_calls_override: int | None = None
@@ -394,7 +391,6 @@ class AgentToolService:
         web_sources: WebSearchSourceRepository | None = None,
         runtime_config: RuntimeConfigService | None = None,
         permission_catalog: PermissionCatalogService | None = None,
-        voice_preferences: VoicePreferenceService | None = None,
     ) -> None:
         self._settings = settings
         self._ledger = ledger
@@ -425,7 +421,6 @@ class AgentToolService:
             settings=settings,
             config_registry=self._runtime_config.registry,
         )
-        self._voice_preferences = voice_preferences
         self.social_service: Any = None
         self.short_state: Any = None
         self.workspace_service: Any = None
@@ -879,34 +874,6 @@ class AgentToolService:
                     ),
                 )
             )
-        if runtime.declaration_only or (
-            self._voice_available_for_turn(runtime)
-            and not runtime.read_only
-            and runtime.origin
-            in {
-                TurnOrigin.USER_MESSAGE,
-                TurnOrigin.AUTONOMOUS_GROUP,
-                TurnOrigin.SCHEDULED_AUTOMATION,
-            }
-        ):
-            tools.append(
-                ChatTool(
-                    name="set_voice_preference",
-                    description=(
-                        "把当前用户的长期语音偏好写入数据库。一次性语音作为发送内容处理，"
-                        "不要用本工具。必须在回执确认写入后才能声称偏好已保存。"
-                    ),
-                    parameters=_object_schema(
-                        {
-                            "mode": {
-                                "type": "string",
-                                "enum": ["text_only", "auto", "prefer_voice"],
-                            }
-                        },
-                        required=("mode",),
-                    ),
-                )
-            )
         from qq_ai_bot.sandbox.client import sandbox_tools
         from qq_ai_bot.social.tools import social_tool_definitions
         from qq_ai_bot.workspace.service import workspace_tools
@@ -1172,8 +1139,6 @@ class AgentToolService:
                     return await self._read_webpage(arguments, runtime)
                 if name == "call_onebot_api":
                     return await self._call_onebot(arguments, runtime)
-                if name == "set_voice_preference":
-                    return await self._set_voice_preference(arguments, runtime)
                 return self._result(error="unknown_tool", detail=f"未知工具：{name}")
             except WebSearchError as exc:
                 return self._web_result(error=exc.code, detail=exc.detail)
@@ -1201,58 +1166,6 @@ class AgentToolService:
             _MEMORY_READ_DUPLICATE.reset(duplicate_token)
             _MEMORY_READ_CACHE.reset(cache_token)
             _RUNTIME_SNAPSHOT.reset(token)
-
-    @staticmethod
-    def _voice_available_for_turn(runtime: ToolRuntime) -> bool:
-        config = runtime.runtime_config
-        if config is None or not config.speech.enabled:
-            return False
-        if not config.speech.agent_delivery_enabled:
-            return False
-        return (
-            config.speech.private_enabled
-            if runtime.effective_scope_type is ScopeType.PRIVATE
-            else config.speech.group_enabled
-        )
-
-    async def _set_voice_preference(
-        self,
-        arguments: dict[str, Any],
-        runtime: ToolRuntime,
-    ) -> str:
-        if (
-            runtime.origin
-            not in {
-                TurnOrigin.USER_MESSAGE,
-                TurnOrigin.AUTONOMOUS_GROUP,
-                TurnOrigin.SCHEDULED_AUTOMATION,
-            }
-            or runtime.read_only
-        ):
-            return self._result(error="voice_preference_forbidden", detail="本轮不能修改语音偏好")
-        if self._voice_preferences is None:
-            return self._result(error="speech_unavailable", detail="语音偏好服务不可用")
-        extra = set(arguments) - {"mode"}
-        if extra:
-            return self._result(error="invalid_arguments", detail="语音偏好只接受 mode")
-        mode = arguments.get("mode")
-        if mode not in {"text_only", "auto", "prefer_voice"}:
-            return self._result(error="invalid_arguments", detail="mode 无效")
-        saved = await self._voice_preferences.set_persistent(
-            user_id=runtime.require_actor().user_id,
-            mode=VoicePreferenceMode(mode),
-            source_message_id=runtime.require_actor().source_key,
-            origin=runtime.origin,
-        )
-        if saved is None:
-            return self._result(error="voice_preference_not_written", detail="语音偏好没有写入")
-        return self._result(
-            data={
-                "written": True,
-                "mode": saved.mode.value,
-                "confirmation": "persisted",
-            }
-        )
 
     def _my_capabilities(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
         """Return only the report derived from this authoritative inbound event."""

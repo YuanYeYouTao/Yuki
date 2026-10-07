@@ -833,46 +833,6 @@ async def test_send_message_media_uses_same_receipt_and_no_replay(
 
     env = await social_env(database, tmp_path)
     assert await env.router.cas_takeover_person(env.person) in {"taken", "unchanged"}
-    audio = tmp_path / "reply.wav"
-    audio.write_bytes(b"test-audio")
-    voice_message = OutboundMessage(
-        media=(
-            OutboundMedia(
-                kind=AttachmentKind.AUDIO,
-                mime_type="audio/wav",
-                summary="语音消息",
-                local_path=str(audio),
-                spoken_text="你好",
-                generation_id=7,
-            ),
-        )
-    )
-    env.service.speech_delivery = SimpleNamespace(
-        prepare=AsyncMock(return_value=SimpleNamespace(message=voice_message)),
-        record_success=AsyncMock(),
-    )
-    context = replace(
-        env.context,
-        call_id="voice",
-        actor=SimpleNamespace(),
-        runtime_snapshot=SimpleNamespace(
-            speech=SimpleNamespace(enabled=True, agent_delivery_enabled=True),
-            emoji=SimpleNamespace(enabled=True),
-        ),
-        voice_delivery_allowed=True,
-    )
-    voice_args = {
-        "target": {"kind": "person", "target_id": env.person},
-        "text": "你好",
-        "voice": {"request_basis": "agent_initiated"},
-    }
-    sent = await env.service.execute("send_message", voice_args, context)
-    assert sent["status"] == "succeeded"
-    assert env.bot.calls[-1][1]["message"][0]["type"] == "record"
-    assert await env.service.execute("send_message", voice_args, context) == sent
-    env.service.speech_delivery.prepare.assert_awaited_once()
-    env.service.speech_delivery.record_success.assert_awaited_once()
-
     emoji_message = OutboundMessage(
         media=(
             OutboundMedia(
@@ -896,7 +856,11 @@ async def test_send_message_media_uses_same_receipt_and_no_replay(
         record_send_accepted=AsyncMock(),
         record_success=AsyncMock(),
     )
-    emoji_context = replace(context, call_id="emoji")
+    emoji_context = replace(
+        env.context,
+        call_id="emoji",
+        runtime_snapshot=SimpleNamespace(emoji=SimpleNamespace(enabled=True)),
+    )
     emoji_args = {
         "target": {"kind": "person", "target_id": env.person},
         "text": "看这个",

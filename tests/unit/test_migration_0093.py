@@ -43,8 +43,9 @@ async def test_compaction_fresh_install_upgrade_downgrade_preserves_schema(
             "SELECT type,name,tbl_name,sql FROM sqlite_master "
             "WHERE tbl_name LIKE 'memory_%' ORDER BY type,name"
         ).fetchall()
-    await asyncio.to_thread(command.upgrade, config, "head")
-    await require_canonical_schema(url)
+    # Complete the reversible historical round trip before upgrading through
+    # 0097; the final current-head startup guard remains below.
+    await asyncio.to_thread(command.upgrade, config, "0096")
     name, table, _columns = migration.INDEXES[0]
     async with database.engine.connect() as connection:
         metadata_sql = await connection.scalar(

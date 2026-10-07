@@ -20,7 +20,7 @@ Memory release check 读取项目版本与迁移图，不另存版本常量或�
 4. 发布提交同步更新 README 的正式版下载入口，并在流水线完成后核对链接、镜像和附件。只有推进开发基线时，不提前声称新镜像或安装包已发布。
 
 首次配置 GHCR 可使用 workflow 的 bootstrap 模式；该模式只准备镜像访问，不等于正式发布。
-Genie-TTS Worker 的发行镜像标签跟随应用版本，其内部组件版本独立维护。
+当前 bootstrap、release 和 finalize 仅构建、拉取和校验 Bot 镜像；此前 Release 的 Genie-TTS Worker 资产保留历史归属，不作为新部署依赖。
 
 新部署的配置向导默认开启模型搜索，不要求新增 Tavily 密钥。Gemini 主 Agent
 明确选择 `search_mode="bridge"`，通过独立请求检索真实来源；支持原生搜索的

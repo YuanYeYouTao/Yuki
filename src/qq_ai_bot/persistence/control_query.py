@@ -82,7 +82,6 @@ from qq_ai_bot.control_plane.query_types import (
     SpaceBindingIngestRouteView,
     SpaceBindingView,
     SpaceView,
-    SpeechProfileView,
     SystemSnapshot,
     YukiSummaryView,
     classify_route_reference,
@@ -149,7 +148,6 @@ from qq_ai_bot.plugin_host.configuration_service import (
 )
 from qq_ai_bot.plugin_host.db_models import PluginInstallationModel
 from qq_ai_bot.plugin_host.manager import PluginManagementRejected, PluginManager
-from qq_ai_bot.speech.db_models import SpeechVoiceProfileModel
 from qq_ai_bot.workspace.service import WorkspaceService
 from qq_ai_bot.workspace.store import WorkspaceStore
 from yuki_plugin_sdk.observation import PluginObservationRequest
@@ -2384,52 +2382,6 @@ class ControlQueryAdapter:
                 kind=QueryResourceKind.EMOJI,
                 phase=QueryCursorPhase.CANONICAL,
                 next_key=rows[-1].id if more else None,
-                snapshot_at=snapshot_at,
-                total=sql_window.total,
-                number=request.number,
-            )
-
-    async def list_speech_profiles(self, request: PageRequest) -> Page[SpeechProfileView]:
-        snapshot_at = _now()
-        async with self._reader() as session:
-            epoch, _revision = await self._runtime(session)
-            _phase, key = self._cursor_state(request, QueryResourceKind.SPEECH, epoch=epoch)
-            stmt = select(SpeechVoiceProfileModel)
-            if key is not None:
-                stmt = stmt.where(SpeechVoiceProfileModel.profile_id > key)
-            stmt = stmt.order_by(SpeechVoiceProfileModel.profile_id.asc()).limit(request.limit + 1)
-            rows = list(
-                await session.scalars(
-                    (
-                        sql_window := await numbered_statement(
-                            session,
-                            stmt,
-                            request,
-                            order=(
-                                SpeechVoiceProfileModel.updated_at.desc(),
-                                SpeechVoiceProfileModel.profile_id.desc(),
-                            ),
-                        )
-                    ).statement
-                )
-            )
-            more = len(rows) == request.limit + 1
-            if more:
-                rows = rows[:-1]
-            items = [
-                SpeechProfileView(
-                    profile_id=str(row.profile_id),
-                    revision=state_revision(row.updated_at),
-                    status="enabled" if row.enabled else "disabled",
-                    enabled=bool(row.enabled),
-                )
-                for row in rows
-            ]
-            return self._page(
-                items,
-                kind=QueryResourceKind.SPEECH,
-                phase=QueryCursorPhase.CANONICAL,
-                next_key=rows[-1].profile_id if more else None,
                 snapshot_at=snapshot_at,
                 total=sql_window.total,
                 number=request.number,

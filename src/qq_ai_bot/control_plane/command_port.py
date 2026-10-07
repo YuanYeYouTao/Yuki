@@ -203,13 +203,6 @@ class ControlCommandPort(Protocol):
         command: ControlCommand,
     ) -> ControlResult: ...
 
-    async def mutate_speech(
-        self,
-        principal: ControlPrincipal,
-        target: object,
-        command: ControlCommand,
-    ) -> ControlResult: ...
-
     async def cancel_operation(
         self,
         principal: ControlPrincipal,

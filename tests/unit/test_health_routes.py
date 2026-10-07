@@ -62,3 +62,27 @@ async def test_livez_responds_while_detailed_health_waits(monkeypatch: pytest.Mo
     assert detailed.status_code == 200
     assert detailed.json()["status"] == "degraded"
     assert detailed.json()["database"] == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_container_and_health_have_no_speech_dependency(database, tmp_path):
+    from tests.conftest import make_settings
+
+    from qq_ai_bot.container import ApplicationContainer
+    from qq_ai_bot.health import build_health_payload
+
+    plugin_directory = tmp_path / "plugins"
+    plugin_directory.mkdir()
+    app = ApplicationContainer(
+        make_settings(database.url, plugin_directory=plugin_directory, plugin_system_enabled=False),
+        database=database,
+    )
+    try:
+        assert not any("speech" in name for name in app.lifecycle.names)
+        assert not hasattr(app, "speech") and not hasattr(app, "voice_preferences")
+        payload = await build_health_payload(app)
+        assert "asr" in payload
+        assert not any(key.startswith("speech") for key in payload)
+    finally:
+        await app.model_clients.close()
+        await app.plugin_http.close()

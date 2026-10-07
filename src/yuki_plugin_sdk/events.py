@@ -75,17 +75,6 @@ class EventName(StrEnum):
     EMOJI_FALLBACK_TEXT_SENT = "emoji.fallback_text_sent"
     EMOJI_MISSING = "emoji.missing"
     EMOJI_RESTORED = "emoji.restored"
-    SPEECH_WORKER_STARTED = "speech.worker_started"
-    SPEECH_WORKER_STOPPED = "speech.worker_stopped"
-    SPEECH_PROFILE_LOADED = "speech.profile_loaded"
-    SPEECH_PROFILE_FAILED = "speech.profile_failed"
-    SPEECH_GENERATION_STARTED = "speech.generation_started"
-    SPEECH_GENERATION_COMPLETED = "speech.generation_completed"
-    SPEECH_GENERATION_FAILED = "speech.generation_failed"
-    SPEECH_GENERATION_CANCELLED = "speech.generation_cancelled"
-    SPEECH_QUEUED = "speech.queued"
-    SPEECH_SENT = "speech.sent"
-    SPEECH_SEND_FAILED = "speech.send_failed"
 
 
 class EventEnvelope(StrictModel):

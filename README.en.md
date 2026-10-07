@@ -1,4 +1,4 @@
-<!-- release-baseline: version=3.9.0 schema=0096 -->
+<!-- release-baseline: version=3.9.0 schema=0097 -->
 
 [简体中文](README.md) · English
 
@@ -35,7 +35,8 @@ Yuki is an open-source, self-hosted social AI agent exploring what a persistent 
 - **Agent-directed retrieval:** The agent uses `search_memory` when past facts are needed instead of injecting them every turn. Current, quoted, historical, workspace, and authorized tool images enter the original main model's native multimodal input.
 - **Web access and model error feedback:** New installations enable model search by default while respecting explicit disablement and connection capabilities. An explicit Gemini tool-format rejection can be returned to the model for up to two corrections in the same execution chain when safe recovery conditions hold, without resetting budgets or blindly resending messages.
 - **Less database waiting before replies:** History reads, context preparation, and optional diagnostic writes are moved out of critical write transactions. Background maintenance uses indexes, bounded pages, and short transactions. Actual latency still depends on model responses, tool requests, and host resources.
-- **Legacy MCP removal:** Connections, tool discovery, management pages, SDK capabilities, and automation entry points are retired together. Shared tool results, media, and receipts remain. Plugin API is now **3.1**, the database head is **0096**, and old plugins require adaptation and renewed approval.
+- **Legacy MCP removal:** Connections, tool discovery, management pages, SDK capabilities, and automation entry points are retired together. Shared tool results, media, and receipts remain. Plugin API is now **3.2**, the database head is **0097**, and old plugins require adaptation and renewed approval.
+- **Speech output retirement:** Genie synthesis, voice profiles/preferences, tool parameters, SDK/management features, the Worker and release dependencies are removed. Incoming/quoted ASR, historical audio and original receipts remain. Reconcile old executions and verify a cold backup of speech facts and referenced files before migrating the dedicated tables; no automatic resend or conversion to text occurs.
 
 These describe the current source. Real provider API behavior, natural-chat latency, and long-task outcomes require their respective acceptance evidence. Code Mode / Pi integration has not been merged.
 
@@ -44,12 +45,12 @@ These describe the current source. Real provider API behavior, natural-chat late
 | Capability | How it is used |
 | --- | --- |
 | Conversation and long-term memory | Chat in groups or privately, look up past events, and explicitly ask Yuki to remember, correct, or delete facts |
-| Images, voice, and attachments | Send images, voice, video, or documents and ask follow-up questions in the same conversation without quoting the attachment |
+| Images, voice, and attachments | Receive images, voice, video, or documents and ask follow-up questions in the same conversation without quoting the attachment |
 | QQ social actions | Look up members, use structured mentions, send group/private messages, and recall Yuki's own messages; the backend checks targets and permissions |
 | Search and plugins | Use configured online tools and approved plugins |
 | Persistent workspace | Save projects and files, run Python, Node.js, or Shell, install dependencies, and deliver results |
 | Background work and automation | Start work while continuing the conversation, check progress later, and run scheduled work within granted permissions |
-| Speech and stickers | Optional Genie-TTS voice output and sticker search, classification, and sending |
+| Stickers and speech recognition | Sticker search, classification, and sending; incoming audio recognition remains |
 
 Availability depends on deployment configuration, model capabilities, and authorization. Acceptance, execution, and message delivery are tracked separately; calling a tool does not mean its result was delivered.
 
@@ -77,7 +78,7 @@ Memory reads have a specific privacy boundary: a past shared-group relationship 
 ## Images, voice, files, and web access
 
 - **Images and video:** Current, quoted, and historical attachments, along with agent-selected workspace and authorized tool images, share the original main model's native image input. Historical reads check internal event IDs, conversation ownership, and cache expiry. A model without image input reports the material as unread; Yuki does not silently switch models or request a separate Qwen visual summary. MP4/MOV video is sampled into frames by FFmpeg for the same main agent. Audio tracks are not analyzed, and sampling may miss moments. Background sticker classification and explicit plugin vision capabilities can still use a separate vision connection.
-- **Incoming voice:** Private messages, group messages that meet the reply policy, and quoted voice can be transcribed with Qwen ASR and included in chat history, search, and Rollup. Qwen connectivity can be reused and is configured separately from Genie-TTS output. See [speech recognition](docs/speech/recognition.md).
+- **Incoming voice:** Private messages, group messages that meet the reply policy, and quoted voice can be transcribed with Qwen ASR and included in chat history, search, and Rollup. Qwen connectivity can be reused; speech synthesis and sending are retired. See [speech recognition](docs/speech/recognition.md).
 - **Files:** Bounded extraction supports text, code, CSV/JSON, PDF text, DOCX, and XLSX. Scanned PDFs do not receive OCR; spreadsheet formulas are not recalculated; reading does not execute macros or embedded code. Within the same conversation, later questions can read the original attachment's 24-hour temporary cache without quoting it.
 - **Web:** New installations without an explicit web switch default to `WEB_MODE=native`. Explicit `disabled` remains disabled, and existing connection search choices are preserved. Enabling web access does not grant every model search capability: native search requires a truthful capability declaration, Gemini can use an explicitly selected search bridge, and external `web_search` requires a configured backend. External search defaults to Tavily. Set `WEB_MODE=tavily` and `WEB_SEARCH_BACKEND=deepseek_anthropic` to use the [DeepSeek search bridge](docs/deepseek-search-bridge.md), with an optional Tavily key for failure fallback. The DeepSeek main agent currently does not declare native search. See the [provider contract](docs/architecture/model-providers.md) for protocol and configuration boundaries.
 
@@ -123,13 +124,13 @@ docker compose run --rm --no-deps --entrypoint qq-ai-bot-cli bot init-db
 docker compose up -d
 ```
 
-Complete QQ login and any plugin or speech-component setup you selected. For a fresh deployment or an upgrade from an older release, see the [3.8.4 upgrade guide](docs/upgrade-3.8.4.md). Existing deployments must retain their project name, Compose overrides, and mounted configuration.
+Complete QQ login and any plugin setup you selected. For a fresh deployment or an upgrade from an older release, see the [3.8.4 upgrade guide](docs/upgrade-3.8.4.md). Existing deployments must retain their project name, Compose overrides, and mounted configuration.
 
-The Bot image is `ghcr.io/yuanyeyoutao/yuki-qqbot:3.8.4`; the optional TTS Worker image is `ghcr.io/yuanyeyoutao/yuki-genie-tts-worker:3.8.4`. The release includes `SHA256SUMS`. The standalone environment-template asset is named `default.env.example`, while the archive contains `.env.example`.
+The Bot image is `ghcr.io/yuanyeyoutao/yuki-qqbot:3.8.4`; historical 3.8.4 TTS Worker assets belong to that older release and are not required by current source. The release includes `SHA256SUMS`. The standalone environment-template asset is named `default.env.example`, while the archive contains `.env.example`.
 
 ## Upgrading and maintenance
 
-The 3.9.0 source uses Plugin API **3.1** and database head **0096**; the official 3.8.4 package has head **0072**. Follow the migrations bundled with the actual target image. An application version does not replace a schema check, and `stamp` must not skip migrations. Plugins must remove MCP dependencies, adapt to API 3.1, and receive renewed approval. Legacy `llm.generate` / `agent.run` calls now use the unified main entry point.
+The 3.9.0 source uses Plugin API **3.2** and database head **0097**; the official 3.8.4 package has head **0072**. Follow the migrations bundled with the actual target image. An application version does not replace a schema check, and `stamp` must not skip migrations. Plugins must remove MCP dependencies, adapt to API 3.2, and receive renewed approval. Legacy `llm.generate` / `agent.run` calls now use the unified main entry point.
 
 Before deploying a 3.9.0 development commit, use the [draft upgrade guide](docs/upgrade-3.9.0.md) to check old MCP mounts, environment settings, and operator grants. Retired operator capabilities fail strict validation. After committing the new database head, an image-only rollback is insufficient; an old backup must not overwrite new messages or receipts.
 
@@ -173,9 +174,8 @@ Routine regressions use fake providers and isolated databases. Paid Gemini and D
 | [Development contract](docs/architecture/development-contract.md) | Event IDs, boundaries, fixed tools, resumption, and transactions |
 | [Rollup](docs/architecture/conversation-rollup.md) | Long-conversation condensation |
 | [Memory](docs/architecture/memory-v2.md) | Extraction, retrieval, and permissions |
-| [Plugin API 3.1](docs/plugin-development/index.md) | Plugin development and capability boundaries |
+| [Plugin API 3.2](docs/plugin-development/index.md) | Plugin development and capability boundaries |
 | [Tool results](docs/architecture/tool-results.md) | Result budgets, media, and durable receipts |
-| [Speech output](docs/speech/operations.md) | Genie-TTS deployment and operations |
 | [Versioned releases](docs/operations/versioned-docker-release.md) | Images, bundles, and the release process |
 | [CHANGELOG](CHANGELOG.md) | Historical changes |
 

@@ -31,9 +31,6 @@ from qq_ai_bot.model_runtime.profiles import ModelRuntimeConfigurationError
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.plugin_host.discovery import PluginDiscovery
 from qq_ai_bot.plugin_host.repository import PluginInstallationRepository
-from qq_ai_bot.speech.paths import SpeechPathPolicy
-from qq_ai_bot.speech.profiles import VoiceProfileService
-from qq_ai_bot.speech.repository import VoiceProfileRepository
 from qq_ai_bot.web.models import WebMode
 from yuki_plugin_sdk.api import PLUGIN_API_VERSION
 
@@ -94,10 +91,6 @@ class SetupPaths:
         return self.root / "data/setup/restart-required"
 
     @property
-    def speech_action(self) -> Path:
-        return self.root / "data/setup/speech-action"
-
-    @property
     def gateway_action(self) -> Path:
         return self.root / "data/setup/gateway-action.json"
 
@@ -118,12 +111,6 @@ def require_migrated_model_profiles(paths: SetupPaths) -> None:
         "发现旧 config/model_profiles.toml，但新 webui-config/model_profiles.toml 不存在；"
         "先按 Model-Profile-Path-Migration.md 核对并迁移模型文件及同目录 secrets，再运行 setup。"
     )
-
-
-@dataclass(frozen=True, slots=True)
-class SpeechProfileCandidate:
-    profile_id: str
-    display_name: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -412,32 +399,6 @@ def model_profiles_use_flash(profile_path: Path) -> bool:
         return False
 
 
-def discover_speech_profiles(speech_root: Path) -> tuple[SpeechProfileCandidate, ...]:
-    voices = speech_root / "voices"
-    if not voices.is_dir():
-        return ()
-    validator = VoiceProfileService(
-        repository=VoiceProfileRepository.__new__(VoiceProfileRepository),
-        paths=SpeechPathPolicy(speech_root),
-    )
-    valid: list[SpeechProfileCandidate] = []
-    for directory in sorted(voices.iterdir(), key=lambda item: item.name):
-        manifest_path = directory / "profile.toml"
-        if not directory.is_dir() or not manifest_path.is_file():
-            continue
-        try:
-            manifest = validator.validate_profile(directory)
-        except (OSError, UnicodeError, ValueError):
-            continue
-        valid.append(
-            SpeechProfileCandidate(
-                profile_id=manifest.id,
-                display_name=manifest.display_name,
-            )
-        )
-    return tuple(valid)
-
-
 def validate_configuration(paths: SetupPaths, configuration: SetupConfiguration) -> Settings:
     environment = dict(configuration.environment)
     environment["BOT_PERSONA_FILE"] = str((paths.root / "config/persona.md").resolve())
@@ -451,7 +412,6 @@ def validate_configuration(paths: SetupPaths, configuration: SetupConfiguration)
             for marker in ("[profiles.background_tasks]", "[profiles.flash]")
         ),
     )
-    _validate_local_feature_files(paths, environment)
     payload = _settings_payload(environment)
     try:
         settings = Settings.model_validate(payload)
@@ -548,14 +508,10 @@ def commit_configuration(
     configuration_changed = any(
         path in restart_sensitive and previous[path] != content for path, content in targets.items()
     )
-    old_speech = _truthy(old_environment.get("SPEECH_ENABLED", "false"))
-    new_speech = _truthy(configuration.environment.get("SPEECH_ENABLED", "false"))
     old_gateways = selected_gateway_providers(old_environment) if existing_deployment else ()
     new_gateways = selected_gateway_providers(configuration.environment)
     if existing_deployment and configuration_changed:
         targets[paths.restart_required] = b"configuration-changed\n"
-    if old_speech != new_speech:
-        targets[paths.speech_action] = b"start\n" if new_speech else b"stop\n"
     if old_gateways != new_gateways:
         targets[paths.gateway_action] = (
             json.dumps(
@@ -576,8 +532,7 @@ def commit_configuration(
         tuple(
             path
             for path, value in previous.items()
-            if value is not None
-            and path not in {paths.restart_required, paths.speech_action, paths.gateway_action}
+            if value is not None and path not in {paths.restart_required, paths.gateway_action}
         ),
     )
     try:
@@ -614,7 +569,6 @@ def compose_profiles_with_features(
     environment: Mapping[str, str],
     *,
     gateways: Iterable[str],
-    speech_enabled: bool,
 ) -> str:
     """Replace managed profiles while retaining deployment-local extension profiles."""
 
@@ -624,8 +578,6 @@ def compose_profiles_with_features(
     existing = _compose_profile_tokens(environment.get("COMPOSE_PROFILES", ""))
     unmanaged = existing.difference(_GATEWAY_PROFILE_SET | {"speech"})
     ordered = [item for item in GATEWAY_PROVIDER_IDS if item in selected]
-    if speech_enabled:
-        ordered.append("speech")
     ordered.extend(sorted(unmanaged))
     return ",".join(ordered)
 
@@ -988,18 +940,6 @@ def _validate_credentials_and_endpoints(
 def _configured_value(value: str) -> str:
     normalized = value.strip()
     return "" if normalized.casefold().startswith("replace-with-") else normalized
-
-
-def _validate_local_feature_files(paths: SetupPaths, environment: Mapping[str, str]) -> None:
-    if environment.get("SPEECH_ENABLED", "false").casefold() != "true":
-        return
-    genie_data = paths.root / "data/speech/genie_data"
-    if not genie_data.is_dir() or not any(genie_data.iterdir()):
-        raise SetupValidationError("Speech 已开启，但 data/speech/genie_data 为空")
-    profiles = discover_speech_profiles(paths.root / "data/speech")
-    selected = environment.get("SPEECH_DEFAULT_PROFILE", "")
-    if not profiles or selected not in {item.profile_id for item in profiles}:
-        raise SetupValidationError("Speech 默认声线不存在或档案无效")
 
 
 def _restrict_windows_acl(path: Path) -> None:

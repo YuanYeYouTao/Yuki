@@ -11,7 +11,6 @@ from yuki_plugin_sdk.events import EventEnvelope
 from yuki_plugin_sdk.models import (
     BackgroundTargetGrantView,
     CurrentMessage,
-    GeneratedSpeechHandle,
     JsonValue,
     MediaArtifactHandle,
     NotificationPublishReceipt,
@@ -639,46 +638,6 @@ class FakeEventBus:
 
     async def publish(self, event: EventEnvelope) -> None:
         self.events.append(event)
-
-
-class FakeSpeechFacade:
-    def __init__(self) -> None:
-        self.queued: list[tuple[str, str, str]] = []
-        self.sent: list[tuple[str, str, str]] = []
-
-    async def status(self) -> Mapping[str, JsonValue]:
-        return {"enabled": True, "available": True}
-
-    async def list_profiles(self) -> tuple[Mapping[str, JsonValue], ...]:
-        return ()
-
-    async def get_profile(self, profile_id: str) -> Mapping[str, JsonValue] | None:
-        return None
-
-    async def list_styles(self, profile_id: str) -> tuple[str, ...]:
-        return ()
-
-    async def synthesize(
-        self,
-        text: str,
-        *,
-        profile_id: str = "",
-        style_hint: str = "",
-    ) -> GeneratedSpeechHandle:
-        return GeneratedSpeechHandle(
-            handle_id=uuid4().hex,
-            generation_id=1,
-            profile_id=profile_id or "default",
-            duration_milliseconds=0,
-        )
-
-    async def send_private(self, user_id: str, handle: GeneratedSpeechHandle) -> PluginResult:
-        self.sent.append(("private", user_id, handle.handle_id))
-        return PluginResult(data={"sent": True})
-
-    async def send_group(self, group_id: str, handle: GeneratedSpeechHandle) -> PluginResult:
-        self.sent.append(("group", group_id, handle.handle_id))
-        return PluginResult(data={"sent": True})
 
 
 class FakeAgentSessionFacade:

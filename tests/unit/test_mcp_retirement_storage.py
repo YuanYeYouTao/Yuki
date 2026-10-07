@@ -175,9 +175,12 @@ def test_frozen_old_head_upgrade_removes_only_owned_derived_tables(
         assert all(
             db.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone() == (0,) for name in RETIRED
         )
-    command.upgrade(config, "head")
+    # This round trip covers MCP's frozen 0095 -> 0096 boundary. Later Speech
+    # retirement owns other tables and deliberately has no factual downgrade.
+    command.upgrade(config, "0096")
     with sqlite3.connect(path) as db:
         assert _snapshot(db) == before
+        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0096",)
 
 
 def test_current_metadata_excludes_retired_tables_but_keeps_shared_tables():

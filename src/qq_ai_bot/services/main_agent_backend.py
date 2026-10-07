@@ -794,7 +794,7 @@ class MainAgentBackend(AgentToolBackend):
                     )
                     if isinstance(sent_target, dict) and sent_target == expected:
                         # Only the confirmed ledger projection knows what survived
-                        # sanitization/splitting/speech preparation and reached QQ.
+                        # sanitization/splitting/media preparation and reached QQ.
                         # Raw tool arguments cannot reconstruct delivery evidence.
                         self.sent_current_texts.extend(
                             part["delivered_text"]

@@ -8,7 +8,6 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any, cast
 
 from sqlalchemy import delete, or_, select, text
@@ -39,7 +38,6 @@ from qq_ai_bot.admin.models import (
     RelationshipRuntimeConfig,
     ReplyRuntimeConfig,
     RuntimeConfigSnapshot,
-    SpeechRuntimeConfig,
     ToolingRuntimeConfig,
     VisionRuntimeConfig,
     WebRuntimeConfig,
@@ -547,21 +545,12 @@ class RuntimeConfigService:
             ),
             "automation.max_consecutive_failures": "automation_max_consecutive_failures",
             "automation.run_retention_days": "automation_run_retention_days",
-            "speech.enabled": "speech_enabled",
-            "speech.provider": "speech_provider",
-            "speech.socket_path": "speech_socket_path",
-            "speech.root": "speech_root",
-            "genie.data_dir": "genie_data_dir",
         }
         updates: dict[str, object] = {}
         for key, field_name in mapping.items():
             effective = await self.get_effective(key)
             if effective.value is not None:
-                updates[field_name] = (
-                    Path(str(effective.value))
-                    if field_name in {"speech_socket_path", "speech_root", "genie_data_dir"}
-                    else effective.value
-                )
+                updates[field_name] = effective.value
         return updates
 
     async def get_effective(
@@ -1748,37 +1737,6 @@ class RuntimeConfigService:
                     cast(float | int, value("emoji.worker_retry_delay_seconds"))
                 ),
                 analysis_version=str(value("emoji.analysis_version")),
-            ),
-            speech=SpeechRuntimeConfig(
-                enabled=bool(value("speech.enabled")),
-                provider=str(value("speech.provider")),
-                socket_path=str(value("speech.socket_path")),
-                root=str(value("speech.root")),
-                genie_data_dir=str(value("genie.data_dir")),
-                default_profile=str(value("speech.default_profile") or ""),
-                agent_delivery_enabled=bool(value("speech.agent_delivery_enabled")),
-                default_mode=str(value("speech.default_mode")),
-                split_sentence=bool(value("speech.split_sentence")),
-                max_synthesis_characters=(
-                    int(cast(int, value("speech.max_synthesis_characters")))
-                    if value("speech.max_synthesis_characters") is not None
-                    else None
-                ),
-                queue_max_pending=(
-                    int(cast(int, value("speech.queue_max_pending")))
-                    if value("speech.queue_max_pending") is not None
-                    else None
-                ),
-                cache_retention_hours=(
-                    int(cast(int, value("speech.cache_retention_hours")))
-                    if value("speech.cache_retention_hours") is not None
-                    else None
-                ),
-                private_enabled=bool(value("speech.private_enabled")),
-                group_enabled=bool(value("speech.group_enabled")),
-                automation_enabled=bool(value("speech.automation_enabled")),
-                plugin_enabled=bool(value("speech.plugin_enabled")),
-                text_fallback_enabled=bool(value("speech.text_fallback_enabled")),
             ),
             conversation=ConversationRuntimeConfig(
                 autonomous_enabled=bool(value("conversation.autonomous_enabled")),

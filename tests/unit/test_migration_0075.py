@@ -25,7 +25,7 @@ def test_delivery_upgrade_preserves_erased_sequence_and_existing_evidence(tmp_pa
         original_sql = db.execute(
             "SELECT sql FROM sqlite_master WHERE name='execution_trace_entries'"
         ).fetchone()[0]
-    command.upgrade(config, "head")
+    command.upgrade(config, "0075")
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT * FROM execution_trace_entries").fetchall() == [
             (*before[0], None)

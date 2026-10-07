@@ -32,7 +32,6 @@ from qq_ai_bot.application.modules import (
     PersistenceModule,
     PluginModule,
     RuntimeFoundationModule,
-    SpeechModule,
     WebModule,
 )
 from qq_ai_bot.automation.models import TurnOrigin
@@ -164,9 +163,6 @@ class ApplicationContainer:
         self.media_analyses = persistence.media_analyses
         self.emoji_descriptions = persistence.emoji_descriptions
         self.emoji_repository = persistence.emoji_repository
-        self.voice_preferences = persistence.voice_preferences
-        self.voice_profiles = persistence.voice_profiles
-        self.speech_generations = persistence.speech_generations
         self.time_context = TimeContextService(
             self.database,
             default_timezone=settings.default_timezone,
@@ -244,27 +240,6 @@ class ApplicationContainer:
             ),
         )
         self.conversation_effect_gate = ConversationEffectGate()
-        speech = SpeechModule(
-            settings=settings.speech,
-            preference_repository=self.voice_preferences,
-            profile_repository=self.voice_profiles,
-            generation_repository=self.speech_generations,
-            turns=self.turn_coordinator,
-            runtime_config=self.runtime_config,
-            lifecycle=self.lifecycle,
-            bot_display_name=settings.bot_display_name,
-            bot_voice_name=settings.bot_voice_name,
-        ).build()
-        self.speech_bundle = speech
-        self.voice_preference_service = speech.preferences
-        self.speech_paths = speech.paths
-        self.speech_cache = speech.cache
-        self.genie_worker = speech.worker
-        self.speech_provider = speech.provider
-        self.speech = speech.service
-        self.voice_profile_service = speech.profiles
-        self.speech_delivery = speech.delivery
-        self.speech_admin = speech.admin
         self.conversation_module = ConversationModule(
             settings=settings,
             persistence=persistence,
@@ -276,7 +251,6 @@ class ApplicationContainer:
             effect_gate=self.conversation_effect_gate,
             time_service=self.time_context,
             web_provider=self.web_provider,
-            voice_preferences=self.voice_preference_service,
             memory_embeddings=self.memory_embeddings,
             tool_artifacts=self.tool_artifacts,
             tool_invocations=self.tool_invocations,
@@ -296,7 +270,6 @@ class ApplicationContainer:
         )
         self.agent_tools.social_service = self.social_service
         self.social_service.runtime_config = self.runtime_config
-        self.social_service.speech_delivery = self.speech_delivery
         self.social_service.emoji_delivery = self.emoji_delivery
         from qq_ai_bot.workspace.service import WorkspaceService
         from qq_ai_bot.workspace.store import WorkspaceStore
@@ -454,7 +427,6 @@ class ApplicationContainer:
             emoji_storage=self.emoji_storage,
             emoji_collector=self.emoji_collector,
             emoji_worker=self.emoji_worker,
-            speech_admin=self.speech_admin,
             memory_rebuild=self.memory_rebuild_service,
             memory_mutations=self.memory_mutations,
             ledger=self.ledger,
@@ -487,7 +459,6 @@ class ApplicationContainer:
             web_provider=self.web_provider,
             emoji_repository=self.emoji_repository,
             emoji_storage=self.emoji_storage,
-            speech=self.speech,
             presence_router=self.presence_router,
         )
         automation = self.automation_module.build()
@@ -602,9 +573,6 @@ class ApplicationContainer:
         self.emoji_lifecycle.set_event_publisher(self.plugin_events)
         self.emoji_selector.set_event_publisher(self.plugin_events)
         self.emoji_delivery.set_event_publisher(self.plugin_events)
-        self.speech.set_event_publisher(self.plugin_events)
-        self.speech_delivery.set_event_publisher(self.plugin_events)
-        self.voice_profile_service.set_event_publisher(self.plugin_events)
         self.emoji_selector.set_plugin_signals(self.plugin_emoji_signals)
         self.chat.set_plugin_tools(self.plugin_tools)
         self.conversation_rollup_worker.on_finished = self.chat.rollup_wakeups.notify
@@ -645,7 +613,6 @@ class ApplicationContainer:
             turn_coordinator=self.turn_coordinator,
             plugin_commands=self.plugin_commands,
             emoji_admin=self.emoji_admin,
-            speech_admin=self.speech_admin,
             model_invocations=self.model_invocations,
             memory_rebuild=self.memory_rebuild_service,
         )
@@ -720,7 +687,6 @@ class ApplicationContainer:
             event_publisher=self.plugin_events,
             emoji_collector=self.emoji_collector,
             emoji_worker=self.emoji_worker,
-            voice_preferences=self.voice_preference_service,
             turn_observations=self.turn_observations,
         )
         self.processor.set_participation(self.semantic_participation)
@@ -824,8 +790,6 @@ class ApplicationContainer:
                 emoji_collector=self.emoji_collector,
                 emoji_selector=self.emoji_selector,
                 emoji_lifecycle=self.emoji_lifecycle,
-                speech=self.speech,
-                voice_profiles=self.voice_profile_service,
                 automation=self.automation,
                 storage=BoundStorageFacade(
                     repository=self.plugin_state,
@@ -1018,8 +982,6 @@ class ApplicationContainer:
             health=self.plugin_background_turns.health,
         )
         self.lifecycle.register("application_event", start=self._publish_started)
-        if self.settings.speech_enabled:
-            self.lifecycle.register("speech_startup", start=self._start_speech)
         self.lifecycle.register(
             "maintenance",
             start=self._start_cleanup,
@@ -1039,28 +1001,6 @@ class ApplicationContainer:
             EventName.APPLICATION_STARTED,
             {"version": __version__},
         )
-
-    async def _start_speech(self) -> None:
-        try:
-            async with asyncio.timeout(self.settings.speech_worker_start_timeout_seconds):
-                speech_health = await self.speech.health()
-                if speech_health.connected:
-                    await publish_notification(
-                        self.plugin_events,
-                        EventName.SPEECH_WORKER_STARTED,
-                        {
-                            "ready": speech_health.ready,
-                            "japanese_frontend_available": (
-                                speech_health.japanese_frontend_available
-                            ),
-                        },
-                    )
-                if speech_health.ready and self.settings.speech_default_profile:
-                    await self.voice_profile_service.sync_profile_metadata(
-                        self.settings.speech_default_profile
-                    )
-        except (TimeoutError, OSError, RuntimeError, ValueError, LookupError) as exc:
-            logger.error("speech_startup_degraded error_category=%s", type(exc).__name__)
 
     async def _start_cleanup(self) -> None:
         self._cleanup_task = asyncio.create_task(
@@ -1121,13 +1061,6 @@ class ApplicationContainer:
                         "plugin_sessions_expired count=%d",
                         plugin_sessions_expired,
                     )
-                speech_expired, speech_files = await self.speech.cleanup(runtime=runtime.speech)
-                if speech_expired:
-                    logger.info(
-                        "speech_cache_cleaned rows=%d files=%d",
-                        speech_expired,
-                        speech_files,
-                    )
                 turn_observations_deleted = await self.turn_observations.cleanup_expired()
                 if self.models.traces is not None:
                     await self.models.traces.cleanup_expired()
@@ -1154,12 +1087,6 @@ class ApplicationContainer:
             EventName.APPLICATION_STOPPING,
             {"version": __version__},
         )
-        if self.settings.speech_enabled:
-            await publish_notification(
-                self.plugin_events,
-                EventName.SPEECH_WORKER_STOPPED,
-                {"reason": "application_stopping"},
-            )
         self.chat.rollup_wakeups.close()
         await self.lifecycle.close()
 

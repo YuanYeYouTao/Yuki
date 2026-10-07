@@ -71,10 +71,14 @@ async def test_one_manifest_without_legacy_aliases(database, tmp_path):
         "send_voice",
         "send_emoji",
         "send_group_voice",
+        "set_voice_preference",
         "send_target_emoji",
         "automation_create_task",
         "report_progress",
     } & set(names)
+    send = next(tool for tool in tools if tool.name == "send_message")
+    assert send.schema_version == "2"
+    assert "voice" not in send.parameters["properties"]
     task_schema = next(t for t in tools if t.name == "automation_create").parameters["properties"][
         "task"
     ]
@@ -97,6 +101,41 @@ async def test_scheduled_actor_uses_common_automation_receipt(database, tmp_path
     assert runtime.inbound is None
     with pytest.raises(PermissionError):
         replace(runtime, actor_user_id="9000").require_actor()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("voice", [None, {}, False, "wrong"])
+async def test_main_tool_rejects_retired_voice_without_execution(database, tmp_path, voice):
+    chat, _, runtime = await setup(database, tmp_path)
+    chat._tools.social_service = SimpleNamespace(execute=AsyncMock())
+    backend = MainAgentBackend(chat, runtime)
+    await backend.prepare()
+    from qq_ai_bot.domain.messages import ToolCall, ToolFunction
+    from qq_ai_bot.services.agent_runner import AgentRuntime
+
+    agent_runtime = AgentRuntime(
+        origin=runtime.origin,
+        actor_user_id=runtime.actor_user_id,
+        actor_is_superuser=False,
+        delegated_authority=None,
+        conversation_key="retired-voice",
+        current_group_id=None,
+        bot_user_id=runtime.bot_user_id,
+        gateway=None,
+        runtime_config=runtime.runtime_config,
+        current_time=chat._time.current_default(),
+        allowed_capabilities=frozenset(),
+        max_tool_calls=8,
+        max_model_requests=8,
+    )
+    arguments = json.dumps({"text": "hello", "voice": voice})
+    backend.begin_batch(
+        (ToolCall("retired", ToolFunction("send_message", arguments)),), agent_runtime
+    )
+    result = json.loads(await backend.execute("send_message", arguments, agent_runtime))
+    assert result["executed"] is False
+    assert result["mutation_committed"] is False
+    chat._tools.social_service.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio

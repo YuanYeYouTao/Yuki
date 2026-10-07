@@ -1,6 +1,6 @@
 # Subscription Monitor / 订阅监控
 
-与 GitHub Monitor 一样，这是通过现有 Plugin API 3.1 运行的轮询插件。
+与 GitHub Monitor 一样，这是通过现有 Plugin API 3.2 运行的轮询插件。
 它读取 RSS 2、Atom、JSON Feed 1/1.1，为每条订阅保存增量状态，并把新动态和判断条件
 交给 Yuki 的统一主 Agent。主 Agent 决定是否通过 `send_message` 通知当前目标。
 

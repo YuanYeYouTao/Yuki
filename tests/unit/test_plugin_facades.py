@@ -1001,32 +1001,6 @@ async def test_sdk_receipt_commit_source_validation_and_notifier_boundaries(
     assert unknown.data["uncertain"] is True
     assert unknown.data["operation_id"] == failed.data["operation_id"]
     assert len(gateway.calls) == 2  # Audit failure preserves unknown, without a resend.
-    from qq_ai_bot.speech.provider import SynthesizedSpeech
-    from yuki_plugin_sdk.models import GeneratedSpeechHandle
-
-    async def failed_mark_sent(generation_id):
-        raise RuntimeError("speech usage bookkeeping unavailable")
-
-    speech = SimpleNamespace(
-        mark_sent=failed_mark_sent,
-        audio_path=lambda generated: SimpleNamespace(read_bytes=lambda: b"audio"),
-    )
-    voice_context = HostPluginContext(
-        plugin_id="example.plugin",
-        approved_permissions=(PluginPermission.SPEECH_SEND,),
-        services=PluginFacadeServices(ledger=ledger, speech=speech),
-    )
-    generated = SynthesizedSpeech(
-        1, "test", "reference", "zh", "test.wav", "wav", 24000, 1, 100, False
-    )
-    voice_context._speech._handles["handle"] = generated
-    handle = GeneratedSpeechHandle(
-        handle_id="handle", generation_id=1, profile_id="test", duration_milliseconds=100
-    )
-    with voice_context.bind(replace(trusted, delivery_identity="speech-post-send")):
-        voice_sent = await voice_context.speech.send_private("10001", handle)
-    assert voice_sent.ok and len(gateway.calls) == 3
-    assert "handle" not in voice_context._speech._handles
 
 
 @pytest.mark.asyncio

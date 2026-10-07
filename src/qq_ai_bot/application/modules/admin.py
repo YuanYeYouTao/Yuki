@@ -39,7 +39,6 @@ from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
 from qq_ai_bot.services.admin.preference_admin import PreferenceAdminService
 from qq_ai_bot.services.admin.private_access_admin import PrivateAccessAdminService
 from qq_ai_bot.services.admin.relationship_admin import RelationshipAdminService
-from qq_ai_bot.speech.admin import SpeechAdminService
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,7 +78,6 @@ class AdminModule:
         emoji_storage: EmojiStorage,
         emoji_collector: EmojiCollector,
         emoji_worker: EmojiWorker | None,
-        speech_admin: SpeechAdminService,
         memory_rebuild: MemoryRebuildService,
         memory_mutations: MemoryMutationService,
         ledger: EventLedgerRepository,
@@ -105,7 +103,6 @@ class AdminModule:
         self._emoji_storage = emoji_storage
         self._emoji_collector = emoji_collector
         self._emoji_worker = emoji_worker
-        self._speech_admin = speech_admin
         self._memory_rebuild = memory_rebuild
         self._memory_mutations = memory_mutations
         self._ledger = ledger
@@ -168,7 +165,6 @@ class AdminModule:
             groups=groups,
             private_access=private_access,
             emoji=emoji,
-            speech=self._speech_admin,
             registry=self._action_registry,
         )
         capabilities = AdminCapabilityService(

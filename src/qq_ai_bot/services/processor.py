@@ -137,7 +137,6 @@ from qq_ai_bot.services.user_profiles import (
     sanitize_profile_name,
 )
 from qq_ai_bot.services.vision_service import VisionService
-from qq_ai_bot.speech.preference_service import VoicePreferenceService
 from qq_ai_bot.vision.models import VisualObservation
 from yuki_plugin_sdk.events import EventName
 from yuki_plugin_sdk.models import AdmissionSignal as SdkAdmissionSignal
@@ -371,7 +370,6 @@ class MessageProcessor:
         event_publisher: LifecycleEventPublisher | None = None,
         emoji_collector: EmojiCollector | None = None,
         emoji_worker: EmojiWorker | None = None,
-        voice_preferences: VoicePreferenceService | None = None,
         turn_observations: TurnObservationRecorder | None = None,
         canonical_ingress: CanonicalIngressResolver | None = None,
         group_recovery: GroupRecoveryHandler | None = None,
@@ -437,7 +435,6 @@ class MessageProcessor:
         )
         self._turn_coordinator = turn_coordinator or chat._turn_coordinator
         self._admission_signals = admission_signals
-        self._voice_preferences = voice_preferences
         audit = AdminAuditService(database)
         self._relationship_admin = relationship_admin or RelationshipAdminService(
             relationships=self._relationships,
@@ -1861,19 +1858,6 @@ class MessageProcessor:
                 turn_snapshot=turn_snapshot,
             )
         )
-        if sent and execution.outbound is not None:
-            if turn_snapshot is None:
-                await self._commands.mark_media_sent(execution.outbound)
-            else:
-                try:
-                    async with self._effect_gate.permit(
-                        turn_snapshot,
-                        validate=self._validate_turn_snapshot,
-                        timeout_seconds=(self._settings.conversation_effect_gate_timeout_seconds),
-                    ):
-                        await self._commands.mark_media_sent(execution.outbound)
-                except (EffectGateTimeoutError, EffectPermitRejectedError):
-                    logger.warning("media_sent_followup_rejected_by_generation_fence")
         self._log_result(
             event_key,
             identity,

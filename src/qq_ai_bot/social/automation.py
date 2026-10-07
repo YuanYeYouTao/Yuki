@@ -125,6 +125,11 @@ def register_social_automation(
                 description=tool.description,
                 argument_model=CapabilityArguments,
                 argument_schema=tool.parameters,
+                schema_version=(
+                    int(tool.schema_version)
+                    if tool.schema_version.isdecimal()
+                    else tool.schema_version
+                ),
                 result_cacheable=tool.result_cacheable,
                 argument_validator=_validator(tool),
                 output_schema={"type": "object"},

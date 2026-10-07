@@ -32,7 +32,6 @@ from qq_ai_bot.runtime import work_schema_v1 as _work_schema_v1  # noqa: F401
 from qq_ai_bot.runtime import work_wait_schema as _work_wait_schema  # noqa: F401
 from qq_ai_bot.sandbox import db_models as _sandbox_db_models  # noqa: F401
 from qq_ai_bot.social import db_models as _social_db_models  # noqa: F401
-from qq_ai_bot.speech import db_models as _speech_db_models  # noqa: F401
 from qq_ai_bot.tool_results import schema as _artifact_schema  # noqa: F401
 
 __all__ = ["Base"]
