@@ -677,3 +677,40 @@ async def test_historical_unknown_reader_and_atomic_debt_agree_without_rewriting
     assert await repo.has_unresolved_effects(lease, identity) is unknown
     assert bool(await repo.effect_evidence(lease, identity, only_unresolved=True)) is unknown
     assert (await read_receipt(repo, "history"))["receipt_json"] == raw
+
+
+@pytest.mark.parametrize("status", [[], {}, True, 1])
+@pytest.mark.parametrize("location", ["outcome", "legacy"])
+async def test_malformed_historical_status_is_unknown_in_reader_and_cas(owned, status, location):
+    repo, lease, identity = owned
+    await repo.prepare_effect(lease, identity, "bad-status", "tool")
+    payload = {"ok": True, "side_effecting": True, "status": status}
+    stored = {"outcome": payload} if location == "outcome" else {"result": json.dumps(payload)}
+    async with repo.database.immediate_session() as writer:
+        await writer.execute(
+            update(effects)
+            .where(effects.c.effect_key == "bad-status")
+            .values(state="accepted", receipt_json=json.dumps(stored))
+        )
+    fact = (await repo.effect_evidence(lease, identity))[0]
+    assert fact["uncertain"] is True and fact["ok"] is False
+    assert await repo.has_unresolved_effects(lease, identity)
+
+
+@pytest.mark.parametrize("data", [None, [], ""])
+@pytest.mark.parametrize(
+    "root", [{"pending": True}, {"status": "unknown"}, {"progress": {"status": "unknown"}}]
+)
+async def test_legacy_nondict_data_preserves_root_lifecycle_facts(owned, data, root):
+    repo, lease, identity = owned
+    await repo.prepare_effect(lease, identity, "legacy-root", "tool")
+    stored = {"result": json.dumps({"ok": True, "data": data, **root})}
+    async with repo.database.immediate_session() as writer:
+        await writer.execute(
+            update(effects)
+            .where(effects.c.effect_key == "legacy-root")
+            .values(state="accepted", receipt_json=json.dumps(stored))
+        )
+    fact = (await repo.effect_evidence(lease, identity))[0]
+    assert fact.get("pending") or fact.get("uncertain")
+    assert await repo.has_unresolved_effects(lease, identity)

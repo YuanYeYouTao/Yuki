@@ -90,3 +90,13 @@
 - 验证：历史 effect repository/results + caller completion 共 85 passed；最终新增缺字段边界与 readonly 身份参数共 22 passed。证据 `.cache/history-outcome-final.log`、`.cache/history-outcome-edges.log`。
 - Host predispatch 拒绝仍保留原 attempt 预算，typed `executed=false` 只排除实际执行业务计数；不退款、不重置原预算。对应既有 `test_schema_rejection_keeps_call_receipt_and_attempt_budget_without_execution` 合同不改。
 - 缓存仅复用明确成功、非 pending/uncertain/retryable 的只读结果，沿原 Work/chain effect key；副作用结果不缓存且不能证明未修改时清除只读缓存。未发现此次 typed 迁移新增的重执行或副作用复用路径。
+
+
+### 提交后独立复审的历史容器边界
+
+- 发现并修复 `status` 为 list/object/bool/number 时的 Python TypeError 与 SQL 未决判断不一致：错型状态一律保守 unknown，两侧同判，原存字节不重写。
+- 历史标准 result 的 data 为 null/list/string 时，仍从根读取 pending/status/progress，不能让非对象 data 吞掉生命周期事实；仅进行原有一层 progress 投影。
+- 内存 SQLite 使用真实 `_unresolved_clause` 与 Python reader 对照 260 组字段/容器反例：零异常、零差异。覆盖 outcome、legacy 根/data 与八个关键事实字段。新增 17 条真实数据库回归；最终历史回归日志 `.cache/history-outcome-final-shapes.log`。
+- 最终冷备应在仅停 Bot 且确认相关 writer 停止后，从实际 Compose mount 对应的当前生产 SQLite（包含 WAL）取得一致 backup；记录停机时间、源路径、旧镜像 digest、head、备份 SHA256/quick_check/FK/count。之前 `deletion-rehearsal-*` 为演练快照，不能代替最终停机回滚备份。
+
+最终验证：`test_work_effect_lifecycle_repository.py` + `test_work_effect_results.py` 共 90 passed；最新 mypy 两文件、ruff、diff whitespace 检查通过。无提交操作。

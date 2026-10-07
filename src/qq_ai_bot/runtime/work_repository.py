@@ -2481,6 +2481,11 @@ class WorkRepository:
                     allowed
                 )
             )
+        malformed.append(
+            ~func.coalesce(func.json_type(receipt, "$.outcome.status"), "missing").in_(
+                ("missing", "null", "text")
+            )
+        )
         meaningful = or_(
             func.coalesce(func.json_type(receipt, "$.outcome.ok"), "missing").in_(
                 ("true", "false")
@@ -2515,6 +2520,12 @@ class WorkRepository:
         )
         legacy_proven = and_(
             legacy_proven, func.coalesce(func.json_extract(body, "$.truncated"), 0) != 1
+        )
+        legacy_proven = and_(
+            legacy_proven,
+            func.coalesce(func.json_type(body, "$.status"), "missing").in_(
+                ("missing", "null", "text")
+            ),
         )
         for field in ("pending", "uncertain", "executed"):
             legacy_proven = and_(

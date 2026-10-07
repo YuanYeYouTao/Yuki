@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from qq_ai_bot.capabilities.results import ToolExecutionResult, process_receipt
@@ -158,6 +158,8 @@ def historical_evidence(receipt: dict[str, Any], *, state: str = "accepted") -> 
         for key in ("ok", "pending", "uncertain", "side_effecting", "executed", "retryable"):
             if key in evidence and type(evidence[key]) is not bool:
                 valid = False
+        if evidence.get("status") is not None and not isinstance(evidence["status"], str):
+            valid = False
         if (
             "mutation_committed" in evidence
             and evidence["mutation_committed"] is not None
@@ -181,16 +183,26 @@ def historical_evidence(receipt: dict[str, Any], *, state: str = "accepted") -> 
             ):
                 raise ValueError("historical_outcome_unknown")
             body = payload.get("data", payload)
+            if not isinstance(body, dict):
+                body = payload
+            original_body = body
             if isinstance(body, dict) and isinstance(body.get("progress"), dict):
                 body = body["progress"]
             if isinstance(body, dict):
+                if body.get("status") is not None and not isinstance(body["status"], str):
+                    raise ValueError("historical_outcome_unknown")
                 if body.get("truncated") is True or any(
                     key in body and type(body[key]) is not bool
                     for key in ("pending", "uncertain", "executed")
                 ):
                     raise ValueError("historical_outcome_unknown")
             result = execution_evidence(
-                normalize_legacy_result(payload, provider_id="historical", tool_name="legacy_tool"),
+                replace(
+                    normalize_legacy_result(
+                        payload, provider_id="historical", tool_name="legacy_tool"
+                    ),
+                    data=original_body,
+                ),
                 tool="legacy_tool",
                 side_effecting=True,
             )
@@ -200,6 +212,8 @@ def historical_evidence(receipt: dict[str, Any], *, state: str = "accepted") -> 
         # Retain original identifiers and explicit pending facts for reconciliation.
         result = dict(evidence) if isinstance(evidence, dict) else {}
         result.update(ok=False, uncertain=True, side_effecting=True, executed=True)
+        if result.get("status") is not None and not isinstance(result["status"], str):
+            result.pop("status")
     if result.get("status") in {"unknown", "uncertain"}:
         result.update(ok=False, uncertain=True)
     elif result.get("status") in {"running", "queued", "waiting"}:
