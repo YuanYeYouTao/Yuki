@@ -31,7 +31,7 @@ from qq_ai_bot.workspace.short_state import ShortState
 from qq_ai_bot.workspace.store import WorkspaceStore
 
 
-async def _scene(database, tmp_path, provider, *, request_limit=24):
+async def _scene(database, tmp_path, provider, *, request_limit=24, code_enabled=False):
     env = await social_env(database, tmp_path)
     harness = build_harness(
         database,
@@ -40,13 +40,15 @@ async def _scene(database, tmp_path, provider, *, request_limit=24):
             runtime_work_enabled=True,
             enabled_groups_csv="20001",
             agent_max_model_requests=request_limit,
+            code_mode_enabled=code_enabled,
         ),
         provider,
     )
     chat = harness.processor._chat
     state = ShortState(WorkspaceStore(tmp_path / "state"))
     state.update({"slot": 1, "text": "original-snapshot", "expected_revision": 0})
-    chat.runtime.runner.main_contract = MainAgentContract(chat, state)
+    chat.runtime.runner.main_contract = MainAgentContract(chat, state, code_enabled=code_enabled)
+    chat.runtime.runner.code_mode_settings = harness.settings
     chat._tools.short_state = state
     message = InboundMessage(
         message_id="history-ownership",

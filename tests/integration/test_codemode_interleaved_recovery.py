@@ -148,7 +148,9 @@ async def test_pending_code_interleave(database, tmp_path, monkeypatch, kind, pa
         return ChatResponse("ordinary done" if n == 4 else "resume result", 0)
 
     provider._responder = respond
-    env, harness, chat, _, inbound = await _scene(database, tmp_path, provider, request_limit=2)
+    env, harness, chat, _, inbound = await _scene(
+        database, tmp_path, provider, request_limit=2, code_enabled=True
+    )
     runner = chat.runtime.runner
     client, wires = wire(SimpleNamespace(provider=provider, runner=runner), kind)
     chat._models = runner._models

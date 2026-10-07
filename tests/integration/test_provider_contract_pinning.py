@@ -91,7 +91,7 @@ async def test_profile_hot_save_keeps_pinned_wire(kind):
 
 @pytest.mark.asyncio
 async def test_concurrent_contract_copies_and_discovery_are_isolated(database, tmp_path):
-    _, _, chat, _, _ = await _scene(database, tmp_path, FakeLLMProvider())
+    _, _, chat, _, _ = await _scene(database, tmp_path, FakeLLMProvider(), code_enabled=True)
     contract = chat.runtime.runner.main_contract
     original = await contract.definitions()
     canonical = [asdict(t) for t in original]
