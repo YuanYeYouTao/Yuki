@@ -10,7 +10,7 @@
 
 ## 测量口径
 
-本地 Windows 两个独立 Python 进程分别加载修复前 Git HEAD 源码与修复后源码，共用同一测量程序。单个真实 `MemoryRebuildService` 连续执行 20,000 次取消；数据库边界替换为无持久列表的固定异步返回，隔离被测进程状态，不声称测了数据库吞吐。每 5,000 次后执行 GC，再读 tracemalloc 当前分配与 Win32 `GetProcessMemoryInfo.WorkingSetSize`。RSS 和 Python 分配分开报告；没有将 allocator 驻留误作 Python 活对象。
+本地 Windows 两个独立 Python 进程分别加载修复前固定基线 `c9555bfb0aebf1a97d94e60335d93070bf601e8e` 源码与修复后源码（该文件基线 SHA-256：`8ad1d4f6126446a1a6ec5ad8a89d9377deef8c639d0eebbc05752b38404dad5b`），共用同一测量程序。单个真实 `MemoryRebuildService` 连续执行 20,000 次取消；数据库边界替换为无持久列表的固定异步返回，隔离被测进程状态，不声称测了数据库吞吐。每 5,000 次后执行 GC，再读 tracemalloc 当前分配与 Win32 `GetProcessMemoryInfo.WorkingSetSize`。RSS 和 Python 分配分开报告；没有将 allocator 驻留误作 Python 活对象。
 
 | 完成取消数 | 修复前保留 ID | 修复前 Python 当前 bytes | 修复前 RSS bytes | 修复后保留任务 | 修复后 Python 当前 bytes | 修复后 RSS bytes |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -31,7 +31,7 @@
 - Memory attribution 虽用无 maxsize Queue，enqueue 已按运行时 queue_limit 在无 await 的区段检查，重复 turn 集合在消费 finally/close 释放。DiagnosticWriter 与插件事件队列有容量上限。
 - ActiveWorkBindings 在 finally 解除当前绑定；subagent scheduler 按可用容量选择，结束 finally 删除 running，关闭取消并 join。Work scheduler 关闭 join 子循环；Rollup active map 在 finally 删除；vision singleflight 最终清理。
 - Model pool timeout key 的真实调用为默认、compaction、self-reflection 三种策略；配置池替换经 lease 归零关闭，关闭任务完成后移除。没有把固定 provider pool 当作每次请求泄漏。数据库读写使用 session 上下文，Database.close dispose engine；诊断 live spans 在 finally 删除。
-- Code native worker 的进程终止由 engine session owner 负责并等待回收；direct 真实回归将 `_code_host` 设为失败陷阱，连续回合未触发，worker direct 没有 script_api 或 execute_code 声明。本轮未进行服务器操作或另建生产 Bot。
+- Code native worker 的进程终止由 engine session owner 负责并等待回收；direct 真实回归将 `_code_host` 设为失败陷阱，连续回合未触发，worker direct 没有 script_api 或 execute_code 声明。该离线审计阶段未进行服务器操作或另建生产 Bot；后续主会话生产部署另见 [生产验收记录](deletion-production-20261008.md)。
 
 `ConversationTurnCoordinator._states` 按见过的 conversation 保留小型版本/来源围栏，清理 task/registration/holder 后仍保留状态。它供迟到 token、延后 observation 和版本匹配使用，直接 LRU/删除会使旧 token 失效或版本复用，不能按通用缓存处理。本轮没有改变该语义；高 conversation 基数下仍需持续观察。这不同于同一会话逐回合保留请求正文。
 
@@ -42,3 +42,10 @@
 Worker 的基础 required 名单不再无条件要求 execute_code / lookup_tools；Code 模式额外要求两者，direct 不生成 ScriptApi。`test_static_mode_prompts.py` 使用真实主/worker入口检查两种模式送达 provider 的提示和工具，联合既有 policy 文件 13 passed。四个生产源码 ruff / mypy 通过。
 
 这些短时本地测量能证明具体增长已消除，不能证明整个进程长期没有内存泄漏。生产稳定态 RSS/Swap、业务量和运行时长应另记，不用旧热进程与新冷启动镜像比较百分比收益。提交、CI、默认镜像构建、部署和自然流量观察由主会话分别记录。
+
+
+## 生产 direct 短时采样
+
+最终 f4 镜像已部署，Code 默认 false，包装内没有 Monty binding / worker / launcher。23:31:00 和 23:33:47 UTC 的进程树 RSS 分别为 273288 / 264228 KiB，PSS 为 273266 / 264206 KiB，Swap 为 0 / 45356 KiB；均 healthy，修正后容器分别运行约 117 / 283 秒。相同脚本测得旧热进程切换前 RSS 457444 KiB、PSS 457422 KiB、Swap 289752 KiB。此时长、流量和背景 IO 不同，不计算节省比例，不宣称长期稳定态或泄漏根因全部清除。完整镜像身份、主机余量、cgroup 口径、配置启动纠正和业务观察限制见 [生产执行记录](deletion-production-20261008.md)。
+
+23:36:43 的补充样本仍 healthy、自动重启 0：RSS 241276 KiB、PSS 241254 KiB、Swap 66440 KiB、主机可用 741748 KiB，容器约运行 459 秒。RSS 下降同时 Swap 增长，不当作泄漏修复收益。

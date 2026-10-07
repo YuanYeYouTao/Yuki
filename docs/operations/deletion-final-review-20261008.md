@@ -2,7 +2,9 @@
 
 审计时间：2026-10-08。本报告是源码/已有测试核对，不以任务书勾选为实现证据，不代表生产部署或真人线上验收。
 
-对照固定 Pi `e7bc7d3275b09ddc5363bbb1eb9d2ee255f276ed`、main `aecc09d621067b7782c2b89e919fe2a7b2c9e5fa`、当前 `c9555bfb` 及共享工作区待提交修正。路径均相对仓库。除 MIG-01 新补三停点外，以下测试名是已存在覆盖定位，未在本次逐项重新运行；历史测试结果见 `docs/operations/deletion-integration-20261008.md`。不能据此虚构每项新的通过数。
+本次逐项审计对照固定 Pi `e7bc7d3275b09ddc5363bbb1eb9d2ee255f276ed`、main `aecc09d621067b7782c2b89e919fe2a7b2c9e5fa`，审计时工作区基于 `c9555bfb` 并包含当时尚未提交的修正。路径均相对仓库。除 MIG-01 新补三停点外，以下测试名是当时已存在的覆盖定位，未在该次逐项审计中重新运行；历史测试结果见 [集成验收记录](deletion-integration-20261008.md)。不能据此虚构每项新的通过数。
+
+后续最终源码为 `f4f483d70c3fdb0302b2bece9f6220971ef3f955`，[Quality CI 37696648000](https://github.com/YuanYeYouTao/Yuki/actions/runs/37696648000) 五个 job 全部通过，主测试为 4800 passed、239 skipped，尾部插件与 fresh 0099 检查通过。[PR #265](https://github.com/YuanYeYouTao/Yuki/pull/265) 已合并为 `dd819fe28c6e3c4a5fc9b70531db0f3328942680`，合并树与最终源码相同。生产执行及验收状态另见 [生产验收记录](deletion-production-20261008.md)，不由本表的源码核对或 CI 结果推导。
 
 | ID | 实际删除/收敛对象与唯一现行 owner | 可核验测试证据、边界 |
 | --- | --- | --- |
@@ -23,7 +25,7 @@
 | APP-09 | pool/executor/search bridge关闭改为每个唯一资源都尝试、按id去重；汇总错误，取消仍优先传播且保留其它失败notes；没有新造 lifecycle manager。现有 LifecycleRegistry owner保留。 | `test_deletion_application_contract.py` pool_closes_every_unique_owner_after_error、search_close_releases_other_resources_even_if_first_fails参数覆盖；`test_model_pool_retirement.py` pinned旧pool寿命。 |
 | APP-10 | structured入口删除四分支同调用，唯一 `models.execute` 转发 priority/conversation。保留严格schema、NaN拒绝、唯一emit_result、最多一次validation repair、原错误/原输出界定为不可信、只对明确provider schema拒绝允许fallback。 | `test_self_reflection_runtime.py` structured_incomplete_and_tools_are_never_accepted、schema_fallback_requires_explicit_provider_rejection_and_opt_in；`test_memory_dream.py::test_episode_decision_repairs_invalid_length_with_original_output`；tool_free_native_schema覆盖auxiliary，不修改主Agent fixed tools。 |
 
-审计结论：本轮发现的是 MIG-01 两个精确停点未留验证证据的缺口，现已补专门回归；未发现上述16项新的生产源码遗漏。历史 main 继承与保留历史 reader 已按表标注。最终CI与生产上线状态应由主会话另填，不能从本表推导。
+审计结论：本轮发现的是 MIG-01 两个精确停点未留验证证据的缺口，现已补专门回归；未发现上述16项新的生产源码遗漏。历史 main 继承与保留历史 reader 已按表标注。后续最终 CI 与合并结果见上文，生产上线状态以独立生产验收记录为准。
 
 MIG-01 最终验证：Windows 3 passed / 32.98s；Linux 3 passed / 55.94s（`.cache/final-migration-stop-points-linux.log`）。三原schema SHA跨平台相同。Linux初次缺私有Git对象，仅导入固定Pi对象后重测；未改变测试或迁移语义。
 补充最终策略变更：产品默认 direct，Code 需显式 opt-in；INT-03 所述两种合同模式分别冻结。Code inventory 导出显式 code_enabled=True，75项与现存 JSON 完全一致。相关测试 fixture 也显式 opt-in，未把测试全局默认改为 Code。
