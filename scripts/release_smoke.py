@@ -130,6 +130,8 @@ def prepare_deployment(deploy_directory: Path) -> dict[Path, str]:
             ),
             "LLM_API_KEY=replace-with-api-key": "LLM_API_KEY=release-smoke-key",
             "LLM_MODEL=replace-with-model-name": "LLM_MODEL=release-smoke-model",
+            "MEMORY_EMBEDDING_ENABLED=true": "MEMORY_EMBEDDING_ENABLED=false",
+            "WEB_MODE=native": "WEB_MODE=disabled",
         }
         for old, new in replacements.items():
             environment = environment.replace(old, new)

@@ -251,6 +251,45 @@ def test_release_smoke_sentinels_are_idempotent_and_conflict_safe(tmp_path: Path
         prepare_deployment(tmp_path)
 
 
+def test_generated_smoke_configuration_passes_real_setup_validation(tmp_path: Path) -> None:
+    from qq_ai_bot.deployment_setup.service import (
+        EnvironmentDocument,
+        SetupConfiguration,
+        SetupPaths,
+        validate_configuration,
+    )
+
+    (tmp_path / ".env.example").write_bytes((ROOT / ".env.example").read_bytes())
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config/persona.md").write_bytes((ROOT / "config/persona.md").read_bytes())
+    prepare_deployment(tmp_path)
+    paths = SetupPaths(tmp_path)
+    environment = EnvironmentDocument.load(paths).values()
+    assert environment["MEMORY_EMBEDDING_ENABLED"] == "false"
+    assert environment["WEB_MODE"] == "disabled"
+    validate_configuration(
+        paths,
+        SetupConfiguration(
+            environment=environment,
+            model_profiles=paths.model_profiles.read_text(encoding="utf-8"),
+            pending_plugins=None,
+        ),
+    )
+
+
+def test_smoke_preserves_existing_embedding_and_search_configuration(tmp_path: Path) -> None:
+    custom = (
+        "MEMORY_EMBEDDING_ENABLED=true\n"
+        "MEMORY_EMBEDDING_BASE_URL=https://custom.example.invalid/v1\n"
+        "MEMORY_EMBEDDING_API_KEY=custom-test-key\n"
+        "WEB_MODE=native\n"
+        "PLUGIN_SYSTEM_ENABLED=true\n"
+    )
+    (tmp_path / ".env").write_text(custom, encoding="utf-8")
+    prepare_deployment(tmp_path)
+    assert (tmp_path / ".env").read_text(encoding="utf-8") == custom
+
+
 def test_release_smoke_decodes_docker_output_as_utf8(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
