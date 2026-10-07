@@ -1177,7 +1177,9 @@ class MainAgentBackend(AgentToolBackend):
         """Keep local response controls and Artifact reads outside the business budget."""
 
         del runtime
-        return name != _ARTIFACT_READER_NAME
+        from qq_ai_bot.capabilities.invocation import counts_toward_business_limit
+
+        return counts_toward_business_limit(name)
 
     def _mutation_identity(self, call: ToolCall) -> tuple[str, str] | None:
         if not self._is_mutating_call(call):

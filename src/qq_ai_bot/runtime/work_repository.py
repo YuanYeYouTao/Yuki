@@ -2312,8 +2312,8 @@ class WorkRepository:
     ) -> bool:
         """T2: one dispatch marker and all root/run usage commit together.
 
-        ``charge=False`` is only for lifecycle controls, which use the model and
-        message budgets rather than the business tool allowance.
+        ``charge=False`` is for lifecycle controls and local artifact readback.
+        They still publish the same dispatch marker and original receipt.
         """
         async with self.database.sessions() as reader:
             original = (

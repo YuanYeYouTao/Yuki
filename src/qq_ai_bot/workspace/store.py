@@ -463,11 +463,32 @@ class WorkspaceStore:
         finally:
             self._unlink([path])
 
-    def read(self, artifact_id: str, *, offset: int = 0) -> dict[str, Any]:
+    def read(
+        self,
+        artifact_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 32768,
+        expected_version: str | None = None,
+    ) -> dict[str, Any]:
         if type(offset) is not int or offset < 0:
             raise WorkspaceError("invalid_offset")
+        if type(limit) is not int or not 4 <= limit <= 32768:
+            raise WorkspaceError("invalid_limit")
         metadata, data = self.read_bytes(artifact_id)
-        page = data[offset : offset + 32768]
+        if expected_version is not None and metadata["sha256"] != expected_version:
+            raise WorkspaceError("version_conflict")
+        page = data[offset : offset + limit]
+        result = {
+            **metadata,
+            "version": metadata["sha256"],
+            "offset": offset,
+            "next_offset": offset + len(page),
+            "offset_unit": "bytes",
+            "truncated": offset + len(page) < len(data),
+            "eof": offset + len(page) >= len(data),
+            "external_untrusted": True,
+        }
         try:
             import codecs
 
@@ -475,16 +496,17 @@ class WorkspaceStore:
             value = decoder.decode(page, final=offset + len(page) >= len(data))
             consumed = len(page) - len(decoder.getstate()[0])
         except UnicodeDecodeError:
-            return {**metadata, "binary": True}
+            return {**result, "binary": True, "read_state": "binary", "text": None}
         if "\x00" in value:
-            return {**metadata, "binary": True}
+            return {**result, "binary": True, "read_state": "binary", "text": None}
         return {
-            **metadata,
+            **result,
+            "read_state": "inline",
             "text": value,
             "offset": offset,
             "next_offset": offset + consumed,
             "truncated": offset + consumed < len(data),
-            "external_untrusted": True,
+            "eof": offset + consumed >= len(data),
         }
 
     def list(

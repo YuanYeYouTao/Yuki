@@ -67,7 +67,10 @@ flowchart LR
 
 ## 代码组合 `execute_code`
 
-冻结清单包含固定的 `execute_code` 和 `lookup_tools`（主合同 version 13，`yuki.codemode.api.v1`）。
+冻结清单包含固定的 `execute_code` 和 `lookup_tools`（主合同 version 15，`yuki.codemode.api.v1`）。
+常用终端 `terminal_exec`、`terminal_read`、`environment_status` 加入固定直调视图；
+交互写入、终端控制、包管理和服务管理仍经 Code Mode。直调复用同一 Manager、来源权限、
+原 request/run ID 和未知结果恢复，不建立宿主执行通道，也不自动重提 pending 命令。
 脚本里的 `await yuki_<工具名>({参数})` 是同一 canonical 工具的调用语法，由
 `codemode/api_projection.py` 从冻结声明确定性投影：参数 schema 为原件，名称编码可逆，
 不增加业务别名或权限；`execute_code` 和只读目录自身不投影，未知名称在沙箱内即 NameError。
@@ -83,6 +86,12 @@ flowchart LR
 （快照、父 checkpoint、子意图同事务）后，走与直接调用相同的 InvocationService →
 WorkSession T2/T3 → `MainAgentBackend.execute_call`，拒绝理由与直接调用逐字一致；
 VM 只收到已保存的原回执视图（`ToolReceiptView`）。
+
+`read_tool_artifact` 在直调与子调用中均不扣业务工具次数，但照常提交 T2 的
+`dispatch_started=true` 与 T3 原回执，`budget_admitted=false` 表示免扣费而非未执行。
+Code Mode 的累计 suspension、内存、并发、快照和时间限制继续生效且不因恢复重置。
+业务次数来自配置 `agent.max_tool_calls`（默认 32），达到段额度时恢复原 composition；
+根预算仍累计，不存在固定 18 次的执行限制。
 
 主 Agent 与工作者共享 `CODE_MODE_POLICY`：有效 Work 内多个步骤已知、无需模型逐步
 解释新证据时，默认用 Code Mode 编排批量读取、过滤汇总、确定性循环、串行操作与原回执

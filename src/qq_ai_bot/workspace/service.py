@@ -177,6 +177,8 @@ class WorkspaceService:
                 self.store.read,
                 str(args["artifact_id"]),
                 offset=int(args.get("offset", 0)),
+                limit=int(args.get("limit", 32768)),
+                expected_version=args.get("expected_version"),
             )
         if name == "workspace_write":
             previous = (

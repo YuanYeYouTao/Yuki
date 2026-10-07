@@ -16,7 +16,14 @@
 
 ## 当前状态
 
-最新工作为[正确性修复与 main 兼容](pi-codemode-correctness-repair.md)，按 2026-10-07
+最新工作为 #262 读回与常用终端直调修复，详见[结果合同](tool-results.md)与
+[交付记录](pi-codemode-delivery.md)。主合同 version 15，完整服务 68 个执行工具、
+42 个模型直调工具；新增直调 `terminal_exec/terminal_read/environment_status`。
+工作区每页 4–32768 字节、版本校验、明确 externalized 状态，VM 按原回执安全取回完整页。
+直调与 Code Mode 的本地 artifact 读回均不扣业务次数，原调度标记和回执仍持久化。
+本轮授权范围仅为本地修复、测试和提交，不推送。
+
+此前工作为[正确性修复与 main 兼容](pi-codemode-correctness-repair.md)，按 2026-10-07
 证据包 F1–F12 修复。主合同 version 14、数据库 head 0098、Plugin API 3.1，MCP 已退役。
 逐项验证、测试夹具修改和未运行条件见该页；历史付费对照不代表本轮缓存验收。
 
@@ -111,16 +118,17 @@ Monty 是实际依赖。早期提交描述中的“Pi 循环移植”为历史�
   顶层 ID 为 `chain:request_sequence:provider_call_id`，子调用为 `<父>/c<序号>`。
   领域回执键一律取 `WorkSession.receipt_key`，不要再用响应内 Provider call ID。
 - **持久化**：`WorkRepository.prepare_effect`（T0/T1 意图）、`publish_code_boundary`（T1）、
-  `admit_dispatch`（T2，预算与 `dispatch_started` 同事务；`charge=False` 用于生命周期控制）、
+  `admit_dispatch`（T2，预算与 `dispatch_started` 同事务；`charge=False` 用于生命周期控制
+  和本地 artifact 读回）、
   `record_effect`（T3，冲突拒绝、保留 invocation/composition 元数据）、
-  `composition_children`、`undispatched_intent`。当前迁移 head `0096`；原测试分支 `0092`
-  与 main `0095` 都按正常 Alembic 链升级，不 stamp 或改写原任务/预算/回执。
+  `composition_children`、`undispatched_intent`。当前迁移 head `0098`；已发布的两种 `0096`
+  由 `0097` 协调，按正常 Alembic 链升级，不 stamp 或改写原任务/预算/回执。
 - **恢复**：`WorkSession.restore` 在一般 pending 配对前识别未结算 composition，产出
   `PendingComposition`；已配对的 partial 不恢复 VM。业务新激活携带最后尚未观察的
   原回执证据，不复制旧 opaque；段末在原模型预算内有一次保存累计 note/complete 的机会。
 - **主循环**：`agent_core.loop.run_agent_loop`，`AgentRunner` 通过模型/调用/结算三个固定边界驱动。
 - **Code Mode**：`codemode/driver.py`（编排）、`api_projection.py`（wrapper）、`contract.py`
-  （`execute_code` 声明，主合同 version 13）、`tool_visibility.py`（固定直调视图与目录）、
+  （`execute_code` 声明，主合同 version 15）、`tool_visibility.py`（固定直调视图与目录）、
   `engine_monty.py`（固定 worker）。
 - **测试夹具**：`tests/unit/test_tool_effect_audit.py::active_work`、
   `tests/unit/test_work_effect_results.py::owned_session`、

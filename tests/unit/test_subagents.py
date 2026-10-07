@@ -591,7 +591,9 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
     assert names == WORKER_REQUIRED_NAMES & DIRECT_TOOL_NAMES
     assert {t.name for t in executor.definitions} == WORKER_REQUIRED_NAMES
     assert "yuki_terminal_exec" in executor.script_api.names
-    assert "terminal_exec" not in names
+    # #262: the worker shares the three common direct terminal entrypoints;
+    # its execution allowlist, fixed schemas and excluded authority stay exact.
+    assert {"terminal_exec", "terminal_read", "environment_status"} <= names
     assert "subagent_message" in names and "search_memory" in names
     assert not names & {"send_group_message", "memory_change", "subagent_start", "report_progress"}
     await workers.message(lease, parent["id"], identity, "continue", "Check again")

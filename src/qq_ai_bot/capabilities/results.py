@@ -249,6 +249,24 @@ class ToolResultBudgeter:
             summary["media_artifact_handle"] = media_handle
         if progress:
             summary["progress"] = progress
+        file_page = (
+            result.provider_id == "core"
+            and result.tool_name == "workspace_read"
+            and isinstance(result.data, dict)
+            and isinstance(result.data.get("text"), str)
+        )
+        if file_page:
+            # A directory/preview is not file text, and must not look like EOF.
+            summary.pop("progress", None)
+            summary["data"] = {
+                **{
+                    key: value
+                    for key, value in progress.items()
+                    if key not in {"output_preview", "preview_truncated"}
+                },
+                "read_state": "externalized",
+                "text": None,
+            }
         rendered = json.dumps(summary, ensure_ascii=False, default=str)
         if (self._max_characters is not None and len(rendered) > self._max_characters) or len(
             json.dumps({"result": rendered}, ensure_ascii=False).encode()
@@ -267,7 +285,8 @@ class ToolResultBudgeter:
                 "root_type": summary.get("root_type"),
                 "available_operations": summary.get("available_operations"),
                 "important_fields": (important or None) if not artifact_id else None,
-                "progress": progress or None,
+                "progress": (progress or None) if not file_page else None,
+                **({"data": summary["data"]} if file_page else {}),
                 **_execution_envelope(result),
             }
             rendered = json.dumps(
@@ -341,6 +360,13 @@ def _workspace_progress(result: ToolExecutionResult) -> dict[str, Any]:
             "truncated",
             "path",
             "version",
+            "size",
+            "offset",
+            "next_offset",
+            "offset_unit",
+            "eof",
+            "read_state",
+            "binary",
             "artifact_id",
             "error",
             "retryable",

@@ -93,7 +93,7 @@ class MainAgentContract:
                 json.dumps(
                     {
                         # 14: retired MCP and fixed direct view, discovery and full execution API.
-                        "version": 14,
+                        "version": 15,
                         "code_api": CODE_API_REVISION,
                         "direct_names": sorted(DIRECT_TOOL_NAMES),
                         "plugin_contracts": self.plugin_contracts,

@@ -1,0 +1,241 @@
+........................................................................ [  1%]
+........................................................................ [  3%]
+........................................................................ [  4%]
+........................................................s............... [  6%]
+........................................................................ [  7%]
+........................................................................ [  9%]
+........................................................................ [ 10%]
+........................................................................ [ 12%]
+........................................................................ [ 13%]
+........................................................................ [ 15%]
+........................................................................ [ 16%]
+........................................................................ [ 18%]
+........................................................................ [ 19%]
+........................................................................ [ 21%]
+........................................................................ [ 22%]
+........................................................................ [ 24%]
+........................................................................ [ 25%]
+........................................................................ [ 27%]
+........................................................................ [ 28%]
+........................................................................ [ 30%]
+........................................................................ [ 31%]
+........................................................................ [ 33%]
+........................................................................ [ 34%]
+........................................................................ [ 36%]
+........................................................................ [ 37%]
+........................................................................ [ 39%]
+........................................................................ [ 40%]
+........................................................................ [ 42%]
+........................................................................ [ 44%]
+........................................................................ [ 45%]
+...........F............................................................ [ 47%]
+........................................................................ [ 48%]
+........................................................................ [ 50%]
+........................................................................ [ 51%]
+........................................................................ [ 53%]
+........................................................................ [ 54%]
+........................................................................ [ 56%]
+........................................................................ [ 57%]
+........................................................................ [ 59%]
+........................................................................ [ 60%]
+........................................................................ [ 62%]
+........................................................................ [ 63%]
+........................................................................ [ 65%]
+........................................................................ [ 66%]
+........................................................................ [ 68%]
+........................................................................ [ 69%]
+........................................................................ [ 71%]
+........................................................................ [ 72%]
+........................................................................ [ 74%]
+........................................................................ [ 75%]
+........................................................................ [ 77%]
+........................................................................ [ 78%]
+........................................................................ [ 80%]
+........................................................................ [ 81%]
+............................FFFFFFFFFFFFFFF............................. [ 83%]
+........................................................................ [ 84%]
+........................................................................ [ 86%]
+........................................................................ [ 88%]
+........................................................................ [ 89%]
+........................................................................ [ 91%]
+........................................................................ [ 92%]
+........................................................................ [ 94%]
+........................................................................ [ 95%]
+........................................................................ [ 97%]
+........................................................................ [ 98%]
+................................................................         [100%]
+=================================== FAILURES ===================================
+_____ test_real_work_selection_disk_reopen_and_paid_compaction_driver[C05] _____
+tests/unit/test_manual_cache_probe.py:424: in test_real_work_selection_disk_reopen_and_paid_compaction_driver
+    assert evidence["restart"]["tool_calls_before"] == 1
+E   assert 0 == 1
+----------------------------- Captured stderr call -----------------------------
+/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/src/qq_ai_bot/persistence/database.py:104: SAWarning: Cannot correctly sort tables; there are unresolvable cycles between tables "canonical_conversations, conversation_legacy_aliases", which is usually caused by mutually dependent foreign key constraints.  Foreign key constraints involving these tables will not be considered; this warning may raise an error in a future release.
+  for table in Base.metadata.sorted_tables
+------------------------------ Captured log call -------------------------------
+WARNING  qq_ai_bot.model_runtime.profiles:profiles.py:136 model_profiles_legacy_fallback_opt_in file=/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-cache-probe-lxsy2jy_/absent.toml profile=main
+_ test_worker_scheduler_uses_fixed_tools_and_recovers_history[complete-chat_completions] _
+tests/unit/test_subagents.py:594: in test_worker_scheduler_uses_fixed_tools_and_recovers_history
+    assert "terminal_exec" not in names
+E   AssertionError: assert 'terminal_exec' not in {'cancel_code_run', 'environment_status', 'execute_code', 'find_contacts', 'get_chat_history_around', 'get_code_run', ...}
+---------------------------- Captured stderr setup -----------------------------
+/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/src/qq_ai_bot/persistence/database.py:104: SAWarning: Cannot correctly sort tables; there are unresolvable cycles between tables "canonical_conversations, conversation_legacy_aliases", which is usually caused by mutually dependent foreign key constraints.  Foreign key constraints involving these tables will not be considered; this warning may raise an error in a future release.
+  for table in Base.metadata.sorted_tables
+_ test_worker_scheduler_uses_fixed_tools_and_recovers_history[complete-responses] _
+tests/unit/test_subagents.py:594: in test_worker_scheduler_uses_fixed_tools_and_recovers_history
+    assert "terminal_exec" not in names
+E   AssertionError: assert 'terminal_exec' not in {'cancel_code_run', 'environment_status', 'execute_code', 'find_contacts', 'get_chat_history_around', 'get_code_run', ...}
+---------------------------- Captured stderr setup -----------------------------
+/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/src/qq_ai_bot/persistence/database.py:104: SAWarning: Cannot correctly sort tables; there are unresolvable cycles between tables "canonical_conversations, conversation_legacy_aliases", which is usually caused by mutually dependent foreign key constraints.  Foreign key constraints involving these tables will not be considered; this warning may raise an error in a future release.
+  for table in Base.metadata.sorted_tables
+------------------------------ Captured log call -------------------------------
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+_ test_worker_scheduler_uses_fixed_tools_and_recovers_history[complete-responses_native] _
+tests/unit/test_subagents.py:594: in test_worker_scheduler_uses_fixed_tools_and_recovers_history
+    assert "terminal_exec" not in names
+E   AssertionError: assert 'terminal_exec' not in {'cancel_code_run', 'environment_status', 'execute_code', 'find_contacts', 'get_chat_history_around', 'get_code_run', ...}
+---------------------------- Captured stderr setup -----------------------------
+/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/src/qq_ai_bot/persistence/database.py:104: SAWarning: Cannot correctly sort tables; there are unresolvable cycles between tables "canonical_conversations, conversation_legacy_aliases", which is usually caused by mutually dependent foreign key constraints.  Foreign key constraints involving these tables will not be considered; this warning may raise an error in a future release.
+  for table in Base.metadata.sorted_tables
+_ test_worker_scheduler_uses_fixed_tools_and_recovers_history[segment-chat_completions] _
+tests/unit/test_subagents.py:594: in test_worker_scheduler_uses_fixed_tools_and_recovers_history
+    assert "terminal_exec" not in names
+E   AssertionError: assert 'terminal_exec' not in {'cancel_code_run', 'environment_status', 'execute_code', 'find_contacts', 'get_chat_history_around', 'get_code_run', ...}
+---------------------------- Captured stderr setup -----------------------------
+/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/src/qq_ai_bot/persistence/database.py:104: SAWarning: Cannot correctly sort tables; there are unresolvable cycles between tables "canonical_conversations, conversation_legacy_aliases", which is usually caused by mutually dependent foreign key constraints.  Foreign key constraints involving these tables will not be considered; this warning may raise an error in a future release.
+  for table in Base.metadata.sorted_tables
+_ test_worker_scheduler_uses_fixed_tools_and_recovers_history[segment-responses] _
+tests/unit/test_subagents.py:594: in test_worker_scheduler_uses_fixed_tools_and_recovers_history
+    assert "terminal_exec" not in names
+E   AssertionError: assert 'terminal_exec' not in {'cancel_code_run', 'environment_status', 'execute_code', 'find_contacts', 'get_chat_history_around', 'get_code_run', ...}
+---------------------------- Captured stderr setup -----------------------------
+/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/src/qq_ai_bot/persistence/database.py:104: SAWarning: Cannot correctly sort tables; there are unresolvable cycles between tables "canonical_conversations, conversation_legacy_aliases", which is usually caused by mutually dependent foreign key constraints.  Foreign key constraints involving these tables will not be considered; this warning may raise an error in a future release.
+  for table in Base.metadata.sorted_tables
+------------------------------ Captured log call -------------------------------
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+_ test_worker_scheduler_uses_fixed_tools_and_recovers_history[segment-responses_native] _
+tests/unit/test_subagents.py:594: in test_worker_scheduler_uses_fixed_tools_and_recovers_history
+    assert "terminal_exec" not in names
+E   AssertionError: assert 'terminal_exec' not in {'cancel_code_run', 'environment_status', 'execute_code', 'find_contacts', 'get_chat_history_around', 'get_code_run', ...}
+---------------------------- Captured stderr setup -----------------------------
+/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/src/qq_ai_bot/persistence/database.py:104: SAWarning: Cannot correctly sort tables; there are unresolvable cycles between tables "canonical_conversations, conversation_legacy_aliases", which is usually caused by mutually dependent foreign key constraints.  Foreign key constraints involving these tables will not be considered; this warning may raise an error in a future release.
+  for table in Base.metadata.sorted_tables
+_ test_worker_scheduler_uses_fixed_tools_and_recovers_history[question-chat_completions] _
+tests/unit/test_subagents.py:594: in test_worker_scheduler_uses_fixed_tools_and_recovers_history
+    assert "terminal_exec" not in names
+E   AssertionError: assert 'terminal_exec' not in {'cancel_code_run', 'environment_status', 'execute_code', 'find_contacts', 'get_chat_history_around', 'get_code_run', ...}
+---------------------------- Captured stderr setup -----------------------------
+/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/src/qq_ai_bot/persistence/database.py:104: SAWarning: Cannot correctly sort tables; there are unresolvable cycles between tables "canonical_conversations, conversation_legacy_aliases", which is usually caused by mutually dependent foreign key constraints.  Foreign key constraints involving these tables will not be considered; this warning may raise an error in a future release.
+  for table in Base.metadata.sorted_tables
+_ test_worker_scheduler_uses_fixed_tools_and_recovers_history[question-responses] _
+tests/unit/test_subagents.py:594: in test_worker_scheduler_uses_fixed_tools_and_recovers_history
+    assert "terminal_exec" not in names
+E   AssertionError: assert 'terminal_exec' not in {'cancel_code_run', 'environment_status', 'execute_code', 'find_contacts', 'get_chat_history_around', 'get_code_run', ...}
+---------------------------- Captured stderr setup -----------------------------
+/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/src/qq_ai_bot/persistence/database.py:104: SAWarning: Cannot correctly sort tables; there are unresolvable cycles between tables "canonical_conversations, conversation_legacy_aliases", which is usually caused by mutually dependent foreign key constraints.  Foreign key constraints involving these tables will not be considered; this warning may raise an error in a future release.
+  for table in Base.metadata.sorted_tables
+------------------------------ Captured log call -------------------------------
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+_ test_worker_scheduler_uses_fixed_tools_and_recovers_history[question-responses_native] _
+tests/unit/test_subagents.py:594: in test_worker_scheduler_uses_fixed_tools_and_recovers_history
+    assert "terminal_exec" not in names
+E   AssertionError: assert 'terminal_exec' not in {'cancel_code_run', 'environment_status', 'execute_code', 'find_contacts', 'get_chat_history_around', 'get_code_run', ...}
+---------------------------- Captured stderr setup -----------------------------
+/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/src/qq_ai_bot/persistence/database.py:104: SAWarning: Cannot correctly sort tables; there are unresolvable cycles between tables "canonical_conversations, conversation_legacy_aliases", which is usually caused by mutually dependent foreign key constraints.  Foreign key constraints involving these tables will not be considered; this warning may raise an error in a future release.
+  for table in Base.metadata.sorted_tables
+_ test_worker_scheduler_uses_fixed_tools_and_recovers_history[compaction-chat_completions] _
+tests/unit/test_subagents.py:594: in test_worker_scheduler_uses_fixed_tools_and_recovers_history
+    assert "terminal_exec" not in names
+E   AssertionError: assert 'terminal_exec' not in {'cancel_code_run', 'environment_status', 'execute_code', 'find_contacts', 'get_chat_history_around', 'get_code_run', ...}
+---------------------------- Captured stderr setup -----------------------------
+/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/src/qq_ai_bot/persistence/database.py:104: SAWarning: Cannot correctly sort tables; there are unresolvable cycles between tables "canonical_conversations, conversation_legacy_aliases", which is usually caused by mutually dependent foreign key constraints.  Foreign key constraints involving these tables will not be considered; this warning may raise an error in a future release.
+  for table in Base.metadata.sorted_tables
+_ test_worker_scheduler_uses_fixed_tools_and_recovers_history[compaction-responses] _
+tests/unit/test_subagents.py:594: in test_worker_scheduler_uses_fixed_tools_and_recovers_history
+    assert "terminal_exec" not in names
+E   AssertionError: assert 'terminal_exec' not in {'cancel_code_run', 'environment_status', 'execute_code', 'find_contacts', 'get_chat_history_around', 'get_code_run', ...}
+---------------------------- Captured stderr setup -----------------------------
+/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/src/qq_ai_bot/persistence/database.py:104: SAWarning: Cannot correctly sort tables; there are unresolvable cycles between tables "canonical_conversations, conversation_legacy_aliases", which is usually caused by mutually dependent foreign key constraints.  Foreign key constraints involving these tables will not be considered; this warning may raise an error in a future release.
+  for table in Base.metadata.sorted_tables
+------------------------------ Captured log call -------------------------------
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+_ test_worker_scheduler_uses_fixed_tools_and_recovers_history[compaction-responses_native] _
+tests/unit/test_subagents.py:594: in test_worker_scheduler_uses_fixed_tools_and_recovers_history
+    assert "terminal_exec" not in names
+E   AssertionError: assert 'terminal_exec' not in {'cancel_code_run', 'environment_status', 'execute_code', 'find_contacts', 'get_chat_history_around', 'get_code_run', ...}
+---------------------------- Captured stderr setup -----------------------------
+/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/src/qq_ai_bot/persistence/database.py:104: SAWarning: Cannot correctly sort tables; there are unresolvable cycles between tables "canonical_conversations, conversation_legacy_aliases", which is usually caused by mutually dependent foreign key constraints.  Foreign key constraints involving these tables will not be considered; this warning may raise an error in a future release.
+  for table in Base.metadata.sorted_tables
+_ test_worker_scheduler_uses_fixed_tools_and_recovers_history[business-chat_completions] _
+tests/unit/test_subagents.py:594: in test_worker_scheduler_uses_fixed_tools_and_recovers_history
+    assert "terminal_exec" not in names
+E   AssertionError: assert 'terminal_exec' not in {'cancel_code_run', 'environment_status', 'execute_code', 'find_contacts', 'get_chat_history_around', 'get_code_run', ...}
+---------------------------- Captured stderr setup -----------------------------
+/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/src/qq_ai_bot/persistence/database.py:104: SAWarning: Cannot correctly sort tables; there are unresolvable cycles between tables "canonical_conversations, conversation_legacy_aliases", which is usually caused by mutually dependent foreign key constraints.  Foreign key constraints involving these tables will not be considered; this warning may raise an error in a future release.
+  for table in Base.metadata.sorted_tables
+_ test_worker_scheduler_uses_fixed_tools_and_recovers_history[business-responses] _
+tests/unit/test_subagents.py:594: in test_worker_scheduler_uses_fixed_tools_and_recovers_history
+    assert "terminal_exec" not in names
+E   AssertionError: assert 'terminal_exec' not in {'cancel_code_run', 'environment_status', 'execute_code', 'find_contacts', 'get_chat_history_around', 'get_code_run', ...}
+---------------------------- Captured stderr setup -----------------------------
+/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/src/qq_ai_bot/persistence/database.py:104: SAWarning: Cannot correctly sort tables; there are unresolvable cycles between tables "canonical_conversations, conversation_legacy_aliases", which is usually caused by mutually dependent foreign key constraints.  Foreign key constraints involving these tables will not be considered; this warning may raise an error in a future release.
+  for table in Base.metadata.sorted_tables
+------------------------------ Captured log call -------------------------------
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+WARNING  qq_ai_bot.services.native_tool_binder:native_tool_binder.py:57 native_tool_binding_skipped reason=capability web_mode=native protocol=responses
+_ test_worker_scheduler_uses_fixed_tools_and_recovers_history[business-responses_native] _
+tests/unit/test_subagents.py:594: in test_worker_scheduler_uses_fixed_tools_and_recovers_history
+    assert "terminal_exec" not in names
+E   AssertionError: assert 'terminal_exec' not in {'cancel_code_run', 'environment_status', 'execute_code', 'find_contacts', 'get_chat_history_around', 'get_code_run', ...}
+---------------------------- Captured stderr setup -----------------------------
+/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/src/qq_ai_bot/persistence/database.py:104: SAWarning: Cannot correctly sort tables; there are unresolvable cycles between tables "canonical_conversations, conversation_legacy_aliases", which is usually caused by mutually dependent foreign key constraints.  Foreign key constraints involving these tables will not be considered; this warning may raise an error in a future release.
+  for table in Base.metadata.sorted_tables
+=========================== short test summary info ============================
+SKIPPED [1] tests/integration/test_legacy_profile_backup_replay.py:122: private production backup paths not provided
+FAILED tests/unit/test_manual_cache_probe.py::test_real_work_selection_disk_reopen_and_paid_compaction_driver[C05]
+FAILED tests/unit/test_subagents.py::test_worker_scheduler_uses_fixed_tools_and_recovers_history[complete-chat_completions]
+FAILED tests/unit/test_subagents.py::test_worker_scheduler_uses_fixed_tools_and_recovers_history[complete-responses]
+FAILED tests/unit/test_subagents.py::test_worker_scheduler_uses_fixed_tools_and_recovers_history[complete-responses_native]
+FAILED tests/unit/test_subagents.py::test_worker_scheduler_uses_fixed_tools_and_recovers_history[segment-chat_completions]
+FAILED tests/unit/test_subagents.py::test_worker_scheduler_uses_fixed_tools_and_recovers_history[segment-responses]
+FAILED tests/unit/test_subagents.py::test_worker_scheduler_uses_fixed_tools_and_recovers_history[segment-responses_native]
+FAILED tests/unit/test_subagents.py::test_worker_scheduler_uses_fixed_tools_and_recovers_history[question-chat_completions]
+FAILED tests/unit/test_subagents.py::test_worker_scheduler_uses_fixed_tools_and_recovers_history[question-responses]
+FAILED tests/unit/test_subagents.py::test_worker_scheduler_uses_fixed_tools_and_recovers_history[question-responses_native]
+FAILED tests/unit/test_subagents.py::test_worker_scheduler_uses_fixed_tools_and_recovers_history[compaction-chat_completions]
+FAILED tests/unit/test_subagents.py::test_worker_scheduler_uses_fixed_tools_and_recovers_history[compaction-responses]
+FAILED tests/unit/test_subagents.py::test_worker_scheduler_uses_fixed_tools_and_recovers_history[compaction-responses_native]
+FAILED tests/unit/test_subagents.py::test_worker_scheduler_uses_fixed_tools_and_recovers_history[business-chat_completions]
+FAILED tests/unit/test_subagents.py::test_worker_scheduler_uses_fixed_tools_and_recovers_history[business-responses]
+FAILED tests/unit/test_subagents.py::test_worker_scheduler_uses_fixed_tools_and_recovers_history[business-responses_native]
+16 failed, 4727 passed, 1 skipped in 1145.73s (0:19:05)

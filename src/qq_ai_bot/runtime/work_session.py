@@ -1752,15 +1752,18 @@ class WorkSession:
                 await control.repository.undispatched_intent(control.current["id"], key)
             ):
                 return await self.journal.effect_result(key)
+        from qq_ai_bot.capabilities.invocation import counts_toward_business_limit
         from qq_ai_bot.runtime.work_budget import WorkBudgetExceeded
 
+        charged = counts_toward_business_limit(call.function.name)
         try:
             if not await control.repository.admit_dispatch(
-                control.lease, control.current["id"], key
+                control.lease, control.current["id"], key, charge=charged
             ):
                 return await self.journal.effect_result(key)
-            control.current["tool_calls"] += 1
-            control.tools_started += 1
+            if charged:
+                control.current["tool_calls"] += 1
+                control.tools_started += 1
         except WorkBudgetExceeded:
             await self.journal.record_effect(
                 key,

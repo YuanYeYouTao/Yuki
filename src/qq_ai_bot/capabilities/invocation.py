@@ -12,6 +12,11 @@ from uuid import uuid4
 from qq_ai_bot.domain.messages import ToolCall
 
 
+def counts_toward_business_limit(tool_name: str) -> bool:
+    """Frozen core readback policy, never selected by generated arguments."""
+    return tool_name != "read_tool_artifact"
+
+
 @dataclass(frozen=True, slots=True)
 class InvocationIdentity:
     """Host-owned identity; arguments are deliberately absent from its key."""

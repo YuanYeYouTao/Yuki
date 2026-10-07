@@ -1194,3 +1194,65 @@ npm run lint
 见[真实缓存记录](pi-codemode-evidence/correctness-20261007/live-cache.json)。
 未运行的部署、上游最后一跳、SSE、长期生产比例保持未验证。
 提交/推送到已授权实验分支，实际SHA在最终回报和远端核验列出；不创建PR、合并main或部署。
+
+## 2026-10-07：#262 读回修复与常用终端直调
+
+按用户本轮要求完成修复、测试和本地提交。基线 `43b80ace`，分支
+`codex/pi-codemode-experiment`；本轮不推送。主合同 version 15，完整服务仍为 68 个执行
+工具，模型直调由 39 增至 42：新增 `terminal_exec`、`terminal_read`、`environment_status`。
+它们复用原 Manager、来源与原执行 ID；交互写入、包管理和服务管理仍经 Code Mode。
+
+### 实际改动
+
+- 工作区读取增加每页字节 `limit`（4–32768，默认 32768）、`expected_version`、明确的
+  `read_state/offset_unit/eof`。读取期间复核文件状态；后续页版本不符明确失败。
+  空文件、EOF 空页、二进制和外置正文分别表示，保留原文件 `size/version/offset/next_offset`。
+- 超预算文件页向模型返回 `text=null/read_state=externalized`。VM 从该子调用已接受回执
+  绑定的原 artifact 取回完整页，重新核验授权、generation、隐私代次、完整性与 VM 上限。
+  中断或分段恢复不重读后来改动的文件；无权、损坏、丢失或引用不符时保持不完整状态。
+- `read_tool_artifact.get` 支持标量字符串按字符分页，不再要求对字符串“继续读取更深路径”。
+  页大小按最终信封、转义和持久回执字节预算计算，包含后端附加的执行证据；不能返回
+  不前进的非空源页，不生成嵌套 artifact。所有带授权的 artifact 在文件 I/O 后重新核验来源。
+- 统一模型直调、VM 与 Work/root 的读回计数：本地 artifact 读取不扣业务次数，但保留
+  `dispatch_started=true`、原回执和 `executed`。`budget_admitted=false` 不再被 VM 误认作未执行。
+  累计 suspension、并发、时间和内存限制仍生效，恢复不重置资源或根预算。
+
+### 验证与合同断言更新
+
+新增真实 Monty + SQLite 回归覆盖原页在中断后的恢复、当前文件被改动、archive 损坏/缺失、
+权限撤销、错误引用、免扣次数与累计资源限制。100 个 Unicode 文件跨 5 次段让出完成分析，
+独立核对编号、字符长度、文件 SHA256 与 VM 对全部字符的加权校验，实际读取和根计数均为 100。
+另有字节页边界、空文件、二进制、文件版本冲突、I/O 中授权撤销、含转义字符串的完整重建与
+最终回执大小，以及终端直调、原 pending/run_id、各 Provider wire 的相关回归。
+
+五份既有测试按新合同更新，均附代码注释，未删除或放宽权限、来源及恢复断言：
+
+- `test_complete_direct_tool_policy.py`：完整服务精确 42 项直调，专用终端工具仍隐藏。
+- `test_tiered_tool_visibility.py`：校验固定集合，替换与新增三项直调冲突的“少于半数”经验断言。
+- `test_tiered_codemode_runner.py`：以仍隐藏的 `terminal_write` 保留原隐藏工具拒绝、目录和恢复矩阵。
+- `test_manual_cache_probe.py`：读回前后业务计数改为 0，仍要求实际调用一次、同一回执和模型预算不重置。
+- `test_subagents.py`：15 个参数化案例核对三个终端直调，保留工作者完整 allowlist、权限排除及固定 wire。
+
+全部命令使用 `UV_CACHE_DIR=/private/tmp/yuki-uv-cache-issue262`，未做 `uv sync`，保留本地 Monty wheel：
+
+```text
+uv run --frozen --no-sync ruff check src tests scripts migrations
+uv run --frozen --no-sync ruff format --check src tests scripts migrations
+uv run --frozen --no-sync mypy
+YUKI_MONTY_BINARY=$PWD/.venv/bin/yuki-monty-worker uv run --frozen --no-sync pytest -q -p no:warnings tests --tb=short -rs --basetemp=/private/tmp/y262-final
+```
+
+最终全量 **4743 通过、1 跳过，1051.98 秒，退出 0**；唯一跳过为未提供私有生产备份路径。
+真实 worker 没有跳过。ruff check、format（1236 文件）和 mypy（715 源文件）均退出 0。
+最终全量开始到结束的 1272 份源码/测试/构建输入 hash 不变。
+
+第一轮全量为 4727 通过、16 失败、1 跳过（1145.73 秒）：1 项旧读回计数断言、15 项同一旧
+终端隐藏断言。确认原因后更新合同测试，相关联合 52 项和工作者 35 项复测通过，再跑上述最终
+全量；不把第一轮红色结果隐藏或描述为通过。原始日志与机器记录见
+[验证记录](pi-codemode-evidence/issue-262-20261007/verification.json)。
+
+### 未运行与下一依赖
+
+本轮未运行真实付费 API、真实 QQ 发送、生产访问、Linux gVisor 部署或独立前端 npm 检查；
+前端未改，后端全量复用已有构建。合成测试临时数据已清理，安装的 worker、原用户文件和
+共享缓存保留。修复没有新增依赖；本轮仅本地提交，后续推送、合并及部署按用户后续指示执行。

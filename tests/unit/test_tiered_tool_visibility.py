@@ -18,8 +18,11 @@ async def test_compact_view_keeps_web_and_full_execution_schemas():
     assert visible == model_definitions(full)
     names = {tool.name for tool in visible}
     assert {"web_search", "read_webpage", "execute_code", "lookup_tools", "workspace_read"} <= names
-    assert not names & {"terminal_exec", "run_python", "admin_set_config", "automation_create"}
-    assert len(visible) < len(full) // 2
+    # #262: terminal_exec is now direct; specialized terminal controls stay hidden.
+    assert "terminal_exec" in names
+    assert not names & {"terminal_write", "run_python", "admin_set_config", "automation_create"}
+    # The requested three direct tools replace the old half-menu size heuristic.
+    assert names == DIRECT_TOOL_NAMES & {tool.name for tool in full}
     api = project(full, inventory["manifest_revision"])
     before = api.digest()
     for name in ("terminal_exec", "admin_set_config", "automation_create", "web_search"):

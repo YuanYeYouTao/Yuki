@@ -421,6 +421,24 @@ class ToolArtifactRepository:
             return _artifact_error("artifact_corrupt", "Artifact 不是有效 UTF-8")
         except OSError:
             return _artifact_error("artifact_missing", "Artifact 正文缺失，执行回执仍然有效")
+        if access is not None:
+            # Erasure, generation changes and GC may race the bounded file I/O.
+            async with self._database.sessions() as session:
+                current = await session.get(ToolArtifactModel, handle_id)
+                if (
+                    current is None
+                    or current.deleting
+                    or not await self._authorized(session, current, access)
+                    or (
+                        _as_utc(current.expires_at) <= datetime.now(UTC)
+                        and not await session.scalar(
+                            select(ToolArtifactModel.handle_id).where(
+                                ToolArtifactModel.handle_id == handle_id, self._protected()
+                            )
+                        )
+                    )
+                ):
+                    return _artifact_error("artifact_not_authorized", "Artifact 来源已失效")
         if media_type == _PRIVATE_MEDIA_TYPE:
             if access is None:
                 return _artifact_error("artifact_not_authorized", "图片 Artifact 需要原读取授权")
@@ -512,7 +530,7 @@ class ToolArtifactRepository:
                 resolved,
                 path=path,
                 offset=offset,
-                limit=min(limit, _MAX_JSON_PAGE_ITEMS),
+                limit=limit if isinstance(resolved, str) else min(limit, _MAX_JSON_PAGE_ITEMS),
                 base=base,
                 max_characters=max_characters,
             )
@@ -792,6 +810,35 @@ def _get_json(
     base: dict[str, object],
     max_characters: int,
 ) -> dict[str, object]:
+    if isinstance(value, str):
+        # Strings page by Unicode characters; workspace cursors remain bytes.
+        # Fit the encoded page, including escaping and its metadata, not a preview.
+        def string_page(length: int) -> dict[str, object]:
+            end = offset + length
+            return {
+                **base,
+                "path": list(path),
+                "type": "string",
+                "value": value[offset:end],
+                "offset": offset,
+                "offset_unit": "characters",
+                "next_offset": end if end < len(value) else None,
+                "total_characters": len(value),
+                "truncated": end < len(value),
+            }
+
+        low, high = 0, min(limit, max(0, len(value) - offset))
+        while low < high:
+            middle = (low + high + 1) // 2
+            if _fits_json_budget(string_page(middle), max_characters):
+                low = middle
+            else:
+                high = middle - 1
+        if not _fits_json_budget(string_page(low), max_characters) or (
+            low == 0 and offset < len(value)
+        ):
+            return _artifact_error("artifact_budget_too_small", "预算不足以返回一个字符")
+        return string_page(low)
     direct = {**base, "path": list(path), "type": _json_type(value), "value": value}
     if offset == 0 and _fits_json_budget(direct, max_characters):
         return direct

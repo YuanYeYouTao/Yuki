@@ -171,22 +171,24 @@ def _fit_artifact_page_result(
         return ToolExecutionResult(
             ok=True,
             data=candidate,
+            # The core reader never mutates; include the backend's eventual
+            # evidence field while sizing the escaped durable receipt.
+            mutation_committed=False,
             provider_id=_ARTIFACT_PROVIDER_ID,
             tool_name=_ARTIFACT_READER_NAME,
         )
 
-    def rendered_size(candidate: dict[str, object]) -> int:
-        return len(
-            json.dumps(
-                outcome(candidate).model_payload(),
-                ensure_ascii=False,
-                default=str,
-            )
+    def fits(candidate: dict[str, object]) -> bool:
+        rendered = json.dumps(outcome(candidate).model_payload(), ensure_ascii=False, default=str)
+        return (
+            len(rendered) <= max_characters
+            and len(json.dumps({"result": rendered}, ensure_ascii=False).encode()) <= 49152
         )
 
-    if rendered_size(page) <= max_characters:
+    if fits(page):
         return outcome(page)
-    content = page.get("content")
+    key = "value" if page.get("type") == "string" and page.get("mode") == "json" else "content"
+    content = page.get(key)
     offset = page.get("offset")
     total = page.get("total_characters")
     if not isinstance(content, str) or not isinstance(offset, int) or not isinstance(total, int):
@@ -206,15 +208,16 @@ def _fit_artifact_page_result(
         next_offset = offset + length
         candidate = {
             **page,
-            "content": content[:length],
+            key: content[:length],
             "next_offset": next_offset if next_offset < total else None,
+            **({"truncated": next_offset < total} if key == "value" else {}),
         }
-        if rendered_size(candidate) <= max_characters:
+        if fits(candidate):
             best = candidate
             low = length + 1
         else:
             high = length - 1
-    if best is None or (content and not best.get("content")):
+    if best is None or (content and not best.get(key)):
         return ToolExecutionResult(
             ok=False,
             error_code="artifact_page_budget_exceeded",
@@ -641,7 +644,7 @@ class ChatService:
                         provider_id=_ARTIFACT_PROVIDER_ID,
                         tool_name=_ARTIFACT_READER_NAME,
                     )
-                if result.get("mode") != "text":
+                if result.get("mode") != "text" and result.get("type") != "string":
                     from qq_ai_bot.capabilities.media import result_images
 
                     return ToolExecutionResult(
@@ -666,6 +669,8 @@ class ChatService:
                             description=(
                                 "读取工具产生的短期 Artifact。JSON 优先使用 inspect 查看结构、"
                                 "get 按路径读取、search 返回关键词命中的完整对象；旧文本使用 text。"
+                                "get 字符串按字符分页，offset/next_offset 单位为 characters；"
+                                "limit 默认 8000、上限 32000，实际页受当前结果预算约束。"
                                 "图片 Artifact 使用 image 将原图交给当前主模型原生查看。"
                             ),
                             parameters={

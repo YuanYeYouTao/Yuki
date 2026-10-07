@@ -22,7 +22,7 @@ import hashlib
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -31,6 +31,7 @@ from qq_ai_bot.capabilities.invocation import (
     InvocationIdentity,
     TrustedInvocationContext,
     child_operation_id,
+    counts_toward_business_limit,
 )
 from qq_ai_bot.capabilities.media import MediaResultText, result_images
 from qq_ai_bot.codemode.api_projection import ScriptApi, ToolReceiptView, receipt_view
@@ -432,7 +433,7 @@ class CodeModeDriver:
         pending.sort(key=lambda child: child.ordinal)
         await self._dispatch_all(state, pending)
         answers = {
-            child.engine_call_id: EngineAnswer.ok(self._vm_value(child)) for child in pending
+            child.engine_call_id: EngineAnswer.ok(await self._vm_value(child)) for child in pending
         }
         return await run.settle(answers)
 
@@ -661,9 +662,10 @@ class CodeModeDriver:
             return
         # Segment allowance, checked synchronously with in-flight reservations so
         # concurrent reads cannot overshoot it. The root budget stays atomic at T2.
-        if control.tools_started + self._inflight >= self.host.tool_limit:
+        charged = counts_toward_business_limit(child.tool)
+        if charged and control.tools_started + self._inflight >= self.host.tool_limit:
             raise CodeCompositionYield(child.operation_id)
-        self._inflight += 1
+        self._inflight += int(charged)
         invocation = self._child_invocation(
             child.operation_id,
             child.ordinal,
@@ -687,11 +689,11 @@ class CodeModeDriver:
             self.usage.rejected_before_dispatch += 1
             raise _Stop(STOP_BUDGET, child.operation_id) from exc
         finally:
-            self._inflight -= 1
+            self._inflight -= int(charged)
         # Admission is the durable T2 marker, never a counter delta that another
         # concurrent sibling could have moved.
         admitted = await self._admitted(child.operation_id)
-        self.usage.business_admitted += int(admitted)
+        self.usage.business_admitted += int(admitted and charged)
         if not admitted:
             self.usage.rejected_before_dispatch += 1
         child.dispatched = admitted
@@ -814,7 +816,7 @@ class CodeModeDriver:
         if raw is None:
             return False
         metadata = json.loads(raw).get("invocation", {})
-        return bool(metadata.get("budget_admitted"))
+        return bool(metadata.get("dispatch_started"))
 
     def _terminal_control(self, child: _Child, *, receipt: str | None = None) -> bool:
         if child.tool != "task_control":
@@ -995,9 +997,50 @@ class CodeModeDriver:
 
     # -- helpers -------------------------------------------------------------------
 
-    def _vm_value(self, child: _Child) -> Any:
+    async def _vm_value(self, child: _Child) -> Any:
         assert child.view is not None
-        value = child.view.as_json()
+        view = child.view
+        if child.tool == "workspace_read" and view.ok and not view.complete and view.result_ref:
+            # Rehydrate only the original accepted page, never today's workspace.
+            # The reference must be bound to this child receipt, not supplied by code.
+            from sqlalchemy import select
+
+            from qq_ai_bot.runtime.work_schema_v1 import effects
+            from qq_ai_bot.tool_results.access import access_from_source
+
+            control = self.control
+            assert control.current is not None
+            database = control.repository.database
+            async with database.sessions() as reader:
+                receipt = await reader.scalar(
+                    select(effects.c.receipt_json).where(
+                        effects.c.effect_key == child.operation_id,
+                        effects.c.work_id == control.current["id"],
+                        effects.c.state == "accepted",
+                    )
+                )
+            saved = _loads(receipt) if isinstance(receipt, str) else {}
+            store = database.work_result_store
+            if store is not None and saved.get("artifact_handle") == view.result_ref:
+                page = await store.read(
+                    view.result_ref,
+                    operation="get",
+                    max_characters=self.host.limits.max_result_bytes,
+                    access=control.context_access
+                    or access_from_source(
+                        control.lease.conversation_id, control.lease.generation, control.source
+                    ),
+                )
+                if (
+                    isinstance(page, dict)
+                    and page.get("tool_name") == "workspace_read"
+                    and page.get("provider_id") == "core"
+                    and isinstance(page.get("value"), dict)
+                    and isinstance(page["value"].get("text"), str)
+                    and page.get("total_items", len(page["value"])) == len(page["value"])
+                ):
+                    view = replace(view, data=page["value"], complete=True)
+        value = view.as_json()
         limit = self.host.limits.max_result_bytes
         if len(json.dumps(value, ensure_ascii=False).encode()) > limit:
             value = {**value, "data": None, "complete": False}

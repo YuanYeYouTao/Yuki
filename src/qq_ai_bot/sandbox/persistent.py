@@ -766,7 +766,12 @@ class PersistentManager(Manager):
                 path, cursor=args.get("cursor", ""), limit=args.get("limit", 50)
             )
         if method == "workspace_read":
-            return self.files.read(path, offset=args.get("offset", 0))
+            return self.files.read(
+                path,
+                offset=args.get("offset", 0),
+                limit=args.get("limit", 32768),
+                expected_version=args.get("expected_version"),
+            )
         if method in {"workspace_media_read", "workspace_media_validate"}:
             # Private Host/Manager operations, never tool declarations. Read
             # from a safely opened workspace FD, outside any SQLite writer.

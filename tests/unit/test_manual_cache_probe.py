@@ -421,8 +421,10 @@ async def test_real_work_selection_disk_reopen_and_paid_compaction_driver(tmp_pa
         assert evidence["restart"]["work_id_unchanged"] is True
         assert evidence["restart"]["model_requests_before"] == 1
         assert evidence["restart"]["model_requests_after"] == 1
-        assert evidence["restart"]["tool_calls_before"] == 1
-        assert evidence["restart"]["tool_calls_after"] == 1
+        # #262: local artifact readback dispatches once but charges no business
+        # budget. Disk reopen must preserve that zero, not silently charge it.
+        assert evidence["restart"]["tool_calls_before"] == 0
+        assert evidence["restart"]["tool_calls_after"] == 0
         assert evidence["accepted_read"]["same_receipt"] is True
         assert evidence["accepted_read"]["business_invocations"] == 1
         assert "original-read-signature" not in json.dumps(bodies[1])

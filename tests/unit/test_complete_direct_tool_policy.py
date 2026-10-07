@@ -1,4 +1,4 @@
-"""The 39-name policy is tested on complete services, separately from narrow fixtures."""
+"""The 42-name policy is tested on complete services, separately from narrow fixtures."""
 
 import json
 
@@ -13,7 +13,8 @@ async def test_complete_service_declaration_keeps_all_direct_entrypoints(tmp_pat
         contract = app.main_agent_contract
         complete = await contract.definitions()
         visible = await contract.model_definitions()
-        assert len(DIRECT_TOOL_NAMES) == 39
+        # #262: common terminal entrypoints join the frozen direct declaration.
+        assert len(DIRECT_TOOL_NAMES) == 42
         assert {tool.name for tool in visible} == DIRECT_TOOL_NAMES
         assert {
             "send_message",
@@ -24,7 +25,10 @@ async def test_complete_service_declaration_keeps_all_direct_entrypoints(tmp_pat
             "lookup_tools",
             "execute_code",
         } <= DIRECT_TOOL_NAMES
-        assert "terminal_exec" not in DIRECT_TOOL_NAMES
+        assert {"terminal_exec", "terminal_read", "environment_status"} <= DIRECT_TOOL_NAMES
+        assert {"terminal_write", "terminal_control", "environment_packages"}.isdisjoint(
+            DIRECT_TOOL_NAMES
+        )
         assert len(complete) > len(visible)
         revision = contract.revision
         for tool in complete:
