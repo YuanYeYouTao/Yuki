@@ -184,3 +184,13 @@ Manager socket 夹具使用长 pytest 目录，超出 macOS AF_UNIX 路径容量
 
 本轮只做本地整合与验证；测试分支以本地提交保存，未推送。无真实 API、QQ
 发送、生产数据访问、PR、main 写入或部署。此前全量记录继续对应其历史源码。
+
+## 2026-10-07：main 25cd 与正确性修复
+
+继续整合 `25cd6083015924bf80405ca7c346f84a995f6ebb`，保留 typed Invocation、
+Pi 本地循环及固定分层清单，接入 explicit execution_finished、native paid guard、
+Plugin API 3.1、MCP 退役与共享 tool_results。两种已发布0096 的实际旧数据库
+通过0097静态形状协调和0098摘要元数据迁移正常升级，不修改旧0096或 stamp。
+
+本轮逐项修复与实际验证见[正确性修复记录](pi-codemode-correctness-repair.md)；
+前述未推送/旧head描述仅对应各自历史轮次，当前交付以本轮记录及 Git 远端核验为准。

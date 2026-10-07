@@ -41,7 +41,7 @@ def context(parts=()):
     )
 
 
-def snapshot(frozen, *, summary=None, coverage=0):
+def snapshot(frozen, *, summary=None, coverage=0, kind="model", renderer=1):
     return ProjectionSnapshot(
         "epoch",
         1,
@@ -53,6 +53,8 @@ def snapshot(frozen, *, summary=None, coverage=0):
         0,
         summary,
         coverage,
+        selected_summary_kind=kind,
+        selected_summary_renderer=renderer,
     )
 
 

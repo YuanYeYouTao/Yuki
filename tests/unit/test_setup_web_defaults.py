@@ -70,7 +70,6 @@ def draft_from_template(tmp_path, *, protocol, provider, initial=True):
             environment=environment,
             protocol=protocol,
             flash_enabled=False,
-            mcp_document={"mcpServers": {}},
             initial=initial,
         ),
     )
@@ -95,6 +94,9 @@ def test_fresh_template_web_page_and_review_validate_without_tavily(
     assert draft.environment["WEB_ENABLED"] == "true"
     assert draft.environment["WEB_SEARCH_BACKEND"] == backend
     assert not draft.environment["TAVILY_API_KEY"]
+    legacy = tmp_path / ".mcp.json"
+    legacy.write_text("broken retired configuration", encoding="utf-8")
+    draft.environment["MCP_ENABLED"] = "true"
     validated = []
     original = command.validate_configuration
 
@@ -121,6 +123,7 @@ def test_fresh_template_web_page_and_review_validate_without_tavily(
     assert ("native_web_search" in main["capabilities"]) == (mode == "native")
     assert profiles.get("search_connection") == connection
     assert not paths.env.exists() and not paths.model_profiles.exists()
+    assert legacy.read_text(encoding="utf-8") == "broken retired configuration"
 
 
 @pytest.mark.parametrize(

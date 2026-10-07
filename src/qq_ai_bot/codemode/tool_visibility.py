@@ -60,6 +60,7 @@ LOOKUP_TOOLS = ChatTool(
     description=(
         "只读查询本部署冻结的工具用法，不执行工具或授予权限。query 按名称和说明搜索，"
         "为空时分页列出目录；name 精确读取单个工具的原参数 schema 和脚本调用名。"
+        "独占纯查询批次，每批最多 10 项 lookup_tools，不能与其他工具混批。"
         "未直接声明的工具只能在接纳 Work 后通过 execute_code 调用；查询不会追加声明。"
     ),
     parameters={

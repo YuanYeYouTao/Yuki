@@ -995,6 +995,14 @@ class AgentToolService:
                         if name in EXECUTION_TOOLS
                         else None,
                     )
+                    if result.get("error") == "sandbox_submission_unknown":
+                        return self._result(
+                            data=result,
+                            error="sandbox_submission_unknown",
+                            detail="沙箱提交结果未确认；核对原执行回执，不能重新提交。",
+                            uncertain=True,
+                            defer_budget=True,
+                        )
                     return self._result(data=result, defer_budget=True)
 
                 if name in WORKSPACE_TOOLS:

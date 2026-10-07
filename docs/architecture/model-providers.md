@@ -21,14 +21,14 @@ WebUI 成功保存模型连接与任务路由后，新任务立即使用新配�
 | 结构化任务 | function tool / JSON Schema | 同左 | 同左 | 同左 |
 | 截断判定、同 Work 续跑与预算 | 支持 | 支持 | 支持 | 支持 |
 | 独立思考通道与协议状态 | reasoning_content / reasoning_details / encrypted_content | reasoning items | 签名 thinking blocks | thoughtSignature parts |
-| 外部搜索、MCP、插件、终端等本地工具 | 支持 | 支持 | 支持 | 支持 |
+| 外部搜索、插件、终端等本地工具 | 支持 | 支持 | 支持 | 支持 |
 | 上游原生搜索 | 显式配置的搜索专用 Profile | 依 Provider 能力；DeepSeek 主调用关闭 | Claude `web_search_20250305`，需 Profile 声明且部署搜索模式为 native | Gemini 3 GenerateContent 的 Google Search，需 Profile 声明 |
 
 这里的支持指适配器与 Yuki 执行合同通过离线协议回放，不代表任意同名模型都支持这些功能，
 也不代表各家服务已完成真实 API 或 QQ 验收。Profile 的能力声明必须符合实际模型。
 
 主 Agent 当前/引用图片、历史 `inspect_conversation_attachment`、工作区 `workspace_inspect`
-和获准 MCP 工具图片共用原主模型图片输入。历史/工作区工具只准备像素，不再调用独立
+和获准工具图片共用原主模型图片输入。历史/工作区工具只准备像素，不再调用独立
 Qwen；DeepSeek 使用这些工具也走自身已声明的 `image_input`，并非固定先读取视觉摘要。
 本次采用各协议已有的用户图片编码：整批文字工具回执配对后追加 Host 媒体观察，保留原
 call_id、工具顺序、签名和 opaque continuation。不自动尝试多模态 functionResponse 或
@@ -37,7 +37,7 @@ function_call_output.output[]，也不在上游拒绝图片后切换 Qwen。没�
 `user` 图片观察属于 Agent 已选取资料的协议承载，不产生新用户事件或额外授权。主请求
 继续使用原 pinned Profile 和原预算；图片准备没有第二次视觉模型请求。配置图片能力仅
 说明声明，不能证明实际端点可读取。五类适配器的 HTTP payload 可离线回放；本次真实
-Gemini/DeepSeek API 图片验收与生产速度验收尚未完成。插件自有 handle 与 SDK MCP 显式选图
+Gemini/DeepSeek API 图片验收与生产速度验收尚未完成。插件自有 handle 与 插件显式选图
 桥接已按其 owner/委托合同做本地验证，不从通用编码推定真实上游已验收。
 
 独立视觉连接仍服务后台表情分类、表情发送候选选择和 SDK 显式 `VISION_ANALYZE`；它不再
@@ -188,13 +188,36 @@ Work compaction 继续使用原任务 Profile 的超时。两类摘要的生成�
 - [执行诊断](execution-trace.md) 单独保存实际返回的可读思考和工具结果；正文权限查询，按期清理。
   不透明签名/加密状态只留摘要，原恢复 journal 继续按协议私有合同保存。
 - 请求原生服务端工具时，传输结果不明不自动重试；普通有界传输重试仍计入 Work 请求预算。
+- 共享执行器将真实 HTTP 派发及未知用量计数传到异常诊断。Runner 对已实际派发的原生
+  超时/不可用结果停止自动重排；尚未派发的拒绝、认证失败和本地工具请求保持各自分类，
+  不从工具声明或错误文字猜测效果已经发生。
+- 原生事件没有正文/本地调用，或声明原生工具却未取得可确认结果，不作为无效果的空响应
+  自动重发。保留实际用量和可取得的私有检查点；仅现有合法 `pause_turn` 按原协议续接，
+  其他情况明确收束。Provider 声明 completed 不独立证明搜索来源或目标完成；检查点保存
+  失败也不因此获得重新派发上游请求的资格。
+  已确认发送后的普通聊天可按原规则接受 completed 的纯空尾包；当前回包须没有原生事件。
+  已验证完成的 caller 沿原完成核验收尾，保留付费检查点和原生状态。未完成 Work 的进展
+  发送、失败/未知发送、截断与阻断不能借此关闭；这一规则不声明原生搜索成功。
+- Responses 同一响应的本地 `call_id` 重复时不派发歧义工具，保留原响应、原生状态和计量，
+  非重试错误停止原链。该规则不把原生工具伪装为本地调用，也不改写原签名或 opaque。
+- 错误回执依据 Host 结构化事实投影：Claude 使用 `tool_result.is_error`，Gemini 使用
+  `functionResponse.response.error`，其余协议保留原结果字符串。已知进程失败可表达为错误，
+  原 `ok`、进程状态、部分修改与未知事实完整保留；不按外部正文关键词猜错误，不据错误位
+  授权重发。Gemini 继续使用 GenerateContent，不套用 Responses 专属字段。
 
 ## 用量与 HTTP 请求口径
 
 `model_invocations` 一行表示一次逻辑模型调用，`calls` 继续按该行计数。`physical_request_count`
 只统计实际进入 HTTP 客户端的请求尝试，包括传输重试和 Claude 原生搜索暂停后的续发；
 路由、配置或本地校验失败不计入。`unknown_usage_request_count` 统计其中未获得上游总 Token
-报告的尝试，不能按零 Token 或零费用处理。历史调用的两个字段为 NULL，无法从原逻辑记录
+报告的尝试，不能按零 Token 或零费用处理。每次物理响应（包括兼容错误包）已明确报告的 usage 由 transport 记录，executor 是逻辑
+归并的唯一边界；同一次解析重复上报不重复计数，Claude pause 已汇总字段不会再叠加。
+输入/缓存字段只有全部物理尝试均报告该字段时才有完整总量，任一缺项保持 NULL，避免用部分
+输入与完整缓存构造错误覆盖率。输出/总 Token 保留已报告的小计，并同时记录未知物理请求
+数，不把小计称为完整账单。显式零仍为零，缺失仍为未知；这些合成兼容错误形状不
+证明官方错误响应格式或实际账单。
+
+历史调用的两个字段为 NULL，无法从原逻辑记录
 反推出真实 HTTP 次数。缓存率只使用上游明确报告缓存量的输入作分母，并同时保留未报告计数。
 
 原生搜索是否启用以当次请求合同记录；Google/Claude 的原生搜索可能另有工具费用，当前账本
@@ -202,6 +225,12 @@ Work compaction 继续使用原任务 Profile 的超时。两类摘要的生成�
 Gemini 独立搜索桥另记一条 `model_invocations.task=web_search`，归入当前连接与模型，
 记录上游返回的输入、输出、缓存 Token 和实际 HTTP 请求数；无可信 grounding 记失败，
 随后 Tavily 降级不伪装成 Gemini 命中。
+
+应用层 `provider_cache_shape_diagnostics` 只覆盖归一 messages/tools，明确排除 native
+continuation 正文。缓存前缀与首差异以各适配器最终 HTTP body 的 `WireRequestObserver`
+为准；相同 messages 的不同原生签名仍可能改变最终输入。代理上游最后一跳不在此观测内。
+WebUI 确认缓存比例使用 `cache_reported_cached_tokens` 与已记录完整 input 的同一覆盖集合；
+原始 `cached_input_tokens` 单独展示，不截到 100% 或由 TTL 子项猜缺项。
 
 ## 验证边界与协议来源
 

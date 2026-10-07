@@ -14,8 +14,8 @@ from qq_ai_bot.conversation.frozen_fragments import FrozenFragments
 from qq_ai_bot.conversation.observation_models import ContextObservationModel, ContextSelectionModel
 from qq_ai_bot.conversation.observations import ContextObservationRepository, validate_observations
 from qq_ai_bot.domain.messages import ChatMessage
-from qq_ai_bot.mcp.artifact_schema import artifact_refs
-from qq_ai_bot.mcp.repository import ToolArtifactRepository
+from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+from qq_ai_bot.tool_results.schema import artifact_refs
 
 
 async def test_observation_payloads_exclude_covered_parents_and_unselected_candidates(

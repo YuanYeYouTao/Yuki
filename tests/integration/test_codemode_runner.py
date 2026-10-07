@@ -10,6 +10,7 @@ from tests.conftest import build_harness, make_settings
 # P10: explicit Invocation fixture contract; existing assertions are retained.
 from tests.support.agent_backend import StubAgentBackend
 from tests.support.codemode_cases import BINARY, TOOLS, requires_worker
+from tests.support.parent_receipts import parent_receipts
 from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.automation.models import TurnOrigin
@@ -17,10 +18,10 @@ from qq_ai_bot.codemode.api_projection import project
 from qq_ai_bot.domain.messages import ChatMessage, ChatResponse, ToolCall, ToolFunction
 from qq_ai_bot.llm.base import LLMMalformedFunctionCallError
 from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.mcp.artifact_access import ArtifactAccess
 from qq_ai_bot.runtime.work_control import WorkControl, work_control_tools
 from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.services.agent_runner import AgentRuntime
+from qq_ai_bot.tool_results.access import ArtifactAccess
 
 pytestmark = requires_worker
 
@@ -333,9 +334,9 @@ async def test_segment_yield_keeps_outer_call_pending_and_next_segment_resumes(d
     # The very first request of the new segment already carries the single
     # paired outer result: no model request ran before the program resumed.
     first = provider.requests[requests_before]
-    paired = [m for m in first.messages if m.tool_call_id == "code"]
+    paired = parent_receipts(first, "code")
     assert len(paired) == 1, paired
-    body = json.loads(paired[0].content)
+    body = json.loads(paired[0])
     assert body["result"] == [1, 2]
     assert [op["status"] for op in body["operations"]] == ["succeeded", "succeeded"]
     assert (await repo.get(control.current["id"]))["tool_calls"] == 2

@@ -21,8 +21,8 @@ from qq_ai_bot.conversation.projections import ProjectionConflict, PromptProject
 from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
 from qq_ai_bot.identity.canonical_repository import ensure_space
-from qq_ai_bot.mcp.artifact_schema import artifact_refs
-from qq_ai_bot.mcp.repository import ToolArtifactRepository
+from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+from qq_ai_bot.tool_results.schema import artifact_refs
 
 
 async def scene(database, tmp_path):

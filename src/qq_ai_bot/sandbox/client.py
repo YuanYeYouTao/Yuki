@@ -167,6 +167,7 @@ class SandboxClient:
                     return recovered
                 return {
                     "error": "sandbox_submission_unknown",
+                    "uncertain": True,
                     "retryable": False,
                     "request_id": request_id,
                 }

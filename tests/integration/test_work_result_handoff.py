@@ -122,10 +122,9 @@ async def test_quantum_result_and_error_are_observed_once_without_effect_replay(
     assert len({key for _, key in backend.log}) == len(backend.log)
     assert (await repo.get(fresh.current["id"]))["tool_calls"] == count + int(script_error)
     assert not await fresh.has_unresolved_effects()
-    if count == 5:
-        assert fresh.session.transcript.chain_id != old_chain
-    else:
-        assert fresh.session.transcript.chain_id == old_chain
+    # F9: fully paired compositions rebase in this same activation before
+    # dispatch, whether settlement happened before or during the resume.
+    assert fresh.session.transcript.chain_id != old_chain
 
 
 @pytest.mark.parametrize("mode", ["direct", "code"])

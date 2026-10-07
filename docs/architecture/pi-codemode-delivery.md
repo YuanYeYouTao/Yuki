@@ -1150,3 +1150,47 @@ core/admin/automation 测试装配，完整 77 项，模型直接 37 项。按�
 与远端核验结果在最终回报中列出。真实模型调用使用用户已授权的 DeepSeek 凭据；没有
 生产 Bot 数据库/凭据/工作区访问、真实 QQ 发送、PR、main 合并、镜像发布或部署。
 私有生产备份和目标部署运行验收仍待提供条件。
+
+## 2026-10-07：F1–F12 正确性修复与 main 25cd 兼容
+
+本轮从实验 `0f24a3b5` 整合 main `25cd6083`，逐项修复用户证据包的恢复停止、
+依赖结算、owned wait、摘要表示、lookup 批次、wire 观测覆盖、stdout、父结果限额、
+业务 rebase、插件冻结合同、UI 缓存分母及物理重试 usage。
+[详细修复/测试更新清单](pi-codemode-correctness-repair.md)区分程序缺陷、旧合同夹具和测量问题，
+原始红色记录保留，历史性能结论不改写。MainAgentContract revision14；head0098；
+完整服务68执行工具/39模型直调，与旧37/33夹具分开。
+
+### 命令和结果
+
+所有 Python 验证使用 `UV_CACHE_DIR=/private/tmp/yuki-uv-cache-correctness`，
+`uv run --frozen --no-sync` 保留已构建且不在uv.lock的 Monty Python wheel：
+
+```text
+uv run --frozen --no-sync ruff check src tests scripts migrations
+uv run --frozen --no-sync ruff format --check src tests scripts migrations
+uv run --frozen --no-sync mypy
+YUKI_MONTY_BINARY=$PWD/.venv/bin/yuki-monty-worker uv run --frozen --no-sync pytest -q -p no:warnings tests --tb=short --basetemp=/private/tmp/yuki-correctness-final-full-20261007
+cd frontend
+npm test
+npm run build
+npm run format:check
+npm run lint
+```
+
+本轮最终结果以[验证记录](pi-codemode-evidence/correctness-20261007/verification.json)为准。
+完整运行为4702通过、5失败、1跳过（1105.52秒）；5项旧合同夹具/README发布marker修复后，
+相关整份模块与新增边界125项通过（22.40秒）。产品源码保持全量hash，仅四个既有测试模块、
+两个新增测试模块及文档在全量后变化，逐文件delta保留，不把联合复验描述为另一次全量通过。
+最终ruff check/format（1233文件）、mypy（715源文件）退出0。
+真实 macOS worker和独立Host崩溃恢复已纳入；Linux immutable/bwrap部署恢复本轮未运行，
+私有生产备份缺条件。原生权限检查未放松。前端真实 React DOM 组合矩阵、全量102项及build通过；
+补格式检查发现新增测试格式问题，仅格式化该文件并复测。既有lint警告不扩大为无警告声明。
+
+### 后续依赖与交付范围
+
+真实缓存验收使用先前授权的 DeepSeek 合成调用，记录当前route/完整清单与每次物理wire，
+六场景全部完成、26次请求，每场景预热1+后续3，账本与wire一致、unknown用量0；
+缓存写入字段未报告而保留None。当前39项固定Provider清单，不引用旧37项结果代替。
+见[真实缓存记录](pi-codemode-evidence/correctness-20261007/live-cache.json)。
+未运行的部署、上游最后一跳、SSE、长期生产比例保持未验证。
+提交/推送到已授权实验分支，实际SHA在最终回报和远端核验列出；不创建PR、合并main或部署。

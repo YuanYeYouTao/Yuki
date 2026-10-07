@@ -22,8 +22,6 @@ from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
 from qq_ai_bot.llm.base import LLMError
-from qq_ai_bot.mcp.artifact_schema import artifact_refs
-from qq_ai_bot.mcp.repository import ToolArtifactRepository
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.persistence.models import ChatEventModel, ToolArtifactModel
@@ -32,6 +30,8 @@ from qq_ai_bot.runtime.work_repository import WorkCapacityError, WorkConflict, W
 from qq_ai_bot.services.context_assembler import AssembledContext, ContextMetrics
 from qq_ai_bot.services.history_projection import prepare_history
 from qq_ai_bot.time.models import TimeContext
+from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+from qq_ai_bot.tool_results.schema import artifact_refs
 
 
 async def context_for(database):

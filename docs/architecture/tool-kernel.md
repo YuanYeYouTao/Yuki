@@ -8,7 +8,7 @@ Tool Kernel 分开管理工具目录、固定声明与执行授权。主 Agent �
 
 `ToolProvider` 提供 `CapabilityDescriptor`，其中的 `ToolBinding` 连接实际实现。
 `UnifiedToolCatalog` 负责目录，`MainAgentContract.definitions()` 在部署初始化时收集
-主工具注册表、已安装插件和已启用 MCP 工具，加入工作控制、子任务、short_state 与只读目录后，
+主工具注册表与已批准插件，加入工作控制、子任务、short_state 与只读目录后，
 按名称排序并冻结完整名称、说明和参数 schema。重名声明直接报错。
 
 `definitions()` 保留完整执行清单；`model_definitions()` 返回固定基础直调视图，包含聊天、
@@ -26,20 +26,25 @@ Provider 原生工具还有独立的协议和配置合同，不能只检查函�
 
 `lookup_tools(query=...)` 搜索名称/说明或分页列出简短目录；`name` 精确读取单项原参数
 schema、脚本调用名及本轮直调可见性。搜索不返回全部 schema，详情不会注册新工具。
-查询只读启动时冻结的 API，不加载插件或 MCP，不接触业务资源或取得执行授权；工作者
-只能查询自己的完整执行子集。查询结果按原 call_id 配对保存，但不计业务效果或业务调用
+查询只读启动时冻结的 API，不加载或升级插件，不接触业务资源或取得执行授权；工作者
+只能查询自己的完整执行子集。纯 `lookup_tools` 批次允许 1–10 项，不能与写入或其他工具混批。查询结果按原 call_id 顺序配对保存，但不计业务效果或业务调用
 额度；查询自身仍受模型请求、输入容量及原 Work journal 合同约束。
 Capability Runtime 的执行集合不是模型声明的真源，也不能在请求链中添加 schema 或扩大权限。
 
 ## 调用与效果
 
+插件 binding 冻结批准 manifest、registration 元数据、输入/输出 schema 和 handler 的
+合同指纹。派发前及异步 scope 等待后复核；同名工具热更新不能在旧 READ 或旧 schema 下
+执行。变更后健康状态提示 `restart_required`，部署重启并在合法新链冻结新合同；禁用与
+撤权立即生效。同合同重启不改变指纹，目录刷新不替换已提交的 Provider 声明。
+
 执行时由后端依据真实 actor、来源、当前权限、委托、工具状态与工作预算核验。
-目录可见或 schema 已声明不等于可以执行；插件批准和 MCP 启停仍可阻止调用，
+目录可见或 schema 已声明不等于可以执行；插件批准和工具运行状态仍可阻止调用，
 不需要为了拒绝执行而修改模型已提交的前缀。
 
 ```mermaid
 flowchart LR
-  P[Core / Plugin / MCP Provider] --> D[UnifiedToolCatalog]
+  P[Core / Plugin Provider] --> D[UnifiedToolCatalog]
   D --> F[MainAgentContract 完整执行清单]
   F --> V[固定基础直调声明]
   F --> S[完整 ScriptApi / 按需目录]
@@ -58,7 +63,7 @@ flowchart LR
 
 结果预算器保留必要 ID、URL、状态与错误，较大的完整结果可保存为 artifact。
 `mutation_committed` 与投递成功、失败、未知状态按真实回执解释；它们不是自然语言
-“已经完成”的替代品。工作区、MCP 结果等 artifact 的保留期由各自存储合同决定。
+“已经完成”的替代品。工作区、工具结果等 artifact 的保留期由各自存储合同决定。
 
 ## 代码组合 `execute_code`
 
@@ -133,7 +138,7 @@ Monty 内置模块（例如 asyncio、math）可用，宿主 Python 包、文件
 
 工具图片通过 Host 私有 `ToolExecutionResult.images` 交给 Runner，文字 `model_payload()`
 不复制像素。预算后的 `MediaResultText` 携带图片而仍以字符串保存公开回执。历史/工作区
-来源由真实事件或冻结文件版本授权；MCP 图片先归档到原执行有权读取的私有工具 artifact，
+来源由真实事件或冻结文件版本授权；工具图片先归档到原执行有权读取的私有工具 artifact，
 归档失败报告图片未读，不能抹去已经发生的外部修改。`read_tool_artifact` 的 `image` 操作
 仅在原 handle 的读取授权内返回像素，通用文字/JSON 操作不开放原始 Base64。
 
@@ -152,18 +157,40 @@ Runner 按原 call 顺序配齐整批回执，再追加有 call_id 的 Host 原�
 Invocation 的 owner、原链、序号与完整 ID。长短键之间的别名复用使用当前 journal 的
 可信链身份，不解析当前别名的散列文本，也不借用其他 Work、未来调用或组合子调用。
 
-插件自有媒体 handle 和 SDK MCP 返回值仍服从其独立委托/owner 边界，通用图片通道不授予
-任意跨插件读取权。SDK MCP 返回 owned handle，插件工具须在本次显式返回
+插件自有媒体 handle 仍服从其独立委托/owner 边界，通用图片通道不授予
+任意跨插件读取权。插件工具须在本次显式返回
 `media_artifacts` 才交给主 Agent；Host 按真实插件/工具和原 manifest、委托、TTL/hash 核验。
 私有副本不能绕过原句柄删除、过期或插件禁用。图片未读不改变已接受的外部效果回执。
 
+Code Mode 控制子回执保存其 Host 停止决定。恢复先读取 accepted 回执的停止、未知与
+观察门，再允许 VM settle；不重做控制，也不继续停止后的副作用。等待 owned pending
+执行允许通过同一 WorkControl，external run 仍拒绝，unknown 仍禁止完成和新增写入。
+累计 stdout 与截断标记通过同一 snapshot owner/privacy/引用发布和 GC 持久化；旧边界
+若仅有输出计数而无文本，标记缺失，不重新 print。父结果的最终 JSON 整体受
+`agent.tool_result_max_characters` 限制；大 operations 返回数量、截断标记与原 composition
+引用，完整子回执不裁剪。空 stdout 不因 operations 截断而标记截断。
+
+所有 pending composition 原父调用配对并保存后，在下一模型派发前复用 business rebase，
+携带当前获准公共历史、任务线索、必要媒体及未被模型观察的原父结果。未决协议、Provider
+pause 与压缩尚未完成时不提前换链；媒体、来源与 CAS 在原派发边界继续复核。
+
 ## 代码定位
+
+参数拒绝从本次冻结 schema 提供有界字段路径、校验类别和期望摘要，不回显参数值、
+未知字段名或原异常正文；保持原严格校验。确定派发前拒绝标记 `executed=false`、
+`mutation_committed=false`，实际执行次数与原 admission/已付尝试预算分别计量，不笼统退款。
+这些反馈在本次调用内生成，不为格式化结果重新查来源、取得 writer 或写错误账本。
+
+终端结果的顶层 `ok` 表示调用/查询成功，`process` 保留原进程状态、退出码、pending 和
+已知成功/失败；短结果、artifact/最小摘要和原持久效果回执保持同一事实。工具成功取得
+失败进程的结果不证明任务成功；非零退出也不证明此前没有写文件或其他局部效果。
+未知和运行中不猜成功，成功探测不代替实际测试验收。
 
 - `services/main_agent_contract.py`：冻结主 Agent 声明与合同 revision。
 - `services/agent_runner.py`：真实请求历史、预算、工具循环与 continuation。
 - `services/main_agent_backend.py`：执行授权、工具回执与业务效果围栏。
 - `capabilities/`：descriptor、catalog、policy、binding、协调器和结果预算。
-- `mcp/`、`plugin_host/`：各来源的注册和执行适配；不建立第二套 Yuki 主循环。
+- `tool_results/`、`plugin_host/`：共享结果存储与插件执行适配；不建立第二套 Yuki 主循环。
 - `codemode/`：`execute_code` 声明、API 投影、Monty 驱动与组合控制门。
 
 
@@ -172,7 +199,18 @@ Invocation 的 owner、原链、序号与完整 ID。长短键之间的别名复
 这些判断精确读取原 Work/root 下的持久效果回执。可信原执行查询只结算同一原 `run_id`。
 模型回执按 UTF-8 字节留出元数据余量；正文归档失败仍保留已知执行事实，并禁止重复执行。
 
+只读调用保留观察到的进程 `pending/status/uncertain`，但读取本身不取得该执行的所有权，
+也不成为 Work 的未完成副作用；读取失败仍如实展示。原所属执行的 pending、未知修改与
+缺少明确角色的旧回执继续保守阻塞。结算须有可信原执行的明确终态；缺字段、断连或
+控制失败不等于结束。后续查询不能覆盖原操作的 `mutation_committed`，包括未知值。
+沙箱派发后确认丢失、按原请求 ID 回查仍未知时，工具返回类型化失败与 `uncertain=true`，
+保留原请求、来源与已计预算，阻止后续修改，不盲目重派。
+原请求的可信终态晚到时，按原 `request_id` 与 `effect_key` 核对所属来源后补齐执行事实，
+无需重新提交。终态子任务的晚到回执只结算已发执行，不复活任务或重新授予预算。
+
 超大完整结果复用工具 artifact 文件存储，单对象最多 64 MiB、总登记容量默认 512 MiB。
 活动 Work 及仍活动 root 的 child 结果不受显示缓存 TTL 清理；终态至少保留七天，
 隐私删除释放其拥有的结果。清理先标记删除围栏、再删除文件、最后清理元数据，可恢复中断。
 工作区不可变文本分页使用字节偏移，跨 UTF-8 字符边界保留完整字符。
+
+主合同版本 12 明确退出 MCP 声明，即使旧部署没有启用 MCP 工具也建立新的合同边界。旧任务复用原 journal、预算及效果回执，不重派原调用。

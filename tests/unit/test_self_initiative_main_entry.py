@@ -17,13 +17,14 @@ from qq_ai_bot.gateway.providers import builtin_provider_catalog
 from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
 from qq_ai_bot.identity.routing import PresenceRouter
 from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.mcp.repository import MCPRepository, ToolArtifactRepository
 from qq_ai_bot.persistence.models import MemoryToolReceiptModel
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.runtime.subagent_repository import SubagentRepository
 from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import journal
 from qq_ai_bot.services.main_agent_contract import MainAgentContract
+from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+from qq_ai_bot.tool_results.recorder import ToolInvocationRepository
 from qq_ai_bot.workspace.short_state import ShortState
 from qq_ai_bot.workspace.store import WorkspaceStore
 
@@ -251,7 +252,7 @@ async def test_self_worker_returns_internal_result_without_group_delivery(
     )
     chat = harness.processor._chat
     if repeat_tool_ids:
-        chat._tool_invocations = MCPRepository(database)
+        chat._tool_invocations = ToolInvocationRepository(database)
     chat._tool_artifacts = ToolArtifactRepository(
         database,
         tmp_path / "artifacts",

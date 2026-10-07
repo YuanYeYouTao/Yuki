@@ -13,11 +13,11 @@ from sqlalchemy.engine import make_url
 from tests.support.codemode_cases import environment, outer_call, requires_worker
 
 from qq_ai_bot.codemode.driver import CodeCompositionYield, CodeModeDriver
-from qq_ai_bot.mcp.repository import ToolArtifactRepository
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.runtime.protocol_schema import objects
 from qq_ai_bot.runtime.protocol_store import ProtocolStore
 from qq_ai_bot.runtime.work_repository import WorkRepository
+from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
 
 pytestmark = requires_worker
 

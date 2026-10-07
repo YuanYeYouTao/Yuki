@@ -46,7 +46,6 @@ from qq_ai_bot.emoji.models import (
 from qq_ai_bot.emoji.repository import EmojiRepository
 from qq_ai_bot.emoji.selector import EmojiSelector
 from qq_ai_bot.llm.base import LLMEmptyResponseError
-from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.memory.context import MemoryContextService
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
@@ -112,7 +111,6 @@ from yuki_plugin_sdk.context import (
     GroupFacade,
     HttpFacade,
     LLMFacade,
-    MCPFacade,
     MediaFacade,
     MemoryFacade,
     MessageFacade,
@@ -317,7 +315,6 @@ class PluginFacadeServices:
     runtime_config: RuntimeConfigService | None = None
     agent_runner: AgentRunner | None = None
     web_provider: WebSearchProvider | None = None
-    mcp_manager: MCPManager | None = None
     vision: VisionService | None = None
     emoji_repository: EmojiRepository | None = None
     emoji_collector: EmojiCollector | None = None
@@ -416,7 +413,6 @@ class HostPluginContext:
         "_http",
         "_llm",
         "_logger",
-        "_mcp",
         "_media",
         "_memory",
         "_messages",
@@ -465,7 +461,6 @@ class HostPluginContext:
         self._agent = _AgentFacade(self)
         self._agent_sessions = _AgentSessionsFacade(self)
         self._web = _WebFacade(self)
-        self._mcp = _MCPFacade(self)
         self._http = _HttpFacade(self)
         self._vision = _VisionFacade(self)
         self._media = _MediaFacade(self)
@@ -534,10 +529,6 @@ class HostPluginContext:
     @property
     def web(self) -> WebFacade:
         return self._web
-
-    @property
-    def mcp(self) -> MCPFacade:
-        return self._mcp
 
     @property
     def http(self) -> HttpFacade:
@@ -661,9 +652,7 @@ class HostPluginContext:
         self, handles: tuple[MediaArtifactHandle, ...], *, tool_name: str
     ) -> tuple[ChatImage, ...]:
         """Host bridge for an explicitly returned SDK handle under this invocation."""
-        _permission, invocation = self._require_any(
-            (PluginPermission.MEDIA_ARTIFACT_CREATE, PluginPermission.MCP_CALL)
-        )
+        invocation = self._require(PluginPermission.MEDIA_ARTIFACT_CREATE)
         assert invocation is not None
         store = _require_service(self._services.media_artifacts, "plugin media artifacts")
         preparer = _require_service(self._services.native_media, "native media")
@@ -698,7 +687,7 @@ class HostPluginContext:
 
     async def _validate_selected_media(self, images: tuple[ChatImage, ...]) -> None:
         """Recheck the original owned dependency, never an archived derivative alone."""
-        self._require_any((PluginPermission.MEDIA_ARTIFACT_CREATE, PluginPermission.MCP_CALL))
+        self._require(PluginPermission.MEDIA_ARTIFACT_CREATE)
         store = _require_service(self._services.media_artifacts, "plugin media artifacts")
         versions = {}
         for image in images:
@@ -718,9 +707,7 @@ class HostPluginContext:
                 raise PluginPermissionError("selected media artifact version does not match")
 
     def _authorize_tool_media(self, canonical_name: str) -> None:
-        _permission, invocation = self._require_any(
-            (PluginPermission.MEDIA_ARTIFACT_CREATE, PluginPermission.MCP_CALL)
-        )
+        invocation = self._require(PluginPermission.MEDIA_ARTIFACT_CREATE)
         assert invocation is not None
         if (
             invocation.origin is TurnOrigin.SCHEDULED_AUTOMATION
@@ -1876,119 +1863,6 @@ class _WebFacade:
                 "untrusted_external_data": True,
                 "source": _web_source(source),
             }
-        )
-
-
-class _MCPFacade:
-    def __init__(self, host: HostPluginContext) -> None:
-        self._host = host
-
-    async def status(self) -> Mapping[str, JsonValue]:
-        self._host._require(PluginPermission.MCP_READ)
-        manager = _require_service(self._host._services.mcp_manager, "MCP")
-        return cast(Mapping[str, JsonValue], manager.health().model_dump(mode="json"))
-
-    async def list_servers(self) -> tuple[Mapping[str, JsonValue], ...]:
-        self._host._require(PluginPermission.MCP_READ)
-        manager = _require_service(self._host._services.mcp_manager, "MCP")
-        return tuple(
-            cast(Mapping[str, JsonValue], item.model_dump(mode="json"))
-            for item in await manager.statuses()
-        )
-
-    async def search_tools(self, query: str) -> tuple[Mapping[str, JsonValue], ...]:
-        self._host._require(PluginPermission.MCP_READ)
-        manager = _require_service(self._host._services.mcp_manager, "MCP")
-        return tuple(
-            {
-                "server_id": item.server_id,
-                "tool_name": item.remote_tool_name,
-                "description": item.compact_description,
-            }
-            for item in manager.search_tools(_bounded_text(query, maximum=400, field_name="query"))
-        )
-
-    async def call(
-        self,
-        server_id: str,
-        tool_name: str,
-        arguments: Mapping[str, JsonValue],
-    ) -> PluginResult:
-        invocation = self._host._require(PluginPermission.MCP_CALL)
-        assert invocation is not None
-        manager = _require_service(self._host._services.mcp_manager, "MCP")
-        from qq_ai_bot.capabilities.invocation import ToolInvocationContext
-        from qq_ai_bot.mcp.binding import MCPPolicyRuntime, MCPToolBinding
-
-        runtime = MCPPolicyRuntime(
-            origin=invocation.origin,
-            actor_user_id=invocation.actor_user_id,
-            actor_is_superuser=self._host._is_real_superuser(invocation),
-        )
-        result = await MCPToolBinding(
-            manager,
-            _bounded_text(server_id, maximum=64, field_name="server_id"),
-            _bounded_text(tool_name, maximum=255, field_name="tool_name"),
-            record_invocation=True,
-        ).invoke(
-            {str(key): cast(object, value) for key, value in arguments.items()},
-            ToolInvocationContext(
-                runtime=runtime,
-                conversation_key=invocation.conversation_key,
-                actor_user_id=invocation.actor_user_id,
-                provider_metadata={
-                    "contains_images": invocation.has_visual_input,
-                    "web_was_used": invocation.web_was_used,
-                },
-            ),
-            canonical_conversation_id=invocation.conversation_id,
-            bot_user_id=invocation.bot_user_id,
-            ingress_presence_id=invocation.presence_id,
-        )
-        media_artifacts: tuple[MediaArtifactHandle, ...] = ()
-        payload = {"result": _safe_json(result.model_payload())}
-        if result.ok and result.images:
-            # Keep original MCP_CALL authority: this creates no general file-read
-            # grant, and pixels only enter the main Agent if explicitly returned.
-            try:
-                self._host._require(PluginPermission.MCP_CALL)
-                preparer = _require_service(self._host._services.native_media, "native media")
-                preparer.check_budget(result.images)
-                store = _require_service(
-                    self._host._services.media_artifacts, "plugin media artifacts"
-                )
-                handles: list[MediaArtifactHandle] = []
-                for index, image in enumerate(result.images):
-                    header, encoded = image.data_url.split(",", 1)
-                    if header not in {"data:image/png;base64", "data:image/jpeg;base64"}:
-                        raise ValueError("unsupported prepared image")
-                    handles.append(
-                        await store.create(
-                            plugin_id=self._host.plugin_id,
-                            data=base64.b64decode(encoded, validate=True),
-                            content_type=header[5:-7],
-                            filename=f"mcp-result-{index}.png"
-                            if "png" in header
-                            else f"mcp-result-{index}.jpg",
-                            ttl_seconds=3600,
-                            expires_at_cap=datetime.fromisoformat(image.expires_at)
-                            if image.expires_at
-                            else None,
-                            storage_mb=self._host._services.media_storage_mb,
-                        )
-                    )
-                media_artifacts = tuple(handles)
-            except Exception as exc:
-                # The remote effect already happened; media publication failure
-                # must not change its receipt into a retryable failed operation.
-                payload["media_error"] = type(exc).__name__
-                payload["media_read"] = False
-        return PluginResult(
-            ok=result.ok,
-            data=payload,
-            media_artifacts=media_artifacts,
-            error_code=result.error_code,
-            detail=result.public_message or "",
         )
 
 

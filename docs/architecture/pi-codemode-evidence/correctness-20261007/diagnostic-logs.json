@@ -1,0 +1,131 @@
+{
+  "interpretation": "Intermediate failures and interrupted restricted-sandbox run are diagnostics, not final acceptance. Each compressed log preserves its original results. Final verification separately states the source and exit codes.",
+  "logs": [
+    {
+      "original_log": "yuki-correctness-full.log",
+      "retained_log": "yuki-correctness-full.log.gz",
+      "sha256_uncompressed": "35386ba54cf0b02b2c497a49dddbbb90ab9a0b15f48f76872882584fc3098233",
+      "bytes": 9217
+    },
+    {
+      "original_log": "yuki-correctness-final-targeted.log",
+      "retained_log": "yuki-correctness-final-targeted.log.gz",
+      "sha256_uncompressed": "64d5f2edd2823805c4224d015e0e8933438f34e12b8b694e23acc3c616fdf689",
+      "bytes": 41594
+    },
+    {
+      "original_log": "yuki-correctness-expanded.log",
+      "retained_log": "yuki-correctness-expanded.log.gz",
+      "sha256_uncompressed": "03ae62ded92a5e060f3c1d6c741d0378d919b24afd594cbba2593b6bb7076625",
+      "bytes": 6512
+    },
+    {
+      "original_log": "yuki-compatibility-correctness.log",
+      "retained_log": "yuki-compatibility-correctness.log.gz",
+      "sha256_uncompressed": "423c1fa4a1ba1ea181387e4c4e67bc2431c0ce4cb36454767c00ef5f29706c01",
+      "bytes": 44028
+    },
+    {
+      "original_log": "yuki-native-guards.log",
+      "retained_log": "yuki-native-guards.log.gz",
+      "sha256_uncompressed": "93b597198d6424d83e39c61c2412bcc05230c1367deff5a4e5e49ae346089169",
+      "bytes": 48089
+    },
+    {
+      "original_log": "yuki-projection-trigger-tests.log",
+      "retained_log": "yuki-projection-trigger-tests.log.gz",
+      "sha256_uncompressed": "88541df2ce1a9e9677c6257f2d10a239ca51a762e829af7dd753cf78a851545b",
+      "bytes": 98
+    },
+    {
+      "original_log": "yuki-rebase-compatibility-final.log",
+      "retained_log": "yuki-rebase-compatibility-final.log.gz",
+      "sha256_uncompressed": "65c6ab7ab5b6af8ce6908082bc7885ca3c123820254787c8574412b58f157180",
+      "bytes": 7140
+    },
+    {
+      "original_log": "yuki-rebase-compatibility-rerun.log",
+      "retained_log": "yuki-rebase-compatibility-rerun.log.gz",
+      "sha256_uncompressed": "924cf5fd0f26ddae6833d60a74f184228466537a4980c2bc22b61e67e6921d89",
+      "bytes": 100
+    },
+    {
+      "original_log": "yuki-expanded-boundary-rerun.log",
+      "retained_log": "yuki-expanded-boundary-rerun.log.gz",
+      "sha256_uncompressed": "b1e6c67d71ab0fd7d47ebe8fbb61ebaf9d0e7f6af05e23cd3bfbc1c5e0f802ea",
+      "bytes": 49909
+    },
+    {
+      "original_log": "yuki-query-lifecycle-final.log",
+      "retained_log": "yuki-query-lifecycle-final.log.gz",
+      "sha256_uncompressed": "b5919127c0127542f21db418b21d0999c7760a560c498ad3f2b6dcdeb98afd9a",
+      "bytes": 5336
+    },
+    {
+      "original_log": "yuki-harness-benchmark-compatibility.log",
+      "retained_log": "yuki-harness-benchmark-compatibility.log.gz",
+      "sha256_uncompressed": "12f0add0ba374a54b7b2d1e1424f8467f18f4a7f612867f97e1bbbc9c3c1f94a",
+      "bytes": 9270
+    },
+    {
+      "original_log": "yuki-correctness-local-sockets.log",
+      "retained_log": "yuki-correctness-local-sockets.log.gz",
+      "sha256_uncompressed": "39ff53d02f357c326f5af6e76dc4590c4029cf4eefc5fc4fe734e22476cd12b4",
+      "bytes": 4120
+    },
+    {
+      "original_log": "yuki-output-benchmark-final.log",
+      "retained_log": "yuki-output-benchmark-final.log.gz",
+      "sha256_uncompressed": "704240d66f5758b4151b885a8b810e9af2b0e3a4dcd00d85ddab4d974f37487e",
+      "bytes": 1291
+    },
+    {
+      "original_log": "yuki-correctness-external-pinning.log",
+      "retained_log": "yuki-correctness-external-pinning.log.gz",
+      "sha256_uncompressed": "62a4c6f50ca1b1c8559ad035a3e20dde28e7bb2f3ea910a2352d4ee6d128e06a",
+      "bytes": 98
+    },
+    {
+      "original_log": "yuki-frontend-correctness.log",
+      "retained_log": "yuki-frontend-correctness.log.gz",
+      "sha256_uncompressed": "de9c5b2055b3ba7a187e96d64acda6a00975810105d34489703e730cbc9b44a6",
+      "bytes": 693
+    },
+    {
+      "original_log": "yuki-frontend-build-final.log",
+      "retained_log": "yuki-frontend-build-final.log.gz",
+      "sha256_uncompressed": "2ed500317b129197f2da3cc57d9ada95b4053e23a05761e3cf87a6a12fc1be95",
+      "bytes": 707
+    },
+    {
+      "original_log": "yuki-frontend-format-final.log",
+      "retained_log": "yuki-frontend-format-final.log.gz",
+      "sha256_uncompressed": "d08f1f250d7035066d7e3daf2db674c947eea0e38d43a402c970d09e12edf298",
+      "bytes": 236
+    },
+    {
+      "original_log": "yuki-frontend-format-final-rerun.log",
+      "retained_log": "yuki-frontend-format-final-rerun.log.gz",
+      "sha256_uncompressed": "e90774ff9d93957046378cc9d7ae57fb033fdd91269527a3cadf3ad3da32dbd2",
+      "bytes": 168
+    },
+    {
+      "original_log": "yuki-frontend-models-final-rerun.log",
+      "retained_log": "yuki-frontend-models-final-rerun.log.gz",
+      "sha256_uncompressed": "3eb4eeb1deabe67c0118cf54e9be20af8397ae6bb441e499a42433a0b18585b0",
+      "bytes": 290
+    },
+    {
+      "original_log": "yuki-frontend-lint-final.log",
+      "retained_log": "yuki-frontend-lint-final.log.gz",
+      "sha256_uncompressed": "38613304b8cec4785b1fc6546b0383f1c665179150ba6b3cb6084c89be6bf12b",
+      "bytes": 2183
+    },
+    {
+      "original_log": "yuki-mypy-final.log",
+      "retained_log": "yuki-mypy-final.log.gz",
+      "sha256_uncompressed": "0fcfc43e5ff604b71874011b5139ea0d2039867b41993953dde5f0aa53a7f2a4",
+      "bytes": 124
+    }
+  ]
+}

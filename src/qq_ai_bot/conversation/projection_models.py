@@ -37,6 +37,8 @@ class PromptProjectionModel(Base):
     selected_summary_coverage: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
+    selected_summary_kind: Mapped[str | None] = mapped_column(String(32))
+    selected_summary_renderer: Mapped[int | None] = mapped_column(Integer)
 
 
 @event.listens_for(Base.metadata, "after_create")

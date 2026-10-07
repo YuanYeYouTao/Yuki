@@ -389,8 +389,7 @@ async def test_actual_0094_upgrade_downgrade_preserves_all_business_facts(tmp_pa
         await original.close()
     before_facts, before_schema, version = _database_facts(path)
     assert version == "0094"
-    # The merged head is now 0096. Keep this owned 0095 DDL/downgrade check
-    # pinned to 0095; verify the full current chain separately below.
+    # This regression isolates the 0095 index change; later migrations own other DDL.
     await asyncio.to_thread(command.upgrade, config, "0095")
     with pytest.raises(CanonicalSchemaError, match="migration head"):
         await require_canonical_schema(url)
@@ -408,4 +407,11 @@ async def test_actual_0094_upgrade_downgrade_preserves_all_business_facts(tmp_pa
     await require_canonical_schema(url)
     final_facts, _final_schema, version = _database_facts(path)
     assert version == canonical_schema_revision()
-    assert final_facts == before_facts
+    # Main retires these two derived caches at the later compatibility head.
+    # Keep exact checksums for every remaining table, including business facts.
+    retired = {"mcp_server_states", "mcp_tool_cache"}
+    assert all(before_facts[name][0] == 0 for name in retired)
+    assert retired.isdisjoint(final_facts)
+    assert final_facts == {
+        name: value for name, value in before_facts.items() if name not in retired
+    }

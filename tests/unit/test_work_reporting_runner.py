@@ -384,7 +384,7 @@ async def test_stage_and_new_input_share_one_nonblocking_opportunity(database, t
     opportunities = [
         message
         for message in test_case.provider.requests[2].messages
-        if "上一段正文仍是内部结果" in (message.content or "")
+        if "上一段工具结果仍是内部资料" in (message.content or "")
     ]
     assert len(opportunities) == 1
     assert "原 Work 新输入的答复机会" in opportunities[0].content
@@ -445,7 +445,7 @@ async def test_explicit_no_reply_with_tools_does_not_trigger_stage_prompt(databa
     result = await run(test_case)
     assert result.work_state == "completed"
     assert not any(
-        "上一段正文仍是内部结果" in (message.content or "")
+        "上一段工具结果仍是内部资料" in (message.content or "")
         for message in test_case.provider.requests[-1].messages
     )
     assert "stage_feedback_batch" not in test_case.control.communication
@@ -599,7 +599,17 @@ async def test_legacy_baseline_skips_old_consumed_but_keeps_new_pending(database
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "delivery", ["rejected", "other_target", "current_target", "failed", "unknown"]
+    "delivery",
+    [
+        "rejected",
+        "other_target",
+        "current_target",
+        "failed",
+        "unknown",
+        "reported_success",
+        "reported_failed",
+        "reported_unknown",
+    ],
 )
 async def test_only_actual_related_send_suppresses_stage_opportunity(database, tmp_path, delivery):
     test_case = await case(database, tmp_path, [])
@@ -608,6 +618,8 @@ async def test_only_actual_related_send_suppresses_stage_opportunity(database, t
             "text": "未执行",
             "work_report": {"kind": "reply", "reply_to_event_ids": [999999]},
         }
+    elif delivery.startswith("reported_"):
+        send_args = {"text": "阶段结果", "work_report": {"kind": "progress"}}
     else:
         send_args = {
             "text": "阶段结果",
@@ -627,14 +639,14 @@ async def test_only_actual_related_send_suppresses_stage_opportunity(database, t
                 tool(
                     "task_control",
                     {"action": "fail", "reason": "交付受阻"}
-                    if delivery in {"failed", "unknown"}
+                    if delivery in {"failed", "unknown", "reported_failed", "reported_unknown"}
                     else {"action": "complete"},
                 )
             ),
         ]
     )
     test_case.provider._responder = lambda _: next(scripted)
-    if delivery in {"failed", "unknown"}:
+    if delivery in {"failed", "unknown", "reported_failed", "reported_unknown"}:
         original_execute = test_case.backend.execute_call
 
         async def execute(invocation):
@@ -646,7 +658,7 @@ async def test_only_actual_related_send_suppresses_stage_opportunity(database, t
                     {
                         "ok": False,
                         "data": {
-                            "status": delivery,
+                            "status": delivery.removeprefix("reported_"),
                             "target": {"kind": "space", "id": test_case.env.space},
                         },
                     }
@@ -655,13 +667,15 @@ async def test_only_actual_related_send_suppresses_stage_opportunity(database, t
 
         test_case.backend.execute_call = execute
     result = await run(test_case)
-    assert (result.work_state == "completed") == (delivery not in {"failed", "unknown"})
+    assert (result.work_state == "completed") == (
+        delivery not in {"failed", "unknown", "reported_failed", "reported_unknown"}
+    )
     stage = [
         message
         for message in test_case.provider.requests[-1].messages
-        if "上一段正文仍是内部结果" in (message.content or "")
+        if "上一段工具结果仍是内部资料" in (message.content or "")
     ]
-    assert bool(stage) == (delivery in {"rejected", "other_target"})
+    assert bool(stage) == (delivery != "reported_success")
     assert test_case.control.tools_started == (2 if delivery == "rejected" else 3)
 
 

@@ -1,0 +1,191 @@
+{
+  "scope": "F1-F12 correctness fixes and fixed main 25cd compatibility; no production or deployment",
+  "environment": {
+    "UV_CACHE_DIR": "/private/tmp/yuki-uv-cache-correctness",
+    "YUKI_MONTY_BINARY": "$PWD/.venv/bin/yuki-monty-worker",
+    "dependency_command": "uv run --frozen --no-sync preserves locally compiled wheel outside uv.lock",
+    "full_pytest_permissions": "unsandboxed isolated fake IO and pinned worker; restricted sandbox denies AF_UNIX fixtures"
+  },
+  "full_run": {
+    "command": "uv run --frozen --no-sync pytest -q -p no:warnings tests --tb=short --basetemp=/private/tmp/yuki-correctness-final-full-20261007",
+    "exit_code": 1,
+    "passed": 4702,
+    "failed": 5,
+    "skipped": 1,
+    "seconds": 1105.52,
+    "source": "full-run-source.json",
+    "log": "yuki-correctness-final-full.log.gz"
+  },
+  "post_full": {
+    "command": "uv run --frozen --no-sync pytest -q -p no:warnings tests/unit/test_social_source_lookup_index.py tests/unit/test_tool_kernel_results.py tests/unit/test_versioned_docker_release.py tests/integration/test_provider_contract_pinning.py tests/integration/test_correctness_boundary_extensions.py tests/integration/test_frozen_rollup_representation.py tests/integration/test_plugin_frozen_binding.py --tb=short --basetemp=/private/tmp/yuki-correctness-final-changed-20261007",
+    "exit_code": 0,
+    "passed": 125,
+    "seconds": 22.4,
+    "log": "yuki-correctness-final-changed.log.gz",
+    "changed_python_files": {
+      "tests/unit/test_tool_kernel_results.py": {
+        "full": "ed7aa894cc1d4f3e7611b297f2b0126769e9e63d1a607403e377ded1d491fede",
+        "final": "0577abde1d04e202fa79b9c53053735091faa635010061755f1d7461fcae15e7"
+      },
+      "tests/integration/test_plugin_frozen_binding.py": {
+        "full": "e6df471604bb2cf24ca6ebfa66dff1f45350903229fac352b8255e8f188e1a06",
+        "final": "31db9220303eecf47d13efa0c2655466e564c046faebf9333a94c1848152fa23"
+      },
+      "tests/integration/test_frozen_rollup_representation.py": {
+        "full": "192f1d7c30111491fbccb09c1b09c43c031f7fd16c2b23f6427ca7225b11f5c2",
+        "final": "425429ca30c69b3835562a24385f9edc919e3a9ed396bf332f5cbd0d8b53e7c9"
+      },
+      "tests/integration/test_correctness_boundary_extensions.py": {
+        "full": null,
+        "final": "8bba9bb649fef9e6ae7478b1caa36389c1967b122fcb29faa6cf65c9d0884e0e"
+      },
+      "tests/unit/test_social_source_lookup_index.py": {
+        "full": "c5fcf07c262398fd6dde6e8ac8a2af09d8ba1e3ede6ec1b4f75ebbc54d5ed6c4",
+        "final": "4fbb3805d562fd8c1eb4d2bf46183111964f3820263331364f97600cb5eb0157"
+      },
+      "tests/integration/test_provider_contract_pinning.py": {
+        "full": null,
+        "final": "bb6cc9b1c28f84c23e98e7849fc85e59477f9f9fecf4079f58bbe0327c765c7a"
+      }
+    },
+    "product_python_unchanged": true,
+    "interpretation": "Full run plus all changed/dependent modules rechecked. No second all-green full run claimed."
+  },
+  "static": [
+    {
+      "command": "uv run --frozen --no-sync ruff check src tests scripts migrations",
+      "exit_code": 0,
+      "log": "yuki-ruff-check-last.log.gz"
+    },
+    {
+      "command": "uv run --frozen --no-sync ruff format --check src tests scripts migrations",
+      "exit_code": 0,
+      "formatted_files": 1233,
+      "log": "yuki-ruff-format-last.log.gz"
+    },
+    {
+      "command": "uv run --frozen --no-sync mypy",
+      "exit_code": 0,
+      "source_files": 715,
+      "log": "yuki-mypy-last.log.gz"
+    }
+  ],
+  "frontend": {
+    "node": "24.20.0",
+    "commands": [
+      "npm test",
+      "npm run build",
+      "npm run format:check",
+      "npm run lint"
+    ],
+    "full_passed": 102,
+    "full_files": 17,
+    "full_seconds": 6.85,
+    "formatted_test_module_only_after_full": true,
+    "model_module_recheck_passed": 7,
+    "all_final_exit_codes": 0,
+    "existing_lint_warnings": 7,
+    "rendering": "actual React DOM/jsdom; no browser screenshot"
+  },
+  "live": {
+    "report": "live-cache.json",
+    "sha256": "cc1d904a9b263269615f6606a9fbfad498ca22de27abd98dafecdcbef3bd032c",
+    "exit_code": 0,
+    "scenarios_complete": 6,
+    "physical_requests": 26,
+    "preheat_each": 1,
+    "measured_samples_each": 3,
+    "manifest_count": 39,
+    "full_execution_inventory": 68,
+    "route": {
+      "provider": "deepseek",
+      "protocol": "chat_completions",
+      "model": "deepseek-flash",
+      "endpoint_origin": "https://api.deepseek.com"
+    },
+    "usage_unknown_requests": 0,
+    "cache_read_explicit_zero": 2,
+    "cache_creation_tokens": "unreported, kept null",
+    "physical_logical_accounting_match": true,
+    "bounds": {
+      "physical_calls": 96,
+      "request_bytes": 400000,
+      "output_tokens_each": 8192,
+      "max_retries": 1
+    },
+    "runner_evidence": "bounded-live-runner.txt (only local credential path redacted)",
+    "executed_runner_sha256": "1c2fb2875dc54ea202879b621facf2b31b99ce38a76c5ead1fe78a07d5d8bc7c"
+  },
+  "native": {
+    "real_worker_skips": 0,
+    "platform": "Darwin arm64",
+    "tested": "pinned worker journal restores and separate Host os._exit(91) boundary recovery; real PluginManager hot-upgrade child refusal with Work receipts",
+    "linux_immutable_worker_bwrap": "not run; trust guards unchanged"
+  },
+  "skipped": [
+    "Private production backup replay: no private backup paths supplied"
+  ],
+  "not_run": [
+    "Linux deployment immutable worker/bwrap acceptance",
+    "Proxy/upstream final hop",
+    "SSE",
+    "Long-interval or production cache rate"
+  ],
+  "logs": {
+    "yuki-correctness-final-full.log": {
+      "retained": "yuki-correctness-final-full.log.gz",
+      "sha256_uncompressed": "b3123bf1ab9609dc1b4db94a55f47e7a4137ba452448cb947017dd57b5a1afcd"
+    },
+    "yuki-correctness-final-changed.log": {
+      "retained": "yuki-correctness-final-changed.log.gz",
+      "sha256_uncompressed": "6c5de2441007bcfea27cf98a14042d3e942c62d8768a5bea9b7ce3e06ed39891"
+    },
+    "yuki-correctness-post-full.log": {
+      "retained": "yuki-correctness-post-full.log.gz",
+      "sha256_uncompressed": "a3d3776ec1eb6def0fdd0f6f10f49d72920665c6ca56e4e00bf0f22492f3c9ce"
+    },
+    "yuki-correctness-source-index.log": {
+      "retained": "yuki-correctness-source-index.log.gz",
+      "sha256_uncompressed": "3526a4fc817b1abe58ff9839b558b6fd826b44dcd2ede4d700a93b98e82b188a"
+    },
+    "yuki-correctness-kernel-release.log": {
+      "retained": "yuki-correctness-kernel-release.log.gz",
+      "sha256_uncompressed": "07a4fda9b8a4b32d0d0c8dcc442917e1bda90e67511d9ebd927a6ce41c17a13e"
+    },
+    "yuki-correctness-freeze-pinning-final.log": {
+      "retained": "yuki-correctness-freeze-pinning-final.log.gz",
+      "sha256_uncompressed": "7f72645db1c549d6a454c346f8f763d0d78521f792a0a470ee53cee7d3e43b01"
+    },
+    "yuki-correctness-plugin-native-final.log": {
+      "retained": "yuki-correctness-plugin-native-final.log.gz",
+      "sha256_uncompressed": "af5ea110fb68cab2848d42d22c96f56e134281d0e47e732028eb4cd95fc20bd5"
+    },
+    "yuki-correctness-plugin-native-rerun.log": {
+      "retained": "yuki-correctness-plugin-native-rerun.log.gz",
+      "sha256_uncompressed": "3459dd0fd3d0918a7a46de3c450cbd0bf495e128eeaf38ff04b2267ff461d462"
+    },
+    "yuki-ruff-check-last.log": {
+      "retained": "yuki-ruff-check-last.log.gz",
+      "sha256_uncompressed": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+    },
+    "yuki-ruff-format-last.log": {
+      "retained": "yuki-ruff-format-last.log.gz",
+      "sha256_uncompressed": "446c19f464d88306ee388b84e258f006ce39472fc0c742efd53f696ccf68df94"
+    },
+    "yuki-mypy-last.log": {
+      "retained": "yuki-mypy-last.log.gz",
+      "sha256_uncompressed": "0fcfc43e5ff604b71874011b5139ea0d2039867b41993953dde5f0aa53a7f2a4"
+    },
+    "yuki-correctness-live.log": {
+      "retained": "yuki-correctness-live.log.gz",
+      "sha256_uncompressed": "1070d7e6d2bb472e15acdc614fd6e54e43c40fd9d8d986edebc991f53738167c"
+    }
+  },
+  "review": {
+    "credential_matches": 0,
+    "scanned_final_task_files": 310,
+    "unresolved_conflicts": 0,
+    "published_0096_unchanged": true,
+    "scratch_cleanup": "scratch-cleanup.json"
+  }
+}

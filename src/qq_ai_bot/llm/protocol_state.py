@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from typing import Any
 
@@ -30,3 +31,17 @@ def ordered_delta(request: ChatRequest) -> tuple[ChatMessage | FunctionCallOutpu
 
 def integer(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def tool_result_failed(output: str) -> bool:
+    """Project the Host result envelope, never infer failure from result prose."""
+    try:
+        payload = json.loads(output)
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    process = payload.get("process")
+    return payload.get("ok") is False or (
+        isinstance(process, dict) and process.get("succeeded") is False
+    )

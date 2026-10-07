@@ -155,7 +155,7 @@ class ContextObservationRepository:
             # Ownership registration has no file IO. Unknown/deleting handles
             # reject publication without consuming another model/tool request.
             if artifact_handles:
-                from qq_ai_bot.mcp.repository import ToolArtifactRepository
+                from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
 
                 await ToolArtifactRepository.add_refs(
                     session, "observation", identity, artifact_handles
@@ -367,8 +367,8 @@ class ContextObservationRepository:
         parents = tuple((row.id, row.version) for row in observations)
         parent_json = encode(parents)
         identity, intent, now = str(uuid4()), summary_key(view_key, observations), datetime.now(UTC)
-        from qq_ai_bot.mcp.artifact_schema import artifact_refs
-        from qq_ai_bot.mcp.repository import ToolArtifactRepository
+        from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+        from qq_ai_bot.tool_results.schema import artifact_refs
 
         async with self.database.sessions() as reader:
             await reader.execute(text("BEGIN"))

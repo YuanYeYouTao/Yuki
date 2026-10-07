@@ -7,6 +7,7 @@ import logging
 import time
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import cast
 
 from pydantic import BaseModel, ValidationError
@@ -26,7 +27,6 @@ from qq_ai_bot.application.modules import (
     ControlPlaneModule,
     ConversationModule,
     EmojiModule,
-    MCPModule,
     MediaModule,
     ModelRuntimeModule,
     PersistenceModule,
@@ -44,7 +44,6 @@ from qq_ai_bot.identity.bootstrap import bootstrap_settings_identity
 from qq_ai_bot.identity.canonical_uow import CanonicalIngressUnitOfWork
 from qq_ai_bot.identity.ingress import CanonicalIngressResolver
 from qq_ai_bot.identity.routing import PresenceRouter, RouteMonitor
-from qq_ai_bot.mcp.admin import MCPCommandHandler
 from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.model_runtime.models import ModelCapability, ModelTask
 from qq_ai_bot.persistence.database import Database
@@ -80,6 +79,8 @@ from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
 from qq_ai_bot.services.user_profiles import UserProfileService
 from qq_ai_bot.services.vision_service import VisionService
 from qq_ai_bot.time.service import TimeContextService
+from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+from qq_ai_bot.tool_results.recorder import ToolInvocationRepository
 from qq_ai_bot.vision.base import VisionProvider
 from yuki_plugin_sdk.events import EventName
 from yuki_plugin_sdk.permissions import PluginPermission
@@ -115,21 +116,17 @@ class ApplicationContainer:
         configure_process_registry(self.gateway_registry)
         self.presence_router = PresenceRouter(self.database, self.gateway_registry)
         self.route_monitor = RouteMonitor(self.presence_router)
-        mcp = MCPModule(settings, self.database, lifecycle=self.lifecycle).build()
-        self.mcp_bundle = mcp
-        self.mcp_repository = mcp.repository
-        self.tool_artifacts = mcp.artifacts
-        self.mcp_manager = mcp.manager
-        self.mcp_tools = mcp.provider
-        self.mcp_commands = MCPCommandHandler(
-            self.mcp_manager,
-            result_max_characters=(
-                settings.mcp_result_token_budget * 4
-                if settings.mcp_result_token_budget is not None
-                else settings.agent_tool_result_max_characters
-            ),
-            artifacts=self.tool_artifacts,
-            artifact_retention_seconds=settings.mcp_artifact_retention_seconds,
+        self.tool_invocations = ToolInvocationRepository(
+            self.database,
+            reflection_excerpt_characters=settings.memory_self_reflection_tool_receipt_characters,
+            reflection_retention_days=settings.memory_self_reflection_tool_receipt_retention_days,
+        )
+        self.tool_artifacts = ToolArtifactRepository(
+            self.database,
+            Path("data/tool_artifacts"),
+            retention_seconds=settings.tooling_result_artifact_retention_seconds,
+            max_media_bytes=settings.vision_max_prepared_bytes,
+            max_media_frames=settings.vision_max_frames_per_turn,
         )
         self.admin_action_registry = ActionRegistry()
         self.permission_catalog = PermissionCatalogService(
@@ -187,7 +184,7 @@ class ApplicationContainer:
             lifecycle=self.lifecycle,
         ).build()
         self.model_runtime = model_runtime
-        self.mcp_repository.writer = model_runtime.invocations.writer
+        self.tool_invocations.writer = model_runtime.invocations.writer
         self.model_profiles = model_runtime.profiles
         self.model_clients = model_runtime.clients
         self.model_invocations = model_runtime.invocations
@@ -282,7 +279,7 @@ class ApplicationContainer:
             voice_preferences=self.voice_preference_service,
             memory_embeddings=self.memory_embeddings,
             tool_artifacts=self.tool_artifacts,
-            tool_invocations=self.mcp_repository,
+            tool_invocations=self.tool_invocations,
         )
         conversation = self.conversation_module.build()
         self.conversation = conversation
@@ -424,7 +421,6 @@ class ApplicationContainer:
         )
         self.runtime.register_worker("runtime_work", self.work_scheduler)
         self.runtime.register_worker("subagents", self.subagent_scheduler)
-        self.chat.register_tool_provider(self.mcp_tools)
         self.memory_mutations = conversation.memory_mutations
         self.memory_auditor = conversation.memory_auditor
         self.memory_worker = conversation.memory_worker
@@ -493,8 +489,6 @@ class ApplicationContainer:
             emoji_repository=self.emoji_repository,
             emoji_storage=self.emoji_storage,
             speech=self.speech,
-            mcp_manager=self.mcp_manager,
-            mcp_artifacts=self.tool_artifacts,
             presence_router=self.presence_router,
         )
         automation = self.automation_module.build()
@@ -518,7 +512,6 @@ class ApplicationContainer:
         self.chat.set_automation_tools(self.automation_tools)
         self.automation_executor = automation.executor
         self.automation_worker = automation.worker
-        self.mcp_automation_bridge = automation.mcp_bridge
         self._plugin_contexts: dict[str, HostPluginContext] = {}
         self.plugin_notification_repository = PluginNotificationRepository(
             self.database,
@@ -589,7 +582,6 @@ class ApplicationContainer:
             database=self.database,
             runtime_config=self.runtime_config,
             connections=self.gateway_registry,
-            mcp=self.mcp_manager,
             automation=self.automation,
             memories=self.memories,
             maintenance=self.memory_maintenance_worker,
@@ -656,7 +648,6 @@ class ApplicationContainer:
             emoji_admin=self.emoji_admin,
             speech_admin=self.speech_admin,
             model_invocations=self.model_invocations,
-            mcp_commands=self.mcp_commands,
             memory_rebuild=self.memory_rebuild_service,
         )
         self.canonical_ingress = CanonicalIngressResolver(
@@ -829,7 +820,6 @@ class ApplicationContainer:
                 agent_runner=self.runtime.runner,
                 agent_capabilities=frozenset(agent_capabilities),
                 web_provider=self.web_provider,
-                mcp_manager=self.mcp_manager,
                 vision=self.vision,
                 emoji_repository=self.emoji_repository,
                 emoji_collector=self.emoji_collector,

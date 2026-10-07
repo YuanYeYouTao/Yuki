@@ -10,9 +10,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from qq_ai_bot.domain.messages import ChatMessage, ChatTool
-from qq_ai_bot.mcp.artifact_access import ArtifactAccess
 from qq_ai_bot.runtime.activation_outcome import ActivationOutcome
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkLease, WorkRepository
+from qq_ai_bot.tool_results.access import ArtifactAccess
 
 if TYPE_CHECKING:
     from qq_ai_bot.runtime.work_session import WorkSession
@@ -199,10 +199,19 @@ class WorkControl:
         )
 
     async def communication_target(self) -> dict[str, str]:
+        from sqlalchemy import select
+
         from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 
         async with self.repository.database.sessions() as session:
-            conversation = await session.get(CanonicalConversationModel, self.lease.conversation_id)
+            conversation = (
+                await session.execute(
+                    select(
+                        CanonicalConversationModel.space_id,
+                        CanonicalConversationModel.person_id,
+                    ).where(CanonicalConversationModel.id == self.lease.conversation_id)
+                )
+            ).first()
         if conversation is None:
             raise ValueError("work_delivery_conversation_missing")
         target_id = conversation.space_id or conversation.person_id
@@ -225,16 +234,36 @@ class WorkControl:
         *,
         kind: str | None = None,
         event_ids: tuple[int, ...] = (),
+        effect_keys: tuple[str, ...] = (),
         delivered_only: bool = False,
     ) -> list[dict[str, Any]]:
         if self.current is None:
             return []
+        target = await self.communication_target()
+        if effect_keys:
+            result = []
+            # Exact batch witnesses use bounded SQL bind pages, without imposing
+            # a new limit on the configured number of model tool calls.
+            for offset in range(0, len(effect_keys), 128):
+                result.extend(
+                    await self.repository.communication_reports(
+                        self.lease,
+                        self.current["id"],
+                        target,
+                        kind=kind,
+                        event_ids=tuple(event_ids),
+                        effect_keys=effect_keys[offset : offset + 128],
+                        delivered_only=delivered_only,
+                    )
+                )
+            return result
         return await self.repository.communication_reports(
             self.lease,
             self.current["id"],
-            await self.communication_target(),
+            target,
             kind=kind,
             event_ids=tuple(event_ids),
+            effect_keys=effect_keys,
             delivered_only=delivered_only,
         )
 
@@ -394,6 +423,7 @@ class WorkControl:
         # checkpoint into a second authority list.
         from qq_ai_bot.capabilities.results import normalize_legacy_result
         from qq_ai_bot.runtime.effect_outcomes import execution_evidence
+        from qq_ai_bot.sandbox.environment_tools import EXECUTION_TOOLS
 
         evidence = await self.repository.effect_evidence(
             self.lease,
@@ -401,10 +431,19 @@ class WorkControl:
             only_unresolved=True,
         )
         owners: dict[str, list[str]] = {}
+        requests: dict[str, dict[str, str]] = {}
         for effect in evidence:
             identity = effect.get("run_id")
             if isinstance(identity, str) and (effect.get("pending") or effect.get("uncertain")):
                 owners.setdefault(effect["work_id"], []).append(identity)
+            elif (
+                effect.get("tool") in EXECUTION_TOOLS
+                and isinstance(effect.get("request_id"), str)
+                and effect.get("uncertain")
+            ):
+                requests.setdefault(effect["work_id"], {})[effect["request_id"]] = effect[
+                    "effect_key"
+                ]
         for owner, ids in owners.items():
             ids = list(dict.fromkeys(ids))
             for offset in range(0, len(ids), 32):
@@ -426,6 +465,28 @@ class WorkControl:
                         owner,
                         result["run_id"],
                         outcome,
+                    )
+        for owner, original in requests.items():
+            ids = list(original)
+            for offset in range(0, len(ids), 32):
+                for result in await self.repository.completed_children(
+                    self.lease, owner, [], request_ids=ids[offset : offset + 32]
+                ):
+                    receipt = normalize_legacy_result(
+                        {"ok": True, "data": result},
+                        provider_id="core",
+                        tool_name="sandbox_completion",
+                    )
+                    outcome = execution_evidence(
+                        receipt, tool="sandbox_completion", side_effecting=False
+                    )
+                    await self.repository.resolve_run_effects(
+                        self.lease,
+                        owner,
+                        result["run_id"],
+                        outcome,
+                        effect_key=original[result["request_id"]],
+                        request_id=result["request_id"],
                     )
         await self.refresh_effects()
 

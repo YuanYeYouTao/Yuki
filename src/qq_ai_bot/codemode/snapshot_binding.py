@@ -25,6 +25,7 @@ class BoundaryRecord:
     feed_index: int
     call: EngineCall
     counters: dict[str, int]
+    output_ref: str | None = None
 
     def composition_fields(self) -> dict[str, Any]:
         return {
@@ -33,6 +34,7 @@ class BoundaryRecord:
             "boundary_kind": self.call.kind,
             "boundary_call": _call_json(self.call),
             "resource_used": self.counters,
+            "output_ref": self.output_ref,
         }
 
 
@@ -93,6 +95,8 @@ async def persist_boundary(
     counters: HostCounters,
     *,
     max_bytes: int,
+    stdout: str = "",
+    stdout_truncated: bool = False,
 ) -> BoundaryRecord:
     """T0: prepare the private object; publication happens in WorkRepository T1."""
     if not dump.startswith(_MONTY_MAGIC):
@@ -100,7 +104,42 @@ async def persist_boundary(
     if len(dump) > max_bytes:
         raise ValueError("code_snapshot_capacity")
     snapshot_ref = await store.put_code_snapshot(binding, dump)
-    return BoundaryRecord(snapshot_ref, call.feed_index, call, counters.as_dict())
+    # The output shares the snapshot's owner, privacy fence and atomic refs/GC.
+    # It is Host output, not a VM dump, and is never passed to the native loader.
+    output_ref = await store.put_code_snapshot(
+        binding,
+        json.dumps(
+            {"version": 1, "stdout": stdout, "truncated": stdout_truncated},
+            ensure_ascii=False,
+        ).encode(),
+    )
+    return BoundaryRecord(snapshot_ref, call.feed_index, call, counters.as_dict(), output_ref)
+
+
+async def load_output(
+    store: ProtocolStore,
+    binding: CodeSnapshotBinding,
+    composition: dict[str, Any],
+    *,
+    max_bytes: int,
+) -> tuple[str, bool]:
+    reference = composition.get("output_ref")
+    if reference is None:
+        # Old boundaries cannot reconstruct text from a byte counter. Make that
+        # missing portion visible rather than reprinting or replaying effects.
+        return "", bool(composition.get("resource_used", {}).get("output_bytes"))
+    if not isinstance(reference, str):
+        raise ValueError("code_output_binding_conflict")
+    value = json.loads(await store.get_code_snapshot(reference, binding))
+    if (
+        not isinstance(value, dict)
+        or value.get("version") != 1
+        or not isinstance(value.get("stdout"), str)
+        or type(value.get("truncated")) is not bool
+        or len(value["stdout"].encode()) > max_bytes
+    ):
+        raise ValueError("code_output_binding_conflict")
+    return value["stdout"], value["truncated"]
 
 
 async def load_boundary(

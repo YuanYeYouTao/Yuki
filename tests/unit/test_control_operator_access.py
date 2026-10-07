@@ -1,12 +1,15 @@
 """Only server-configured credentials produce trusted management principals."""
 
 import json
+import tomllib
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
 
 from qq_ai_bot.application.control_access import ControlOperatorAccess
 from qq_ai_bot.control_plane import ControlQueryError, PrincipalSource, ProblemCode
+from qq_ai_bot.control_plane.capabilities import is_protocol_capability
 
 
 def operator_file(
@@ -70,7 +73,17 @@ async def test_unconfigured_disabled_and_unproven_person_fail_closed(
 
 
 @pytest.mark.parametrize(
-    "capability", ["*", "plugin.execute", "secret.read", "database.sql", "control.fake.read"]
+    "capability",
+    [
+        "*",
+        "plugin.execute",
+        "secret.read",
+        "database.sql",
+        "control.fake.read",
+        "control.mcp.read",
+        "control.mcp.mutate",
+        "mcp.web_search",
+    ],
 )
 def test_server_config_cannot_grant_unreviewed_or_intrinsic_dangerous_capabilities(
     database, tmp_path, capability
@@ -78,3 +91,24 @@ def test_server_config_cannot_grant_unreviewed_or_intrinsic_dangerous_capabiliti
     path, _ = operator_file(tmp_path, capabilities=(capability,))
     with pytest.raises(ValueError, match="invalid control operator configuration"):
         ControlOperatorAccess(database, path)
+
+
+@pytest.mark.asyncio
+async def test_shipped_operator_template_loads_only_current_explicit_grants(database, monkeypatch):
+    path, declarations = _shipped_operator_template()
+    access = ControlOperatorAccess(database, path)
+    for declaration in declarations:
+        capabilities = tuple(declaration["capabilities"])
+        assert capabilities and all(is_protocol_capability(item) for item in capabilities)
+        assert not any(item.startswith(("control.mcp.", "mcp.")) for item in capabilities)
+        credential = "synthetic-template-credential-" + "a" * 32
+        monkeypatch.setenv(declaration["token_env"], credential)
+        principal = await access.authenticate(credential, source=PrincipalSource.CLI)
+        assert principal.principal_id.text == declaration["principal_id"]
+        assert principal.granted_capabilities == frozenset(capabilities)
+        assert not principal.allows("control.plugin.mutate")
+
+
+def _shipped_operator_template():
+    path = Path(__file__).resolve().parents[2] / "config/control-operators.example.toml"
+    return path, tomllib.loads(path.read_text(encoding="utf-8"))["operators"]

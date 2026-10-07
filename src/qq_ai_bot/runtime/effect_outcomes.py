@@ -7,7 +7,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
-from qq_ai_bot.capabilities.results import ToolExecutionResult
+from qq_ai_bot.capabilities.results import ToolExecutionResult, process_receipt
 
 
 @dataclass(slots=True)
@@ -21,6 +21,21 @@ class ResultCapture:
 current_result_capture: ContextVar[ResultCapture | None] = ContextVar(
     "work_result_capture", default=None
 )
+
+
+def execution_finished(evidence: dict[str, Any]) -> bool:
+    """Only an explicit terminal receipt can settle an original execution.
+
+    A successful read can observe a failed process. Conversely, a failed read
+    with no status says nothing about whether that process has finished.
+    """
+    status = evidence.get("status")
+    return (
+        isinstance(status, str)
+        and status in {"completed", "succeeded", "failed", "cancelled"}
+        and not evidence.get("pending")
+        and not evidence.get("uncertain")
+    )
 
 
 def execution_evidence(
@@ -88,6 +103,7 @@ def execution_evidence(
         )
     raw_status = body.get("status")
     status = raw_status if isinstance(raw_status, str) else None
+    process = process_receipt(outcome)
     return {
         "tool": tool,
         "side_effecting": side_effecting,
@@ -107,8 +123,10 @@ def execution_evidence(
             else {}
         ),
         "run_id": body.get("run_id"),
+        **({"request_id": body["request_id"]} if isinstance(body.get("request_id"), str) else {}),
         "ok": outcome.ok
         and not body.get("error")
+        and process.get("succeeded") is not False
         and status not in {"failed", "cancelled", "uncertain", "unknown"}
         and body.get("exit_code") in (None, 0),
         "pending": bool(body.get("pending")) or status in {"running", "queued", "waiting"},
@@ -119,4 +137,5 @@ def execution_evidence(
         "error_code": outcome.error_code,
         "mutation_committed": outcome.mutation_committed,
         "executed": body.get("executed", True),
+        **({"process": process} if process else {}),
     }

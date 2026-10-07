@@ -83,7 +83,6 @@ from qq_ai_bot.identity.db_models import (
     PresenceModel,
     SpaceBindingModel,
 )
-from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
 from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
@@ -251,7 +250,6 @@ class ControlCommandAdapter:
         workspace_service: WorkspaceService | None = None,
         rebuild_service: MemoryRebuildService | None = None,
         config_files: ConfigFileService | None = None,
-        mcp_manager: MCPManager | None = None,
         runtime_config: RuntimeConfigService | None = None,
         maintenance: MemoryMaintenanceWorker | None = None,
         embeddings: MemoryEmbeddingRuntime | None = None,
@@ -269,7 +267,6 @@ class ControlCommandAdapter:
             settings=settings,
             config_files=config_files,
             runtime_config=runtime_config,
-            mcp=mcp_manager,
             maintenance=maintenance,
             embeddings=embeddings,
             automation=automation,
@@ -804,20 +801,6 @@ class ControlCommandAdapter:
             invoke=self._management.mutate_work,
         )
 
-    async def mutate_mcp(
-        self,
-        principal: ControlPrincipal,
-        target: object,
-        command: ControlCommand,
-    ) -> ControlResult:
-        return await self._management_action(
-            principal,
-            target,
-            command,
-            operation=CommandOperation.MCP_MUTATE.value,
-            capability="control.mcp.mutate",
-        )
-
     async def mutate_emoji(
         self,
         principal: ControlPrincipal,
@@ -899,7 +882,6 @@ class ControlCommandAdapter:
                 CommandOperation.WORKSPACE_MUTATE.value,
                 CommandOperation.ENVIRONMENT_FILE_MUTATE.value,
                 CommandOperation.TERMINAL_MUTATE.value,
-                CommandOperation.MCP_MUTATE.value,
                 CommandOperation.MEMORY_MAINTENANCE.value,
                 CommandOperation.CONFIG_FILE_SAVE.value,
                 CommandOperation.PLUGIN_CONFIGURE.value,

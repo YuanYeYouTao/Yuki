@@ -22,7 +22,6 @@ from qq_ai_bot.control_plane.operations import OperationRef, OperationStatus, St
 from qq_ai_bot.control_plane.principal import ControlPrincipal
 from qq_ai_bot.control_plane.problems import Problem, ProblemCode
 from qq_ai_bot.conversation.canonical_db_models import ControlCommandReceiptModel
-from qq_ai_bot.mcp.manager import MCPManagementRejected, MCPRevisionConflict
 from qq_ai_bot.persistence.control_management import ManagementFailure, ManagementUnavailable
 from qq_ai_bot.persistence.models import AdminOperationEventModel
 from qq_ai_bot.persistence.unit_of_work import next_updated_at
@@ -258,9 +257,7 @@ class ExternalControlExecutor:
                 exc,
                 (
                     PluginRevisionConflict,
-                    MCPRevisionConflict,
                     PluginManagementRejected,
-                    MCPManagementRejected,
                     ManagementFailure,
                 ),
             ):
@@ -280,7 +277,7 @@ class ExternalControlExecutor:
                             if isinstance(exc, ManagementFailure)
                             else (
                                 ProblemCode.VERSION_CONFLICT
-                                if isinstance(exc, (PluginRevisionConflict, MCPRevisionConflict))
+                                if isinstance(exc, PluginRevisionConflict)
                                 else ProblemCode.PRECONDITION_FAILED
                             )
                         ),

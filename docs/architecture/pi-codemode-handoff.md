@@ -16,7 +16,11 @@
 
 ## 当前状态
 
-最新工作为[工具分层与联网直调](pi-codemode-delivery.md)：基础聊天、记忆读写、历史、
+最新工作为[正确性修复与 main 兼容](pi-codemode-correctness-repair.md)，按 2026-10-07
+证据包 F1–F12 修复。主合同 version 14、数据库 head 0098、Plugin API 3.1，MCP 已退役。
+逐项验证、测试夹具修改和未运行条件见该页；历史付费对照不代表本轮缓存验收。
+
+此前工作为[工具分层与联网直调](pi-codemode-delivery.md)：基础聊天、记忆读写、历史、
 工作区、任务/原执行控制和联网保持直接调用，其余工具经按需目录与 Code Mode 使用。
 模型直调视图与完整执行 API 分开冻结；主合同 version 13、工作者 version 3，API v1 和
 Monty 1.0.1 不变。隐藏 schema 变化同样改变恢复合同，权限及已提交回执不放宽。

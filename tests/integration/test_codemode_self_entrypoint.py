@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 from tests.conftest import build_harness, make_settings
 from tests.support.codemode_cases import BINARY, requires_worker
+from tests.support.parent_receipts import parent_receipts
 from tests.support.runtime_execution import make_work_resumer
 from tests.unit.test_self_initiative_runtime import self_source
 
@@ -52,7 +53,7 @@ async def test_self_code_uses_original_initiative_and_shared_main_service(
                     ToolCall("outer", ToolFunction("execute_code", json.dumps({"code": code}))),
                 ),
             )
-        assert len([m for m in request.messages if m.tool_call_id == "outer"]) == 1
+        assert len(parent_receipts(request, "outer")) == 1
         return "NO_REPLY"
 
     provider = FakeLLMProvider(respond)

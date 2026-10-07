@@ -6,6 +6,7 @@ from dataclasses import replace
 import pytest
 from tests.integration.test_codemode_runner import ACCEPT, Backend, call, runner_env
 from tests.support.codemode_cases import effect_rows, requires_worker
+from tests.support.parent_receipts import parent_receipts
 
 from qq_ai_bot.codemode.api_projection import project
 from qq_ai_bot.codemode.tool_visibility import LOOKUP_TOOLS, model_definitions
@@ -101,9 +102,9 @@ async def test_discovery_hidden_child_authorization_and_original_resume(
     assert json.loads(discovery.content)["data"]["parameters"] == api.schemas["terminal_exec"]
     forged = next(m for m in provider.requests[3].messages if m.tool_call_id == "forged")
     assert json.loads(forged.content)["error"] == "tool_not_declared"
-    paired = [m for m in provider.requests[-1].messages if m.tool_call_id == "code"]
+    paired = parent_receipts(provider.requests[-1], "code")
     assert len(paired) == 1
-    body = json.loads(paired[0].content)
+    body = json.loads(paired[0])
     if denied:
         assert [name for name, _ in backend.log] == ["terminal_exec"]
         assert body["error"] == "admission_closed"

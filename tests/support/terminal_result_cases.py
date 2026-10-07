@@ -11,11 +11,11 @@ from qq_ai_bot.capabilities.invocation import direct_invocations
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity, ToolCall, ToolFunction
-from qq_ai_bot.mcp.repository import ToolArtifactRepository
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.services.agent_runner import AgentRuntime
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.main_agent_backend import MainAgentBackend
+from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
 from tests.conftest import build_harness, make_settings
 from tests.support.social_identity_cases import social_env
 

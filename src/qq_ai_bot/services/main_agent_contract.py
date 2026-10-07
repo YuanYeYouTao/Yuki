@@ -26,6 +26,8 @@ class MainAgentContract:
         self._tools: tuple[ChatTool, ...] | None = None
         self.revision = ""
         self.script_api: ScriptApi | None = None
+        self.plugin_contracts: dict[str, str] = {}
+        self._stale_plugins: set[str] = set()
         self._lock = asyncio.Lock()
 
     def health(self) -> dict[str, object]:
@@ -33,14 +35,17 @@ class MainAgentContract:
         from qq_ai_bot.sandbox.environment_tools import SANDBOX_TOOLS
         from qq_ai_bot.workspace.tools import WORKSPACE_TOOLS
 
+        # Health reflects a hot upgrade immediately while keeping declarations fixed.
+        for name in self.plugin_contracts:
+            self.plugin_binding_current(name)
         names = {tool.name for tool in self._tools or ()}
         return {
             "frozen": self._tools is not None,
             "revision": self.revision,
             "tool_count": len(names),
             "model_tool_count": len(names & DIRECT_TOOL_NAMES),
+            "restart_required": bool(self._stale_plugins),
             "persistent_environment_tools_complete": (SANDBOX_TOOLS | WORKSPACE_TOOLS) <= names,
-            "netease_tools_present": any("netease" in name.casefold() for name in names),
         }
 
     async def definitions(self) -> tuple[ChatTool, ...]:
@@ -57,12 +62,6 @@ class MainAgentContract:
                 declaration_only=True,
                 runtime_config=config,
             )
-            for provider in self.chat._external_tool_providers:
-                prepare = getattr(provider, "prepare_manifest", None)
-                if callable(prepare):
-                    await prepare(declaration)
-                else:
-                    await provider.refresh(force=False)
             registry = self.chat._build_tool_registry(declaration, web_was_used=False)
             tools = [
                 entry.descriptor.as_chat_tool(description=entry.descriptor.description)
@@ -82,13 +81,22 @@ class MainAgentContract:
             if len(names) != len(set(names)):
                 raise ValueError("duplicate Main Agent manifest tool")
             frozen = deepcopy(tuple(sorted(tools, key=lambda item: item.name)))
+            adapter = self.chat._plugin_tools
+            fingerprint = getattr(adapter, "contract_fingerprint", None)
+            if callable(fingerprint):
+                self.plugin_contracts = {
+                    tool.name: value
+                    for tool in frozen
+                    if (value := fingerprint(tool.name)) is not None
+                }
             revision = hashlib.sha256(
                 json.dumps(
                     {
-                        # 13: fixed direct view, discovery and full execution API.
-                        "version": 13,
+                        # 14: retired MCP and fixed direct view, discovery and full execution API.
+                        "version": 14,
                         "code_api": CODE_API_REVISION,
                         "direct_names": sorted(DIRECT_TOOL_NAMES),
+                        "plugin_contracts": self.plugin_contracts,
                         "tools": [
                             {
                                 "name": t.name,
@@ -116,3 +124,13 @@ class MainAgentContract:
 
     async def model_definitions(self) -> tuple[ChatTool, ...]:
         return model_definitions(await self.definitions())
+
+    def plugin_binding_current(self, name: str) -> bool:
+        expected = self.plugin_contracts.get(name)
+        if expected is None:
+            return True
+        fingerprint = getattr(self.chat._plugin_tools, "contract_fingerprint", None)
+        actual = fingerprint(name) if callable(fingerprint) else None
+        if actual is not None and actual != expected:
+            self._stale_plugins.add(name)
+        return actual == expected

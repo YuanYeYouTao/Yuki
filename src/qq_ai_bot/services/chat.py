@@ -23,7 +23,6 @@ from qq_ai_bot.capabilities import (
     ToolArtifactWriter,
     ToolExecutionResult,
     ToolKernelMetrics,
-    ToolProvider,
     ToolProviderRegistry,
 )
 from qq_ai_bot.config import Settings
@@ -286,6 +285,7 @@ class PluginToolProvider(Protocol):
         runtime: ToolRuntime,
         *,
         web_was_used: bool,
+        expected_contract: str | None = None,
     ) -> str: ...
 
 
@@ -403,7 +403,6 @@ class ChatService:
         self._admin_tools: AdminToolService | None = None
         self._automation_tools: AutomationToolProvider | None = None
         self._plugin_tools: PluginToolProvider | None = None
-        self._external_tool_providers: list[ToolProvider] = []
         self._tool_artifacts = tool_artifacts
         self._tool_invocations = tool_invocations
         self._tool_metrics = ToolKernelMetrics()
@@ -484,13 +483,6 @@ class ChatService:
         """Attach approved plugin tools without a parallel chat router."""
 
         self._plugin_tools = service
-
-    def register_tool_provider(self, provider: ToolProvider) -> None:
-        """Register one host-owned provider before the application starts."""
-
-        if any(item.provider_id == provider.provider_id for item in self._external_tool_providers):
-            raise ValueError(f"duplicate tool provider: {provider.provider_id}")
-        self._external_tool_providers.append(provider)
 
     def _history_input_budget(
         self,
@@ -608,7 +600,7 @@ class ChatService:
                 limit = int(decoded.get("limit", 8000))
                 query = str(decoded.get("query", ""))
                 max_characters = _core_result_character_budget(context.runtime_config)
-                from qq_ai_bot.mcp.artifact_access import access_from_runtime
+                from qq_ai_bot.tool_results.access import access_from_runtime
 
                 result = await artifacts.read(
                     handle,
@@ -768,12 +760,27 @@ class ChatService:
             )
         if self._plugin_tools is not None:
             plugin = self._plugin_tools
+            fingerprint = getattr(plugin, "contract_fingerprint", None)
+            frozen_plugin_contracts = (
+                self.runtime.runner.main_contract.plugin_contracts
+                if self.runtime.runner.main_contract is not None
+                else {}
+            )
 
             async def plugin_execute(
                 name: str,
                 arguments: str,
                 context: ToolRuntime,
             ) -> object:
+                expected = frozen_plugin_contracts.get(name)
+                if expected is not None and callable(fingerprint):
+                    return await plugin.execute(
+                        name,
+                        arguments,
+                        context,
+                        web_was_used=web_was_used,
+                        expected_contract=expected,
+                    )
                 return await plugin.execute(
                     name,
                     arguments,
@@ -793,8 +800,6 @@ class ChatService:
                     plugin_read_only=plugin.is_read_only,
                 )
             )
-        for provider in self._external_tool_providers:
-            registry.register(provider)
         return registry
 
     def configure_runtime_controls(self, runtime: RuntimeConfigSnapshot) -> None:
@@ -1435,7 +1440,7 @@ class ChatService:
             **_trusted_conversation_write_kwargs(inbound),
         )
 
-    async def _record_mcp_invocation(
+    async def _record_tool_invocation(
         self,
         *,
         runtime: ToolRuntime,
@@ -1740,7 +1745,7 @@ class ChatService:
             active_control.source.get("actor_person_id")
             or active_control.source.get("principal_kind") == "self"
         ):
-            from qq_ai_bot.mcp.artifact_access import access_from_runtime
+            from qq_ai_bot.tool_results.access import access_from_runtime
 
             active_control.bind_context_access(
                 access_from_runtime(runtime, generation=active_control.lease.generation)

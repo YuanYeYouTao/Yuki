@@ -325,6 +325,7 @@ async def test_work_control_has_no_progress_tool_and_preserves_checkpoint(databa
             "run_id": "verified-run",
             "pending": False,
             "uncertain": False,
+            "status": "succeeded",
             "ok": True,
         },
     )

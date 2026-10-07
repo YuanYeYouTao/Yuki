@@ -240,7 +240,9 @@ async def test_silence_is_allowed_but_unconfirmed_delivery_is_not_success(
     assert result.status is expected, result
     assert not sent(case.env)
     if expected is RunStatus.BLOCKED:
-        assert result.error_category == "agent_delivery_unconfirmed"
+        assert result.error_category == (
+            "agent_work_blocked" if mode == "silent" else "agent_delivery_unconfirmed"
+        )
 
 
 async def legacy_run(database, case, *, call="yuki.generate"):

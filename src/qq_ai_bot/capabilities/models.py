@@ -33,7 +33,6 @@ class CapabilityTrustSource(StrEnum):
     ADMIN = "admin"
     AUTOMATION = "automation"
     PLUGIN = "plugin"
-    MCP = "mcp"
 
 
 class CapabilityIdempotency(StrEnum):

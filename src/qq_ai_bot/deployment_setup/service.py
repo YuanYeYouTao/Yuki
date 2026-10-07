@@ -25,8 +25,6 @@ from sqlalchemy.exc import SQLAlchemyError
 from qq_ai_bot import __version__
 from qq_ai_bot.config import Settings
 from qq_ai_bot.llm.vendor_policy import supports_native_search
-from qq_ai_bot.mcp.config import MCPConfigurationError, load_mcp_config
-from qq_ai_bot.mcp.models import MCPConfigFile
 from qq_ai_bot.model_runtime import ModelCapability, ModelTask, load_model_profile_catalog
 from qq_ai_bot.model_runtime.models import ModelSearchMode
 from qq_ai_bot.model_runtime.profiles import ModelRuntimeConfigurationError
@@ -41,8 +39,6 @@ from yuki_plugin_sdk.api import PLUGIN_API_VERSION
 
 _ENV_LINE = re.compile(r"^(?P<prefix>\s*(?:export\s+)?)(?P<key>[A-Za-z_][A-Za-z0-9_]*)=")
 _SAFE_ENV_VALUE = re.compile(r"^[A-Za-z0-9_./:@+,-]*$")
-_ENV_REFERENCE = re.compile(r"\$\{([A-Z][A-Z0-9_]{0,63})\}")
-_SECRET_HEADER_TOKENS = ("authorization", "cookie", "token", "api-key", "api_key", "secret")
 GATEWAY_PROVIDER_IDS = ("napcat", "snowluma")
 _GATEWAY_PROFILE_SET = frozenset(GATEWAY_PROVIDER_IDS)
 _FLASH_TASKS = frozenset(
@@ -86,10 +82,6 @@ class SetupPaths:
         return self.root / "config/model_profiles.toml"
 
     @property
-    def mcp(self) -> Path:
-        return self.root / ".mcp.json"
-
-    @property
     def pending(self) -> Path:
         return self.root / "data/setup/pending.json"
 
@@ -114,10 +106,8 @@ class SetupPaths:
 class SetupConfiguration:
     environment: dict[str, str]
     model_profiles: str
-    mcp_document: dict[str, object]
     pending_plugins: tuple[str, ...] | None
     write_model_profiles: bool = True
-    write_mcp: bool = True
 
 
 def require_migrated_model_profiles(paths: SetupPaths) -> None:
@@ -422,66 +412,6 @@ def model_profiles_use_flash(profile_path: Path) -> bool:
         return False
 
 
-def sanitize_mcp_document(
-    document: object,
-    environment: dict[str, str],
-) -> dict[str, object]:
-    if not isinstance(document, dict):
-        raise SetupValidationError("MCP 配置根节点必须是对象")
-    raw_servers = document.get("mcpServers")
-    if not isinstance(raw_servers, dict) or not raw_servers:
-        raise SetupValidationError("MCP 开启时至少需要一个 Server")
-    sanitized_servers: dict[str, object] = {}
-    generated_secret_origins: dict[str, tuple[str, str]] = {}
-    enabled_count = 0
-    for raw_id, raw_server in raw_servers.items():
-        server_id = str(raw_id).strip()
-        if not server_id or not isinstance(raw_server, dict):
-            raise SetupValidationError("MCP Server ID 或配置无效")
-        server = dict(raw_server)
-        if server.get("command") is not None:
-            raise SetupValidationError("Docker 引导版不支持 stdio MCP，请使用 Streamable HTTP")
-        url = server.get("url")
-        if not isinstance(url, str) or not url.casefold().startswith(("http://", "https://")):
-            raise SetupValidationError(f"MCP Server {server_id} 缺少有效 HTTP URL")
-        headers = server.get("headers", {})
-        if not isinstance(headers, dict):
-            raise SetupValidationError(f"MCP Server {server_id} headers 必须是对象")
-        safe_headers: dict[str, str] = {}
-        for raw_name, raw_value in headers.items():
-            name = str(raw_name).strip()
-            value = str(raw_value)
-            if any(token in name.casefold() for token in _SECRET_HEADER_TOKENS):
-                references = _ENV_REFERENCE.findall(value)
-                if not references:
-                    env_name = _mcp_secret_name(server_id, name)
-                    origin = (server_id, name.casefold())
-                    previous_origin = generated_secret_origins.get(env_name)
-                    if previous_origin is not None and previous_origin != origin:
-                        raise SetupValidationError("MCP 敏感 Header 环境变量名称冲突")
-                    generated_secret_origins[env_name] = origin
-                    environment[env_name] = value
-                    value = f"${{{env_name}}}"
-            safe_headers[name] = value
-        server["headers"] = safe_headers
-        sanitized_servers[server_id] = server
-        if not bool(server.get("disabled", False)):
-            enabled_count += 1
-    if enabled_count == 0:
-        raise SetupValidationError("MCP 开启时至少需要一个未禁用 Server")
-    sanitized: dict[str, object] = {"mcpServers": sanitized_servers}
-    try:
-        MCPConfigFile.model_validate(sanitized)
-    except ValidationError as exc:
-        raise SetupValidationError("MCP 配置不符合合同") from exc
-    return sanitized
-
-
-def missing_mcp_environment(document: object, environment: Mapping[str, str]) -> tuple[str, ...]:
-    serialized = json.dumps(document, ensure_ascii=False)
-    return tuple(sorted(set(_ENV_REFERENCE.findall(serialized)).difference(environment)))
-
-
 def discover_speech_profiles(speech_root: Path) -> tuple[SpeechProfileCandidate, ...]:
     voices = speech_root / "voices"
     if not voices.is_dir():
@@ -512,7 +442,6 @@ def validate_configuration(paths: SetupPaths, configuration: SetupConfiguration)
     environment = dict(configuration.environment)
     environment["BOT_PERSONA_FILE"] = str((paths.root / "config/persona.md").resolve())
     environment["MODEL_PROFILES_FILE"] = str(paths.model_profiles.resolve())
-    environment["MCP_CONFIG_PATH"] = str(paths.mcp.resolve())
     environment["YUKI_VERSION"] = __version__
     _validate_gateway_configuration(environment)
     _validate_credentials_and_endpoints(
@@ -532,12 +461,7 @@ def validate_configuration(paths: SetupPaths, configuration: SetupConfiguration)
     with tempfile.TemporaryDirectory(prefix="yuki-setup-validate-") as temporary_name:
         temporary = Path(temporary_name)
         profile_path = temporary / "model_profiles.toml"
-        mcp_path = temporary / ".mcp.json"
         profile_path.write_text(configuration.model_profiles, encoding="utf-8")
-        mcp_path.write_text(
-            json.dumps(configuration.mcp_document, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
         try:
             catalog = load_model_profile_catalog(
                 profile_path,
@@ -590,15 +514,7 @@ def validate_configuration(paths: SetupPaths, configuration: SetupConfiguration)
                         )
                 elif not settings.tavily_api_key:
                     raise SetupValidationError("外部搜索需要可用搜索连接或 Tavily 密钥")
-            if settings.mcp_enabled:
-                sanitized = sanitize_mcp_document(configuration.mcp_document, dict(environment))
-                if sanitized != configuration.mcp_document:
-                    raise SetupValidationError("MCP 敏感 Header 必须通过环境变量引用")
-                missing = missing_mcp_environment(sanitized, environment)
-                if missing:
-                    raise SetupValidationError("MCP 缺少环境变量：" + ", ".join(missing))
-                load_mcp_config(mcp_path, environment=environment)
-        except (ModelRuntimeConfigurationError, MCPConfigurationError, ValidationError) as exc:
+        except (ModelRuntimeConfigurationError, ValidationError) as exc:
             raise SetupValidationError(str(exc)) from exc
     return settings
 
@@ -615,10 +531,6 @@ def commit_configuration(
     }
     if configuration.write_model_profiles:
         targets[paths.model_profiles] = configuration.model_profiles.encode("utf-8")
-    if configuration.write_mcp:
-        targets[paths.mcp] = (
-            json.dumps(configuration.mcp_document, ensure_ascii=False, indent=2) + "\n"
-        ).encode("utf-8")
     if configuration.pending_plugins is not None:
         targets[paths.pending] = (
             json.dumps(
@@ -632,7 +544,7 @@ def commit_configuration(
             + "\n"
         ).encode("utf-8")
     previous = {path: path.read_bytes() if path.is_file() else None for path in targets}
-    restart_sensitive = {paths.env, paths.model_profiles, paths.mcp}
+    restart_sensitive = {paths.env, paths.model_profiles}
     configuration_changed = any(
         path in restart_sensitive and previous[path] != content for path, content in targets.items()
     )
@@ -1017,11 +929,6 @@ def _split_env_comment(value: str) -> tuple[str, str]:
             head = value[:index].rstrip()
             return head, value[len(head) :]
     return value, ""
-
-
-def _mcp_secret_name(server_id: str, header_name: str) -> str:
-    normalized = re.sub(r"[^A-Z0-9]+", "_", f"MCP_{server_id}_{header_name}".upper()).strip("_")
-    return normalized[:64] or "MCP_SERVER_SECRET"
 
 
 def _validate_credentials_and_endpoints(

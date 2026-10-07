@@ -2151,53 +2151,6 @@ class AutomationStepRunModel(Base):
     run: Mapped[AutomationRunModel] = relationship(back_populates="step_runs")
 
 
-class MCPServerStateModel(Base):
-    """Secret-free lifecycle metadata for one configured MCP server."""
-
-    __tablename__ = "mcp_server_states"
-
-    server_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    transport: Mapped[str] = mapped_column(String(32), nullable=False)
-    config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    lifecycle: Mapped[str] = mapped_column(String(32), nullable=False)
-    status: Mapped[str] = mapped_column(String(32), nullable=False)
-    protocol_version: Mapped[str] = mapped_column(String(64), nullable=False, default="")
-    server_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
-    server_version: Mapped[str] = mapped_column(String(128), nullable=False, default="")
-    server_instructions: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    last_connected_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    last_refreshed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    last_error_category: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
-class MCPToolCacheModel(Base):
-    """Cached MCP tools/list metadata; never stores credentials or results."""
-
-    __tablename__ = "mcp_tool_cache"
-    __table_args__ = (
-        UniqueConstraint("server_id", "remote_tool_name", name="uq_mcp_tool_cache_server_tool"),
-        Index("ix_mcp_tool_cache_server", "server_id"),
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    server_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    remote_tool_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    model_name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
-    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    compact_description: Mapped[str] = mapped_column(String(500), nullable=False, default="")
-    input_schema_json: Mapped[str] = mapped_column(Text, nullable=False)
-    output_schema_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
-    annotations_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
-    metadata_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    refreshed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
 class ToolArtifactModel(Base):
     """Handle metadata for an oversized tool result stored outside SQLite."""
 

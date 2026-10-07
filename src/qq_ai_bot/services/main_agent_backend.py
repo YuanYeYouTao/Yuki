@@ -17,7 +17,6 @@ from qq_ai_bot.capabilities import (
     CapabilityEffect,
     CapabilityPolicyContext,
     CapabilityRisk,
-    CapabilityTrustSource,
     ToolExecutionResult,
     ToolInvocationContext,
     ToolProviderRegistry,
@@ -28,6 +27,7 @@ from qq_ai_bot.capabilities import (
 from qq_ai_bot.capabilities.catalog import DescriptorRegistrySnapshot
 from qq_ai_bot.capabilities.exposure import NO_LONGER_AUTHORIZED
 from qq_ai_bot.capabilities.invocation import Invocation
+from qq_ai_bot.capabilities.models import CapabilityTrustSource
 from qq_ai_bot.capabilities.runtime import TurnCapabilityRuntime
 from qq_ai_bot.capabilities.validation import UNDECLARED_TOOL
 from qq_ai_bot.domain.messages import ChatImage, ChatTool, ToolCall, ToolFunction
@@ -96,7 +96,7 @@ class MainAgentBackend(AgentToolBackend):
                 await plugin_tools.validate_images(
                     plugin_images, self._runtime, web_was_used=self._web_was_used
                 )
-            from qq_ai_bot.mcp.artifact_access import access_from_runtime
+            from qq_ai_bot.tool_results.access import access_from_runtime
 
             store = self._service._tool_artifacts
             validator = getattr(store, "validate_media", None)
@@ -414,8 +414,8 @@ class MainAgentBackend(AgentToolBackend):
         tooling = config.tooling if config is not None else None
         if store is None or tooling is None or not tooling.result_artifact_enabled:
             return None
-        from qq_ai_bot.mcp.artifact_access import access_from_runtime
         from qq_ai_bot.runtime.work_activation import current_work_control
+        from qq_ai_bot.tool_results.access import access_from_runtime
 
         active = current_work_control.get()
         request_runtime = self._request_runtime()
@@ -457,7 +457,12 @@ class MainAgentBackend(AgentToolBackend):
                 or set(feedback) - {"text", "work_report"}
             ):
                 return json.dumps(
-                    {"ok": False, "executed": False, "error": "memory_feedback_current_text_only"}
+                    {
+                        "ok": False,
+                        "executed": False,
+                        "mutation_committed": False,
+                        "error": "memory_feedback_current_text_only",
+                    }
                 )
         if name == "send_message" and runtime.work_control is None:
             try:
@@ -466,12 +471,35 @@ class MainAgentBackend(AgentToolBackend):
                 arguments = None
             if isinstance(arguments, dict) and "work_report" in arguments:
                 return json.dumps(
-                    {"ok": False, "executed": False, "error": "work_report_requires_main_work"}
+                    {
+                        "ok": False,
+                        "executed": False,
+                        "mutation_committed": False,
+                        "error": "work_report_requires_main_work",
+                    }
                 )
         if name != "send_message" and self._runtime.before_model_request is not None:
             await self._runtime.before_model_request()
         if self._allowed_tools is not None and name not in self._allowed_tools:
-            return json.dumps({"ok": False, "error": "capability_not_allowed", "executed": False})
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "capability_not_allowed",
+                    "executed": False,
+                    "mutation_committed": False,
+                }
+            )
+        contract = self._service.runtime.runner.main_contract
+        if contract is not None and not contract.plugin_binding_current(name):
+            return json.dumps(
+                {
+                    "ok": False,
+                    "executed": False,
+                    "mutation_committed": False,
+                    "error": "plugin_tool_contract_changed",
+                    "restart_required": True,
+                }
+            )
         control = runtime.work_control
         # Provider IDs are response-local for every origin. The domain receipt
         # follows the original Host operation, including ordinary direct sends.
@@ -483,7 +511,12 @@ class MainAgentBackend(AgentToolBackend):
             and await control.pending()
         ):
             return json.dumps(
-                {"ok": False, "error": "new_input_before_execution", "executed": False}
+                {
+                    "ok": False,
+                    "error": "new_input_before_execution",
+                    "executed": False,
+                    "mutation_committed": False,
+                }
             )
         if name == "update_short_state" and self._service.runtime.runner.main_contract is not None:
             return await self._service.runtime.runner.main_contract.state.execute(arguments_json)
@@ -491,6 +524,8 @@ class MainAgentBackend(AgentToolBackend):
             return json.dumps(
                 {
                     "ok": False,
+                    "executed": False,
+                    "mutation_committed": False,
                     "error": "tools_closed",
                     "detail": "本轮只声明会话前缀工具 schema，不允许真实调用。",
                 },
@@ -500,6 +535,8 @@ class MainAgentBackend(AgentToolBackend):
             return json.dumps(
                 {
                     "ok": False,
+                    "executed": False,
+                    "mutation_committed": False,
                     "error": (
                         "mutation_already_committed" if self._mutation_committed else "tools_closed"
                     ),
@@ -513,10 +550,16 @@ class MainAgentBackend(AgentToolBackend):
             )
         capability_runtime = self._capability_runtime
         if capability_runtime is not None:
-            ok, error = capability_runtime.validate_call(name, arguments_json)
-            if not ok and error != UNDECLARED_TOOL:
+            validation = capability_runtime.validate_call_result(name, arguments_json)
+            if not validation.ok and validation.error_category != UNDECLARED_TOOL:
                 return json.dumps(
-                    {"ok": False, "error": error or NO_LONGER_AUTHORIZED},
+                    {
+                        "ok": False,
+                        "executed": False,
+                        "mutation_committed": False,
+                        "error": validation.error_category or NO_LONGER_AUTHORIZED,
+                        "detail": validation.detail,
+                    },
                     ensure_ascii=False,
                 )
         if (
@@ -524,7 +567,12 @@ class MainAgentBackend(AgentToolBackend):
             and self._service.runtime.runner.main_contract is None
         ):
             return json.dumps(
-                {"ok": False, "error": "main_agent_contract_unavailable"},
+                {
+                    "ok": False,
+                    "error": "main_agent_contract_unavailable",
+                    "executed": False,
+                    "mutation_committed": False,
+                },
                 ensure_ascii=False,
             )
         entry = self._catalog.by_model_name(name) if self._catalog is not None else None
@@ -535,9 +583,21 @@ class MainAgentBackend(AgentToolBackend):
                 tool.name == name for tool in await contract.definitions()
             ):
                 return json.dumps(
-                    {"ok": False, "error": "capability_not_allowed", "executed": False}
+                    {
+                        "ok": False,
+                        "error": "capability_not_allowed",
+                        "executed": False,
+                        "mutation_committed": False,
+                    }
                 )
-            return json.dumps({"ok": False, "error": "unknown_capability"})
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "unknown_capability",
+                    "executed": False,
+                    "mutation_committed": False,
+                }
+            )
         binding = descriptor.binding
         effective_descriptor = self._effective_descriptor(call, descriptor)
         is_web_tool = effective_descriptor.namespace_id.startswith("web.")
@@ -564,6 +624,8 @@ class MainAgentBackend(AgentToolBackend):
             result = json.dumps(
                 {
                     "ok": False,
+                    "executed": False,
+                    "mutation_committed": False,
                     "error": "duplicate_mutation",
                     "detail": "本轮已经成功执行过相同修改，不再重复执行。",
                 },
@@ -573,6 +635,8 @@ class MainAgentBackend(AgentToolBackend):
             result = json.dumps(
                 {
                     "ok": False,
+                    "executed": False,
+                    "mutation_committed": False,
                     "error": "web_tool_limit_exceeded",
                     "detail": (
                         f"本轮最多执行 {config.web.max_calls_per_turn} 次联网工具，"
@@ -592,6 +656,8 @@ class MainAgentBackend(AgentToolBackend):
             result = json.dumps(
                 {
                     "ok": False,
+                    "executed": False,
+                    "mutation_committed": False,
                     "error": "retry_scope_violation",
                     "detail": "参数修正只能重试刚才失败的同一个工具和操作。",
                 },
@@ -610,12 +676,18 @@ class MainAgentBackend(AgentToolBackend):
                 parsed = None
             if not isinstance(parsed, dict):
                 result = json.dumps(
-                    {"ok": False, "error": "invalid_json"},
+                    {
+                        "ok": False,
+                        "error": "invalid_json",
+                        "executed": False,
+                        "mutation_committed": False,
+                    },
                     ensure_ascii=False,
                 )
             else:
                 started = time.perf_counter()
                 binding_started = False
+                send_attempted_before = self._send_message_attempted
                 try:
 
                     async def invoke_binding() -> ToolExecutionResult:
@@ -631,9 +703,11 @@ class MainAgentBackend(AgentToolBackend):
                             if name != "send_message" and await work.pending():
                                 return ToolExecutionResult(
                                     ok=False,
+                                    data={"executed": False},
                                     error_code="new_input_before_execution",
                                     public_message="新要求已到达，此调用未执行，请按新要求继续。",
                                     retryable=True,
+                                    mutation_committed=False,
                                 )
                         if name == "send_message":
                             self._send_message_attempted = True
@@ -675,6 +749,15 @@ class MainAgentBackend(AgentToolBackend):
                         provider_id=descriptor.provider_id,
                         tool_name=descriptor.provider_tool_name or descriptor.model_name,
                     )
+                if (
+                    name == "send_message"
+                    and not outcome.uncertain
+                    and isinstance(outcome.data, dict)
+                    and outcome.data.get("executed") is False
+                    and not outcome.data.get("uncertain")
+                    and outcome.data.get("status") not in {"unknown", "uncertain"}
+                ):
+                    self._send_message_attempted = send_attempted_before
                 mutation_committed = self._is_mutating_call(call) and resolve_mutation_commit(
                     outcome,
                     effective_descriptor,
@@ -730,37 +813,23 @@ class MainAgentBackend(AgentToolBackend):
                             and part["delivered_text"].strip()
                         )
                 tooling = config.tooling
-                mcp = config.mcp
-                is_mcp = effective_descriptor.trust_source is CapabilityTrustSource.MCP
-                result_tokens = (
-                    mcp.result_token_budget
-                    if is_mcp and mcp is not None and mcp.result_token_budget is not None
-                    else (tooling.result_token_budget if tooling is not None else None)
-                )
+                result_tokens = tooling.result_token_budget if tooling is not None else None
                 result_budget = (
                     result_tokens * 4
                     if result_tokens is not None
                     else config.agent.tool_result_max_characters
                 )
-                item_limit = (
-                    mcp.result_item_limit
-                    if is_mcp and mcp is not None and mcp.result_item_limit is not None
-                    else (tooling.result_item_limit if tooling is not None else None)
-                )
+                item_limit = tooling.result_item_limit if tooling is not None else None
                 artifact_store = (
                     self._service._tool_artifacts
                     if outcome.images or (tooling is not None and tooling.result_artifact_enabled)
                     else None
                 )
                 retention_seconds = (
-                    mcp.artifact_retention_seconds
-                    if is_mcp and mcp is not None
-                    else (
-                        tooling.result_artifact_retention_seconds if tooling is not None else None
-                    )
+                    tooling.result_artifact_retention_seconds if tooling is not None else None
                 )
-                from qq_ai_bot.mcp.artifact_access import access_from_runtime
                 from qq_ai_bot.runtime.work_activation import current_work_control
+                from qq_ai_bot.tool_results.access import access_from_runtime
 
                 active = current_work_control.get()
 
@@ -785,7 +854,7 @@ class MainAgentBackend(AgentToolBackend):
                     outcome.ok,
                 )
                 if self._service._tool_invocations is not None:
-                    await self._service._record_mcp_invocation(
+                    await self._service._record_tool_invocation(
                         runtime=execution_runtime,
                         provider_id=descriptor.provider_id,
                         tool_name=descriptor.provider_tool_name or descriptor.model_name,
@@ -941,6 +1010,37 @@ class MainAgentBackend(AgentToolBackend):
                     "这段最终正文是内部结果，尚未发送。需要参与当前群讨论时调用 send_message；"
                     "决定沉默则返回 NO_REPLY。已经成功的操作不要重复。"
                 )
+        control = runtime.work_control
+        source = (
+            (control.source if control is not None else runtime.invocation_source or {})
+            if runtime.origin is RuntimeTurnOrigin.SCHEDULED_AUTOMATION
+            else {}
+        )
+        if (
+            runtime.origin is RuntimeTurnOrigin.SCHEDULED_AUTOMATION
+            and source.get("owner") == "automation"
+            and source.get("principal_kind") == "person"
+            and source.get("delivery_target") in {"current_group", "self_private"}
+            and (control is None or control.lease.work_id is None)
+            and body.strip()
+            and not self._send_message_attempted
+            and not self.messages_sent
+        ):
+            if self._unsent_final_feedback_count:
+                raise UnsentFinalResponseError("scheduled notification was not sent")
+            self._unsent_final_feedback_count += 1
+            target_feedback = (
+                "原获准目标是创建者私聊：用 target.kind=person、subject_ref=current_speaker，"
+                "不能改发当前群。"
+                if source["delivery_target"] == "self_private"
+                else "按原获准的当前群目标发送。"
+            )
+            return (
+                "这次自动化明确要求通知，但上一段最终正文只是内部结果，尚未发送。"
+                + target_feedback
+                + "请调用 send_message；原工具结果和发送回执仍有效，"
+                "不重复已成功或结果未知的操作。不能交付时如实保留阻塞。"
+            )
         if self._capability_was_used and contains_internal_capability_payload(content):
             return (
                 "上一正文未发送：权限结果是内部执行资料。请根据实际结果继续，勿转发内部权限载荷。"

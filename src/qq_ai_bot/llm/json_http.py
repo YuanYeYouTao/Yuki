@@ -136,7 +136,7 @@ class JSONHTTPProvider(LLMProvider):
                     type(value) is int and value >= 0 for value in usage.values()
                 ):
                     if attempts is not None:
-                        attempts.reported_usage(usage.get("total_tokens"))
+                        attempts.reported_usage(usage.get("total_tokens"), usage=usage)
                     exc.diagnostics = {**exc.diagnostics, "usage": usage}
                 raise
         return response
@@ -184,10 +184,10 @@ class JSONHTTPProvider(LLMProvider):
         except LLMError as exc:
             usage = exc.diagnostics.get("usage")
             if counter is not None and isinstance(usage, dict):
-                counter.reported_usage(usage.get("total_tokens"))
+                counter.reported_usage(usage.get("total_tokens"), usage=usage)
             raise
         if counter is not None:
-            counter.reported_usage(parsed.total_tokens)
+            counter.reported_response(parsed)
         return replace(parsed, latency_seconds=time.perf_counter() - started)
 
     async def close(self) -> None:

@@ -36,11 +36,11 @@ async def validate_note(
         raise ValueError("no_active_work")
     from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
     from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
-    from qq_ai_bot.mcp.artifact_access import access_from_source
-    from qq_ai_bot.mcp.repository import ToolArtifactRepository
     from qq_ai_bot.persistence.models import ChatEventModel, ToolArtifactModel
     from qq_ai_bot.runtime.subagent_schema import children
     from qq_ai_bot.runtime.work_schema_v1 import effects, inputs
+    from qq_ai_bot.tool_results.access import access_from_source
+    from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
 
     identity = control.current["id"]
     source = json.loads(control.current["source_json"])
@@ -154,7 +154,7 @@ async def visible_context_note(control: WorkControl) -> dict[str, Any] | None:
 
     from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
     from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
-    from qq_ai_bot.mcp.artifact_access import access_from_source
+    from qq_ai_bot.tool_results.access import access_from_source
 
     source = json.loads(control.current["source_json"])
     try:

@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import select
 from tests.integration.test_automation_unified_delivery import sent, setup_run
 from tests.support.codemode_cases import BINARY, requires_worker
+from tests.support.parent_receipts import parent_receipts
 
 from qq_ai_bot.automation.models import RunStatus
 from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
@@ -52,9 +53,9 @@ async def test_scheduled_code_preserves_source_receipts_and_reentry(
                     ToolCall("outer", ToolFunction("execute_code", json.dumps({"code": code}))),
                 ),
             )
-        paired = [m for m in request.messages if m.tool_call_id == "outer"]
+        paired = parent_receipts(request, "outer")
         assert len(paired) == 1
-        result = json.loads(paired[0].content)
+        result = json.loads(paired[0])
         results.append(result)
         assert result["complete"]
         return "NO_REPLY"

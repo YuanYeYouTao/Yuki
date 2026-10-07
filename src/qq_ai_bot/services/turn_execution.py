@@ -41,7 +41,9 @@ from qq_ai_bot.llm.base import (
     LLMEmptyResponseError,
     LLMError,
     LLMIncompleteResponseError,
+    LLMInvalidResponseError,
     LLMMalformedFunctionCallError,
+    LLMNativeToolError,
     LLMTimeoutError,
     LLMUnavailableError,
 )
@@ -353,6 +355,14 @@ class TurnExecution:
                         suppress_delivery=True,
                         work_state="queued",
                     )
+            if pending_code:
+                session = self.runtime.work_control.session
+                # _resume_compositions paired every original parent and saved the
+                # old signed chain. Continue this activation on current public
+                # history, carrying only its unobserved portable round.
+                if await session.rebase_business(TurnTranscript(self.initial_messages)):
+                    assert session.transcript is not None
+                    self.state.transcript = session.transcript
             self.state.repeated_batch_count = int(
                 self.runtime.work_control.session.progress.get("repeats", 0)
             )
@@ -675,10 +685,12 @@ class TurnExecution:
             native_definitions = self.runner._merge_native_tools(
                 self.state.continuation_native_tools, native_definitions
             )
+        prepared_request: _PreparedRequest | None = None
         try:
             candidate = await self.prepare_request(request_index, native_definitions, web_mode)
             if isinstance(candidate, (End, LoopSignal)):
                 return candidate
+            prepared_request = candidate
             execute = (
                 partial(
                     self.runner._models.execute,
@@ -746,13 +758,36 @@ class TurnExecution:
                 self.tools, tool_calls=self.state.calls_used, model_requests=request_index
             )
             raise exc.cause from exc
-        except (LLMTimeoutError, LLMUnavailableError):
+        except (LLMTimeoutError, LLMUnavailableError) as exc:
             self.runner._record_failure_usage(
                 self.tools, tool_calls=self.state.calls_used, model_requests=request_index + 1
             )
+            physical_count = exc.diagnostics.get("physical_request_count")
+            if (
+                prepared_request is not None
+                and prepared_request.request.native_tools
+                and type(physical_count) is int
+                and physical_count > 0
+            ):
+                raise LLMNativeToolError(
+                    "provider-native request transport outcome is unknown",
+                    diagnostics=exc.diagnostics,
+                ) from exc
             raise
         except (LLMEmptyResponseError, LLMMalformedFunctionCallError) as exc:
             malformed = isinstance(exc, LLMMalformedFunctionCallError)
+            if (
+                not malformed
+                and prepared_request is not None
+                and prepared_request.request.native_tools
+            ):
+                self.runner._record_failure_usage(
+                    self.tools, tool_calls=self.state.calls_used, model_requests=request_index + 1
+                )
+                raise LLMNativeToolError(
+                    "provider-native request returned no resumable output",
+                    diagnostics=exc.diagnostics,
+                ) from exc
             if malformed:
                 # This typed provider failure confirms a response with no usable
                 # calls or native effects; prior receipts stay authoritative.
@@ -859,9 +894,115 @@ class TurnExecution:
                 self.tools, tool_calls=self.state.calls_used, model_requests=request_index + 1
             )
             raise
-        return await self.observe_response(
+        response = await self.observe_response(
             request_index, response, candidate.request.native_tools, compacting=candidate.compacting
         )
+        return (
+            await self.guard_native_response(
+                request_index, response, candidate.request.native_tools
+            )
+            or response
+        )
+
+    async def guard_native_response(
+        self,
+        request_index: int,
+        response: ChatResponse,
+        native_definitions: tuple[NativeToolDefinition, ...],
+    ) -> End | None:
+        """A paid native response grants no generic empty/truncation replay."""
+        native_empty = (
+            (response.native_tool_events or native_definitions)
+            and not response.content.strip()
+            and not response.tool_calls
+            and not self.state.provider_pause_replay
+        )
+        if (
+            native_empty
+            and response.status is ModelResponseStatus.COMPLETED
+            and response.incomplete_reason != "duplicate_tool_call_id"
+            and (
+                self.state.control is None
+                or self.state.control.current is None
+                or self.state.control.ending == "completed"
+            )
+            and (
+                not response.native_tool_events
+                or (
+                    self.state.control is not None
+                    and self.state.control.current is not None
+                    and self.state.control.ending == "completed"
+                )
+            )
+        ):
+            # Preserve the ordinary empty-final boundary after a real send.
+            # A progress report cannot complete an accepted Work, and a
+            # truncated/blocked response cannot borrow this closing rule.
+            delivered = bool(
+                self.tools is not None
+                and callable(getattr(self.tools, "has_visible_effects", None))
+                and self.tools.has_visible_effects()
+            )
+            try:
+                if (
+                    delivered
+                    and self.state.control is not None
+                    and self.state.control.current is not None
+                    and self.state.control.source.get("delivery_contract") == "return_to_caller"
+                ):
+                    delivered = await self.revalidate_caller_completion()
+                elif not delivered:
+                    delivered = await self.caller_has_confirmed_delivery()
+                if (
+                    delivered
+                    and self.state.control is not None
+                    and self.state.control.session is not None
+                ):
+                    await self.state.control.session.save("paired")
+            except Exception as exc:
+                self.runner._record_failure_usage(
+                    self.tools, tool_calls=self.state.calls_used, model_requests=request_index + 1
+                )
+                raise LLMNativeToolError(
+                    "provider-native closing checkpoint could not be confirmed",
+                    diagnostics={"checkpoint_saved": False},
+                ) from exc
+            if delivered:
+                return End(
+                    AgentRunResult(
+                        text="",
+                        tool_calls_used=self.state.calls_used,
+                        model_requests=request_index + 1,
+                        web_was_used=self.state.web_was_used,
+                        native_tool_events=tuple(self.state.native_events),
+                        citations=tuple(self.state.citations),
+                        response_status=response.status,
+                    )
+                )
+        if response.incomplete_reason == "duplicate_tool_call_id" or native_empty:
+            # These are paid responses with retained protocol evidence, not
+            # confirmed effect-free empty generations. Only a supported
+            # pause may automatically continue a server tool. A generic
+            # empty/truncation retry could repeat already-dispatched work.
+            self.runner._record_failure_usage(
+                self.tools, tool_calls=self.state.calls_used, model_requests=request_index + 1
+            )
+            failure = (
+                LLMInvalidResponseError("provider returned duplicate local tool call IDs")
+                if response.incomplete_reason == "duplicate_tool_call_id"
+                else LLMNativeToolError("provider-native result has no final response")
+            )
+            if self.state.control is not None and self.state.control.session is not None:
+                try:
+                    await self.state.control.session.save("paired")
+                except Exception as exc:
+                    # A failure to publish the received server-tool state
+                    # cannot grant a database retry that repeats its HTTP
+                    # dispatch. The paid request budget is already durable.
+                    failure.diagnostics["checkpoint_saved"] = False
+                    raise failure from exc
+            raise failure
+        return None
 
     async def prepare_request(
         self,

@@ -18,6 +18,8 @@ from qq_ai_bot.persistence.schema_guard import require_canonical_schema
     [
         ("3d1d983828207049cb5e0806ad01b5008c841591", "0092", False),
         ("de9d0e3ae1d682ec6411df4d628db4ba061a5fd8", "0095", True),
+        ("0f24a3b590d103eb547483161fb5873d5a78d032", "0096", True),
+        ("25cd6083015924bf80405ca7c346f84a995f6ebb", "0096", True),
     ],
 )
 async def test_actual_branch_producer_upgrade_preserves_work_receipts_and_budgets(
@@ -59,13 +61,15 @@ async def test_actual_branch_producer_upgrade_preserves_work_receipts_and_budget
     await require_canonical_schema(url)
     assert facts(path, columns)[1] == before
     with sqlite3.connect(path) as db:
-        assert db.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0096"
+        assert db.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0098"
         for name in (*migration.INDEXES, *(s[0] for s in migration.LEGACY_MAIN_INDEXES)):
             assert db.execute("SELECT 1 FROM sqlite_master WHERE name=?", (name,)).fetchone()
     # Re-running standard upgrade is idempotent, without manual stamp/DB replacement.
     await asyncio.to_thread(command.upgrade, config, "head")
     assert facts(path, columns)[1] == before
-    if not upstream_indexes:
+    # The actual experiment seed uses versioned Invocations even though its
+    # main-owned indexes already exist. Preserve its published downgrade gate.
+    if not upstream_indexes or sha == "0f24a3b590d103eb547483161fb5873d5a78d032":
         with pytest.raises(RuntimeError, match="versioned invocation facts exist"):
             await asyncio.to_thread(command.downgrade, config, "0095")
         assert facts(path, columns)[1] == before

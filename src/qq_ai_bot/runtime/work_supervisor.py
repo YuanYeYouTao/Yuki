@@ -17,6 +17,7 @@ from qq_ai_bot.runtime.activation_outcome import (
     SegmentBudgetReached,
     WorkNoProgress,
     classify_failure,
+    failure_status_text,
 )
 from qq_ai_bot.runtime.work_budget import WorkBudgetExceeded
 from qq_ai_bot.runtime.work_recovery_schema import deliveries, recovery
@@ -199,7 +200,7 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
             descriptions = {
                 ExitReason.BUDGET: "这项工作的总执行额度已用完，已暂停并保留结果。",
                 ExitReason.CAPACITY: _capacity_pause_text(failure.code),
-                ExitReason.NO_PROGRESS: "连续执行没有取得进展，已暂停并保留已有结果。",
+                ExitReason.NO_PROGRESS: failure_status_text(failure),
             }
             if failure.diagnostics.get("category") == "work_conflict":
                 if failure.code == "work_journal_source_changed":

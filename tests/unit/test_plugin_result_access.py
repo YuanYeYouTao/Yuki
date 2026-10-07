@@ -16,14 +16,14 @@ from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
 from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.mcp.artifact_access import ArtifactAccess
-from qq_ai_bot.mcp.repository import ToolArtifactRepository
 from qq_ai_bot.persistence.models import ChatEventModel, ToolArtifactModel
 from qq_ai_bot.runtime.effect_outcomes import ResultCapture, current_result_capture
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.trigger import ExternalEventTurnTrigger
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.social.db_models import SocialOperationModel
+from qq_ai_bot.tool_results.access import ArtifactAccess
+from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
 
 
 @pytest.mark.parametrize(

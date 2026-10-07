@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import marshal
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from types import CodeType
 from typing import Protocol, cast
 
 from pydantic import BaseModel, ValidationError
@@ -98,6 +101,43 @@ class PluginCapabilityAdapter:
         item = self._registry.resolve_model_name(model_name)
         return item is not None and item.kind is ExtensionKind.TOOL
 
+    def contract_fingerprint(self, model_name: str) -> str | None:
+        """Trusted registration contract, stable across an unchanged restart."""
+        item = self._registry.resolve_model_name(model_name)
+        if item is None or item.kind is not ExtensionKind.TOOL:
+            return None
+        registration = cast(ToolRegistration, item.registration)
+        handler = getattr(registration.handler, "__func__", registration.handler)
+        code = getattr(handler, "__code__", None)
+
+        def normalized(value: CodeType) -> CodeType:
+            return value.replace(
+                co_filename="",
+                co_firstlineno=0,
+                co_consts=tuple(
+                    normalized(v) if isinstance(v, CodeType) else v for v in value.co_consts
+                ),
+            )
+
+        metadata = registration.metadata.model_dump(mode="json")
+        metadata["allowed_origins"] = sorted(metadata["allowed_origins"])
+        encoded = json.dumps(
+            {
+                "plugin_id": item.plugin_id,
+                "approval_revision": item.approval_revision,
+                "metadata": metadata,
+                "input": registration.input_model.model_json_schema(),
+                "output": registration.output_model.model_json_schema(),
+                "handler": hashlib.sha256(marshal.dumps(normalized(code))).hexdigest()
+                if isinstance(code, CodeType)
+                else str(type(handler)),
+            },
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(encoded.encode()).hexdigest()
+
     def is_mutating(self, model_name: str) -> bool:
         item = self._registry.resolve_model_name(model_name)
         if item is None or item.kind is not ExtensionKind.TOOL:
@@ -119,11 +159,16 @@ class PluginCapabilityAdapter:
         runtime: ToolRuntime,
         *,
         web_was_used: bool,
+        expected_contract: str | None = None,
     ) -> str:
         item = self._registry.resolve_model_name(name)
         if item is None or item.kind is not ExtensionKind.TOOL:
             return _error("unknown_plugin_tool", "插件工具不存在")
         registration = cast(ToolRegistration, item.registration)
+        if expected_contract is not None and self.contract_fingerprint(name) != expected_contract:
+            return _error(
+                "plugin_tool_contract_changed", "插件执行合同已变更；旧声明不能执行，需重启运行时。"
+            )
         if not await self._available(item, registration, runtime, web_was_used):
             return _error("plugin_tool_denied", "当前真实事件不能调用该插件工具")
         try:
@@ -155,6 +200,14 @@ class PluginCapabilityAdapter:
                             item, registration, runtime, web_was_used
                         ):
                             return _error("plugin_tool_denied", "当前真实事件不能调用该插件工具")
+                        if (
+                            expected_contract is not None
+                            and self.contract_fingerprint(name) != expected_contract
+                        ):
+                            return _error(
+                                "plugin_tool_contract_changed",
+                                "等待期间插件合同已变更；调用未派发。",
+                            )
                         dispatched = True
                         raw_result = await registration.handler(arguments)
                         result = _validated_result(raw_result, registration.output_model)
@@ -244,10 +297,7 @@ class PluginCapabilityAdapter:
             or installation is None
             or not await self._available(item, registration, runtime, web_was_used)
             or PluginPermission.TOOL_REGISTER.value not in installation.approved_permissions
-            or not {
-                PluginPermission.MEDIA_ARTIFACT_CREATE.value,
-                PluginPermission.MCP_CALL.value,
-            }.intersection(installation.approved_permissions)
+            or PluginPermission.MEDIA_ARTIFACT_CREATE.value not in installation.approved_permissions
             or installation.manifest_hash != context._services.approval_revision
             or frozenset(installation.approved_permissions)
             != frozenset(permission.value for permission in context._approved_permissions)

@@ -34,7 +34,6 @@ class CommandName(StrEnum):
     EMOJI = "emoji"
     VOICE = "voice"
     MODEL = "model"
-    MCP = "mcp"
 
 
 @dataclass(frozen=True, slots=True)

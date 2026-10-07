@@ -14,6 +14,7 @@ from qq_ai_bot.conversation.observations import (
     ObservationSummaryError,
 )
 from qq_ai_bot.conversation.projections import (
+    SUMMARY_RENDERER_VERSION,
     ProjectionPublication,
     ProjectionSnapshot,
     PromptProjectionRepository,
@@ -68,6 +69,8 @@ class PreparedHistory:
             read_scope=self.read_scope,
             selected_summary_text=self.context.rollup_text,
             selected_summary_coverage=self.context.prompt_effective_coverage,
+            selected_summary_kind=self.context.metrics.rollup_mode,
+            selected_summary_renderer=SUMMARY_RENDERER_VERSION,
             current_snapshot=current_snapshot,
             snapshot_event_id=self.context.current_event_id,
             snapshot_fragment_index=(
@@ -161,6 +164,13 @@ async def prepare_history(
         reason = invalidated_reason or "bootstrap"
     elif previous.contract_revision != contract_revision:
         reason = "contract_changed"
+    elif previous.selected_summary_text and (
+        previous.selected_summary_kind is None
+        or previous.selected_summary_renderer != SUMMARY_RENDERER_VERSION
+    ):
+        # Legacy text did not record its renderer/kind. Rebuild from currently
+        # authorized source instead of guessing a label for the old body.
+        reason = "rollup"
     elif previous.context_key != context_key:
         reason = "read_scope_changed"
     else:
@@ -291,6 +301,7 @@ async def prepare_history(
         selected_context = replace(
             context,
             rollup_text=previous.selected_summary_text,
+            metrics=replace(context.metrics, rollup_mode=previous.selected_summary_kind),
             prompt_effective_coverage=previous.selected_summary_coverage,
             history_fragments=additions,
             history_event_fragments=individual,

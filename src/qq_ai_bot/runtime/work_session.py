@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -12,7 +13,7 @@ from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select, true
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.capabilities.invocation import (
@@ -32,6 +33,7 @@ from qq_ai_bot.domain.messages import (
 )
 from qq_ai_bot.execution_trace.phases import model_detail
 from qq_ai_bot.model_runtime.capacity import estimate_request_tokens, estimate_text_tokens
+from qq_ai_bot.runtime.activation_outcome import classify_failure
 from qq_ai_bot.runtime.work_journal import (
     JournalUnavailable,
     WorkJournal,
@@ -378,39 +380,7 @@ class WorkSession:
                 # context, including failed/unexecuted receipts. Pairing is not
                 # evidence that the model has observed the result. Never copy
                 # the creation-time chat or opaque provider continuation.
-                unobserved_round = self._unobserved_tool_round()
-                previous_chain = self.transcript.chain_id
-                # Preserve only Host-selected pixels still needed by the Work.
-                # A legal business chain does not replay old calls, opaque state,
-                # incoming images or the retired conversation text. Source/byte
-                # admission is checked again on the actual next dispatch.
-                selected_media = tuple(
-                    message
-                    for message in self.transcript.portable_entries()
-                    if isinstance(message, ChatMessage)
-                    and message.role == "user"
-                    and (message.content or "").startswith("[Host 工具媒体观察：call_id=")
-                    and message.images
-                    and all(
-                        image.source in {"history", "workspace", "tool"} for image in message.images
-                    )
-                )
-                self.transcript = initial
-                for message in selected_media:
-                    self.transcript.append(message)
-                self.compaction_anchor = TurnTranscript(initial.request().messages)
-                for message in unobserved_round:
-                    self.transcript.append(message)
-                self.uses_recovery_transcript = False
-                self.source_guard = None
-                self.progress.setdefault("chain_links", []).append(
-                    {"from": previous_chain, "to": initial.chain_id, "reason": "business_resume"}
-                )
-                # Protocol objects remain the evidence owner. Historical full
-                # outputs are no longer a second copy of current working data.
-                self.progress.pop("model_observations", None)
-                self.progress.pop("retained_tool_rounds", None)
-                self.progress.pop("compaction_request_tokens", None)
+                await self.rebase_business(initial, append_material=False)
         if (
             control.current is not None
             and not control.lease.work_id
@@ -441,6 +411,56 @@ class WorkSession:
                 )
             )
         return self.transcript
+
+    async def rebase_business(
+        self, initial: TurnTranscript, *, append_material: bool = True
+    ) -> bool:
+        """Retire only a fully paired protocol before the next business dispatch."""
+        control = self.control
+        if (
+            not self.uses_recovery_transcript
+            or control.lease.work_id
+            or self.recovered_delivery is not None
+            or self.pending_compositions
+            or self.progress.get("provider_pause_replay")
+            or self.progress.get("compaction_staging")
+        ):
+            return False
+        assert self.transcript is not None
+        unobserved_round = self._unobserved_tool_round()
+        previous_chain = self.transcript.chain_id
+        # Preserve only Host-selected pixels still needed by the Work.
+        # A legal business chain does not replay old calls, opaque state,
+        # incoming images or the retired conversation text. Source/byte
+        # admission is checked again on the actual next dispatch.
+        selected_media = tuple(
+            message
+            for message in self.transcript.portable_entries()
+            if isinstance(message, ChatMessage)
+            and message.role == "user"
+            and (message.content or "").startswith("[Host 工具媒体观察：call_id=")
+            and message.images
+            and all(image.source in {"history", "workspace", "tool"} for image in message.images)
+        )
+        self.transcript = initial
+        for message in selected_media:
+            self.transcript.append(message)
+        self.compaction_anchor = TurnTranscript(initial.request().messages)
+        for message in unobserved_round:
+            self.transcript.append(message)
+        self.uses_recovery_transcript = False
+        self.source_guard = None
+        self.progress.setdefault("chain_links", []).append(
+            {"from": previous_chain, "to": initial.chain_id, "reason": "business_resume"}
+        )
+        # Protocol objects remain the evidence owner. Historical full
+        # outputs are no longer a second copy of current working data.
+        self.progress.pop("model_observations", None)
+        self.progress.pop("retained_tool_rounds", None)
+        self.progress.pop("compaction_request_tokens", None)
+        if append_material and control.current is not None:
+            await self._append_business_material()
+        return True
 
     def _unobserved_tool_round(self) -> tuple[ChatMessage, ...]:
         """Portable last response/results, derived from the original journal."""
@@ -1558,6 +1578,26 @@ class WorkSession:
                         },
                     )
                     break
+                except OperationalError as exc:
+                    if classify_failure(exc, "journal").code != "sqlite_busy":
+                        raise
+                    cleanup_failed = any(
+                        note.startswith(("rollback_failed:", "invalidation_failed:"))
+                        for error in (exc, exc.orig)
+                        for note in getattr(error, "__notes__", ())
+                    )
+                    if not attempt and not cleanup_failed:
+                        # The failed writer has rolled back and closed. Rebuild
+                        # this same publication once; the new journal transaction
+                        # rechecks lease, owner and source before publishing.
+                        await asyncio.sleep(0.05)
+                        continue
+                    if phase in {"response", "paired"} or cleanup_failed:
+                        # A paid response cannot be repurchased merely because
+                        # publishing it failed. The prior checkpoint and budgets
+                        # remain authoritative; the new response is not durable.
+                        raise JournalUnavailable("work_journal_unavailable") from exc
+                    raise
                 except WorkConflict as exc:
                     if (
                         exc.code != "work_journal_source_changed"
@@ -1752,6 +1792,7 @@ class WorkSession:
             ResultCapture,
             current_result_capture,
             execution_evidence,
+            execution_finished,
         )
 
         capture = ResultCapture(control.current["id"], key)
@@ -1860,8 +1901,7 @@ class WorkSession:
             and call.function.name
             in {"get_code_run", "terminal_read", "cancel_code_run", "terminal_control"}
             and isinstance(evidence.get("run_id"), str)
-            and not evidence["pending"]
-            and not evidence["uncertain"]
+            and execution_finished(evidence)
         ):
             await control.repository.resolve_run_effects(
                 control.lease,

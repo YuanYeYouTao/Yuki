@@ -983,7 +983,7 @@ class AgentRunner:
 
         if any(call.function.name == TOOL_LOOKUP_NAME for call in calls):
             await save_response()
-            if len(calls) != 1:
+            if len(calls) > 10 or any(call.function.name != TOOL_LOOKUP_NAME for call in calls):
                 result = json.dumps({"ok": False, "error": "tool_lookup_requires_own_batch"})
             elif calls[0].function.name not in declared_names:
                 result = json.dumps({"ok": False, "error": "tool_not_declared"})
@@ -993,11 +993,21 @@ class AgentRunner:
                     # Never substitute the main catalog for a worker scope.
                     if control is None or control.lease.work_id is None:
                         api = self.main_contract.script_api
-                result = (
-                    lookup_tools(api, calls[0].function.arguments, declared_names=declared_names)
-                    if api is not None
-                    else json.dumps({"ok": False, "error": "tool_catalog_unavailable"})
-                )
+                if api is not None:
+                    return CoordinatedToolResult(
+                        tuple(
+                            (
+                                call,
+                                lookup_tools(
+                                    api, call.function.arguments, declared_names=declared_names
+                                ),
+                                False,
+                            )
+                            for call in calls
+                        ),
+                        0,
+                    )
+                result = json.dumps({"ok": False, "error": "tool_catalog_unavailable"})
             # Frozen metadata creates no business effect or execution charge;
             # its paired result still persists in the ordinary Work journal.
             return CoordinatedToolResult(tuple((call, result, False) for call in calls), 0)

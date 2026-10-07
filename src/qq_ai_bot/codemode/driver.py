@@ -49,7 +49,7 @@ from qq_ai_bot.codemode.contract import (
 from qq_ai_bot.codemode.driver_types import EngineAnswer, EngineCall, EngineOutcome
 from qq_ai_bot.codemode.engine_monty import CodeEngineUnavailable
 from qq_ai_bot.codemode.limits import CodeModeLimits
-from qq_ai_bot.codemode.snapshot_binding import load_boundary, persist_boundary
+from qq_ai_bot.codemode.snapshot_binding import load_boundary, load_output, persist_boundary
 from qq_ai_bot.domain.messages import ToolCall, ToolFunction
 from qq_ai_bot.execution_trace.recorder import record_trace, trace_span
 from qq_ai_bot.runtime.protocol_store import CodeSnapshotBinding
@@ -117,6 +117,7 @@ class _Child:
     dispatched: bool = False
     receipt: str | None = None
     view: ToolReceiptView | None = None
+    stop: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -322,8 +323,38 @@ class CodeModeDriver:
             dump, _expected, counters = await load_boundary(
                 control.session.journal.objects, binding, composition
             )
+            stdout, truncated = await load_output(
+                control.session.journal.objects,
+                binding,
+                composition,
+                max_bytes=self.host.limits.max_output_bytes,
+            )
+            self._stdout, self._stdout_truncated = [stdout], truncated
         except ValueError as exc:
             return await self._settle(state, stop=_Stop(STOP_SNAPSHOT, str(exc)))
+        try:
+            # A committed stop is an original result, not an activation-local
+            # flag. Restore it before answering even one VM future.
+            for child in sorted(state.children.values(), key=lambda item: item.ordinal):
+                if child.receipt is None:
+                    continue
+                if child.stop is not None:
+                    control.ending = child.stop.get("ending")
+                    control.handoff_work_id = child.stop.get("handoff_work_id")
+                    raise _Stop(child.stop["reason"], child.operation_id, child.stop["payload"])
+                if self._terminal_control(child):
+                    # Compatible read of old accepted lifecycle receipts.
+                    ending = _loads(child.receipt).get("ending_proposed")
+                    if isinstance(ending, str):
+                        control.ending = ending
+                    raise _Stop(
+                        STOP_HOST_CONTROL, child.operation_id, {"control": _loads(child.receipt)}
+                    )
+                if child.klass.kind == "memory_write" and child.dispatched:
+                    raise _Stop(STOP_MEMORY, child.operation_id)
+                self._closing(child)
+        except _Stop as stop:
+            return await self._settle(state, stop=stop)
         return await self._drive(state, restore=(dump, composition["boundary_call"], counters))
 
     # -- main loop -----------------------------------------------------------------
@@ -461,6 +492,8 @@ class CodeModeDriver:
                 call,
                 run.counters,
                 max_bytes=self.host.limits.max_snapshot_bytes,
+                stdout="".join(self._stdout),
+                stdout_truncated=self._stdout_truncated,
             )
         except ValueError as exc:
             # Capacity: stop before the next dispatch, keeping prior effects.
@@ -683,11 +716,27 @@ class CodeModeDriver:
         child.dispatched = True
         ending_before, handoff_before = control.ending, control.handoff_work_id
         result, executed = await self.host.execute_control(call, child.operation_id)
+        terminal = (
+            control.ending != ending_before
+            or control.handoff_work_id != handoff_before
+            or (self._terminal_control(child, receipt=result))
+        )
+        stop = (
+            {
+                "reason": STOP_HOST_CONTROL,
+                "payload": {"control": _loads(result)},
+                "ending": control.ending,
+                "handoff_work_id": control.handoff_work_id,
+            }
+            if terminal
+            else None
+        )
         await control.repository.record_effect(
             child.operation_id,
             "accepted",
             {
                 "result": result,
+                **({"code_stop": stop} if stop is not None else {}),
                 "outcome": {
                     "tool": child.tool,
                     "side_effecting": False,
@@ -702,11 +751,7 @@ class CodeModeDriver:
         child.state = "settled"
         child.view = receipt_view(result, operation_id=child.operation_id, executed=executed)
         self.usage.control_calls += 1
-        if (
-            control.ending != ending_before
-            or control.handoff_work_id != handoff_before
-            or self._terminal_control(child)
-        ):
+        if terminal:
             raise _Stop(STOP_HOST_CONTROL, child.operation_id, {"control": _loads(result)})
         self._closing(child)
 
@@ -740,11 +785,20 @@ class CodeModeDriver:
             raise _Stop(STOP_BUDGET, child.operation_id)
 
     def _query_control(self, child: _Child) -> bool:
-        """task_control get/list keep the original read scope and paging."""
+        """Reads and waiting use WorkControl's ownership/condition checks.
+
+        Pending owned execution is precisely why wait exists. It is not a new
+        business dispatch; unknown effects still fence complete and mutations.
+        """
         if child.tool != "task_control":
             return False
         try:
-            return json.loads(child.arguments).get("action") in {"get", "list"}
+            return json.loads(child.arguments).get("action") in {
+                "get",
+                "list",
+                "wait",
+                "wait_status",
+            }
         except (ValueError, AttributeError):
             return False
 
@@ -762,14 +816,16 @@ class CodeModeDriver:
         metadata = json.loads(raw).get("invocation", {})
         return bool(metadata.get("budget_admitted"))
 
-    def _terminal_control(self, child: _Child) -> bool:
+    def _terminal_control(self, child: _Child, *, receipt: str | None = None) -> bool:
         if child.tool != "task_control":
             return False
         try:
             action = json.loads(child.arguments).get("action")
         except (ValueError, AttributeError):
             return False
-        return action in TERMINAL_CONTROL_ACTIONS and _ok(child.receipt or "")
+        return action in TERMINAL_CONTROL_ACTIONS and _ok(
+            receipt if receipt is not None else child.receipt or ""
+        )
 
     # -- settlement ----------------------------------------------------------------
 
@@ -826,11 +882,7 @@ class CodeModeDriver:
                 error=f"code_{failure.category}" if failure else "code_failed",
                 detail=(failure.message if failure else "")[:2000],
             )
-        result = json.dumps(body, ensure_ascii=False, default=str)
-        if len(result) > self.host.result_limit:
-            body["stdout"] = body["stdout"][-1000:]
-            body["stdout_truncated"] = True
-            result = json.dumps(body, ensure_ascii=False, default=str)
+        result = await self._bounded_result(body, state.parent_key)
         images = tuple(
             dict.fromkeys(
                 image
@@ -860,6 +912,70 @@ class CodeModeDriver:
             },
             media_source=state.media_source,
         )
+        return result
+
+    async def _bounded_result(self, body: dict[str, Any], parent_key: str) -> str:
+        """Budget the final JSON, retaining control facts and original leaf refs."""
+
+        def encode() -> str:
+            return json.dumps(body, ensure_ascii=False, default=str, separators=(",", ":"))
+
+        result = encode()
+        if len(result) <= self.host.result_limit:
+            return result
+        if self.host.archive is not None:
+            reference = await self.host.archive(result)
+            if reference is not None:
+                body["summary_ref"] = reference
+        operations = body["operations"]
+        if operations:
+            body.update(
+                operations_count=len(operations),
+                operations_truncated=True,
+                operations_ref={
+                    "parent_key_sha256": hashlib.sha256(parent_key.encode()).hexdigest(),
+                    "source": "original composition children",
+                },
+            )
+            body["operations"] = []
+        if "result" in body and len(encode()) > self.host.result_limit:
+            body["result_preview"] = json.dumps(body.pop("result"), ensure_ascii=False, default=str)
+            body.update(complete=False, truncated=True)
+        # Shrink text only when it actually exists and is removed. JSON escaping
+        # is included in every measurement; an empty stdout is not truncated.
+        for key in ("result_preview", "stdout", "detail"):
+            text = body.get(key)
+            if not isinstance(text, str) or len(encode()) <= self.host.result_limit:
+                continue
+            low, high = 0, len(text)
+            while low < high:
+                middle = (low + high + 1) // 2
+                body[key] = text[:middle]
+                if len(encode()) <= self.host.result_limit:
+                    low = middle
+                else:
+                    high = middle - 1
+            body[key] = text[:low]
+            if key == "stdout" and low < len(text):
+                body["stdout_truncated"] = True
+        # IDs in the paired original remain intact; oversized display facts use
+        # a digest that can be checked against that original, never a new ID.
+        for key in ("uncertain_operation_id", "snapshot_reason", "control"):
+            if len(encode()) <= self.host.result_limit:
+                break
+            if key in body:
+                value = json.dumps(body.pop(key), ensure_ascii=False, default=str)
+                body[key + "_ref_sha256"] = hashlib.sha256(value.encode()).hexdigest()
+        # Fill the remaining budget with a prefix of the operation summaries.
+        if operations:
+            for operation in operations:
+                body["operations"].append(operation)
+                if len(encode()) > self.host.result_limit:
+                    body["operations"].pop()
+                    break
+        result = encode()
+        if len(result) > self.host.result_limit:
+            raise WorkConflict("code_result_capacity")
         return result
 
     async def _result_view(self, output: Any) -> dict[str, Any]:
@@ -964,8 +1080,11 @@ class CodeModeDriver:
                 child.view = receipt_view(
                     child.receipt,
                     operation_id=child.operation_id,
-                    executed=bool(metadata.get("budget_admitted")),
+                    executed=bool(
+                        row.get("outcome", {}).get("executed", metadata.get("dispatch_started"))
+                    ),
                 )
+                child.stop = row.get("code_stop")
             state.children[(child.feed_index, child.engine_call_id)] = child
             if child.klass.side_effecting and row["state"] == "accepted":
                 state.side_effect_done = True

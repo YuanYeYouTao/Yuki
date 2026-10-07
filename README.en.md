@@ -1,4 +1,4 @@
-<!-- release-baseline: version=3.9.0 schema=0096 -->
+<!-- release-baseline: version=3.9.0 schema=0098 -->
 
 [简体中文](README.md) · English
 
@@ -24,18 +24,29 @@
 
 Yuki is an open-source, self-hosted social AI agent exploring what a persistent digital life can be in real conversations. She currently runs in QQ private chats and groups, remembers people and shared experiences, maintains long-term relationships, and uses tools and a persistent workspace to carry work across messages. Her identity, memory, and relationships live in Yuki's own database and can survive a change of model, QQ account, or gateway.
 
-**The current release is 3.8.4.** In this release, the main agent sends visible messages explicitly through `send_message`, and optional group semantic observation, SELF initiative, and SELF automation are available. Yuki can choose to speak, split a reply, or remain silent. Autonomous participation is disabled by default, and long-term behavior in real QQ groups is still being evaluated. The workspace is deployed separately; there is no WebUI yet.
+**The current release is 3.8.4.** In this release, the main agent sends visible messages explicitly through `send_message`, and optional group semantic observation, SELF initiative, and SELF automation are available. Yuki can choose to speak, split a reply, or remain silent. Autonomous participation is disabled by default, and long-term behavior in real QQ groups is still being evaluated. The workspace is deployed separately; the official 3.8.4 bundle does not include the management WebUI.
 
 **The current development baseline is 3.9.0 and is not released.** See the [draft 3.9.0 release notes](docs/releases/v3.9.0.md) for every merged PR and the [draft upgrade guide](docs/upgrade-3.9.0.md) for preparation. The 3.8.4 Release above remains the official download.
 
-## What Yuki can do
+## Main changes in 3.9.0
+
+- **Management WebUI and a shared execution runtime:** The journal-style interface shows actual conversations, execution traces, tool receipts, model usage, and workspace files, and manages model connections and task routes. Chat, SELF, plugins, automation, and Work resumption share the main agent. WebUI is disabled by default.
+- **Recoverable long tasks:** Work retains its original goal, cumulative budget, protocol checkpoints, and delivery receipts. Context is condensed against actual request capacity, and research material is read on demand. Terminal waits, subtasks, and additional user requirements continue the original task; restarts do not repeat confirmed effects.
+- **Agent-directed retrieval:** The agent uses `search_memory` when past facts are needed instead of injecting them every turn. Current, quoted, historical, workspace, and authorized tool images enter the original main model's native multimodal input.
+- **Web access and model error feedback:** New installations enable model search by default while respecting explicit disablement and connection capabilities. An explicit Gemini tool-format rejection can be returned to the model for up to two corrections in the same execution chain when safe recovery conditions hold, without resetting budgets or blindly resending messages.
+- **Less database waiting before replies:** History reads, context preparation, and optional diagnostic writes are moved out of critical write transactions. Background maintenance uses indexes, bounded pages, and short transactions. Actual latency still depends on model responses, tool requests, and host resources.
+- **Legacy MCP removal:** Connections, tool discovery, management pages, SDK capabilities, and automation entry points are retired together. Shared tool results, media, and receipts remain. Plugin API is now **3.1**, the database head is **0098**, and old plugins require adaptation and renewed approval.
+
+These describe the current source. Real provider API behavior, natural-chat latency, and long-task outcomes require their respective acceptance evidence. Code Mode / Pi integration has not been merged.
+
+## Current source capabilities
 
 | Capability | How it is used |
 | --- | --- |
 | Conversation and long-term memory | Chat in groups or privately, look up past events, and explicitly ask Yuki to remember, correct, or delete facts |
 | Images, voice, and attachments | Send images, voice, video, or documents and ask follow-up questions in the same conversation without quoting the attachment |
 | QQ social actions | Look up members, use structured mentions, send group/private messages, and recall Yuki's own messages; the backend checks targets and permissions |
-| Search and extensions | Use configured online tools, MCP services, and plugins |
+| Search and plugins | Use configured online tools and approved plugins |
 | Persistent workspace | Save projects and files, run Python, Node.js, or Shell, install dependencies, and deliver results |
 | Background work and automation | Start work while continuing the conversation, check progress later, and run scheduled work within granted permissions |
 | Speech and stickers | Optional Genie-TTS voice output and sticker search, classification, and sending |
@@ -57,7 +68,7 @@ This is an **optional, separately deployed capability** requiring a Linux host, 
 
 ## Memory and continuity
 
-Long-term memory stores stable facts, preferences, and meaningful experiences. Routine extraction aggregates messages; explicit requests to remember, correct, or delete are handled immediately. Rollup condenses long conversation history, while raw history remains independently searchable.
+Long-term memory stores stable facts, preferences, and meaningful experiences. Routine extraction aggregates messages; explicit requests to remember, correct, or delete are handled immediately. The main agent decides when to call `search_memory` instead of automatically searching every turn or injecting all long-term facts. Retrieval respects the current actor's visible scope and work budget, and reports truncation or incomplete results. Rollup condenses long conversation history, while raw history remains independently searchable.
 
 `short_state` is a shared, bounded, expiring area for temporary cross-conversation notes. It is distinct from long-term memory and workspace files. Group and private chats are not automatically combined into one complete history.
 
@@ -65,12 +76,14 @@ Memory reads have a specific privacy boundary: a past shared-group relationship 
 
 ## Images, voice, files, and web access
 
-- **Images and video:** A model with image input can inspect current or quoted images and revisit cached attachments from the same conversation on a later turn. MP4/MOV video is sampled into frames by FFmpeg for the same main agent. Audio tracks are not analyzed, and sampling may miss moments.
+- **Images and video:** Current, quoted, and historical attachments, along with agent-selected workspace and authorized tool images, share the original main model's native image input. Historical reads check internal event IDs, conversation ownership, and cache expiry. A model without image input reports the material as unread; Yuki does not silently switch models or request a separate Qwen visual summary. MP4/MOV video is sampled into frames by FFmpeg for the same main agent. Audio tracks are not analyzed, and sampling may miss moments. Background sticker classification and explicit plugin vision capabilities can still use a separate vision connection.
 - **Incoming voice:** Private messages, group messages that meet the reply policy, and quoted voice can be transcribed with Qwen ASR and included in chat history, search, and Rollup. Qwen connectivity can be reused and is configured separately from Genie-TTS output. See [speech recognition](docs/speech/recognition.md).
-- **Files:** Bounded extraction supports text, code, CSV/JSON, PDF text, DOCX, and XLSX. Scanned PDFs do not receive OCR; spreadsheet formulas are not recalculated; reading does not execute macros or embedded code. An original attachment can be referenced again later.
-- **Web:** Configure provider-native search or external `web_search`. External search defaults to Tavily. Set `WEB_MODE=tavily` and `WEB_SEARCH_BACKEND=deepseek_anthropic` to use the [DeepSeek search bridge](docs/deepseek-search-bridge.md), with an optional Tavily key for failure fallback. `both` permits configured external search and supported native search; `disabled` disables web access. The adapter currently disables native search for the DeepSeek Main Agent; the bridge uses a separate protocol request.
+- **Files:** Bounded extraction supports text, code, CSV/JSON, PDF text, DOCX, and XLSX. Scanned PDFs do not receive OCR; spreadsheet formulas are not recalculated; reading does not execute macros or embedded code. Within the same conversation, later questions can read the original attachment's 24-hour temporary cache without quoting it.
+- **Web:** New installations without an explicit web switch default to `WEB_MODE=native`. Explicit `disabled` remains disabled, and existing connection search choices are preserved. Enabling web access does not grant every model search capability: native search requires a truthful capability declaration, Gemini can use an explicitly selected search bridge, and external `web_search` requires a configured backend. External search defaults to Tavily. Set `WEB_MODE=tavily` and `WEB_SEARCH_BACKEND=deepseek_anthropic` to use the [DeepSeek search bridge](docs/deepseek-search-bridge.md), with an optional Tavily key for failure fallback. The DeepSeek main agent currently does not declare native search. See the [provider contract](docs/architecture/model-providers.md) for protocol and configuration boundaries.
 
 Chat, plugin wakeups, automation, and task resumption use the same main agent with its complete tool declarations. The tool schema stays fixed within a deployment; permissions and budgets are checked at execution time. This reduces request-prefix variation but does not guarantee provider cache hits.
+
+In historical samples, three requests within one natural Gemini group-chat reply had an input-weighted cached-token ratio of **90.55%**. A manual DeepSeek Responses cumulative-chat experiment measured **95.11%** across nine requests, or **99.02%** for its eight warm continuations. Dates, scenarios, and measurement coverage differ; these are neither current production rates nor before/after latency comparisons. See the [3.9.0 cache measurements](docs/releases/v3.9.0.md#缓存与用量) for complete samples and multi-scenario results.
 
 ## Configuration and startup
 
@@ -99,6 +112,8 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 **The wizard configures only.** In an empty directory it downloads and verifies the deployment bundle; for an existing deployment it preserves Compose, plugins, and data, then backs up and writes configuration after confirmation. It does not stop services, migrate the database, start services, or switch gateways.
 
+Model connections are stored in `webui-config/model_profiles.toml`. If an older deployment only has `config/model_profiles.toml`, follow the [path migration guide](docs/operations/model-profile-path-migration.md) first. The wizard does not overwrite current WebUI connections; a missing selected file causes an explicit startup failure.
+
 After configuring a fresh deployment, run from its deployment directory:
 
 ```bash
@@ -114,7 +129,9 @@ The Bot image is `ghcr.io/yuanyeyoutao/yuki-qqbot:3.8.4`; the optional TTS Worke
 
 ## Upgrading and maintenance
 
-The current source uses Plugin API **3.0**. The bundled Alembic head determines the database target; the application version does not replace a schema check. The historical target for the 3.8.2 package was 0055. Older databases must follow the migration chain—do not skip migrations with `stamp`. Legacy plugin calls to `llm.generate` / `agent.run` now use the unified main entry point; plugins that relied on separate-generation behavior need adaptation.
+The 3.9.0 source uses Plugin API **3.1** and database head **0098**; the official 3.8.4 package has head **0072**. Follow the migrations bundled with the actual target image. An application version does not replace a schema check, and `stamp` must not skip migrations. Plugins must remove MCP dependencies, adapt to API 3.1, and receive renewed approval. Legacy `llm.generate` / `agent.run` calls now use the unified main entry point.
+
+Before deploying a 3.9.0 development commit, use the [draft upgrade guide](docs/upgrade-3.9.0.md) to check old MCP mounts, environment settings, and operator grants. Retired operator capabilities fail strict validation. After committing the new database head, an image-only rollback is insufficient; an old backup must not overwrite new messages or receipts.
 
 Before upgrading, make a consistent backup of the database, configuration, plugins, and files. For a persistent workspace, retain its home directory and execution receipts. Pause writes from Bot and related Manager components; you do not need to shut down all of Docker or the QQ gateway. Preserve any new messages, files, and receipts before rollback; see the [3.8.4 upgrade guide](docs/upgrade-3.8.4.md).
 
@@ -147,6 +164,7 @@ uv run pytest
 ```
 
 Use targeted checks during development; the release pipeline also verifies migrations, images, and source-free deployment.
+Routine regressions use fake providers and isolated databases. Paid Gemini and DeepSeek cache comparisons run separately, with cold rounds, warm rounds, and missing accounting reported explicitly; they are not ordinary tests or fixed cache-hit thresholds.
 
 | Document | Topic |
 | --- | --- |
@@ -155,8 +173,8 @@ Use targeted checks during development; the release pipeline also verifies migra
 | [Development contract](docs/architecture/development-contract.md) | Event IDs, boundaries, fixed tools, resumption, and transactions |
 | [Rollup](docs/architecture/conversation-rollup.md) | Long-conversation condensation |
 | [Memory](docs/architecture/memory-v2.md) | Extraction, retrieval, and permissions |
-| [Plugin API 3.0](docs/plugin-development/index.md) | Plugin development and capability boundaries |
-| [MCP](docs/mcp/architecture.md) | External tools |
+| [Plugin API 3.1](docs/plugin-development/index.md) | Plugin development and capability boundaries |
+| [Tool results](docs/architecture/tool-results.md) | Result budgets, media, and durable receipts |
 | [Speech output](docs/speech/operations.md) | Genie-TTS deployment and operations |
 | [Versioned releases](docs/operations/versioned-docker-release.md) | Images, bundles, and the release process |
 | [CHANGELOG](CHANGELOG.md) | Historical changes |

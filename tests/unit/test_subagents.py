@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sqlite3
 from itertools import pairwise
 
 import pytest
@@ -64,15 +65,14 @@ async def test_foreground_answer_and_finalization_keep_worker_alive(database, tm
 
 
 @pytest.mark.asyncio
-async def test_worker_busy_retry_keeps_journal_evidence_and_budget(database, tmp_path):
-    import sqlite3
-
+@pytest.mark.parametrize("code", [sqlite3.SQLITE_BUSY, sqlite3.SQLITE_BUSY_SNAPSHOT])
+async def test_worker_busy_retry_keeps_journal_evidence_and_budget(database, tmp_path, code):
     from sqlalchemy.exc import OperationalError
 
     from qq_ai_bot.runtime.work_control import WorkControl
     from qq_ai_bot.runtime.work_recovery_schema import recovery
 
-    repo, workers, parent_lease, _parent, identity = await stack(database, tmp_path)
+    repo, workers, parent_lease, parent, identity = await stack(database, tmp_path)
     lease = await workers.acquire(identity)
     evidence = {"execution_evidence": [{"run_id": "already-dispatched", "uncertain": True}]}
     await repo.checkpoint(lease, identity, evidence, models=2, tools=1)
@@ -81,11 +81,17 @@ async def test_worker_busy_retry_keeps_journal_evidence_and_budget(database, tmp
         assert await repo.valid(lease)
 
     control = WorkControl(repo, lease, "worker", {}, valid)
-    error = OperationalError("UPDATE", {}, sqlite3.OperationalError("database is locked"))
+    # This is an activation database failure, not publication of a returned
+    # paid response. Only a trusted BUSY code grants bounded original recovery.
+    original = sqlite3.OperationalError("database is locked")
+    original.sqlite_errorcode = code
+    error = OperationalError("UPDATE", {}, original)
     for count in range(1, 4):
         control.current = await repo.get(identity)
         control.settled = False
-        await control.recover_failure(error)
+        outcome = await control.recover_failure(error)
+        assert outcome.failure.code == "sqlite_busy" and outcome.failure.retryable
+        assert outcome.failure.diagnostics == {"sqlite_errorcode": code}
         row = await repo.get(identity)
         assert row["state"] == "queued"
         checkpoint = json.loads(row["checkpoint_json"])
@@ -101,11 +107,73 @@ async def test_worker_busy_retry_keeps_journal_evidence_and_budget(database, tmp
     control.settled = False
     await control.recover_failure(error)
     assert control.current["state"] == "suspended"
+    assert control.current["model_requests"] == 2 and control.current["tool_calls"] == 1
+    assert (
+        json.loads(control.current["checkpoint_json"])["execution_evidence"]
+        == evidence["execution_evidence"]
+    )
+    async with database.sessions() as session:
+        root_budget = (
+            (await session.execute(select(budgets).where(budgets.c.root_id == parent["id"])))
+            .mappings()
+            .one()
+        )
+    assert root_budget["models"] == 2 and root_budget["tools"] == 1
     from qq_ai_bot.runtime.activation_outcome import classify_failure
 
     assert not classify_failure(
         OperationalError("SELECT", {}, sqlite3.OperationalError("no such table: missing"))
     ).retryable
+    await repo.release(lease)
+    await repo.release(parent_lease)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "code,expected", [(None, "database_failure"), (sqlite3.SQLITE_LOCKED, "sqlite_locked")]
+)
+async def test_worker_text_lock_or_locked_suspends_without_budget_or_evidence_reset(
+    database, tmp_path, code, expected
+):
+    from sqlalchemy.exc import OperationalError
+
+    from qq_ai_bot.runtime.work_control import WorkControl
+    from qq_ai_bot.runtime.work_recovery_schema import recovery
+
+    repo, workers, parent_lease, parent, identity = await stack(database, tmp_path)
+    lease = await workers.acquire(identity)
+    evidence = {"execution_evidence": [{"run_id": "already-dispatched", "uncertain": True}]}
+    await repo.checkpoint(lease, identity, evidence, models=2, tools=1)
+
+    async def valid():
+        assert await repo.valid(lease)
+
+    control = WorkControl(repo, lease, "worker", {}, valid)
+    control.current = await repo.get(identity)
+    original = sqlite3.OperationalError("database is locked")
+    if code is not None:
+        original.sqlite_errorcode = code
+    outcome = await control.recover_failure(OperationalError("UPDATE", {}, original))
+    assert outcome.failure.code == expected and not outcome.failure.retryable
+    assert control.current["state"] == "suspended"
+    assert control.current["model_requests"] == 2 and control.current["tool_calls"] == 1
+    assert (
+        json.loads(control.current["checkpoint_json"])["execution_evidence"]
+        == evidence["execution_evidence"]
+    )
+    async with database.sessions() as session:
+        saved = (
+            (await session.execute(select(recovery).where(recovery.c.work_id == identity)))
+            .mappings()
+            .one()
+        )
+        root_budget = (
+            (await session.execute(select(budgets).where(budgets.c.root_id == parent["id"])))
+            .mappings()
+            .one()
+        )
+    assert saved["attempts"] == 1 and saved["not_before"] == 0
+    assert root_budget["models"] == 2 and root_budget["tools"] == 1
     await repo.release(lease)
     await repo.release(parent_lease)
 
@@ -444,7 +512,7 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
         # The test assembly does not configure the runner's native engine;
         # bind the same explicitly pinned settings as real worker entry tests.
         chat.runtime.runner.code_mode_settings = settings
-    from qq_ai_bot.mcp.repository import ToolArtifactRepository
+    from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
 
     chat._tool_artifacts = ToolArtifactRepository(
         database, tmp_path / "tool-results", retention_seconds=86400

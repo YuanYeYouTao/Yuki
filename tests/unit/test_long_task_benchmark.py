@@ -412,6 +412,7 @@ async def test_unpaid_long_task_assembly(
         )
 
     compaction_sources = []
+    primary_payloads = []
 
     def transport(request):
         payload = json.loads(request.content)
@@ -425,6 +426,7 @@ async def test_unpaid_long_task_assembly(
             return httpx.Response(
                 200, json=answer(ChatResponse(summary_json(source), 1), "chat_completions", 1)
             )
+        primary_payloads.append(payload)
         if loop == "new" and any(
             m["role"] == "user"
             and isinstance(m.get("content"), str)
@@ -477,6 +479,14 @@ async def test_unpaid_long_task_assembly(
                 receipts.extend(
                     row["result"] for row in wire_work_receipts(records) if row["call_id"] == "code"
                 )
+                # F9 may legally retire the signed protocol by business rebase
+                # before capacity compaction. The original result must appear in
+                # either the actual summary source or current portable evidence.
+                receipts.extend(
+                    row["result"]
+                    for row in wire_work_receipts(messages)
+                    if row["call_id"] == "code"
+                )
                 assert any(json.loads(receipt)["result"] == "OK" for receipt in receipts), [
                     list(record) for record in records
                 ]
@@ -525,13 +535,11 @@ async def test_unpaid_long_task_assembly(
     for wire in result["wire"]:
         assert 0 < wire["message_bytes"] < wire["request_bytes"]
         assert wire["tool_receipt_characters"] >= 0
-    if large_reasoning:
-        # The first main observation happens after compaction. Its receipt was
-        # present in the auxiliary public source, not a role=tool HTTP message;
-        # serialized message bytes still count that source and its paid usage.
-        assert all(wire["tool_receipt_characters"] == 0 for wire in result["wire"])
-    else:
-        assert any(wire["tool_receipt_characters"] > 0 for wire in result["wire"])
+    # Receipt accounting includes both protocol rows and F9 portable evidence.
+    # A compacted round is instead proven in its actual summary source above.
+    assert any(wire["tool_receipt_characters"] > 0 for wire in result["wire"]) or (
+        large_reasoning and compaction_sources
+    )
     if invalid_json:
         assert result["model_turns"][0]["tool_calls"][0]["arguments_valid_json"] is False
         assert "invalid" in result["wire"][1]["receipt_error_call_ids"]
@@ -551,7 +559,14 @@ async def test_unpaid_long_task_assembly(
 
         from qq_ai_bot.runtime.work_schema_v1 import effects
 
-        assert compaction_sources
+        if not compaction_sources:
+            # F9 business rebase can retire large old opaque after parent
+            # settlement, avoiding a now-unnecessary compaction purchase.
+            assert task == "resumed_work" and mode == "code" and loop == "new"
+            assert len(primary_payloads) == 2
+            assert "synthetic private reasoning" not in json.dumps(primary_payloads[-1])
+            portable = wire_work_receipts(primary_payloads[-1]["messages"])
+            assert sum(row["call_id"] == "code" for row in portable) == 1
         assert result["logical_models"] == result["physical_http"]
         assert len([w for w in result["wire"] if w["purpose"] == "main"]) == 2
         assert all(

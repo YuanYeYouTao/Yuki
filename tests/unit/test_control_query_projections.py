@@ -86,7 +86,6 @@ _READ_CAPS = (
     "control.memory.content.read",
     "control.automation.read",
     "control.plugin.read",
-    "control.mcp.read",
     "control.emoji.read",
     "control.speech.read",
 )

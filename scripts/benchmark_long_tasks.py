@@ -635,6 +635,7 @@ async def compare_case(
         errors = []
         error_call_ids = []
         observed = []
+        receipt_characters = 0
         for message in payload.get("messages", []):
             receipts = []
             if message.get("role") == "tool":
@@ -652,6 +653,9 @@ async def compare_case(
                 except (ValueError, TypeError):
                     pass
             for call_id, content in receipts:
+                # Count portable rebase evidence as well as protocol tool rows;
+                # result characters follow the original parent ID on either wire.
+                receipt_characters += len(content)
                 observed.append(
                     {"call_id": call_id, "sha256": hashlib.sha256(content.encode()).hexdigest()}
                 )
@@ -671,11 +675,7 @@ async def compare_case(
                 "message_bytes": len(
                     json.dumps(payload.get("messages", []), ensure_ascii=False).encode()
                 ),
-                "tool_receipt_characters": sum(
-                    len(message.get("content") or "")
-                    for message in payload.get("messages", [])
-                    if message.get("role") == "tool"
-                ),
+                "tool_receipt_characters": receipt_characters,
                 "bytes": len(request.content),
                 "output_limit": payload.get("max_tokens", 0),
                 "output_limit_bound": bound,

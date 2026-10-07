@@ -8,6 +8,7 @@ from qq_ai_bot.plugin_host.approval import InMemoryApprovalStore, PluginApproval
 from qq_ai_bot.plugin_host.discovery import PluginDiscovery
 from qq_ai_bot.plugin_host.manifest import PluginManifest, load_manifest
 from qq_ai_bot.plugin_host.models import PluginStatus
+from qq_ai_bot.plugin_host.repository import PluginInstallationRepository
 from yuki_plugin_sdk.errors import ManifestValidationError
 from yuki_plugin_sdk.permissions import PluginPermission
 
@@ -18,7 +19,7 @@ name = "Echo"
 version = "0.1.0"
 description = "Echo test plugin"
 entrypoint = "echo_plugin:EchoPlugin"
-plugin_api = "3.0"
+plugin_api = "3.1"
 yuki_requires = ">=1.6.0,<2.0"
 permissions = ["tool.register", "network.http.allowlisted"]
 
@@ -40,12 +41,12 @@ def _plugin_dir(tmp_path: Path, plugin_id: str = "com.example.echo") -> Path:
     return root
 
 
-@pytest.mark.parametrize("version", ["1.1", "2.0", "3.1"])
+@pytest.mark.parametrize("version", ["1.1", "2.0", "3.0", "3.2"])
 def test_manifest_rejects_non_exact_plugin_api(tmp_path: Path, version: str) -> None:
     root = _plugin_dir(tmp_path)
     text = (root / "plugin.toml").read_text(encoding="utf-8")
     (root / "plugin.toml").write_text(
-        text.replace('plugin_api = "3.0"', f'plugin_api = "{version}"'),
+        text.replace('plugin_api = "3.1"', f'plugin_api = "{version}"'),
         encoding="utf-8",
     )
 
@@ -141,14 +142,64 @@ def test_discovery_isolates_invalid_plugin(tmp_path: Path) -> None:
     assert statuses[invalid.name] is PluginStatus.INVALID
 
 
-def test_plugin_api_30_docs_replace_planner_signals() -> None:
+@pytest.mark.parametrize("permission", ["mcp.read", "mcp.call"])
+def test_discovery_rejects_retired_permission_without_loading_other_plugin(
+    tmp_path: Path, permission: str
+) -> None:
+    valid = _plugin_dir(tmp_path)
+    retired = _plugin_dir(tmp_path, "com.example.retired")
+    text = (retired / "plugin.toml").read_text(encoding="utf-8")
+    (retired / "plugin.toml").write_text(
+        text.replace('"tool.register"', f'"{permission}"'), encoding="utf-8"
+    )
+    (retired / "echo_plugin.py").write_text(
+        'raise AssertionError("retired plugin must never be imported")\n', encoding="utf-8"
+    )
+    records = PluginDiscovery(tmp_path, yuki_version="1.6.0").discover()
+    statuses = {item.record.directory.name: item.record.status for item in records}
+    assert statuses[valid.name] is PluginStatus.DISCOVERED
+    assert statuses[retired.name] is PluginStatus.INVALID
+
+
+async def test_api_upgrade_revokes_old_approval_without_granting_media(database, tmp_path) -> None:
+    manifest = load_manifest(_plugin_dir(tmp_path), yuki_version="1.6.0")
+    repository = PluginInstallationRepository(database)
+    fields = {
+        "plugin_id": manifest.id,
+        "name": manifest.name,
+        "version": manifest.version,
+        "yuki_requires": manifest.yuki_requires,
+        "entrypoint": manifest.entrypoint,
+    }
+    await repository.upsert_discovered(
+        **fields,
+        plugin_api="3.0",
+        manifest_hash="old-contract",
+        requested_permissions=("tool.register", "mcp.call"),
+    )
+    await repository.approve(manifest.id)
+    previous = await repository.set_enabled(manifest.id, enabled=True)
+    assert previous.enabled and "mcp.call" in previous.approved_permissions
+    current = await repository.upsert_discovered(
+        **fields,
+        plugin_api=manifest.plugin_api,
+        manifest_hash=manifest.manifest_hash,
+        requested_permissions=(permission.value for permission in manifest.permissions),
+    )
+    assert current.status == "pending_approval" and current.enabled is False
+    assert current.approved_at is None and not current.approved_permissions
+    assert "mcp.call" not in current.requested_permissions
+    assert PluginPermission.MEDIA_ARTIFACT_CREATE.value not in current.requested_permissions
+
+
+def test_plugin_api_31_docs_document_current_contract() -> None:
     docs = Path(__file__).resolve().parents[2] / "docs" / "plugin-development"
     assert not (docs / "planner-signals.md").exists()
     index = (docs / "index.md").read_text(encoding="utf-8")
-    migration = (docs / "api-3.0-migration.md").read_text(encoding="utf-8")
+    migration = (docs / "api-3.1-migration.md").read_text(encoding="utf-8")
     admission = (docs / "admission-signals.md").read_text(encoding="utf-8")
-    assert "Yuki Plugin API 3.0" in index
+    assert "Yuki Plugin API 3.1" in index
     assert "register_admission_signal" in admission
     assert "admission.signal.register" in admission
-    assert 'plugin_api = "3.0"' in migration
+    assert 'plugin_api = "3.1"' in migration
     assert "planner-signals.md" not in index

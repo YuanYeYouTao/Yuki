@@ -22,7 +22,8 @@ from qq_ai_bot.capabilities.exposure import (
 from qq_ai_bot.capabilities.models import CapabilityDescriptor
 from qq_ai_bot.capabilities.policy import CapabilityPolicyContext, CapabilityPolicyEngine
 from qq_ai_bot.capabilities.validation import (
-    TOOL_INPUT_VALIDATION_FAILED,
+    UNDECLARED_TOOL,
+    CapabilityValidationResult,
     JsonSchemaCapabilityValidator,
 )
 from qq_ai_bot.domain.messages import ChatTool
@@ -124,14 +125,18 @@ class TurnCapabilityRuntime:
         return self.initial_exposure()
 
     def validate_call(self, name: str, arguments_json: str) -> tuple[bool, str | None]:
+        """Boolean admission view retained for policy probes, without losing execution detail."""
+        result = self.validate_call_result(name, arguments_json)
+        return result.ok, result.error_category
+
+    def validate_call_result(self, name: str, arguments_json: str) -> CapabilityValidationResult:
         if name not in self._ledger.declared:
-            return False, "undeclared_tool"
+            return CapabilityValidationResult(False, UNDECLARED_TOOL, "tool is not declared")
         if name not in self._ledger.callable_ids:
-            return False, NO_LONGER_AUTHORIZED
-        result = self._validator.validate(name, arguments_json)
-        if not result.ok:
-            return False, result.error_category or TOOL_INPUT_VALIDATION_FAILED
-        return True, None
+            return CapabilityValidationResult(
+                False, NO_LONGER_AUTHORIZED, "current authority does not allow this tool"
+            )
+        return self._validator.validate(name, arguments_json)
 
     def mark_side_effect(self) -> None:
         self._ledger.had_side_effect = True

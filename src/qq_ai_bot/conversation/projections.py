@@ -21,6 +21,8 @@ from qq_ai_bot.conversation.projection_models import PromptProjectionModel
 from qq_ai_bot.execution_trace.phases import collect_phase_metrics, model_detail
 from qq_ai_bot.persistence.database import Database
 
+SUMMARY_RENDERER_VERSION = 1
+
 REBUILD_REASONS = frozenset(
     {
         "bootstrap",
@@ -61,6 +63,9 @@ class ProjectionSnapshot:
     _prefix_origin: tuple[str, str, tuple[object, ...]] | None = field(
         default=None, repr=False, compare=False
     )
+
+    selected_summary_kind: str | None = None
+    selected_summary_renderer: int | None = None
 
     def items(self) -> list[dict[str, Any]]:
         # Each consumer gets a copy; changing it cannot mutate the committed view.
@@ -139,6 +144,8 @@ class PromptProjectionRepository:
         read_scope: str = "",
         selected_summary_text: str | None = None,
         selected_summary_coverage: int = 0,
+        selected_summary_kind: str | None = None,
+        selected_summary_renderer: int | None = None,
         current_snapshot: dict[str, Any] | None = None,
         snapshot_event_id: int | None = None,
         snapshot_fragment_index: int | None = None,
@@ -159,6 +166,8 @@ class PromptProjectionRepository:
             read_scope=read_scope,
             selected_summary_text=selected_summary_text,
             selected_summary_coverage=selected_summary_coverage,
+            selected_summary_kind=selected_summary_kind,
+            selected_summary_renderer=selected_summary_renderer,
             current_snapshot=current_snapshot,
             snapshot_event_id=snapshot_event_id,
             snapshot_fragment_index=snapshot_fragment_index,
@@ -184,6 +193,8 @@ class PromptProjectionRepository:
         read_scope: str = "",
         selected_summary_text: str | None = None,
         selected_summary_coverage: int = 0,
+        selected_summary_kind: str | None = None,
+        selected_summary_renderer: int | None = None,
         current_snapshot: dict[str, Any] | None = None,
         snapshot_event_id: int | None = None,
         snapshot_fragment_index: int | None = None,
@@ -610,6 +621,19 @@ class PromptProjectionRepository:
                     )
             if used + size > self.total_bytes or count >= self.maximum_views:
                 raise ProjectionCapacityError("projection global budget exceeded")
+            if old is not None and not rebuild_reason and old.selected_summary_text is not None:
+                if (
+                    old.selected_summary_text,
+                    old.selected_summary_coverage,
+                    old.selected_summary_kind,
+                    old.selected_summary_renderer,
+                ) != (
+                    selected_summary_text,
+                    selected_summary_coverage,
+                    selected_summary_kind,
+                    selected_summary_renderer,
+                ):
+                    raise ProjectionConflict("summary representation requires a new epoch")
             row = old or PromptProjectionModel(view_key=view_key, conversation_id=conversation_id)
             row.generation, row.starts_after_event_id = generation, starts_after_event_id
             row.source_revision = expected_source_revision
@@ -621,6 +645,8 @@ class PromptProjectionRepository:
             row.payload_json, row.byte_size = payload, size
             row.selected_summary_text = selected_summary_text
             row.selected_summary_coverage = selected_summary_coverage
+            row.selected_summary_kind = selected_summary_kind
+            row.selected_summary_renderer = selected_summary_renderer
             row.updated_at = datetime.now(UTC)
             session.add(row)
             if prepared_sources:
@@ -643,7 +669,7 @@ class PromptProjectionRepository:
                         "selected representation publication conflict"
                     ) from exc
             if parent_summaries:
-                from qq_ai_bot.mcp.artifact_schema import artifact_refs
+                from qq_ai_bot.tool_results.schema import artifact_refs
 
                 identities = list(parent_summaries.keys() | summary_parents.keys())
                 refs: dict[str, set[str]] = {}
@@ -797,4 +823,6 @@ def _snapshot(row: PromptProjectionModel) -> ProjectionSnapshot:
         # Keep the original immutable string reference, without another body
         # copy or encode. dataclasses.replace must not substitute a new prefix.
         (row.view_key, row.payload_json, stamp),
+        selected_summary_kind=row.selected_summary_kind,
+        selected_summary_renderer=row.selected_summary_renderer,
     )

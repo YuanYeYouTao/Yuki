@@ -20,7 +20,6 @@ from qq_ai_bot.settings_domains import (
     AutomationSettings,
     ConversationSettings,
     EmojiSettings,
-    MCPSettings,
     MemorySettings,
     ModelRuntimeSettings,
     OneBotSettings,
@@ -373,19 +372,6 @@ class Settings(BaseSettings):
     tooling_result_item_limit: int | None = None
     tooling_result_artifact_enabled: bool = True
     tooling_result_artifact_retention_seconds: int = 86400
-
-    # Generic MCP client. Only MCP_CONFIG_PATH is inspected; no other client config is imported.
-    mcp_enabled: bool = False
-    mcp_config_path: Path = Path(".mcp.json")
-    mcp_cache_enabled: bool = True
-    mcp_gateway_enabled: bool = True
-    mcp_metadata_cache_ttl_seconds: int = 3600
-    mcp_connect_timeout_seconds: float = 15.0
-    mcp_request_timeout_seconds: float = 60.0
-    mcp_result_token_budget: int | None = None
-    mcp_result_item_limit: int | None = None
-    mcp_max_parallel_calls: int = 8
-    mcp_artifact_retention_seconds: int = 86400
 
     conversation_autonomous_enabled: bool = True
     conversation_semantic_participation_enabled: bool = False
@@ -870,7 +856,6 @@ class Settings(BaseSettings):
             self.asr,
             self.automation,
             self.tooling,
-            self.mcp,
         )
         return self
 
@@ -973,10 +958,6 @@ class Settings(BaseSettings):
     @cached_property
     def tooling(self) -> ToolingSettings:
         return ToolingSettings.model_validate(self)
-
-    @cached_property
-    def mcp(self) -> MCPSettings:
-        return MCPSettings.model_validate(self)
 
     @cached_property
     def superusers(self) -> frozenset[str]:

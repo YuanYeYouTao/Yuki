@@ -1,0 +1,30 @@
+[
+  {
+    "label": "original-branch",
+    "source_sha": "0f24a3b590d103eb547483161fb5873d5a78d032",
+    "exit_code": 0,
+    "seconds": 3.1670149581041187,
+    "log": "original-branch-plugin-verified.log.gz",
+    "log_sha256": "fc90f49c2f74cff62b2d7e22fd3c965e5973d58f9df7d7b3e24af8ae42b54b65",
+    "import_path": "/private/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/branch-original/src/qq_ai_bot/__init__.py",
+    "command": [
+      "/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/.venv/bin/python",
+      "-c",
+      "import qq_ai_bot; from pathlib import Path; assert Path(qq_ai_bot.__file__).resolve().is_relative_to(Path('/private/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/branch-original')); print(\"SOURCE_IMPORT\",qq_ai_bot.__file__); import runpy; runpy.run_path('/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/round3/tools/lifecycle_probe.py')"
+    ]
+  },
+  {
+    "label": "original-main",
+    "source_sha": "25cd6083015924bf80405ca7c346f84a995f6ebb",
+    "exit_code": 0,
+    "seconds": 2.476479958044365,
+    "log": "original-main-plugin-verified.log.gz",
+    "log_sha256": "ac806a134f97232df79d4fd29a710d100bb606eb1db27053954021c9b6888c13",
+    "import_path": "/private/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/main/src/qq_ai_bot/__init__.py",
+    "command": [
+      "/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/.venv/bin/python",
+      "-c",
+      "import qq_ai_bot; from pathlib import Path; assert Path(qq_ai_bot.__file__).resolve().is_relative_to(Path('/private/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/main')); print(\"SOURCE_IMPORT\",qq_ai_bot.__file__); import runpy; runpy.run_path('/var/folders/xd/1qtnjp4s4kv_9z6x7bq465kw0000gn/T/yuki-fix-20261007-mwb4jfqp/evidence/round3/tools/lifecycle_probe.py')"
+    ]
+  }
+]

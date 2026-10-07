@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import select
 from tests.conftest import build_harness, make_settings
 from tests.support.codemode_cases import BINARY, requires_worker
+from tests.support.parent_receipts import parent_receipts
 from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.domain.conversations import ScopeType
@@ -57,9 +58,9 @@ async def test_sdk_code_owner_reentry_and_original_source(database, tmp_path, sc
                     ToolCall("outer", ToolFunction("execute_code", json.dumps({"code": code}))),
                 ),
             )
-        paired = [m for m in request.messages if m.tool_call_id == "outer"]
+        paired = parent_receipts(request, "outer")
         assert len(paired) == 1
-        outputs.append(json.loads(paired[0].content))
+        outputs.append(json.loads(paired[0]))
         return "SDK_RESULT"
 
     provider = FakeLLMProvider(respond)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-PLUGIN_API_VERSION = "3.0"
+PLUGIN_API_VERSION = "3.1"
 _API_VERSION = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 
 DEFAULT_FEATURES: frozenset[str] = frozenset(
@@ -19,7 +19,6 @@ DEFAULT_FEATURES: frozenset[str] = frozenset(
         "emoji.selection_signals.v1",
         "speech.facade.v1",
         "speech.tts_provider.v1",
-        "mcp.facade.v1",
         "notification.facade.v1",
         "media.artifact.v1",
         "http.credential.v1",

@@ -15,7 +15,6 @@ from tests.support.social_identity_cases import social_env
 from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
 from qq_ai_bot.identity.db_models import CanonicalSpaceModel
 from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.mcp.repository import ToolArtifactRepository
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.runtime.subagent_repository import SubagentRepository
 from qq_ai_bot.runtime.subagent_tools import WORKER_REQUIRED_NAMES
@@ -24,6 +23,7 @@ from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import effects
 from qq_ai_bot.services.main_agent_contract import MainAgentContract
+from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
 from qq_ai_bot.workspace.short_state import ShortState
 
 pytestmark = requires_worker

@@ -115,8 +115,8 @@ def classify(call: ToolCall) -> ChildClass:
     return ChildClass("read", True, False)
 
 
-async def environment(database, tmp_path, *, tool_limit=32, max_parallel=2):
-    _env, owner, _runtime = await active_work(database, tmp_path)
+async def environment(database, tmp_path, *, tool_limit=32, max_parallel=2, reporting=None):
+    _env, owner, _runtime = await active_work(database, tmp_path, reporting=reporting)
     owner.control.session = owner
     owner.transcript.append(ChatMessage("user", "compose"))
     return build_host(owner, FakeDomain(), tool_limit=tool_limit, max_parallel=max_parallel)

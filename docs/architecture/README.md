@@ -24,8 +24,9 @@ Yuki 正在逐层解耦：永久主体、内部事件和工作身份由核心持
 | [Tool Kernel](tool-kernel.md) | 固定主声明、目录查询与执行授权 |
 | [Pi 与 Code Mode 交接](pi-codemode-handoff.md) | 实验分支当前状态、环境准备、已知问题与 P06–P11 接手要点 |
 | [Code Mode 与 main 兼容](pi-codemode-main-compatibility.md) | 主线修复接入新循环、两边旧数据库正常升级及联合验证 |
+| [Code Mode 正确性修复](pi-codemode-correctness-repair.md) | 2026-10-07 F1–F12、main 25cd、摘要/迁移兼容和可核对验证 |
 | [Pi / Code Mode 运维](../operations/pi-codemode-operations.md) | 原数据兼容矩阵、固定 worker 分发、私有对象备份与切换/回退门 |
-| [MCP 架构](../mcp/architecture.md) | 外部工具、固定清单和执行授权 |
+| [工具结果](tool-results.md) | 结果预算、共享 artifact 与来源证据 |
 | [插件架构](../plugin-development/architecture.md) | SDK、Host 与隔离插件会话 |
 | [持久环境](../operations/persistent-environment.zh-CN.md) | 工作区、终端、Manager、文件交付和恢复 |
 | [搜索适配器](../deepseek-search-bridge.md) | 临时协议适配和真实失败兜底 |
@@ -66,6 +67,10 @@ Agent 自主选取历史附件、工作区与工具图片后交给原主模型�
 此前的验收不代表上述全入口缺口已经解决。
 
 本文是开发导航，不是上线证明；实际部署状态须核对当前镜像、数据库版本与部署记录。
+
+当前模式的错误反馈、执行事实、恢复及非阻断汇报修复见
+[Harness 修复任务书](harness-feedback-and-codemode-compatibility-taskbook-2026-10-06.md)。
+Code Mode 移植延后；本轮复用原 journal/效果回执，数据库防回归与实际交付分别核验。
 
 本轮实现任务书：[共享持久 Runtime 主干重构](persistent-runtime-refactor-taskbook.md)。
 现行执行与恢复规则仍以主 Agent 合同和共同架构约束为准；任务书中的阶段验收不能替代实际 CI 与部署证据。

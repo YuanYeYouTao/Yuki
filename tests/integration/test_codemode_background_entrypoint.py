@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import select, update
 from tests.conftest import build_harness, make_settings
 from tests.support.codemode_cases import BINARY, requires_worker
+from tests.support.parent_receipts import parent_receipts
 from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
@@ -85,7 +86,7 @@ async def test_background_job_code_keeps_event_owner_and_current_plugin_grant(
                     ToolCall("outer", ToolFunction("execute_code", json.dumps({"code": code}))),
                 ),
             )
-        paired = [m for m in request.messages if m.tool_call_id == "outer"]
+        paired = parent_receipts(request, "outer")
         assert len(paired) == 1
         return "NO_REPLY"
 

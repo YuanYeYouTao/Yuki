@@ -3,33 +3,45 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
+import httpx
 import pytest
+from sqlalchemy import select
 from tests.conftest import MemorySender, build_harness, make_settings
 from tests.fakes import FakeWebSearchProvider
 from tests.support.fixed_contract_fixture import bind_main_contract
+from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import (
     ChatRequest,
     ChatResponse,
-    CitationOrigin,
     InboundMessage,
-    NativeToolDefinition,
-    NativeToolEvent,
-    NativeToolStatus,
-    NativeToolType,
     OutboundMessage,
     OutboundSendReceipt,
-    ResponseCitation,
     SenderIdentity,
     ToolCall,
     ToolFunction,
 )
 from qq_ai_bot.llm.base import LLMProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
+from qq_ai_bot.llm.openai_responses import OpenAIResponsesProvider
+from qq_ai_bot.model_runtime.executor import TaskModelExecutor
+from qq_ai_bot.model_runtime.models import (
+    ModelCapability,
+    ModelProfile,
+    ModelProtocol,
+    ModelRoute,
+    ModelSearchMode,
+    ModelTask,
+)
+from qq_ai_bot.model_runtime.pool import ModelClientPool
+from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
+from qq_ai_bot.model_runtime.routes import ModelRouter
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.web_repository import WebSearchSourceRepository
+from qq_ai_bot.social.db_models import SocialOperationModel
 from qq_ai_bot.web.base import WebSearchError
 from qq_ai_bot.web.models import WebMode, WebSearchResponse, WebSearchSource
 
@@ -76,6 +88,71 @@ def web_response() -> WebSearchResponse:
         provider_request_id="request-1",
         latency_seconds=0.1,
     )
+
+
+def install_native_response_wire(harness, responses, *, search_mode=ModelSearchMode.BOTH):
+    """Use an actual explicit Responses profile and capture the serialized HTTP."""
+    captured = []
+
+    def transport(request):
+        captured.append(json.loads(request.content))
+        assert len(captured) <= len(responses), "native work must not be implicitly replayed"
+        return httpx.Response(200, json=responses[len(captured) - 1])
+
+    client = httpx.AsyncClient(
+        base_url="https://wire.invalid/", transport=httpx.MockTransport(transport)
+    )
+    provider = OpenAIResponsesProvider(
+        base_url="https://wire.invalid",
+        api_key="synthetic",
+        timeout_seconds=1,
+        max_retries=3,
+        client=client,
+    )
+    profile = ModelProfile(
+        id="native-web-wire",
+        provider="openai",
+        protocol=ModelProtocol.RESPONSES,
+        base_url="https://wire.invalid",
+        api_key_env="UNUSED",
+        model="synthetic",
+        timeout_seconds=1,
+        max_retries=3,
+        default_temperature=0.5,
+        default_max_output_tokens=8192,
+        search_mode=search_mode,
+        capabilities=frozenset(
+            {ModelCapability.TOOLS, ModelCapability.NATIVE_WEB_SEARCH, ModelCapability.REASONING}
+        ),
+    )
+    models = TaskModelExecutor(
+        router=ModelRouter(
+            ModelProfileCatalog(
+                profiles={profile.id: profile},
+                routes={task: ModelRoute(task=task, profile_id=profile.id) for task in ModelTask},
+            )
+        ),
+        pool=ModelClientPool(injected_profiles={profile.id: provider}),
+    )
+    chat = harness.processor._chat
+    chat.runtime.runner._models = chat._models = models
+    return client, captured
+
+
+def native_response(*items):
+    return {
+        "status": "completed",
+        "output": list(items),
+        "usage": {"input_tokens": 10, "output_tokens": 3, "total_tokens": 13},
+    }
+
+
+def explicit_native_final(text="NO_REPLY", *, annotations=()):
+    return {
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": text, "annotations": list(annotations)}],
+    }
 
 
 class WebToolLLM(LLMProvider):
@@ -250,40 +327,6 @@ class RepeatedWebToolLLM(LLMProvider):
         return ChatResponse(content="", latency_seconds=0)
 
 
-class NativeWebLLM(LLMProvider):
-    """Return provider-native events without fabricating a local Function Call."""
-
-    async def complete(self, request: ChatRequest) -> ChatResponse:
-        del request
-        return ChatResponse(
-            content="",
-            latency_seconds=0,
-            native_tool_events=(
-                NativeToolEvent(
-                    tool_type=NativeToolType.WEB_SEARCH,
-                    call_id="native-search",
-                    status=NativeToolStatus.COMPLETED,
-                    action_type="search",
-                    query="public docs",
-                ),
-                NativeToolEvent(
-                    tool_type=NativeToolType.WEB_SEARCH,
-                    call_id="native-open",
-                    status=NativeToolStatus.COMPLETED,
-                    action_type="open_page",
-                    url="https://example.com/native-docs#ws_call_id=test",
-                ),
-            ),
-            citations=(
-                ResponseCitation(
-                    url="https://example.com/native-docs",
-                    title="Native docs",
-                    origin=CitationOrigin.ANNOTATION,
-                ),
-            ),
-        )
-
-
 class NativeSourceFailureThenTavilyLLM(LLMProvider):
     """Use Tavily immediately when the profile cannot expose native tools."""
 
@@ -394,20 +437,50 @@ async def test_native_web_sources_are_persisted_without_implicit_rendering(
 ) -> None:
     settings = make_settings(
         database.url,
-        web_enabled=False,
+        web_enabled=True,
         web_mode=WebMode.NATIVE,
         tavily_api_key="",
     )
-    harness = build_harness(database, settings, NativeWebLLM())
+    harness = build_harness(database, settings, FakeLLMProvider())
+    client, wire = install_native_response_wire(
+        harness,
+        [
+            native_response(
+                {
+                    "type": "web_search_call",
+                    "id": "native-search",
+                    "status": "completed",
+                    "action": {"type": "search", "query": "public docs"},
+                },
+                # An explicit decision to remain silent is a final model output;
+                # a native-only response with no final is covered by the stop test.
+                explicit_native_final(
+                    annotations=(
+                        {
+                            "type": "url_citation",
+                            "url": "https://example.com/native-docs",
+                            "title": "Native docs",
+                        },
+                    )
+                ),
+            )
+        ],
+        search_mode=ModelSearchMode.NATIVE,
+    )
     sender = MemorySender()
 
-    result = await harness.processor.handle(
-        event("请联网确认并附上来源。", message_id="native-visible"),
-        sender,
-    )
+    try:
+        result = await harness.processor.handle(
+            event("请联网确认并附上来源。", message_id="native-visible"),
+            sender,
+        )
+    finally:
+        await client.aclose()
 
+    assert result.reason == "chat" and len(wire) == 1
     assert result.sent_messages == 0
     assert not sender.messages
+    assert any(item["type"] == "web_search" for item in wire[0]["tools"])
     source = await harness.ledger.find_by_platform_message(
         bot_user_id="8000", platform_message_id="native-visible"
     )
@@ -755,33 +828,8 @@ async def test_spoken_search_phrase_exposes_web_search_in_native_first_mode(
 
 @pytest.mark.asyncio
 async def test_mixed_tools_stay_visible_and_missing_native_sources_do_not_restart(
-    database: Database, monkeypatch: pytest.MonkeyPatch
+    database: Database, tmp_path
 ) -> None:
-    from qq_ai_bot.services.native_tool_binder import NativeToolBinder
-
-    monkeypatch.setattr(
-        NativeToolBinder,
-        "bind",
-        lambda self, **kwargs: (NativeToolDefinition(type=NativeToolType.WEB_SEARCH),),
-    )
-
-    class MissingSourcesLLM(FakeLLMProvider):
-        async def complete(self, request: ChatRequest) -> ChatResponse:
-            self.requests.append(request)
-            return ChatResponse(
-                content="",
-                latency_seconds=0,
-                native_tool_events=(
-                    NativeToolEvent(
-                        tool_type=NativeToolType.WEB_SEARCH,
-                        call_id="failed-native",
-                        status=NativeToolStatus.FAILED,
-                        action_type="search",
-                    ),
-                ),
-            )
-
-    llm = MissingSourcesLLM()
     web = FakeWebSearchProvider(response=web_response())
     harness = build_harness(
         database,
@@ -791,19 +839,171 @@ async def test_mixed_tools_stay_visible_and_missing_native_sources_do_not_restar
             web_mode=WebMode.BOTH,
             tavily_api_key="test-placeholder",
         ),
-        llm,
+        FakeLLMProvider(),
         web_provider=web,
     )
-    result = await harness.processor.handle(
-        event("请搜索最新公告并附上来源", message_id="failed-native-no-restart"),
-        MemorySender(),
+    bind_main_contract(harness, tmp_path)
+    client, wire = install_native_response_wire(
+        harness,
+        [
+            native_response(
+                {
+                    "type": "web_search_call",
+                    "id": "failed-native",
+                    "status": "failed",
+                    "action": {"type": "search", "query": "announcement"},
+                },
+            )
+        ],
     )
-    assert result.reason == "chat"
-    assert len(llm.requests) == 1
+    sender = MemorySender()
+    try:
+        result = await harness.processor.handle(
+            event("请搜索最新公告并附上来源", message_id="failed-native-no-restart"),
+            sender,
+        )
+    finally:
+        await client.aclose()
+    # Native failure with no final or local calls cannot be silently called a
+    # successful chat, and cannot cause another paid native request or fallback.
+    assert result.reason == "llm_failure" and result.sent_messages == 1
+    assert [message.text for message in sender.messages] == ["模型未能完成这次回复，请稍后重试。"]
+    assert len(wire) == 1
     assert not web.search_requests
-    first_names = {tool.name for tool in llm.requests[0].tools}
+    first_names = {tool.get("name") for tool in wire[0]["tools"] if tool["type"] == "function"}
     assert "web_search" in first_names
-    assert llm.requests[0].native_tools
+    assert any(tool["type"] == "web_search" for tool in wire[0]["tools"])
+    source = await harness.ledger.find_by_platform_message(
+        bot_user_id="8000", platform_message_id="failed-native-no-restart"
+    )
+    assert source is not None
+    assert (
+        await WebSearchSourceRepository(database).for_trigger(
+            conversation_key="bot:8000:private:1001", trigger_event_id=source.id
+        )
+        == ()
+    )
+
+
+@pytest.mark.asyncio
+async def test_native_failure_with_explicit_local_fallback_keeps_protocol_and_send_receipts(
+    database: Database, tmp_path
+) -> None:
+    env = await social_env(database, tmp_path)
+    web = FakeWebSearchProvider(response=web_response())
+    harness = build_harness(
+        database,
+        make_settings(
+            database.url,
+            enabled_groups_csv="20001",
+            web_enabled=True,
+            web_mode=WebMode.BOTH,
+            tavily_api_key="test-placeholder",
+        ),
+        FakeLLMProvider(),
+        web_provider=web,
+    )
+    chat = harness.processor._chat
+    chat._tools.social_service = env.service
+    env.service.runtime_config = chat._runtime_config
+    bind_main_contract(harness, tmp_path)
+    client, wire = install_native_response_wire(
+        harness,
+        [
+            native_response(
+                {
+                    "type": "reasoning",
+                    "id": "original-reason",
+                    "summary": [],
+                    "encrypted_content": "original-opaque",
+                },
+                {
+                    "type": "web_search_call",
+                    "id": "failed-native",
+                    "status": "failed",
+                    "action": {"type": "search", "query": "latest announcement"},
+                },
+                {
+                    "type": "function_call",
+                    "id": "fc-local",
+                    "call_id": "local-fallback",
+                    "name": "web_search",
+                    "arguments": '{"query":"最新 DeepSeek 更新"}',
+                },
+            ),
+            native_response(
+                {
+                    "type": "function_call",
+                    "id": "fc-send",
+                    "call_id": "public-send",
+                    "name": "send_message",
+                    "arguments": '{"text":"已查到本地联网来源，原生搜索未成功。"}',
+                }
+            ),
+            native_response(explicit_native_final()),
+        ],
+    )
+    sender = MemorySender()
+    inbound = replace(
+        event(
+            "请搜索最新公告并附上来源",
+            message_id="native-local-explicit-send",
+            user_id="10001",
+            group_id="20001",
+        ),
+        bot_user_id="80001",
+        conversation_id=env.context.conversation_id,
+        legacy_conversation_key=ConversationScope.group("80001", "20001").key,
+        person_id=env.person,
+        space_id=env.space,
+        presence_id=env.presence,
+    )
+    try:
+        result = await harness.processor.handle(inbound, sender)
+    finally:
+        await client.aclose()
+    assert result.reason == "chat" and result.sent_messages == 1 and not sender.messages
+    assert len(wire) == 3 and len(web.search_requests) == 1
+    assert all(item["tools"] == wire[0]["tools"] for item in wire)
+    assert {tool.get("name") for tool in wire[0]["tools"] if tool["type"] == "function"} >= {
+        "web_search",
+        "send_message",
+    }
+    assert any(tool["type"] == "web_search" for tool in wire[0]["tools"])
+    second = wire[1]["input"]
+    assert any(item.get("id") == "failed-native" and item["status"] == "failed" for item in second)
+    assert any(item.get("encrypted_content") == "original-opaque" for item in second)
+    local_results = [
+        item
+        for item in second
+        if item.get("type") == "function_call_output" and item["call_id"] == "local-fallback"
+    ]
+    assert len(local_results) == 1 and json.loads(local_results[0]["output"])["ok"] is True
+    third = wire[2]["input"]
+    send_results = [
+        item
+        for item in third
+        if item.get("type") == "function_call_output" and item["call_id"] == "public-send"
+    ]
+    assert len(send_results) == 1
+    receipt = json.loads(send_results[0]["output"])
+    assert receipt["ok"] is True and receipt["data"]["status"] == "succeeded", receipt
+    actual_sends = [
+        (action, params) for action, params in env.bot.calls if action.startswith("send_")
+    ]
+    assert len(actual_sends) == 1 and actual_sends[0][0] == "send_group_msg"
+    async with database.sessions() as reader:
+        statuses = list(await reader.scalars(select(SocialOperationModel.status).limit(4)))
+    assert statuses == ["succeeded"]
+    source = await harness.ledger.find_by_platform_message(
+        bot_user_id="80001", platform_message_id="native-local-explicit-send"
+    )
+    assert source is not None
+    stored = await WebSearchSourceRepository(database).for_trigger(
+        conversation_key="bot:80001:group:20001",
+        trigger_event_id=source.id,
+    )
+    assert [item.url for item in stored] == ["https://example.com/deepseek-update"]
 
 
 @pytest.mark.asyncio

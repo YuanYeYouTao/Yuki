@@ -632,6 +632,8 @@ class MainAgentTurnService:
                         read_scope=read_scope,
                         selected_summary_text=previous.selected_summary_text,
                         selected_summary_coverage=previous.selected_summary_coverage,
+                        selected_summary_kind=previous.selected_summary_kind,
+                        selected_summary_renderer=previous.selected_summary_renderer,
                     )
                     original_guard = guard.snapshot() if guard is not None else None
                     snapshot = None

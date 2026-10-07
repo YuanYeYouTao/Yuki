@@ -33,7 +33,7 @@ const navigation = [
   ["models", "gear", "模型与用量", "list_model_usage"],
   ["persona", "fountain-pen", "人格提示词", "read_config_file"],
   ["memory", "notebook", "记忆", "list_memory_facts"],
-  ["tools", "box", "插件与 MCP", "list_plugins"],
+  ["tools", "box", "插件", "list_plugins"],
   ["files", "folder", "工作区", "read_environment"],
   ["identity", "cat", "身份与连接", "list_persons"],
   ["settings", "fountain-pen", "配置", "list_effective_configs"],

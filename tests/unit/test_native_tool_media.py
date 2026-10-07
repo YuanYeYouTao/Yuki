@@ -1,4 +1,4 @@
-"""Authorized MCP pixels stay outside public receipts and use the primary model."""
+"""Authorized tool pixels stay outside public receipts and use the primary model."""
 
 import base64
 import io
@@ -9,13 +9,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from mcp.types import (
-    BlobResourceContents,
-    CallToolResult,
-    EmbeddedResource,
-    ImageContent,
-    TextContent,
-)
 from PIL import Image
 from sqlalchemy import select, update
 from tests.conftest import build_harness, make_settings
@@ -34,13 +27,12 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
-from qq_ai_bot.mcp.artifact_access import ArtifactAccess, access_from_runtime
-from qq_ai_bot.mcp.repository import ToolArtifactRepository
-from qq_ai_bot.mcp.result_normalizer import normalize_mcp_result
 from qq_ai_bot.persistence.models import ChatEventModel, ToolArtifactModel
 from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
 from qq_ai_bot.services.native_media import NativeMediaPreparer
 from qq_ai_bot.services.processor import MessageProcessor
+from qq_ai_bot.tool_results.access import ArtifactAccess, access_from_runtime
+from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
 
 
 def _pixels():
@@ -50,103 +42,16 @@ def _pixels():
 
 
 def _result():
-    return normalize_mcp_result(
-        CallToolResult(
-            content=[
-                TextContent(type="text", text="screenshot result"),
-                ImageContent(type="image", data=_pixels(), mimeType="image/png"),
-            ]
-        ),
-        server_id="browser",
+    pixels = NativeMediaPreparer(ImagePreprocessor()).prepare_image(
+        base64.b64decode(_pixels()), source="tool"
+    )
+    return ToolExecutionResult(
+        ok=True,
+        data={"summary": "screenshot result"},
+        images=pixels,
+        provider_id="plugin.browser",
         tool_name="screenshot",
     )
-
-
-def test_mcp_image_block_prepares_pixels_without_textual_base64():
-    result = _result()
-    assert result.ok and len(result.images) == 1
-    assert result.images[0].source == "tool"
-    assert result.images[0].data_url.startswith("data:image/jpeg;base64,")
-    public = json.dumps(result.model_payload())
-    assert "base64" not in public and _pixels() not in public
-    assert result.content[1] == {"type": "image", "status": "prepared", "image_count": 1}
-
-
-def test_invalid_mcp_image_does_not_leak_decoder_data():
-    result = normalize_mcp_result(
-        CallToolResult(
-            content=[
-                ImageContent(type="image", data="signed-secret-invalid-data", mimeType="image/png")
-            ]
-        ),
-        server_id="browser",
-        tool_name="screenshot",
-    )
-    assert not result.images
-    assert result.content[0]["status"] == "unread"
-    assert "signed-secret" not in json.dumps(result.model_payload())
-
-
-def test_mcp_image_mirror_is_private_without_rewriting_ordinary_data():
-    result = normalize_mcp_result(
-        CallToolResult(
-            content=[ImageContent(type="image", data=_pixels(), mimeType="image/png")],
-            structuredContent={
-                "screen": {"type": "image", "mimeType": "image/png", "data": _pixels()},
-                "resource": {"mimeType": "image/png", "blob": _pixels()},
-                "ordinary": {"type": "text", "data": "some structured business field"},
-            },
-        ),
-        server_id="browser",
-        tool_name="screenshot",
-    )
-    assert len(result.images) == 1
-    assert _pixels() not in json.dumps(result.model_payload())
-    assert result.data["ordinary"]["data"] == "some structured business field"
-
-
-def test_mcp_uses_injected_preprocessing_and_cumulative_frame_limit():
-    result = normalize_mcp_result(
-        CallToolResult(
-            content=[
-                ImageContent(type="image", data=_pixels(), mimeType="image/png"),
-                ImageContent(type="image", data=_pixels(), mimeType="image/png"),
-            ]
-        ),
-        server_id="browser",
-        tool_name="screenshot",
-        media_preparer=NativeMediaPreparer(
-            ImagePreprocessor(max_dimension=8),
-            max_frames=1,
-        ),
-    )
-    assert len(result.images) == 1
-    encoded = result.images[0].data_url.split(",", 1)[1]
-    with Image.open(io.BytesIO(base64.b64decode(encoded))) as frame:
-        assert max(frame.size) == 8
-    assert result.content[1]["error_code"] == "frame_budget"
-
-
-def test_embedded_image_resource_uses_identical_pixel_path():
-    result = normalize_mcp_result(
-        CallToolResult(
-            content=[
-                EmbeddedResource(
-                    type="resource",
-                    resource=BlobResourceContents(
-                        uri="file:///private/screenshot.png",
-                        mimeType="image/png",
-                        blob=_pixels(),
-                    ),
-                )
-            ]
-        ),
-        server_id="browser",
-        tool_name="screenshot",
-    )
-    assert len(result.images) == 1 and result.images[0].content_hash
-    assert result.images[0].data_url == _result().images[0].data_url
-    assert "private" not in json.dumps(result.model_payload())
 
 
 @pytest.mark.asyncio

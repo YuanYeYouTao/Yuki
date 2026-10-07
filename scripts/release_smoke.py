@@ -146,9 +146,6 @@ def prepare_deployment(deploy_directory: Path) -> dict[Path, str]:
         env_file.write_text(environment, encoding="utf-8")
     if env_file.exists():
         _enable_plugin_system(env_file)
-    mcp_file = deploy_directory / ".mcp.json"
-    if not mcp_file.exists():
-        mcp_file.write_text('{"mcpServers": {}}\n', encoding="utf-8")
     model_profiles = deploy_directory / "webui-config/model_profiles.toml"
     if not model_profiles.exists():
         model_profiles.parent.mkdir(parents=True, exist_ok=True)
@@ -383,9 +380,7 @@ def verify_guided_setup(deploy_directory: Path, version: str) -> None:
         "from qq_ai_bot.deployment_setup.service import _atomic_write; "
         "root=Path('/deploy'); "
         "profile=root/'webui-config/model_profiles.toml'; "
-        "mcp=root/'.mcp.json'; "
         "_atomic_write(profile, profile.read_bytes(), private=False); "
-        "_atomic_write(mcp, mcp.read_bytes(), private=False); "
         "_atomic_write(root/'data/setup/pending.json', "
         'b\'{"schema_version":1,"selected_plugins":[]}\\n\', private=False)'
     )
@@ -408,7 +403,6 @@ def verify_guided_setup(deploy_directory: Path, version: str) -> None:
         "from pathlib import Path; "
         "root=Path('/deploy'); "
         "assert (root/'webui-config/model_profiles.toml').read_bytes(); "
-        "assert (root/'.mcp.json').read_bytes(); "
         "assert (root/'data/setup/pending.json').read_bytes()"
     )
     subprocess.run(

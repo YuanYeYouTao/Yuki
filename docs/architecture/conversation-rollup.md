@@ -167,6 +167,11 @@ CURRENT ACTOR DYNAMIC ENVELOPE
 CURRENT MESSAGE
 ```
 
+已选摘要冻结正文、coverage、kind 与 renderer version（当前 1）。同 epoch 的 append
+继续使用原完整表示，后台 semantic 追平不能给旧 emergency 正文换标签。缺少 kind 或
+renderer 的旧记录按当前获准来源进行 `rollup` 显式重建并记录新 epoch；不猜旧语义。
+重启、fit/soft/hard 容量及隐私/来源复核仍走原合同。
+
 Rollup 永不进入 system instructions。冻结历史保留所选聊天与观察的原顺序，新事件在安全点追加。
 昵称、群名片和正文来自落账时事件；当前 Actor 的关系、
 权限和必要场景资料只进入当前 envelope。长期记忆由 Main Agent 按需调用记忆检索工具，

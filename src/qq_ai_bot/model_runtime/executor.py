@@ -98,6 +98,7 @@ class ProviderCacheShapeDiagnostics:
     instructions_hash: str
     tools_hash: str
     input_prefix_hash: str
+    coverage: str = "normalized messages and tools; excludes native continuation body"
 
 
 def _diagnostic_message(message: object) -> dict[str, object]:
@@ -132,7 +133,11 @@ def provider_cache_shape_diagnostics(
     profile_id: str,
     protocol: str,
 ) -> ProviderCacheShapeDiagnostics:
-    """Hash the normalized provider request while excluding the current user tail."""
+    """Hash the application projection, excluding the current user tail.
+
+    Native continuation body is outside this projection. WireRequestObserver on
+    each adapter's final body is authoritative for that shape and first difference.
+    """
 
     boundary = 0
     while boundary < len(request.messages) and request.messages[boundary].role in {
@@ -651,7 +656,7 @@ class TaskModelExecutor:
                 "conversation_prefix_hash=%s "
                 "request_shape_hash=%s provider_cache_shape_hash=%s "
                 "provider_instructions_hash=%s provider_tools_hash=%s "
-                "provider_input_prefix_hash=%s prompt_snapshot_fingerprint=%s",
+                "provider_input_prefix_hash=%s prompt_snapshot_fingerprint=%s coverage=%s",
                 task.value,
                 normalized.conversation_prefix_hash,
                 normalized.request_shape_hash,
@@ -660,6 +665,7 @@ class TaskModelExecutor:
                 provider_cache_shape.tools_hash,
                 provider_cache_shape.input_prefix_hash,
                 normalized.prompt_snapshot_fingerprint,
+                provider_cache_shape.coverage,
             )
         if profile.protocol is ModelProtocol.RESPONSES:
             logger.info(
@@ -689,6 +695,24 @@ class TaskModelExecutor:
                 priority=priority,
             )
         except Exception as exc:
+            if isinstance(exc, LLMError):
+                # The actual transport counter survives the executor boundary;
+                # zero remains a predispatch failure, not an unknown paid effect.
+                usage = attempts.usage_totals()
+                prior_usage = exc.diagnostics.get("usage")
+                # Preserve the adapter's diagnostic field shape; aggregation
+                # adds reported values, not previously absent optional NULLs.
+                reported = {
+                    name: value
+                    for name, value in usage.items()
+                    if value is not None or (isinstance(prior_usage, dict) and name in prior_usage)
+                }
+                exc.diagnostics = {
+                    **exc.diagnostics,
+                    **({"usage": reported} if attempts.requests else {}),
+                    "physical_request_count": attempts.requests,
+                    "unknown_usage_request_count": attempts.unknown_usage_requests,
+                }
             if self._invocations is not None:
                 diagnostic_usage = (
                     exc.diagnostics.get("usage") if isinstance(exc, LLMError) else None
@@ -729,6 +753,22 @@ class TaskModelExecutor:
         finally:
             current_provider_attempts.reset(attempt_token)
             switch_model_phase("response_preparation")
+        if attempts.requests:
+            # Adapters report physical usage; only this boundary combines it.
+            # Claude pause may already return a combined logical response, so
+            # replace these fields instead of adding its totals a second time.
+            usage = attempts.usage_totals()
+            response = replace(
+                response,
+                prompt_tokens=usage["prompt_tokens"],
+                completion_tokens=usage["completion_tokens"],
+                total_tokens=usage["total_tokens"],
+                cached_prompt_tokens=usage["cached_prompt_tokens"],
+                reasoning_tokens=usage["reasoning_tokens"],
+                cache_creation_input_tokens=usage["cache_creation_input_tokens"],
+                cache_creation_5m_input_tokens=usage["cache_creation_5m_input_tokens"],
+                cache_creation_1h_input_tokens=usage["cache_creation_1h_input_tokens"],
+            )
         if response.continuation is not None:
             response = replace(
                 response,
