@@ -106,8 +106,12 @@ it("edits native schedule variants and registered step arguments before reviewin
       action: "update",
       resource_id: "94",
       spec: {
-        schedule: { type: "interval", seconds: 7200 },
-        steps: [{ call: "yuki.agent", arguments: { delivery_target: "none" } }],
+        script: {
+          schedule: { type: "interval", seconds: 7200 },
+          steps: [
+            { call: "yuki.agent", arguments: { delivery_target: "none" } },
+          ],
+        },
       },
     },
   });

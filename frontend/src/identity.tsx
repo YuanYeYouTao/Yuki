@@ -396,103 +396,101 @@ export function Identity(props: PageProps) {
             />
           </>
         )}
-        {(["person_active", "space_active", "space_binding_ingest"] as const).map(
-          (kind) => {
-            const method = `list_${kind}_routes` as const;
-            return (
-              props.allowed(method) && (
-                <div key={kind}>
-                  <h3>
-                    {kind === "person_active"
-                      ? "人物主动发送"
-                      : kind === "space_active"
-                        ? "群主动发送"
-                        : "群接入"}
-                  </h3>
-                  <QueryList
-                    method={method}
-                    refresh={props.refresh}
-                    columns={[
-                      [
-                        kind === "person_active"
-                          ? "person_id"
-                          : kind === "space_active"
-                            ? "space_id"
-                            : "space_binding_id",
-                        "原主体",
-                      ],
-                      [
-                        kind === "person_active"
-                          ? "identity_binding_id"
+        {(
+          ["person_active", "space_active", "space_binding_ingest"] as const
+        ).map((kind) => {
+          const method = `list_${kind}_routes` as const;
+          return (
+            props.allowed(method) && (
+              <div key={kind}>
+                <h3>
+                  {kind === "person_active"
+                    ? "人物主动发送"
+                    : kind === "space_active"
+                      ? "群主动发送"
+                      : "群接入"}
+                </h3>
+                <QueryList
+                  method={method}
+                  refresh={props.refresh}
+                  columns={[
+                    [
+                      kind === "person_active"
+                        ? "person_id"
+                        : kind === "space_active"
+                          ? "space_id"
                           : "space_binding_id",
-                        "Binding",
-                      ],
-                      [
-                        kind === "space_binding_ingest"
-                          ? "ingest_presence_id"
-                          : "presence_id",
-                        "Presence",
-                      ],
-                      ["paused", "暂停", badge],
-                      ["route_generation", "代数"],
-                      ["reference_state", "引用状态"],
-                      ["revision", "版本"],
-                    ]}
-                    actions={(row) => (
-                      <>
-                        <button
-                          className="btn-secondary"
-                          onClick={() => {
-                            setRoute(row);
-                            setCreateRoute(false);
-                          }}
-                        >
-                          编辑原路由
-                        </button>
-                        <button
-                          className="btn-secondary"
-                          disabled={
-                            !props.allowed(
-                              row.paused ? "resume_route" : "pause_route",
-                            )
-                          }
-                          onClick={() =>
-                            props.act({
-                              method: row.paused
-                                ? "resume_route"
-                                : "pause_route",
-                              label: row.paused ? "恢复原路由" : "暂停原路由",
-                              revision: Number(row.revision),
-                              payload: { kind },
-                              target: {
-                                kind:
-                                  kind === "person_active"
-                                    ? "person"
-                                    : kind === "space_active"
-                                      ? "space"
-                                      : "space_binding",
-                                id: row[
-                                  kind === "person_active"
-                                    ? "person_id"
-                                    : kind === "space_active"
-                                      ? "space_id"
-                                      : "space_binding_id"
-                                ],
-                              },
-                              review: row,
-                            })
-                          }
-                        >
-                          {row.paused ? "恢复" : "暂停"}
-                        </button>
-                      </>
-                    )}
-                  />
-                </div>
-              )
-            );
-          },
-        )}
+                      "原主体",
+                    ],
+                    [
+                      kind === "person_active"
+                        ? "identity_binding_id"
+                        : "space_binding_id",
+                      "Binding",
+                    ],
+                    [
+                      kind === "space_binding_ingest"
+                        ? "ingest_presence_id"
+                        : "presence_id",
+                      "Presence",
+                    ],
+                    ["paused", "暂停", badge],
+                    ["route_generation", "代数"],
+                    ["reference_state", "引用状态"],
+                    ["revision", "版本"],
+                  ]}
+                  actions={(row) => (
+                    <>
+                      <button
+                        className="btn-secondary"
+                        onClick={() => {
+                          setRoute(row);
+                          setCreateRoute(false);
+                        }}
+                      >
+                        编辑原路由
+                      </button>
+                      <button
+                        className="btn-secondary"
+                        disabled={
+                          !props.allowed(
+                            row.paused ? "resume_route" : "pause_route",
+                          )
+                        }
+                        onClick={() =>
+                          props.act({
+                            method: row.paused ? "resume_route" : "pause_route",
+                            label: row.paused ? "恢复原路由" : "暂停原路由",
+                            revision: Number(row.revision),
+                            payload: { kind },
+                            target: {
+                              kind:
+                                kind === "person_active"
+                                  ? "person"
+                                  : kind === "space_active"
+                                    ? "space"
+                                    : "space_binding",
+                              id: row[
+                                kind === "person_active"
+                                  ? "person_id"
+                                  : kind === "space_active"
+                                    ? "space_id"
+                                    : "space_binding_id"
+                              ],
+                            },
+                            review: row,
+                          })
+                        }
+                      >
+                        {row.paused ? "恢复" : "暂停"}
+                      </button>
+                    </>
+                  )}
+                />
+              </div>
+            )
+          );
+        })}
       </Section>
     </>
   );

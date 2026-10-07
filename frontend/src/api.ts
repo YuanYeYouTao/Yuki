@@ -1,4 +1,9 @@
-import { type QueryMethod, type CommandMethod, queryMethods, commandMethods } from "./control-methods";
+import {
+  type QueryMethod,
+  type CommandMethod,
+  queryMethods,
+  commandMethods,
+} from "./control-methods";
 export type Row = Record<string, unknown>;
 export interface Page {
   items: Row[];
@@ -119,8 +124,13 @@ export async function logout() {
   await request("logout", {});
   csrf = "";
 }
-export function query<T>(name: QueryMethod, args: Row = {}, signal?: AbortSignal) {
-  if (!(queryMethods as readonly string[]).includes(name)) throw new ApiError("not_found");
+export function query<T>(
+  name: QueryMethod,
+  args: Row = {},
+  signal?: AbortSignal,
+) {
+  if (!(queryMethods as readonly string[]).includes(name))
+    throw new ApiError("not_found");
   return request<T>(
     `queries/${encodeURIComponent(name)}`,
     args,
@@ -129,7 +139,8 @@ export function query<T>(name: QueryMethod, args: Row = {}, signal?: AbortSignal
   );
 }
 export function command(name: CommandMethod, envelope: Command) {
-  if (!(commandMethods as readonly string[]).includes(name)) throw new ApiError("not_found");
+  if (!(commandMethods as readonly string[]).includes(name))
+    throw new ApiError("not_found");
   return request<Row>(
     `commands/${encodeURIComponent(name)}`,
     envelope,

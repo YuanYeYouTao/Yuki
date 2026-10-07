@@ -10,7 +10,9 @@ def render() -> str:
     lines = ["// Generated from control_plane/surface.py; do not add methods here."]
     for kind in ("query", "command"):
         names = [method.name for method in _METHODS if method.kind == kind]
-        lines.append(f"export const {kind}Methods = {json.dumps(names)} as const;")
+        lines.append(f"export const {kind}Methods = [")
+        lines.extend(f"  {json.dumps(name)}," for name in names)
+        lines.append("] as const;")
     lines.extend(
         (
             "export type QueryMethod = (typeof queryMethods)[number];",

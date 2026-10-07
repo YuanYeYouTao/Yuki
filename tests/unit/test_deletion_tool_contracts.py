@@ -95,7 +95,9 @@ def test_control_frontend_names_match_authoritative_bindings():
     for kind in ("query", "command"):
         match = re.search(rf"export const {kind}Methods = (\[.*?\]) as const;", source, re.S)
         assert match is not None
-        assert json.loads(match.group(1)) == [item.name for item in _METHODS if item.kind == kind]
+        assert json.loads(re.sub(r",\s*\]$", "]", match.group(1))) == [
+            item.name for item in _METHODS if item.kind == kind
+        ]
     for item in _METHODS:
         owner = SimpleNamespace(**{item.name: object()})
         assert item.bind(owner) is getattr(owner, item.name)
@@ -364,3 +366,38 @@ async def test_online_plugin_transport_authenticates_and_never_retries_unknown(m
 def test_typed_result_rejects_string_booleans(field):
     with pytest.raises(TypeError, match="bool"):
         ToolExecutionResult(**{"ok": True, field: "false"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("executed", [True, False])
+async def test_coordinator_execution_budget_uses_typed_fact_not_display(executed):
+    from tests.support.agent_backend import StubAgentBackend
+
+    from qq_ai_bot.capabilities.coordinator import ToolInvocationCoordinator
+    from qq_ai_bot.domain.messages import ToolCall, ToolFunction
+    from qq_ai_bot.runtime.effect_outcomes import current_result_capture
+
+    async def execute(invocation):
+        capture = current_result_capture.get()
+        assert capture is not None
+        capture.outcome = ToolExecutionResult(
+            ok=executed,
+            data={"executed": executed},
+            mutation_committed=executed,
+            provider_id="core",
+            tool_name=invocation.call.function.name,
+        )
+        return json.dumps({"ok": not executed, "executed": not executed})
+
+    backend = StubAgentBackend(execute_call=execute)
+    call = ToolCall("original", ToolFunction("send_message", "{}"))
+    result = await ToolInvocationCoordinator().execute_batch(
+        (call,),
+        backend,
+        SimpleNamespace(work_control=None),
+        remaining_calls=1,
+        max_parallel_calls=1,
+    )
+    assert result.calls[0][2] is executed
+    assert result.executed_count == int(executed)
+    assert result.evidence[call.id]["executed"] is executed

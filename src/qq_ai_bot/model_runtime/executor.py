@@ -237,7 +237,7 @@ class BackgroundModelPreempted(RuntimeError):
 
 
 class ModelCompleter(Protocol):
-    """Small compatibility boundary for injected test providers."""
+    """Provider completion contract consumed by the physical dispatch owner."""
 
     async def complete(self, request: ChatRequest) -> ChatResponse: ...
 
