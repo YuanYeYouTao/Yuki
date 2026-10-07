@@ -1,6 +1,6 @@
 # 删除导向重构集成记录（2026-10-08）
 
-本记录对应任务书 68 项。任务索引的勾选表示实现及对应定向验收已完成；生产部署和最终全量结果单独记录，不能用勾选代替上线证明。
+本记录覆盖原任务书 68 项及追加 DEP-02、RES-03，共 70 项。任务索引的勾选表示实现及对应定向验收已完成；生产部署和最终全量结果单独记录，不能用勾选代替上线证明。
 
 ## 集成边界
 
@@ -51,7 +51,7 @@
 
 最终历史容器边界再审 90 passed，260 组 Python/SQLite 差分一致。有效 typed 拒绝重放的测试后端补齐真实 side_effecting 布尔角色，联合 72 passed；没有为错型 null 角色放宽生产 unknown 保护。
 
-`bcb43a74` 源码的 direct 镜像确认不含 Monty binding、Settings 默认关闭 Code；codemode 镜像已在实际生产内核通过无 bind mount 的打包隔离探针，worker/launcher 全部来自镜像，见 [打包探针原件](deletion-codemode-packaged-20261008.json)。任务索引 68 项源码及专项验收均已标记；最终 CI、上线仍单独记录。
+`bcb43a74` 源码的 direct 镜像确认不含 Monty binding，并通过镜像环境变量 `CODE_MODE_ENABLED=false` 显式关闭 Code；该提交的 Settings 字段默认仍为 true，产品默认 false 是后续最终提交中的修改。codemode 镜像已在实际生产内核通过无 bind mount 的打包隔离探针，worker/launcher 全部来自镜像，见 [打包探针原件](deletion-codemode-packaged-20261008.json)。任务索引 68 项源码及专项验收均已标记；最终 CI、上线仍单独记录。
 
 
 ## 用户要求的再次终审与追加范围
@@ -67,3 +67,75 @@
 共享主机测试期间出现高负载与换页压力，SSH 延迟和 Bot 健康超时；两只本次测试容器停止后 SSH 恢复，Bot 回到 healthy，Bot/SnowLuma 的原容器 ID、启动时间及重启计数未变。Manager 期间发生自动重启。未把未完成的服务器补验记为通过；原测试日志保留，剩余定点验收在本地 Linux 完成。后续不在约 1.6 GiB 内存的主机上叠加重测试、保留大 tmpfs 与镜像解包。
 
 部署准备再审补齐：冷备先验证原 Manager 作业终态，停 Bot/Manager 后仅按原 ID 暂停持久环境，核写入容器后复制并恢复原暂停；不重跑任务。切换前复验 overlay、候选源码及安装源码的完整哈希集合；断线按原意图和实际状态恢复，不盲重发。生产实际执行和最终健康仍待下节记录。
+
+## 最终冻结源码与删除交付
+
+最终源码 `f4f483d70c3fdb0302b2bece9f6220971ef3f955`。相对前一镜像完整smoke提交 `d768f1baeaa568dfb1ee91f3a41b0aafe1ea0f61`，仅3个测试文件变更（+8/-4），产品src不变。以下统计按精确提交计算，不覆盖本报告前文的历史轮次结果。
+
+| 固定基线 | 全树默认Git shortstat | 产品src新增/删除/净变化 |
+| --- | --- | --- |
+| main `aecc09d621067b7782c2b89e919fe2a7b2c9e5fa` | 858 files changed, 542861 insertions(+), 11215 deletions(-) | +11690 / -8450 / +3240 |
+| Pi `e7bc7d3275b09ddc5363bbb1eb9d2ee255f276ed` | 654 files changed, 32909 insertions(+), 20563 deletions(-) | +4847 / -12066 / -7219 |
+
+src行数使用关闭rename检测的numstat；文件删除清单使用Git -M检测后的D状态，排除被识别为移动的文件。相对Pi净减7,219行，相对main净增3,240行必须并列；main引入Pi的新实现/文档/证据不算删除收益。测试搬迁、冻结SQL及文档不计产品行数。
+
+### 集中删除文件清单
+
+两个基线都存在、最终删除的6个产品路径（也是相对main的全部D文件）：
+
+- `src/qq_ai_bot/application/module.py`
+- `src/qq_ai_bot/application/provider_registry.py`
+- `src/qq_ai_bot/capabilities/registry.py`
+- `src/qq_ai_bot/memory/runtime/command_plane.py`
+- `src/qq_ai_bot/memory/runtime/finalizer.py`
+- `src/qq_ai_bot/observability/__init__.py`
+
+另19个相对Pi删除的产品路径在固定main已经不存在，是集成继承main语音退役的闭包，不能全部记为本轮新删：
+
+- `src/qq_ai_bot/admin/config_specs_speech.py`
+- `src/qq_ai_bot/application/modules/speech.py`
+- `src/qq_ai_bot/speech/__init__.py`
+- `src/qq_ai_bot/speech/admin.py`
+- `src/qq_ai_bot/speech/cache.py`
+- `src/qq_ai_bot/speech/db_models.py`
+- `src/qq_ai_bot/speech/delivery.py`
+- `src/qq_ai_bot/speech/genie_client.py`
+- `src/qq_ai_bot/speech/language.py`
+- `src/qq_ai_bot/speech/models.py`
+- `src/qq_ai_bot/speech/paths.py`
+- `src/qq_ai_bot/speech/preference_repository.py`
+- `src/qq_ai_bot/speech/preference_service.py`
+- `src/qq_ai_bot/speech/profiles.py`
+- `src/qq_ai_bot/speech/provider.py`
+- `src/qq_ai_bot/speech/repository.py`
+- `src/qq_ai_bot/speech/service.py`
+- `src/qq_ai_bot/speech/style_resolver.py`
+- `src/qq_ai_bot/speech/text_normalizer.py`
+
+因此相对Pi实际删除产品文件25个、全树65个；其中全树59个在main基线已不存在。原AgentState移动到tests/support及两个迁移改号不计为D文件。必要历史reader按原Work/operation ID保留，唯一owner与具体退出条件见三个分工报告和终审表。完整机器可读指标见私有final-deletion-delivery-metrics.json。
+
+### 最终direct镜像与smoke证据
+
+- f4本地镜像ID：`sha256:82ed61b72b0231fd43f933f79467deef5778ae7efa08324789d48e15897478bb`，OCI revision与f4完整SHA一致。Docker archive config ID为`sha256:7208b68e877f5ecd6d9cf5c5a5a806b6d09082615935f2c6102d85a8022362de`；服务器实际load后应独立inspect记录，不能把本地index ID冒充server identity。
+- 默认target构建和f4实际packaging gate通过：binding、worker、launcher均不存在，Code默认false。私有证据direct-image-f4f483d7-metadata.json及direct-packaging-f4f483d7.json。
+- 实际完整source-free smoke运行于d768：CLI/setup验证、fresh0099迁移、direct无native包装、Bot健康、Bot重建后持久数据、NapCat登录挂载重建；日志末行source-free smoke passed。未临时改写smoke配置以绕过校验。
+- 独立读取两镜像inspect：全部12个RootFS layers按顺序相同，Config仅OCI revision标签不同。f4复用了d768相同运行文件系统的完整smoke证据，f4自身另过packaging；没有把完整smoke描述为在f4重复执行。此等同性不替代f4最终CI，更不等于生产上线。
+
+### 内存修复与旧生产基线口径
+
+- 修复MemoryRebuildService永久累计取消run ID：仅以弱引用记录实际被本服务取消的活任务。26项相关回归通过，显式取消与外部取消语义仍区分。
+- 两个独立本地Python进程各20,000次受控取消：原实现GC后保留20,000个ID、tracemalloc当前3,253,824bytes；修后保留0、当前1,000bytes（含测量列表）。修后四段RSS均93,233,152bytes。详见deletion-memory报告；该测量证明具体增长消除，不是全系统长期无泄漏证明。
+- 旧生产采样来自主会话私有memory-baseline-1/2.json，只读进程树合计（不是单一Bot进程或cgroup同口径）：
+
+| UTC | 健康 | RSS KiB | PSS KiB | Swap KiB | 主机MemAvailable KiB |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 2026-10-07T21:46:04.427087+00:00 | unhealthy | 444956 | 440086 | 321520 | 521912 |
+| 2026-10-07T21:47:44.558962+00:00 | healthy | 452044 | 452022 | 294508 | 519696 |
+
+两次采样的原容器StartedAt均为2026-10-06T20:07:53.329766101Z，约一天uptime；主机MemTotal=1,651,684KiB。第一次unhealthy、第二次healthy的真实背景保留，不挑选有利样本。新direct冷启动不得与旧热进程换算RSS/Swap百分比收益；上线后同口径、稳定时长与负载另采样。高conversation基数的版本围栏暂不盲删，短测限制仍保留。
+
+### 最终 CI 与生产执行
+
+源码 `f4f483d7` 的 [Quality CI](https://github.com/YuanYeYouTao/Yuki/actions/runs/37696648000) 五项 job 全部成功：主测试 4800 passed、239 skipped；插件 Echo / GitHub / Subscription 分别 4 / 84 / 32 项、两个 CLI 检查、mypy 683 + 5 文件及 fresh 0099 均通过。原 4c 的 9 个失败是 Code 专项 fixture 未显式启用 Code，修复后 52 项场景回归通过；没有将旧失败/取消 CI 记为成功。
+
+[PR #265](https://github.com/YuanYeYouTao/Yuki/pull/265) 已于 2026-10-07 22:59:06 UTC 合并，merge commit 为 `dd819fe28c6e3c4a5fc9b70531db0f3328942680`，合并树与 f4 完全相同。实际生产执行与验收结果见 [生产验收记录](deletion-production-20261008.md)。

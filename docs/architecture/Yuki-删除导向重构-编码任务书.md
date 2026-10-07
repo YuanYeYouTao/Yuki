@@ -111,8 +111,8 @@ P0/P1/P2为优先批次，不是漏洞等级。每项只列实际编码前置；
 - [x] CTX-06 · 已完成（源码及定向回归；集成验收、部署另记） · P0 · 运行状态置于当前真实发言之前
 - [x] PAR-01 · 已完成（源码及定向回归；集成验收、部署另记） · P1 · 合并同轮参与反馈准备并保留原回执事实
 
-- [ ] DEP-02 · 进行中 · P0 · 默认 direct 构建与生产部署，不加载 Code Mode
-- [ ] RES-03 · 进行中 · P1 · Yuki 内存增长检查与可复现泄漏优化
+- [x] DEP-02 · 已完成 · P0 · 默认 direct 构建与生产部署，不加载 Code Mode
+- [x] RES-03 · 已完成 · P1 · Yuki 内存增长检查与可复现泄漏优化
 
 ## 详细任务
 
@@ -1822,3 +1822,10 @@ main/Pi的SemanticParticipationService对dirty scope先sync+hydrate，随后所�
 - 对可复现增长做有界重复工作负载：预热、稳定输入与高基数输入分开，比较多轮活对象/保留分配及峰值，核查取消/失败/关闭路径。仅修已经证明的生命周期缺陷；不为压 RSS 任意缩历史、预算或 unknown 回执保留期。
 - 允许直接删除完成后无消费者的临时状态；有业务 fence/generation 含义的状态不得盲目 LRU。保留原执行身份、迟到回执保护和 current source 边界。
 - 验收：记录发现、排除理由、真实修复与针对性回归，提交 direct 镜像运行资源证据；明确短测不能证明长期无泄漏，不报告虚构百分比收益。不在小内存生产机并行跑重测试或叠加大 tmpfs 与镜像解包。
+
+
+## 最终执行收口（2026-10-08）
+
+70 项任务索引已逐项标记。最终源码 f4f483d7 的完整 CI 为 4800 passed / 239 skipped，PR #265 已合并；生产采用默认 direct 镜像，Monty binding / worker / launcher 均不随包部署，75 个工具全部直接声明。生产唯一 0096 库升级 0099，135 张保留表按记录的退役配置排除规则完成原列 / 行数哈希核对；Manager 原 628 个任务及原持久文件 / manifest 内容保留。Bot、DB、OneBot、Manager 和两个原插件均核验，SnowLuma 未重启。
+
+DEP-02 以默认构建、包装、模式合同及真实上线证据关闭；RES-03 以真实取消集合增长修复、26 项回归、20,000 次离线比较及部署后同口径短时资源采样关闭。此处不声称长期无泄漏、Code 容量验收或真人 QQ 自然收发已完成；既有语义参与 CanonicalIdentityError 告警也保留说明。详见 [最终集成记录](../operations/deletion-integration-20261008.md)、[终审](../operations/deletion-final-review-20261008.md)、[内存检查](../operations/deletion-memory-20261008.md) 和 [生产执行记录](../operations/deletion-production-20261008.md)。
