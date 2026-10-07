@@ -593,7 +593,7 @@ class WorkJournal:
                 .values(state="pending", attempt_id=None)
             )
 
-    async def effect_result(self, key: str) -> str:
+    async def effect_result(self, key: str, *, original_tool: str = "legacy_tool") -> str:
         def recorded_result(result: str) -> str:
             # This is the original persisted receipt reader, never a live adapter.
             from qq_ai_bot.runtime.effect_outcomes import (
@@ -609,6 +609,7 @@ class WorkJournal:
                     if row is not None and row["state"] == "accepted"
                     else {"result": result},
                     state="accepted",
+                    original_tool=original_tool,
                 )
             return result
 

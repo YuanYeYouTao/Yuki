@@ -143,7 +143,9 @@ def execution_evidence(
     }
 
 
-def historical_evidence(receipt: dict[str, Any], *, state: str = "accepted") -> dict[str, Any]:
+def historical_evidence(
+    receipt: dict[str, Any], *, state: str = "accepted", original_tool: str = "legacy_tool"
+) -> dict[str, Any]:
     """Read original facts without promoting absent or malformed display data."""
     from qq_ai_bot.capabilities.results import normalize_legacy_result
 
@@ -199,11 +201,11 @@ def historical_evidence(receipt: dict[str, Any], *, state: str = "accepted") -> 
             result = execution_evidence(
                 replace(
                     normalize_legacy_result(
-                        payload, provider_id="historical", tool_name="legacy_tool"
+                        payload, provider_id="historical", tool_name=original_tool
                     ),
                     data=original_body,
                 ),
-                tool="legacy_tool",
+                tool=original_tool,
                 side_effecting=True,
             )
         except (TypeError, ValueError):

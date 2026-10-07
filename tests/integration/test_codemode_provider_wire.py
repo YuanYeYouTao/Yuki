@@ -159,6 +159,9 @@ def wire_work_receipts(value):
             return []
         if isinstance(material, dict) and material.get("kind") == "work_unobserved_tool_round":
             return material["calls"]
+        # The current Host envelope contains the original observation as nested
+        # JSON text; inspect the captured wire recursively, not host internals.
+        return wire_work_receipts(material)
     return []
 
 

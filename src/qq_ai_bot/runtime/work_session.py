@@ -32,6 +32,7 @@ from qq_ai_bot.domain.messages import (
 from qq_ai_bot.execution_trace.phases import model_detail
 from qq_ai_bot.model_runtime.capacity import estimate_request_tokens, estimate_text_tokens
 from qq_ai_bot.runtime.activation_outcome import classify_failure
+from qq_ai_bot.runtime.effect_outcomes import ResultCapture, current_result_capture
 from qq_ai_bot.runtime.work_journal import (
     JournalUnavailable,
     WorkJournal,
@@ -270,36 +271,29 @@ class WorkSession:
                     call, f"{loaded.previous_chain}:{loaded.pending_sequence}:{call['id']}"
                 )
                 state = await self.journal.effect_state(key)
-                result = await self.journal.effect_result(key)
+                capture = ResultCapture(control.current["id"] if control.current else "", key)
+                token = current_result_capture.set(capture)
                 try:
-                    outcome = json.loads(result)
-                except (TypeError, ValueError):
-                    outcome = {}
-                if not isinstance(outcome, dict):
-                    outcome = {}
-                body = outcome.get("data")
-                run_id = body.get("run_id") if isinstance(body, dict) else None
+                    await self.journal.effect_result(key, original_tool=call["name"])
+                finally:
+                    current_result_capture.reset(token)
+                if capture.evidence is None:
+                    raise JournalUnavailable("original_effect_evidence_missing")
+                outcome = dict(capture.evidence)
+                outcome.setdefault("tool", call["name"])
+                outcome["effect_key"] = key
+                control.observe_evidence(outcome)
+                run_id = outcome.get("run_id")
                 if not isinstance(run_id, str) or not 1 <= len(run_id) <= 64:
                     run_id = None
-                if state == "accepted":
-                    control.observe_historical_result(call["name"], result, True)
-                    status = "unknown" if outcome.get("uncertain") else "recorded"
-                elif outcome.get("error") == "never_dispatched" and state in {None, "failed"}:
+                if outcome.get("uncertain"):
+                    status = "unknown"
+                elif outcome.get("executed") is False:
                     status = "not_dispatched"
+                elif state == "accepted":
+                    status = "recorded"
                 else:
                     status = "unknown"
-                if status == "unknown":
-                    control.known_effects.append(
-                        {
-                            "tool": call["name"],
-                            "effect_key": key,
-                            "run_id": run_id,
-                            "ok": False,
-                            "side_effecting": True,
-                            "uncertain": True,
-                        }
-                    )
-                    control.known_effects[:] = control.known_effects[-64:]
                 pending_audit.append(
                     {
                         "tool": call["name"],
@@ -386,12 +380,20 @@ class WorkSession:
                     )
                     continue
                 key = await self._pending_result_key(call, self.call_key(call["id"]))
-                result = await self.journal.effect_result(key)
+                capture = ResultCapture(control.current["id"] if control.current else "", key)
+                token = current_result_capture.set(capture)
+                try:
+                    result = await self.journal.effect_result(key, original_tool=call["name"])
+                finally:
+                    current_result_capture.reset(token)
+                if capture.evidence is None:
+                    raise JournalUnavailable("original_effect_evidence_missing")
                 self.transcript.append_result(call["id"], result)
                 recovered_results.append((call["id"], result))
-                control.observe_historical_result(
-                    call["name"], result, True, arguments=call.get("arguments", "{}")
-                )
+                recovered_evidence = dict(capture.evidence)
+                recovered_evidence.setdefault("tool", call["name"])
+                recovered_evidence["effect_key"] = key
+                control.observe_evidence(recovered_evidence)
             self.transcript.append_tool_media(tuple(recovered_results))
             retired_paid = row["phase"] == "response" and bool(
                 self.progress.get("compaction_staging")

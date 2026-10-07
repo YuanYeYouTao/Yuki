@@ -671,30 +671,6 @@ class WorkControl:
         if self.session is not None and not auxiliary:
             self.session.sequence += 1
 
-    def observe_historical_result(
-        self,
-        name: str,
-        result: str,
-        executed: bool,
-        *,
-        side_effecting: bool = True,
-        arguments: str = "{}",
-    ) -> None:
-        """Restore the prior journal's original serialized result into its bounded view."""
-        if not executed:
-            return
-        from qq_ai_bot.capabilities.results import normalize_legacy_result
-        from qq_ai_bot.runtime.effect_outcomes import execution_evidence
-
-        self.observe_evidence(
-            execution_evidence(
-                normalize_legacy_result(result, provider_id="display", tool_name=name),
-                tool=name,
-                side_effecting=side_effecting,
-                arguments=arguments,
-            )
-        )
-
     def observe_evidence(self, evidence: dict[str, Any]) -> None:
         """Bounded view of already accepted typed facts, never a result-text decoder."""
         if evidence.get("tool") in WORK_CONTROL_NAMES or not evidence.get("executed"):

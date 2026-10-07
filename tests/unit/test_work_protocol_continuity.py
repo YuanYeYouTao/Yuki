@@ -1521,3 +1521,97 @@ async def test_original_trigger_requirements_survive_goal_rewrite_and_business_r
     assert capsule["task_material"]["directives"][0]["refs"] == [reference]
     assert capsule["task_material"]["original_request_ref"] == reference
     await control.repository.release(control.lease)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed", [False, True])
+@pytest.mark.parametrize(
+    "kind",
+    ["typed_unknown", "typed_refused", "legacy_empty", "legacy_success", "typed_original_name"],
+)
+async def test_pending_recovery_uses_original_evidence_not_display(
+    database, tmp_path, monkeypatch, changed, kind
+):
+    from sqlalchemy import update
+
+    from qq_ai_bot.capabilities.results import ToolExecutionResult
+    from qq_ai_bot.runtime.effect_outcomes import execution_evidence
+    from qq_ai_bot.runtime.work_schema_v1 import effects
+
+    control = await _control(database, tmp_path)
+    initial = (ChatMessage("system", "fixed"), ChatMessage("user", "retain task"))
+    first = WorkSession(control, "original")
+    await first.restore(TurnTranscript(initial), compaction_brief=initial[-1])
+    call = ToolCall("original-call", ToolFunction("terminal_exec", "{}"))
+    first.transcript.append(ChatMessage("assistant", tool_calls=(call,)))
+    await first.save("response", (call,))
+    key = first.call_key(call.id)
+    await control.repository.prepare_effect(control.lease, control.current["id"], key, "tool")
+    stored = {"result": "{}"}
+    if kind == "legacy_success":
+        stored = {"result": '{"ok":true,"data":{"status":"succeeded","run_id":"original-run"}}'}
+    elif kind != "legacy_empty":
+        outcome = ToolExecutionResult(
+            ok=False,
+            data={"executed": kind != "typed_refused", "run_id": "original-run"},
+            uncertain=kind == "typed_unknown",
+            mutation_committed=False if kind == "typed_refused" else None,
+        )
+        stored = {
+            "result": '{"ok":true,"uncertain":false}',
+            "outcome": execution_evidence(
+                outcome,
+                tool="typed_original" if kind == "typed_original_name" else "terminal_exec",
+                side_effecting=True,
+            ),
+        }
+    raw = json.dumps(stored)
+    async with database.immediate_session() as writer:
+        await writer.execute(
+            update(effects)
+            .where(effects.c.effect_key == key)
+            .values(state="accepted", receipt_json=raw)
+        )
+    observed = []
+    observe = type(control).observe_evidence
+
+    def record(owner, fact):
+        observed.append(dict(fact))
+        observe(owner, fact)
+
+    monkeypatch.setattr(type(control), "observe_evidence", record)
+    before = await control.repository.get(control.current["id"])
+    resumed = WorkSession(control, "changed" if changed else "original")
+    await resumed.restore(TurnTranscript(initial), compaction_brief=initial[-1])
+    assert observed
+    original = observed[0]
+    assert original["tool"] == (
+        "typed_original" if kind == "typed_original_name" else "terminal_exec"
+    )
+    if kind == "legacy_success":
+        assert original["ok"] is True and original["uncertain"] is False
+    elif kind == "typed_original_name":
+        assert original["ok"] is False and original["uncertain"] is False
+    elif kind == "typed_refused":
+        assert original["executed"] is False and original["uncertain"] is False
+    else:
+        assert original["uncertain"] is True and original["ok"] is False
+    if changed:
+        messages = resumed.transcript.request().messages
+        audit = next(
+            message.content
+            for message in messages
+            if "旧模型链未配对调用的原始执行状态" in (message.content or "")
+        )
+        status = (
+            "not_dispatched"
+            if kind == "typed_refused"
+            else "recorded"
+            if kind in {"legacy_success", "typed_original_name"}
+            else "unknown"
+        )
+        assert f'"status": "{status}"' in audit
+    after = await control.repository.get(control.current["id"])
+    assert after["tool_calls"] == before["tool_calls"]
+    assert after["model_requests"] == before["model_requests"]
+    assert await resumed.journal.effect_state(key) == "accepted"
