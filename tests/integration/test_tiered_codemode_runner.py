@@ -1,7 +1,7 @@
 """Real Monty composes hidden tools while direct calls remain fenced.
 
-#262 makes terminal_exec direct; use still-hidden terminal_write to retain the
-original authorization, discovery and recovery regression.
+The complete terminal family is directly declared. A private extension fixture
+retains hidden-tool authorization, discovery and original recovery coverage.
 """
 
 import json
@@ -27,7 +27,7 @@ class TieredBackend(Backend):
 
     def definitions(self, runtime, **kwargs):
         terminal = ChatTool(
-            "terminal_write",
+            "fixture_specialized_command",
             "specialized command",
             {
                 "type": "object",
@@ -55,15 +55,15 @@ async def test_discovery_hidden_child_authorization_and_original_resume(
     database, tmp_path, segmented, denied
 ):
     program = (
-        "a = await yuki_terminal_write({'command': 'first'})\n"
-        "if a['ok']:\n    b = await yuki_terminal_write({'command': 'second'})\n"
+        "a = await yuki_fixture_specialized_command({'command': 'first'})\n"
+        "if a['ok']:\n    b = await yuki_fixture_specialized_command({'command': 'second'})\n"
         "a['status']"
     )
     responses = iter(
         [
-            call("lookup_tools", {"name": "terminal_write"}, "discover"),
+            call("lookup_tools", {"name": "fixture_specialized_command"}, "discover"),
             call("task_control", ACCEPT, "accept"),
-            call("terminal_write", {"command": "forged-direct"}, "forged"),
+            call("fixture_specialized_command", {"command": "forged-direct"}, "forged"),
             call("execute_code", {"code": program}, "code"),
             *(
                 [call("task_control", {"action": "fail", "reason": "permission denied"}, "fail")]
@@ -101,16 +101,20 @@ async def test_discovery_hidden_child_authorization_and_original_resume(
     else:
         assert result.text == "done"
     assert all(request.tools == visible for request in provider.requests)
-    assert "terminal_write" not in {tool.name for tool in visible}
-    discovery = next(m for m in provider.requests[1].messages if m.tool_call_id == "discover")
-    assert json.loads(discovery.content)["data"]["parameters"] == api.schemas["terminal_write"]
-    forged = next(m for m in provider.requests[3].messages if m.tool_call_id == "forged")
-    assert json.loads(forged.content)["error"] == "tool_not_declared"
+    assert "fixture_specialized_command" not in {tool.name for tool in visible}
+    discovery = parent_receipts(provider.requests[1], "discover")
+    assert len(discovery) == 1
+    assert (
+        json.loads(discovery[0])["data"]["parameters"] == api.schemas["fixture_specialized_command"]
+    )
+    forged = parent_receipts(provider.requests[3], "forged")
+    assert len(forged) == 1
+    assert json.loads(forged[0])["error"] == "tool_not_declared"
     paired = parent_receipts(provider.requests[-1], "code")
     assert len(paired) == 1
     body = json.loads(paired[0])
     if denied:
-        assert [name for name, _ in backend.log] == ["terminal_write"]
+        assert [name for name, _ in backend.log] == ["fixture_specialized_command"]
         assert body["error"] == "admission_closed"
         # The parent contains the bounded summary; verify the exact permission
         # refusal in the durable original child receipt, rather than demanding
@@ -121,7 +125,10 @@ async def test_discovery_hidden_child_authorization_and_original_resume(
         assert json.loads(receipt["result"])["error"] == "capability_no_longer_authorized"
     else:
         assert body["result"] == "succeeded"
-        assert [name for name, _ in backend.log] == ["terminal_write", "terminal_write"]
+        assert [name for name, _ in backend.log] == [
+            "fixture_specialized_command",
+            "fixture_specialized_command",
+        ]
         assert len({identity for _, identity in backend.log}) == 2
         assert all("/c" in identity for _, identity in backend.log)
         assert (await repo.get(active.current["id"]))["tool_calls"] == 2

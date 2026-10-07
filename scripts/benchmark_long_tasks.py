@@ -26,6 +26,7 @@ from typing import Any
 
 import httpx
 import pytest
+from tests.support.parent_receipts import observation_bodies
 
 from scripts.benchmark_pi_codemode import BASELINE, historical_runner
 from scripts.export_pi_codemode_inventory import export_inventory
@@ -641,17 +642,11 @@ async def compare_case(
             if message.get("role") == "tool":
                 receipts.append((message.get("tool_call_id"), message.get("content", "")))
             elif message.get("role") == "user":
-                try:
-                    material = json.loads(message.get("content", ""))
-                    if (
-                        isinstance(material, dict)
-                        and material.get("kind") == "work_unobserved_tool_round"
-                    ):
+                for material in observation_bodies(message.get("content", "")):
+                    if material.get("kind") == "work_unobserved_tool_round":
                         receipts.extend(
                             (item["call_id"], item["result"]) for item in material["calls"]
                         )
-                except (ValueError, TypeError):
-                    pass
             for call_id, content in receipts:
                 # Count portable rebase evidence as well as protocol tool rows;
                 # result characters follow the original parent ID on either wire.

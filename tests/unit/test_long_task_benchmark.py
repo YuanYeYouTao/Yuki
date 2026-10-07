@@ -8,6 +8,7 @@ from scripts import benchmark_long_tasks as bench
 from tests.integration.test_codemode_provider_wire import answer, wire_work_receipts
 from tests.integration.test_codemode_runner import call
 from tests.support.codemode_cases import requires_worker
+from tests.support.parent_receipts import observation_bodies
 from tests.support.work_compaction import summary_json
 
 from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
@@ -261,9 +262,10 @@ async def test_resumed_benchmark_keeps_trusted_note_in_actual_model_material(dat
         assert await visible_context_note(control) == note
         restored = await WorkSession(control, "benchmark-test").restore(TurnTranscript(()))
         material = [
-            json.loads(message.content)
+            body
             for message in restored.request().messages
-            if message.content and '"kind": "work_current_material"' in message.content
+            for body in observation_bodies(message.content)
+            if body.get("kind") == "work_current_material"
         ]
         assert material[-1]["context_note"] == note
         assert control.current["id"] == original["id"]
@@ -429,9 +431,10 @@ async def test_unpaid_long_task_assembly(
         primary_payloads.append(payload)
         if loop == "new" and any(
             m["role"] == "user"
-            and isinstance(m.get("content"), str)
-            and m["content"].startswith("{")
-            and json.loads(m["content"]).get("kind") == "work_segment_handoff"
+            and any(
+                body.get("kind") == "work_segment_handoff"
+                for body in observation_bodies(m.get("content"))
+            )
             for m in messages
         ):
             # A scripted model must respect the zero-business closing request.

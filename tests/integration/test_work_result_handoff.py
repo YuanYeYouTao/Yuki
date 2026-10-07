@@ -297,11 +297,11 @@ async def test_segment_allows_one_handoff_request_before_retiring_observed_worki
 
     def finish(request):
         materials = [
-            json.loads(m.content)
-            for m in request.messages
-            if m.content
-            and m.content.startswith("{")
-            and json.loads(m.content).get("kind") == "work_current_material"
+            material
+            for message in request.messages
+            if message.content
+            for material in observation_bodies(message.content)
+            if material.get("kind") == "work_current_material"
         ]
         rows = json.loads(materials[-1]["context_note"]["facts"][0]["text"])
         assert [row["q"] for row in rows] == list(range(5))
