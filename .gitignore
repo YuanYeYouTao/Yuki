@@ -41,7 +41,3 @@ artifacts/memory-quality/*.log
 /docs/operations/static-review-*.md
 /frontend/node_modules/
 /src/qq_ai_bot/webui/assets/
-
-# AOCI agent host integration (machine-bound; do not commit)
-.codex/config.toml
-.codex/config.toml.backup.*
