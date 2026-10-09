@@ -113,16 +113,14 @@ async def test_self_code_uses_original_initiative_and_shared_main_service(
         run_effect=chat.run_effect,
         bindings=chat.runtime.bindings,
     )
-    await resumer.resume(item)
+    error = await resumer.resume(item)
     row = await repository.get(item["id"])
     if scenario == "resumed":
         assert row["state"] == "queued"
         assert len(writes) == 32 and len(provider.requests) == 1
-        await resumer.resume(row)
+        error = await resumer.resume(row)
         row = await repository.get(item["id"])
-    assert row["state"] == ("cancelled" if scenario == "cancelled" else "completed"), (
-        resumer.last_error
-    )
+    assert row["state"] == ("cancelled" if scenario == "cancelled" else "completed"), error
     assert len(writes) == (0 if scenario == "refused" else count)
     actual_source = json.loads(row["source_json"])
     assert actual_source["initiative_run_id"] == source["initiative_run_id"]

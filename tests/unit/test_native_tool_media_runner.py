@@ -342,27 +342,3 @@ async def test_restored_tool_pixels_and_new_input_share_dispatch_budget(database
     AgentRunner._check_request_media_budget((restored,), runtime, backend)
     with pytest.raises(WorkCapacityError, match="media_request_budget_exceeded"):
         AgentRunner._check_request_media_budget((restored, current), runtime, backend)
-
-
-async def test_worker_wrapper_retains_private_pixels_and_delegates_source_guard():
-    from types import SimpleNamespace
-
-    from qq_ai_bot.capabilities.invocation import direct_invocations
-    from qq_ai_bot.llm.base import LLMError
-    from qq_ai_bot.services.subagent_execution import WorkerBackend
-
-    backend = Backend()
-    backend.media_max_bytes = 123
-    worker = WorkerBackend(backend, frozenset({"inspect"}))
-    runtime = SimpleNamespace(work_control=None)
-    invocation = direct_invocations((ToolCall("image", ToolFunction("inspect", "{}")),), runtime)[0]
-    result = await worker.execute_call(invocation)
-    assert result.images == (IMAGE,) and worker.media_max_bytes == 123
-    await worker.validate_images(result.images, runtime)
-    assert backend.validated == [(IMAGE,)]
-    backend.validate_images = AsyncMock(side_effect=LLMError("source_deleted"))
-    with pytest.raises(LLMError, match="source_deleted"):
-        await worker.validate_images(result.images, runtime)
-    denied = direct_invocations((ToolCall("denied", ToolFunction("undeclared", "{}")),), runtime)[0]
-    assert json.loads(await worker.execute_call(denied))["error"] == "worker_tool_not_declared"
-    assert backend.executed == ["inspect"]

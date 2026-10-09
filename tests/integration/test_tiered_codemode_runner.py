@@ -94,7 +94,7 @@ async def test_discovery_hidden_child_authorization_and_original_resume(
         )
     # Standalone Runner fixtures leave lifecycle settlement to their caller,
     # just as main/worker entrypoints do; persist the actual proposed ending.
-    await active.settle(delivered=False, pending_inputs=False)
+    await active.settle(pending_inputs=False)
     if denied:
         assert result.text == "permission denied"
         assert (await repo.get(active.current["id"]))["state"] == "failed"

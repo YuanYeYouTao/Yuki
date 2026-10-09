@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from qq_ai_bot.agent_core import ToolBatchOutcome
+from qq_ai_bot.agent_core import End, ToolBatchOutcome
 from qq_ai_bot.capabilities.coordinator import CoordinatedToolResult
 from qq_ai_bot.capabilities.results import ToolExecutionResult
 from qq_ai_bot.domain.messages import ChatMessage, ChatResponse, ToolCall, ToolFunction
@@ -174,13 +174,17 @@ async def test_code_host_pre_dispatch_refusal_publishes_typed_fact(path):
     assert json.loads(display)["executed"] is False
 
 
-def turn_for(outcome, display, *, completed=False):
+def turn_for(outcome, display, *, completed=False, accepted=None):
     name = "task_control" if completed else "read"
     tool_call = call("call", name, '{"action":"complete"}' if completed else "{}")
     session = SimpleNamespace(progress={}, save=AsyncMock())
     control = SimpleNamespace(
         session=session,
-        ending="completed" if completed else None,
+        ending=None,
+        accepted=accepted,
+        # Only the persisted accepted decision ends the activation; the
+        # display returned to the model is never consulted.
+        accepted_ending=lambda *_: "completed" if accepted else None,
         source={"delivery_contract": "return_to_caller"} if completed else {},
         handoff_work_id=None,
         current=None,
@@ -216,32 +220,26 @@ async def test_pending_repeat_guard_ignores_opposite_display(pending):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("ok", [False, True])
-async def test_caller_completion_pending_uses_fact_not_display(ok):
-    turn, session = turn_for(
-        ToolExecutionResult(ok=ok),
-        json.dumps({"ok": not ok}),
-        completed=True,
+@pytest.mark.parametrize("accepted", [False, True])
+async def test_accepted_completion_ends_on_persisted_decision_not_display(accepted):
+    decision = (
+        {"action": "complete", "call_key": "call", "result": "internal result"}
+        if accepted
+        else None
     )
-    await turn.finish_tool_turn(0, ChatResponse("", 0), ToolBatchOutcome(()))
-    assert ("caller_completion_pending_result" in session.progress) is ok
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("completed", [False, True])
-async def test_caller_revalidation_requires_fresh_control_settlement(completed):
-    turn, session = turn_for(ToolExecutionResult(ok=True), "prior display", completed=True)
-    control = turn.runtime.work_control
-    control.current = {"id": "original-work"}
-    control.pending = AsyncMock(return_value=False)
-    session.progress["caller_completion_pending_result"] = {"action": "complete"}
-
-    async def settle(*_):
-        assert control.ending is None
-        if completed:
-            control.ending = "completed"
-        return json.dumps({"ok": not completed})
-
-    control.execute = settle
-    assert await turn.revalidate_caller_completion() is completed
-    assert ("caller_completion_pending_result" in session.progress) is completed
+    turn, session = turn_for(
+        ToolExecutionResult(ok=accepted),
+        json.dumps({"ok": not accepted, "ending_proposed": "completed"}),
+        completed=True,
+        accepted=decision,
+    )
+    outcome = await turn.finish_tool_turn(0, ChatResponse("", 0), ToolBatchOutcome(()))
+    assert isinstance(outcome, End) is accepted
+    assert "caller_completion_pending_result" not in session.progress
+    if accepted:
+        # The activation ends with the accepted internal result; it is
+        # returned to its owner and never delivered by itself.
+        assert outcome.value.text == "internal result"
+        assert outcome.value.suppress_delivery is True
+        assert outcome.value.work_state == "completed"
+        assert outcome.value.model_requests == 1

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
-from tests.support.work_session import WorkSession
+from tests.support.work_session import WorkSession, invoke_tool
 from tests.unit.rollup_test_helpers import candidate_summary
 from tests.unit.test_conversation_rollup_370 import _append, _policy
 from tests.unit.test_work_journal_source_retry import _saved, _session
@@ -128,7 +128,7 @@ async def test_real_semantic_commit_keeps_effective_overlay_and_exact_request(
     invoke = AsyncMock(
         return_value='{"ok":true,"executed":true,"execution_id":"original-execution"}'
     )
-    result = await session.execute(call, invoke)
+    result = await invoke_tool(session, call, invoke)
     session.transcript.append_result(call.id, result)
     original_receipt = await _receipt(database, control)
     original_budget = await control.repository.get(control.current["id"])
@@ -161,7 +161,7 @@ async def test_real_semantic_commit_keeps_effective_overlay_and_exact_request(
     recovered = WorkSession(control, session.contract)
     control.session = recovered
     await recovered.restore(TurnTranscript((ChatMessage("user", "unused new wakeup"),)))
-    assert await recovered.execute(call, invoke) == result
+    assert await invoke_tool(recovered, call, invoke) == result
     invoke.assert_awaited_once()
     assert await _receipt(database, control) == original_receipt
     current_budget = await control.repository.get(control.current["id"])

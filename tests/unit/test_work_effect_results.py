@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import select, update
 from tests.support.social_identity_cases import social_env
-from tests.support.work_session import WorkSession
+from tests.support.work_session import WorkSession, invoke_tool
 from tests.support.workspace_snapshots import snapshot_bytes
 
 from qq_ai_bot.capabilities.results import ToolExecutionResult, ToolResultBudgeter
@@ -53,7 +53,7 @@ async def execute(session, store, identity, outcome, *, side_effecting=True):
             await ToolResultBudgeter(max_characters=24000, artifacts=store).render(outcome)
         ).text
 
-    return await session.execute(call, invoke, side_effecting=side_effecting)
+    return await invoke_tool(session, call, invoke, side_effecting=side_effecting)
 
 
 @pytest.mark.asyncio
@@ -395,10 +395,13 @@ async def test_migrated_active_work_completes_from_original_file_caption_without
     if protocol == "unmatched_native":
         assert completed == {"ok": False, "error": "work_has_unresolved_execution"}
         assert await control.has_unresolved_effects(pending=False)
-        blocked = await resumed.execute(
+        blocked = await invoke_tool(
+            resumed,
             ToolCall("new-send", ToolFunction("send_message", arguments)),
             lambda: None,
             side_effecting=True,
+            # A direct send bypasses the fence; a composed send never does.
+            child_ordinal=0,
         )
         assert json.loads(blocked)["error_code"] == "unresolved_prior_effect"
         assert await resumed.journal.effect_result(key) == result

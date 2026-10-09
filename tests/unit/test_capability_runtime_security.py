@@ -28,10 +28,7 @@ from qq_ai_bot.capabilities.validation import (
     TOOL_INPUT_VALIDATION_FAILED,
     JsonSchemaCapabilityValidator,
 )
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.runtime.authority import TurnAuthority, TurnSceneFacts
 from qq_ai_bot.runtime.contracts import MemoryCapabilityView
-from qq_ai_bot.runtime.origin import TurnOrigin as RuntimeTurnOrigin
 
 
 def _descriptor(
@@ -259,16 +256,6 @@ def _runtime(
     snapshot = DescriptorRegistrySnapshot(catalog)
     return TurnCapabilityRuntime(
         registry=snapshot,
-        authority=TurnAuthority(
-            actor_user_id="1001",
-            bot_user_id="9999",
-            origin=RuntimeTurnOrigin.USER_MESSAGE,
-            permission_ceiling=frozenset(),
-            delegated_authority=None,
-            authority_revision=1,
-        ),
-        scene=TurnSceneFacts(scope_type=ScopeType.PRIVATE, group_id=None),
-        memory_view=memory_view,
         policy_context=CapabilityPolicyContext(
             authority=AuthorityContext(actor_user_id="1001", is_superuser=False),
             origin=TurnOrigin.USER_MESSAGE,
@@ -295,13 +282,17 @@ def test_stable_declarations_are_complete_while_execution_remains_authorized() -
             )
         ),
     )
-    snapshot = runtime.initial_exposure()
+    # Freshly constructed: complete declaration, nothing executable yet.
+    assert runtime.callable_capability_ids() == frozenset()
+    assert runtime.validate_call("web_search", '{"query":"x"}') == (False, NO_LONGER_AUTHORIZED)
+    runtime.initial_exposure()
     assert {tool.name for tool in runtime.definitions()} == {
         "web_search",
         "memory_change",
         "admin_set_config",
     }
-    assert set(snapshot.requestable_capability_ids) == {"web_search", "memory_change"}
+    assert runtime.callable_capability_ids() == {"web_search", "memory_change"}
+    assert runtime.validate_call("web_search", '{"query":"x"}') == (True, None)
     assert runtime.validate_call("admin_set_config", '{"query":"x"}') == (
         False,
         NO_LONGER_AUTHORIZED,
@@ -310,3 +301,46 @@ def test_stable_declarations_are_complete_while_execution_remains_authorized() -
         False,
         "undeclared_tool",
     )
+
+
+def _memory_view(revision: int, *, hidden: tuple[str, ...] = ()) -> MemoryCapabilityView:
+    return MemoryCapabilityView(
+        eager_namespaces=(),
+        requestable_namespaces=("memory.state.write",),
+        hidden_namespaces=hidden,
+        transition_revision=revision,
+    )
+
+
+def test_memory_revision_changes_only_execution_grants_and_denial_wins() -> None:
+    entries = (
+        _entry(_descriptor("web_search", namespace="web.search")),
+        _entry(_descriptor("memory_change", namespace="memory.state.write")),
+    )
+    runtime = _runtime(*entries, memory_view=_memory_view(1))
+    runtime.initial_exposure()
+    declared = runtime.definitions()
+    assert "memory_change" in runtime.callable_capability_ids()
+    runtime.sync_memory_view(_memory_view(2, hidden=("memory.state.write",)))
+    # The declaration is fixed; the hidden namespace is denied at execution.
+    assert runtime.definitions() == declared
+    assert runtime.callable_capability_ids() == {"web_search"}
+    assert runtime.validate_call("memory_change", '{"query":"x"}') == (
+        False,
+        NO_LONGER_AUTHORIZED,
+    )
+    # The same revision is not re-projected.
+    runtime.sync_memory_view(_memory_view(2))
+    assert runtime.callable_capability_ids() == {"web_search"}
+
+
+def test_memory_sync_before_initial_exposure_opens_existing_grants() -> None:
+    runtime = _runtime(
+        _entry(_descriptor("web_search", namespace="web.search")),
+        _entry(_descriptor("memory_change", namespace="memory.state.write")),
+    )
+    assert runtime.callable_capability_ids() == frozenset()
+    runtime.sync_memory_view(_memory_view(1))
+    assert runtime.callable_capability_ids() == {"web_search", "memory_change"}
+    runtime.initial_exposure()
+    assert runtime.callable_capability_ids() == {"web_search", "memory_change"}

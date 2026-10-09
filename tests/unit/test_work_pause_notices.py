@@ -92,7 +92,7 @@ async def _paused(database, tmp_path):
         run_effect=chat.run_effect,
         bindings=chat.runtime.bindings,
     )
-    scheduler = WorkScheduler(repository, resumer, chat_admission_enabled=False)
+    scheduler = WorkScheduler(repository, resumer.resume, chat_admission_enabled=False)
     scheduler._last_reclaim = time.monotonic()
     return env, repository, resumer, scheduler, identity, source, generate, provider
 
@@ -372,7 +372,7 @@ async def test_notice_reconciliation_failure_preserves_original_cause(
             await resumer._resume(item, json.loads(item["source_json"]))
         assert caught.value.__cause__ is original
         # Dispatching is not a definitely unsubmitted plan and cannot be selected again.
-        scheduler = WorkScheduler(repo, resumer, chat_admission_enabled=False)
+        scheduler = WorkScheduler(repo, resumer.resume, chat_admission_enabled=False)
         scheduler._last_reclaim = time.monotonic()
         await scheduler.drain_once()
         assert sent.await_count == 1

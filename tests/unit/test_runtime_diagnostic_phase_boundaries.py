@@ -137,9 +137,7 @@ async def test_scheduler_maintenance_and_resumers_remain_serial_and_separately_t
         clock[0] += 8
 
     monkeypatch.setattr(ProtocolStore, "cleanup", cleanup)
-    scheduler = WorkScheduler(
-        repository, SimpleNamespace(resume=resume, last_error=None), chat_admission_enabled=True
-    )
+    scheduler = WorkScheduler(repository, resume, chat_admission_enabled=True)
     await scheduler.drain_once()
     report = (await scheduler.health())["phase_timings"]
     assert calls == [
@@ -154,8 +152,8 @@ async def test_scheduler_maintenance_and_resumers_remain_serial_and_separately_t
         ("wake_rollups", 4),
         ("reclaim", 5),
         ("protocol_cleanup", 6),
-        ("serial_resumer", 8),
+        ("resume", 8),
     ):
         assert report[name]["maximum"] == maximum
-    assert report["serial_resumer"]["count"] == 2
+    assert report["resume"]["count"] == 2
     assert report["selection"]["count"] == 1

@@ -15,8 +15,6 @@ from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.conversation.rollup.repository import ConversationScopeRepository
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.identity.routing import PresenceRouter, ResolvedSend
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.runtime.activation_bindings import ActiveWorkBindings
@@ -69,10 +67,13 @@ class WorkResumer:
     def __init__(self, repository: WorkRepository, services: WorkResumeDependencies) -> None:
         self.repository = repository
         self.services = services
-        self.last_error: str | None = None
 
-    async def resume(self, item: dict[str, Any]) -> None:
+    async def resume(self, item: dict[str, Any]) -> str | None:
+        """Run one selected Work; return this run's error category, None on success."""
         source = json.loads(item["source_json"])
+        # True only while the original SELF source prepares its first scene/
+        # Presence boundary, before any activation can dispatch anything.
+        startup = [False]
         try:
             if item["state"] == "running":
                 # Scheduler selected an expired/absent owner. The lost process
@@ -80,14 +81,15 @@ class WorkResumer:
                 await self._recover_preparation_failure(
                     item, source, WorkConflict("work_activation_interrupted"), orphan=True
                 )
-                return
+                return None
             if source.get("owner") == "plugin_invocation":
                 await self.services.resume_plugin(item, source)
             elif source.get("origin") == "self_initiative":
                 if item["state"] != "suspended":
-                    await self._resume_self(item, source)
+                    return await self._resume_self(item, source, startup)
             elif source.get("origin") in {"user_message", "autonomous_group"}:
-                await self._resume(item, source)
+                return await self._resume(item, source)
+            return None
         except WorkConflict as exc:
             if item["state"] == "suspended":
                 try:
@@ -95,23 +97,30 @@ class WorkResumer:
                 except BaseException as cleanup:
                     exc.add_note(f"notice reconciliation deferred: {type(cleanup).__name__}")
                     raise exc from exc.__cause__
-            return
+            return None
         except Exception as exc:
             from qq_ai_bot.runtime.activation_outcome import (
                 WorkActivationHandled,
             )
 
-            self.last_error = type(exc).__name__
+            category = type(exc).__name__
             if isinstance(exc, WorkActivationHandled):
-                return
+                return category
             try:
-                await self._recover_preparation_failure(item, source, exc)
+                await self._recover_preparation_failure(item, source, exc, startup=startup[0])
             except BaseException as cleanup:
                 exc.add_note(f"work preparation recovery deferred: {type(cleanup).__name__}")
                 raise exc from exc.__cause__
+            return category
 
     async def _recover_preparation_failure(
-        self, item: dict[str, Any], source: dict[str, Any], exc: Exception, *, orphan: bool = False
+        self,
+        item: dict[str, Any],
+        source: dict[str, Any],
+        exc: Exception,
+        *,
+        orphan: bool = False,
+        startup: bool = False,
     ) -> None:
         from qq_ai_bot.runtime.activation_outcome import WorkRecoveryDeferred
         from qq_ai_bot.runtime.work_activation import bind_work_activation
@@ -127,6 +136,8 @@ class WorkResumer:
                 raise WorkConflict("work_recovery_lease_lost")
 
         control = WorkControl(self.repository, lease, item["source_key"], source, validate)
+        # The supervisor still proves "never started" from durable facts.
+        control.startup_boundary = startup
         async with bind_work_activation(control):
             current = await self.repository.get(item["id"])
             if orphan:
@@ -281,14 +292,18 @@ class WorkResumer:
 
         return child
 
-    async def _resume_self(self, item: dict[str, Any], source: dict[str, Any]) -> None:
+    async def _resume_self(
+        self, item: dict[str, Any], source: dict[str, Any], startup: list[bool]
+    ) -> str | None:
         """Resume the original SELF Work through the same Main Agent entry point."""
         recovered = await recover_self_source(
             self.repository.database, item["conversation_id"], source, request_id=item["id"]
         )
+        startup[0] = True
         async with self._scene(item, source, recovered) as scene:
+            startup[0] = False
             if scene is None:
-                return
+                return None
             key, snapshot = scene.key, scene.snapshot
             token, validate = scene.token, scene.validate
             child = self._child_resolver(item["id"])
@@ -310,18 +325,7 @@ class WorkResumer:
                 runtime = await self.services.runtime_config.snapshot(
                     group_id=recovered.external_target_id
                 )
-                actor = ToolActor(
-                    user_id="",
-                    bot_user_id=recovered.bot_user_id,
-                    group_id=recovered.external_target_id,
-                    origin=TurnOrigin.SELF_INITIATIVE,
-                    instruction=recovered.content,
-                    execution_id=item["id"],
-                    conversation_id=recovered.conversation_id,
-                    presence_id=recovered.presence_id,
-                    principal_kind="self",
-                    initiative_run_id=recovered.run_id,
-                )
+                actor = recovered.actor(item["id"])
                 result = await self.services.generate_self(
                     trigger=recovered.trigger(),
                     runtime=runtime,
@@ -347,13 +351,13 @@ class WorkResumer:
                         allow_automation=True,
                     ),
                 )
-                self.last_error = (
+                return (
                     result.outcome.failure.code
                     if result.outcome and result.outcome.failure
                     else None
                 )
 
-    async def _resume(self, item: dict[str, Any], source: dict[str, Any]) -> None:
+    async def _resume(self, item: dict[str, Any], source: dict[str, Any]) -> str | None:
         recovered = await recover_source(
             self.repository.database, item["conversation_id"], source, request_id=item["id"]
         )
@@ -362,7 +366,7 @@ class WorkResumer:
             raise ValueError("work_source_deleted")
         async with self._scene(item, source, recovered) as scene:
             if scene is None:
-                return
+                return None
             identity, key, snapshot = scene.identity, scene.key, scene.snapshot
             token, resolved, validate = scene.token, scene.resolved, scene.validate
 
@@ -464,29 +468,11 @@ class WorkResumer:
                                     f"notice reconciliation deferred: {type(cleanup).__name__}"
                                 )
                             raise
-                    return
-                from qq_ai_bot.runtime.work_delivery import repair_receipt_ledger
-
-                await repair_receipt_ledger(control, self.services.ledger)
+                    return None
                 runtime = await self.services.runtime_config.snapshot(
                     user_id=recovered.actor_user_id, group_id=original.group_id
                 )
-                inbound = InboundMessage(
-                    message_id=original.platform_message_id,
-                    source_event_id=original.id,
-                    event_type="message",
-                    scope_type=original.scope_type,
-                    sender=SenderIdentity(recovered.actor_user_id),
-                    text=original.content,
-                    bot_user_id=recovered.bot_user_id,
-                    group_id=original.group_id,
-                    received_at=original.occurred_at,
-                    person_id=recovered.actor_person_id,
-                    space_id=recovered.target_space_id,
-                    conversation_id=recovered.conversation_id,
-                    presence_id=recovered.presence_id,
-                    legacy_conversation_key=key,
-                )
+                inbound = recovered.inbound(original, legacy_conversation_key=key)
                 result = await self.services.generate_wakeup(
                     event=original,
                     trigger=WorkResumeTrigger(
@@ -519,18 +505,9 @@ class WorkResumer:
                         sandbox_source={**source, "work_id": item["id"]},
                     ),
                 )
-                self.last_error = (
+                category = (
                     result.outcome.failure.code
                     if result.outcome and result.outcome.failure
                     else None
                 )
-                from qq_ai_bot.domain.messages import OutboundSendReceipt
-                from qq_ai_bot.runtime.work_delivery import resume_delivery_plan
-
-                class ResumeSender:
-                    async def send_prepared(self, message: Any, key: str) -> OutboundSendReceipt:
-                        outcome = await deliver_message(message, key)
-                        return OutboundSendReceipt(str(outcome["message_id"]))
-
-                if control.session and control.session.recovered_delivery == "delivery":
-                    await resume_delivery_plan(control, ResumeSender())
+                return category

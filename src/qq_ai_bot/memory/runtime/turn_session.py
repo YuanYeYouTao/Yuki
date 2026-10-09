@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.domain.messages import AttachmentKind, InboundMessage
+from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.memory.attribution import (
     MemoryAttributionJob,
     MemoryAttributionWorker,
@@ -37,17 +37,17 @@ from qq_ai_bot.memory.runtime.resolver import (
     MemoryAccessDecision,
     MemoryAccessReason,
     MemoryStructuredCommand,
+    resolve_inbound_scope,
     resolve_memory_access,
-    resolve_scope_from_scene,
 )
 from qq_ai_bot.memory.runtime.state import (
     MemorySessionState,
     RecallHandle,
 )
 from qq_ai_bot.memory.self_origin import SelfMemoryOrigin
-from qq_ai_bot.runtime.authority import TurnAuthority, TurnSceneFacts
 from qq_ai_bot.runtime.contracts import DeliverySummary, MemoryCapabilityView, MemoryReceiptHandle
 from qq_ai_bot.runtime.delivery import DeliveryStatus
+from qq_ai_bot.runtime.errors import InvalidTurnContextError
 from qq_ai_bot.runtime.keys import ResolvedMemoryScope
 from qq_ai_bot.runtime.origin import TurnOrigin
 
@@ -58,24 +58,6 @@ _MEMORY_READ_TOOLS = frozenset(
         "get_memory_evidence",
     }
 )
-
-
-def scene_from_inbound(
-    inbound: InboundMessage, *, image_present: bool | None = None
-) -> TurnSceneFacts:
-    """Trusted scene facts for the resolver.  Never derived from model text."""
-
-    attachments = (*inbound.attachments, *inbound.reply_attachments)
-    images = image_present
-    if images is None:
-        images = any(item.kind is AttachmentKind.IMAGE for item in attachments)
-    return TurnSceneFacts(
-        scope_type=inbound.scope_type,
-        group_id=inbound.group_id,
-        image_present=images,
-        mentions_bot=inbound.mentions_bot,
-        reply_present=bool(inbound.reply_text or inbound.reply_sender_user_id),
-    )
 
 
 class TurnMemorySession:
@@ -133,24 +115,25 @@ class TurnMemorySession:
         partition_lookup: MemoryPartitionLookup,
         origin: TurnOrigin,
         user_question: str,
-        authority: TurnAuthority,
         structured_command: MemoryStructuredCommand = MemoryStructuredCommand.NONE,
-        image_present: bool | None = None,
         runtime_turn_id: str | None = None,
         attribution: MemoryAttributionWorker | None = None,
         memory_available: bool = True,
     ) -> TurnMemorySession:
-        scene = scene_from_inbound(inbound, image_present=image_present)
+        if origin is TurnOrigin.SELF_INITIATIVE:
+            # SELF continues under its own run identity via open_self_origin.
+            raise InvalidTurnContextError("invalid turn principal")
+        scope = resolve_inbound_scope(inbound)
         decision = resolve_memory_access(
-            authority=authority,
-            scene=scene,
+            origin=origin,
+            reply_present=bool(inbound.reply_text or inbound.reply_sender_user_id),
             structured_command=structured_command,
             memory_available=memory_available,
             retrieval_enabled=runtime.memory.retrieval_enabled,
         )
         return cls(
             decision=decision,
-            scope=resolve_scope_from_scene(authority=authority, scene=scene),
+            scope=scope,
             inbound=inbound,
             identity=identity,
             runtime=runtime,

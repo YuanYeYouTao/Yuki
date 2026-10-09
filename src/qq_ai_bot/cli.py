@@ -247,6 +247,33 @@ def _add_conversation_parser(
     )
 
 
+def _add_work_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    work = subparsers.add_parser("work", help="停写 Work 维护")
+    commands = work.add_subparsers(dest="work_command", required=True)
+    legacy = commands.add_parser(
+        "import-legacy-deliveries",
+        help="对账 v3.8.3/3.8.4 遗留的冻结最终发送计划；不调用网关、不补发",
+    )
+    legacy.add_argument("--dry-run", action="store_true", help="只统计，不写入")
+
+
+async def _work_command(settings: Settings, args: argparse.Namespace) -> int:
+    from qq_ai_bot.persistence.event_repository import EventLedgerRepository
+    from qq_ai_bot.runtime.work_delivery import import_legacy_deliveries
+
+    if args.work_command != "import-legacy-deliveries":
+        return 1
+    database = Database(settings.database_url)
+    try:
+        report = await import_legacy_deliveries(
+            database, EventLedgerRepository(database), dry_run=bool(args.dry_run)
+        )
+    finally:
+        await database.engine.dispose()
+    print(json.dumps({"ok": True, **report.as_counts()}, ensure_ascii=False))
+    return 0
+
+
 def _add_memory_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     memory = subparsers.add_parser("memory", help="Memory V2 质量、审计与显式治理")
     commands = memory.add_subparsers(dest="memory_command", required=True)
@@ -799,6 +826,7 @@ def main() -> None:
     _add_plugin_parser(subparsers)
     _add_diagnostics_parsers(subparsers)
     _add_conversation_parser(subparsers)
+    _add_work_parser(subparsers)
     _add_memory_parser(subparsers)
     args = parser.parse_args()
     if args.command == "setup":
@@ -845,6 +873,8 @@ def main() -> None:
         raise SystemExit(asyncio.run(_runtime_diagnostics(settings, args)))
     elif args.command == "conversation":
         raise SystemExit(asyncio.run(_conversation_command(settings, args)))
+    elif args.command == "work":
+        raise SystemExit(asyncio.run(_work_command(settings, args)))
     elif args.command == "memory":
         raise SystemExit(asyncio.run(_memory_command(settings, args)))
 

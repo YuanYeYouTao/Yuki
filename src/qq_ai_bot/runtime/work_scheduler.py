@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
-from typing import Any, Protocol
+from typing import Any
 
 from sqlalchemy import func, or_, select
 
@@ -22,22 +22,26 @@ from qq_ai_bot.runtime.work_wait_schema import waits
 logger = logging.getLogger(__name__)
 
 
-class WorkResumeService(Protocol):
-    last_error: str | None
+# Resume one selected Work; returns that run's error category (None on success).
+ResumeWork = Callable[[dict[str, Any]], Awaitable[str | None]]
 
-    async def resume(self, item: dict[str, Any]) -> None: ...
+# Selection limit doubles as the cap on concurrently dispatched root scopes.
+_MAX_IN_FLIGHT = 8
 
 
 class WorkScheduler:
     def __init__(
         self,
         repository: WorkRepository,
-        resumer: WorkResumeService,
+        resume: ResumeWork,
         *,
         chat_admission_enabled: bool,
     ) -> None:
         self.repository = repository
-        self.resumer = resumer
+        self._resume = resume
+        # One task per conversation scope; it resumes that scope's selected items in order.
+        self._in_flight: dict[str, asyncio.Task[None]] = {}
+        self._accepting = True
         self._chat_admission_enabled = chat_admission_enabled
         self._waits = WorkWaitRepository(repository)
         self._worker: asyncio.Task[None] | None = None
@@ -54,7 +58,7 @@ class WorkScheduler:
                 "reclaim",
                 "protocol_cleanup",
                 "selection",
-                "serial_resumer",
+                "resume",
             )
         }
 
@@ -77,16 +81,23 @@ class WorkScheduler:
         # Existing accepted Work must recover even when optional chat admission is off.
         # SELF always uses durable Work, including the legacy participation proposer.
         if self._worker is None:
+            self._accepting = True
             from qq_ai_bot.runtime.execution_receipts import PROCESS_ID
 
             await self.repository.repair_abandoned_inputs(PROCESS_ID)
             self._worker = asyncio.create_task(self._loop(), name="runtime-work-scheduler")
 
     async def close(self) -> None:
+        self._accepting = False
         task, self._worker = self._worker, None
         if task is not None:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        active = tuple(self._in_flight.values())
+        for worker in active:
+            worker.cancel()
+        await asyncio.gather(*active, return_exceptions=True)
+        self._in_flight.clear()
 
     async def health(self) -> dict[str, object]:
         async with self.repository.database.sessions() as session:
@@ -114,6 +125,7 @@ class WorkScheduler:
             "enabled": True,
             "chat_admission_enabled": self._chat_admission_enabled,
             "running": self.running,
+            "active_scopes": len(self._in_flight),
             "wait_running": self._wait_worker is not None and not self._wait_worker.done(),
             "last_error_category": self._last_error,
             "wait_error_category": self._last_wait_error,
@@ -166,7 +178,7 @@ class WorkScheduler:
     async def _selection_loop(self) -> None:
         while True:
             try:
-                await self.drain_once()
+                await self.dispatch_once()
             except Exception as exc:
                 self._last_error = type(exc).__name__
                 logger.warning("work_scheduler_failed category=%s", self._last_error)
@@ -186,6 +198,13 @@ class WorkScheduler:
             logger.warning("work_wait_poll_failed category=%s", self._last_wait_error)
 
     async def drain_once(self) -> None:
+        """Dispatch one scan and wait for the scopes it started (tests/manual drains)."""
+        started = await self.dispatch_once()
+        if started:
+            await asyncio.wait(started)
+
+    async def dispatch_once(self) -> list[asyncio.Task[None]]:
+        """Maintain, select and dispatch without waiting for any resume to finish."""
         from qq_ai_bot.runtime.execution_receipts import PROCESS_ID
 
         with self._timed("repair_inputs"):
@@ -200,6 +219,9 @@ class WorkScheduler:
             with self._timed("protocol_cleanup"):
                 await ProtocolStore(self.repository.database).cleanup()
             self._last_reclaim = time.monotonic()
+        capacity = _MAX_IN_FLIGHT - len(self._in_flight)
+        if not self._accepting or capacity <= 0:
+            return []
         with self._timed("selection"):
             async with self.repository.database.sessions() as session:
                 rows = (
@@ -230,6 +252,7 @@ class WorkScheduler:
                                     ),
                                 ),
                                 work.c.id.not_in(select(children.c.work_id)),
+                                work.c.conversation_id.not_in(tuple(self._in_flight)),
                                 or_(scope.c.owner.is_(None), scope.c.lease_until <= time.time()),
                                 or_(
                                     recovery.c.work_id.is_(None),
@@ -237,13 +260,36 @@ class WorkScheduler:
                                 ),
                             )
                             .order_by(work.c.updated)
-                            .limit(8)
+                            .limit(_MAX_IN_FLIGHT)
                         )
                     )
                     .mappings()
                     .all()
                 )
+        batches: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
-            with self._timed("serial_resumer"):
-                await self.resumer.resume(dict(row))
-            self._last_error = self.resumer.last_error
+            batches.setdefault(row["conversation_id"], []).append(dict(row))
+        started: list[asyncio.Task[None]] = []
+        for conversation_id, items in list(batches.items())[:capacity]:
+            task = asyncio.create_task(
+                self._run_scope(conversation_id, items), name=f"runtime-work:{conversation_id}"
+            )
+            self._in_flight[conversation_id] = task
+            started.append(task)
+        return started
+
+    async def _run_scope(self, conversation_id: str, items: list[dict[str, Any]]) -> None:
+        try:
+            for item in items:
+                try:
+                    with self._timed("resume"):
+                        category = await self._resume(item)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    category = type(exc).__name__
+                    logger.warning("work_resume_failed category=%s", category)
+                # Health reflects only this run's own outcome.
+                self._last_error = category
+        finally:
+            self._in_flight.pop(conversation_id, None)

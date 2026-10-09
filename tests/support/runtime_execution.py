@@ -71,7 +71,9 @@ def make_child_executor(
             load_tools=load_tools,
             open_memory=chat.open_memory_session,
             open_self_memory=chat.open_self_memory_session,
-            backend_factory=lambda runtime: MainAgentBackend(chat, runtime),
+            backend_factory=lambda runtime, allowed: MainAgentBackend(
+                chat, runtime, allowed_tools=allowed
+            ),
             web_capabilities=chat.web_capabilities,
         ),
     )

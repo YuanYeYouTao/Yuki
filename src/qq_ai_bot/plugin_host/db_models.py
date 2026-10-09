@@ -549,6 +549,8 @@ class PluginBackgroundTurnJobModel(Base):
             "canonical_conversation_id",
         ),
         Index("ix_plugin_background_turn_jobs_canonical_presence_id", "canonical_presence_id"),
+        # One Job owns at most one original Work, and a Work at most one Job.
+        Index("ux_plugin_background_turn_work", "work_id", unique=True),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -592,5 +594,13 @@ class PluginBackgroundTurnJobModel(Base):
     canonical_presence_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("presences.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    # The exact original Work admitted for this Job. Set only null -> id in the
+    # admission writer; never recomputed from the capability-bound source hash.
+    # RESTRICT: deleting a referenced Work must first retire this Job explicitly.
+    work_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("runtime_work.id", ondelete="RESTRICT"),
         nullable=True,
     )

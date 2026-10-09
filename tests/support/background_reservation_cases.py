@@ -31,6 +31,7 @@ async def background_attempt_reservation():
         plugin_id="plugin",
         target_type="private",
         agent_intent="continue",
+        work_id=None,
     )
     resolved = SimpleNamespace(
         sender_account_id="80001",

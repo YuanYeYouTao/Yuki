@@ -18,7 +18,6 @@ from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.services.renderer import strip_internal_history_markers
 from qq_ai_bot.time.formatting import local_datetime, local_iso, stored_utc
 
-EXTERNAL_EVENT_DIGEST_SUMMARY_MAX_CHARACTERS = 800
 EXTERNAL_EVENT_CONTENT_TRUST = "external_untrusted"
 _MAIN_HISTORY_GROUP_SPAN = timedelta(minutes=5)
 _EXTERNAL_EVENT_DIGEST_METADATA_ID = "recent_external_events"
@@ -68,24 +67,6 @@ def prompt_origin_class(row: EventRecord) -> str:
     if row.direction == "outbound" and row.origin == "plugin_background":
         return "plugin_proactive"
     return "ordinary"
-
-
-def external_event_digest_item(
-    row: EventRecord,
-    *,
-    timezone: str,
-    summary_max_characters: int = EXTERNAL_EVENT_DIGEST_SUMMARY_MAX_CHARACTERS,
-) -> dict[str, object]:
-    """Return one coverage-tail digest object. Never includes payload."""
-
-    return {
-        "source": row.external_source or "external",
-        "source_plugin_id": row.source_plugin_id or "",
-        "event_type": row.external_event_type or "event",
-        "occurred_at": local_iso(row.occurred_at, timezone),
-        "summary": row.content[: max(0, summary_max_characters)],
-        "content_trust": EXTERNAL_EVENT_CONTENT_TRUST,
-    }
 
 
 def external_event_digest_data(
@@ -144,44 +125,6 @@ def external_event_digest_appended_growth(
     encoded = external_event_digest_encoded_characters(items)
     extra = EXTERNAL_EVENT_DIGEST_ITEMS_SEPARATOR_CHARACTERS if parent_items_nonempty else 0
     return encoded + extra
-
-
-def recent_external_event_digest(
-    rows: Iterable[EventRecord],
-    *,
-    timezone: str,
-    exclude_event_id: int | None = None,
-    limit: int,
-    character_limit: int,
-    summary_max_characters: int = EXTERNAL_EVENT_DIGEST_SUMMARY_MAX_CHARACTERS,
-) -> tuple[dict[str, object], ...]:
-    """Select bounded digest items from a final uncovered raw tail.
-
-    Newest-first. The complete appended growth into a nonempty ``items``
-    array, including the metadata wrapper, ``content_trust``, and the JSON
-    comma separator, must fit ``character_limit``. If even the newest bounded
-    item cannot fit, the digest is empty.
-    """
-
-    selected: list[dict[str, object]] = []
-    for row in reversed(tuple(rows)):
-        if row.event_kind != "external_event":
-            continue
-        if exclude_event_id is not None and row.id == exclude_event_id:
-            continue
-        item = external_event_digest_item(
-            row,
-            timezone=timezone,
-            summary_max_characters=summary_max_characters,
-        )
-        candidate = (*selected, item)
-        if external_event_digest_appended_growth(candidate) > character_limit:
-            break
-        selected.append(item)
-        if len(selected) >= limit:
-            break
-    selected.reverse()
-    return tuple(selected)
 
 
 @lru_cache(maxsize=8)

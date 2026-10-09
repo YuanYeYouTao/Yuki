@@ -43,6 +43,9 @@ class PersistentRollupCoverageHoldQuery:
             select(func.min(PluginBackgroundTurnJobModel.source_event_id)).where(
                 PluginBackgroundTurnJobModel.canonical_conversation_id == canonical_conversation_id,
                 PluginBackgroundTurnJobModel.status.in_(_ACTIVE_WAKEUP_STATUSES),
+                # A Job bound to its admitted Work no longer needs its source
+                # uncovered; a parked Work must not pin Rollup indefinitely.
+                PluginBackgroundTurnJobModel.work_id.is_(None),
                 PluginBackgroundTurnJobModel.source_event_id > floor,
                 PluginBackgroundTurnJobModel.source_event_id <= conversation.last_event_id,
             )

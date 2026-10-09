@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import select
 from tests.support.work_compaction import summary_json
-from tests.support.work_session import WorkSession
+from tests.support.work_session import WorkSession, invoke_tool
 from tests.unit.test_work_compaction_capacity import _runtime, _session
 
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ToolCall, ToolFunction
@@ -27,7 +27,7 @@ async def test_work_candidate_keeps_public_delta_out_of_summary_and_reuses_paid_
     call = ToolCall("original-read", ToolFunction("read_probe", "{}"))
     session.transcript.append(ChatMessage("assistant", "", tool_calls=(call,)))
     invoke = AsyncMock(return_value=json.dumps({"ok": True, "body": "retained probe"}))
-    output = await session.execute(call, invoke)
+    output = await invoke_tool(session, call, invoke)
     session.transcript.append_result(call.id, output)
     session.transcript.append(ChatMessage("assistant", "temporary research " * 6000))
     ambient = ChatMessage("user", "public-ambient-must-remain-once")

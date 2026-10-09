@@ -674,8 +674,12 @@ async def test_historical_unknown_reader_and_atomic_debt_agree_without_rewriting
         )
     facts = await repo.effect_evidence(lease, identity)
     assert bool(facts[0].get("uncertain")) is unknown
-    assert await repo.has_unresolved_effects(lease, identity) is unknown
-    assert bool(await repo.effect_evidence(lease, identity, only_unresolved=True)) is unknown
+    # Migration 0101 gives every legacy result-only receipt a canonical outcome,
+    # so SQL reads only outcome.*: a result-only row written past that boundary
+    # stays fenced even when the Python reader could decode it.
+    fenced = unknown or "outcome" not in stored
+    assert await repo.has_unresolved_effects(lease, identity) is fenced
+    assert bool(await repo.effect_evidence(lease, identity, only_unresolved=True)) is fenced
     assert (await read_receipt(repo, "history"))["receipt_json"] == raw
 
 

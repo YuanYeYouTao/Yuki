@@ -32,12 +32,10 @@ from qq_ai_bot.capabilities.validation import UNDECLARED_TOOL
 from qq_ai_bot.domain.messages import ChatImage, ChatTool, ToolCall, ToolFunction
 from qq_ai_bot.llm.base import LLMError
 from qq_ai_bot.memory.runtime.contract import MemoryReadPolicy
-from qq_ai_bot.runtime.authority import TurnAuthority
 from qq_ai_bot.runtime.observability import identifier_hash
 from qq_ai_bot.runtime.origin import TurnOrigin as RuntimeTurnOrigin
 from qq_ai_bot.services.agent_runner import AgentRuntime, AgentToolBackend
 from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.services.policies import replies_to_bot
 from qq_ai_bot.services.turn_coordinator import TurnSupersededError
 
 if TYPE_CHECKING:
@@ -140,7 +138,7 @@ class MainAgentBackend(AgentToolBackend):
         if self._capability_runtime is not None:
             return
         capability_runtime = self._install_capability_runtime()
-        await capability_runtime.prepare_initial_exposure()
+        capability_runtime.initial_exposure()
         self._catalog = capability_runtime.authorized_catalog
 
     def _memory(self) -> Any:
@@ -175,6 +173,10 @@ class MainAgentBackend(AgentToolBackend):
     def work_control_allowed(self, name: str) -> bool:
         # Lifecycle tools are declared globally, but remain subject to the
         # currently executing backend's mutation and delivery restrictions.
+        if self._child_work():
+            # A child's lifecycle controls are exactly its frozen contract;
+            # spawn/control names are absent from it, so no recursion exists.
+            return self._allowed_tools is not None and name in self._allowed_tools
         if name == "task_control":
             # Recording lifecycle state grants no business or send authority.
             # Even a restricted calculation must be able to answer or stop.
@@ -188,7 +190,18 @@ class MainAgentBackend(AgentToolBackend):
         )
 
     def work_query_allowed(self, action: str) -> bool:
-        """Use the automation directory's read authority, without executing it."""
+        """Use the automation directory's read authority, without executing it.
+
+        A child Work reads only its own lifecycle: WorkQueries fences the
+        query by the child lease's work ownership, so it neither needs nor
+        inherits the root's global Automation read authority.
+        """
+        if self._child_work():
+            return (
+                action in {"get", "list"}
+                and self._allowed_tools is not None
+                and "task_control" in self._allowed_tools
+            )
         name = "automation_get" if action == "get" else "automation_list"
         if self._allowed_tools is not None and name not in self._allowed_tools:
             return False
@@ -206,13 +219,23 @@ class MainAgentBackend(AgentToolBackend):
         permitted, _ = capability_runtime.validate_call(name, arguments)
         return permitted
 
+    @staticmethod
+    def _child_work(runtime: AgentRuntime | None = None) -> bool:
+        """A persistent child lease is a trusted fact, never a constructor flag."""
+        control = getattr(runtime, "work_control", None) if runtime is not None else None
+        if control is None:
+            from qq_ai_bot.runtime.work_activation import current_work_control
+
+            control = current_work_control.get()
+        return control is not None and control.lease.work_id is not None
+
     def _prompt_tools_closed(self) -> bool:
         if self._tools_closed:
             return True
         return self._runtime.tools_closed
 
     def definitions(self, runtime: AgentRuntime, *, web_was_used: bool) -> tuple[ChatTool, ...]:
-        del runtime
+        child = self._child_work(runtime)
         self._web_was_used = self._web_was_used or web_was_used
         if self._runtime.tools_closed:
             self._callable_tool_names = set()
@@ -223,6 +246,14 @@ class MainAgentBackend(AgentToolBackend):
         if session is not None:
             capability_runtime.sync_memory_view(session.capability_view())
         definitions = capability_runtime.definitions()
+        if child:
+            # Root/plugin declarations stay fixed; only a child catalog is its
+            # frozen execution subset.
+            definitions = tuple(
+                tool
+                for tool in definitions
+                if self._allowed_tools is not None and tool.name in self._allowed_tools
+            )
         if self._tools_closed:
             definitions = tuple(tool for tool in definitions if tool.name == "send_message")
         elif self._admin_retry_constraint is not None:
@@ -276,6 +307,8 @@ class MainAgentBackend(AgentToolBackend):
         return DescriptorRegistrySnapshot(catalog)
 
     def _install_capability_runtime(self) -> TurnCapabilityRuntime:
+        # The real execution backend is installed only for a consistent source.
+        self._runtime.validate_source()
         snapshot = self._refresh_capability_registry()
         session = self._memory()
         memory_view = session.capability_view() if session is not None else None
@@ -298,62 +331,11 @@ class MainAgentBackend(AgentToolBackend):
             memory_view=memory_view,
             artifact_available=self._service._tool_artifacts is not None,
         )
-        authority = TurnAuthority(
-            actor_user_id=(
-                ""
-                if self._runtime.actor_context is not None
-                and self._runtime.actor_context.principal_kind == "self"
-                else self._runtime.actor_user_id or "unknown"
-            ),
-            bot_user_id=self._runtime.effective_bot_user_id or "bot",
-            origin=RuntimeTurnOrigin(self._runtime.origin.value),
-            permission_ceiling=frozenset({"superuser"} if self._runtime.actor_is_superuser else ()),
-            delegated_authority=None,
-            authority_revision=1,
-            principal_kind=(
-                "self"
-                if self._runtime.actor_context is not None
-                and self._runtime.actor_context.principal_kind == "self"
-                else "person"
-            ),
-            initiative_run_id=self._runtime.initiative_run_id,
-        )
         self._capability_runtime = TurnCapabilityRuntime(
             registry=snapshot,
-            authority=authority,
-            scene=self._scene_facts(),
-            memory_view=memory_view,
             policy_context=policy_context,
         )
         return self._capability_runtime
-
-    def _scene_facts(self) -> Any:
-        from qq_ai_bot.domain.conversations import ScopeType as DomainScopeType
-        from qq_ai_bot.runtime.authority import TurnSceneFacts
-
-        inbound = self._runtime.inbound
-        scope = self._runtime.effective_scope_type
-        if scope is DomainScopeType.GROUP:
-            return TurnSceneFacts(
-                scope_type=scope,
-                group_id=self._runtime.current_group_id,
-                image_present=self._runtime.image_present,
-                mentions_bot=inbound.mentions_bot if inbound is not None else False,
-                replies_to_bot=replies_to_bot(inbound) if inbound is not None else False,
-                reply_present=bool(
-                    inbound is not None and (inbound.reply_text or inbound.reply_sender_user_id)
-                ),
-            )
-        return TurnSceneFacts(
-            scope_type=scope,
-            group_id=None,
-            image_present=self._runtime.image_present,
-            mentions_bot=inbound.mentions_bot if inbound is not None else False,
-            replies_to_bot=replies_to_bot(inbound) if inbound is not None else False,
-            reply_present=bool(
-                inbound is not None and (inbound.reply_text or inbound.reply_sender_user_id)
-            ),
-        )
 
     def _log_tool_exposure(
         self,
@@ -412,6 +394,12 @@ class MainAgentBackend(AgentToolBackend):
         call = invocation.call
         name, arguments_json = call.function.name, call.function.arguments
         runtime: AgentRuntime = invocation.context.runtime
+        if self._child_work(runtime) and (
+            self._allowed_tools is None or name not in self._allowed_tools
+        ):
+            # A child's frozen tool contract is its execution ceiling. Refuse
+            # before any source validation or binding, in the original shape.
+            return _worker_tool_not_declared(name)
         if name == "send_message" and runtime.work_control is None:
             try:
                 arguments = json.loads(arguments_json)
@@ -825,23 +813,6 @@ class MainAgentBackend(AgentToolBackend):
     def exhausted(self, runtime: AgentRuntime) -> str:
         return "这次操作的工具调用次数过多，已停止继续执行。请把请求拆小后再试。"
 
-    @staticmethod
-    def _memory_mutation_outcome(result: dict[str, object]) -> str:
-        data = result.get("data")
-        payload = data if isinstance(data, dict) else {}
-        applied = str(payload.get("applied_operation") or "")
-        outcome = str(payload.get("outcome") or "")
-        error = str(result.get("error") or result.get("error_code") or "")
-        if applied == "noop" or outcome in {"no_change", "deduplicated"}:
-            return "noop"
-        if error == "memory_candidate_ambiguous":
-            return "ambiguous"
-        if error == "memory_candidate_not_found":
-            return "not_found"
-        if result.get("mutation_committed") is True:
-            return "committed"
-        return "rejected"
-
     def _is_mutating_call(self, call: ToolCall) -> bool:
         entry = (
             self._catalog.by_model_name(call.function.name) if self._catalog is not None else None
@@ -981,3 +952,23 @@ def _refused_result(
     if capture is not None:
         capture.outcome = outcome
     return json.dumps(outcome.model_payload(), ensure_ascii=False)
+
+
+_WORKER_TOOL_NOT_DECLARED = '{"ok":false,"error":"worker_tool_not_declared"}'
+
+
+def _worker_tool_not_declared(name: str) -> str:
+    """Child refusal keeps its original model shape and publishes typed evidence."""
+    from qq_ai_bot.runtime.effect_outcomes import current_result_capture
+
+    capture = current_result_capture.get()
+    if capture is not None:
+        capture.outcome = ToolExecutionResult(
+            ok=False,
+            error_code="worker_tool_not_declared",
+            mutation_committed=False,
+            data={"executed": False},
+            provider_id="core",
+            tool_name=name,
+        )
+    return _WORKER_TOOL_NOT_DECLARED

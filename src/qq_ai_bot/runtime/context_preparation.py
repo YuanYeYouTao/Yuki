@@ -129,7 +129,7 @@ async def prepare_context[T](
                 from qq_ai_bot.runtime.work_control import WorkInputsPreparing
 
                 control.ending = "waiting_external"
-                await control.settle(delivered=False, pending_inputs=bool(await control.pending()))
+                await control.settle(pending_inputs=bool(await control.pending()))
                 raise WorkInputsPreparing("work_context_preparing") from requirement
             context_preparation_mode.set(ContextPreparationMode.FALLBACK)
             prepared = await builder()

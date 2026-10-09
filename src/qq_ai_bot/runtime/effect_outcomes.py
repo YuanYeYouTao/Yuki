@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -138,9 +139,62 @@ def execution_evidence(
         "error_code": outcome.error_code,
         "retryable": outcome.retryable,
         "mutation_committed": outcome.mutation_committed,
+        **(
+            {"request_postcondition_satisfied": True}
+            if outcome.ok
+            and not outcome.uncertain
+            and outcome.request_postcondition_satisfied is True
+            else {}
+        ),
         "executed": body.get("executed", True),
         **({"process": process} if process else {}),
     }
+
+
+def readonly_call_signature(name: str, arguments: str) -> str:
+    """Canonical readonly reuse signature; argument key order is not identity."""
+    try:
+        value = json.loads(arguments)
+    except ValueError:
+        normalized = arguments.strip()
+    else:
+        normalized = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(json.dumps([name, normalized], ensure_ascii=False).encode()).hexdigest()
+
+
+def effect_evidence(
+    outcome: ToolExecutionResult,
+    *,
+    tool: str,
+    side_effecting: bool,
+    arguments: str,
+    report: dict[str, Any] | None = None,
+    report_target: Any = None,
+) -> dict[str, Any]:
+    """Durable receipt evidence: typed facts plus readonly signature and report target."""
+    evidence = execution_evidence(
+        outcome, tool=tool, side_effecting=side_effecting, arguments=arguments
+    )
+    if not side_effecting:
+        evidence["readonly_call_signature"] = readonly_call_signature(tool, arguments)
+    if report:
+        evidence.update(work_report=report)
+        if evidence.get("report_target") is None:
+            evidence["report_target"] = report_target
+    return evidence
+
+
+def captured_evidence(
+    capture: ResultCapture, *, tool: str, side_effecting: bool, arguments: str
+) -> dict[str, Any] | None:
+    """Recorded evidence wins; otherwise project the typed outcome; None if neither."""
+    if capture.evidence is not None:
+        return capture.evidence
+    if capture.outcome is None:
+        return None
+    return execution_evidence(
+        capture.outcome, tool=tool, side_effecting=side_effecting, arguments=arguments
+    )
 
 
 def historical_evidence(

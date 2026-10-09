@@ -83,9 +83,7 @@ async def test_time_wait_is_delivered_while_another_root_activation_is_blocked(
             CancelledError=asyncio.CancelledError,
         ),
     )
-    scheduler = WorkScheduler(
-        repository, SimpleNamespace(resume=resume, last_error=None), chat_admission_enabled=False
-    )
+    scheduler = WorkScheduler(repository, resume, chat_admission_enabled=False)
     await scheduler.start()
     try:
         await asyncio.wait_for(entered.wait(), timeout=1)
@@ -113,7 +111,7 @@ async def test_time_wait_is_delivered_while_another_root_activation_is_blocked(
 async def test_wait_loop_exit_is_visible_and_collects_blocked_selection(database, monkeypatch):
     scheduler = WorkScheduler(
         WorkRepository(database),
-        SimpleNamespace(resume=AsyncMock(), last_error=None),
+        AsyncMock(),
         chat_admission_enabled=False,
     )
     entered, cancelled = asyncio.Event(), asyncio.Event()
@@ -148,7 +146,7 @@ async def test_close_during_failed_wait_loop_cleanup_does_not_cancel_selection_t
 ):
     scheduler = WorkScheduler(
         WorkRepository(database),
-        SimpleNamespace(resume=AsyncMock(), last_error=None),
+        AsyncMock(),
         chat_admission_enabled=False,
     )
     entered, cleanup_entered, release_cleanup = (asyncio.Event() for _ in range(3))
@@ -235,8 +233,10 @@ async def test_scheduler_delivers_original_time_wait_without_automation(
     )
     await repository.transition(lease, item["id"], item["revision"], "waiting_external")
     await repository.release(lease)
-    resumer = SimpleNamespace(resume=AsyncMock(), last_error=None)
-    scheduler = WorkScheduler(repository, resumer, chat_admission_enabled=chat_admission_enabled)
+    resumer = SimpleNamespace(resume=AsyncMock(return_value=None))
+    scheduler = WorkScheduler(
+        repository, resumer.resume, chat_admission_enabled=chat_admission_enabled
+    )
     await scheduler.poll_waits_once()
     await scheduler.drain_once()
     await scheduler.poll_waits_once()
@@ -266,8 +266,8 @@ async def test_failed_wait_poll_does_not_block_unrelated_queued_work(
         lease, source_key="unrelated-root", source={"origin": "user_message"}, goal="continue"
     )
     await repository.release(lease)
-    resumer = SimpleNamespace(resume=AsyncMock(), last_error=None)
-    scheduler = WorkScheduler(repository, resumer, chat_admission_enabled=False)
+    resumer = SimpleNamespace(resume=AsyncMock(return_value=None))
+    scheduler = WorkScheduler(repository, resumer.resume, chat_admission_enabled=False)
     monkeypatch.setattr(
         WorkWaitRepository, "deliver_due", AsyncMock(side_effect=RuntimeError("wait unavailable"))
     )
@@ -322,3 +322,108 @@ async def test_persisted_audio_is_rejected_before_gateway_dispatch(group):
             )
         )
     bot.call_api.assert_not_awaited()
+
+
+async def _two_scope_work(database, tmp_path):
+    from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
+    from qq_ai_bot.domain.conversations import ConversationScope
+    from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+
+    env = await social_env(database, tmp_path)
+    await ScopedEventLedgerUnitOfWork(database, config=RollupPolicyConfig()).append(
+        scope=ConversationScope.private("80001", "10001"),
+        platform_message_id="other-scope",
+        sender_user_id="10001",
+        direction="inbound",
+        content="hi",
+    )
+    async with database.sessions() as session:
+        other = await session.scalar(
+            select(ChatEventModel.canonical_conversation_id).where(
+                ChatEventModel.platform_message_id == "other-scope"
+            )
+        )
+    repository = WorkRepository(database)
+    items = {}
+    for name, conversation in (("slow", env.context.conversation_id), ("fast", other)):
+        lease = await repository.acquire(conversation, 1)
+        assert lease
+        items[name] = await repository.accept(
+            lease, source_key=name, source={"origin": "user_message"}, goal=name
+        )
+        await repository.release(lease)
+    return repository, items
+
+
+@pytest.mark.asyncio
+async def test_root_scopes_dispatch_concurrently_with_isolated_results(database, tmp_path):
+    repository, items = await _two_scope_work(database, tmp_path)
+    slow_entered, slow_release, slow_cancelled = (asyncio.Event() for _ in range(3))
+    fast_done = asyncio.Event()
+    calls: list[str] = []
+
+    async def resume(item):
+        calls.append(item["source_key"])
+        if item["source_key"] == "slow":
+            slow_entered.set()
+            try:
+                await slow_release.wait()
+            except asyncio.CancelledError:
+                slow_cancelled.set()
+                raise
+            return "slow_failure"
+        fast_done.set()
+        return "fast_failure"
+
+    scheduler = WorkScheduler(repository, resume, chat_admission_enabled=False)
+    started = await scheduler.dispatch_once()
+    assert len(started) == 2
+    await asyncio.wait_for(fast_done.wait(), 1)
+    await asyncio.wait_for(slow_entered.wait(), 1)
+    await asyncio.sleep(0)
+    # Fast scope finished and freed its slot while slow is still running.
+    assert not slow_release.is_set()
+    assert tuple(scheduler._in_flight) == (items["slow"]["conversation_id"],)
+    # Each completed run records only its own category.
+    assert (await scheduler.health())["last_error_category"] == "fast_failure"
+    # Repeated scans never redispatch the in-flight scope.
+    for _ in range(3):
+        again = await scheduler.dispatch_once()
+        assert all(task is not started[0] for task in again)
+        for task in again:
+            await task
+    assert calls.count("slow") == 1
+    slow_release.set()
+    await asyncio.wait_for(started[0], 1)
+    assert (await scheduler.health())["last_error_category"] == "slow_failure"
+    assert not scheduler._in_flight
+
+
+@pytest.mark.asyncio
+async def test_close_cancels_in_flight_scopes_and_stops_dispatch(database, tmp_path):
+    repository, _ = await _two_scope_work(database, tmp_path)
+    entered, cancelled = asyncio.Event(), []
+
+    async def resume(item):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.append(item["source_key"])
+            raise
+
+    scheduler = WorkScheduler(repository, resume, chat_admission_enabled=False)
+    started = await scheduler.dispatch_once()
+    await asyncio.wait_for(entered.wait(), 1)
+    await scheduler.close()
+    assert all(task.done() for task in started)
+    assert sorted(cancelled) == ["fast", "slow"]
+    assert not scheduler._in_flight
+    assert await scheduler.dispatch_once() == []
+    await scheduler.close()
+    pending = [
+        task
+        for task in asyncio.all_tasks()
+        if task is not asyncio.current_task() and task.get_name().startswith("runtime-work")
+    ]
+    assert pending == []

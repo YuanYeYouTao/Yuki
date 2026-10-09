@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert
+from tests.support.work_session import invoke_tool
 from tests.unit.test_tool_effect_audit import active_work
 
 from qq_ai_bot.capabilities.invocation import direct_invocations
@@ -129,7 +130,7 @@ async def test_changed_arguments_under_original_id_cannot_reuse_or_dispatch(data
         return '{"ok":true}'
 
     with pytest.raises(WorkConflict, match="invocation_content_conflict"):
-        await owner.execute(changed, external, allow_pending=True)
+        await invoke_tool(owner, changed, external)
     assert dispatched == []
     _, total, root = await facts(database, invocation.identity.operation_id)
     assert total == 0 and root is None
@@ -145,8 +146,8 @@ async def test_unknown_dispatch_is_never_replayed_after_reentry(database, tmp_pa
         raise asyncio.CancelledError()
 
     with pytest.raises(asyncio.CancelledError):
-        await owner.execute(call, external, allow_pending=True)
-    result = await owner.execute(call, external, allow_pending=True)
+        await invoke_tool(owner, call, external)
+    result = await invoke_tool(owner, call, external)
     assert json.loads(result)["uncertain"] is True
     assert external_log == ["sent-before-interruption"]
     receipt, total, root = await facts(database, owner.call_key(call.id))

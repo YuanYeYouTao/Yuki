@@ -32,8 +32,6 @@ from qq_ai_bot.event_prompt import (
     ChatEventPromptRenderer,
     external_event_digest_appended_growth,
     external_event_digest_data,
-    external_event_digest_metadata_item,
-    recent_external_event_digest,
 )
 from qq_ai_bot.execution_trace.phases import collect_phase_metrics
 from qq_ai_bot.memory.attribution import MemoryExposure, MemoryExposureSource
@@ -45,12 +43,9 @@ from qq_ai_bot.memory.context import (
 from qq_ai_bot.memory.enums import (
     MemoryContextMode,
     MemoryRetrievalMode,
-    MemoryScopeType,
     MemoryTargetRole,
-    SelfMemoryVisibility,
 )
 from qq_ai_bot.memory.models import (
-    MemoryEntityTarget,
     MemoryQueryIntent,
     MemoryRetrievalResult,
 )
@@ -1156,45 +1151,6 @@ class ContextAssembler:
         )
 
     @staticmethod
-    def _actorless_memory_targets(
-        event: EventRecord,
-        trigger: ExternalEventTurnTrigger | SandboxTaskTurnTrigger | WorkResumeTrigger,
-    ) -> tuple[MemoryEntityTarget, ...]:
-        targets = [
-            MemoryEntityTarget(
-                role=MemoryTargetRole.CURRENT_SELF,
-                scope_type=MemoryScopeType.SELF,
-                visibility_type=(
-                    SelfMemoryVisibility.GROUP
-                    if event.group_id is not None
-                    else SelfMemoryVisibility.PRIVATE
-                ),
-                visibility_user_id=None if event.group_id is not None else trigger.target_id,
-                visibility_group_id=event.group_id,
-                block_id="current_self",
-            )
-        ]
-        if event.group_id is None:
-            targets.append(
-                MemoryEntityTarget(
-                    role=MemoryTargetRole.CURRENT_PERSON,
-                    scope_type=MemoryScopeType.PERSON,
-                    subject_user_id=trigger.target_id,
-                    block_id="conversation_target_person",
-                )
-            )
-        else:
-            targets.append(
-                MemoryEntityTarget(
-                    role=MemoryTargetRole.CURRENT_GROUP,
-                    scope_type=MemoryScopeType.GROUP,
-                    group_id=event.group_id,
-                    block_id="current_group",
-                )
-            )
-        return tuple(targets)
-
-    @staticmethod
     def _external_wakeup_message(
         event: EventRecord,
         trigger: ExternalEventTurnTrigger | SandboxTaskTurnTrigger | WorkResumeTrigger,
@@ -2092,48 +2048,4 @@ class ContextAssembler:
             visible_event_ids=frozenset(
                 (*event_ids, *((current_row.id,) if current_row is not None else ()))
             ),
-        )
-
-    def _external_digest_reserve(
-        self,
-        recent: tuple[EventRecord, ...],
-        *,
-        exclude_event_id: int | None = None,
-    ) -> int:
-        if not any(
-            row.event_kind == "external_event"
-            and (exclude_event_id is None or row.id != exclude_event_id)
-            for row in recent
-        ):
-            return 0
-        return self._settings.plugin_external_event_context_characters
-
-    @staticmethod
-    def _with_external_digest(
-        metadata_payload: dict[str, object],
-        external_events: tuple[dict[str, object], ...],
-    ) -> dict[str, object]:
-        raw_items = metadata_payload.get("items", ())
-        items = [
-            item
-            for item in (raw_items if isinstance(raw_items, list) else [])
-            if not (isinstance(item, dict) and item.get("id") == "recent_external_events")
-        ]
-        if external_events:
-            items.append(external_event_digest_metadata_item(external_events))
-        return {**metadata_payload, "items": items}
-
-    def _external_event_context(
-        self,
-        recent: tuple[EventRecord, ...],
-        *,
-        exclude_event_id: int | None = None,
-    ) -> tuple[dict[str, object], ...]:
-        return recent_external_event_digest(
-            recent,
-            timezone=self._settings.default_timezone,
-            exclude_event_id=exclude_event_id,
-            limit=self._settings.plugin_external_event_context_limit,
-            character_limit=self._settings.plugin_external_event_context_characters,
-            summary_max_characters=self._settings.plugin_external_event_summary_characters,
         )

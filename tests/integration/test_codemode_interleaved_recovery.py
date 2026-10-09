@@ -226,8 +226,8 @@ async def test_pending_code_interleave(database, tmp_path, monkeypatch, kind, pa
             bindings=chat.runtime.bindings,
         )
         await database.close()
-        await resumer.resume(await repository.get(first_id))
-        assert resumer.last_error is None, resumer.last_error
+        error = await resumer.resume(await repository.get(first_id))
+        assert error is None, error
         await snap("original_work_resumed")
         assert len(wires) == 8
         assert domain.log == [

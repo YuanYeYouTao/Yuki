@@ -311,8 +311,8 @@ async def test_two_steers_two_ambient_and_later_followup_keep_original_work_rece
             run_effect=chat.run_effect,
             bindings=chat.runtime.bindings,
         )
-        await resumer.resume(await repository.get(original["id"]))
-        assert resumer.last_error is None and len(provider.requests) == 7
+        error = await resumer.resume(await repository.get(original["id"]))
+        assert error is None and len(provider.requests) == 7
         resumed_text = "\n".join(str(message.content) for message in provider.requests[-1].messages)
         assert {item: resumed_text.count(item) for item in [*observed, followup.text]} == {
             item: 1 for item in [*observed, followup.text]

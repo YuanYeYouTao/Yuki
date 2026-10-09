@@ -44,16 +44,6 @@ class MemoryReceiptHandle:
 
 
 @dataclass(frozen=True, slots=True)
-class CapabilityExposureSnapshot:
-    """Capability surface pinned for one turn at one catalog revision."""
-
-    revision: int
-    exposed_capability_ids: tuple[str, ...]
-    requestable_capability_ids: tuple[str, ...] = ()
-    schema_token_estimate: int = 0
-
-
-@dataclass(frozen=True, slots=True)
 class DeliverySummary:
     """What the delivery runtime hands to memory finalization/attribution.
 

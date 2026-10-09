@@ -112,7 +112,9 @@ Space，不能为语义关联改成某个人。普通发送通过原回执和入
 这不制造 Jev observation 或 observed 概率；歧义和需要纠正的原焦点仍请求原语义观察。
 工具效果、模型请求消耗、取消、暂停与无回复分开反馈。Host 先持久登记反馈，再回放给
 控制器；已结束 run 仍对账迟到效果，反馈序列和效果 ID 防止重入重复累计。
-`suspended`/`waiting_user` 保留 Work 和回执，反馈为 interrupted，不由参与控制器盲目重跑。
+保留型 `suspended`/`waiting_user` Work 不终结 run：反馈保持 running，原 run 仍可经管理 resume
+由原 SELF 来源继续；参与控制器不自行重跑。只有真实终态 Work（completed/failed/cancelled）结束 run，
+已终结的 run 不被 resume 复活。
 
 活跃 run 保持恢复优先；终态 run 按原稳定 ID、有界页和每次巡回固定上界轮转，
 不只读取最近修改的尾页。游标只存在于进程内，不承担效果事实或跨代所有权。

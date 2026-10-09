@@ -5,11 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, or_, select, text, update
+from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import (
@@ -65,7 +66,10 @@ from qq_ai_bot.plugin_host.ownership import (
     resolve_human_person_id,
     stamp_grant_owners,
 )
-from qq_ai_bot.runtime.work_repository import WorkRepository
+from qq_ai_bot.runtime.subagent_schema import children
+from qq_ai_bot.runtime.work_recovery_schema import recovery
+from qq_ai_bot.runtime.work_repository import TERMINAL, WorkConflict, WorkLease, WorkRepository
+from qq_ai_bot.runtime.work_schema_v1 import inputs, scope, work
 from qq_ai_bot.runtime.work_wait import WorkWaitRepository
 from qq_ai_bot.runtime.work_wait_schema import waits
 from yuki_plugin_sdk.errors import PluginPermissionError
@@ -104,6 +108,7 @@ TURN_ERROR_SUPERSEDED_COVERED = "superseded_covered"
 TURN_ERROR_GENERATION_STALE = "generation_stale"
 TURN_ERROR_LATER_HUMAN = "later_human_inbound"
 TURN_ERROR_ATTEMPT_RECLAIMED = "attempt_reclaimed"
+TURN_ERROR_WORK_PARKED = "runtime_work_parked"
 
 
 class BackgroundTurnFenceError(RuntimeError):
@@ -129,6 +134,8 @@ class BackgroundTurnJobRecord:
     canonical_target_space_id: str | None
     canonical_presence_id: str | None
     canonical_conversation_id: str | None
+    # The exact original Work bound to this Job, or None before first admission.
+    work_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -683,18 +690,16 @@ class PluginNotificationRepository:
     async def claim_turn(
         self, *, lease_seconds: int = TURN_LEASE_SECONDS
     ) -> BackgroundTurnJobRecord | None:
+        """Claim one runnable Job; a Job bound to a paused Work stays parked.
+
+        Discovery and the writer recheck use the same Work JOIN. A Job linked to
+        a suspended/waiting Work is not claimed and spends no attempt; an
+        expired processing lease is reconciled once back to pending/terminal.
+        """
         now = datetime.now(UTC)
         async with self._database.sessions() as discovery:
             candidate_id = await discovery.scalar(
-                select(PluginBackgroundTurnJobModel.id)
-                .where(
-                    PluginBackgroundTurnJobModel.next_attempt_at <= now,
-                    or_(
-                        PluginBackgroundTurnJobModel.status == "pending",
-                        (PluginBackgroundTurnJobModel.status == "processing")
-                        & (PluginBackgroundTurnJobModel.lease_until < now),
-                    ),
-                )
+                _claim_select(PluginBackgroundTurnJobModel.id, now=now)
                 .order_by(PluginBackgroundTurnJobModel.created_at, PluginBackgroundTurnJobModel.id)
                 .limit(1)
             )
@@ -702,24 +707,34 @@ class PluginNotificationRepository:
             return None
         async with self._database.immediate_session() as session:
             now = datetime.now(UTC)
-            row = await session.scalar(
-                select(PluginBackgroundTurnJobModel)
-                .where(
-                    PluginBackgroundTurnJobModel.id == candidate_id,
-                    PluginBackgroundTurnJobModel.next_attempt_at <= now,
-                    or_(
-                        PluginBackgroundTurnJobModel.status == "pending",
-                        (
-                            (PluginBackgroundTurnJobModel.status == "processing")
-                            & (PluginBackgroundTurnJobModel.lease_until < now)
-                        ),
-                    ),
+            found = (
+                await session.execute(
+                    _claim_select(
+                        PluginBackgroundTurnJobModel,
+                        work.c.state,
+                        work.c.generation,
+                        _linked_work_ready(now).label("work_ready"),
+                        now=now,
+                    ).where(PluginBackgroundTurnJobModel.id == candidate_id)
                 )
-                .order_by(PluginBackgroundTurnJobModel.created_at, PluginBackgroundTurnJobModel.id)
-                .limit(1)
-            )
-            if row is None:
+            ).first()
+            if found is None:
                 return None
+            row, work_state, work_generation, work_ready = found
+            if row.work_id is not None:
+                if work_state is None or work_state in TERMINAL:
+                    # The original Work already ended: close the Job only.
+                    # No model request, no new send.
+                    await _close_with_terminal_work(session, row, now=now)
+                    return None
+                if not work_ready:
+                    # Only an expired processing lease reaches here. Reconcile it
+                    # once; the paused Work keeps it out of discovery afterwards.
+                    row.status = "pending"
+                    row.lease_until = None
+                    row.last_error_category = TURN_ERROR_WORK_PARKED
+                    row.updated_at = now
+                    return None
             row.status = "processing"
             row.attempts += 1
             row.lease_until = now + timedelta(seconds=lease_seconds)
@@ -728,20 +743,33 @@ class PluginNotificationRepository:
             try:
                 await require_queued_work_readable(session, row)
             except PluginOwnershipError as exc:
-                row.status = "failed"
-                row.last_error_category = queued_work_error_category(exc, row)
-                row.lease_until = None
+                await _retire_turn(
+                    session,
+                    row,
+                    status="failed",
+                    category=queued_work_error_category(exc, row),
+                    now=now,
+                )
                 return None
             conversation = await session.get(
                 CanonicalConversationModel,
                 row.canonical_conversation_id,
             )
             if conversation is None:
-                row.status = "cancelled"
-                row.last_error_category = TURN_ERROR_SUPERSEDED_COVERED
-                row.lease_until = None
+                await _retire_turn(
+                    session,
+                    row,
+                    status="cancelled",
+                    category=TURN_ERROR_SUPERSEDED_COVERED,
+                    now=now,
+                )
                 return None
             generation = int(conversation.generation)
+            if row.work_id is not None and work_generation != generation:
+                await _retire_turn(
+                    session, row, status="cancelled", category=TURN_ERROR_GENERATION_STALE, now=now
+                )
+                return None
             category = await _turn_fence_category(
                 session,
                 row,
@@ -749,7 +777,7 @@ class PluginNotificationRepository:
                 include_coverage=True,
             )
             if category is not None:
-                _cancel_turn(row, category=category, now=now)
+                await _retire_turn(session, row, status="cancelled", category=category, now=now)
                 return None
             return _turn_record(row, generation=generation)
 
@@ -781,7 +809,7 @@ class PluginNotificationRepository:
                     job.lease_until = now + timedelta(seconds=max(1, lease_seconds))
                     job.updated_at = now
                 else:
-                    _cancel_turn(job, category=category, now=now)
+                    await _retire_turn(session, job, status="cancelled", category=category, now=now)
         if category is not None:
             raise BackgroundTurnFenceError(category)
 
@@ -807,12 +835,13 @@ class PluginNotificationRepository:
                 include_coverage=True,
             )
             if category is not None:
-                _cancel_turn(job, category=category, now=now)
+                await _retire_turn(session, job, status="cancelled", category=category, now=now)
                 return False
             job.status = "completed"
             job.generated_text = ""
             job.tool_calls_used = tool_calls_used
             job.model_requests = model_requests
+            _keep_actual_usage(job, await _linked_work_usage(session, job))
             job.lease_until = None
             job.updated_at = now
             job.completed_at = now
@@ -826,13 +855,15 @@ class PluginNotificationRepository:
                 return False
             assert row is not None
             if row.attempts >= row.max_attempts:
-                row.status = "failed"
-            else:
-                delays = (30, 120, 600)
-                row.status = "pending"
-                row.next_attempt_at = now + timedelta(
-                    seconds=delays[min(max(row.attempts - 1, 0), len(delays) - 1)]
-                )
+                # The owner decides permanent failure: Job and its original
+                # Work are closed together in this writer.
+                await _retire_turn(session, row, status="failed", category=error_category, now=now)
+                return True
+            delays = (30, 120, 600)
+            row.status = "pending"
+            row.next_attempt_at = now + timedelta(
+                seconds=delays[min(max(row.attempts - 1, 0), len(delays) - 1)]
+            )
             row.last_error_category = error_category
             row.lease_until = None
             row.updated_at = now
@@ -847,7 +878,41 @@ class PluginNotificationRepository:
             if not _owns_processing_attempt(row, attempt=attempt):
                 return False
             assert row is not None
-            row.status = "failed"
+            await _retire_turn(
+                session,
+                row,
+                status="failed",
+                category=error_category,
+                now=now,
+                work_state="cancelled",
+            )
+            return True
+
+    async def park_turn(self, job_id: int, *, attempt: int, error_category: str) -> bool:
+        """Release a Job whose original Work paused; the Work JOIN keeps it parked.
+
+        It returns to pending with an ordinary next_attempt_at and the attempt
+        that ran is not charged. An unbound Job has no Work to wake it, so it
+        keeps the ordinary bounded retry instead of parking.
+        """
+
+        now = datetime.now(UTC)
+        async with self._database.immediate_session() as session:
+            row = await session.get(PluginBackgroundTurnJobModel, job_id)
+            if not _owns_processing_attempt(row, attempt=attempt):
+                return False
+            assert row is not None
+            if row.work_id is None:
+                if row.attempts >= row.max_attempts:
+                    await _retire_turn(
+                        session, row, status="failed", category=error_category, now=now
+                    )
+                    return True
+                row.next_attempt_at = now + timedelta(seconds=30)
+            else:
+                row.max_attempts += 1
+                row.next_attempt_at = now
+            row.status = "pending"
             row.last_error_category = error_category
             row.lease_until = None
             row.updated_at = now
@@ -1105,7 +1170,13 @@ class PluginNotificationRepository:
                     )
                     if current is not None:
                         category = current
-                        _cancel_turn(stored, category=current, now=datetime.now(UTC))
+                        await _retire_turn(
+                            writer,
+                            stored,
+                            status="cancelled",
+                            category=current,
+                            now=datetime.now(UTC),
+                        )
         if category is not None or result is None:
             raise BackgroundTurnFenceError(category or TURN_ERROR_SUPERSEDED_COVERED)
         return result
@@ -1194,16 +1265,202 @@ def _owns_processing_attempt(row: object | None, *, attempt: int) -> bool:
     )
 
 
-def _cancel_turn(
+def _linked_work_ready(now: datetime) -> Any:
+    """A bound Job may run only when its original Work can actually continue."""
+
+    timestamp = now.timestamp()
+    scope_free = or_(scope.c.conversation_id.is_(None), scope.c.lease_until <= timestamp)
+    return or_(
+        PluginBackgroundTurnJobModel.work_id.is_(None),
+        work.c.id.is_(None),
+        work.c.state.in_(tuple(TERMINAL)),
+        and_(
+            work.c.state == "queued",
+            or_(recovery.c.work_id.is_(None), recovery.c.not_before <= timestamp),
+            scope_free,
+        ),
+        # Running only when the original activation lease is really lost.
+        and_(work.c.state == "running", scope_free),
+    )
+
+
+def _claim_select(*columns: Any, now: datetime) -> Any:
+    job = PluginBackgroundTurnJobModel
+    return (
+        select(*columns)
+        .select_from(job)
+        .outerjoin(work, work.c.id == job.work_id)
+        .outerjoin(recovery, recovery.c.work_id == work.c.id)
+        .outerjoin(scope, scope.c.conversation_id == work.c.conversation_id)
+        .where(
+            or_(
+                and_(
+                    job.status == "pending",
+                    job.next_attempt_at <= now,
+                    _linked_work_ready(now),
+                ),
+                # An expired attempt is always reconciled exactly once.
+                and_(
+                    job.status == "processing",
+                    job.lease_until < now,
+                    job.next_attempt_at <= now,
+                ),
+            )
+        )
+    )
+
+
+async def _linked_work_usage(session: AsyncSession, row: PluginBackgroundTurnJobModel) -> Any:
+    if row.work_id is None:
+        return None
+    return (
+        await session.execute(
+            select(work.c.state, work.c.model_requests, work.c.tool_calls).where(
+                work.c.id == row.work_id
+            )
+        )
+    ).first()
+
+
+def _keep_actual_usage(row: PluginBackgroundTurnJobModel, usage: Any) -> None:
+    # A Job summary of 0 must not hide real calls the original Work made.
+    if usage is not None:
+        row.model_requests = max(int(row.model_requests or 0), int(usage.model_requests))
+        row.tool_calls_used = max(int(row.tool_calls_used or 0), int(usage.tool_calls))
+
+
+async def _close_with_terminal_work(
+    session: AsyncSession,
     row: PluginBackgroundTurnJobModel,
     *,
-    category: str,
     now: datetime,
 ) -> None:
-    row.status = "cancelled"
+    usage = await _linked_work_usage(session, row)
+    if usage is None:
+        row.status, row.last_error_category = "failed", "runtime_work_missing"
+    elif usage.state == "completed":
+        row.status, row.last_error_category = "completed", None
+        row.completed_at = now
+    elif usage.state == "cancelled":
+        row.status, row.last_error_category = "cancelled", "runtime_work_cancelled"
+    else:
+        row.status, row.last_error_category = "failed", "runtime_work_failed"
+    _keep_actual_usage(row, usage)
+    row.lease_until = None
+    row.updated_at = now
+
+
+async def _close_linked_work(
+    session: AsyncSession, identity: str, *, state: str, reason: str
+) -> None:
+    """Close the original Work tree with the Job; confirmed effects stay intact."""
+
+    now = time.time()
+    tree = [
+        identity,
+        *await session.scalars(select(children.c.work_id).where(children.c.root_id == identity)),
+    ]
+    await session.execute(
+        update(work)
+        .where(work.c.id.in_(tree), work.c.state.not_in(tuple(TERMINAL)))
+        .values(state=state, reason=reason[:128], revision=work.c.revision + 1, updated=now)
+    )
+    await session.execute(
+        update(children)
+        .where(children.c.work_id.in_(tree))
+        .values(owner=None, lease_until=0, cancel_epoch=children.c.cancel_epoch + 1)
+    )
+    await session.execute(
+        update(inputs)
+        .where(inputs.c.work_id.in_(tree), inputs.c.state.in_(("pending", "staged")))
+        .values(state="cancelled")
+    )
+    await session.execute(
+        update(waits)
+        .where(waits.c.work_id.in_(tree), waits.c.status == "active")
+        .values(status="cancelled", updated=now)
+    )
+
+
+async def _retire_turn(
+    session: AsyncSession,
+    row: PluginBackgroundTurnJobModel,
+    *,
+    status: str,
+    category: str,
+    now: datetime,
+    work_state: str | None = None,
+) -> None:
+    """Owner-decided permanent end of a Job, closing its original Work too."""
+
+    if row.work_id is not None:
+        await _close_linked_work(session, row.work_id, state=work_state or status, reason=category)
+        _keep_actual_usage(row, await _linked_work_usage(session, row))
+    row.status = status
     row.last_error_category = category
     row.lease_until = None
     row.updated_at = now
+
+
+async def admit_background_turn_work(
+    database: Database,
+    lease: WorkLease,
+    *,
+    job_id: int,
+    attempt: int,
+    generation: int,
+    source_key: str,
+    source: dict[str, Any],
+    goal: str,
+) -> dict[str, Any]:
+    """Admit the first Work and bind it to its Job in one short writer.
+
+    The exact Job attempt, original source and generation are rechecked here.
+    The link only moves null -> this Work or confirms the same ID; there is no
+    window in which a Work is admitted without its Job owning it.
+    """
+
+    category: str | None = None
+    admitted: dict[str, Any] | None = None
+    async with database.immediate_session() as session:
+        now = datetime.now(UTC)
+        job = await session.get(PluginBackgroundTurnJobModel, job_id)
+        if not _owns_processing_attempt(job, attempt=attempt):
+            category = TURN_ERROR_ATTEMPT_RECLAIMED
+        else:
+            assert job is not None
+            if (
+                source.get("owner") != "plugin_background"
+                or source.get("plugin_id") != job.plugin_id
+                or source.get("trigger_event_id") != job.source_event_id
+                or source.get("conversation_id") != job.canonical_conversation_id
+                or source.get("generation") != generation
+                or lease.conversation_id != job.canonical_conversation_id
+                or lease.generation != generation
+            ):
+                raise WorkConflict("plugin_turn_source_mismatch")
+            category = await _turn_fence_category(
+                session, job, expected_generation=generation, include_coverage=True
+            )
+            if category is not None:
+                await _retire_turn(session, job, status="cancelled", category=category, now=now)
+            else:
+                admitted = await WorkRepository(database).accept_in_session(
+                    session,
+                    lease,
+                    source_key=source_key,
+                    source=source,
+                    goal=goal,
+                    output_kind="answer",
+                    deliver_artifacts=False,
+                )
+                if job.work_id is not None and job.work_id != admitted["id"]:
+                    raise WorkConflict("plugin_turn_work_link_conflict")
+                job.work_id = admitted["id"]
+                job.updated_at = now
+    if category is not None or admitted is None:
+        raise BackgroundTurnFenceError(category or TURN_ERROR_SUPERSEDED_COVERED)
+    return admitted
 
 
 async def _has_later_human_message(
@@ -1265,6 +1522,10 @@ async def _turn_fence_category(
         or not suppression_is_canonical_live(source.suppression_status)
     ):
         return TURN_ERROR_SUPERSEDED_COVERED
+    if job.work_id is not None:
+        # An admitted Work owns this event now. New input reaches its mailbox;
+        # coverage/later-human staleness only filters new opportunities.
+        return None
     if include_coverage:
         semantic = await session.get(CanonicalConversationRollupModel, conversation.id)
         overlay = await session.get(
@@ -1819,6 +2080,7 @@ def _turn_record(
         canonical_target_space_id=row.canonical_target_space_id,
         canonical_presence_id=row.canonical_presence_id,
         canonical_conversation_id=row.canonical_conversation_id,
+        work_id=row.work_id,
     )
 
 

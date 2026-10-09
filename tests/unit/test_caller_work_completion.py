@@ -1,7 +1,8 @@
-"""Caller completion survives segmentation without replaying confirmed sends."""
+"""Caller completion carries its result in complete(result) and never replays sends."""
 
 import json
 from dataclasses import replace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import delete, select, update
@@ -16,6 +17,7 @@ from qq_ai_bot.llm.base import LLMEmptyResponseError
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.work_activation import current_work_control
+from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import effects, work
 from qq_ai_bot.services.agent_runner import AgentRuntime
@@ -65,105 +67,147 @@ async def caller_case(database, tmp_path, responses):
     return env, provider, chat.runtime.main_turns, runtime
 
 
+async def sends(env):
+    return sum(action == "send_group_msg" for action, _ in env.bot.calls)
+
+
+async def save_accepted(database, runtime, work_id, payload):
+    """Fixture for a crash after acceptance but before the writer committed it."""
+    repository = WorkRepository(database)
+    lease = await repository.acquire(runtime.canonical_conversation_id, 1)
+    assert lease is not None
+    try:
+        await repository.accept_control(lease, work_id, payload)
+    finally:
+        await repository.release(lease)
+
+
+async def mark_receipt(database, work_id, **outcome):
+    async with database.immediate_session() as writer:
+        row = (
+            (await writer.execute(select(effects).where(effects.c.work_id == work_id)))
+            .mappings()
+            .one()
+        )
+        receipt = json.loads(row["receipt_json"])
+        receipt["outcome"].update(outcome)
+        await writer.execute(
+            update(effects)
+            .where(effects.c.effect_key == row["effect_key"])
+            .values(receipt_json=json.dumps(receipt))
+        )
+
+
+def checkpoint(row):
+    return json.loads(row["checkpoint_json"])
+
+
 @pytest.mark.asyncio
-async def test_complete_at_segment_end_preserves_proposal_until_real_caller_result(
+async def test_complete_result_ends_activation_and_reentry_returns_committed_result(
     database, tmp_path
 ):
     env, provider, service, runtime = await caller_case(
         database,
         tmp_path,
-        [
-            call("task_control", {"action": "complete"}, "finish"),
-            ChatResponse("internal result", 0),
-        ],
+        [call("task_control", {"action": "complete", "result": "internal result"}, "finish")],
     )
     messages = (ChatMessage("user", "finish original task"),)
+    # Even a one-request segment completes: the accepted call ends the activation.
     first = await service.run(messages, replace(runtime, max_model_requests=1), CallerBackend(env))
-    assert first.work_state == "queued" and first.model_requests == 1
-    original_responder = provider._responder
-
-    def respond(request):
-        control = current_work_control.get()
-        assert control.ending == "completed"
-        assert control.session.recovered_phase == "paired"
-        assert control.session.progress["caller_completion_pending_result"]["action"] == "complete"
-        return original_responder(request)
-
-    provider._responder = respond
-    second = await service.run(messages, replace(runtime, max_model_requests=1), CallerBackend(env))
-    assert second.work_id == first.work_id
-    assert second.work_state == "completed" and second.text == "internal result"
-    assert len(provider.requests) == 2 and not any(
-        action == "send_group_msg" for action, _ in env.bot.calls
-    )
-    repeated = await service.run(messages, runtime, CallerBackend(env))
-    assert repeated.text == "internal result" and repeated.model_requests == 0
-    assert len(provider.requests) == 2
+    assert first.work_state == "completed" and first.text == "internal result"
+    assert first.model_requests == 1 and len(provider.requests) == 1
+    # The internal result returns to the caller; it is never sent by itself.
+    assert await sends(env) == 0
     row = await WorkRepository(database).get(first.work_id)
-    assert row["model_requests"] == 2 and row["tool_calls"] == 0
+    assert checkpoint(row)["sync_result"] == "internal result"
+    assert "accepted_control" not in checkpoint(row)
+    repeated = await service.run(messages, runtime, CallerBackend(env))
+    assert repeated.work_id == first.work_id and repeated.work_state == "completed"
+    assert repeated.text == "internal result" and repeated.model_requests == 0
+    assert len(provider.requests) == 1
+    row = await WorkRepository(database).get(first.work_id)
+    assert row["model_requests"] == 1
 
 
 @pytest.mark.asyncio
-async def test_confirmed_send_complete_segment_then_empty_internal_result_never_resends(
-    database, tmp_path
-):
+async def test_ordinary_final_uses_same_completion_as_caller_result(database, tmp_path):
+    env, provider, service, runtime = await caller_case(
+        database, tmp_path, [ChatResponse("internal result", 0)]
+    )
+    messages = (ChatMessage("user", "answer the caller"),)
+    first = await service.run(messages, runtime, CallerBackend(env))
+    assert first.work_state == "completed" and first.text == "internal result"
+    assert len(provider.requests) == 1 and await sends(env) == 0
+    row = await WorkRepository(database).get(first.work_id)
+    assert checkpoint(row)["sync_result"] == "internal result"
+
+
+@pytest.mark.asyncio
+async def test_confirmed_send_then_empty_result_completion_never_resends(database, tmp_path):
     env, provider, service, runtime = await caller_case(
         database,
         tmp_path,
         [
             call("send_message", {"text": "synthetic confirmed reply"}, "send"),
             call("task_control", {"action": "complete"}, "finish"),
-            call("task_control", {"action": "complete"}, "finish-resume"),
-            ChatResponse('<yuki-state>{"engage":"quiet"}</yuki-state>', 0),
         ],
     )
     messages = (ChatMessage("user", "send once and finish"),)
-    first = await service.run(messages, runtime, CallerBackend(env))
-    assert first.work_state == "queued" and first.model_requests == 2
-    assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
+    # The send exhausts the first segment; completion arrives in the next one.
+    first = await service.run(messages, replace(runtime, max_model_requests=1), CallerBackend(env))
+    assert first.work_state == "queued" and first.model_requests == 1
+    assert await sends(env) == 1
     second = await service.run(messages, runtime, CallerBackend(env))
+    assert second.work_id == first.work_id
     assert second.work_state == "completed" and second.text == ""
-    assert second.model_requests == 2 and second.work_id == first.work_id
+    assert second.model_requests == 1 and len(provider.requests) == 2
     row = await WorkRepository(database).get(first.work_id)
-    assert row["model_requests"] == 4 and row["tool_calls"] == 1 and row["sent_messages"] == 1
+    # Budgets accumulate on the original Work; nothing is reset by the segment.
+    assert row["model_requests"] == 2 and row["sent_messages"] == 1
+    assert checkpoint(row)["sync_result"] == ""
     repeated = await service.run(messages, runtime, CallerBackend(env))
     assert repeated.work_state == "completed" and repeated.model_requests == 0
-    assert len(provider.requests) == 4
-    assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
+    assert len(provider.requests) == 2 and await sends(env) == 1
 
 
 @pytest.mark.asyncio
-async def test_no_confirmed_effect_does_not_make_empty_caller_result_success(database, tmp_path):
+async def test_no_confirmed_effect_rejects_empty_caller_result(database, tmp_path):
     env, provider, service, runtime = await caller_case(
         database,
         tmp_path,
         [call("task_control", {"action": "complete"}, "finish"), ChatResponse("", 0)],
     )
     messages = (ChatMessage("user", "return a real result"),)
-    first = await service.run(messages, replace(runtime, max_model_requests=1), CallerBackend(env))
-    second = await service.run(messages, replace(runtime, max_model_requests=1), CallerBackend(env))
-    assert second.work_id == first.work_id and second.work_state == "suspended"
-    assert second.outcome.failure.code == "LLMEmptyResponseError"
-    assert len(provider.requests) == 2 and not any(
-        action == "send_group_msg" for action, _ in env.bot.calls
-    )
+    result = await service.run(messages, runtime, CallerBackend(env))
+    # The rejected complete is visible to the model; the empty final runs the
+    # same preparation and its stable code becomes the pause reason.
+    assert result.work_state == "suspended" and result.text == ""
+    assert '"work_completion_requires_result"' in provider.requests[1].messages[-1].content
+    assert len(provider.requests) == 2 and await sends(env) == 0
     async with database.sessions() as reader:
         rows = (await reader.execute(select(work))).mappings().all()
     assert len(rows) == 1 and rows[0]["model_requests"] == 2
+    assert rows[0]["state"] == "suspended"
+    assert rows[0]["reason"] == "work_completion_requires_result"
+    assert "sync_result" not in checkpoint(rows[0])
 
 
 @pytest.mark.asyncio
-async def test_new_ready_input_revokes_saved_completion_proposal(database, tmp_path):
+async def test_new_ready_input_revokes_saved_completion(database, tmp_path):
     env, provider, service, runtime = await caller_case(
         database,
         tmp_path,
-        [
-            call("send_message", {"text": "original confirmed reply"}, "send"),
-            call("task_control", {"action": "complete"}, "finish"),
-        ],
+        [call("send_message", {"text": "original confirmed reply"}, "send")],
     )
     messages = (ChatMessage("user", "original task"),)
-    first = await service.run(messages, runtime, CallerBackend(env))
+    first = await service.run(messages, replace(runtime, max_model_requests=1), CallerBackend(env))
+    assert first.work_state == "queued"
+    await save_accepted(
+        database,
+        runtime,
+        first.work_id,
+        {"action": "complete", "call_key": "finish", "result": "stale result"},
+    )
     repository = WorkRepository(database)
     identity = await repository.enqueue(
         runtime.canonical_conversation_id,
@@ -174,28 +218,80 @@ async def test_new_ready_input_revokes_saved_completion_proposal(database, tmp_p
         ready=False,
     )
     await repository.prepare_input(identity, {"text": "new independent requirement"})
+    second = await service.run(messages, runtime, CallerBackend(env))
+    # The writer sees the admitted input: the stale candidate is consumed
+    # without publishing its result, and the Work stays live for the input.
+    assert second.work_id == first.work_id and second.work_state == "queued"
+    assert second.text == "" and second.model_requests == 0
+    row = await repository.get(first.work_id)
+    assert row["state"] == "queued"
+    assert "sync_result" not in checkpoint(row) and "accepted_control" not in checkpoint(row)
 
     def respond(request):
         control = current_work_control.get()
-        assert control.ending is None
-        assert "caller_completion_pending_result" not in control.session.progress
+        assert control.accepted is None and control.ending is None
         assert any("new independent requirement" in (m.content or "") for m in request.messages)
-        return ChatResponse("", 0)
+        return call("task_control", {"action": "complete", "result": "fresh result"}, "fresh")
 
     provider._responder = respond
-    second = await service.run(messages, replace(runtime, max_model_requests=1), CallerBackend(env))
-    assert (
-        second.work_state == "suspended" and second.outcome.failure.code == "LLMEmptyResponseError"
-    )
-    assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
+    third = await service.run(messages, runtime, CallerBackend(env))
+    assert third.work_state == "completed" and third.text == "fresh result"
+    assert len(provider.requests) == 2 and await sends(env) == 1
+    row = await repository.get(first.work_id)
+    assert row["model_requests"] == 2 and checkpoint(row)["sync_result"] == "fresh result"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("receipt_state", ["missing", "failed", "unknown"])
+async def test_new_input_during_complete_request_keeps_work_live(database, tmp_path):
+    env, provider, service, runtime = await caller_case(
+        database,
+        tmp_path,
+        [
+            call("send_message", {"text": "original confirmed reply"}, "send"),
+            call("task_control", {"action": "complete", "result": "too early"}, "finish"),
+        ],
+    )
+    repository = WorkRepository(database)
+    original_complete = provider.complete
+
+    async def complete(request):
+        response = await original_complete(request)
+        if len(provider.requests) == 2:
+            control = current_work_control.get()
+            identity = await repository.enqueue(
+                runtime.canonical_conversation_id,
+                1,
+                "during-http",
+                kind="message",
+                work_id=control.current["id"],
+                ready=False,
+            )
+            await repository.prepare_input(identity, {"text": "new requirement during HTTP"})
+        return response
+
+    provider.complete = complete
+    result = await service.run((ChatMessage("user", "original task"),), runtime, CallerBackend(env))
+    assert result.work_state == "queued" and result.text == ""
+    assert result.model_requests == 2 and len(provider.requests) == 2
+    row = await repository.get(result.work_id)
+    assert row["state"] == "queued" and row["reason"] == "work_input_arrived"
+    assert "sync_result" not in checkpoint(row) and "accepted_control" not in checkpoint(row)
+    assert row["sent_messages"] == 1 and await sends(env) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "receipt_state,code",
+    [
+        ("missing", "work_completion_requires_result"),
+        ("failed", "work_completion_requires_result"),
+        ("unknown", "work_has_unresolved_execution"),
+    ],
+)
 async def test_empty_internal_result_requires_original_confirmed_fact(
-    database, tmp_path, receipt_state
+    database, tmp_path, receipt_state, code
 ):
-    env, _provider, service, runtime = await caller_case(
+    env, provider, service, runtime = await caller_case(
         database,
         tmp_path,
         [
@@ -205,34 +301,53 @@ async def test_empty_internal_result_requires_original_confirmed_fact(
         ],
     )
     messages = (ChatMessage("user", "original task"),)
-    first = await service.run(messages, runtime, CallerBackend(env))
-    async with database.immediate_session() as writer:
-        if receipt_state == "missing":
+    first = await service.run(messages, replace(runtime, max_model_requests=1), CallerBackend(env))
+    assert first.work_state == "queued"
+    if receipt_state == "missing":
+        async with database.immediate_session() as writer:
             await writer.execute(delete(effects).where(effects.c.work_id == first.work_id))
-        else:
-            row = (
-                (await writer.execute(select(effects).where(effects.c.work_id == first.work_id)))
-                .mappings()
-                .one()
-            )
-            receipt = json.loads(row["receipt_json"])
-            receipt["outcome"].update(
-                ok=False,
-                status=receipt_state,
-                delivered_message=False,
-                uncertain=receipt_state == "unknown",
-            )
-            await writer.execute(
-                update(effects)
-                .where(effects.c.effect_key == row["effect_key"])
-                .values(receipt_json=json.dumps(receipt))
-            )
-    second = await service.run(messages, replace(runtime, max_model_requests=1), CallerBackend(env))
-    assert second.work_state != "completed"
-    assert second.outcome.failure.code == "LLMEmptyResponseError"
+    else:
+        await mark_receipt(
+            database,
+            first.work_id,
+            ok=False,
+            status=receipt_state,
+            delivered_message=False,
+            uncertain=receipt_state == "unknown",
+        )
+    second = await service.run(messages, runtime, CallerBackend(env))
+    assert second.work_state == "suspended" and second.text == ""
+    assert f'"{code}"' in provider.requests[2].messages[-1].content
     row = await WorkRepository(database).get(first.work_id)
+    assert row["state"] == "suspended" and row["reason"] == code
     assert row["model_requests"] == 3 and row["sent_messages"] == 1
-    assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
+    assert "sync_result" not in checkpoint(row)
+    assert len(provider.requests) == 3 and await sends(env) == 1
+
+
+@pytest.mark.asyncio
+async def test_restored_accepted_completion_settles_without_model_request(database, tmp_path):
+    env, provider, service, runtime = await caller_case(
+        database,
+        tmp_path,
+        [call("send_message", {"text": "original confirmed reply"}, "send")],
+    )
+    messages = (ChatMessage("user", "original task"),)
+    first = await service.run(messages, replace(runtime, max_model_requests=1), CallerBackend(env))
+    await save_accepted(
+        database,
+        runtime,
+        first.work_id,
+        {"action": "complete", "call_key": "finish", "result": "saved result"},
+    )
+    second = await service.run(messages, runtime, CallerBackend(env))
+    assert second.work_id == first.work_id and second.work_state == "completed"
+    assert second.text == "saved result" and second.model_requests == 0
+    assert len(provider.requests) == 1 and await sends(env) == 1
+    row = await WorkRepository(database).get(first.work_id)
+    assert row["model_requests"] == 1 and row["sent_messages"] == 1
+    assert checkpoint(row)["sync_result"] == "saved result"
+    assert "accepted_control" not in checkpoint(row)
 
 
 @pytest.mark.asyncio
@@ -240,10 +355,12 @@ async def test_source_revalidation_failure_cannot_use_saved_completion(database,
     env, provider, service, runtime = await caller_case(
         database,
         tmp_path,
-        [call("task_control", {"action": "complete"}, "finish")],
+        [call("send_message", {"text": "original confirmed reply"}, "send")],
     )
     messages = (ChatMessage("user", "original task"),)
     first = await service.run(messages, replace(runtime, max_model_requests=1), CallerBackend(env))
+    saved = {"action": "complete", "call_key": "finish", "result": "saved result"}
+    await save_accepted(database, runtime, first.work_id, saved)
 
     async def changed():
         raise WorkConflict("invocation_authority_changed")
@@ -254,41 +371,50 @@ async def test_source_revalidation_failure_cannot_use_saved_completion(database,
         )
     row = await WorkRepository(database).get(first.work_id)
     assert row["state"] == "queued" and row["model_requests"] == 1
+    assert checkpoint(row)["accepted_control"] == saved
+    assert "sync_result" not in checkpoint(row)
     assert len(provider.requests) == 1
 
 
 @pytest.mark.asyncio
-async def test_empty_provider_after_verified_completion_uses_original_receipt(database, tmp_path):
+async def test_empty_provider_after_send_is_ordinary_failure_not_completion(database, tmp_path):
     env, provider, service, runtime = await caller_case(
         database,
         tmp_path,
-        [
-            call("send_message", {"text": "original confirmed reply"}, "send"),
-            call("task_control", {"action": "complete"}, "finish"),
-        ],
+        [call("send_message", {"text": "original confirmed reply"}, "send")],
     )
     messages = (ChatMessage("user", "original task"),)
-    first = await service.run(messages, runtime, CallerBackend(env))
+    first = await service.run(messages, replace(runtime, max_model_requests=1), CallerBackend(env))
 
     def empty(_):
         raise LLMEmptyResponseError("synthetic empty provider")
 
     provider._responder = empty
     second = await service.run(messages, replace(runtime, max_model_requests=1), CallerBackend(env))
-    assert (
-        second.work_id == first.work_id and second.work_state == "completed" and second.text == ""
-    )
+    assert second.work_id == first.work_id
+    assert second.work_state != "completed" and second.text == ""
+    assert second.outcome.failure.code == "LLMEmptyResponseError"
     row = await WorkRepository(database).get(first.work_id)
-    assert row["model_requests"] == 3 and row["sent_messages"] == 1
+    assert row["state"] != "completed" and "sync_result" not in checkpoint(row)
+    assert row["model_requests"] == 2 and row["sent_messages"] == 1
+    assert await sends(env) == 1
 
 
 @pytest.mark.asyncio
 async def test_conversation_generation_change_does_not_restore_completion(database, tmp_path):
     env, provider, service, runtime = await caller_case(
-        database, tmp_path, [call("task_control", {"action": "complete"}, "finish")]
+        database,
+        tmp_path,
+        [call("send_message", {"text": "original confirmed reply"}, "send")],
     )
     messages = (ChatMessage("user", "original task"),)
     first = await service.run(messages, replace(runtime, max_model_requests=1), CallerBackend(env))
+    await save_accepted(
+        database,
+        runtime,
+        first.work_id,
+        {"action": "complete", "call_key": "finish", "result": "saved result"},
+    )
     async with database.immediate_session() as writer:
         await writer.execute(
             update(CanonicalConversationModel)
@@ -297,38 +423,50 @@ async def test_conversation_generation_change_does_not_restore_completion(databa
         )
     second = await service.run(messages, runtime, CallerBackend(env))
     assert second.work_state == "cancelled" and second.model_requests == 0
+    assert second.text == ""
     row = await WorkRepository(database).get(first.work_id)
     assert row["model_requests"] == 1 and len(provider.requests) == 1
+    assert row["state"] != "completed" and "sync_result" not in checkpoint(row)
 
 
 @pytest.mark.asyncio
-async def test_goal_update_after_restored_completion_revokes_old_proposal(database, tmp_path):
-    env, provider, service, runtime = await caller_case(
+async def test_goal_update_retires_accepted_completion(database, tmp_path):
+    env, _provider, service, runtime = await caller_case(
         database,
         tmp_path,
-        [
-            call("send_message", {"text": "original confirmed reply"}, "send"),
-            call("task_control", {"action": "complete"}, "finish"),
-            call("task_control", {"action": "update", "goal": "new goal"}, "update"),
-        ],
+        [call("send_message", {"text": "original confirmed reply"}, "send")],
     )
     messages = (ChatMessage("user", "original task"),)
-    first = await service.run(messages, runtime, CallerBackend(env))
-    second = await service.run(messages, replace(runtime, max_model_requests=1), CallerBackend(env))
-    assert second.work_id == first.work_id and second.work_state == "queued"
-
-    def respond(_):
-        control = current_work_control.get()
-        assert control.ending is None
-        assert "caller_completion_pending_result" not in control.session.progress
-        return ChatResponse("", 0)
-
-    provider._responder = respond
-    third = await service.run(messages, replace(runtime, max_model_requests=1), CallerBackend(env))
-    assert third.work_state == "suspended" and third.outcome.failure.code == "LLMEmptyResponseError"
-    row = await WorkRepository(database).get(first.work_id)
-    assert row["goal"] == "new goal" and row["model_requests"] == 4
-    assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
+    first = await service.run(messages, replace(runtime, max_model_requests=1), CallerBackend(env))
+    repository = WorkRepository(database)
+    lease = await repository.acquire(runtime.canonical_conversation_id, 1)
+    assert lease is not None
+    try:
+        row = await repository.get(first.work_id)
+        control = WorkControl(
+            repository,
+            lease,
+            row["source_key"],
+            json.loads(row["source_json"]),
+            AsyncMock(),
+        )
+        control.current = row
+        await control._accept("complete", "finish", result="stale result")
+        assert control.accepted_ending() == "completed"
+        updated = json.loads(
+            await control.execute(
+                "task_control", {"action": "update", "goal": "new goal"}, "update"
+            )
+        )
+        assert updated["ok"] is True and updated["ending_proposed"] is None
+        assert control.accepted is None and control.accepted_ending() is None
+        await control.settle(pending_inputs=False)
+    finally:
+        await repository.release(lease)
+    row = await repository.get(first.work_id)
+    assert row["goal"] == "new goal" and row["state"] == "suspended"
+    assert "accepted_control" not in checkpoint(row) and "sync_result" not in checkpoint(row)
+    assert await sends(env) == 1
 
 
 @pytest.mark.asyncio
@@ -341,128 +479,87 @@ async def test_receipt_becoming_unknown_during_model_cannot_complete_result(
         tmp_path,
         [
             call("send_message", {"text": "original confirmed reply"}, "send"),
-            call("task_control", {"action": "complete"}, "finish"),
-            ChatResponse(body, 0),
+            call("task_control", {"action": "complete", "result": body}, "finish"),
         ],
     )
     messages = (ChatMessage("user", "original task"),)
-    first = await service.run(messages, runtime, CallerBackend(env))
+    first = await service.run(messages, replace(runtime, max_model_requests=1), CallerBackend(env))
     original_complete = provider.complete
 
     async def complete(request):
-        control = current_work_control.get()
-        assert control.ending == "completed"
         result = await original_complete(request)
-        async with database.immediate_session() as writer:
-            row = (
-                (await writer.execute(select(effects).where(effects.c.work_id == first.work_id)))
-                .mappings()
-                .one()
-            )
-            receipt = json.loads(row["receipt_json"])
-            # Preserve the old delivered bit: a newly unknown outcome must
-            # invalidate completion even with a surviving positive send fact.
-            receipt["outcome"]["uncertain"] = True
-            await writer.execute(
-                update(effects)
-                .where(effects.c.effect_key == row["effect_key"])
-                .values(receipt_json=json.dumps(receipt))
-            )
+        # Preserve the old delivered bit: a newly unknown outcome must
+        # invalidate completion even with a surviving positive send fact.
+        await mark_receipt(database, first.work_id, uncertain=True)
         return result
 
     provider.complete = complete
     second = await service.run(messages, replace(runtime, max_model_requests=1), CallerBackend(env))
-    assert second.work_state == "queued" and second.text == ""
+    assert second.work_state != "completed" and second.text == ""
     row = await WorkRepository(database).get(first.work_id)
-    assert row["model_requests"] == 3 and row["sent_messages"] == 1
-    assert row["state"] == "queued" and "sync_result" not in json.loads(row["checkpoint_json"])
-    assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
+    assert row["model_requests"] == 2 and row["sent_messages"] == 1
+    assert row["state"] != "completed"
+    assert "sync_result" not in checkpoint(row) and "accepted_control" not in checkpoint(row)
+    assert len(provider.requests) == 2 and await sends(env) == 1
 
 
 @pytest.mark.asyncio
-async def test_empty_provider_with_new_ready_input_does_not_finish_caller(database, tmp_path):
-    env, provider, service, runtime = await caller_case(
-        database,
-        tmp_path,
-        [
-            call("send_message", {"text": "original confirmed reply"}, "send"),
-            call("task_control", {"action": "complete"}, "finish"),
-        ],
-    )
-    messages = (ChatMessage("user", "original task"),)
-    first = await service.run(messages, runtime, CallerBackend(env))
-    repository = WorkRepository(database)
-
-    async def complete(_):
-        control = current_work_control.get()
-        assert control.ending == "completed"
-        identity = await repository.enqueue(
-            runtime.canonical_conversation_id,
-            1,
-            "during-http",
-            kind="message",
-            work_id=first.work_id,
-            ready=False,
-        )
-        await repository.prepare_input(identity, {"text": "new requirement during HTTP"})
-        raise LLMEmptyResponseError("synthetic empty response after new input")
-
-    provider.complete = complete
-    second = await service.run(messages, replace(runtime, max_model_requests=1), CallerBackend(env))
-    assert second.work_state == "queued" and second.model_requests == 1
-    row = await repository.get(first.work_id)
-    assert row["state"] == "queued" and "sync_result" not in json.loads(row["checkpoint_json"])
-    assert row["model_requests"] == 3 and row["sent_messages"] == 1
-    assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
-
-
-@pytest.mark.asyncio
-async def test_empty_provider_with_turn_local_visible_send_still_revalidates_unknown(
-    database, tmp_path
+async def test_writer_rechecks_receipt_that_turns_unknown_after_acceptance(
+    database, tmp_path, monkeypatch
 ):
     env, provider, service, runtime = await caller_case(
         database,
         tmp_path,
         [
             call("send_message", {"text": "original confirmed reply"}, "send"),
-            call("task_control", {"action": "complete"}, "finish"),
-            ChatResponse("", 0),
+            call("task_control", {"action": "complete", "result": "accepted result"}, "finish"),
         ],
+    )
+    original_accept = WorkRepository.accept_control
+
+    async def accept_then_unknown(self, lease, identity, payload):
+        row = await original_accept(self, lease, identity, payload)
+        if payload is not None:
+            await mark_receipt(database, identity, uncertain=True)
+        return row
+
+    monkeypatch.setattr(WorkRepository, "accept_control", accept_then_unknown)
+    result = await service.run((ChatMessage("user", "original task"),), runtime, CallerBackend(env))
+    assert result.work_state == "suspended" and result.text == ""
+    assert len(provider.requests) == 2
+    row = await WorkRepository(database).get(result.work_id)
+    assert row["state"] == "suspended" and row["reason"] == "work_completion_facts_changed"
+    assert "sync_result" not in checkpoint(row) and "accepted_control" not in checkpoint(row)
+    assert row["sent_messages"] == 1 and await sends(env) == 1
+
+
+@pytest.mark.asyncio
+async def test_empty_provider_with_turn_local_visible_send_is_not_completion(database, tmp_path):
+    env, provider, service, runtime = await caller_case(
+        database,
+        tmp_path,
+        [call("send_message", {"text": "original confirmed reply"}, "send")],
     )
     backend = CallerBackend(env)
     original_complete = provider.complete
 
     async def complete(request):
-        response = await original_complete(request)
-        if len(provider.requests) != 3:
-            return response
+        if len(provider.requests) < 1:
+            return await original_complete(request)
+        provider.requests.append(request)
         control = current_work_control.get()
-        assert control.ending == "completed" and backend.has_visible_effects()
-        async with database.immediate_session() as writer:
-            row = (
-                (
-                    await writer.execute(
-                        select(effects).where(effects.c.work_id == control.current["id"])
-                    )
-                )
-                .mappings()
-                .one()
-            )
-            receipt = json.loads(row["receipt_json"])
-            receipt["outcome"]["uncertain"] = True
-            await writer.execute(
-                update(effects)
-                .where(effects.c.effect_key == row["effect_key"])
-                .values(receipt_json=json.dumps(receipt))
-            )
+        assert control.accepted is None and backend.has_visible_effects()
+        await mark_receipt(database, control.current["id"], uncertain=True)
         raise LLMEmptyResponseError("synthetic empty provider with original send now unknown")
 
     provider.complete = complete
     result = await service.run(
         (ChatMessage("user", "original task"),), replace(runtime, max_model_requests=3), backend
     )
-    assert result.work_state == "queued" and result.model_requests == 3
+    # A turn-local visible send grants no completion shortcut to an active Work.
+    assert result.work_state != "completed" and result.text == ""
+    assert result.outcome.failure.code == "LLMEmptyResponseError"
     row = await WorkRepository(database).get(result.work_id)
-    assert row["state"] == "queued" and "sync_result" not in json.loads(row["checkpoint_json"])
+    assert row["state"] != "completed" and "sync_result" not in checkpoint(row)
     assert row["model_requests"] == 3 and row["sent_messages"] == 1
-    assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
+    assert len(provider.requests) == 3 and await sends(env) == 1

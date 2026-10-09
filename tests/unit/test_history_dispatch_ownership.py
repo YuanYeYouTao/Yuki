@@ -134,8 +134,7 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(d
         run_effect=chat.run_effect,
         bindings=chat.runtime.bindings,
     )
-    await resumer.resume(item)
-    assert resumer.last_error is None
+    assert await resumer.resume(item) is None
     assert len(provider.requests) == 3
     serialized = json.dumps([m.content for m in provider.requests[2].messages], ensure_ascii=False)
     assert "保存工作结果" in serialized and "work_current_material" in serialized

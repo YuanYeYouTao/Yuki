@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import select
@@ -174,7 +175,7 @@ class WorkDriver:
                 call.id,
             ),
             call,
-            TrustedInvocationContext(self.control, session.contract),
+            TrustedInvocationContext(SimpleNamespace(work_control=self.control), session.contract),
         )
 
         async def invoke() -> str:
@@ -189,12 +190,9 @@ class WorkDriver:
                 )
             return json.dumps(result, ensure_ascii=False)
 
-        recorded = await session.execute(
-            call,
-            invoke,
-            invocation=invocation,
-            side_effecting=False,
-        )
+        from qq_ai_bot.services.invocation_service import InvocationService
+
+        recorded = await InvocationService().invoke(invocation, invoke, side_effecting=False)
         self._read_call, self._read_result = call, recorded
         self._read_key = self.control.session.call_key(call.id)
         return recorded

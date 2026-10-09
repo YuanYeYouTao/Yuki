@@ -49,7 +49,6 @@ async def test_tick_discovers_semantic_scope_without_new_message(database, tmp_p
         await host._binding(item)
         host._sessions.clear()  # Simulate a scope absent from the bounded cache.
         host._advance_scene = AsyncMock()
-        host._reconcile = AsyncMock()
         await host.tick()
         assert (first.canonical_conversation_id, 1) in host._sessions
         host._advance_scene.assert_awaited_once()

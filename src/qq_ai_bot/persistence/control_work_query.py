@@ -278,6 +278,13 @@ class ControlWorkQueryAdapter:
                 .first()
             )
             result["recovery"] = self._record(recovered) if recovered else None
+            from qq_ai_bot.runtime.work_management import management_view
+
+            # Pause reason, delivered signal and original resume/cancel together.
+            managed = await management_view(session, work_id)
+            if managed is not None and managed["signal"] is not None:
+                managed["signal"]["delivered"] = _stamp(managed["signal"]["delivered"])
+            result["management"] = managed
             return ActivityView(work_id, result)
 
     @staticmethod

@@ -9,6 +9,8 @@ from sqlalchemy import select
 
 from qq_ai_bot.conversation.autonomy_db_models import InitiativeRunModel
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
+from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
@@ -39,6 +41,25 @@ class MessageTaskSource:
     external_target_id: str
     content: str
 
+    def inbound(self, original: Any, **extra: Any) -> InboundMessage:
+        """The original ledger event as the trusted inbound; never a new message."""
+        return InboundMessage(
+            message_id=original.platform_message_id,
+            source_event_id=original.id,
+            event_type="message",
+            scope_type=original.scope_type,
+            sender=SenderIdentity(self.actor_user_id),
+            text=original.content,
+            bot_user_id=self.bot_user_id,
+            group_id=original.group_id,
+            received_at=original.occurred_at,
+            person_id=self.actor_person_id,
+            space_id=self.target_space_id,
+            conversation_id=self.conversation_id,
+            presence_id=self.presence_id,
+            **extra,
+        )
+
 
 @dataclass(frozen=True)
 class SelfTaskSource:
@@ -58,6 +79,21 @@ class SelfTaskSource:
     actor_user_id: str = ""
     actor_person_id: None = None
     event_id: None = None
+
+    def actor(self, execution_id: str) -> ToolActor:
+        """The stable SELF principal of the original run; no person is borrowed."""
+        return ToolActor(
+            user_id="",
+            bot_user_id=self.bot_user_id,
+            group_id=self.external_target_id,
+            origin=TurnOrigin.SELF_INITIATIVE,
+            instruction=self.content,
+            execution_id=execution_id,
+            conversation_id=self.conversation_id,
+            presence_id=self.presence_id,
+            principal_kind="self",
+            initiative_run_id=self.run_id,
+        )
 
     def trigger(self) -> SelfInitiativeTrigger:
         return SelfInitiativeTrigger(

@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError
 from tests.support.social_identity_cases import social_env
-from tests.support.work_session import WorkSession
+from tests.support.work_session import WorkSession, invoke_tool
 from tests.support.workspace_snapshots import snapshot_bytes
 
 from qq_ai_bot.capabilities.results import normalize_legacy_result
@@ -220,7 +220,7 @@ async def test_invalid_association_never_dispatches(database, tmp_path, argument
     call = ToolCall(
         "invalid", ToolFunction("send_message", json.dumps({"text": "reply", **arguments}))
     )
-    receipt = json.loads(await control.session.execute(call, invoke, allow_pending=True))
+    receipt = json.loads(await invoke_tool(control.session, call, invoke))
     assert receipt == {
         "ok": False,
         "executed": False,
@@ -261,7 +261,7 @@ async def test_transport_report_survives_long_history_and_does_not_complete_earl
             )
             return json.dumps({"ok": True, "data": result})
 
-        return await session.execute(call, invoke, allow_pending=True)
+        return await invoke_tool(session, call, invoke)
 
     await send("start", "start")
     for index in range(70):
@@ -313,11 +313,11 @@ async def test_interrupted_send_keeps_association_and_recovery_never_replays(dat
         raise RuntimeError("interrupted after possible transport")
 
     with pytest.raises(RuntimeError):
-        await session.execute(call, interrupted, allow_pending=True)
+        await invoke_tool(session, call, interrupted)
     evidence = await control.communication_reports(event_ids=(original,))
     assert len(evidence) == 1 and evidence[0]["uncertain"]
     assert not await control.communication_reports(event_ids=(original,), delivered_only=True)
-    receipt = json.loads(await session.execute(call, interrupted, allow_pending=True))
+    receipt = json.loads(await invoke_tool(session, call, interrupted))
     assert receipt["uncertain"] and attempts == 1
 
 
@@ -335,13 +335,13 @@ async def test_failed_start_cannot_be_retried_or_cleared_by_quiet(database, tmp_
         attempts += 1
         return json.dumps({"ok": False, "data": {"status": "failed"}})
 
-    original = await session.execute(call, failed, allow_pending=True)
-    assert await session.execute(call, failed, allow_pending=True) == original
+    original = await invoke_tool(session, call, failed)
+    assert await invoke_tool(session, call, failed) == original
     retry = json.loads(
-        await session.execute(
+        await invoke_tool(
+            session,
             ToolCall("retry", call.function),
             failed,
-            allow_pending=True,
         )
     )
     assert retry["ok"] is False and attempts == 2
@@ -420,9 +420,9 @@ async def test_typed_send_survives_presentation_failure_without_replay(database,
         raise RuntimeError("presentation persistence failed")
 
     with pytest.raises(RuntimeError, match="presentation persistence failed"):
-        await session.execute(call, interrupted_publication, allow_pending=True)
+        await invoke_tool(session, call, interrupted_publication)
     assert len(await control.communication_reports(kind="start", delivered_only=True)) == 1
-    recovered = json.loads(await session.execute(call, interrupted_publication, allow_pending=True))
+    recovered = json.loads(await invoke_tool(session, call, interrupted_publication))
     assert recovered["delivered_message"] and recovered["replay_forbidden"]
     assert attempts == 1 and sum(name == "send_group_msg" for name, _ in env.bot.calls) == 1
 
@@ -517,10 +517,10 @@ async def test_another_work_input_is_rejected_before_any_dispatch(database, tmp_
         },
     }
     receipt = json.loads(
-        await session.execute(
+        await invoke_tool(
+            session,
             ToolCall("cross-work", ToolFunction("send_message", json.dumps(arguments))),
             invoke,
-            allow_pending=True,
         )
     )
     assert receipt["error_code"] == "work_report_event_not_admitted"
@@ -556,10 +556,10 @@ async def test_reports_do_not_self_certify_a_state_change(database, tmp_path, ki
         )
         return json.dumps({"ok": True, "data": receipt})
 
-    await session.execute(
+    await invoke_tool(
+        session,
         ToolCall("report", ToolFunction("send_message", json.dumps(arguments))),
         report,
-        allow_pending=True,
     )
     incomplete = json.loads(await control.execute("task_control", {"action": "complete"}, "early"))
     assert incomplete["error"] == "work_completion_requires_execution_evidence"
@@ -567,7 +567,7 @@ async def test_reports_do_not_self_certify_a_state_change(database, tmp_path, ki
     async def write():
         return json.dumps({"ok": True, "data": snapshot_bytes(env.store, "state.txt", b"changed")})
 
-    await session.execute(ToolCall("write", ToolFunction("workspace_write", "{}")), write)
+    await invoke_tool(session, ToolCall("write", ToolFunction("workspace_write", "{}")), write)
     assert json.loads(await control.execute("task_control", {"action": "complete"}, "complete"))[
         "ok"
     ]

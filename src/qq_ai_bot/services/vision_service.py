@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import logging
 import re
 import time
@@ -745,47 +744,6 @@ class VisionService:
             success,
             error_category or "",
         )
-
-
-def compact_visual_summary(observation: VisualObservation, *, limit: int = 6000) -> str:
-    """Render a bounded text-only observation for later conversation turns."""
-
-    payload: dict[str, object] = {
-        "overall_description": observation.overall_description,
-        "partial_failure": observation.partial_failure,
-        "items": [],
-    }
-    items: list[dict[str, object]] = []
-    for item in observation.items:
-        rendered = {
-            "index": item.index,
-            "description": item.description,
-            "ocr_text": item.ocr_text,
-            "expression": item.expression,
-            "meme_intent": item.meme_intent,
-            "recognized_character": item.recognized_character,
-            "franchise": item.franchise,
-            "character_candidates": [
-                candidate.model_dump(mode="json") for candidate in item.character_candidates
-            ],
-            "notable_objects": list(item.notable_objects),
-            "uncertainty": item.uncertainty,
-            "confidence": item.confidence,
-        }
-        items.append({key: value for key, value in rendered.items() if value not in ("", (), [])})
-    payload["items"] = items
-    serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    if len(serialized) <= limit:
-        return serialized
-    fallback = json.dumps(
-        {
-            "overall_description": observation.overall_description[: max(0, limit - 80)],
-            "truncated": True,
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-    return fallback[:limit]
 
 
 def _conversation_hash(conversation_key: str) -> str:

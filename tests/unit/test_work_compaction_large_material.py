@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import select
 from tests.support.work_compaction import summary_json
-from tests.support.work_session import WorkSession
+from tests.support.work_session import WorkSession, invoke_tool
 from tests.unit.test_work_compaction_capacity import _grow, _runtime, _session, _snapshot, _steer
 from tests.unit.test_work_effect_results import owned_session
 
@@ -85,7 +85,7 @@ async def _near_window_session(database, tmp_path, *, large_anchor, single_recor
         calls.append(call)
         invocations.append(invoke)
         session.transcript.append(ChatMessage("assistant", "Read evidence", tool_calls=(call,)))
-        result = await session.execute(call, invoke, side_effecting=False)
+        result = await invoke_tool(session, call, invoke, side_effecting=False)
         session.transcript.append_result(call.id, result)
         session.progress.setdefault("model_observations", []).append(
             {

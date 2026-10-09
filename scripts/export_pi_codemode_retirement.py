@@ -28,13 +28,11 @@ def export() -> dict:
         if isinstance(node, ast.ClassDef)
     }
     runner = classes["AgentRunner"]
-    worker = classes["WorkerBackend"]
     assert "_run" not in {
         node.name for node in runner.body if isinstance(node, ast.AsyncFunctionDef)
     }
-    assert "__getattr__" not in {
-        node.name for node in worker.body if isinstance(node, ast.FunctionDef)
-    }
+    # The worker wrapper is retired; limits live at the real backend boundary.
+    assert "WorkerBackend" not in classes
     assert "Callbacks" not in classes
     dynamic = []
     for key in ("runner", "turn", "coordinator"):

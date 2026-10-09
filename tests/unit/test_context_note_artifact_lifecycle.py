@@ -208,8 +208,9 @@ async def test_note_update_preserves_real_wait_and_failure_checkpoint(database, 
     assert failed["ok"]
     stored = await control.repository.get(control.current["id"])
     assert json.loads(stored["checkpoint_json"])["context_note"]["revision"] == 2
-    assert (
-        json.loads(stored["checkpoint_json"])["reason"] == "The original source became unavailable"
+    # The accepted failure keeps its reason until the writer commits it.
+    assert json.loads(stored["checkpoint_json"])["accepted_control"]["reason"] == (
+        "The original source became unavailable"
     )
 
 

@@ -8,7 +8,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import event, select, update
 from tests.support.social_identity_cases import social_env
-from tests.support.work_session import WorkSession
+from tests.support.work_session import WorkSession, invoke_tool
 
 from qq_ai_bot.domain.messages import ChatMessage, ToolCall, ToolFunction
 from qq_ai_bot.runtime.execution_receipts import ExecutionReceipts, current_receipts
@@ -107,7 +107,8 @@ async def test_confirmed_terminal_result_retires_only_duplicate_notification(
         invoked.append(True)
         return '{"ok":true,"data":{}}'
 
-    result = await session.execute(
+    result = await invoke_tool(
+        session,
         ToolCall(
             id="next-read",
             type="function",

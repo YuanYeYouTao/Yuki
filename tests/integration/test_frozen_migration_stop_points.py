@@ -145,4 +145,4 @@ def test_original_stop_schema_and_facts_survive_head(tmp_path, frozen_pi, stop):
     assert retained(historical) == before
     assert attachment.read_bytes() == original_file
     with sqlite3.connect(historical) as db:
-        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0099",)
+        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0101",)

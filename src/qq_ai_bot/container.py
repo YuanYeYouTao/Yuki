@@ -31,7 +31,6 @@ from qq_ai_bot.application.modules import (
     ModelRuntimeModule,
     PersistenceModule,
     PluginModule,
-    RuntimeFoundationModule,
     WebModule,
 )
 from qq_ai_bot.automation.models import TurnOrigin
@@ -169,10 +168,6 @@ class ApplicationContainer:
         self.relationships = persistence.relationships
         self.relationship_jobs = persistence.relationship_jobs
         self.turn_observations = persistence.turn_observations
-        self.runtime_foundation = RuntimeFoundationModule(
-            turn_observability=self.turn_observations,
-            superusers=settings.superusers,
-        ).build()
         model_runtime = ModelRuntimeModule(
             settings.model_runtime,
             self.database,
@@ -360,7 +355,9 @@ class ApplicationContainer:
             ),
         )
         self.work_scheduler = WorkScheduler(
-            works, self.work_resumer, chat_admission_enabled=self.settings.runtime_work_enabled
+            works,
+            self.work_resumer.resume,
+            chat_admission_enabled=self.settings.runtime_work_enabled,
         )
         self.database.subagents_enabled = self.settings.subagents_enabled
         self.database.subagent_concurrency = self.settings.subagent_concurrency
@@ -380,7 +377,9 @@ class ApplicationContainer:
                 load_tools=self.main_agent_contract.definitions,
                 open_memory=self.chat.open_memory_session,
                 open_self_memory=self.chat.open_self_memory_session,
-                backend_factory=lambda runtime: MainAgentBackend(self.chat, runtime),
+                backend_factory=lambda runtime, allowed: MainAgentBackend(
+                    self.chat, runtime, allowed_tools=allowed
+                ),
                 web_capabilities=self.chat.web_capabilities,
             ),
         )

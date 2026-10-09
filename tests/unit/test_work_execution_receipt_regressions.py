@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
+from tests.support.work_session import invoke_tool
 from tests.unit.test_work_effect_results import execute, owned_session
 
 from qq_ai_bot.capabilities.results import ToolExecutionResult
@@ -157,7 +158,7 @@ async def test_interrupted_read_is_visible_but_not_an_unknown_mutation(database,
         raise RuntimeError("readonly invocation interrupted before a typed result")
 
     with pytest.raises(RuntimeError):
-        await session.execute(call, fail, side_effecting=False)
+        await invoke_tool(session, call, fail, side_effecting=False)
     visible = next(
         item for item in await control.effect_evidence() if item["tool"] == "read_status"
     )

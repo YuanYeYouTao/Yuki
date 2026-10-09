@@ -61,7 +61,7 @@ async def test_actual_branch_producer_upgrade_preserves_work_receipts_and_budget
     await require_canonical_schema(url)
     assert facts(path, columns)[1] == before
     with sqlite3.connect(path) as db:
-        assert db.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0099"
+        assert db.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0101"
         for name in (*migration.INDEXES, *(s[0] for s in migration.LEGACY_MAIN_INDEXES)):
             assert db.execute("SELECT 1 FROM sqlite_master WHERE name=?", (name,)).fetchone()
     # Re-running standard upgrade is idempotent, without manual stamp/DB replacement.
@@ -73,4 +73,4 @@ async def test_actual_branch_producer_upgrade_preserves_work_receipts_and_budget
         await asyncio.to_thread(command.downgrade, config, "0095")
     assert facts(path, columns)[1] == before
     with sqlite3.connect(path) as db:
-        assert db.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0099"
+        assert db.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0101"

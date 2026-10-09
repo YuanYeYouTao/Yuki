@@ -6,8 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
-from collections.abc import Awaitable, Callable
-from contextvars import ContextVar
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING, Any
@@ -17,8 +16,6 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.capabilities.invocation import (
-    Invocation,
-    child_operation_id,
     direct_operation_id,
 )
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
@@ -32,7 +29,11 @@ from qq_ai_bot.domain.messages import (
 from qq_ai_bot.execution_trace.phases import model_detail
 from qq_ai_bot.model_runtime.capacity import estimate_request_tokens, estimate_text_tokens
 from qq_ai_bot.runtime.activation_outcome import classify_failure
-from qq_ai_bot.runtime.effect_outcomes import ResultCapture, current_result_capture
+from qq_ai_bot.runtime.effect_outcomes import (
+    ResultCapture,
+    current_result_capture,
+    readonly_call_signature,
+)
 from qq_ai_bot.runtime.work_journal import (
     JournalUnavailable,
     WorkJournal,
@@ -50,30 +51,6 @@ if TYPE_CHECKING:
     from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
 
 logger = logging.getLogger(__name__)
-_TOOL_AUDITS: ContextVar[
-    tuple[str, tuple[str, int, int], list[Callable[[], Awaitable[None]]]] | None
-] = ContextVar("work_tool_post_effect_audits", default=None)
-
-
-def defer_tool_audit(call_key: str, audit: Callable[[], Awaitable[None]]) -> bool:
-    """Defer only this call's derived audit until its durable effect commits."""
-    current = _TOOL_AUDITS.get()
-    if current is None:
-        return False
-    if current[0] != call_key:
-        raise ValueError("tool_audit_effect_key_mismatch")
-    current[2].append(audit)
-    return True
-
-
-def tool_audit_source(call_key: str) -> tuple[str, int, int] | None:
-    """Original Conversation/generation/privacy authority, frozen before dispatch."""
-    current = _TOOL_AUDITS.get()
-    if current is None:
-        return None
-    if current[0] != call_key:
-        raise ValueError("tool_audit_effect_key_mismatch")
-    return current[1]
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,7 +84,6 @@ class WorkSession:
         self.sequence = 0
         self.recovered_delivery: str | None = None
         self.recovered_phase: str | None = None
-        self.delivery_origin: dict[str, Any] | None = None
         self.progress: dict[str, Any] = {}
         self.compaction_anchor: TurnTranscript | None = None
         self.handoff_work_id: str | None = None
@@ -225,25 +201,7 @@ class WorkSession:
                     )
                 )
             if loaded.delivery_record is not None:
-                delivery = loaded.delivery_record
-                self.progress["delivery_plan"] = deepcopy(delivery["plan"])
-                self.delivery_origin = deepcopy(delivery["origin"])
-                self.event_ids = list(delivery["event_ids"])
-                self.source_keys = list(delivery["source_keys"])
-                self.input_ids = list(delivery["input_ids"])
-                if delivery["source_guard"]:
-                    from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
-
-                    self.source_guard = WorkSourceGuard.restore(delivery["source_guard"])
-                    if not await self.source_guard.check(control):
-                        raise WorkConflict("work_journal_source_changed")
-                if not self._source_present():
-                    raise WorkConflict("work_journal_source_changed")
-                self.recovered_phase = self.recovered_delivery = delivery["phase"]
-                control.ending = (
-                    delivery["ending"] if delivery["phase"] == "delivered" else "suspended"
-                )
-                control.final_delivery = delivery["phase"] == "delivered"
+                self.recovered_phase = self.recovered_delivery = loaded.delivery_record["phase"]
         if not row and control.current and loaded and loaded.reason != "fresh":
             await control.refresh_effects()
             evidence = control.known_effects
@@ -325,7 +283,6 @@ class WorkSession:
             self.compaction_anchor = _decode_compaction_anchor(saved_anchor)
             self.handoff_work_id = metadata.get("handoff_work_id")
             self.progress = dict(metadata.get("progress", {}))
-            self.delivery_origin = metadata.get("delivery_origin")
             if metadata.get("source_guard"):
                 from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
 
@@ -334,25 +291,11 @@ class WorkSession:
             self.event_ids = list(metadata.get("event_ids", []))
             self.source_keys = list(metadata.get("source_keys", []))
             self.input_ids = list(metadata.get("input_ids", []))
-            if (
-                self.delivery_origin is not None
-                and row["phase"] in {"delivery", "delivered"}
-                and not self._source_present()
-            ):
-                raise WorkConflict("work_journal_source_changed")
-            if row["phase"] in {"delivery", "delivered"} and self.progress.get("delivery_plan"):
-                await self.validate_delivery_source()
             await control.refresh_effects()
-            if (
-                row["phase"] in {"delivery", "delivered"}
-                and self._source_present()
-                and (self.delivery_origin is not None or not await control.pending())
-            ):
+            if row["phase"] in {"delivery", "delivered"} and self.progress.get("delivery_plan"):
+                # A legacy frozen final-delivery plan is never executed online;
+                # the offline importer reconciles it (see runtime/work_delivery).
                 self.recovered_delivery = row["phase"]
-                control.ending = (
-                    metadata.get("ending") if row["phase"] == "delivered" else "suspended"
-                )
-                control.final_delivery = row["phase"] == "delivered"
 
             # Never run calls from a recovered model response. Attach persisted
             # outcomes, or uncertainty, before any fresh input/model dispatch.
@@ -1415,21 +1358,6 @@ class WorkSession:
         assert self.transcript is not None
         return direct_operation_id(self.transcript.chain_id, self.sequence, call_id)
 
-    def delivery_call_key(self, call_id: str) -> str:
-        """Only persisted delivery uses its original chain/sequence across upgrades."""
-        origin = self.delivery_origin
-        if origin is None:
-            return self.call_key(call_id)
-        current = self.control.current
-        if current is None or origin.get("work_id") != current["id"]:
-            raise WorkConflict("delivery_intent_conflict")
-        return f"{origin['chain_id']}:{origin['sequence']}:{call_id}"
-
-    async def validate_delivery_source(self) -> None:
-        """Recheck the original selected sources outside any delivery writer."""
-        if self.source_guard is not None and not await self.source_guard.check(self.control):
-            raise WorkConflict("work_journal_source_changed")
-
     async def _pending_result_key(self, call: dict[str, Any], original: str) -> str:
         """Follow only a Host-persisted readonly link owned by this original Work."""
         key = call.get("readonly_result_key")
@@ -1505,24 +1433,10 @@ class WorkSession:
             or outcome.get("side_effecting") is not False
             or outcome.get("tool") != call["name"]
             or outcome.get("readonly_call_signature")
-            != self._readonly_signature(call["name"], call.get("arguments", ""))
+            != readonly_call_signature(call["name"], call.get("arguments", ""))
         ):
             raise JournalUnavailable("work_readonly_reuse_corrupt")
         return key
-
-    @staticmethod
-    def _readonly_signature(name: str, arguments: str) -> str:
-        try:
-            value = json.loads(arguments)
-        except ValueError:
-            normalized = arguments.strip()
-        else:
-            normalized = json.dumps(
-                value, sort_keys=True, ensure_ascii=False, separators=(",", ":")
-            )
-        return hashlib.sha256(
-            json.dumps([name, normalized], ensure_ascii=False).encode()
-        ).hexdigest()
 
     async def save(
         self,
@@ -1602,11 +1516,6 @@ class WorkSession:
                         publication=publication,
                         metadata={
                             "sequence": self.sequence,
-                            **(
-                                {"delivery_origin": self.delivery_origin}
-                                if self.delivery_origin is not None
-                                else {}
-                            ),
                             "event_ids": list(
                                 dict.fromkeys(self.event_ids[:1] + self.event_ids[-255:])
                             ),
@@ -1677,295 +1586,6 @@ class WorkSession:
             }:
                 raise WorkCapacityError(str(exc)) from exc
             raise
-
-    async def execute(
-        self,
-        call: ToolCall,
-        invoke: Callable[[], Awaitable[str]],
-        *,
-        side_effecting: bool = True,
-        allow_pending: bool = False,
-        invocation: Invocation,
-    ) -> str:
-        control = self.control
-        if control.current is not None:
-            identity = invocation.identity
-            expected = (
-                self.call_key(call.id)
-                if identity.parent_operation_id is None
-                else child_operation_id(identity.parent_operation_id, identity.child_ordinal or 0)
-            )
-            if (
-                identity.owner_execution_id != control.current["id"]
-                or identity.operation_id != expected
-                or (identity.parent_operation_id is not None and identity.child_ordinal is None)
-            ):
-                raise WorkConflict("invocation_owner_conflict")
-            await control.repository.validate_invocation(
-                invocation.identity.operation_id, invocation.durable_metadata()
-            )
-        # The original Host operation, including a composition child's identity.
-        operation_key = invocation.identity.operation_id
-
-        def refuse(error_code: str, detail: str = "") -> str:
-            from qq_ai_bot.capabilities.results import ToolExecutionResult
-            from qq_ai_bot.runtime.effect_outcomes import current_result_capture
-
-            outcome = ToolExecutionResult(
-                ok=False,
-                provider_id="core",
-                tool_name=call.function.name,
-                data={"executed": False},
-                mutation_committed=False,
-                error_code=error_code,
-                public_message=detail,
-            )
-            capture = current_result_capture.get()
-            if capture is not None:
-                capture.outcome = outcome
-            return json.dumps(outcome.model_payload(), ensure_ascii=False)
-
-        report = None
-        report_target = None
-        if call.function.name == "send_message":
-            if control.current is not None:
-                key = operation_key
-                child_intent = (
-                    invocation is not None
-                    and invocation.identity.parent_operation_id is not None
-                    and await control.repository.undispatched_intent(control.current["id"], key)
-                )
-                if not child_intent and await self.journal.effect_state(key) is not None:
-                    if not await control.repository.valid(control.lease):
-                        raise WorkConflict("work_activation_obsolete")
-                    return await self.journal.effect_result(key)
-            try:
-                arguments = json.loads(call.function.arguments)
-                if isinstance(arguments, dict):
-                    report = await control.validate_work_report(arguments)
-                    if report is not None:
-                        report_target = await control.communication_target()
-            except ValueError as exc:
-                return refuse(str(exc))
-        if control.current is None:
-            return await invoke()
-        if not allow_pending and await control.pending():
-            return refuse("new_input_before_execution")
-        if not allow_pending:
-            await control.validate()
-        if (
-            side_effecting
-            and not allow_pending
-            and await control.has_unresolved_effects(pending=False)
-        ):
-            return refuse("unresolved_prior_effect", "先查询原执行结果；结果未知时不能继续副作用。")
-        key = operation_key
-        if not await control.repository.prepare_effect(
-            control.lease,
-            control.current["id"],
-            key,
-            "tool",
-            invocation=invocation.durable_metadata() if invocation is not None else None,
-            outcome={
-                "tool": call.function.name,
-                "side_effecting": side_effecting,
-                "ok": False,
-                "pending": False,
-                "uncertain": False,
-                "executed": False,
-                **(
-                    {
-                        "readonly_call_signature": self._readonly_signature(
-                            call.function.name, call.function.arguments
-                        )
-                    }
-                    if not side_effecting
-                    else {}
-                ),
-                **({"work_report": report, "report_target": report_target} if report else {}),
-            },
-        ):
-            assert invocation is not None
-            await control.repository.validate_invocation(key, invocation.durable_metadata())
-            # A composition child's intent was published at T1 with its snapshot;
-            # only that exact undispatched intent continues to T2. Anything else
-            # (dispatched, settled, legacy) returns the original receipt.
-            if invocation.identity.parent_operation_id is None or not (
-                await control.repository.undispatched_intent(control.current["id"], key)
-            ):
-                return await self.journal.effect_result(key)
-        from qq_ai_bot.capabilities.invocation import counts_toward_business_limit
-        from qq_ai_bot.runtime.work_budget import WorkBudgetExceeded
-
-        charged = counts_toward_business_limit(call.function.name)
-        try:
-            if not await control.repository.admit_dispatch(
-                control.lease, control.current["id"], key, charge=charged
-            ):
-                return await self.journal.effect_result(key)
-            if charged:
-                control.current["tool_calls"] += 1
-                control.tools_started += 1
-        except WorkBudgetExceeded:
-            await self.journal.record_effect(
-                key,
-                "accepted",
-                {
-                    "result": json.dumps(
-                        {"ok": False, "executed": False, "error": "work_total_budget_exhausted"}
-                    )
-                },
-            )
-            raise
-        from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
-
-        async with control.repository.database.sessions() as reader:
-            privacy_generation = (
-                await reader.scalar(
-                    select(ExecutionTraceStateModel.privacy_generation).where(
-                        ExecutionTraceStateModel.id == 1
-                    )
-                )
-                or 0
-            )
-        # An erasure during invoke or accepted persistence cannot authorize this
-        # old result under the deletion generation observed by its later audit.
-        audit_source = (control.lease.conversation_id, control.lease.generation, privacy_generation)
-        audits: list[Callable[[], Awaitable[None]]] = []
-        audit_token = _TOOL_AUDITS.set((key, audit_source, audits))
-        from qq_ai_bot.runtime.effect_outcomes import (
-            ResultCapture,
-            current_result_capture,
-            execution_evidence,
-            execution_finished,
-        )
-
-        parent_capture = current_result_capture.get()
-        capture = ResultCapture(control.current["id"], key)
-        capture_token = current_result_capture.set(capture)
-        try:
-            result = await invoke()
-        except BaseException as exc:
-            try:
-                if capture.outcome is None:
-                    await self.journal.record_effect(
-                        key,
-                        "unknown",
-                        {
-                            "error": "execution_interrupted",
-                            "outcome": {
-                                "tool": call.function.name,
-                                "side_effecting": side_effecting,
-                                "uncertain": True,
-                                "delivered_message": False,
-                                **(
-                                    {"work_report": report, "report_target": report_target}
-                                    if report
-                                    else {}
-                                ),
-                            },
-                        },
-                    )
-                else:
-                    # The backend returned a typed outcome before presentation
-                    # persistence failed. Body loss cannot erase execution facts.
-                    evidence = execution_evidence(
-                        capture.outcome,
-                        tool=call.function.name,
-                        side_effecting=side_effecting,
-                        arguments=call.function.arguments,
-                    )
-                    if not side_effecting:
-                        evidence["readonly_call_signature"] = self._readonly_signature(
-                            call.function.name, call.function.arguments
-                        )
-                    if report:
-                        evidence.update(work_report=report)
-                        if evidence.get("report_target") is None:
-                            evidence["report_target"] = report_target
-                    fallback = json.dumps(
-                        {
-                            **evidence,
-                            "result_unavailable": True,
-                            "result_error": "tool_result_publication_failed",
-                            "replay_forbidden": True,
-                        },
-                        ensure_ascii=False,
-                    )
-                    from qq_ai_bot.capabilities.media import MediaResultText
-
-                    await self.journal.record_effect(
-                        key,
-                        "accepted",
-                        {
-                            "result": MediaResultText(fallback, capture.outcome.images),
-                            "outcome": evidence,
-                            "artifact_handle": capture.artifact_handle,
-                        },
-                        media_source=audit_source,
-                    )
-                    if isinstance(exc, OSError) and not capture.outcome.uncertain:
-                        return MediaResultText(fallback, capture.outcome.images)
-            except Exception as secondary:
-                exc.add_note(f"effect receipt persistence deferred: {type(secondary).__name__}")
-            raise
-        finally:
-            _TOOL_AUDITS.reset(audit_token)
-            current_result_capture.reset(capture_token)
-            if parent_capture is not None and capture.outcome is not None:
-                parent_capture.outcome = capture.outcome
-                parent_capture.artifact_handle = capture.artifact_handle
-        if capture.outcome is None:
-            raise TypeError("live tool execution did not publish a typed outcome")
-        evidence = execution_evidence(
-            capture.outcome,
-            tool=call.function.name,
-            side_effecting=side_effecting,
-            arguments=call.function.arguments,
-        )
-        if not side_effecting:
-            evidence["readonly_call_signature"] = self._readonly_signature(
-                call.function.name, call.function.arguments
-            )
-        if report:
-            evidence.update(work_report=report)
-            if evidence.get("report_target") is None:
-                evidence["report_target"] = report_target
-        await self.journal.record_effect(
-            key,
-            "accepted",
-            {
-                "result": result,
-                "outcome": evidence,
-                "artifact_handle": capture.artifact_handle,
-            },
-            media_source=audit_source,
-        )
-        control.observe_evidence(evidence)
-        if (
-            capture.outcome.provider_id == "core"
-            and call.function.name
-            in {"get_code_run", "terminal_read", "cancel_code_run", "terminal_control"}
-            and isinstance(evidence.get("run_id"), str)
-            and execution_finished(evidence)
-        ):
-            await control.repository.resolve_run_effects(
-                control.lease,
-                control.current["id"],
-                evidence["run_id"],
-                evidence,
-            )
-        # No audit runs after an uncertain effect commit. Cancellation after this
-        # commit propagates without replacing its already-confirmed effect.
-        for audit in audits:
-            try:
-                await audit()
-            except Exception as exc:
-                logger.warning(
-                    "tool_evidence_record_failed category=%s coverage_incomplete=true",
-                    type(exc).__name__,
-                )
-        return result
 
 
 def _decode_compaction_anchor(value: object) -> TurnTranscript | None:

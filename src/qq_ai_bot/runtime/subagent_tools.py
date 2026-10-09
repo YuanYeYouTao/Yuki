@@ -13,7 +13,6 @@ from qq_ai_bot.runtime.subagent_repository import SubagentRepository
 from qq_ai_bot.sandbox.environment_tools import SANDBOX_TOOLS, tool
 from qq_ai_bot.workspace.tools import WORKSPACE_TOOLS
 
-SUBAGENT_NAMES = frozenset({"subagent_start", "subagent_control", "subagent_message"})
 _WORKER_BASE = (
     "你是 Yuki 派出的持久工作者，完成任务资料包中的目标并检查真实结果。"
     "工作已登记，不要再次 accept。你可以自由操作全局 /workspace，默认将本任务产物"

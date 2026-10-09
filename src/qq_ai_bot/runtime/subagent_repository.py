@@ -258,10 +258,7 @@ class SubagentRepository:
             lease = await self.acquire(identity, reconcile=True)
             if lease:
                 try:
-                    row = await self.repository.get(identity)
-                    await self.finish(
-                        lease, str((row or {}).get("reason") or "已恢复持久执行回执；请核对产物。")
-                    )
+                    await self.finish(lease)
                 finally:
                     await self.repository.release(lease)
         now = time.time()
@@ -528,7 +525,8 @@ class SubagentRepository:
                 )
             )
 
-    async def finish(self, lease: WorkLease, result: str) -> None:
+    async def finish(self, lease: WorkLease) -> None:
+        """Notify the parent with the committed result of this exact revision."""
         async with self.database.immediate_session() as session:
             await self.repository._assert_lease(session, lease)
             child = (
@@ -541,10 +539,17 @@ class SubagentRepository:
                 .mappings()
                 .one()
             )
+            checkpoint = json.loads(row["checkpoint_json"])
+            if row["state"] == "completed":
+                result = checkpoint.get("sync_result")
+            elif row["state"] == "suspended":
+                result = "工作暂停，已保留执行记录。"
+            else:
+                result = checkpoint.get("reason") or row["reason"]
             receipt = {
                 "child_id": lease.work_id,
                 "state": row["state"],
-                "text": result.encode("utf-8")[:12000].decode("utf-8", errors="ignore"),
+                "text": str(result or "").encode("utf-8")[:12000].decode("utf-8", errors="ignore"),
             }
             saved = await session.scalar(
                 select(journal.c.payload_json).where(journal.c.work_id == lease.work_id)

@@ -30,8 +30,20 @@ async def _completed_child(database, tmp_path):
     row = await repo.get(identity)
     checkpoint = json.loads(row["checkpoint_json"])
     assert len(row["checkpoint_json"].encode()) > 256 * 1024
+    await repo.accept_control(
+        lease,
+        identity,
+        {
+            "action": "complete",
+            "call_key": "done",
+            "result": "Verified result: /workspace/tasks/report.md",
+        },
+    )
+    row = await repo.get(identity)
     await repo.transition(lease, identity, row["revision"], "completed", reason="done")
-    await workers.finish(lease, "Verified result: /workspace/tasks/report.md")
+    await workers.finish(lease)
+    # The committed checkpoint, including its published result, is what the parent reads.
+    checkpoint = json.loads((await repo.get(identity))["checkpoint_json"])
     parent_control = SimpleNamespace(repository=repo, lease=parent_lease, current=parent, source={})
     return repo, workers, parent_control, lease, identity, checkpoint
 
@@ -75,7 +87,7 @@ async def test_large_note_completion_notifies_and_result_reads_original_checkpoi
     finally:
         event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
     assert all("checkpoint_json" not in statement for statement in statements)
-    await workers.finish(lease, "Verified result: /workspace/tasks/report.md")
+    await workers.finish(lease)
     assert len(await repo.pending(parent.lease, work_id=parent.current["id"])) == 1
     with pytest.raises(ValueError, match="subagent_not_owned"):
         await workers.related("unrelated-root", identity, include_checkpoint=True)
@@ -123,7 +135,7 @@ async def test_stale_child_owner_cannot_replace_completed_result(database, tmp_p
     repo, workers, parent, lease, identity, _checkpoint = await _completed_child(database, tmp_path)
     await repo.release(lease)
     with pytest.raises(WorkConflict):
-        await workers.finish(lease, "Stale overwrite")
+        await workers.finish(lease)
     result = await workers.related(parent.current["id"], identity, include_checkpoint=True)
     assert (
         json.loads(result["result_json"])["text"] == "Verified result: /workspace/tasks/report.md"

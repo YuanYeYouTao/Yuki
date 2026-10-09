@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any, ClassVar
 
 from qq_ai_bot.automation.compiler import ExecutionPlan
-from qq_ai_bot.automation.models import AutomationDirectoryEntry, AutomationRecord
+from qq_ai_bot.automation.models import (
+    AutomationDirectoryEntry,
+    AutomationRecord,
+    AutomationStatus,
+)
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.capabilities.results import ToolExecutionResult
 from qq_ai_bot.domain.messages import ChatTool
@@ -478,10 +483,22 @@ class AutomationToolService:
                     "任务已进入待执行队列。" if changed else "该任务不能立即执行。"
                 ),
             }[name]
-            return _result(
-                data={"automation_id": automation_id, "changed": changed},
-                public_message=public_message,
-                mutation_committed=changed,
+            satisfied: bool | None = None
+            if name == "automation_cancel":
+                # A repeated cancel of an already cancelled task meets its request.
+                satisfied = changed or (
+                    (await self._service.require_manageable(automation_id, actor)).status
+                    is AutomationStatus.CANCELLED
+                )
+            elif name == "automation_resume":
+                satisfied = changed
+            return replace(
+                _result(
+                    data={"automation_id": automation_id, "changed": changed},
+                    public_message=public_message,
+                    mutation_committed=changed,
+                ),
+                request_postcondition_satisfied=satisfied,
             )
         except (PermissionError, ValueError) as exc:
             if name == "automation_create":

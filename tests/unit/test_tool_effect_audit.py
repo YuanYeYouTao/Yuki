@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import delete, func, select, update
 from tests.conftest import build_harness, make_settings
 from tests.support.social_identity_cases import social_env
-from tests.support.work_session import WorkSession
+from tests.support.work_session import WorkSession, invoke_tool
 from tests.unit.test_self_initiative_memory import record, seed
 
 from qq_ai_bot.capabilities import (
@@ -42,9 +42,9 @@ from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import effects
-from qq_ai_bot.runtime.work_session import defer_tool_audit
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.chat import ChatService
+from qq_ai_bot.services.invocation_service import defer_tool_audit
 from qq_ai_bot.services.main_agent_backend import MainAgentBackend
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 from qq_ai_bot.social.db_models import SocialOperationModel
@@ -235,13 +235,13 @@ async def test_social_success_and_original_work_call_survive_telemetry_failure(
         assert audit_calls == []
         return result
 
-    result = await work.execute(call, invoke, allow_pending=True)
+    result = await invoke_tool(work, call, invoke)
     if writer is not None:
         await writer.close()
         assert writer.failures == 1
     assert "data" in json.loads(result), result
     assert json.loads(result)["data"]["status"] == "succeeded"
-    assert await work.execute(call, invoke, allow_pending=True) == result
+    assert await invoke_tool(work, call, invoke) == result
     assert dispatched == 1 and audit_calls == [key]
     async with database.sessions() as session:
         effect = (await session.execute(select(effects))).mappings().one()
@@ -300,7 +300,7 @@ async def test_post_effect_cancel_or_uncertain_commit_never_runs_unconfirmed_aud
         return '{"ok":true}'
 
     with pytest.raises(asyncio.CancelledError if mode == "cancel_audit" else RuntimeError):
-        await work.execute(call, invoke, allow_pending=True)
+        await invoke_tool(work, call, invoke)
     async with database.sessions() as session:
         assert await session.scalar(select(effects.c.state)) == "accepted"
     assert audit.await_count == (1 if mode == "cancel_audit" else 0)
@@ -347,7 +347,7 @@ async def test_deferred_audit_cannot_refill_person_erased_before_accepted(
         await invoke_audit(recorder, runtime, work.call_key(call.id), "confirmed")
         return "confirmed"
 
-    result = await work.execute(call, invoke, allow_pending=True)
+    result = await invoke_tool(work, call, invoke)
     await writer.close()
     assert result == "confirmed" and dispatched == 1
     assert await work.journal.effect_result(work.call_key(call.id)) == result
@@ -417,7 +417,7 @@ async def test_group_binding_move_cannot_reassign_original_event_receipt(
             await move_binding()
         return "confirmed original result"
 
-    result = await work.execute(call, invoke, allow_pending=True)
+    result = await invoke_tool(work, call, invoke)
     assert destination is not None and destination != env.space
     assert await work.journal.effect_result(work.call_key(call.id)) == result
     async with sessions() as session:

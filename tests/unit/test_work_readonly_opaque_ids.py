@@ -4,7 +4,7 @@ import json
 
 import pytest
 from sqlalchemy import select, update
-from tests.support.work_session import WorkSession
+from tests.support.work_session import WorkSession, invoke_tool
 from tests.unit.test_work_readonly_reuse import _call, _setup
 
 from qq_ai_bot.domain.messages import ChatMessage
@@ -35,7 +35,7 @@ async def test_original_opaque_readonly_call_restores_alias_without_reexecution(
         invocations.append(original_id)
         return json.dumps({"ok": True, "selected": "original evidence"})
 
-    receipt = await first.execute(original_call, invoke, side_effecting=False)
+    receipt = await invoke_tool(first, original_call, invoke, side_effecting=False)
     original_key = first.call_key(original_id)
     first.sequence += 1
     first.transcript.append(ChatMessage("assistant", tool_calls=(alias,)))
@@ -69,7 +69,7 @@ async def test_hashed_readonly_key_requires_original_persisted_invocation(
     async def invoke():
         return '{"ok":true}'
 
-    await first.execute(original_call, invoke, side_effecting=False)
+    await invoke_tool(first, original_call, invoke, side_effecting=False)
     key = first.call_key(original_call.id)
     assert key.startswith("invocation:v1:")
     async with database.sessions() as writer, writer.begin():
@@ -109,7 +109,7 @@ async def test_opaque_call_suffix_does_not_bypass_host_prefix(database, tmp_path
     async def invoke():
         return '{"ok":true}'
 
-    await first.execute(original_call, invoke, side_effecting=False)
+    await invoke_tool(first, original_call, invoke, side_effecting=False)
     key = first.call_key(original_call.id)
     chain, sequence, identity = key.split(":", 2)
     if violation == "other_chain":

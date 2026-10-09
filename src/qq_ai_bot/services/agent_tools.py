@@ -30,7 +30,6 @@ from qq_ai_bot.memory.attribution import MemoryExposure, MemoryExposureRegistry
 from qq_ai_bot.memory.authorized_scope import AuthorizedMemoryScope
 from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE, MemoryContextService
 from qq_ai_bot.memory.enums import (
-    MemoryRetrievalMode,
     MemoryScopeType,
     MemoryTargetRole,
     SelfMemoryVisibility,
@@ -67,6 +66,7 @@ from qq_ai_bot.persistence.repositories import (
     RelationshipRepository,
     WebSearchSourceRepository,
 )
+from qq_ai_bot.runtime.errors import InvalidTurnContextError
 from qq_ai_bot.sandbox.environment_tools import EXECUTION_TOOLS, READ_TOOLS, SANDBOX_TOOLS
 from qq_ai_bot.services.context_boundary import ContextBoundaryReader
 from qq_ai_bot.services.evidence_state import evidence_state
@@ -333,6 +333,28 @@ class ToolRuntime:
         ):
             raise PermissionError("tool_actor_unavailable")
         return actor
+
+    def validate_source(self) -> None:
+        """Reject an inconsistent source before a real execution backend is installed.
+
+        Declaration-only runtimes never execute and do not call this entry.
+        """
+        scope = self.effective_scope_type  # RuntimeError when the scope is unavailable.
+        if scope is ScopeType.GROUP and not self.current_group_id:
+            raise InvalidTurnContextError("group scene requires a group id")
+        actor = self.actor_context
+        if actor is not None and actor.principal_kind == "self":
+            if (
+                self.origin not in {TurnOrigin.SELF_INITIATIVE, TurnOrigin.SCHEDULED_AUTOMATION}
+                or (self.origin is TurnOrigin.SELF_INITIATIVE and not self.initiative_run_id)
+                or (
+                    self.origin is TurnOrigin.SCHEDULED_AUTOMATION
+                    and self.initiative_run_id is not None
+                )
+            ):
+                raise InvalidTurnContextError("invalid self turn authority")
+        elif self.initiative_run_id is not None or self.origin is TurnOrigin.SELF_INITIATIVE:
+            raise InvalidTurnContextError("invalid turn principal")
 
     def require_inbound(self) -> InboundMessage:
         if self.inbound is None:
@@ -2059,10 +2081,6 @@ class AgentToolService:
             raise ValueError("limit 必须是 1～100 的整数")
         return int(value)
 
-    @staticmethod
-    def _memory_list_limit(arguments: dict[str, Any]) -> int:
-        return AgentToolService._memory_requested_limit(arguments) or 20
-
     async def _read_memories(
         self,
         arguments: dict[str, Any],
@@ -2437,31 +2455,6 @@ class AgentToolService:
         )
         facts = await self._memories.repository.get_active_authorized(scope, (fact_id,))
         return facts[0] if facts else None
-
-    @staticmethod
-    def _memory_query(
-        arguments: dict[str, Any],
-    ) -> tuple[str | None, MemoryRetrievalMode | None]:
-        raw_query = arguments.get("query")
-        if raw_query is not None and (not isinstance(raw_query, str) or len(raw_query) > 400):
-            raise ValueError("query 必须是不超过 400 字符的字符串")
-        raw_mode = arguments.get("mode")
-        if raw_mode is None:
-            mode = None
-        elif isinstance(raw_mode, str) and raw_mode in {
-            "relevant",
-            "lexical",
-            "hybrid",
-            "overview",
-        }:
-            mode = (
-                MemoryRetrievalMode.OVERVIEW
-                if raw_mode == "overview"
-                else MemoryRetrievalMode.RELEVANT
-            )
-        else:
-            raise ValueError("mode 必须是 relevant、lexical、hybrid 或 overview")
-        return raw_query, mode
 
     @staticmethod
     def _memory_json(
