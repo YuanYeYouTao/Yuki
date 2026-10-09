@@ -6,6 +6,8 @@
 
 检查完整链路：声明、提示、参数、执行、持久化、恢复、收尾、现行文档及测试。只放宽入口、保留下游拒绝不算完成；不为已删除限制保留空参数、兼容别名或新开关。
 
+本轮回看及终局审查已执行C00–C36、P01–P10、W01–W23，索引行全部标记。源码PR280–283已合并，最新750533d2完成本地部署、上传和生产群复验；源码全量CI1333通过/49跳过，SnowLuma未操作。完整测试、CI、真实执行与边界见文末交付记录；旧失败证据保留。
+
 ## 基线与生产证据
 
 - 初次实施基线 main `fa505a8c`；当时生产源码 `0046d394`、数据库0103，实施分支 `codex/remove-work-memory-policy-gates`。后续合并与线上结果见文末，初次本地完成不代表当时已上线。
@@ -707,3 +709,23 @@ W23纯删内层三次即时517重试及异常import，源码净删7行；原64re
 本次回看执行及终局审查完成：C00–C36、P01–P10、W01–W23均已逐行标注，相关源码与消费者已复核。Memory范围旧三次/专属exhausted类和无消费者clear_conflict均零残余；测试和现行合同同步，Quality自动收集重命名和新增测试，不需添加或改动CI机制。冻结Ruff、16份改动Python格式、Linux-target Mypy644源文件、3.9.0 release identity及diffcheck通过。最新全量CI与生产结果在实际执行后补录，不把本地绿灯写成已上线。
 
 最终相对fa505a8c：src101文件+1399/-2554，净删1155；migrations2文件+46/-1，净增45；生产源码及迁移共103文件净删1110行。测试和文档不计入该净删数；缩进移动计入Git原始增删，净值由实际numstat复核。
+
+## 最终回看交付与线上复验
+
+PR283已合并为750533d206f00af3335ee9d49b1db6efd0d5b41b，合并后的src/tests/migrations/lock与已验证提交0d1dd6b6一致。direct amd64镜像ops-750533d2本机构建，3.9.0源码免挂载部署包以该镜像完成隔离init-db、health、0104及容器重建持久化验证，测试容器已清理。镜像归档267835392字节，上传前后SHA256同为dbc28e3ca9e47e8bb7fe0b894a723463297eb0be47b5e7c9b49fdf4037cbe3ef。
+
+2026-10-10 06:19:53（Asia/Taipei）生产Bot-only切到该镜像，沿当前Compose文件追加ops/work-final-750533d2-20261009T221946Z/bot-only.override.yml；没有第二个Bot、重复迁移或数据库回退。数据库0104保留，QQ连接和health正常。
+
+原Dream run69/6e0471af-7810-4005-9dd7-cf9215e4a185在06:20:59真正completed：12/12簇完成、failed0、error空、累计model_calls13。cluster482在06:20:51完成，attempt2、model_calls仍1，原preview adbe1780-bfa4-4e46-8842-9873ff14002f applied，KEEP operation503/0e22e066-982e-4980-b932-f81ee825e648 committed。478/482没有新增模型调用；另外两簇沿原run正常执行使总调用11→13，未重置预算。全库历史71个failed cluster保留，不改写成成功。health的Dream.running=false此时表示没有running run，last_error_category为空，不能与先前OperationalError退出混淆。
+
+最新源码真实主动轮：模拟intrinsic提案simulated-intrinsic-20261010-750533d2-release经原Host准入，唯一生产Bot执行原run dc254c9f-7d2d-4dab-94c9-d6c021272196、Work a994c9d4-f2da-43b2-93ea-eedaf4015a16。06:22:04准入、06:22:08创建、06:23:02完成、06:23:06反馈completed/sequence5；model4/tool2/send3，两个效果accepted、journal paired，sync_result为空仍沿真实回执结束，scope owner空、lease0、无wait。该探针没有被模型选为安静轮，不写成send0；同样不冒充自然Controller.advance流量。
+
+06:24健康采样：Work/subagent运行，active Work/wait/scope/worker均0、last_error为空；Memory consistency healthy、Embedding pending/failed0、maintenance运行，原active automations64/93无claim或running run。当前compaction所有212个item完成、无active或孤立item；历史空run保留。启动后抽样139行日志有4次517和3次5竞争，但原Dream与主动轮真实完成，无traceback、CanonicalIdentityError或MemoryPartitionResolutionError，不能把有竞争写成零竞争。
+
+SnowLuma整个过程未操作：容器cbdabcdf7c2fff6763d3688b10f606b26c6be06ffce98cfba8bccd2032850d89，启动2026-10-09T05:10:47.99332112Z、restart0保持。Bot采样232.6→243.2MiB，服务器总内存1.575GiB；这只是短时样本，不宣称长期内存泄露验收。
+
+旧Yuki镜像0046d394/528e2adc/31d12022/04ec85cf/edcda2ae已按全容器引用核对后删除，仅保留750533d2最新和07815fb2次新；本轮两份上传归档535675904字节已清理。最近一份冷备pre-work-memory-20261009T205923Z保留，其他应用镜像、卷及SnowLuma未清理。
+
+最新源码主分支[CI37998301429](https://github.com/YuanYeYouTao/Yuki/actions/runs/37998301429)全部通过：1333 passed、49 skipped、1166 warnings、765.46秒；Ruff、Mypy644源码、前端3文件18项测试和TypeScript/Vite构建通过。49个可选native Monty场景没有在此CI构建，不算已验收。最终两个Markdown回执文件另行合并，src/tests/migrations/lock继续与已部署750533d2一致；不因文档补录重复运行源码全量测试或重建镜像，自动触发的文档CI与本次已确认源码CI分开。
+
+06:27:58部署后再次核验：health/QQ连接正常、Work/wait/scope/worker均0、Embedding pending/failed0、错误类别为空；日志样本增至228行而SQL竞争计数仍4次517及3次5，没有新增traceback、canonical身份或Memory分区错误。
