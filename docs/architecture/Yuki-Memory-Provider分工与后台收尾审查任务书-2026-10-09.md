@@ -315,7 +315,7 @@ Memory quality套件有真实CI/CLI消费者，不能说是无人调用。但`qu
 | D14 | subject_basis、SELF命名、重复风格准入 | ✅ 已完成（定向验证通过） | subject_basis/retention/source_style/value_reason DTO 净删；旧 DB 列兼容保留 |
 | D15 | DTO重解析往返与空兼容参数 | ✅ 已完成（定向验证通过） | prepared target/evidence 直构造；bot_aliases 和空参数删 |
 | D16 | 重复治理队列与维护聊天包装 | ✅ 已完成（定向验证通过） | governance/reflection 队列、无消费者 ORM 与维护聊天包装删 |
-| D17 | 跨worker长锁与旧格式补链器 | ✅ 已完成（定向验证通过） | 跨 worker 长锁/回调/持锁健康和旧 backfill 删 |
+| D17 | 跨worker长锁与旧格式补链器 | ✅ 已完成（定向验证通过） | 跨 worker 长锁/回调/持锁健康和旧 backfill 删；Dream 启动元数据恢复用现有即时写事务 |
 | D18 | baseline/isolated/遗漏项假checkpoint | ✅ 已完成（定向验证通过） | baseline/isolated/未选假 checkpoint 删；真实 operation checkpoint 保留 |
 | D19 | Rebuild模型/版本冻结封口 | ✅ 已完成（定向验证通过） | 换 Profile/版本冻结封口删，原 proposal/source/owner 继续核验 |
 | D20 | 检索重复限制、过滤与排名 | ✅ 已完成（定向验证通过） | 字长/目标数/分数门槛/重复过滤排名与 topic_projection 删 |
@@ -341,7 +341,7 @@ Memory quality套件有真实CI/CLI消费者，不能说是无人调用。但`qu
 
 ## 12. 实施与交付记录
 
-实现分支 `codex/memory-delete-delivery`，基于 main `2ce7a167`。截至首次联调：Ruff 与 Linux 平台 mypy 通过、前端生产构建通过；真实身份/证据/Dream 输入 SQLite 用例 11 项通过。测试大裁剪后还在修旧 fixture 与依赖，尚未完成统一测试、PR、合并或部署，不宣称全量完成。
+实现分支 `codex/memory-delete-delivery`，基于 main `2ce7a167`。首次联调历史记录：Ruff 与 Linux 平台 mypy 通过、前端生产构建通过；真实身份/证据/Dream 输入 SQLite 用例 11 项通过。测试大裁剪后还在修旧 fixture 与依赖，尚未完成统一测试、PR、合并或部署，不宣称全量完成。
 
 0102 只删除四个同 key 的 active 唯一索引，不删事实或历史表。上线前将以当前 0101 停写副本演练并核对事实、证据、Work、累计预算和效果回执，随后更新 Bot；SnowLuma 容器、登录与配置保持原样。新备份验证后沿用户要求只留最近一份。
 
@@ -350,4 +350,12 @@ Memory quality套件有真实CI/CLI消费者，不能说是无人调用。但`qu
 
 2026-10-09 实施项 D01–D33 已完成并在索引标注。保留 Python 主测试 111 文件、638 个静态用例、约 32,733 行（原 432 文件、2,706 静态用例、134,012 行）；支持 helper 43 文件/3,796 行。插件测试保留 4 文件，126 项通过；前端保留 3 文件，18 项通过且构建成功。不是以 skip 隐藏旧策略断言；既有 Monty/外部服务环境要求继续准确报告。
 
-源码 Ruff、650 个源文件 Linux 平台 mypy、全迁移 fresh→0102、真实 0101→0102 数据保留、关键 SQL/回执/身份、Provider HTTP 与 Work 恢复验证通过。本地 source-free direct Bot 已启动、health/database 正常，重建后数据库与持久资料保留；未启动 QQ 客户端。Linux 保留套件终验、PR/合并与线上结果属于后续实际回执，不提前标成上线。
+源码 Ruff、650 个源文件 Linux 平台 mypy、全迁移 fresh→0102、真实 0101→0102 数据保留、关键 SQL/回执/身份、Provider HTTP 与 Work 恢复验证通过。本地 source-free direct Bot 已启动、health/database 正常，重建后数据库与持久资料保留；未启动 QQ 客户端。下列交付回执补充 Linux 终验、合并与线上实证。
+
+2026-10-09 交付回执：实现 PR [#272](https://github.com/YuanYeYouTao/Yuki/pull/272) 已合并到 main，应用 revision `4f582c066a7a6529f1a503a0fee292ab978a9062`。PR CI 与合并后 main CI 均通过：Ruff、650 源文件 mypy、前端 18 项与生产构建；保留 Python 套件 1081 passed / 49 skipped。49 项为既有可选 Monty worker/binding 集成环境缺失，本次上线 direct 构建、Code Mode 关闭；插件定向 126 项通过。
+
+合并版本 direct 镜像已在本地 source-free 部署：启动健康、schema 0102，重建后数据库和持久资料保留。镜像上传 SHA256 与本地一致；停机前以新镜像解析实际模型配置，并确认 Bot 挂载和 SnowLuma 服务定义不变。模型配置只移除已退役 memory_consolidation/memory_attribution routes 和 gemini_schema_format 等旧 wire_options，不改现行连接地址、密钥或模型选择。
+
+首次上线验证：4f582c06 的 health/database 正常、OneBot 已连接，SnowLuma 容器 ID、启动时间、镜像和 onebot.json 摘要前后完全一致。停写备份与引用文件校验通过，0101→0102 副本演练和生产迁移都核对了 14 个关键表内容摘要；2470 条事实、3050 条证据及原身份/Work/预算/效果回执不变。备份先保留，等交付收尾后执行单份保留。
+
+生产启动暴露并确认了一处真实竞争：Dream 恢复页只核对执行元数据，却借用事实写入的 deferred 读快照，先 SELECT 后 UPDATE。另一 writer 持锁时会直接报 SQLITE_BUSY(5)，不是仅处理 517 的证据快照重备。容器第二次启动恢复健康，仍须修复根因。D17 补充修复改用现有 Database.immediate_session：先取得 writer，再按索引核对最多 128 个 cluster 的原操作回执并更新状态；空页仍只读，不扫描事实/证据/聊天历史，不加入全局锁、超时或额外重试。真实两连接竞争、260 cluster 分页、原累计预算/attempt/调用数、重复恢复和快照耗尽等 15 项既有回归通过；该修复的合并与部署另以实际回执补齐。

@@ -882,8 +882,6 @@ class DreamRepository:
                         )
                     )
                 }
-                # Complete aggregates belong to this read snapshot. A competing
-                # commit rejects its upgrade; reprepare only this database page.
                 now = datetime.now(UTC)
                 for row in rows:
                     row.updated_at = now
@@ -902,7 +900,12 @@ class DreamRepository:
                         row.error_category = "process_restart"
                 return len(rows)
 
-            recovered += await self._facts.apply_evidence_write(recover_page)
+            # This page restores bounded execution metadata from durable receipts;
+            # it neither prepares fact evidence nor replays model work. Acquire the
+            # writer before reading current state, avoiding a deferred-read upgrade
+            # that returns SQLITE_BUSY immediately when another worker is writing.
+            async with self.database.immediate_session() as writer:
+                recovered += await recover_page(writer)
 
     async def create_operation(
         self,
