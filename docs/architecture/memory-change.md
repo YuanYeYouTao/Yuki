@@ -38,6 +38,7 @@ checkpoint。新事实复制全部获准原证据，模型输入采样不裁剪�
 沿链传递，不用平台消息 ID 重建业务身份。
 
 已完成 target/owner/evidence 准备的变更直接构造有效事实，不再把同一资料转回提取 DTO 二次解析。
+已保存事实使用原canonical owner，不按当前QQ账号绑定重新归属；停用Person、Space或绑定不抹除既有事实的永久所有者。Dream合成新事实保留原owner并取得新的事实ID与时间，不继承旧正文的审计时间；当前执行权限仍在实际调用处核验。
 SELF 的 kind、category 和 key 不设固定名称白名单。私聊资料传播到 global 仍执行已有隐私边界。
 可信自省可为每条 SELF 事实附加多条真实来源；每条来源分别核验 owner 和可见范围。
 主SELF沿原initiative和execution的实际工具回执进入同一领域事务；重复摘录及未消费的

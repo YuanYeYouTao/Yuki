@@ -470,7 +470,9 @@ class SemanticParticipationService:
     ) -> AutonomyBinding:
         scene = item.scene
         if runtime is None:
-            runtime = await self.app.runtime_config.snapshot(group_id=scene.group_id)
+            runtime = await self.app.runtime_config.snapshot(
+                group_id=scene.group_id if scene.enabled else None
+            )
         policy = runtime.conversation_policy()
         prior = await self.repository.get_binding(scene.conversation_id, scene.generation)
         if prior is None:
@@ -721,7 +723,9 @@ class SemanticParticipationService:
 
         runtime = cast(
             RuntimeConfigSnapshot,
-            await self.app.runtime_config.snapshot(group_id=item.scene.group_id),
+            await self.app.runtime_config.snapshot(
+                group_id=item.scene.group_id if item.scene.enabled else None
+            ),
         )
         observe_enabled = (
             item.scene.enabled and runtime.conversation_policy().semantic_participation_enabled

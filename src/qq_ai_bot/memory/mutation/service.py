@@ -366,32 +366,26 @@ class MemoryMutationService:
                     actor_user_id=bot_user_id,
                     session=session,
                 )
-            replacement = MemoryFactCreate(
-                scope_type=anchor.scope_type,
-                subject_user_id=anchor.subject_user_id,
-                group_id=anchor.group_id,
-                visibility_type=anchor.visibility_type,
-                visibility_user_id=anchor.visibility_user_id,
-                visibility_group_id=anchor.visibility_group_id,
-                kind=anchor.kind,
-                memory_key=anchor.memory_key,
-                category=anchor.category,
-                content=normalized,
-                importance=importance or anchor.importance,
-                confidence=anchor.confidence,
-                source_type=anchor.source_type,
-                authority=anchor.authority,
-                valid_from=min(
-                    (item.valid_from for item in sources if item.valid_from is not None),
-                    default=anchor.valid_from,
-                ),
-                valid_until=(
-                    None
-                    if any(item.valid_until is None for item in sources)
-                    else max(item.valid_until for item in sources if item.valid_until is not None)
-                ),
-                validation_version=anchor.validation_version,
-                review_state=anchor.review_state,
+            replacement = anchor.model_copy(
+                update={
+                    "content": normalized,
+                    "importance": importance or anchor.importance,
+                    "status": MemoryStatus.ACTIVE,
+                    "conflict_state": MemoryConflictState.CLEAR,
+                    "invalidated_reason": None,
+                    "last_audited_at": None,
+                    "valid_from": min(
+                        (item.valid_from for item in sources if item.valid_from is not None),
+                        default=anchor.valid_from,
+                    ),
+                    "valid_until": (
+                        None
+                        if any(item.valid_until is None for item in sources)
+                        else max(
+                            item.valid_until for item in sources if item.valid_until is not None
+                        )
+                    ),
+                }
             )
             created = await self._facts.repository.create_fact(
                 replacement,
@@ -465,36 +459,32 @@ class MemoryMutationService:
             for output, normalized in zip(recompose_outputs, normalized_outputs, strict=True):
                 output_sources = tuple(source_by_id[item.id] for item in output.source_facts)
                 output_anchor = self.select_dream_anchor(output_sources)
-                replacement = MemoryFactCreate(
-                    scope_type=output_anchor.scope_type,
-                    subject_user_id=output_anchor.subject_user_id,
-                    group_id=output_anchor.group_id,
-                    visibility_type=output_anchor.visibility_type,
-                    visibility_user_id=output_anchor.visibility_user_id,
-                    visibility_group_id=output_anchor.visibility_group_id,
-                    kind=output_anchor.kind,
-                    memory_key=output_anchor.memory_key,
-                    category=output_anchor.category,
-                    content=normalized,
-                    importance=output.importance,
-                    confidence=output_anchor.confidence,
-                    source_type=output_anchor.source_type,
-                    authority=output_anchor.authority,
-                    valid_from=min(
-                        (item.valid_from for item in output_sources if item.valid_from is not None),
-                        default=output_anchor.valid_from,
-                    ),
-                    valid_until=(
-                        None
-                        if any(item.valid_until is None for item in output_sources)
-                        else max(
-                            item.valid_until
-                            for item in output_sources
-                            if item.valid_until is not None
-                        )
-                    ),
-                    validation_version=output_anchor.validation_version,
-                    review_state=output_anchor.review_state,
+                replacement = output_anchor.model_copy(
+                    update={
+                        "content": normalized,
+                        "importance": output.importance,
+                        "status": MemoryStatus.ACTIVE,
+                        "conflict_state": MemoryConflictState.CLEAR,
+                        "invalidated_reason": None,
+                        "last_audited_at": None,
+                        "valid_from": min(
+                            (
+                                item.valid_from
+                                for item in output_sources
+                                if item.valid_from is not None
+                            ),
+                            default=output_anchor.valid_from,
+                        ),
+                        "valid_until": (
+                            None
+                            if any(item.valid_until is None for item in output_sources)
+                            else max(
+                                item.valid_until
+                                for item in output_sources
+                                if item.valid_until is not None
+                            )
+                        ),
+                    }
                 )
                 created = await self._facts.repository.create_fact(
                     replacement,

@@ -15,6 +15,7 @@ from qq_ai_bot.conversation.canonical_db_models import (
 from qq_ai_bot.identity.canonical_repository import IDENTITY_PLATFORM, ensure_person, ensure_space
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
+    CanonicalSpaceModel,
     IdentityBindingModel,
     SpaceBindingModel,
 )
@@ -108,14 +109,22 @@ async def test_private_event_resolves_all_bindings_to_one_person(database: Datab
 
 
 @pytest.mark.asyncio
-async def test_space_partition_requires_enabled_active_binding(database: Database) -> None:
+@pytest.mark.parametrize("disabled", ["binding", "owner"])
+async def test_space_partition_requires_enabled_active_binding(
+    database: Database, disabled
+) -> None:
     async with database.sessions() as session, session.begin():
         space_id = await ensure_space(session, "2001", now=_NOW)
         binding = await session.scalar(
             select(SpaceBindingModel).where(SpaceBindingModel.space_id == space_id)
         )
         assert binding is not None
-        binding.status = "disabled"
+        space = await session.get(CanonicalSpaceModel, space_id)
+        assert space is not None
+        if disabled == "binding":
+            binding.status = "disabled"
+        else:
+            space.enabled = False
     event = _event(message_id="g1", group="2001")
     async with database.sessions() as session:
         with pytest.raises(MemoryPartitionResolutionError) as disabled:
@@ -128,6 +137,9 @@ async def test_space_partition_requires_enabled_active_binding(database: Databas
         )
         assert binding is not None
         binding.status = "active"
+        space = await session.get(CanonicalSpaceModel, space_id)
+        assert space is not None
+        space.enabled = True
     async with database.sessions() as session:
         partition = await resolve_memory_partition_for_event(session, event)
     assert partition.value == f"space:{space_id}"

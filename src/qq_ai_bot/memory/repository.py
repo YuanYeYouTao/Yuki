@@ -830,7 +830,7 @@ class MemoryFactRepository:
 
     async def create_fact(
         self,
-        fact: MemoryFactCreate,
+        fact: MemoryFact | MemoryFactCreate,
         *,
         normalized_content: str,
         supersedes_id: int | None,

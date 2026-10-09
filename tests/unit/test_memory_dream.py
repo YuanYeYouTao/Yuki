@@ -2,14 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from tests.conftest import make_settings
+from tests.support.correctness_wire import wire
 from tests.support.model_executor import InjectedModelExecutor
 
 from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
+from qq_ai_bot.identity.db_models import (
+    CanonicalPersonModel,
+    CanonicalSpaceModel,
+    IdentityBindingModel,
+    SpaceBindingModel,
+)
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.memory.claim_processor import MemoryClaimProcessor
 from qq_ai_bot.memory.dream.db_models import (
@@ -29,6 +40,7 @@ from qq_ai_bot.memory.dream.repository import (
     fact_signature,
 )
 from qq_ai_bot.memory.dream.service import DreamService
+from qq_ai_bot.memory.dream.worker import DreamWorker
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
     MemoryConflictState,
@@ -38,6 +50,7 @@ from qq_ai_bot.memory.enums import (
     MemoryScopeType,
     MemorySourceType,
     MemoryStatus,
+    SelfMemoryVisibility,
 )
 from qq_ai_bot.memory.models import (
     MemoryEvidenceCreate,
@@ -45,12 +58,18 @@ from qq_ai_bot.memory.models import (
     MemoryFactCreate,
 )
 from qq_ai_bot.memory.mutation.service import DreamRecomposePlan, MemoryMutationService
+from qq_ai_bot.memory.partition import (
+    MemoryPartitionResolutionError,
+    resolve_active_space_id,
+    resolve_fact_canonical_owners,
+)
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.model_runtime.structured import StructuredTaskRunner
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     MemoryEvidenceModel,
+    MemoryFactModel,
     MemoryFactRelationModel,
     MemoryMutationReceiptModel,
 )
@@ -91,6 +110,7 @@ async def _fact_with_evidence(
     source_type: MemorySourceType = MemorySourceType.AUTOMATIC,
     authority: MemoryAuthority = MemoryAuthority.SELF_REPORT,
     kind: MemoryKind = MemoryKind.FACT,
+    scope_type: MemoryScopeType = MemoryScopeType.PERSON_GROUP,
 ) -> MemoryFact:
     event, _ = await ledger.append(
         bot_user_id="8000",
@@ -103,9 +123,13 @@ async def _fact_with_evidence(
     )
     return await facts.remember(
         MemoryFactCreate(
-            scope_type=MemoryScopeType.PERSON_GROUP,
-            subject_user_id="1001",
-            group_id="3001",
+            scope_type=scope_type,
+            subject_user_id="1001" if scope_type is MemoryScopeType.PERSON_GROUP else None,
+            group_id="3001" if scope_type is MemoryScopeType.PERSON_GROUP else None,
+            visibility_type=(
+                SelfMemoryVisibility.GROUP if scope_type is MemoryScopeType.SELF else None
+            ),
+            visibility_group_id="3001" if scope_type is MemoryScopeType.SELF else None,
             kind=kind,
             memory_key=memory_key,
             category="profile",
@@ -142,12 +166,142 @@ def _empty_dream_statistics() -> DreamPlanStatistics:
 
 
 @pytest.mark.asyncio
+async def test_dream_worker_recovers_disabled_owner_same_run_and_preserves_actual_calls(
+    database, monkeypatch
+):
+    mutations, facts, ledger, dreams = _services(database)
+    source = await _fact_with_evidence(
+        facts,
+        ledger,
+        message_id="disabled-owner-restart",
+        memory_key="self:experience",
+        content="我记得这段共同经历",
+        scope_type=MemoryScopeType.SELF,
+    )
+    provider = FakeLLMProvider(
+        responder=lambda request: ChatResponse(
+            latency_seconds=0,
+            content="",
+            tool_calls=(
+                ToolCall(
+                    id="dream-decision",
+                    function=ToolFunction(
+                        name=request.tools[0].name,
+                        arguments=json.dumps(
+                            {
+                                "actions": [
+                                    {
+                                        "operation": "synthesize",
+                                        "source_refs": ["memory_1"],
+                                        "anchor_ref": "memory_1",
+                                        "content": "我记得我们的共同经历",
+                                        "importance": 4,
+                                    }
+                                ]
+                            },
+                            ensure_ascii=False,
+                        ),
+                    ),
+                ),
+            ),
+        )
+    )
+    service = object.__new__(DreamService)
+    settings = make_settings(database.url).model_copy(
+        update={
+            "memory_dream_enabled": True,
+            "memory_dream_timezone": "UTC",
+            "memory_dream_schedule_hour": (datetime.now(UTC).hour + 1) % 24,
+            "memory_dream_poll_seconds": 0.01,
+        }
+    )
+    service._settings = settings
+    service._facts, service._mutations, service._repository = facts, mutations, dreams
+    case = SimpleNamespace(provider=provider, runner=SimpleNamespace())
+    client, captured = wire(case, "chat")
+    service._structured = StructuredTaskRunner(case.runner._models)
+    service._concurrency = ConcurrencyManager(2)
+    run = await dreams.create_run(
+        mode=DreamRunMode.FULL,
+        statistics=_empty_dream_statistics(),
+        clusters=(
+            (
+                "restart",
+                "partition",
+                "8000",
+                "fact",
+                (source.id,),
+                service._cluster_fingerprint((source,)),
+            ),
+        ),
+        snapshot_max_fact_id=source.id,
+        actor_user_id=None,
+        scheduled_slot=None,
+    )
+    assert await dreams.start_run(run.public_id)
+    async with database.immediate_session() as session:
+        await session.execute(update(CanonicalSpaceModel).values(enabled=False))
+    resolver = facts.requested_target_owners
+
+    async def legacy_transport_resolution(target, *, session):
+        await resolve_active_space_id(session, target.visibility_group_id)
+
+    # Reproduce the old resolver against a real disabled owner after Provider success.
+    monkeypatch.setattr(facts, "requested_target_owners", legacy_transport_resolution)
+    failed_worker = DreamWorker(settings=settings, repository=dreams, service=service)
+    with pytest.raises(MemoryPartitionResolutionError) as error:
+        await failed_worker._drain_active()
+    assert error.value.reason == "missing_owner" and len(provider.requests) == 1
+    before = await dreams.run_page(run.public_id)
+    before_run = await dreams.get_run(run.public_id)
+    cluster_id = before.clusters[0].id
+    assert before_run.model_calls == 1 and before.clusters[0].model_calls == 1
+    assert before.clusters[0].status.value == "processing" and not before.operations
+    assert (await facts.get_fact(source.id)).status is MemoryStatus.ACTIVE
+    monkeypatch.setattr(facts, "requested_target_owners", resolver)
+    worker = DreamWorker(settings=settings, repository=dreams, service=service)
+    completed = asyncio.Event()
+    finalize = dreams.finalize_run
+
+    async def finalize_and_signal(public_id):
+        result = await finalize(public_id)
+        completed.set()
+        return result
+
+    monkeypatch.setattr(dreams, "finalize_run", finalize_and_signal)
+    try:
+        await worker.start()
+        await asyncio.wait_for(completed.wait(), timeout=5)
+        page = await dreams.run_page(run.public_id)
+        current_run = await dreams.get_run(run.public_id)
+        assert current_run.public_id == run.public_id and current_run.model_calls == 2
+        assert page.clusters[0].id == cluster_id and page.clusters[0].attempts == 2
+        assert page.clusters[0].model_calls == 2 and len(provider.requests) == len(captured) == 2
+        assert len(page.operations) == 1
+        output = await facts.get_fact(page.operations[0].output_fact_id)
+        assert output.id != source.id and output.status is MemoryStatus.ACTIVE
+        assert facts.persisted_target_owners(output) == facts.persisted_target_owners(source)
+        assert (await facts.get_fact(source.id)).status is MemoryStatus.SUPERSEDED
+        health = await worker.health()
+        assert worker._task is not None and not worker._task.done()
+        assert health.last_error_category is None
+    finally:
+        await worker.close()
+        await case.runner._models.close()
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "owner_state", ["active", "space_disabled", "person_disabled", "bindings_disabled"]
+)
+@pytest.mark.parametrize("scope_type", [MemoryScopeType.PERSON_GROUP, MemoryScopeType.SELF])
 @pytest.mark.parametrize(
     "operation",
     [DreamOperationType.SYNTHESIZE, DreamOperationType.KEEP, DreamOperationType.CONTEST],
 )
 async def test_single_source_dream_uses_saved_model_output_and_original_receipt(
-    database, operation
+    database, operation, owner_state, scope_type
 ):
     mutations, facts, ledger, dreams = _services(database)
     await PeopleRepository(database).observe(user_id="8000", nickname="Yuki", is_bot=True)
@@ -157,8 +311,21 @@ async def test_single_source_dream_uses_saved_model_output_and_original_receipt(
         message_id="single-source-synthesis",
         memory_key="drink:coffee",
         content="我喜欢喝不加糖的美式咖啡",
+        scope_type=scope_type,
     )
     evidence = (await facts.list_evidence(source.id, limit=10))[0]
+    async with database.immediate_session() as session:
+        await session.execute(
+            update(MemoryFactModel)
+            .where(MemoryFactModel.id == source.id)
+            .values(last_audited_at=source.created_at)
+        )
+    source = await facts.get_fact(source.id)
+    assert source.last_audited_at is not None
+    if owner_state == "bindings_disabled":
+        async with database.immediate_session() as session:
+            await session.execute(update(IdentityBindingModel).values(status="disabled"))
+            await session.execute(update(SpaceBindingModel).values(status="disabled"))
     provider = FakeLLMProvider(
         responder=lambda _: json.dumps(
             {
@@ -201,6 +368,15 @@ async def test_single_source_dream_uses_saved_model_output_and_original_receipt(
     cluster = await dreams.claim_next_cluster(run.public_id)
     preview = await service.preview_cluster(run.public_id, cluster.id)
     assert preview.actions[0].source_refs == ("memory_1",)
+    async with database.immediate_session() as session:
+        if owner_state == "space_disabled":
+            await session.execute(update(CanonicalSpaceModel).values(enabled=False))
+        elif owner_state == "person_disabled":
+            await session.execute(update(CanonicalPersonModel).values(enabled=False))
+        persisted = await session.get(MemoryFactModel, source.id)
+        assert await resolve_fact_canonical_owners(
+            session, persisted
+        ) == facts.persisted_target_owners(source)
     assert await service.process_cluster(run, cluster) == (0, 1, True)
     assert len(provider.requests) == 1
     async with database.sessions() as session:
@@ -209,7 +385,10 @@ async def test_single_source_dream_uses_saved_model_output_and_original_receipt(
         receipt = await session.scalar(select(MemoryMutationReceiptModel))
         identities = stored_operation.id, result.fact_id, receipt.id
     replacement = await facts.get_fact(result.fact_id)
+    assert facts.persisted_target_owners(replacement) == facts.persisted_target_owners(source)
     if operation is DreamOperationType.SYNTHESIZE:
+        assert replacement.id != source.id and replacement.created_at > source.created_at
+        assert replacement.last_audited_at is None
         assert replacement.content == "喜欢无糖美式咖啡"
         assert replacement.supersedes_id == source.id and replacement.status is MemoryStatus.ACTIVE
         assert (await facts.get_fact(source.id)).status is MemoryStatus.SUPERSEDED
@@ -241,6 +420,8 @@ async def test_single_source_dream_uses_saved_model_output_and_original_receipt(
         assert await session.scalar(select(func.count(MemoryEvidenceModel.id))) == (
             2 if operation is DreamOperationType.SYNTHESIZE else 1
         )
+    finalized = await dreams.finalize_run(run.public_id)
+    assert finalized.status.value == "completed" and finalized.completed_clusters == 1
 
 
 @pytest.mark.asyncio
@@ -747,7 +928,10 @@ async def test_dream_resolution_records_conflict_provenance(database: Database) 
 
 
 @pytest.mark.asyncio
-async def test_dream_recompose_consumes_actual_outputs_and_normalizes_model_metadata(database):
+@pytest.mark.parametrize("disable_owners", [False, True])
+async def test_dream_recompose_consumes_actual_outputs_and_normalizes_model_metadata(
+    database, disable_owners
+):
     mutations, facts, ledger, dreams = _services(database)
     await PeopleRepository(database).observe(user_id="8000", nickname="Yuki", is_bot=True)
     sources = tuple(
@@ -762,6 +946,12 @@ async def test_dream_recompose_consumes_actual_outputs_and_normalizes_model_meta
             for index in range(3)
         ]
     )
+    if disable_owners:
+        async with database.immediate_session() as session:
+            await session.execute(update(CanonicalSpaceModel).values(enabled=False))
+            await session.execute(update(CanonicalPersonModel).values(enabled=False))
+            await session.execute(update(SpaceBindingModel).values(status="disabled"))
+            await session.execute(update(IdentityBindingModel).values(status="disabled"))
     provider = FakeLLMProvider(
         responder=lambda _: json.dumps(
             {
@@ -831,6 +1021,8 @@ async def test_dream_recompose_consumes_actual_outputs_and_normalizes_model_meta
     ]
     for operation, source in zip(page.operations, sources, strict=False):
         output = await facts.get_fact(operation.output_fact_id)
+        assert output.id != source.id and output.created_at > source.created_at
+        assert facts.persisted_target_owners(output) == facts.persisted_target_owners(source)
         evidence = await facts.list_evidence(output.id)
         original = await facts.list_evidence(source.id)
         assert len(evidence) == 1 and evidence[0].event_id == original[0].event_id
