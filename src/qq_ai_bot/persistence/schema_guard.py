@@ -203,21 +203,6 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "presence_id",
         }
     ),
-    "memory_recall_receipts": frozenset(
-        {
-            "consumer",
-            "attribution_status",
-            "attribution_reason",
-            "attribution_completed_at",
-            "tool_read_success_count",
-            "tool_read_empty_count",
-            "tool_read_ambiguous_count",
-            "tool_read_permission_denied_count",
-            "tool_read_duplicate_count",
-            "tool_read_infrastructure_failure_count",
-        }
-    ),
-    "memory_recall_items": frozenset({"attribution_evaluated"}),
     "persons": frozenset({"id", "enabled", "revision"}),
     "identity_bindings": frozenset(
         {
@@ -396,12 +381,6 @@ async def require_canonical_schema(database_url: str) -> None:
                     "runtime_work",
                     ("state", "updated"),
                     "cache cleanup",
-                ),
-                (
-                    "ix_memory_reflection_jobs_status_claimed",
-                    "memory_reflection_jobs",
-                    ("status", "claimed_at", "id"),
-                    "maintenance",
                 ),
                 (
                     "ix_memory_dream_clusters_status_id",

@@ -10,17 +10,11 @@ from qq_ai_bot.memory.enums import (
     MemoryAuthority,
     MemoryClaimOperation,
     MemoryEvidenceRelation,
-    MemoryKind,
-    MemoryRetention,
     MemoryScopeType,
     MemorySourceType,
 )
 from qq_ai_bot.memory.extraction import MemoryClaim
 from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
-from qq_ai_bot.memory.quality_policy import (
-    AttributionPolicy,
-    RetentionPolicy,
-)
 from qq_ai_bot.memory.subjects import SubjectResolutionContext, SubjectResolver
 from qq_ai_bot.memory.temporal import MemoryTemporalResolver
 from qq_ai_bot.persistence.repository_records import EventRecord
@@ -35,9 +29,6 @@ class ValidatedMemoryClaim:
     evidence: MemoryEvidenceCreate
     subject_is_speaker: bool
     occurred_at: datetime
-    subject_basis: str = ""
-    retention: str = ""
-    source_style: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,10 +59,10 @@ class _MemoryClaimCandidate(_MemoryClaimRejected):
         self.candidate_type = candidate_type
 
 
-def normalize_memory_text(value: str, *, maximum: int) -> str:
+def normalize_memory_text(value: str) -> str:
     """Flatten untrusted model/user text before persistence and prompt use."""
 
-    return " ".join(_CONTROL.sub(" ", value).split())[:maximum].strip()
+    return " ".join(_CONTROL.sub(" ", value).split())
 
 
 class MemoryClaimValidator:
@@ -83,9 +74,7 @@ class MemoryClaimValidator:
         temporal: MemoryTemporalResolver | None = None,
         *,
         timezone_name: str = "Asia/Shanghai",
-        bot_aliases: tuple[str, ...] | None = None,
     ) -> None:
-        del bot_aliases
         self._resolver = resolver or SubjectResolver()
         self._temporal = temporal or MemoryTemporalResolver()
         self._timezone_name = timezone_name
@@ -153,45 +142,23 @@ class MemoryClaimValidator:
         raw_quote = claim.evidence_quote.strip()
         if not raw_quote or raw_quote not in event.evidence_content:
             raise _MemoryClaimRejected("evidence_quote_not_in_event")
-        quote = normalize_memory_text(raw_quote, maximum=500)
-        source = normalize_memory_text(event.evidence_content, maximum=4000)
-        if not quote or quote not in source:
-            raise _MemoryClaimRejected("normalized_evidence_not_in_event")
+        quote = normalize_memory_text(raw_quote)
         resolved = self._resolver.resolve(
             event,
             subject_ref=claim.subject_ref,
             scope_type=claim.scope_type,
             context=subject_context,
         )
-        attribution = AttributionPolicy.evaluate(
-            claim,
-            event,
-            resolved,
-        )
-        if attribution.candidate_type is not None:
-            raise _MemoryClaimCandidate(attribution.reason_code, attribution.candidate_type)
-        if not attribution.accepted:
-            raise _MemoryClaimRejected(attribution.reason_code)
-        explicit_request = claim.source_type is MemorySourceType.EXPLICIT
-        retention = RetentionPolicy.evaluate(
-            claim,
-            event,
-            explicit_request=explicit_request,
-        )
-        if not retention.accepted:
-            raise _MemoryClaimRejected(retention.reason_code)
-        if claim.confidence < 0.65 and not explicit_request:
-            raise _MemoryClaimCandidate("low_confidence_candidate", "memory")
+        if claim.scope_type is MemoryScopeType.SELF:
+            raise _MemoryClaimCandidate("self_candidate_requires_agent_judgment", "self")
         if resolved is None:
             raise _MemoryClaimRejected("subject_unresolved")
-        key = normalize_memory_text(claim.memory_key, maximum=128)
-        category = normalize_memory_text(claim.category, maximum=64)
-        content = normalize_memory_text(claim.content, maximum=4000)
+        key = normalize_memory_text(claim.memory_key)
+        category = normalize_memory_text(claim.category)
+        content = normalize_memory_text(claim.content)
         if not key or not category or not content:
             raise _MemoryClaimRejected("incomplete_claim_fields")
         kind = claim.kind
-        if claim.retention is MemoryRetention.MEANINGFUL_EPISODE:
-            kind = MemoryKind.EPISODE
         subject_is_speaker = resolved.subject_user_id == event.sender_user_id
         is_third_party = bool(resolved.subject_user_id) and not subject_is_speaker
         if is_third_party and resolved.scope_type is not MemoryScopeType.PERSON_GROUP:
@@ -250,9 +217,6 @@ class MemoryClaimValidator:
             evidence=evidence,
             subject_is_speaker=subject_is_speaker,
             occurred_at=event.occurred_at,
-            subject_basis=claim.subject_basis.value,
-            retention=claim.retention.value,
-            source_style=claim.source_style.value,
         )
 
     @staticmethod

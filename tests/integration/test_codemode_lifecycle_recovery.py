@@ -8,8 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 from tests.support.codemode_cases import effect_rows, environment, outer_call, requires_worker
+from tests.support.work_effect_results_helpers import execute, owned_session
 from tests.support.work_session import invoke_tool
-from tests.unit.test_work_effect_results import execute, owned_session
 
 from qq_ai_bot.capabilities.results import ToolExecutionResult
 from qq_ai_bot.codemode.driver import ChildClass, CodeModeDriver, _Child, _State

@@ -177,7 +177,6 @@ class LLMRelationshipEvaluator:
                 output_model=RelationshipEvaluationOutput,
                 temperature=0.1,
                 max_output_tokens=None,
-                allow_text_json=True,
             ),
             translate_cancellation=False,
         )

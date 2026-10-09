@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import delete, select, update
 from sqlalchemy import event as sql_event
-from tests.unit.test_semantic_participation_host import _event_and_route
+from tests.support.semantic_participation_host_helpers import _event_and_route
 
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,

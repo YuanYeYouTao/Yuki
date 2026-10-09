@@ -8,7 +8,7 @@ from tests.support.social_identity_cases import social_env
 from tests.support.work_session import WorkSession
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.domain.messages import ChatMessage, OutboundSendReceipt
+from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.gateway.registry import RegistryClosed
 from qq_ai_bot.identity.routing import RouteSendError
 from qq_ai_bot.runtime.activation_outcome import ExitReason
@@ -37,18 +37,6 @@ async def setup(database, tmp_path):
     control.session = WorkSession(control, "contract")
     await control.session.restore(TurnTranscript((ChatMessage("user", "deliver"),)))
     return control
-
-
-class Sender:
-    def __init__(self, fail_at=0):
-        self.messages = []
-        self.fail_at = fail_at
-
-    async def send(self, message):
-        self.messages.append(message.text)
-        if len(self.messages) == self.fail_at:
-            raise TimeoutError("gateway outcome unknown")
-        return OutboundSendReceipt(str(len(self.messages)))
 
 
 @pytest.mark.asyncio

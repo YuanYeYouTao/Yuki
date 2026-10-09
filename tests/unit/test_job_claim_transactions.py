@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import event, text, update
 from tests.conftest import make_settings
 from tests.support.model_executor import InjectedModelExecutor
-from tests.unit.test_relationships import (
+from tests.support.relationships_helpers import (
     CapturingRelationshipProvider,
     _add_canonical_person_with_aliases,
     append_user_event,

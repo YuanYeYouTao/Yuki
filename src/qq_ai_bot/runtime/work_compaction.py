@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -23,19 +23,11 @@ class SupersededDirective(BaseModel):
     refs: list[str] = Field(min_length=1)
 
 
-class InputDisposition(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    input_ref: str
-    kind: Literal["directive", "correction", "context"]
-    reason: str = Field(min_length=1)
-
-
 class CompactionSummary(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     version: int = Field(ge=1, le=1)
     task_directives: list[SourcedFact]
     superseded_directives: list[SupersededDirective]
-    input_dispositions: list[InputDisposition]
     completed: list[SourcedFact]
     pending: list[SourcedFact]
     failures: list[SourcedFact]
@@ -123,23 +115,13 @@ def validate_summary(raw: str, source: dict[str, Any]) -> tuple[dict[str, Any], 
         superseded[identity] = fact
     if set(previous) - retained - set(superseded):
         raise WorkCapacityError("work_compaction_missing_directive")
-    classified = set()
-    for item in summary["input_dispositions"]:
-        ref = item["input_ref"]
-        if ref not in new_refs or ref in classified or not item["reason"].strip():
-            raise WorkCapacityError("work_compaction_invalid_input_disposition")
-        if item["kind"] != "context" and ref not in directive_refs:
-            raise WorkCapacityError("work_compaction_missing_input")
-        classified.add(ref)
-    if classified != new_refs:
-        raise WorkCapacityError("work_compaction_missing_input")
     corrections = [
         *source["task_material"].get("corrections", []),
         *[
             {"previous": previous[identity], "refs": item["refs"]}
             for identity, item in superseded.items()
         ],
-    ][-16:]
+    ]
     material = {
         "version": 1,
         "covered_input_id": max(

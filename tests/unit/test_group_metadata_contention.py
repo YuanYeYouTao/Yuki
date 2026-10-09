@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import event, select
 from sqlalchemy.exc import OperationalError
 from tests.conftest import build_harness, make_settings
-from tests.unit.test_user_profiles import inbound
+from tests.support.user_profiles_helpers import inbound
 
 from qq_ai_bot.identity.db_models import CanonicalSpaceModel, SpaceBindingModel
 from qq_ai_bot.identity.errors import CanonicalIdentityError

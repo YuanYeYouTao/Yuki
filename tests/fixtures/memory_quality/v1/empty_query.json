@@ -1,6 +1,0 @@
-{
-  "schema_version":"1","case_id":"empty_query","category":"retrieval","description":"Empty relevant queries do not fall back to all facts.",
-  "initial_facts":[{"fact_ref":"fact_secret","scope_type":"person","subject":"person_a","memory_key":"private:note","category":"private","content":"高重要度私人事实","importance":5}],
-  "queries":[{"query_ref":"query_empty","text":"","scope_type":"person","subject":"person_a","expected_fact_refs":[],"forbidden_fact_refs":["fact_secret"]}],
-  "expected_facts":[{"fact_ref":"fact_secret","scope_type":"person","subject":"person_a","memory_key":"private:note","category":"private","content":"高重要度私人事实","importance":5}],"expected_claims":[],"expected_evidence":[],"tags":["empty_query","privacy"]
-}

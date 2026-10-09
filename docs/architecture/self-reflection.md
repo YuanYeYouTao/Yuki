@@ -10,42 +10,41 @@ SELF 自主证据扩展已有定向验证；T20 真实 QQ 社交效果仍须单�
 
 ## 结构化生成
 
-`memory_self_reflection` 使用独立模型任务与结构化输出合同；现有 DeepSeek Responses
-配置方案为 `json_schema`、low reasoning、180 秒、32768 输出 tokens。实际生产 profile
-须核对部署配置，本文不替代该检查；其他模型任务与主 Agent 工具声明不因此变化。
-Responses 通用适配器将 Chat 风格的嵌套 schema 展开为 `text.format`。
-任务可显式绑定支持 JSON Schema 的 Chat、Claude 或 Gemini Profile，仍使用同一范围、
-mutation、请求预算和恢复合同；协议转换见[模型供应商合同](model-providers.md)。
+`memory_self_reflection` 使用独立模型任务；结构化输出格式由当前绑定的 Profile 决定，
+不再强制 JSON Schema，也不在任务中开启文本 JSON 降级。Chat、Responses、Claude、Gemini
+复用通用 Provider 格式转换和原有请求预算；见[模型供应商合同](model-providers.md)。
 
-返回值须完整、零工具调用、单个 JSON object，并通过 Pydantic、引用、范围、所有权与
-原有 mutation 校验。截断或输出达到预算时报 `output_budget_exhausted`，不自动加预算。
+返回值通过 Pydantic、引用、范围、所有权与 mutation 校验。源证据必须来自输入中提供的
+真实事件或工具回执；同一 proposal 选择的多个来源都会保存，不只使用第一条。原事件正文
+仍是聊天引用的校验依据，人物名片和 ID 展示不会改写原凭据。截断或输出达到预算时报
+`output_budget_exhausted`，不自动加预算。类别名称、importance、confidence 与解释文案
+不再构成后台价值准入门槛，不要求 subject_basis、retention 或 source_style 分类。
+
 稳定且不含具体人物隐私的 SELF fact、preference、reflection 和 principle 可使用 global；
-私聊产生的 SELF fact 保持 current scope，Episode 永不进入 global。
-配置显式允许时，只接受 Provider `unsupported_json_schema` / `json_schema_not_supported`
-错误码触发一次严格 text JSON 降级；普通 400、格式错误和校验失败不触发降级。
+私聊产生的 SELF fact 保持 current scope，Episode 永不进入 global。正文可记录真实姓名、
+名片和 ID；名字和分类本身不赋予系统权限。输入复用现有可见记忆与 existing_episodes，
+不再另取 previous_episode 专属视图。
 
 ## 调度与恢复
 
-固定 04/12/20 点调度。默认每轮 32 批、每 owner 16 批、每批最多 200 事件/16000
-字符。批次按实际渲染后的事件文本计数，实际事件数可能少于 200；不能在生成前丢弃尾部
-事件后再把整批标为完成。前台可以抢占后台自省；抢占保留批次，不消耗失败隔离次数。
+调度小时沿配置，默认 04/12/20；不要求恰好三个小时。默认每轮 32 批，每批配置
+200 事件/16000 字符的输入预算。撤去每 owner 次数封口、低/高水位排空和自然间隔重复
+调度。批次按实际渲染的输入计数，不能生成前丢弃尾部事件后再把整批标为完成。
 
-每日 96 次限额在实际 HTTP 调用前原子登记，含校验修复和传输重试；进程重启不重置。
-迁移保留旧 model invocation 账本已有记录，旧版本没有记录的额外 HTTP 重试无法追溯。
+每日 96 次限额在 Provider 准备 payload 并通过调度检查后、真正发送 HTTP 前原子登记；
+包含格式修复和传输重试，成功或失败都收尾实际请求记录。schema 准备或调度前失败不
+扣调用次数。进程重启保留原请求账本，不能重置原 run 的额度。旧版本未登记的 HTTP
+重试无法追溯，不以 model invocation 次数冒充物理请求次数。
 
-排空默认关闭，用于分阶段上线。启用后 >=500 actionable events 每 10 分钟增加后台周期，
->=1000 告警，<100 退出。持久 cycle 防止同一时间槽重复执行，进程锁使 worker 串行。
-同一 cycle 内失败批次不再次领取。按 owner 轮转分配份额；一个失败范围不阻挡其他 owner 或该 owner 后续独立范围。
+持久 cycle 防止重复时间槽，同一 cycle 内失败批次不再次领取；失败沿原 run ID、内部
+事件范围、已保存输出和 mutation 回执恢复。不再以第三次失败永久隔离，也不添加水位
+排空周期。真实源范围改变仍拒绝重放。连续检查点不会跨过失败空洞，后续成功范围独立
+保存。完成提交后释放输入输出快照，失败快照继续保留。逐项 mutation 回执防止重复
+写入；只有原完整执行检查点允许恢复 completed。旧版无检查点的已提交批次沿原回执
+恢复，不能声称恢复了从未保存的模型输出。
 
-失败范围按原 run ID、first/last 内部事件和指纹恢复，退避 5/15 分钟；第三次失败隔离，
-记录 30 分钟边界但不自动重新接纳。变更后的源范围拒绝重放。连续检查点不会跨过失败
-空洞，后续成功范围独立保存、不会重复生成。已验证输入和输出保存到有界检查点，
-完成提交后释放输入输出快照，保留源范围和 mutation 回执；失败快照继续保留。
-逐项 mutation 回执避免重放；只有完整执行检查点才允许把新批次恢复为 completed。
-历史版本无检查点的已提交批次沿用其原回执恢复语义，不能伪称能恢复旧版未保存的输出。
-mutation 的正常拒绝、重复、低价值跳过与 `no_change` 都是已处理终态，不把整批标为失败；
-数据库、事务、检查点和未预期代码异常才重试。consolidation 只修改完全相同的持久化目标；
-更宽范围的完全同键、同 kind、同正文 SELF fact 可覆盖窄范围写入，但不得追加局部 evidence。
+mutation 的正常拒绝、重复与 no_change 是已处理终态；实际数据库、事务、检查点或
+未预期代码错误保留失败记录。恢复不重复调用已完成模型，也不重复执行已提交操作。
 
 无自身回复或可信工具证据的到期范围不调用模型，不写记忆；记录 `no_self_evidence`
 并推进自省投影。原始事件账本不变。
@@ -59,7 +58,7 @@ tool 和真实 tool call ID 去重；没有聊天发言也保留实际成功或�
 
 每个已结束 initiative 有独立 receipt 水位；窗口最多 8 条回执，保持原有输入字符边界。
 迟到回执进入该 run 的后续窗口，不受其他 run 进度影响。窗口复用原 SelfReflectionRun、
-cycle、每日请求预算、检查点、退避与隔离机制；管理输出以 receipt 范围显示，不将它们
+cycle、每日请求预算、检查点和原 run 恢复机制；管理输出以 receipt 范围显示，不将它们
 统计成聊天事件。已领取未完成窗口保护其源回执，完成后仍被 Memory evidence 引用的
 回执不会过期删除。未讲话的失败也可以参与判断，但仅能支持真实失败或尝试的经历。
 
@@ -95,16 +94,11 @@ tool_receipt_id 非空索引；原 receipt、run 和证据仍是唯一事实来�
 已跳过且没有新消息的 policy-ineligible owner 显示 0 pending events。
 失败详情按 5 项分页，其他原始内容不进入报告。`retry <batch_id>` 可由超级管理员
 重新接纳隔离批次，保留原 ID、尝试次数和总额度。健康快照按最近 24 小时内周期提供
-实际流入/排出速率，观察不足 60 秒时为未知；连续三轮积压未下降会告警。
+实际流入/排出速率，观察不足 60 秒时为未知；历史失败不否决当前健康。
 配置见 `.env.example`。
-
-管理员可用 `/ai config set memory.self_reflection_drain_enabled false` 关闭额外排空，
-用 `true` 开启，`/ai config get memory.self_reflection_drain_enabled` 查询。
-配置持久化且需要重建/重启 Bot 才生效，不终止当前周期，不关闭固定调度和失败重试。
 
 ## 部署
 
-先备份并在副本验证当前迁移链，再只替换 Bot；首次保持 drain=false，完成真实 manual 验证后
-开启。回滚先关闭 drain，保留新表、预算与 mutation/发送回执，不恢复旧数据库覆盖新记忆。
-这是后续部署顺序，不是本轮已执行操作。本地迁移与回执测试不能替代真实 QQ 验收；
-独立参与库的 Jev 合成 smoke 也不能证明自省记忆质量或独立人工语义准确率。
+本轮为源码与合同裁剪，不代表已部署或通过真实 QQ 验收。后续部署仍沿当前迁移链
+与 Bot 发布流程，保留预算、mutation 和发送回执；回滚不得用旧数据库覆盖新记忆。
+本地 SQLite 与来源回执测试验证恢复正确性，不能替代自然社交效果或人工语义准确率。

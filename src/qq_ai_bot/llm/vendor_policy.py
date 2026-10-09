@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
-
-from qq_ai_bot.domain.messages import ReasoningEffort
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ChatWireOptions(BaseModel):
@@ -23,27 +21,8 @@ class ChatWireOptions(BaseModel):
     send_reasoning_effort: bool = False
     native_web_search: bool = False
     thinking_budget_tokens: int = Field(default=4096, ge=1024)
-    effort_levels: tuple[ReasoningEffort, ...] | None = None
     include_reasoning: bool | None = None
     reasoning_format: Literal["parsed", "hidden"] | None = None
-    gemini_schema_format: Literal["response_json_schema", "response_schema"] = (
-        "response_json_schema"
-    )
-
-    @field_validator("effort_levels")
-    @classmethod
-    def _effort_levels(
-        cls, value: tuple[ReasoningEffort, ...] | None
-    ) -> tuple[ReasoningEffort, ...] | None:
-        if value is not None:
-            order = tuple(ReasoningEffort)
-            if (
-                not value
-                or any(level in {ReasoningEffort.NONE, ReasoningEffort.MINIMAL} for level in value)
-                or tuple(sorted(set(value), key=order.index)) != value
-            ):
-                raise ValueError("effort_levels must be distinct ascending levels at least low")
-        return value
 
 
 # Vendor presets specify wire dialect, not claims about any particular model.
@@ -78,7 +57,6 @@ def wire_options(vendor: str, overrides: ChatWireOptions | None = None) -> ChatW
             "reasoning": "thinking",
             "send_tool_choice": False,
             "send_reasoning_effort": True,
-            "effort_levels": ("low", "high", "max"),
         }
     elif vendor == "qwen":
         defaults = {"reasoning": "enable_thinking"}
@@ -94,56 +72,28 @@ def wire_options(vendor: str, overrides: ChatWireOptions | None = None) -> ChatW
         defaults = {
             "token_field": "max_completion_tokens",
             "include_reasoning": True,
-            "effort_levels": ("low", "medium", "high"),
         }
     elif vendor == "mistral":
-        defaults = {"effort_levels": ("high",)}
+        defaults = {}
     elif vendor == "anthropic":
-        defaults = {"reasoning": "effort", "effort_levels": ("low", "medium", "high", "max")}
+        defaults = {"reasoning": "effort"}
     elif vendor == "gemini":
-        defaults = {"reasoning": "gemini", "effort_levels": ("low", "medium", "high")}
+        defaults = {"reasoning": "gemini"}
     if overrides is not None:
         defaults.update(overrides.model_dump(exclude_unset=True))
     return ChatWireOptions.model_validate(defaults)
 
 
-def effort_value(options: ChatWireOptions, effort: ReasoningEffort | None) -> str:
-    if options.effort_levels is None:
-        return effort.value if effort else "low"
-    order = tuple(ReasoningEffort)
-    for level in options.effort_levels:
-        if order.index(level) >= order.index(effort or ReasoningEffort.LOW):
-            return level.value
-    from qq_ai_bot.llm.base import LLMUnsupportedFeatureError
-
-    raise LLMUnsupportedFeatureError("requested effort exceeds configured model levels")
-
-
-def thinking_budget(options: ChatWireOptions, effort: ReasoningEffort | None) -> int:
-    """An explicit monotone policy for budget APIs, not a claim of effort equivalence."""
-    levels = (
-        ReasoningEffort.LOW,
-        ReasoningEffort.MEDIUM,
-        ReasoningEffort.HIGH,
-        ReasoningEffort.XHIGH,
-        ReasoningEffort.MAX,
-    )
-    level = levels.index(effort) if effort in levels else 0
-    return options.thinking_budget_tokens * (1 << level)
-
-
 def supports_native_search(
     vendor: str, protocol: str, options: ChatWireOptions | None, *, has_functions: bool
 ) -> bool:
-    if vendor == "deepseek":
-        return False
     if protocol == "responses":
-        return vendor in RESPONSES_VENDORS
+        return vendor != "deepseek"
     if protocol == "gemini":
         # Gemini GenerateContent can combine Google Search with function declarations.
-        return vendor == "gemini"
+        return True
     if protocol == "anthropic_messages":
-        return vendor == "anthropic"
+        return True
     if protocol == "chat_completions":
         return wire_options(vendor, options).native_web_search and not has_functions
     return False

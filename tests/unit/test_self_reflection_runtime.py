@@ -9,125 +9,12 @@ import pytest
 from qq_ai_bot.domain.messages import (
     ChatMessage,
     ChatRequest,
-    ChatResponse,
-    ModelResponseStatus,
-    ToolCall,
-    ToolFunction,
 )
-from qq_ai_bot.llm.base import LLMInvalidRequestError
 from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
-from qq_ai_bot.llm.openai_responses import OpenAIResponsesProvider
-from qq_ai_bot.memory.self_reflection.models import SelfReflectionOutput
-from qq_ai_bot.model_runtime.models import ModelTask, StructuredOutputMode
 from qq_ai_bot.model_runtime.request_accounting import (
     after_provider_request,
     before_provider_request,
 )
-from qq_ai_bot.model_runtime.structured import StructuredTaskError, StructuredTaskRunner
-
-
-def test_responses_schema_is_flat_and_tools_do_not_change():
-    schema = SelfReflectionOutput.model_json_schema()
-    request = ChatRequest(
-        model="test",
-        messages=(ChatMessage(role="user", content="synthetic"),),
-        response_format={
-            "type": "json_schema",
-            "json_schema": {"name": "emit_result", "strict": True, "schema": schema},
-        },
-    )
-    for kind in (DeepSeekResponsesProvider, OpenAIResponsesProvider):
-        provider = kind(
-            base_url="https://example.test", api_key="synthetic", timeout_seconds=1, max_retries=0
-        )
-        payload = provider._build_payload(request)
-        assert payload["text"]["format"] == {
-            "type": "json_schema",
-            "name": "emit_result",
-            "strict": True,
-            "schema": schema,
-        }
-        assert not payload.get("tools")
-        assert request.response_format["json_schema"]["schema"] == schema
-
-
-@pytest.mark.asyncio
-async def test_structured_incomplete_and_tools_are_never_accepted():
-    responses = [
-        ChatResponse(
-            latency_seconds=0,
-            content="{}",
-            status=ModelResponseStatus.INCOMPLETE,
-            incomplete_reason="max_output_tokens",
-        ),
-        ChatResponse(latency_seconds=0, content="{}", completion_tokens=32768),
-        ChatResponse(
-            latency_seconds=0,
-            content="{}",
-            status=ModelResponseStatus.INCOMPLETE,
-            incomplete_reason="other",
-        ),
-        ChatResponse(latency_seconds=0, content="```json\n{}\n```"),
-        ChatResponse(latency_seconds=0, content="[]"),
-        ChatResponse(
-            latency_seconds=0,
-            content="{}",
-            tool_calls=(
-                ToolCall(id="x", function=ToolFunction(name="emit_result", arguments="{}")),
-            ),
-        ),
-    ]
-    for response in responses:
-        models = SimpleNamespace(
-            model_name=lambda task: "test", execute=AsyncMock(return_value=response)
-        )
-        runner = StructuredTaskRunner(models)
-        with pytest.raises(StructuredTaskError):
-            await runner.run(
-                task=ModelTask.MEMORY_SELF_REFLECTION,
-                instruction="test",
-                structured_input={},
-                output_model=SelfReflectionOutput,
-                mode=StructuredOutputMode.JSON_SCHEMA,
-                max_output_tokens=32768,
-            )
-        assert models.execute.await_count == 1
-
-
-@pytest.mark.asyncio
-async def test_schema_fallback_requires_explicit_provider_rejection_and_opt_in():
-    for allow, code, succeeds in (
-        (False, "unsupported_json_schema", False),
-        (True, "invalid_request", False),
-        (True, "unsupported_json_schema", True),
-    ):
-        models = SimpleNamespace(
-            model_name=lambda task: "test",
-            execute=AsyncMock(
-                side_effect=[
-                    LLMInvalidRequestError("rejected", diagnostics={"code": code}),
-                    ChatResponse(latency_seconds=0, content='{"proposals":[],"episodes":[]}'),
-                ]
-            ),
-        )
-        runner = StructuredTaskRunner(models)
-        args = dict(
-            task=ModelTask.MEMORY_SELF_REFLECTION,
-            instruction="test",
-            structured_input={},
-            output_model=SelfReflectionOutput,
-            mode=StructuredOutputMode.JSON_SCHEMA,
-            allow_schema_fallback=allow,
-        )
-        if succeeds:
-            result = await runner.run(**args)
-            assert not result.proposals
-            request = models.execute.call_args.args[1]
-            assert not request.tools and request.response_format is None
-        else:
-            with pytest.raises(LLMInvalidRequestError):
-                await runner.run(**args)
-            assert models.execute.await_count == 1
 
 
 @pytest.mark.asyncio

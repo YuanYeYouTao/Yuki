@@ -15,9 +15,7 @@ from qq_ai_bot.runtime.activation_outcome import (
     ActivationOutcome,
     ExitReason,
     SegmentBudgetReached,
-    WorkNoProgress,
     classify_failure,
-    failure_status_text,
 )
 from qq_ai_bot.runtime.work_budget import WorkBudgetExceeded
 from qq_ai_bot.runtime.work_recovery_schema import deliveries, recovery
@@ -41,9 +39,7 @@ ACCEPTED_REASONS = {
 
 
 def _capacity_pause_text(code: str) -> str:
-    if code == "work_compaction_no_capacity_improvement":
-        detail = "上下文压缩未释放足够空间"
-    elif code == "work_compaction_source_capacity":
+    if code == "work_compaction_source_capacity":
         detail = "用于压缩的资料超过单次模型输入窗口"
     elif code in {"model_request_capacity", "work_task_input_source_capacity"}:
         detail = "本轮上下文超过可用模型输入窗口"
@@ -135,8 +131,6 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
         reason = ExitReason.BUDGET
     elif isinstance(exc, SegmentBudgetReached):
         reason = ExitReason.SEGMENT
-    elif isinstance(exc, WorkNoProgress):
-        reason = ExitReason.NO_PROGRESS
     elif isinstance(exc, WorkCapacityError):
         reason = ExitReason.CAPACITY
     elif isinstance(exc, WorkConflict):
@@ -269,7 +263,6 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
             descriptions = {
                 ExitReason.BUDGET: "这项工作的总执行额度已用完，已暂停并保留结果。",
                 ExitReason.CAPACITY: _capacity_pause_text(failure.code),
-                ExitReason.NO_PROGRESS: failure_status_text(failure),
             }
             if failure.diagnostics.get("category") == "work_conflict":
                 if failure.code == "work_journal_source_changed":

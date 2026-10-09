@@ -8,8 +8,8 @@ from contextlib import asynccontextmanager
 import pytest
 import pytest_asyncio
 from sqlalchemy import event, select, update
+from tests.support.semantic_participation_host_helpers import _event_and_route
 from tests.support.social_identity_cases import social_env
-from tests.unit.test_semantic_participation_host import _event_and_route
 
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.runtime.subagent_repository import SubagentRepository

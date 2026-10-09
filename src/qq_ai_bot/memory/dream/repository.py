@@ -22,7 +22,6 @@ from qq_ai_bot.memory.dream.db_models import (
     MemoryDreamOperationResultModel,
     MemoryDreamOperationSourceModel,
     MemoryDreamRunModel,
-    MemoryDreamRuntimeModel,
     MemoryEvidenceCompactionItemModel,
     MemoryEvidenceCompactionRunModel,
 )
@@ -91,7 +90,6 @@ class DreamCandidate:
 @dataclass(frozen=True, slots=True)
 class DreamCandidateLoad:
     candidates: tuple[DreamCandidate, ...]
-    fact_signatures: tuple[tuple[int, str], ...]
     eligible_facts: int
     missing_embeddings: int
     ambiguous_bot_facts: int
@@ -162,7 +160,6 @@ class DreamRepository:
                 )
             ).all()
             candidates: list[DreamCandidate] = []
-            signatures: list[tuple[int, str]] = []
             missing = 0
             ambiguous = 0
             for row in rows:
@@ -170,7 +167,6 @@ class DreamRepository:
                 if fact is None:
                     continue
                 signature = fact_signature(fact)
-                signatures.append((fact.id, signature))
                 if row.vector_blob is None or row.content_hash is None:
                     missing += 1
                     continue
@@ -203,7 +199,6 @@ class DreamRepository:
                 )
         return DreamCandidateLoad(
             candidates=tuple(candidates),
-            fact_signatures=tuple(signatures),
             eligible_facts=len(rows),
             missing_embeddings=missing,
             ambiguous_bot_facts=ambiguous,
@@ -262,24 +257,6 @@ class DreamRepository:
             return {
                 fingerprint: attempted for fingerprint, attempted in rows if attempted is not None
             }
-
-    async def initialize_baseline(self, fact_signatures: tuple[tuple[int, str], ...]) -> bool:
-        now = datetime.now(UTC)
-        async with self.database.sessions() as session, session.begin():
-            existing = await session.get(MemoryDreamRuntimeModel, 1)
-            if existing is not None:
-                return False
-            await self._upsert_checkpoints(
-                tuple((fact_id, signature, None) for fact_id, signature in fact_signatures),
-                checked_at=now,
-                session=session,
-            )
-            session.add(MemoryDreamRuntimeModel(id=1, initialized_at=now))
-        return True
-
-    async def baseline_exists(self) -> bool:
-        async with self.database.sessions() as session:
-            return await session.get(MemoryDreamRuntimeModel, 1) is not None
 
     @staticmethod
     def _plan_source_query(fact_ids: tuple[int, ...]) -> Any:
@@ -426,28 +403,6 @@ class DreamRepository:
                         values[offset : offset + 256],
                     )
                 return self._run(row, statistics=prepared_statistics)
-
-    async def checkpoint_candidates(
-        self,
-        candidates: tuple[DreamCandidate, ...],
-        *,
-        operation_id: int | None = None,
-        session: AsyncSession | None = None,
-    ) -> None:
-        if session is None:
-            async with self.database.sessions() as owned, owned.begin():
-                await self.checkpoint_candidates(
-                    candidates, operation_id=operation_id, session=owned
-                )
-                return
-        now = datetime.now(UTC)
-        await self._upsert_checkpoints(
-            tuple(
-                (candidate.fact.id, candidate.signature, operation_id) for candidate in candidates
-            ),
-            checked_at=now,
-            session=session,
-        )
 
     async def checkpoint_fact(
         self,
@@ -681,7 +636,7 @@ class DreamRepository:
         *,
         run_public_id: str,
         cluster_id: int,
-        maximum: int | None,
+        maximum: int,
     ) -> bool:
         """Persist one actual API attempt before issuing it, including failed attempts."""
 
@@ -705,7 +660,7 @@ class DreamRepository:
             if row is None:
                 return False
             run, cluster = row
-            if cluster.model_calls >= 2 or (maximum is not None and run.model_calls >= maximum):
+            if run.model_calls >= maximum:
                 return False
             run.model_calls += 1
             run.updated_at = now

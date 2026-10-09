@@ -1478,38 +1478,10 @@ class RuntimeConfigService:
                 lexical_candidate_limit=int(cast(int, value("memory.lexical_candidate_limit"))),
                 context_limit_per_entity=int(cast(int, value("memory.context_limit_per_entity"))),
                 overview_limit_per_entity=int(cast(int, value("memory.overview_limit_per_entity"))),
-                automatic_recall_per_target_limit=int(
-                    cast(int, value("memory.automatic_recall_per_target_limit"))
-                ),
-                automatic_topic_threshold=float(
-                    cast(float, value("memory.automatic_topic_threshold"))
-                ),
-                automatic_background_threshold=float(
-                    cast(float, value("memory.automatic_background_threshold"))
-                ),
-                automatic_calibrated_profile=str(value("memory.automatic_calibrated_profile")),
-                automatic_recall_background_limit=int(
-                    cast(int, value("memory.automatic_recall_background_limit"))
-                ),
-                automatic_recall_continuation_limit=int(
-                    cast(int, value("memory.automatic_recall_continuation_limit"))
-                ),
-                automatic_recall_focused_limit=int(
-                    cast(int, value("memory.automatic_recall_focused_limit"))
-                ),
-                automatic_recall_overview_limit=int(
-                    cast(int, value("memory.automatic_recall_overview_limit"))
-                ),
-                always_on_explicit_preference_limit=int(
-                    cast(int, value("memory.always_on_explicit_preference_limit"))
-                ),
                 query_term_limit=int(cast(int, value("memory.query_term_limit"))),
                 short_query_fallback_enabled=bool(value("memory.short_query_fallback_enabled")),
                 semantic_enabled=bool(value("memory.semantic_enabled")),
                 semantic_candidate_limit=int(cast(int, value("memory.semantic_candidate_limit"))),
-                semantic_min_similarity=float(
-                    cast(float | int, value("memory.semantic_min_similarity"))
-                ),
                 hybrid_lexical_weight=float(
                     cast(float | int, value("memory.hybrid_lexical_weight"))
                 ),
@@ -1517,93 +1489,11 @@ class RuntimeConfigService:
                     cast(float | int, value("memory.hybrid_semantic_weight"))
                 ),
                 hybrid_rrf_k=int(cast(int, value("memory.hybrid_rrf_k"))),
-                intent_rerank_enabled=bool(value("memory.intent_rerank_enabled")),
-                activation_ranking_enabled=bool(value("memory.activation_ranking_enabled")),
-                usage_attribution_enabled=bool(value("memory.usage_attribution_enabled")),
-                usage_attribution_timeout_seconds=float(
-                    cast(float | int, value("memory.usage_attribution_timeout_seconds"))
-                ),
-                usage_attribution_job_ttl_seconds=float(
-                    cast(float | int, value("memory.usage_attribution_job_ttl_seconds"))
-                ),
-                usage_attribution_queue_limit=int(
-                    cast(int, value("memory.usage_attribution_queue_limit"))
-                ),
-                reinforcement_enabled=bool(value("memory.reinforcement_enabled")),
-                recall_receipts_enabled=bool(value("memory.recall_receipts_enabled")),
-                activation_half_life_episode_days=float(
-                    cast(float | int, value("memory.activation_half_life_episode_days"))
-                ),
-                activation_half_life_fact_days=float(
-                    cast(float | int, value("memory.activation_half_life_fact_days"))
-                ),
-                activation_half_life_preference_days=float(
-                    cast(float | int, value("memory.activation_half_life_preference_days"))
-                ),
-                activation_half_life_explicit_days=float(
-                    cast(float | int, value("memory.activation_half_life_explicit_days"))
-                ),
-                reinforcement_alpha_background=float(
-                    cast(float | int, value("memory.reinforcement_alpha_background"))
-                ),
-                reinforcement_alpha_continuation=float(
-                    cast(float | int, value("memory.reinforcement_alpha_continuation"))
-                ),
-                reinforcement_alpha_recall=float(
-                    cast(float | int, value("memory.reinforcement_alpha_recall"))
-                ),
-                reinforcement_alpha_verify=float(
-                    cast(float | int, value("memory.reinforcement_alpha_verify"))
-                ),
-                intent_recent_window_days=int(cast(int, value("memory.intent_recent_window_days"))),
-                recall_receipt_retention_days=int(
-                    cast(int, value("memory.recall_receipt_retention_days"))
-                ),
-                recall_trace_candidate_limit=int(
-                    cast(int, value("memory.recall_trace_candidate_limit"))
-                ),
-                consolidation_enabled=bool(value("memory.consolidation_enabled")),
-                consolidation_candidate_limit=int(
-                    cast(int, value("memory.consolidation_candidate_limit"))
-                ),
-                consolidation_min_relevance=float(
-                    cast(float | int, value("memory.consolidation_min_relevance"))
-                ),
-                consolidation_model_task=str(value("memory.consolidation_model_task")),
-                consolidation_max_output_tokens=int(
-                    cast(int, value("memory.consolidation_max_output_tokens"))
-                ),
-                evidence_weight_explicit=float(
-                    cast(float | int, value("memory.evidence_weight_explicit"))
-                ),
-                evidence_weight_self=float(cast(float | int, value("memory.evidence_weight_self"))),
-                evidence_weight_group=float(
-                    cast(float | int, value("memory.evidence_weight_group"))
-                ),
-                evidence_weight_third_party=float(
-                    cast(float | int, value("memory.evidence_weight_third_party"))
-                ),
-                evidence_weight_rebuild=float(
-                    cast(float | int, value("memory.evidence_weight_rebuild"))
-                ),
-                authority_cap_explicit=float(
-                    cast(float | int, value("memory.authority_cap_explicit"))
-                ),
-                authority_cap_self=float(cast(float | int, value("memory.authority_cap_self"))),
-                authority_cap_group=float(cast(float | int, value("memory.authority_cap_group"))),
-                authority_cap_third_party=float(
-                    cast(float | int, value("memory.authority_cap_third_party"))
-                ),
                 maintenance_enabled=bool(value("memory.maintenance_enabled")),
                 maintenance_interval_seconds=float(
                     cast(float | int, value("memory.maintenance_interval_seconds"))
                 ),
                 maintenance_batch_limit=int(cast(int, value("memory.maintenance_batch_limit"))),
-                automatic_stale_days=int(cast(int, value("memory.automatic_stale_days"))),
-                third_party_stale_days=int(cast(int, value("memory.third_party_stale_days"))),
-                contested_stale_days=int(cast(int, value("memory.contested_stale_days"))),
-                stale_max_importance=int(cast(int, value("memory.stale_max_importance"))),
-                stale_max_confidence=float(cast(float | int, value("memory.stale_max_confidence"))),
             ),
             reply=ReplyRuntimeConfig(
                 delay_min_seconds=delay_min,
@@ -1617,8 +1507,7 @@ class RuntimeConfigService:
                 max_retries=int(cast(int, value("llm.max_retries"))),
                 temperature=float(cast(float | int, value("llm.temperature"))),
                 max_output_tokens=int(cast(int, value("llm.max_output_tokens"))),
-                # Legacy persisted toggles cannot lower the generation floor.
-                thinking_enabled=True,
+                thinking_enabled=cast(bool | None, value("llm.thinking_enabled")),
             ),
             agent=AgentRuntimeConfig(
                 max_tool_calls=int(cast(int, value("agent.max_tool_calls"))),
@@ -1685,7 +1574,7 @@ class RuntimeConfigService:
                 ),
                 video_max_frames=int(cast(int, value("vision.video_max_frames"))),
                 video_max_download_bytes=int(cast(int, value("vision.video_max_download_bytes"))),
-                thinking_enabled=True,
+                thinking_enabled=bool(value("vision.thinking_enabled")),
                 thinking_budget=int(cast(int, value("vision.thinking_budget"))),
                 low_confidence_retry_threshold=float(
                     cast(float | int, value("vision.low_confidence_retry_threshold"))

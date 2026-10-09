@@ -1,6 +1,0 @@
-{
-  "schema_version":"1","case_id":"evidence_mismatch","category":"extraction","description":"Evidence must be a verbatim substring of the primary event.",
-  "events":[{"event_ref":"event_source","speaker":"person_a","scope_type":"private","content":"我准备考研","occurred_at":"2026-01-05T01:00:00Z"}],
-  "fake_model_outputs":[{"event_ref":"event_source","memory_key":"plan:study","category":"plan","content":"准备出国","evidence_quote":"上下文说准备出国"}],
-  "expected_claims":[],"expected_facts":[],"expected_evidence":[],"forbidden_facts":["准备出国"],"tags":["evidence"]
-}

@@ -28,7 +28,6 @@ METRIC_NAMES = frozenset(
         "rebuild_facts_invalidated",
         "rebuild_noops",
         "rebuild_extraction_requests",
-        "rebuild_consolidation_requests",
         "rebuild_input_tokens",
         "rebuild_output_tokens",
         "rebuild_latency",

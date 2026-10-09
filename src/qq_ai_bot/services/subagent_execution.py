@@ -250,21 +250,14 @@ class SubagentExecution:
                         if isinstance(recovered, MessageTaskSource) and original is not None
                         else None
                     )
-                    from qq_ai_bot.memory.runtime.resolver import MemoryStructuredCommand
 
                     if isinstance(recovered, SelfTaskSource):
-                        memory = await self.services.open_self_memory(
-                            recovered.trigger(), config, row["goal"]
-                        )
+                        memory = await self.services.open_self_memory(recovered.trigger())
                     else:
                         assert inbound is not None
                         memory = self.services.open_memory(
                             inbound,
-                            inbound.scope(),
-                            row["goal"],
-                            config,
                             autonomous=recovered.origin == "autonomous_group",
-                            structured_command=MemoryStructuredCommand.NONE,
                         )
                     actor = (
                         recovered.actor(identity) if isinstance(recovered, SelfTaskSource) else None

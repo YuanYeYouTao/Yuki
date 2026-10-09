@@ -5,8 +5,8 @@ from dataclasses import asdict, replace
 
 import httpx
 import pytest
-from tests.integration.test_codemode_runner import ACCEPT, Backend, call, runner_env
 from tests.support.codemode_cases import requires_worker
+from tests.support.codemode_runner_helpers import ACCEPT, Backend, call, runner_env
 
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ChatResponse
 from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
@@ -14,7 +14,6 @@ from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
 from qq_ai_bot.llm.gemini import GeminiProvider
 from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
 from qq_ai_bot.llm.openai_responses import OpenAIResponsesProvider
-from qq_ai_bot.llm.vendor_policy import CHAT_VENDORS
 from qq_ai_bot.model_runtime.executor import TaskModelExecutor
 from qq_ai_bot.model_runtime.models import (
     ModelCapability,
@@ -31,8 +30,8 @@ from qq_ai_bot.runtime.work_journal import WorkJournal, decode_transcript
 
 pytestmark = requires_worker
 
-DIALECTS = [(vendor, "chat_completions") for vendor in sorted(CHAT_VENDORS)] + [
-    ("deepseek", "responses"),
+DIALECTS = [
+    ("openai_compatible", "chat_completions"),
     ("openai", "responses"),
     ("anthropic", "anthropic_messages"),
     ("gemini", "gemini"),

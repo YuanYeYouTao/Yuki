@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import event, func, select, update
-from tests.unit.test_control_plane_foundation import context
+from tests.support.control_plane_foundation_helpers import context
 
 from qq_ai_bot.control_plane import ControlCommand, ControlCommandService
 from qq_ai_bot.conversation.canonical_db_models import ControlCommandReceiptModel

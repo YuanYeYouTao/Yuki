@@ -46,7 +46,10 @@ class JSONHTTPProvider(LLMProvider):
         max_retries: int,
         client: httpx.AsyncClient | None = None,
         headers: dict[str, str] | None = None,
+        provider_name: str | None = None,
     ) -> None:
+        if provider_name is not None:
+            self.provider_name = provider_name
         self._api_key = api_key
         self._max_retries = max_retries
         self._headers = dict(headers or {})
@@ -98,6 +101,13 @@ class JSONHTTPProvider(LLMProvider):
 
         with model_detail("payload_preparation"):
             payload = self._build_payload(request)
+            prepared = self._client.build_request(
+                "POST",
+                self._path(request),
+                headers=self._request_headers(),
+                json=payload,
+                timeout=self._timeout,
+            )
             self._wire_observer.observe(
                 payload,
                 self.protocol,
@@ -110,36 +120,55 @@ class JSONHTTPProvider(LLMProvider):
             # Keep the real permission/budget fence immediately before HTTP dispatch.
             with model_detail("attempt_dispatch_preparation"):
                 await check_model_dispatch()
+            from qq_ai_bot.model_runtime.request_accounting import (
+                after_provider_request,
+                before_provider_request,
+            )
+
+            account, finish = before_provider_request.get(), after_provider_request.get()
+            if account is not None:
+                await account()
             attempts = current_provider_attempts.get()
             if attempts is not None:
                 attempts.dispatched()
             phases = current_model_phases.get()
             if phases is not None:
                 phases.attempts += 1
-            with model_detail("transport"):
-                response = await self._client.post(
-                    self._path(request),
-                    headers=self._request_headers(),
-                    json=payload,
-                    timeout=self._timeout,
-                )
-            await record_http_response(response)
             try:
-                check_provider_response(response)
-            except LLMError as exc:
+                with model_detail("transport"):
+                    response = await self._client.send(prepared)
+                await record_http_response(response)
                 try:
-                    payload = response.json()
-                except ValueError:
-                    payload = {}
-                diagnostics = self._usage_diagnostics(payload) if isinstance(payload, dict) else {}
-                usage = diagnostics.get("usage")
-                if isinstance(usage, dict) and any(
-                    type(value) is int and value >= 0 for value in usage.values()
-                ):
-                    if attempts is not None:
-                        attempts.reported_usage(usage.get("total_tokens"), usage=usage)
-                    exc.diagnostics = {**exc.diagnostics, "usage": usage}
+                    check_provider_response(response)
+                except LLMError as exc:
+                    try:
+                        payload = response.json()
+                    except ValueError:
+                        payload = {}
+                    diagnostics = (
+                        self._usage_diagnostics(payload) if isinstance(payload, dict) else {}
+                    )
+                    usage = diagnostics.get("usage")
+                    if isinstance(usage, dict) and any(
+                        type(value) is int and value >= 0 for value in usage.values()
+                    ):
+                        if attempts is not None:
+                            attempts.reported_usage(usage.get("total_tokens"), usage=usage)
+                        exc.diagnostics = {**exc.diagnostics, "usage": usage}
+                    raise
+            except BaseException:
+                if finish is not None:
+                    await finish("failed", None)
                 raise
+            if finish is not None:
+                try:
+                    body = response.json()
+                except ValueError:
+                    body = {}
+                body = body if isinstance(body, dict) else {}
+                usage = self._usage_diagnostics(body).get("usage", {})
+                usage = usage if isinstance(usage, dict) else {}
+                await finish(str(body.get("status", "unknown")), usage.get("completion_tokens"))
         return response
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
@@ -171,31 +200,7 @@ class JSONHTTPProvider(LLMProvider):
                     if work is not None and attempt.retry_state.attempt_number > 1:
                         with model_detail("retry_budget_preparation"):
                             await work.reserve_request(auxiliary=True)
-                    from qq_ai_bot.model_runtime.request_accounting import (
-                        after_provider_request,
-                        before_provider_request,
-                    )
-
-                    account, finish = before_provider_request.get(), after_provider_request.get()
-                    if account is not None:
-                        await account()
-                    try:
-                        response = await self._post(request)
-                    except BaseException:
-                        if finish is not None:
-                            await finish("failed", None)
-                        raise
-                    if finish is not None:
-                        try:
-                            body = response.json()
-                        except ValueError:
-                            body = {}
-                        body = body if isinstance(body, dict) else {}
-                        usage = self._usage_diagnostics(body).get("usage", {})
-                        usage = usage if isinstance(usage, dict) else {}
-                        await finish(
-                            str(body.get("status", "unknown")), usage.get("completion_tokens")
-                        )
+                    response = await self._post(request)
         except httpx.TimeoutException as exc:
             raise LLMTimeoutError("LLM request timed out") from exc
         except retry_errors as exc:

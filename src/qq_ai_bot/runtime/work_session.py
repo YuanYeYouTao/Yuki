@@ -1254,15 +1254,9 @@ class WorkSession:
                 )
             return result, measured
 
-        if request_template is not None:
-            original_size = estimate_request_tokens(request_template)
-        else:
-            original_size = estimate_text_tokens(
-                json.dumps(encode_transcript(original), ensure_ascii=False)
-            )
         candidate, size = candidate_and_size()
-        if (ceiling_tokens is not None and size > ceiling_tokens) or size >= original_size:
-            raise WorkCapacityError("work_compaction_no_capacity_improvement")
+        if ceiling_tokens is not None and size > ceiling_tokens:
+            raise WorkCapacityError("work_compaction_capacity")
         old_progress = deepcopy(self.progress)
         self.transcript = candidate
         self.progress.pop("compaction_staging", None)

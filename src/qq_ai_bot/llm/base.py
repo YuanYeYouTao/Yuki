@@ -52,7 +52,7 @@ class LLMMalformedFunctionCallError(LLMInvalidResponseError):
 
 
 class LLMIncompleteResponseError(LLMError):
-    """The bounded recovery request also failed to complete."""
+    """The provider returned an incomplete response."""
 
 
 class LLMNativeToolError(LLMError):

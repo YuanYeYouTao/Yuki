@@ -20,7 +20,6 @@ from qq_ai_bot.domain.messages import (
     ChatRequest,
     ChatResponse,
     NativeToolType,
-    minimum_reasoning_effort,
 )
 from qq_ai_bot.execution_trace.phases import (
     ModelPhases,
@@ -66,9 +65,15 @@ def _profile_request(request: ChatRequest, profile: ModelProfile) -> ChatRequest
             if request.max_output_tokens is None
             else request.max_output_tokens
         ),
-        thinking_enabled=True,
-        reasoning_effort=minimum_reasoning_effort(
-            request.reasoning_effort, profile.reasoning_effort
+        thinking_enabled=(
+            profile.thinking_enabled
+            if request.thinking_enabled is None
+            else request.thinking_enabled
+        ),
+        reasoning_effort=(
+            profile.reasoning_effort
+            if request.reasoning_effort is None
+            else request.reasoning_effort
         ),
     )
 
@@ -467,10 +472,10 @@ class TaskModelExecutor:
         priority: ModelExecutionPriority,
         canonical_conversation_id: str | None,
     ) -> ChatResponse:
-        required: set[ModelCapability] = {ModelCapability.REASONING}
-        if request.tools and not request.structured_output:
+        required: set[ModelCapability] = set()
+        if request.tools:
             required.add(ModelCapability.TOOLS)
-        if request.structured_output or request.response_format is not None:
+        if request.response_format is not None:
             required.add(ModelCapability.STRUCTURED_OUTPUT)
         if request.native_tools:
             if ModelCapability.NATIVE_WEB_SEARCH not in self.capabilities(task):
@@ -1019,9 +1024,6 @@ class TaskModelExecutor:
             effective_wire_options = wire_options(profile.provider.casefold(), profile.wire_options)
             serialized["wire_options"] = effective_wire_options.model_dump(
                 mode="json",
-                exclude={"gemini_schema_format"}
-                if effective_wire_options.gemini_schema_format == "response_json_schema"
-                else set(),
             )
         return _json_hash(
             {

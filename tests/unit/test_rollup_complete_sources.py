@@ -16,6 +16,7 @@ from qq_ai_bot.conversation.rollup.renderer import (
 from qq_ai_bot.conversation.rollup.service import ConversationRollupService
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatResponse
+from qq_ai_bot.model_runtime.models import StructuredOutputMode
 from qq_ai_bot.persistence.repository_records import EventRecord
 
 
@@ -69,13 +70,14 @@ class RecordingModel:
         self.fail_at = fail_at
         self.output_budgets: list[int | None] = []
 
+    def structured_output_mode(self, _task):
+        return StructuredOutputMode.TEXT_JSON
+
     async def execute(self, _task, request, *, priority=None, canonical_conversation_id=None):
         del priority
         self.output_budgets.append(request.max_output_tokens)
         body = request.messages[-1].content
-        self.sources.append(
-            body.split("New source events:\n", 1)[1].rsplit("\n\nCharacter limit:", 1)[0]
-        )
+        self.sources.append(body.split("New source events:\n", 1)[1])
         if self.fail_at == len(self.sources):
             raise RuntimeError("model disconnected")
         return ChatResponse(
@@ -289,7 +291,6 @@ async def test_plugin_capacity_reads_hot_snapshot_and_shared_fixed_contract_rese
         settings=make_settings("sqlite+aiosqlite:///:memory:"),
         ledger=ledger,
         people=MagicMock(),
-        memory_context=MagicMock(),
         relationships=MagicMock(),
         time_service=MagicMock(),
         rollup_repository=MagicMock(),

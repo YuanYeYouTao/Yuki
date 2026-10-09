@@ -25,7 +25,6 @@ from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ChatResponse, In
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
 from qq_ai_bot.execution_trace.phases import collect_phase_metrics
 from qq_ai_bot.model_runtime.capacity import ModelCapacity, estimate_request_tokens
-from qq_ai_bot.model_runtime.structured import tool_free_structured_output_mode
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.runtime.activation_tasks import ActivationTasks
@@ -387,9 +386,7 @@ class MainAgentTurnService:
                 summary = await summarize_records(
                     [(f"observation:{row.id}", row.payload_json) for row in observations],
                     main_request=prepared_request,
-                    structured_mode=tool_free_structured_output_mode(
-                        self._runner._models, self._runner._task
-                    ),
+                    structured_mode=self._runner._models.structured_output_mode(self._runner._task),
                     summary_budget=capacity.input_budget(
                         runtime.context.window_tokens,
                         output_tokens=runtime.context.compaction_output_tokens,

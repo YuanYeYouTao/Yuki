@@ -41,7 +41,7 @@ def inspect_event_evidence(
         if reflection
         else event.content
     )
-    normalized = normalize_memory_text(source, maximum=4000)
+    normalized = normalize_memory_text(source)
     quote = evidence.excerpt
     return EventEvidenceCheck(
         source_valid=(

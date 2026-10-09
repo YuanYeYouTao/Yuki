@@ -430,9 +430,6 @@ class SelfReflectionRepository:
         max_daily_calls: int,
         max_events: int,
         max_characters: int,
-        low_event_threshold: int | None = None,
-        low_character_threshold: int | None = None,
-        natural_gap_seconds: float | None = None,
         context_events: int = 4,
         force: bool = False,
         excluded_conversation_keys: frozenset[str] = frozenset(),
@@ -586,23 +583,6 @@ class SelfReflectionRepository:
                         break
                     event_rows.append(item)
                     input_characters += item_characters
-                if (
-                    event_rows
-                    and retry is None
-                    and natural_gap_seconds is not None
-                    and low_event_threshold is not None
-                    and low_character_threshold is not None
-                    and (
-                        row.pending_events >= event_threshold
-                        or row.pending_characters >= character_threshold
-                    )
-                ):
-                    event_rows = self._watermark_segment(
-                        event_rows,
-                        low_event_threshold=low_event_threshold,
-                        low_character_threshold=low_character_threshold,
-                        natural_gap_seconds=natural_gap_seconds,
-                    )
                 if not event_rows and outstanding:
                     continue
                 if not event_rows:
@@ -724,29 +704,6 @@ class SelfReflectionRepository:
                 if len(claimed) >= available:
                     break
             return tuple(claimed)
-
-    @staticmethod
-    def _watermark_segment(
-        rows: list[ChatEventModel],
-        *,
-        low_event_threshold: int,
-        low_character_threshold: int,
-        natural_gap_seconds: float,
-    ) -> list[ChatEventModel]:
-        """Cut one oldest non-overlapping segment at the latest natural pause."""
-
-        if len(rows) < 2:
-            return rows
-        characters = 0
-        boundary: int | None = None
-        for index, item in enumerate(rows[:-1], start=1):
-            characters += len(item.evidence_content)
-            if index < low_event_threshold and characters < low_character_threshold:
-                continue
-            gap_seconds = (rows[index].occurred_at - item.occurred_at).total_seconds()
-            if gap_seconds >= natural_gap_seconds:
-                boundary = index
-        return rows[:boundary] if boundary is not None else rows
 
     @staticmethod
     def _trigger_reason(
@@ -1036,10 +993,8 @@ class SelfReflectionRepository:
         run.first_failed_at = run.first_failed_at or now
         if error_category in {"daily_limit_reached", "preempted"}:
             run.attempt_count = max(0, run.attempt_count - 1)
-        run.retry_state = "isolated" if run.attempt_count >= 3 else "waiting"
-        run.next_attempt_at = now + timedelta(
-            minutes=(5, 15, 30)[min(2, max(0, run.attempt_count - 1))]
-        )
+        run.retry_state = "waiting"
+        run.next_attempt_at = now
         return "failed"
 
     async def fail(self, run_id: int, error_category: str) -> None:
@@ -1067,8 +1022,6 @@ class SelfReflectionRepository:
             )
 
     async def save_checkpoint(self, run_id: int, value: str) -> None:
-        if len(value.encode()) > 4 * 1024 * 1024:
-            raise ValueError("reflection_checkpoint_too_large")
         async with self._database.sessions() as session, session.begin():
             await session.execute(
                 update(MemorySelfReflectionRunModel)

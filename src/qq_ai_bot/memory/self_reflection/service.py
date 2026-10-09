@@ -48,7 +48,6 @@ from qq_ai_bot.memory.self_reflection.models import (
     SelfReflectionInput,
     SelfReflectionOperation,
     SelfReflectionOutput,
-    SelfReflectionPreviousEpisode,
     SelfReflectionProposal,
     SelfReflectionToolReceipt,
     SelfReflectionVisibility,
@@ -58,7 +57,7 @@ from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import ResolvedSubject
 from qq_ai_bot.model_runtime.executor import ModelExecutor
-from qq_ai_bot.model_runtime.models import ModelExecutionPriority, ModelTask, StructuredOutputMode
+from qq_ai_bot.model_runtime.models import ModelExecutionPriority, ModelTask
 from qq_ai_bot.model_runtime.request_accounting import (
     after_provider_request,
     before_provider_request,
@@ -70,38 +69,17 @@ from qq_ai_bot.time.formatting import local_datetime, utc_iso
 logger = logging.getLogger(__name__)
 
 _VALUE_INSTRUCTION = """\
-精选长期事实与共同经历，不凑产出。create proposal 必须明确 importance，reason 简述未来价值；
-episode 必须提供 value_reason 简述未来回忆价值（不放进 content）。importance 1–2 是临时
-琐碎、无持续意义，不能自动保存；3 是值得未来理解或回忆；4–5 是重要承诺、变化或里程碑。
-有意义的一次性经历可为 3，不需重复发生。普通问候、无进展的调侃或前一经历的简单重复不记，
-输出 noop/空数组即可。已有记忆的纠错、撤回、合并不是首次收录，不需抬高其重要性。
-
-先区分持久自我认识与一次经历，再决定输出位置：create fact/preference 必须表达脱离当次
-日期和对话仍成立、且有来源支持的认识、偏好或原则。叙述“某天我教了什么、做了什么、
-和谁说了什么”是 Episode，不因改成 kind=fact 或 category=self_reflection 就成为稳定事实。
-不要从一次互动泛化出持续偏好或原则，也不要把同一段经历同时写进 proposals 和 episodes。
-一窗有多段值得记住的经历时，只选一段最有价值的进入 episodes；其余不借 proposals 保存。
-一个 Episode 应围绕同一目标、冲突或进展；“同一天/同一个群”不足以把无关话题合并。
-先选该核心经历的 evidence_refs，再写正文；没有被选中证据支持的细节不要写。
-与核心进展无关的插曲即便真实出现过也略去，不用“他还……”拼成整窗流水账。
-区分“发生过一次讨论”与“讨论里的说法是真的”：历史回复只证明当时说过这些话，
-不证明其中的外部数据、推断、任务执行或自我评价正确。没有对应工具依据时，可记为
-“当时讨论/建议/声称”，不写成“核实了/讲透了/确认成功”；不必复录无独立依据的技术结论。
-工具回执仅支持其实际结果，例如创建任务成功不证明后续任务执行或查询结论正确。
-author_kind=yuki 的消息是 Yuki 当时的发言，不是独立核验；旧事实的 authority、
-conflict_state、evidence_count 是后端来源元数据，active 不等于无争议或已证实，
-证据数量也不证明语义正确。人物主张、角色扮演与模型此前的推测保持其来源性质；
-reason/value_reason 说明价值，
-不代替证据。你的感受与反思可以保留，但应表达为主观理解，不能补造过去的动作和结果。
-"""
+选择有未来意义的记忆，由你判断其价值；importance是判断资料，不是后端保存门槛。
+历史发言只能证明当时的说法，工具回执只支持其实际结果，不补造过去动作或未经验证的成果。
+你的理解与感受可以保留为主观认识，不把它们写成已经核实的外部事实。"""
 
 _EPISODE_EVIDENCE_INSTRUCTION = """\
-Each episode must describe exactly one central experience. If the window contains several
-topics, keep only the experience most worth remembering. Select 1-8 evidence_refs per passage
+Each episode should describe an actual experience with its supporting sources.
+Select evidence_refs per passage
 from the provided event_N and tool_N aliases. Bind each passage's evidence_refs to exactly
-its own content, using at most 16 distinct aliases across passages. Do not attach a global
+its own content, preserving the actual source bindings across passages. Do not attach a global
 source list to an otherwise free-form account. The backend joins passages in order. context_N and
-previous_episode are context only and must never be cited as evidence. Do not treat the whole
+historical memories are context only and must never be cited as evidence. Do not treat the whole
 input window as direct evidence for every episode.
 """
 
@@ -121,23 +99,20 @@ _INSTRUCTION = """\
 source_kind=initiative_tools 表示自主执行留下的工具回执，events 可以为空：没有发言
 不等于没有真实经历；只记录工具实际证明的动作，不捏造用户请求、对话或已对外发送。
 
-proposals 只用于 {bot_name} 自己的动态偏好、反思、原则及既有 SELF 记忆变更，kind 只能是 fact
-或 preference，不能用于 Episode。用户对 {bot_name} 的评价
+proposals 用于 {bot_name} 自己的记忆及既有 SELF 记忆变更。用户对 {bot_name} 的评价
 可以接受、改写后接受、拒绝或暂缓；接受必须伴随实际记忆变更，拒绝或暂缓必须使用 noop。
 不要创建人物记忆。proposals 只能引用输入提供的
 event_N、tool_N、fact_N、candidate_N 别名；create/correct/merge/contest/invalidate 必须引用
 至少一条真实 event/tool evidence。稳定、跨会话成立且不含具体人物隐私的
 self_fact/self_preference/self_reflection/self_principle 可以 global；私聊产生的 self_fact
-保持 current_scope。不要修改 identity/core/safety/system/permission/runtime 键。
+保持 current_scope。记忆名称不会赋予系统权限。
 没有值得长期保留或修改的内容时输出空 proposals。
 
 episodes 是创建 Episode 的唯一输出位置，用来记录你在当前群聊或私聊中真实参与过的长期经历，
-一次最多一条。context_events
+可以保留多个实际经历。context_events
 只帮助你理解主窗口；events 和 tool_receipts 是这次经历的完整来源窗口。Episode 的类别、范围、
 时间和来源由后端确定。输出 passages，每段包含 evidence_refs 和 content；整条经历还需
-value_reason 和 importance。后端将片段按原顺序连接，不生成额外正文。previous_episode 是当前范围内
-最近一条既有 Episode，只用于避免重复，不是本轮证据。如果当前窗口只是它的重复延续且没有
-重要新进展，保持 episodes 为空。不要把 context_events 或 previous_episode 重新总结进正文。
+importance。后端将片段按原顺序连接，不生成额外正文。不要把 context_events 重新总结进正文。
 
 self_facts 是已有的事实/偏好，existing_episodes 是历史经历，二者均只供核对已有记忆和去重，
 不是写作范例，也不是本次新内容的证据。历史存档可能沿用旧的流水账或混杂话题格式，
@@ -240,25 +215,12 @@ class SelfReflectionService:
         else:
             control = ReflectionControlRepository(self._repository.database, self._settings)
             request_id = 0
-            model_attempt = 0
-            physical_attempt = 0
-
-            async def begin_attempt() -> None:
-                nonlocal model_attempt, physical_attempt
-                model_attempt += 1
-                physical_attempt = 0
 
             async def reserve() -> None:
-                nonlocal request_id, physical_attempt
-                kind = (
-                    "transport_retry"
-                    if physical_attempt
-                    else "repair"
-                    if model_attempt > 1
-                    else "initial"
+                nonlocal request_id
+                request_id = await control.reserve_request(
+                    batch.run_id, "initial" if not request_id else "retry"
                 )
-                request_id = await control.reserve_request(batch.run_id, kind)
-                physical_attempt += 1
 
             async def finish(status: str, tokens: int | None) -> None:
                 await control.finish_request(request_id, status, tokens)
@@ -280,31 +242,12 @@ class SelfReflectionService:
                     output_model=SelfReflectionOutput,
                     temperature=0.1,
                     max_output_tokens=self._settings.memory_self_reflection_max_output_tokens,
-                    mode=StructuredOutputMode.JSON_SCHEMA,
-                    allow_schema_fallback=self._settings.memory_self_reflection_allow_text_json_fallback,
                     priority=ModelExecutionPriority.BEST_EFFORT_BACKGROUND,
-                    before_attempt=begin_attempt,
-                    # Field-level semantic boundaries are needed at the emit_result call site.
-                    # Compact schemas remove descriptions, losing the fact/episode distinction.
-                    compact_schema=False,
                     validation_retries=1,
                     validate_output=validate_references,
                     validation_repair_hint=(
-                        "Fix the reported fields. Max 8 proposals and 1 episode. An episode "
-                        "requires "
-                        "passages, importance, value_reason; 1-8 passages each need "
-                        "nonblank content "
-                        "and 1-8 unique evidence_refs. For >8 references in one passage, "
-                        "split its "
-                        "content into supported passages; do not discard evidence or invent "
-                        "aliases "
-                        "to fit. Max 16 distinct references and 4000 joined characters per "
-                        "episode. "
-                        "Only supplied event_N/tool_N references are evidence, never "
-                        "context_N. "
-                        "Proposal categories: self_fact, self_preference, self_reflection, "
-                        "self_principle; each needs reason. Episodes are not proposals. Remove "
-                        "placeholders. Use empty arrays for no valuable supported change."
+                        "Use only supplied event/tool aliases as evidence "
+                        "and correct the reported fields."
                     ),
                 )
             finally:
@@ -320,25 +263,11 @@ class SelfReflectionService:
             )
         already_committed = await self._repository.committed_results(batch.run_id)
         committed = 0
-        from qq_ai_bot.memory.enums import MemoryRetention
-        from qq_ai_bot.memory.quality_policy import AutomaticValuePolicy
 
         for proposal_index, proposal in enumerate(output.proposals, start=1):
             if ("proposal", proposal_index) in already_committed:
                 committed += 1
                 continue
-            if proposal.operation is SelfReflectionOperation.CREATE:
-                value = AutomaticValuePolicy.evaluate(
-                    importance=proposal.importance,
-                    retention=MemoryRetention.DURABLE,
-                    value_reason=proposal.reason,
-                )
-                if not value.accepted:
-                    self._metrics.increment(f"self_reflection_skipped_{value.reason_code}")
-                    candidate = candidate_map.get(proposal.candidate_ref or "")
-                    if candidate is not None:
-                        await self._candidates.set_status(candidate.id, "rejected")
-                    continue
             try:
                 changed = await self._apply(
                     batch,
@@ -357,14 +286,6 @@ class SelfReflectionService:
             if ("episode", index) in already_committed:
                 committed += 1
                 episode_committed += 1
-                continue
-            value = AutomaticValuePolicy.evaluate(
-                importance=episode.importance,
-                retention=MemoryRetention.MEANINGFUL_EPISODE,
-                value_reason=episode.value_reason,
-            )
-            if not value.accepted:
-                self._metrics.increment(f"self_reflection_skipped_{value.reason_code}")
                 continue
             try:
                 changed = await self._apply_episode(
@@ -468,7 +389,7 @@ class SelfReflectionService:
             bounded: list[StoredToolReceipt] = []
             tool_remaining = max(0, batch.max_input_characters)
             for item in receipts:
-                excerpt = item.result_excerpt[: min(2000, tool_remaining)]
+                excerpt = item.result_excerpt[:tool_remaining]
                 bounded.append(replace(item, result_excerpt=excerpt))
                 tool_remaining -= len(excerpt)
             receipts = tuple(bounded)
@@ -519,7 +440,6 @@ class SelfReflectionService:
             )
             for ref, item in candidate_map.items()
         )
-        previous_episode = await self._previous_episode(batch)
         return (
             SelfReflectionInput(
                 scope_type=_batch_scope_type(batch),
@@ -529,22 +449,6 @@ class SelfReflectionService:
                 events=events,
                 source_kind="initiative_tools" if batch.initiative_run_id else "chat",
                 tool_receipts=tools,
-                previous_episode=(
-                    SelfReflectionPreviousEpisode(
-                        content=previous_episode.content,
-                        valid_from=(
-                            local_datetime(
-                                previous_episode.valid_from,
-                                self._settings.memory_self_reflection_timezone,
-                            )
-                            if previous_episode.valid_from is not None
-                            else None
-                        ),
-                        importance=previous_episode.importance,
-                    )
-                    if previous_episode is not None
-                    else None
-                ),
                 self_facts=tuple(row for row in fact_rows if row.kind is not MemoryKind.EPISODE),
                 existing_episodes=tuple(row for row in fact_rows if row.kind is MemoryKind.EPISODE),
                 self_candidates=candidate_rows,
@@ -554,30 +458,6 @@ class SelfReflectionService:
             event_map,
             tool_map,
         )
-
-    async def _previous_episode(self, batch: SelfReflectionBatch) -> MemoryFact | None:
-        if batch.state.canonical_space_id is not None:
-            query = MemoryFactQuery(
-                scope_type=MemoryScopeType.SELF,
-                visibility_type=SelfMemoryVisibility.GROUP,
-                visibility_group_id=batch.state.external_space_id,
-                kind=MemoryKind.EPISODE,
-                status=MemoryStatus.ACTIVE,
-            )
-        else:
-            query = MemoryFactQuery(
-                scope_type=MemoryScopeType.SELF,
-                visibility_type=SelfMemoryVisibility.PRIVATE,
-                visibility_user_id=batch.state.external_person_id,
-                kind=MemoryKind.EPISODE,
-                status=MemoryStatus.ACTIVE,
-            )
-        rows = await self._facts.repository.list_facts(
-            query,
-            limit=1,
-            order_by_id_desc=True,
-        )
-        return rows[0] if rows else None
 
     async def _visible_self_facts(self, batch: SelfReflectionBatch) -> tuple[MemoryFact, ...]:
         global_rows = await self._facts.repository.list_facts(
@@ -630,18 +510,10 @@ class SelfReflectionService:
             raise ValueError("unknown fact alias")
         if proposal.merge_fact_ref and merge_fact is None:
             raise ValueError("unknown merge fact alias")
-        evidence_ref = proposal.evidence_refs[0]
-        event = event_map.get(evidence_ref)
-        tool = tool_map.get(evidence_ref)
-        tool_receipt_id: int | None = None
-        if tool is not None:
-            tool_receipt_id = tool.id
-            trigger_event_id = tool.trigger_event_id
-            event = next((item for item in batch.events if item.id == trigger_event_id), None)
-        if event is None and not (
-            batch.initiative_run_id and tool and tool.initiative_run_id == batch.initiative_run_id
-        ):
-            raise ValueError("unknown evidence alias")
+        event, tool, additional = self._evidence(
+            batch, proposal.evidence_refs, event_map=event_map, tool_map=tool_map
+        )
+        tool_receipt_id = tool.id if tool is not None else None
         target = self._target(batch, proposal.visibility)
         operation = MemoryMutationOperation(proposal.operation.value)
         content = proposal.content
@@ -667,9 +539,7 @@ class SelfReflectionService:
             confidence=proposal.confidence,
             importance=proposal.importance,
             evidence_quote=(
-                tool.result_excerpt[:500]
-                if tool is not None
-                else self._event_evidence_text(event)[:500]
+                tool.result_excerpt if tool is not None else self._event_evidence_text(event)
             ),
         )
         result = await self._mutations.mutate_resolved(
@@ -704,6 +574,7 @@ class SelfReflectionService:
                     fact.visibility_group_id,
                 )
             ),
+            additional_evidence=additional,
             self_reflection_result=(batch.run_id, "proposal", result_index),
         )
         if result.outcome is MemoryMutationOutcome.REJECTED:
@@ -735,32 +606,9 @@ class SelfReflectionService:
         event_map: dict[str, EventRecord],
         tool_map: dict[str, StoredToolReceipt],
     ) -> bool:
-        selected_events: list[EventRecord] = []
-        selected_tools: list[StoredToolReceipt] = []
-        for ref in proposal.evidence_refs:
-            if ref.startswith("event_"):
-                event = event_map.get(ref)
-                if event is None:
-                    raise ValueError("episode referenced an unknown event alias")
-                selected_events.append(event)
-            else:
-                receipt = tool_map.get(ref)
-                if receipt is None:
-                    raise ValueError("episode referenced an unknown tool alias")
-                selected_tools.append(receipt)
-        anchor = selected_events[0] if selected_events else None
-        primary_tool = selected_tools[0] if anchor is None and selected_tools else None
-        if anchor is None and primary_tool is not None:
-            anchor = next(
-                (event for event in batch.events if event.id == primary_tool.trigger_event_id),
-                None,
-            )
-        if anchor is None and not (
-            batch.initiative_run_id
-            and primary_tool
-            and primary_tool.initiative_run_id == batch.initiative_run_id
-        ):
-            raise ValueError("episode evidence has no trusted conversation anchor")
+        anchor, primary_tool, additional = self._evidence(
+            batch, proposal.evidence_refs, event_map=event_map, tool_map=tool_map
+        )
         source_key = (
             f"initiative:{batch.initiative_run_id}:{batch.first_receipt_id}:{batch.last_receipt_id}:{index}"
             if batch.initiative_run_id
@@ -769,41 +617,6 @@ class SelfReflectionService:
         )
         memory_key = f"self_episode:{hashlib.sha256(source_key.encode()).hexdigest()[:24]}"
         target = self._target(batch, SelfReflectionVisibility.CURRENT_SCOPE)
-        additional: list[MemoryEvidenceCreate] = []
-        for event in selected_events:
-            if anchor is not None and event.id == anchor.id:
-                continue
-            additional.append(
-                MemoryEvidenceCreate(
-                    event_id=event.id,
-                    source_speaker_user_id=event.sender_user_id,
-                    relation=MemoryEvidenceRelation.AGENT_REFLECTION,
-                    confidence=0.9,
-                    authority=MemoryAuthority.AGENT_REFLECTION,
-                    excerpt=self._event_evidence_text(event)[:500],
-                )
-            )
-        for receipt in selected_tools:
-            if primary_tool is not None and receipt.id == primary_tool.id:
-                continue
-            trigger_event = next(
-                (event for event in batch.events if event.id == receipt.trigger_event_id),
-                None,
-            )
-            additional.append(
-                MemoryEvidenceCreate(
-                    tool_receipt_id=receipt.id,
-                    source_speaker_user_id=(
-                        trigger_event.bot_user_id
-                        if trigger_event is not None
-                        else receipt.bot_user_id or batch.state.bot_user_id
-                    ),
-                    relation=MemoryEvidenceRelation.AGENT_REFLECTION,
-                    confidence=0.9,
-                    authority=MemoryAuthority.AGENT_REFLECTION,
-                    excerpt=receipt.result_excerpt[:500],
-                )
-            )
         result = await self._mutations.mutate_resolved(
             MemoryMutationRequest(
                 operation=MemoryMutationOperation.CREATE,
@@ -820,9 +633,9 @@ class SelfReflectionService:
                 confidence=0.9,
                 importance=proposal.importance,
                 evidence_quote=(
-                    primary_tool.result_excerpt[:500]
+                    primary_tool.result_excerpt
                     if primary_tool is not None
-                    else self._event_evidence_text(anchor)[:500]
+                    else self._event_evidence_text(anchor)
                 ),
                 valid_from=utc_iso(
                     batch.events[0].occurred_at if batch.events else batch.occurred_at
@@ -859,6 +672,67 @@ class SelfReflectionService:
                 result.reason_code or "unknown",
             )
         return result.ok
+
+    def _evidence(
+        self,
+        batch: SelfReflectionBatch,
+        refs: tuple[str, ...],
+        *,
+        event_map: dict[str, EventRecord],
+        tool_map: dict[str, StoredToolReceipt],
+    ) -> tuple[EventRecord | None, StoredToolReceipt | None, tuple[MemoryEvidenceCreate, ...]]:
+        events = []
+        tools = []
+        for ref in refs:
+            if ref in event_map:
+                events.append(event_map[ref])
+            elif ref in tool_map:
+                tools.append(tool_map[ref])
+            else:
+                raise ValueError("reflection referenced an unknown evidence alias")
+        anchor = events[0] if events else None
+        primary_tool = tools[0] if not events and tools else None
+        if anchor is None and primary_tool is not None:
+            anchor = next(
+                (event for event in batch.events if event.id == primary_tool.trigger_event_id), None
+            )
+        if anchor is None and not (
+            batch.initiative_run_id
+            and primary_tool
+            and primary_tool.initiative_run_id == batch.initiative_run_id
+        ):
+            raise ValueError("reflection evidence has no trusted conversation anchor")
+        additional = [
+            MemoryEvidenceCreate(
+                event_id=event.id,
+                source_speaker_user_id=event.sender_user_id,
+                relation=MemoryEvidenceRelation.AGENT_REFLECTION,
+                confidence=0.9,
+                authority=MemoryAuthority.AGENT_REFLECTION,
+                excerpt=self._event_evidence_text(event),
+            )
+            for event in events
+            if anchor is None or event.id != anchor.id
+        ]
+        for receipt in tools:
+            if primary_tool is not None and receipt.id == primary_tool.id:
+                continue
+            trigger = next(
+                (event for event in batch.events if event.id == receipt.trigger_event_id), None
+            )
+            additional.append(
+                MemoryEvidenceCreate(
+                    tool_receipt_id=receipt.id,
+                    source_speaker_user_id=trigger.bot_user_id
+                    if trigger
+                    else receipt.bot_user_id or batch.state.bot_user_id,
+                    relation=MemoryEvidenceRelation.AGENT_REFLECTION,
+                    confidence=0.9,
+                    authority=MemoryAuthority.AGENT_REFLECTION,
+                    excerpt=receipt.result_excerpt,
+                )
+            )
+        return anchor, primary_tool, tuple(additional)
 
     @staticmethod
     def _event_evidence_text(event: EventRecord | None) -> str:

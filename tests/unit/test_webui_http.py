@@ -7,13 +7,13 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from tests.conftest import make_settings
+from tests.support import control_automation_history_helpers as automation_fixtures
+from tests.support import control_memory_query_helpers as memory_fixtures
+from tests.support import control_reflection_query_helpers as reflection_fixtures
+from tests.support import control_work_details_helpers as work_fixtures
 from tests.support.social_identity_cases import social_env
 from tests.support.workspace_snapshots import snapshot_bytes
-from tests.unit import test_control_automation_history as automation_fixtures
-from tests.unit import test_control_memory_query as memory_fixtures
-from tests.unit import test_control_reflection_query as reflection_fixtures
 from tests.unit import test_control_relationships as relationship_fixtures
-from tests.unit import test_control_work_details as work_fixtures
 from tests.unit.test_control_operator_access import operator_file
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService

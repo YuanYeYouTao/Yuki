@@ -20,35 +20,18 @@ from qq_ai_bot.conversation.rollup.repository import ConversationRollupRepositor
 from qq_ai_bot.conversation.rollup.service import ConversationRollupService
 from qq_ai_bot.conversation.scope import (
     ConversationTurnSnapshot,
-    runtime_conversation_key,
     turn_matches_hydrated_scope,
 )
-from qq_ai_bot.domain.conversations import ConversationScope
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.domain.relationships import RelationshipSnapshot
 from qq_ai_bot.event_prompt import (
-    EXTERNAL_EVENT_CONTENT_TRUST,
     ChatEventPromptRenderer,
     external_event_digest_appended_growth,
     external_event_digest_data,
 )
 from qq_ai_bot.execution_trace.phases import collect_phase_metrics
-from qq_ai_bot.memory.attribution import MemoryExposure, MemoryExposureSource
-from qq_ai_bot.memory.context import (
-    MemoryContextService,
-    retrieval_fact_context,
-    self_retrieval_fact_context,
-)
-from qq_ai_bot.memory.enums import (
-    MemoryContextMode,
-    MemoryRetrievalMode,
-    MemoryTargetRole,
-)
-from qq_ai_bot.memory.models import (
-    MemoryQueryIntent,
-    MemoryRetrievalResult,
-)
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.model_runtime.capacity import estimate_text_tokens
 from qq_ai_bot.persistence.event_repository import ConversationReadVersion
@@ -71,19 +54,6 @@ from qq_ai_bot.time.models import TimeContext
 from qq_ai_bot.time.service import TimeContextService
 
 logger = logging.getLogger(__name__)
-
-
-def _empty_automatic_retrieval() -> MemoryRetrievalResult:
-    """Automatic context no longer recalls facts; the agent uses a memory tool."""
-
-    return MemoryRetrievalResult(
-        blocks=(),
-        hits=(),
-        candidate_count=0,
-        selected_count=0,
-        query_hash="",
-        mode=MemoryRetrievalMode.RELEVANT,
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,10 +83,6 @@ class AssembledContext:
     metrics: ContextMetrics
     visible_event_ids: frozenset[int] = frozenset()
     external_events: tuple[dict[str, object], ...] = ()
-    memory_turn_id: str = ""
-    injected_memory_ids: tuple[int, ...] = ()
-    memory_exposures: tuple[MemoryExposure, ...] = ()
-    memory_intent: MemoryQueryIntent | None = None
     history_anchor_event_id: int | None = None
     rollup_text: str = ""
     prompt_conversation_id: str = ""
@@ -193,7 +159,6 @@ class ContextAssembler:
         settings: Settings,
         ledger: EventLedgerRepository,
         people: PeopleRepository,
-        memory_context: MemoryContextService,
         relationships: RelationshipRepository,
         time_service: TimeContextService,
         rollup_repository: ConversationRollupRepository,
@@ -204,7 +169,6 @@ class ContextAssembler:
         self._settings = settings
         self._ledger = ledger
         self._people = people
-        self._memory_context = memory_context
         self._relationships = relationships
         self._time = time_service
         self._rollups = rollup_repository
@@ -263,7 +227,6 @@ class ContextAssembler:
         trigger: SelfInitiativeTrigger,
         runtime: RuntimeConfigSnapshot,
         turn: ConversationTurnSnapshot,
-        memory_retrieval: MemoryRetrievalResult | None = None,
     ) -> AssembledContext:
         """Project the real group history for SELF, without a synthetic human event."""
         identity = ConversationScope.group(trigger.bot_user_id, trigger.group_id)
@@ -271,10 +234,6 @@ class ContextAssembler:
         if recovery is not None:
             return recovery
         snapshot = await self._load_history_snapshot(identity, turn=turn, before_event_id=None)
-        # The provided result belongs to the retired automatic recall path.
-        # Keep the argument for callers while preventing old facts entering a new prompt.
-        del memory_retrieval
-        retrieval = _empty_automatic_retrieval()
         data: dict[str, Any] = {
             "scene": {
                 "type": "group",
@@ -283,16 +242,7 @@ class ContextAssembler:
                 "current_actor": "SELF",
             },
         }
-        for block in retrieval.blocks:
-            is_self = block.target.role is MemoryTargetRole.CURRENT_SELF
-            formatter = self_retrieval_fact_context if is_self else retrieval_fact_context
-            data["current_self" if is_self else "current_group"] = {
-                "facts": [
-                    formatter(hit, self._settings.default_timezone, include_budget_metadata=True)
-                    for hit in block.hits
-                ]
-            }
-        metadata, selected = self._fit_metadata(
+        metadata = self._fit_metadata(
             data,
             max(
                 1,
@@ -374,9 +324,7 @@ class ContextAssembler:
             ),
             visible_event_ids=bounded.visible_event_ids,
             external_events=(),
-            injected_memory_ids=selected,
             history_anchor_event_id=bounded.history_anchor_event_id,
-            memory_exposures=self._memory_exposures(retrieval, selected),
             rollup_text=rollup,
             prompt_conversation_id=turn.conversation_id,
             prompt_scope_key=turn.scope_key,
@@ -635,13 +583,6 @@ class ContextAssembler:
         turn: ConversationTurnSnapshot,
         content: str,
         runtime: RuntimeConfigSnapshot,
-        memory_mode: MemoryContextMode = MemoryContextMode.LEXICAL,
-        self_recall: bool = False,
-        memory_intent: MemoryQueryIntent | None = None,
-        requested_limit: int | None = None,
-        turn_origin: str = "user_message",
-        memory_retrieval: MemoryRetrievalResult | None = None,
-        persist_memory_exposure: bool = True,
         external_event: EventRecord | None = None,
         external_trigger: ExternalEventTurnTrigger
         | SandboxTaskTurnTrigger
@@ -686,21 +627,6 @@ class ContextAssembler:
         ):
             raise ConversationCoverageError("turn trigger event does not match scope snapshot")
         recent = snapshot.recent
-        # Ordinary turns never prefill old facts; only an explicit model tool read
-        # may expose them. Historical prefetch arguments are intentionally ignored.
-        del memory_retrieval, memory_mode, self_recall, requested_limit
-        retrieval = _empty_automatic_retrieval()
-        hits_by_role = {
-            block.target.role: block.hits
-            for block in retrieval.blocks
-            if block.target.role
-            in {
-                MemoryTargetRole.CURRENT_PERSON,
-                MemoryTargetRole.CURRENT_SELF,
-                MemoryTargetRole.CURRENT_PERSON_GROUP,
-                MemoryTargetRole.CURRENT_GROUP,
-            }
-        }
         metadata = await self._people.prompt_metadata(
             inbound.sender.user_id,
             default_timezone=self._time.default_timezone,
@@ -722,16 +648,12 @@ class ContextAssembler:
             "current_person": {
                 "user_id": inbound.sender.user_id,
                 "nickname": profile.nickname,
-                "display_name": profile.display_name,
+                "display_name": (
+                    profile.group_card if profile.scope_type is ScopeType.GROUP else ""
+                )
+                or profile.nickname
+                or profile.user_id,
                 "aliases": list(aliases),
-                "facts": [
-                    retrieval_fact_context(
-                        hit,
-                        self._settings.default_timezone,
-                        include_budget_metadata=True,
-                    )
-                    for hit in hits_by_role.get(MemoryTargetRole.CURRENT_PERSON, ())
-                ],
             },
             "scene": {
                 "type": inbound.scope_type.value,
@@ -739,111 +661,21 @@ class ContextAssembler:
                 "group_card": profile.group_card,
             },
         }
-        self_hits = hits_by_role.get(MemoryTargetRole.CURRENT_SELF, ())
-        if self_hits:
-            context["current_self"] = {
-                "facts": [
-                    self_retrieval_fact_context(
-                        hit,
-                        self._settings.default_timezone,
-                        include_budget_metadata=True,
-                    )
-                    for hit in self_hits
-                ]
-            }
         context["event_bound_memory_refs"] = await self._event_bound_memory_refs(
             inbound,
             profile,
         )
-
-        if inbound.group_id is not None:
-            context["current_person_in_group"] = {
-                "user_id": inbound.sender.user_id,
-                "group_id": inbound.group_id,
-                "facts": [
-                    retrieval_fact_context(
-                        hit,
-                        self._settings.default_timezone,
-                        include_budget_metadata=True,
-                    )
-                    for hit in hits_by_role.get(MemoryTargetRole.CURRENT_PERSON_GROUP, ())
-                ],
-            }
-            context["current_group"] = {
-                "group_id": inbound.group_id,
-                "facts": [
-                    retrieval_fact_context(
-                        hit,
-                        self._settings.default_timezone,
-                        include_budget_metadata=True,
-                    )
-                    for hit in hits_by_role.get(MemoryTargetRole.CURRENT_GROUP, ())
-                ],
-            }
-            referenced: dict[str, dict[str, Any]] = {}
-            for block in retrieval.blocks:
-                target = block.target
-                if (
-                    target.role
-                    not in {
-                        MemoryTargetRole.REFERENCED_PERSON,
-                        MemoryTargetRole.REFERENCED_PERSON_GROUP,
-                    }
-                    or target.subject_user_id is None
-                ):
-                    continue
-                entry = referenced.setdefault(
-                    target.subject_user_id,
-                    {
-                        "user_id": target.subject_user_id,
-                        "group_id": inbound.group_id,
-                        "person_facts": [],
-                        "group_facts": [],
-                    },
-                )
-                key = (
-                    "person_facts"
-                    if target.role is MemoryTargetRole.REFERENCED_PERSON
-                    else "group_facts"
-                )
-                entry[key] = [
-                    retrieval_fact_context(
-                        hit,
-                        self._settings.default_timezone,
-                        include_budget_metadata=True,
-                    )
-                    for hit in block.hits
-                ]
-            if referenced:
-                context["referenced_people"] = list(referenced.values())
 
         total_budget = self._history_token_budget(runtime)
         metadata_budget = max(
             1,
             int(total_budget * self._settings.context_metadata_budget_ratio),
         )
-        metadata_payload, selected_fact_ids = self._fit_metadata(
+        metadata_payload = self._fit_metadata(
             context,
             metadata_budget,
             capacity_limit=self._history_capacity_token_budget(runtime),
         )
-        memory_exposures = self._memory_exposures(retrieval, selected_fact_ids)
-        recall_turn = None
-        if persist_memory_exposure:
-            await self._memory_context.mark_injected(retrieval, selected_fact_ids)
-            recall_turn = await self._memory_context.record_recall(
-                conversation_key=runtime_conversation_key(
-                    identity=identity,
-                    inbound=inbound,
-                    turn=turn,
-                ),
-                source_key=f"event:{current_event.id}",
-                origin=turn_origin,
-                intent=memory_intent,
-                result=retrieval,
-                injected_fact_ids=selected_fact_ids,
-                runtime=runtime,
-            )
         metadata_json = json.dumps(
             metadata_payload,
             ensure_ascii=False,
@@ -932,10 +764,6 @@ class ContextAssembler:
             metrics=metrics,
             visible_event_ids=bounded_messages.visible_event_ids,
             external_events=(),
-            memory_turn_id=recall_turn.turn_id if recall_turn is not None else "",
-            injected_memory_ids=selected_fact_ids,
-            memory_exposures=memory_exposures,
-            memory_intent=memory_intent,
             history_anchor_event_id=bounded_messages.history_anchor_event_id,
             rollup_text=rollup_text,
             prompt_conversation_id=turn.conversation_id,
@@ -991,17 +819,6 @@ class ContextAssembler:
         ) or event.id <= snapshot.starts_after_event_id:
             raise ConversationCoverageError("external trigger is already covered")
         recent = snapshot.recent
-        retrieval = _empty_automatic_retrieval()
-        hits_by_role = {
-            block.target.role: block.hits
-            for block in retrieval.blocks
-            if block.target.role
-            in {
-                MemoryTargetRole.CURRENT_PERSON,
-                MemoryTargetRole.CURRENT_SELF,
-                MemoryTargetRole.CURRENT_GROUP,
-            }
-        }
         context: dict[str, Any] = {
             "scene": {
                 "type": event.scope_type.value,
@@ -1024,44 +841,15 @@ class ContextAssembler:
             context["conversation_target_person"] = {
                 "user_id": trigger.target_id,
                 "nickname": profile.nickname,
-                "display_name": profile.display_name,
+                "display_name": (
+                    profile.group_card if profile.scope_type is ScopeType.GROUP else ""
+                )
+                or profile.nickname
+                or profile.user_id,
                 "aliases": list(aliases),
                 "not_current_speaker": True,
-                "facts": [
-                    retrieval_fact_context(
-                        hit,
-                        self._settings.default_timezone,
-                        include_budget_metadata=True,
-                    )
-                    for hit in hits_by_role.get(MemoryTargetRole.CURRENT_PERSON, ())
-                ],
             }
-        group_hits = hits_by_role.get(MemoryTargetRole.CURRENT_GROUP, ())
-        if event.group_id is not None:
-            context["current_group"] = {
-                "group_id": event.group_id,
-                "facts": [
-                    retrieval_fact_context(
-                        hit,
-                        self._settings.default_timezone,
-                        include_budget_metadata=True,
-                    )
-                    for hit in group_hits
-                ],
-            }
-        self_hits = hits_by_role.get(MemoryTargetRole.CURRENT_SELF, ())
-        if self_hits:
-            context["current_self"] = {
-                "facts": [
-                    self_retrieval_fact_context(
-                        hit,
-                        self._settings.default_timezone,
-                        include_budget_metadata=True,
-                    )
-                    for hit in self_hits
-                ]
-            }
-        metadata_payload, _selected_fact_ids = self._fit_metadata(
+        metadata_payload = self._fit_metadata(
             context,
             max(
                 1,
@@ -1243,7 +1031,14 @@ class ContextAssembler:
         subjects = [
             {
                 "subject_ref": "current_speaker",
-                "display_name": current_profile.display_name,
+                "display_name": (
+                    current_profile.group_card
+                    if current_profile.scope_type is ScopeType.GROUP
+                    else ""
+                )
+                or current_profile.nickname
+                or inbound.sender.user_id,
+                "user_id": inbound.sender.user_id,
             }
         ]
         if self._settings.self_memory_enabled:
@@ -1269,14 +1064,17 @@ class ContextAssembler:
         members = await self._people.members_in_group(targets, group_id) if targets else frozenset()
         profiles = await self._people.get_many(tuple(members), group_id=group_id) if members else {}
 
-        for index, user_id in enumerate(mentioned, start=1):
+        for user_id in mentioned:
             if user_id not in members:
                 continue
             person = profiles.get(user_id)
             subjects.append(
                 {
-                    "subject_ref": f"mentioned_user_{index}",
-                    "display_name": person.display_name if person else "被提及群成员",
+                    "subject_ref": f"member_{user_id}",
+                    "user_id": user_id,
+                    "display_name": (person.group_card or person.nickname or user_id)
+                    if person
+                    else user_id,
                 }
             )
         reply_targets = (
@@ -1306,38 +1104,13 @@ class ContextAssembler:
             subjects.append(
                 {
                     "subject_ref": "replied_message_author",
-                    "display_name": person.display_name if person else "被回复群成员",
+                    "user_id": reply_rep,
+                    "display_name": (person.group_card or person.nickname or reply_rep)
+                    if person
+                    else reply_rep,
                 }
             )
         return subjects
-
-    def _memory_exposures(
-        self,
-        retrieval: Any,
-        selected_fact_ids: tuple[int, ...],
-    ) -> tuple[MemoryExposure, ...]:
-        selected = set(selected_fact_ids)
-        by_id: dict[int, MemoryExposure] = {}
-        for block in retrieval.blocks:
-            for hit in block.hits:
-                fact = hit.fact
-                if fact.id not in selected:
-                    continue
-                by_id[fact.id] = MemoryExposure(
-                    memory_ref=f"M{fact.id}",
-                    fact_id=fact.id,
-                    kind=fact.kind.value,
-                    category=fact.category[:64],
-                    content=fact.content[:4_000],
-                    occurred_at=(
-                        local_iso(fact.valid_from, self._settings.default_timezone)
-                        if fact.valid_from is not None
-                        else None
-                    ),
-                    target_role=block.target.role.value,
-                    source=MemoryExposureSource.AUTOMATIC,
-                )
-        return tuple(by_id[fact_id] for fact_id in selected_fact_ids if fact_id in by_id)
 
     @classmethod
     def _fit_metadata(
@@ -1346,28 +1119,28 @@ class ContextAssembler:
         limit: int,
         *,
         capacity_limit: int | None = None,
-    ) -> tuple[dict[str, object], tuple[int, ...]]:
+    ) -> dict[str, object]:
         """Select contributions and enforce the serialized metadata budget."""
 
         contributions = cls._context_contributions(context)
         # Required metadata belongs to the final full-request capacity check.
         # Preserve it even when this optional-contribution character target is low.
         required = tuple(item for item in contributions if item.required)
-        required_payload, required_fact_ids = cls._render_metadata_selection(required)
+        required_payload = cls._render_metadata_selection(required)
         required_cost = sum(item.cost for item in required)
         required_size = len(
             json.dumps(required_payload, ensure_ascii=False, separators=(",", ":"), default=str)
         )
         if max(required_size, required_cost) >= limit:
             ContextBudgeter().select(contributions, character_budget=required_cost)
-            return required_payload, required_fact_ids
+            return required_payload
         selection_budget = limit
         while True:
             selection = ContextBudgeter().select(
                 contributions,
                 character_budget=selection_budget,
             )
-            payload, selected_fact_ids = cls._render_metadata_selection(selection.selected)
+            payload = cls._render_metadata_selection(selection.selected)
             rendered_size = len(
                 json.dumps(
                     payload,
@@ -1377,92 +1150,23 @@ class ContextAssembler:
                 )
             )
             if rendered_size <= limit:
-                return payload, selected_fact_ids
+                return payload
             # Contribution costs intentionally describe standalone items. Reduce the
             # selection budget by the exact container/aggregation overshoot and retry.
             selection_budget -= max(1, rendered_size - limit)
             if selection_budget < required_cost:
-                return required_payload, required_fact_ids
+                return required_payload
 
     @staticmethod
     def _render_metadata_selection(
         selection: tuple[ContextContribution, ...],
-    ) -> tuple[dict[str, object], tuple[int, ...]]:
-        selected = {
-            item.id: ContextAssembler._public_context_payload(item.payload) for item in selection
+    ) -> dict[str, object]:
+        return {
+            "items": [
+                {"id": item.id, "data": ContextAssembler._public_context_payload(item.payload)}
+                for item in selection
+            ]
         }
-        items: list[dict[str, object]] = []
-        selected_fact_ids: list[int] = []
-        for item in selection:
-            if isinstance(item.payload, dict):
-                fact_id = item.payload.get("fact_id")
-                if isinstance(fact_id, int) and fact_id > 0:
-                    selected_fact_ids.append(fact_id)
-            if item.id.startswith(
-                (
-                    "person_memory.",
-                    "current_group.fact.",
-                    "current_person_in_group.fact.",
-                    "referenced_person_fact.",
-                    "referenced_group_fact.",
-                    "current_self.fact.",
-                    "recent_external_event.",
-                )
-            ):
-                continue
-            payload = item.payload
-            if item.id == "current_person" and isinstance(payload, dict):
-                facts = [
-                    value for key, value in selected.items() if key.startswith("person_memory.")
-                ]
-                if facts:
-                    payload = {**payload, "facts": facts}
-            elif item.id in {"current_group", "current_person_in_group"} and isinstance(
-                payload, dict
-            ):
-                facts = [
-                    value for key, value in selected.items() if key.startswith(f"{item.id}.fact.")
-                ]
-                if facts:
-                    payload = {**payload, "facts": facts}
-            items.append({"id": item.id, "data": payload})
-        self_facts = [
-            value for key, value in selected.items() if key.startswith("current_self.fact.")
-        ]
-        if self_facts:
-            items.append({"id": "current_self", "data": {"facts": self_facts}})
-        external_events = [
-            value for key, value in selected.items() if key.startswith("recent_external_event.")
-        ]
-        if external_events:
-            items.append(
-                {
-                    "id": "recent_external_events",
-                    "data": {
-                        "events": external_events,
-                        "content_trust": EXTERNAL_EVENT_CONTENT_TRUST,
-                    },
-                }
-            )
-        for output_item in items:
-            item_id = output_item["id"]
-            payload = output_item["data"]
-            if not isinstance(item_id, str) or not item_id.startswith("referenced_person."):
-                continue
-            if not isinstance(payload, dict):
-                continue
-            index = item_id.rsplit(".", 1)[-1]
-            payload["person_facts"] = [
-                value
-                for key, value in selected.items()
-                if key.startswith(f"referenced_person_fact.{index}.")
-            ]
-            payload["group_facts"] = [
-                value
-                for key, value in selected.items()
-                if key.startswith(f"referenced_group_fact.{index}.")
-            ]
-        return {"items": items}, tuple(dict.fromkeys(selected_fact_ids))
 
     @staticmethod
     def _public_context_payload(payload: Any) -> Any:
@@ -1511,38 +1215,12 @@ class ContextAssembler:
                 )
             )
 
-        def add_memory(item_id: str, payload: Any, *, fallback_priority: int) -> None:
-            if not isinstance(payload, dict):
-                add(item_id, payload, priority=fallback_priority, relevance=0.5)
-                return
-            public_payload = ContextAssembler._public_context_payload(payload)
-            score = payload.get("_retrieval_score")
-            pinned = payload.get("_retrieval_pinned") is True
-            preference = payload.get("_preference_reserve") is True
-            if isinstance(score, (int, float)) and (score > 0 or pinned or preference):
-                add(
-                    item_id,
-                    public_payload,
-                    priority=90 if pinned else 85 if preference else 80,
-                    relevance=max(0.0, min(1.0, float(score))),
-                )
-                return
-            importance = payload.get("importance", 1)
-            add(
-                item_id,
-                public_payload,
-                priority=fallback_priority + int(importance),
-                relevance=0.8,
-            )
-
         current = context.get("current_person")
         if isinstance(current, dict):
             base = {key: value for key, value in current.items() if key not in {"aliases", "facts"}}
             add("current_person", base, priority=100, relevance=1, required=True)
             for index, alias in enumerate(current.get("aliases", ())):
                 add(f"current_alias.{index}", alias, priority=45, relevance=0.7)
-            for index, memory in enumerate(current.get("facts", ())):
-                add_memory(f"person_memory.{index}", memory, fallback_priority=60)
         target_person = context.get("conversation_target_person")
         if isinstance(target_person, dict):
             base = {
@@ -1553,13 +1231,7 @@ class ContextAssembler:
             add("conversation_target_person", base, priority=100, relevance=1, required=True)
             for index, alias in enumerate(target_person.get("aliases", ())):
                 add(f"conversation_target_alias.{index}", alias, priority=45, relevance=0.7)
-            for index, memory in enumerate(target_person.get("facts", ())):
-                add_memory(f"conversation_target_memory.{index}", memory, fallback_priority=60)
         add("scene", context.get("scene", {}), priority=100, relevance=1, required=True)
-        current_self = context.get("current_self")
-        if isinstance(current_self, dict):
-            for index, memory in enumerate(current_self.get("facts", ())):
-                add_memory(f"current_self.fact.{index}", memory, fallback_priority=70)
         memory_subjects = context.get("event_bound_memory_refs")
         if isinstance(memory_subjects, list) and memory_subjects:
             add(
@@ -1568,41 +1240,6 @@ class ContextAssembler:
                 priority=100,
                 relevance=1,
             )
-        for key, priority in (("current_group", 55), ("current_person_in_group", 65)):
-            block = context.get(key)
-            if not isinstance(block, dict):
-                continue
-            identity = {name: value for name, value in block.items() if name != "facts"}
-            add(key, identity, priority=95, relevance=1, required=True)
-            for index, value in enumerate(block.get("facts", ())):
-                add_memory(f"{key}.fact.{index}", value, fallback_priority=priority)
-        for index, person in enumerate(context.get("referenced_people", ())):
-            if not isinstance(person, dict):
-                continue
-            identity = {
-                key: value
-                for key, value in person.items()
-                if key not in {"person_facts", "group_facts"}
-            }
-            add(
-                f"referenced_person.{index}",
-                identity,
-                priority=90,
-                relevance=1,
-                required=True,
-            )
-            for fact_index, fact in enumerate(person.get("person_facts", ())):
-                add_memory(
-                    f"referenced_person_fact.{index}.{fact_index}",
-                    fact,
-                    fallback_priority=58,
-                )
-            for fact_index, fact in enumerate(person.get("group_facts", ())):
-                add_memory(
-                    f"referenced_group_fact.{index}.{fact_index}",
-                    fact,
-                    fallback_priority=57,
-                )
         events = context.get("recent_external_events")
         if isinstance(events, (list, tuple)) and events:
             payload = external_event_digest_data(events)

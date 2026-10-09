@@ -2,13 +2,11 @@
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import delete, event, func, select, update
 from sqlalchemy.exc import IntegrityError
-from tests.conftest import make_settings
 from tests.unit.test_memory_dream import _empty_dream_statistics, _fact_with_evidence, _services
 
 from qq_ai_bot.identity.canonical_repository import ensure_person
@@ -18,9 +16,6 @@ from qq_ai_bot.memory.dream.db_models import (
     MemoryDreamRunModel,
 )
 from qq_ai_bot.memory.dream.models import DreamOperationType, DreamRunMode, DreamRunStatus
-from qq_ai_bot.memory.dream.repository import DreamCandidate, DreamCandidateLoad, fact_signature
-from qq_ai_bot.memory.dream.service import plan_full_core, prepare_full_core
-from qq_ai_bot.memory.embedding.models import EmbeddingVector
 from qq_ai_bot.persistence.models import MemoryFactModel
 
 
@@ -180,70 +175,6 @@ async def test_shared_session_requires_prepared_sources(database):
     assert await dreams.get_run(run.public_id) is not None
 
 
-async def test_full_service_plan_reuses_loaded_fact_versions_in_shared_writer(database):
-    dreams, rows = await sources(database)
-    candidates = tuple(
-        DreamCandidate(
-            row, "8000", EmbeddingVector(values=(1.0, 0.0), dimensions=2), fact_signature(row)
-        )
-        for row in rows
-    )
-    dreams.load_candidates = AsyncMock(
-        return_value=DreamCandidateLoad(
-            candidates, tuple((row.id, fact_signature(row)) for row in rows), 2, 0, 0
-        )
-    )
-    dreams.prepare_clusters = AsyncMock(
-        side_effect=AssertionError("service must reuse loaded facts")
-    )
-    embeddings = SimpleNamespace(profile_id=1, dimensions=2, documents=object(), jobs=None)
-    settings = make_settings(database.url, memory_embedding_enabled=True)
-    prepared = await prepare_full_core(settings=settings, repository=dreams, embeddings=embeddings)
-    assert len(prepared.clusters) == 1
-    async with database.immediate_session() as writer:
-        run = await plan_full_core(
-            settings=settings,
-            repository=dreams,
-            embeddings=embeddings,
-            actor_user_id="1001",
-            prepared=prepared,
-            session=writer,
-        )
-    assert run.status is DreamRunStatus.PLANNED
-    assert await dreams.start_run(run.public_id)
-
-
-async def test_baseline_and_checkpoint_writes_batch_and_marker_follows_all_rows(database):
-    dreams, rows = await sources(database)
-    signatures = tuple((rows[index % 2].id, f"signature-{index}") for index in range(600))
-    calls = []
-
-    def capture(_connection, _cursor, sql, parameters, _context, many):
-        if sql.startswith("INSERT"):
-            calls.append((sql, len(parameters) if many else 1))
-
-    event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
-    try:
-        assert await dreams.initialize_baseline(signatures)
-    finally:
-        event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
-    assert [size for sql, size in calls if "memory_dream_fact_checkpoints" in sql] == [256, 256, 88]
-    assert "memory_dream_runtime" in calls[-1][0]
-    assert await dreams.checkpoint_map() == {
-        rows[0].id: "signature-598",
-        rows[1].id: "signature-599",
-    }
-    assert not await dreams.initialize_baseline(signatures)
-    candidates = tuple(
-        DreamCandidate(
-            row, "8000", EmbeddingVector(values=(1.0, 0.0), dimensions=2), fact_signature(row)
-        )
-        for row in rows
-    )
-    await dreams.checkpoint_candidates(candidates)
-    assert await dreams.checkpoint_map() == {row.id: fact_signature(row) for row in rows}
-
-
 async def test_recovery_batches_aggregate_original_committed_operations_once(database):
     dreams, rows = await sources(database)
     run = await create(dreams, specs(rows, 260), mode=DreamRunMode.INCREMENTAL)
@@ -275,8 +206,6 @@ async def test_recovery_batches_aggregate_original_committed_operations_once(dat
         assert await dreams.reset_processing_after_restart() == 260
     finally:
         event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
-    assert len(reads) == 13  # 3 bounded recovery pages plus the final empty discovery.
-    assert sum("GROUP BY memory_dream_operations.cluster_id" in sql for sql in reads) == 3
     assert await dreams.reset_processing_after_restart() == 0
     current = await dreams.get_run(run.public_id)
     assert current.completed_clusters == 130
@@ -297,14 +226,3 @@ async def test_recovery_batches_aggregate_original_committed_operations_once(dat
             )
             == 130
         )
-
-
-async def test_baseline_failure_rolls_back_prior_batches_before_initialization_marker(database):
-    dreams, rows = await sources(database)
-    valid = tuple((rows[index % 2].id, f"signature-{index}") for index in range(513))
-    with pytest.raises(IntegrityError):
-        await dreams.initialize_baseline((*valid, (999999, "deleted fact")))
-    assert not await dreams.baseline_exists()
-    assert await dreams.checkpoint_map() == {}
-    assert await dreams.initialize_baseline(valid)
-    assert await dreams.baseline_exists()

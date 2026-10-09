@@ -1,7 +1,0 @@
-{
-  "schema_version":"1","case_id":"expired_excluded","category":"temporal","description":"Expired automatic facts remain auditable but are absent from current retrieval.",
-  "initial_facts":[{"fact_ref":"fact_expired","scope_type":"person","subject":"person_a","memory_key":"temporary:trip","category":"temporary","content":"本周在北京","valid_until":"2025-01-01T00:00:00Z"}],
-  "queries":[{"query_ref":"query_trip","text":"本周北京","scope_type":"person","subject":"person_a","expected_fact_refs":[],"forbidden_fact_refs":["fact_expired"]}],
-  "expected_facts":[{"fact_ref":"fact_expired","scope_type":"person","subject":"person_a","memory_key":"temporary:trip","category":"temporary","content":"本周在北京","valid_until":"2025-01-01T00:00:00Z"}],
-  "expected_claims":[],"expected_evidence":[],"tags":["temporal","expired"]
-}

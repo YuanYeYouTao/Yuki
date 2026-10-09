@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import event, select, update
-from tests.unit.test_subagents import stack
+from tests.support.subagents_helpers import stack
 
 from qq_ai_bot.runtime.subagent_schema import children
 from qq_ai_bot.runtime.subagent_tools import execute_subagent

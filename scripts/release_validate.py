@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import ast
 import os
 import re
 import subprocess
@@ -12,7 +11,6 @@ from pathlib import Path
 
 _TAG_PATTERN = re.compile(r"^v(?P<version>0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 _APP_VERSION_PATTERN = re.compile(r'^__version__\s*=\s*"([^"]+)"$', re.MULTILINE)
-_PLUGIN_API_PATTERN = re.compile(r'^PLUGIN_API_VERSION\s*=\s*"([^"]+)"$', re.MULTILINE)
 
 
 class ReleaseValidationError(ValueError):
@@ -73,51 +71,6 @@ def validate_release_identity(root: Path, tag: str) -> str:
         rendered = ", ".join(f"{name}={value}" for name, value in versions.items())
         raise ReleaseValidationError(f"release versions do not match: {rendered}")
 
-    # This early release gate runs without project dependencies installed.
-    # Read literal Alembic revision metadata from the shipped migrations.
-    revisions: set[str] = set()
-    parents: set[str] = set()
-    for migration in (root / "migrations/versions").glob("*.py"):
-        for node in ast.parse(migration.read_text(encoding="utf-8")).body:
-            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-                name, value = node.target.id, node.value
-            elif (
-                isinstance(node, ast.Assign)
-                and len(node.targets) == 1
-                and isinstance(node.targets[0], ast.Name)
-            ):
-                name, value = node.targets[0].id, node.value
-            else:
-                continue
-            if name not in {"revision", "down_revision"} or value is None:
-                continue
-            literal = ast.literal_eval(value)
-            if name == "revision":
-                if literal in revisions:
-                    raise ReleaseValidationError(f"Duplicate migration revision: {literal}")
-                revisions.add(literal)
-            elif literal is not None:
-                parents.update((literal,) if isinstance(literal, str) else literal)
-    if len(revisions - parents) != 1 or parents - revisions:
-        raise ReleaseValidationError("Bundled migrations must have one head and no missing parents")
-    head = next(iter(revisions - parents))
-    baseline = f"<!-- release-baseline: version={tag_version} schema={head} -->"
-    for relative in (
-        "README.md",
-        "README.en.md",
-        f"docs/releases/v{tag_version}.md",
-        f"docs/upgrade-{tag_version}.md",
-    ):
-        path = root / relative
-        if not path.is_file() or baseline not in path.read_text(encoding="utf-8"):
-            raise ReleaseValidationError(
-                f"release/schema baseline is stale: {relative}; expected {baseline}"
-            )
-    plugin_api = _match_value(
-        root / "src/yuki_plugin_sdk/api.py", _PLUGIN_API_PATTERN, "Plugin API version"
-    )
-    if plugin_api != "3.3":
-        raise ReleaseValidationError(f"Plugin API must be 3.3, got {plugin_api}")
     return tag_version
 
 

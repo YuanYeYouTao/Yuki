@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
@@ -18,7 +17,6 @@ from qq_ai_bot.memory.dream.models import (
     DreamClusterStatus,
     DreamHealth,
     DreamRun,
-    DreamRunMode,
     DreamRunPage,
 )
 from qq_ai_bot.memory.dream.repository import DreamRepository
@@ -36,9 +34,6 @@ class DreamWorker:
         settings: Settings,
         repository: DreamRepository,
         service: DreamService,
-        process_lock: asyncio.Lock | None = None,
-        compaction_active: Callable[[], bool] | None = None,
-        compaction_error: Callable[[], str | None] | None = None,
     ) -> None:
         self._settings = settings
         self._repository = repository
@@ -47,29 +42,18 @@ class DreamWorker:
         self._stop = asyncio.Event()
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
-        self._process_lock = process_lock or asyncio.Lock()
-        self._compaction_active = compaction_active or (lambda: False)
-        self._compaction_error = compaction_error or (lambda: None)
-        self._baseline_ready = False
+        self._process_lock = asyncio.Lock()
 
     async def start(self) -> None:
         if not self._settings.memory_dream_enabled or self._task is not None:
             return
         self._stop.clear()
         await self._repository.reset_processing_after_restart()
-        try:
-            initialized = await self._service.initialize_baseline()
-            self._baseline_ready = initialized or await self._repository.baseline_exists()
-        except RuntimeError as exc:
-            initialized = False
-            self._baseline_ready = False
-            logger.warning("memory_dream_baseline_deferred error_category=%s", type(exc).__name__)
         self._task = asyncio.create_task(self._run(), name="memory-dream-worker")
         logger.info(
-            "memory_dream_started hour=%d timezone=%s baseline_initialized=%s",
+            "memory_dream_started hour=%d timezone=%s ",
             self._settings.memory_dream_schedule_hour,
             self._settings.memory_dream_timezone,
-            self._baseline_ready,
         )
 
     async def close(self) -> None:
@@ -147,11 +131,6 @@ class DreamWorker:
                     if task_error is not None
                     else {}
                 ),
-                "compaction_last_error_category": self._compaction_error()
-                or snapshot.compaction_last_error_category,
-                "waiting_for_compaction_lock": (
-                    self._process_lock.locked() and self._compaction_active()
-                ),
             }
         )
 
@@ -160,13 +139,9 @@ class DreamWorker:
             async with self._process_lock:
                 try:
                     await self._schedule_if_due()
+                    await self._drain_active()
                 except (OSError, RuntimeError, ValueError, IntegrityError) as exc:
                     logger.warning("memory_dream_loop_failed error_category=%s", type(exc).__name__)
-                else:
-                    # Unsettled drain/finish failures must stop this task. A
-                    # later automatic tick could otherwise reset processing and
-                    # repeat a model call whose database outcome is unknown.
-                    await self._drain_active()
             self._wake.clear()
             try:
                 await asyncio.wait_for(
@@ -177,11 +152,6 @@ class DreamWorker:
                 pass
 
     async def _schedule_if_due(self) -> None:
-        if not self._baseline_ready:
-            initialized = await self._service.initialize_baseline()
-            self._baseline_ready = initialized or await self._repository.baseline_exists()
-            if initialized:
-                return
         local = datetime.now(UTC).astimezone(self._timezone)
         if local.hour != self._settings.memory_dream_schedule_hour:
             return
@@ -203,11 +173,10 @@ class DreamWorker:
             if refreshed is None or refreshed.status.value != "running":
                 return
             run = refreshed
-            if run.mode is DreamRunMode.INCREMENTAL:
-                if run.model_calls >= self._settings.memory_dream_max_model_calls_per_run:
-                    await self._repository.defer_pending(run.public_id)
-                    await self._repository.finalize_run(run.public_id)
-                    return
+            if run.model_calls >= self._settings.memory_dream_max_model_calls_per_run:
+                await self._repository.defer_pending(run.public_id)
+                await self._repository.finalize_run(run.public_id)
+                return
             cluster = await self._repository.claim_next_cluster(run.public_id)
             if cluster is None:
                 await self._repository.finalize_run(run.public_id)

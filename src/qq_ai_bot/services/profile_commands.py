@@ -307,7 +307,7 @@ class ProfileCommandHandler:
                 if len(parts) != 1 or not parts[0].isdigit():
                     return "格式：/ai memory restore <fact_id>"
                 row = await self._memory_admin.restore_fact(actor, int(parts[0]))
-                return "事实已恢复。" if row is not None else "该事实不能恢复或 active 槽位已占用。"
+                return "事实已恢复。" if row is not None else "该事实不能恢复。"
             if operation == "merge":
                 if len(parts) != 2 or not all(item.isdigit() for item in parts):
                     return "格式：/ai memory merge <source_fact_id> <target_fact_id>"
@@ -332,7 +332,6 @@ class ProfileCommandHandler:
                 return (
                     f"维护 Worker：{'运行中' if running else '未运行'}；"
                     f"过期待处理 {health.expired_active_count}；"
-                    f"陈旧待处理 {health.stale_backlog_count}。"
                 )
             if operation == "doctor":
                 health = await self._memory_admin.consistency_health(actor)
@@ -360,7 +359,6 @@ class ProfileCommandHandler:
                     )
                 return (
                     f"Memory V2 一致性：{'正常' if health.healthy else '异常'}；"
-                    f"active 槽冲突 {health.active_slot_conflicts}；"
                     f"争议 facts {health.contested_fact_count}；"
                     f"孤立关系 {health.orphan_relation_count}；"
                     f"跨目标关系 {health.cross_target_relation_count}；"

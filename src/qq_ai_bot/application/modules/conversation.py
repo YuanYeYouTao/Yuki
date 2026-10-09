@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
@@ -15,13 +14,6 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.features import AdmissionFeatureBuilder
 from qq_ai_bot.conversation.rollup.service import ConversationRollupService
 from qq_ai_bot.conversation.rollup.worker import ConversationRollupWorker
-from qq_ai_bot.memory.attribution import MemoryAttributionWorker
-from qq_ai_bot.memory.auditing import (
-    MemoryAuditCoordinator,
-    SelfMemoryAuditor,
-    UserMemoryAuditor,
-)
-from qq_ai_bot.memory.candidates import MemoryConflictCandidateResolver
 from qq_ai_bot.memory.dream.repository import DreamRepository
 from qq_ai_bot.memory.dream.service import DreamService
 from qq_ai_bot.memory.dream.worker import DreamWorker
@@ -30,7 +22,6 @@ from qq_ai_bot.memory.evidence_compaction import (
     EvidenceCompactionService,
     EvidenceCompactionWorker,
 )
-from qq_ai_bot.memory.governance import MemoryGovernanceRepository, MemoryGovernanceWorker
 from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
@@ -68,13 +59,10 @@ class ConversationBundle:
     agent_tools: AgentToolService
     chat: ChatService
     memory_mutations: MemoryMutationService
-    memory_auditor: MemoryAuditCoordinator
     memory_worker: MemoryWorker
-    memory_attribution_worker: MemoryAttributionWorker
     memory_rebuild_service: MemoryRebuildService
     memory_rebuild_worker: MemoryRebuildWorker
     memory_maintenance_worker: MemoryMaintenanceWorker
-    memory_reflection_worker: MemoryGovernanceWorker
     memory_self_reflection_worker: SelfReflectionWorker
     memory_dream_worker: DreamWorker
     memory_evidence_compaction_worker: EvidenceCompactionWorker
@@ -151,30 +139,9 @@ class ConversationModule:
             people=persistence.people,
             model_executor=models,
             concurrency=self._concurrency,
-            runtime_config=self._runtime_config,
-            candidate_resolver=MemoryConflictCandidateResolver(
-                persistence.memories.repository,
-                retriever=persistence.memory_context.retriever,
-                limit=settings.memory_consolidation_candidate_limit,
-            ),
             metrics=persistence.memory_metrics,
         )
         memory_mutations = memory_worker.mutations
-        memory_auditor = MemoryAuditCoordinator(
-            facts=persistence.memories,
-            ledger=persistence.ledger,
-            mutations=memory_mutations,
-            user_auditor=UserMemoryAuditor(
-                models,
-                self._concurrency,
-                bot_display_name=settings.bot_display_name,
-            ),
-            self_auditor=SelfMemoryAuditor(
-                models,
-                self._concurrency,
-                bot_display_name=settings.bot_display_name,
-            ),
-        )
         agent_tools = AgentToolService(
             settings=settings,
             ledger=persistence.ledger,
@@ -187,12 +154,6 @@ class ConversationModule:
             web_sources=persistence.web_sources,
             runtime_config=self._runtime_config,
             permission_catalog=self._permission_catalog,
-        )
-        memory_attribution_worker = MemoryAttributionWorker(
-            models=models,
-            memory_context=persistence.memory_context,
-            runtime_config=self._runtime_config,
-            metrics=persistence.memory_metrics,
         )
         conversation_rollup_service = ConversationRollupService(
             models=models,
@@ -223,7 +184,6 @@ class ConversationModule:
             memories=persistence.memories,
             memory_context=persistence.memory_context,
             memory_partition_lookup=DatabaseMemoryPartitionLookup(persistence.database),
-            memory_attribution=memory_attribution_worker,
             relationships=persistence.relationships,
             tools=agent_tools,
             web_sources=persistence.web_sources,
@@ -254,15 +214,6 @@ class ConversationModule:
             facts=persistence.memories,
             runtime_config=self._runtime_config,
             metrics=persistence.memory_metrics,
-            mutations=memory_mutations,
-            receipts=persistence.memory_receipts,
-        )
-        memory_reflection_worker = MemoryGovernanceWorker(
-            settings=settings,
-            repository=MemoryGovernanceRepository(persistence.database),
-            facts=persistence.memories,
-            mutations=memory_mutations,
-            metrics=persistence.memory_metrics,
         )
         self_reflection_repository = SelfReflectionRepository(persistence.database)
         memory_self_reflection_worker = SelfReflectionWorker(
@@ -279,7 +230,6 @@ class ConversationModule:
             metrics=persistence.memory_metrics,
         )
         memory_dream_repository = DreamRepository(persistence.database)
-        memory_maintenance_lock = asyncio.Lock()
         memory_evidence_compaction_worker = EvidenceCompactionWorker(
             settings=settings,
             service=EvidenceCompactionService(
@@ -287,7 +237,6 @@ class ConversationModule:
                 database=persistence.database,
                 facts=persistence.memories,
             ),
-            process_lock=memory_maintenance_lock,
         )
         memory_dream_worker = DreamWorker(
             settings=settings,
@@ -300,14 +249,6 @@ class ConversationModule:
                 embeddings=self._memory_embeddings,
                 models=models,
                 concurrency=self._concurrency,
-            ),
-            process_lock=memory_maintenance_lock,
-            compaction_active=lambda: memory_evidence_compaction_worker.holding_lock,
-            compaction_error=lambda: (
-                "worker_not_running"
-                if settings.memory_evidence_compaction_enabled
-                and not memory_evidence_compaction_worker.running
-                else memory_evidence_compaction_worker.last_error_category
             ),
         )
         relationship_worker = RelationshipWorker(
@@ -325,13 +266,10 @@ class ConversationModule:
             agent_tools,
             chat,
             memory_mutations,
-            memory_auditor,
             memory_worker,
-            memory_attribution_worker,
             memory_rebuild_service,
             memory_rebuild_worker,
             memory_maintenance_worker,
-            memory_reflection_worker,
             memory_self_reflection_worker,
             memory_dream_worker,
             memory_evidence_compaction_worker,
@@ -348,11 +286,6 @@ class ConversationModule:
             close=bundle.memory_worker.close,
         )
         lifecycle.register(
-            "memory_attribution_worker",
-            start=bundle.memory_attribution_worker.start,
-            close=bundle.memory_attribution_worker.close,
-        )
-        lifecycle.register(
             "memory_rebuild_worker",
             start=bundle.memory_rebuild_worker.start,
             close=bundle.memory_rebuild_worker.close,
@@ -361,11 +294,6 @@ class ConversationModule:
             "memory_maintenance_worker",
             start=bundle.memory_maintenance_worker.start,
             close=bundle.memory_maintenance_worker.close,
-        )
-        lifecycle.register(
-            "memory_governance_worker",
-            start=bundle.memory_reflection_worker.start,
-            close=bundle.memory_reflection_worker.close,
         )
         lifecycle.register(
             "memory_self_reflection_worker",

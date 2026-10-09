@@ -6,9 +6,9 @@ from dataclasses import replace
 import pytest
 from sqlalchemy import select
 from tests.conftest import MemorySender, build_harness, make_settings
+from tests.support.commands_and_chat_helpers import inbound
 from tests.support.fixed_contract_fixture import bind_main_contract
 from tests.support.social_identity_cases import social_env
-from tests.unit.test_commands_and_chat import inbound
 
 from qq_ai_bot.conversation.hydrate import require_primary_alias_for_conversation
 from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
@@ -53,13 +53,6 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
                 },
             ),
             (failure, {}),
-            *(
-                [
-                    ("body", {}),
-                ]
-                if accepted
-                else []
-            ),
         ]
     )
     ownership = []
@@ -74,8 +67,6 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
             assert any('"succeeded"' in str(receipt) for receipt in receipts), receipts
             error = LLMEmptyResponseError if name == "empty" else LLMMalformedFunctionCallError
             raise error("unusable response after a real successful delivery")
-        if name == "body":
-            return ChatResponse("这仍然只是内部阶段结果", 0)
         return ChatResponse(
             "",
             0,
@@ -108,10 +99,13 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
     )
     sender = MemorySender()
     result = await harness.processor.handle(message, sender)
-    assert result.reason == "chat"
-    assert not sender.messages
-    assert len(provider.requests) == (4 if accepted else 2)
-    assert ownership == ([False, True, True, True] if accepted else [False, False])
+    assert result.reason == (
+        "chat" if accepted else "empty_llm_response" if failure == "empty" else "llm_failure"
+    )
+    assert len(sender.messages) == (0 if accepted else 1)
+    assert all(message.text != "已确认的原消息" for message in sender.messages)
+    assert len(provider.requests) == (3 if accepted else 2)
+    assert ownership == ([False, True, True] if accepted else [False, False])
     assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
     async with database.sessions() as reader:
         outgoing = (
@@ -123,13 +117,13 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
             )
         ).all()
         works = (await reader.execute(select(work))).mappings().all()
-    assert len(outgoing) == 1 and outgoing[0].content == "已确认的原消息"
+    assert sum(row.content == "已确认的原消息" for row in outgoing) == 1
+    assert len(outgoing) == 1 + len(sender.messages)
     if accepted:
-        # A confirmed start report is not a final delivery receipt. The single
-        # completion attempt suspends conservatively without etiquette retries.
+        # The original confirmed send remains authoritative. An unusable
+        # response suspends the accepted Work without buying a repair request.
         assert len(works) == 1 and works[0]["state"] == "suspended"
-        assert works[0]["model_requests"] == 4 and works[0]["sent_messages"] == 1
-        assert "不能据此结束交互式 Work" not in str(provider.requests[-1].messages)
+        assert works[0]["model_requests"] == 3 and works[0]["sent_messages"] == 1
     else:
         assert not works
     assert provider.requests[1].tools == provider.requests[0].tools

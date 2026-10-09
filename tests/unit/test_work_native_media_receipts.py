@@ -6,9 +6,9 @@ from hashlib import sha256
 
 import pytest
 from sqlalchemy import select, update
+from tests.support.semantic_participation_host_helpers import _event_and_route
+from tests.support.work_effect_results_helpers import owned_session
 from tests.support.work_session import WorkSession, invoke_tool
-from tests.unit.test_semantic_participation_host import _event_and_route
-from tests.unit.test_work_effect_results import owned_session
 from tests.unit.test_work_protocol_continuity import _control
 from tests.unit.test_work_source_guard import _guard
 

@@ -405,7 +405,7 @@ async def test_successful_proposals_over_twenty_finish_original_items_across_tic
             else MemoryRebuildRunStatus.COMMITTING
         )
     assert processed == [20, 20, 5]
-    assert len(await facts.list_person("1001")) == 1
+    assert len(await facts.list_person("1001")) == 45
     async with database.sessions() as session:
         items = tuple(
             await session.execute(

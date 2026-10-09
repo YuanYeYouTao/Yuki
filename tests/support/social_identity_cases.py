@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+from tests.support.workspace_snapshots import snapshot_bytes
 
 from qq_ai_bot.conversation.canonical_db_models import SpaceActiveRouteModel
 from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
@@ -23,7 +24,6 @@ from qq_ai_bot.social.models import SocialError
 from qq_ai_bot.social.service import SocialContext, SocialService
 from qq_ai_bot.social.transfer import ArtifactTransfer
 from qq_ai_bot.workspace.store import WorkspaceStore
-from tests.support.workspace_snapshots import snapshot_bytes
 
 
 class Bot:

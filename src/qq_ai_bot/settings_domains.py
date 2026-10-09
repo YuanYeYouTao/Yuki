@@ -191,10 +191,6 @@ class PluginSettings(DomainSettings):
 
 
 class MemorySettings(DomainSettings):
-    group_memory_max_entries: int = Field(gt=0)
-    person_memory_max_entries: int = Field(gt=0)
-    person_group_memory_max_entries: int = Field(gt=0)
-    preference_max_entries: int = Field(gt=0)
     memory_batch_seconds: float = Field(ge=0)
     memory_batch_trigger_count: int = Field(gt=0)
     memory_batch_max_events: int = Field(gt=0)
@@ -202,94 +198,50 @@ class MemorySettings(DomainSettings):
     memory_batch_max_wait_seconds: float = Field(ge=0)
     memory_batch_max_output_tokens: int = Field(gt=0)
     memory_retrieval_enabled: bool
-    memory_automatic_topic_threshold: float = Field(ge=0.35, le=0.90)
-    memory_automatic_background_threshold: float = Field(ge=0.35, le=0.90)
-    memory_automatic_calibrated_profile: str
     self_memory_enabled: bool
     memory_self_reflection_enabled: bool
     memory_self_reflection_schedule_hours: str
     memory_self_reflection_timezone: str
     memory_self_reflection_poll_seconds: float = Field(gt=0)
-    memory_self_reflection_max_batches_per_run: int = Field(gt=0, le=100)
-    memory_self_reflection_max_batches_per_conversation_per_run: int = Field(gt=0, le=25)
-    memory_self_reflection_max_daily_calls: int = Field(gt=0, le=365)
+    memory_self_reflection_max_batches_per_run: int = Field(gt=0)
+    memory_self_reflection_max_daily_calls: int = Field(gt=0)
     memory_self_reflection_event_threshold: int = Field(gt=0)
     memory_self_reflection_character_threshold: int = Field(gt=0)
-    memory_self_reflection_low_event_threshold: int = Field(gt=0)
-    memory_self_reflection_low_character_threshold: int = Field(gt=0)
-    memory_self_reflection_natural_gap_seconds: float = Field(gt=0)
     memory_self_reflection_max_wait_seconds: float = Field(gt=0)
-    memory_self_reflection_max_events: int = Field(gt=0, le=200)
-    memory_self_reflection_max_characters: int = Field(gt=0, le=16000)
+    memory_self_reflection_max_events: int = Field(gt=0)
+    memory_self_reflection_max_characters: int = Field(gt=0)
     memory_self_reflection_max_output_tokens: int = Field(gt=0)
     memory_self_reflection_timeout_seconds: float = Field(default=180.0, gt=0)
-    memory_self_reflection_drain_enabled: bool = False
-    memory_self_reflection_drain_high_events: int = 500
-    memory_self_reflection_drain_critical_events: int = 1000
-    memory_self_reflection_drain_low_events: int = 100
-    memory_self_reflection_drain_interval_seconds: float = Field(default=600.0, gt=0)
-    memory_self_reflection_allow_text_json_fallback: bool = False
-    memory_self_reflection_tool_receipt_characters: int = Field(gt=0, le=8000)
-    memory_self_reflection_tool_receipt_retention_days: int = Field(gt=0, le=30)
+    memory_self_reflection_tool_receipt_characters: int = Field(gt=0)
+    memory_self_reflection_tool_receipt_retention_days: int = Field(gt=0)
     memory_max_referenced_targets: int = Field(gt=0)
     memory_lexical_candidate_limit: int = Field(gt=0)
     memory_context_limit_per_entity: int = Field(gt=0)
     memory_overview_limit_per_entity: int = Field(gt=0)
-    memory_automatic_recall_per_target_limit: int = Field(gt=0, le=20)
-    memory_automatic_recall_background_limit: int = Field(gt=0, le=20)
-    memory_automatic_recall_continuation_limit: int = Field(gt=0, le=20)
-    memory_automatic_recall_focused_limit: int = Field(gt=0, le=20)
-    memory_automatic_recall_overview_limit: int = Field(gt=0, le=20)
-    memory_always_on_explicit_preference_limit: int = Field(ge=0)
     memory_query_term_limit: int = Field(gt=0)
     memory_short_query_fallback_enabled: bool
     memory_semantic_enabled: bool
     memory_semantic_candidate_limit: int = Field(gt=0)
-    memory_semantic_min_similarity: float = Field(ge=-1, le=1)
     memory_hybrid_lexical_weight: float = Field(ge=0)
     memory_hybrid_semantic_weight: float = Field(ge=0)
     memory_hybrid_rrf_k: int = Field(gt=0)
-    memory_consolidation_enabled: bool
-    memory_consolidation_candidate_limit: int = Field(gt=0)
-    memory_consolidation_min_relevance: float = Field(ge=0, le=1)
-    memory_consolidation_model_task: str
-    memory_consolidation_max_output_tokens: int = Field(gt=0)
     memory_dream_enabled: bool
     memory_dream_schedule_hour: int = Field(ge=0, le=23)
     memory_dream_timezone: str
     memory_dream_poll_seconds: float = Field(gt=0)
-    memory_dream_max_clusters_per_run: int = Field(gt=0, le=100)
-    memory_dream_max_model_calls_per_run: int = Field(gt=0, le=200)
+    memory_dream_max_clusters_per_run: int = Field(gt=0)
+    memory_dream_max_model_calls_per_run: int = Field(gt=0)
     memory_dream_similarity_threshold: float = Field(ge=-1, le=1)
-    memory_dream_max_cluster_size: int = Field(ge=2, le=20)
-    memory_dream_max_input_characters: int = Field(gt=0, le=100_000)
+    memory_dream_max_cluster_size: int = Field(gt=0)
+    memory_dream_max_input_characters: int = Field(gt=0)
     memory_dream_max_output_tokens: int = Field(gt=0)
-    memory_dream_episode_max_characters: int = Field(ge=200, le=800)
-    memory_dream_episode_compression_ratio: float = Field(gt=0, le=1)
-    memory_dream_evidence_per_fact: int = Field(ge=1, le=10)
-    memory_dream_evidence_excerpt_characters: int = Field(gt=0, le=2000)
+    memory_dream_evidence_per_fact: int = Field(ge=1)
+    memory_dream_evidence_excerpt_characters: int = Field(gt=0)
     memory_evidence_compaction_enabled: bool
-    memory_evidence_compaction_batch_size: int = Field(ge=1, le=100)
-    memory_mmr_enabled: bool
-    memory_mmr_lambda: float = Field(ge=0, le=1)
-    memory_mmr_candidate_pool_size: int = Field(gt=0, le=100)
-    memory_evidence_weight_explicit: float = Field(ge=0, le=1)
-    memory_evidence_weight_self: float = Field(ge=0, le=1)
-    memory_evidence_weight_group: float = Field(ge=0, le=1)
-    memory_evidence_weight_third_party: float = Field(ge=0, le=1)
-    memory_evidence_weight_rebuild: float = Field(ge=0, le=1)
-    memory_authority_cap_explicit: float = Field(ge=0, le=1)
-    memory_authority_cap_self: float = Field(ge=0, le=1)
-    memory_authority_cap_group: float = Field(ge=0, le=1)
-    memory_authority_cap_third_party: float = Field(ge=0, le=1)
+    memory_evidence_compaction_batch_size: int = Field(ge=1)
     memory_maintenance_enabled: bool
     memory_maintenance_interval_seconds: float = Field(gt=0)
     memory_maintenance_batch_limit: int = Field(gt=0)
-    memory_automatic_stale_days: int = Field(gt=0)
-    memory_third_party_stale_days: int = Field(gt=0)
-    memory_contested_stale_days: int = Field(gt=0)
-    memory_stale_max_importance: int = Field(ge=1, le=5)
-    memory_stale_max_confidence: float = Field(ge=0, le=1)
     memory_embedding_enabled: bool
     memory_embedding_provider: str
     memory_embedding_base_url: str
@@ -323,55 +275,9 @@ class MemorySettings(DomainSettings):
 
     @model_validator(mode="after")
     def _memory_batch_shape(self) -> MemorySettings:
-        if self.memory_automatic_topic_threshold < self.memory_automatic_background_threshold:
-            raise ValueError("automatic topic threshold cannot be below background threshold")
-        if self.memory_batch_trigger_count > self.memory_batch_max_events:
-            raise ValueError("memory batch trigger count cannot exceed batch event limit")
-        if not (
-            0
-            < self.memory_self_reflection_drain_low_events
-            < self.memory_self_reflection_drain_high_events
-            <= self.memory_self_reflection_drain_critical_events
-        ):
-            raise ValueError("self-reflection drain watermarks must be ordered")
-        hours = [item.strip() for item in self.memory_self_reflection_schedule_hours.split(",")]
-        if len(hours) != 3 or any(not item.isdigit() or not 0 <= int(item) <= 23 for item in hours):
-            raise ValueError("memory self-reflection schedule must contain three hours")
-        if len(set(hours)) != 3:
-            raise ValueError("memory self-reflection schedule hours must be unique")
-        if (
-            self.memory_self_reflection_max_batches_per_conversation_per_run
-            > self.memory_self_reflection_max_batches_per_run
-        ):
-            raise ValueError(
-                "memory self-reflection per-conversation batch limit cannot exceed run limit"
-            )
-        if (
-            self.memory_self_reflection_low_event_threshold
-            > self.memory_self_reflection_event_threshold
-        ):
-            raise ValueError(
-                "memory self-reflection low event watermark cannot exceed high watermark"
-            )
-        if self.memory_self_reflection_event_threshold > self.memory_self_reflection_max_events:
-            raise ValueError(
-                "memory self-reflection high event watermark cannot exceed batch event limit"
-            )
-        if (
-            self.memory_self_reflection_low_character_threshold
-            > self.memory_self_reflection_character_threshold
-        ):
-            raise ValueError(
-                "memory self-reflection low character watermark cannot exceed high watermark"
-            )
-        if (
-            self.memory_self_reflection_character_threshold
-            > self.memory_self_reflection_max_characters
-        ):
-            raise ValueError(
-                "memory self-reflection high character watermark cannot exceed "
-                "batch character limit"
-            )
+        hours = self.memory_self_reflection_schedule_hours.split(",")
+        if any(not item.strip().isdigit() or not 0 <= int(item) <= 23 for item in hours):
+            raise ValueError("memory self-reflection schedule hours must be between 0 and 23")
         return self
 
 

@@ -394,12 +394,10 @@ class ApplicationContainer:
         self.runtime.register_worker("runtime_work", self.work_scheduler)
         self.runtime.register_worker("subagents", self.subagent_scheduler)
         self.memory_mutations = conversation.memory_mutations
-        self.memory_auditor = conversation.memory_auditor
         self.memory_worker = conversation.memory_worker
         self.memory_rebuild_service = conversation.memory_rebuild_service
         self.memory_rebuild_worker = conversation.memory_rebuild_worker
         self.memory_maintenance_worker = conversation.memory_maintenance_worker
-        self.memory_reflection_worker = conversation.memory_reflection_worker
         self.memory_self_reflection_worker = conversation.memory_self_reflection_worker
         self.memory_self_reflection_worker.social = self.social_service
         self.memory_dream_worker = conversation.memory_dream_worker

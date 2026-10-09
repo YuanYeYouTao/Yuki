@@ -1,8 +1,7 @@
 """Actorless SELF evidence, read scope and restart-safe receipt reflection."""
 
 import json
-from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -32,7 +31,6 @@ from qq_ai_bot.memory.subjects import ResolvedSubject
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
     MemoryMutationReceiptModel,
-    MemorySelfReflectionRunModel,
     MemoryToolReceiptModel,
 )
 from qq_ai_bot.tool_results.recorder import ToolInvocationRepository
@@ -166,16 +164,11 @@ async def test_actorless_memory_scope_has_no_target_person_partition(database):
         initiative_run_id=run_id,
         canonical_conversation_id=event.canonical_conversation_id,
         identity=event.scope,
-        runtime=SimpleNamespace(memory=SimpleNamespace(retrieval_enabled=True)),
-        memory_context=SimpleNamespace(),
         partition_lookup=DatabaseMemoryPartitionLookup(database),
-        user_question="看看群里共同的经历",
     )
     assert turn.scope.scope_type.value == "group"
     assert turn.scope.scope_id == event.group_id
     assert turn.scope.partition_key == f"group:{event.group_id}"
-    assert turn._inbound is None
-    assert turn._source_key == f"initiative:{run_id}"
 
 
 @pytest.mark.asyncio
@@ -274,7 +267,6 @@ async def test_silent_service_episode_keeps_checkpoint_without_second_model_requ
                                 "content": "我独立生成了曲线绘图，并校验了产物。",
                             }
                         ],
-                        "value_reason": "有真实工具结果的一次自主完成经历",
                         "importance": 4,
                     }
                 ],
@@ -300,22 +292,3 @@ async def test_silent_service_episode_keeps_checkpoint_without_second_model_requ
     assert await reflection.reflect(batch) == (1, 1)
     assert len(provider.requests) == request_count
     assert await claim(database, "cycle-next") == ()
-
-
-@pytest.mark.asyncio
-async def test_receipt_window_failure_preserves_source_and_backoff(database):
-    _, _, event, run_id = await seed(database)
-    await record(database, event, run_id)
-    await finish(database, run_id)
-    (batch,) = await claim(database)
-    repository = SelfReflectionRepository(database)
-    assert await repository.recover_interrupted(batch.run_id, "synthetic_failure") == "failed"
-    assert await claim(database, "cycle-2") == ()
-    async with database.sessions() as session, session.begin():
-        run = await session.get(MemorySelfReflectionRunModel, batch.run_id)
-        run.next_attempt_at = datetime.now(UTC) - timedelta(seconds=1)
-        receipt = await session.get(MemoryToolReceiptModel, batch.first_receipt_id)
-        receipt.expires_at = datetime.now(UTC) - timedelta(seconds=1)
-    assert await repository.cleanup_receipts() == 0
-    (retried,) = await claim(database, "cycle-3")
-    assert retried.run_id == batch.run_id and retried.first_receipt_id == batch.first_receipt_id

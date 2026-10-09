@@ -32,7 +32,6 @@ from qq_ai_bot.llm.base import (
     LLMMalformedFunctionCallError,
     LLMUnsupportedFeatureError,
 )
-from qq_ai_bot.llm.gemini_schema import response_schema
 from qq_ai_bot.llm.json_http import JSONHTTPProvider
 from qq_ai_bot.llm.protocol_state import (
     checkpoint_items,
@@ -40,7 +39,7 @@ from qq_ai_bot.llm.protocol_state import (
     ordered_delta,
     tool_result_failed,
 )
-from qq_ai_bot.llm.vendor_policy import ChatWireOptions, effort_value, thinking_budget, wire_options
+from qq_ai_bot.llm.vendor_policy import ChatWireOptions, wire_options
 
 
 class GeminiProvider(JSONHTTPProvider):
@@ -49,7 +48,7 @@ class GeminiProvider(JSONHTTPProvider):
 
     def __init__(self, *, options: ChatWireOptions | None = None, **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self.options = wire_options(self.provider_name, options)
+        self.options = wire_options("gemini", options)
 
     def _path(self, request: ChatRequest) -> str:
         return f"models/{quote(request.model.removeprefix('models/'), safe='')}:generateContent"
@@ -228,18 +227,12 @@ class GeminiProvider(JSONHTTPProvider):
             config["maxOutputTokens"] = request.max_output_tokens
         if request.thinking_enabled:
             if self.options.reasoning == "budget":
-                if request.model.removeprefix("models/").startswith("gemini-3.8-"):
-                    raise LLMUnsupportedFeatureError(
-                        "Gemini 3.8 requires thinkingLevel, not a fixed thinkingBudget"
-                    )
+                config["thinkingConfig"] = {"thinkingBudget": self.options.thinking_budget_tokens}
+            elif self.options.reasoning == "gemini" and request.reasoning_effort is not None:
                 config["thinkingConfig"] = {
-                    "thinkingBudget": thinking_budget(self.options, request.reasoning_effort)
+                    "thinkingLevel": request.reasoning_effort.value,
                 }
-            elif self.options.reasoning == "gemini":
-                config["thinkingConfig"] = {
-                    "thinkingLevel": effort_value(self.options, request.reasoning_effort),
-                }
-            else:
+            elif self.options.reasoning != "gemini":
                 raise LLMUnsupportedFeatureError("Gemini requires thinking level or budget")
         if self.options.send_temperature and request.temperature is not None:
             config["temperature"] = request.temperature
@@ -248,10 +241,7 @@ class GeminiProvider(JSONHTTPProvider):
             schema_spec = spec.get("json_schema")
             config["responseMimeType"] = "application/json"
             if spec.get("type") == "json_schema" and isinstance(schema_spec, dict):
-                if self.options.gemini_schema_format == "response_schema":
-                    config["responseSchema"] = response_schema(schema_spec["schema"])
-                else:
-                    config["responseJsonSchema"] = schema_spec["schema"]
+                config["responseJsonSchema"] = schema_spec["schema"]
             elif spec.get("type") != "json_object":
                 raise LLMUnsupportedFeatureError("unsupported Gemini structured format")
         payload: dict[str, Any] = {

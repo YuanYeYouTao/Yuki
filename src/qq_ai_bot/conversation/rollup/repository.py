@@ -839,10 +839,7 @@ class ConversationRollupRepository:
         if summary_kind is RollupKind.EMERGENCY:
             raise ValueError("emergency summaries cannot write the semantic rollup checkpoint")
         normalized = summary_text.strip()
-        if (
-            not normalized
-            or len(normalized) > (candidate.policy or self.config).summary_max_characters
-        ):
+        if not normalized:
             raise ValueError("summary violates configured output bounds")
         # Historical migration/extractive checkpoints remain readable. All new
         # model checkpoints use the single structured write contract.
@@ -882,10 +879,7 @@ class ConversationRollupRepository:
         """Upsert a prompt overlay only. Never mutates semantic rollup coverage."""
 
         normalized = summary_text.strip()
-        if (
-            not normalized
-            or len(normalized) > (candidate.policy or self.config).summary_max_characters
-        ):
+        if not normalized:
             raise ValueError("summary violates configured output bounds")
         if not claim.conversation_id:
             raise RollupLeaseLostError("canonical rollup claim has no conversation")

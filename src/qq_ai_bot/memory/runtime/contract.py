@@ -10,8 +10,6 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict
 
-from qq_ai_bot.memory.enums import MemoryRecallPurpose
-
 
 class MemoryReadPolicy(StrEnum):
     """How memory read tools may be exposed this turn."""
@@ -34,11 +32,9 @@ class MemoryTurnContract(BaseModel):
     availability: MemoryAvailability
     read_policy: MemoryReadPolicy
     persistent_write_allowed: bool
-    default_purpose: MemoryRecallPurpose
 
 
 def active_read_contract(
-    default_purpose: MemoryRecallPurpose = MemoryRecallPurpose.RECALL,
     *,
     persistent_write_allowed: bool = True,
 ) -> MemoryTurnContract:
@@ -46,14 +42,12 @@ def active_read_contract(
         availability=MemoryAvailability.ENABLED,
         read_policy=MemoryReadPolicy.EAGER,
         persistent_write_allowed=persistent_write_allowed,
-        default_purpose=default_purpose,
     )
 
 
-def forbidden_contract(default_purpose: MemoryRecallPurpose) -> MemoryTurnContract:
+def forbidden_contract() -> MemoryTurnContract:
     return MemoryTurnContract(
         availability=MemoryAvailability.FORBIDDEN,
         read_policy=MemoryReadPolicy.DENIED,
         persistent_write_allowed=False,
-        default_purpose=default_purpose,
     )

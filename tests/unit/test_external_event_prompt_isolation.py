@@ -104,7 +104,6 @@ def _assembler(**overrides: object) -> ContextAssembler:
         settings=settings,
         ledger=MagicMock(),
         people=MagicMock(),
-        memory_context=MagicMock(),
         relationships=MagicMock(),
         time_service=MagicMock(),
         rollup_repository=MagicMock(),
@@ -292,8 +291,6 @@ async def _assemble_wakeup(
             rollup_mode="llm",
         )
     )
-    assembler._memory_context.retrieve_for_targets = AsyncMock()
-    assembler._memory_context.retrieve_for_turn = AsyncMock()
     assembler._people.get = AsyncMock(
         return_value=UserProfileSnapshot(
             user_id=target_id,
@@ -364,8 +361,6 @@ async def test_private_wakeup_targets_the_person_without_an_actor() -> None:
     assembler._people.get.assert_awaited_once_with(user_id="1001")
     assembler._time.current.assert_awaited_once_with("1001")
     # Automatic memory recall stays off; the agent must use memory tools explicitly.
-    assembler._memory_context.retrieve_for_targets.assert_not_called()
-    assembler._memory_context.retrieve_for_turn.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -387,10 +382,8 @@ async def test_group_wakeup_targets_the_group_without_a_person() -> None:
         "trigger": "external_event",
         "current_actor": None,
     }
-    assert items["current_group"] == {"group_id": "group-100"}
     assert "conversation_target_person" not in items and "current_person" not in items
     assembler._people.get.assert_not_called()
-    assembler._memory_context.retrieve_for_targets.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -476,7 +469,6 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     runtime.context.local_event_limit = 2_048
     runtime.context.window_tokens = 96_000
     runtime.context.compaction_window_tokens = 90_000
-    empty_retrieval = MagicMock(blocks=(), hits=())
 
     ordinary_event = replace(
         _message(10, "ordinary current turn"),
@@ -488,7 +480,6 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
         return_value=snapshot
     )
     ordinary._ledger.get_event = AsyncMock(return_value=ordinary_event)
-    ordinary._memory_context.retrieve_for_turn = AsyncMock(return_value=empty_retrieval)
     ordinary._people.prompt_metadata = AsyncMock(
         return_value=PersonPromptMetadata("synthetic-person", (), _time().timezone)
     )
@@ -521,7 +512,6 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
         turn=turn,
         content=ordinary_event.content,
         runtime=runtime,
-        persist_memory_exposure=False,
     )
 
     external_event = replace(
@@ -533,7 +523,6 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     wakeup._load_history_snapshot = AsyncMock(  # type: ignore[method-assign]
         return_value=snapshot
     )
-    wakeup._memory_context.retrieve_for_targets = AsyncMock(return_value=empty_retrieval)
     wakeup._people.get = AsyncMock(
         return_value=UserProfileSnapshot(
             user_id="1001",
@@ -561,8 +550,6 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     )
 
     assert wakeup_context.history_messages == ordinary_context.history_messages
-    ordinary._memory_context.retrieve_for_turn.assert_not_called()
-    wakeup._memory_context.retrieve_for_targets.assert_not_called()
     assert ordinary_context.external_events == wakeup_context.external_events == ()
     assert "recent_external_events" not in json.dumps(ordinary_context.metadata_payload)
     assert "recent_external_events" not in json.dumps(wakeup_context.metadata_payload)
@@ -684,7 +671,13 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
         (item.role, item.content) for item in composed.messages
     )
     assert repeat.metrics.conversation_prefix_hash == composed.metrics.conversation_prefix_hash
-    instructions, inputs = DeepSeekResponsesProvider._convert_messages(composed.messages)
+    instructions, inputs = DeepSeekResponsesProvider(
+        base_url="https://provider.invalid",
+        api_key="",
+        timeout_seconds=1,
+        max_retries=0,
+        client=MagicMock(),
+    )._convert_messages(composed.messages)
     assert "github-monitor" not in instructions
     assert all(item["role"] in {"user", "assistant"} for item in inputs)
     assert inputs[-1]["role"] == "user"
@@ -1051,7 +1044,7 @@ def test_digest_parent_comma_stays_within_contribution_cost() -> None:
         "scene": {"type": "private", "group_id": None},
         "current_person": {"user_id": "1001", "nickname": "Ada", "display_name": "Ada"},
     }
-    parent, _selected = assembler._fit_metadata(context, 4_000)
+    parent = assembler._fit_metadata(context, 4_000)
     items = parent["items"]
     assert isinstance(items, list)
     assert items
@@ -1063,7 +1056,7 @@ def test_digest_parent_comma_stays_within_contribution_cost() -> None:
     assert digest_item.required
     assert digest_item.cost == external_event_digest_appended_growth(exact)
     # The real metadata fit appends exactly the costed growth, comma included.
-    payload, _selected = assembler._fit_metadata(with_digest, 8_000)
+    payload = assembler._fit_metadata(with_digest, 8_000)
     before = json.dumps(parent, ensure_ascii=False, separators=(",", ":"), default=str)
     after = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
     assert len(after) - len(before) == digest_item.cost == cap
@@ -1097,7 +1090,6 @@ def _covered_external_turn(
             starts_after_event_id=starts_after_event_id,
         )
     )
-    assembler._memory_context.retrieve_for_targets = AsyncMock()
     turn = ConversationTurnSnapshot(
         conversation_id="test-conversation-1",
         scope_key="bot:8000:private:1001",
@@ -1151,7 +1143,6 @@ async def test_actorless_main_context_fails_closed_when_current_source_is_covere
     assert str(exc.value) == "external trigger is already covered"
     assert marker not in str(exc.value)
     assert str(event.id) not in str(exc.value)
-    assembler._memory_context.retrieve_for_targets.assert_not_called()
     # The covered rollup text and the isolated current carrier would both show
     # the marker if prompt composition ran. Assemble must not return a prompt.
     isolated_current = ChatEventPromptRenderer((event,)).render_reference_event(event)

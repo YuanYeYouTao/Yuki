@@ -120,3 +120,6 @@ V6 迁移链为 `0065`（关系历史索引）→ `0066`（autonomy 接纳）→
 
 前轮上线后仍有回复长尾，本次自然流量检查与后续空写、租约和短期状态修复见
 [2026-10-04 后续交付记录](../operations/database-reply-latency-followup-2026-10-04.md)。
+
+Memory、Provider 与后台收尾的删除优先实现和逐项证据见
+[2026-10-09 任务书](Yuki-Memory-Provider分工与后台收尾审查任务书-2026-10-09.md)。

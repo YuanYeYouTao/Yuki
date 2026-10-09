@@ -46,12 +46,11 @@ class FaceNameResolver(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class ProjectedMention:
-    """One ordered OneBot mention without exposing its account id in prompt text."""
+    """One ordered OneBot mention retaining its transport target and original segment position."""
 
     kind: str
     segment_index: int
     target_user_id: str | None = None
-    member_index: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,7 +131,6 @@ def _extract_segments(
     mentions_yuki = False
     attachments: list[MessageAttachment] = []
     mentioned_user_ids: list[str] = []
-    member_indices: dict[str, int] = {}
     ordered_mentions: list[ProjectedMention] = []
     resolver = face_resolver or _default_face_resolver()
     for segment_index, segment in enumerate(segments):
@@ -156,18 +154,14 @@ def _extract_segments(
                     )
                 )
             elif target.isdecimal():
-                index = member_indices.get(target)
-                if index is None:
+                if target not in mentioned_user_ids:
                     mentioned_user_ids.append(target)
-                    index = len(mentioned_user_ids)
-                    member_indices[target] = index
-                text_parts.append(f"[提及成员{index}]")
+                text_parts.append(f"[提及{target}]")
                 ordered_mentions.append(
                     ProjectedMention(
                         kind="member",
                         segment_index=segment_index,
                         target_user_id=target,
-                        member_index=index,
                     )
                 )
         elif segment_type == "face":

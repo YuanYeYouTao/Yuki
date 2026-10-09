@@ -1,4 +1,4 @@
-"""Persistent TTL-backed staging for uncertain Memory V2 claims."""
+"""Persistent SELF observations awaiting the agent's judgment."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from qq_ai_bot.memory.enums import MemoryScopeType
 from qq_ai_bot.memory.extraction import MemoryClaim
 from qq_ai_bot.memory.job_claims import fence_memory_job_claim
 from qq_ai_bot.memory.models import MemoryJob
-from qq_ai_bot.memory.subjects import SubjectResolutionContext, SubjectResolver
 from qq_ai_bot.memory.validation import normalize_memory_text
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
@@ -33,22 +32,10 @@ class MemoryClaimCandidate:
     group_id: str | None
     memory_key: str
     content: str
-    subject_basis: str
-    retention: str
-    source_style: str
     confidence: float
     status: str
     evidence_count: int
     expires_at: datetime
-
-    @property
-    def ready_for_promotion(self) -> bool:
-        return (
-            self.candidate_type == "memory"
-            and self.status == "pending"
-            and self.subject_user_id is not None
-            and self.evidence_count >= 2
-        )
 
 
 class MemoryClaimCandidateRepository:
@@ -62,45 +49,24 @@ class MemoryClaimCandidateRepository:
         event: EventRecord,
         *,
         candidate_type: str,
-        subject_context: SubjectResolutionContext | None,
         job: MemoryJob,
     ) -> MemoryClaimCandidate:
         if job.event_id != event.id:
             raise ValueError("memory job claim does not own the source event")
-        if candidate_type not in {"memory", "self"}:
-            raise ValueError("unknown memory candidate type")
-        resolved = (
-            None
-            if candidate_type == "self"
-            else SubjectResolver.resolve(
-                event,
-                subject_ref=claim.subject_ref,
-                scope_type=claim.scope_type,
-                context=subject_context,
-            )
-        )
-        target_scope = MemoryScopeType.SELF if candidate_type == "self" else claim.scope_type
+        if candidate_type != "self":
+            raise ValueError("only SELF observations use candidate staging")
+        target_scope = MemoryScopeType.SELF
         target = {
             "scope": target_scope.value,
             "subject_user_id": (
-                (event.private_peer_user_id or event.sender_user_id)
-                if candidate_type == "self" and event.group_id is None
-                else resolved.subject_user_id
-                if resolved is not None
+                event.private_peer_user_id or event.sender_user_id
+                if event.group_id is None
                 else None
             ),
-            "group_id": (
-                event.group_id
-                if candidate_type == "self"
-                else resolved.group_id
-                if resolved is not None
-                else event.group_id
-                if target_scope is MemoryScopeType.PERSON_GROUP
-                else None
-            ),
+            "group_id": event.group_id,
         }
-        memory_key = normalize_memory_text(claim.memory_key, maximum=128).casefold()
-        content = normalize_memory_text(claim.content, maximum=4000)
+        memory_key = normalize_memory_text(claim.memory_key).casefold()
+        content = normalize_memory_text(claim.content)
         target_fingerprint = _fingerprint(target)
         fingerprint = _fingerprint(
             {
@@ -135,9 +101,9 @@ class MemoryClaimCandidateRepository:
                 row.target_fingerprint = target_fingerprint
                 row.normalized_memory_key = memory_key
                 row.content = content
-                row.subject_basis = claim.subject_basis.value
-                row.retention = claim.retention.value
-                row.source_style = claim.source_style.value
+                row.subject_basis = ""
+                row.retention = ""
+                row.source_style = ""
                 row.confidence = claim.confidence
                 row.status = "pending"
                 row.evidence_count = 1
@@ -154,9 +120,9 @@ class MemoryClaimCandidateRepository:
                     target_fingerprint=target_fingerprint,
                     normalized_memory_key=memory_key,
                     content=content,
-                    subject_basis=claim.subject_basis.value,
-                    retention=claim.retention.value,
-                    source_style=claim.source_style.value,
+                    subject_basis="",
+                    retention="",
+                    source_style="",
                     confidence=claim.confidence,
                     status="pending",
                     evidence_count=1,
@@ -271,9 +237,6 @@ def _candidate(row: MemoryClaimCandidateModel) -> MemoryClaimCandidate:
         group_id=row.group_id,
         memory_key=row.normalized_memory_key,
         content=row.content,
-        subject_basis=row.subject_basis,
-        retention=row.retention,
-        source_style=row.source_style,
         confidence=row.confidence,
         status=row.status,
         evidence_count=row.evidence_count,

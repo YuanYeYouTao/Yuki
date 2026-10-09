@@ -132,7 +132,6 @@ class AdminModule:
             dream=self._memory_dream,
         )
         preferences = PreferenceAdminService(
-            settings=self._settings,
             memories=self._memories,
             audit=audit,
             memory_mutations=memories,

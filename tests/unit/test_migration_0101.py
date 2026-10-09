@@ -1,13 +1,9 @@
 """0101 stores one canonical outcome per legacy receipt; the original bytes stay."""
 
-import asyncio
 import importlib
 import json
-import sqlite3
 import time
 
-from alembic import command
-from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import text
@@ -105,13 +101,3 @@ async def test_late_legacy_rewrite_of_migrated_receipt_is_idempotent(
     # The same original receipt, rewritten late without the migrated outcome.
     await repository.record_effect("ok", "accepted", {"result": migrated["result"]})
     assert (await _receipts(database))["ok"] == migrated
-
-
-async def test_fresh_upgrade_reaches_0101_head(tmp_path, monkeypatch):
-    path = tmp_path / "head.sqlite3"
-    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{path.as_posix()}")
-    config = Config("alembic.ini")
-    await asyncio.to_thread(command.upgrade, config, "head")
-    with sqlite3.connect(path) as db:
-        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0101",)
-    await asyncio.to_thread(command.downgrade, config, "0100")

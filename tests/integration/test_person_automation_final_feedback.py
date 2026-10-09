@@ -4,7 +4,7 @@ import json
 
 import pytest
 from sqlalchemy import select
-from tests.integration.test_automation_unified_delivery import sent, setup_run
+from tests.support.automation_unified_delivery_helpers import sent, setup_run
 
 from qq_ai_bot.automation.models import RunStatus
 from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction

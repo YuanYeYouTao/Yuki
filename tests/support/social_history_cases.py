@@ -10,6 +10,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import delete, func, select
+from tests.support.social_identity_cases import Bot, add_second_account
 
 from qq_ai_bot.conversation.canonical_db_models import PersonActiveRouteModel, SpaceActiveRouteModel
 from qq_ai_bot.domain.conversations import ConversationScope
@@ -19,10 +20,11 @@ from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.social.automation import SocialAutomationAdapter
 from qq_ai_bot.social.db_models import SocialOperationModel
 from qq_ai_bot.social.models import SocialError
-from tests.support.social_identity_cases import Bot, add_second_account
 
 
 async def history_agent_loop(env):
+    from tests.conftest import MemorySender, build_harness, make_settings
+
     from qq_ai_bot.domain.conversations import ScopeType
     from qq_ai_bot.domain.messages import (
         ChatResponse,
@@ -34,7 +36,6 @@ async def history_agent_loop(env):
     from qq_ai_bot.llm.fake import FakeLLMProvider
     from qq_ai_bot.services.main_agent_contract import MainAgentContract
     from qq_ai_bot.workspace.short_state import ShortState
-    from tests.conftest import MemorySender, build_harness, make_settings
 
     calls = 0
     arguments = json.dumps({"kind": "person", "target_id": env.person, "presence_id": env.presence})

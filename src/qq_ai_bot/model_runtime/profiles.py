@@ -38,10 +38,6 @@ def model_profile_environment(settings: Settings | ModelRuntimeSettings) -> dict
 
 logger = logging.getLogger(__name__)
 
-PROFILE_SCHEMA_VERSION = 3
-RETIRED_MODEL_ROUTES = frozenset({"planner", "tool_selection", "automation_text_generation"})
-CURRENT_CONFIGURATION_HINT = "regenerate model_profiles.toml with qq-ai-bot-cli setup"
-
 
 class ModelRuntimeConfigurationError(ValueError):
     """The profile file or compatibility configuration is unusable."""
@@ -90,17 +86,15 @@ class ModelProfileCatalog(BaseModel):
 
 _DEFAULT_REQUIREMENTS: dict[ModelTask, frozenset[ModelCapability]] = {
     ModelTask.CHAT_AGENT: frozenset({ModelCapability.TOOLS}),
-    ModelTask.MEMORY_EXTRACTION: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
-    ModelTask.MEMORY_SELF_REFLECTION: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
-    ModelTask.MEMORY_CONSOLIDATION: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
-    ModelTask.MEMORY_DREAM: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
-    ModelTask.MEMORY_ATTRIBUTION: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
-    ModelTask.RELATIONSHIP_EVALUATION: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
-    ModelTask.EMOJI_REPLACEMENT: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
+    ModelTask.MEMORY_EXTRACTION: frozenset(),
+    ModelTask.MEMORY_SELF_REFLECTION: frozenset(),
+    ModelTask.MEMORY_DREAM: frozenset(),
+    ModelTask.RELATIONSHIP_EVALUATION: frozenset(),
+    ModelTask.EMOJI_REPLACEMENT: frozenset(),
     ModelTask.AUTOMATION_AGENT: frozenset({ModelCapability.TOOLS}),
     ModelTask.PLUGIN_AGENT_SESSION: frozenset({ModelCapability.TOOLS}),
-    ModelTask.UTILITY_STRUCTURED: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
-    ModelTask.CONVERSATION_COMPACTION: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
+    ModelTask.UTILITY_STRUCTURED: frozenset(),
+    ModelTask.CONVERSATION_COMPACTION: frozenset(),
 }
 
 
@@ -126,12 +120,6 @@ def parse_model_profile_catalog(
     """Validate the same document for startup and management, without file I/O."""
     try:
         raw = tomllib.loads(content)
-        version = raw.get("schema_version", 1)
-        if version != PROFILE_SCHEMA_VERSION:
-            raise ModelRuntimeConfigurationError(
-                f"model profile schema v{version} is no longer accepted; "
-                f"{CURRENT_CONFIGURATION_HINT}"
-            )
         document = _ProfileDocument.model_validate(raw)
         profiles = {
             profile_id: ModelProfile.model_validate(
@@ -143,13 +131,6 @@ def parse_model_profile_catalog(
             for profile_id, payload in document.profiles.items()
         }
         raw_routes = dict(document.routes)
-        retired = RETIRED_MODEL_ROUTES.intersection(raw_routes)
-        if retired:
-            names = ", ".join(sorted(retired))
-            raise ModelRuntimeConfigurationError(
-                f"retired model routes remain ({names}); remove these entries from [routes] "
-                "and preserve the other profiles and routes"
-            )
         routes = {
             ModelTask(task_name): ModelRoute(
                 task=ModelTask(task_name),

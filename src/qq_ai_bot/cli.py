@@ -7,7 +7,7 @@ import asyncio
 import json
 import os
 from dataclasses import asdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 from uuid import uuid4
@@ -28,35 +28,16 @@ from qq_ai_bot.deployment_setup import add_setup_parser, run_setup_command
 from qq_ai_bot.domain.messages import ChatMessage, ChatTool
 from qq_ai_bot.gateway.compatibility import provider_doctor_payload
 from qq_ai_bot.gateway.providers import NAPCAT_PROVIDER_ID, SNOWLUMA_PROVIDER_ID
-from qq_ai_bot.memory.embedding.qwen import QwenDashScopeEmbeddingProvider
 from qq_ai_bot.memory.quality.audit import MemoryProductionQualityAudit
-from qq_ai_bot.memory.quality.baseline import (
-    load_baseline,
-    write_baseline,
-)
-from qq_ai_bot.memory.quality.gates import compare_baseline, load_gate_configuration
 from qq_ai_bot.memory.quality.hygiene import MemoryProvenanceHygiene
-from qq_ai_bot.memory.quality.loader import load_quality_suite
-from qq_ai_bot.memory.quality.models import (
-    MemoryQualityReport,
-    QualitySuiteMode,
-)
-from qq_ai_bot.memory.quality.release_check import MemoryReleaseCheck
-from qq_ai_bot.memory.quality.report import write_reports
-from qq_ai_bot.memory.quality.runner import MemoryQualityRunner
-from qq_ai_bot.memory.receipt import MemoryRecallRepository
 from qq_ai_bot.memory.repository import MemoryJobRepository
 from qq_ai_bot.model_runtime import (
-    ModelClientPool,
     ModelInvocationRepository,
     ModelProfileCatalog,
-    ModelRouter,
     ModelTask,
-    TaskModelExecutor,
     load_model_profile_catalog,
 )
 from qq_ai_bot.model_runtime.profiles import model_profile_environment
-from qq_ai_bot.model_runtime.secrets import read_model_secrets
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.plugin_host.manifest import load_manifest
 from qq_ai_bot.prompting import (
@@ -275,19 +256,8 @@ async def _work_command(settings: Settings, args: argparse.Namespace) -> int:
 
 
 def _add_memory_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    memory = subparsers.add_parser("memory", help="Memory V2 质量、审计与显式治理")
+    memory = subparsers.add_parser("memory", help="Memory 来源审计与显式治理")
     commands = memory.add_subparsers(dest="memory_command", required=True)
-    quality = commands.add_parser("quality", help="运行版本化合成质量套件")
-    quality_commands = quality.add_subparsers(dest="quality_command", required=True)
-    quality_commands.add_parser("validate-dataset")
-    run = quality_commands.add_parser("run")
-    run.add_argument("--suite", choices=[item.value for item in QualitySuiteMode], default="full")
-    run.add_argument("--output", type=Path, default=Path("artifacts/memory-quality"))
-    quality_commands.add_parser("compare")
-    report = quality_commands.add_parser("report")
-    report.add_argument("--format", choices=("json", "markdown"), default="markdown")
-    update = quality_commands.add_parser("update-baseline")
-    update.add_argument("--output", type=Path, default=Path("artifacts/memory-quality"))
     audit = commands.add_parser("audit", help="只读、无内容的生产数据库检查")
     audit.add_argument("--database-url", required=True)
     stats = commands.add_parser("stats", help="只读、无正文的提取与召回统计")
@@ -303,8 +273,6 @@ def _add_memory_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     rebuild_fts = hygiene_commands.add_parser("rebuild-fts", help="在独立维护窗口全量重建 FTS 索引")
     rebuild_fts.add_argument("fingerprint")
     rebuild_fts.add_argument("--database-url", required=True)
-    release = commands.add_parser("release-check", help="组合正式发布只读门禁")
-    release.add_argument("--database-url")
 
 
 def _model_catalog(settings: Settings) -> ModelProfileCatalog:
@@ -612,139 +580,8 @@ async def _conversation_command(settings: Settings, args: argparse.Namespace) ->
     return 0 if ok else 1
 
 
-def _quality_paths(root: Path) -> tuple[Path, Path, Path, Path]:
-    return (
-        root / "tests/fixtures/memory_quality/v1",
-        root / "config/memory_quality_gates.toml",
-        root / "tests/benchmarks/memory_v2/v1/baseline.json",
-        root / "artifacts/memory-quality/report.json",
-    )
-
-
 async def _memory_command(settings: Settings, args: argparse.Namespace) -> int:
-    root = Path.cwd()
-    fixture_path, gate_path, baseline_path, report_path = _quality_paths(root)
     action = str(args.memory_command)
-    if action == "quality":
-        quality_action = str(args.quality_command)
-        suite = load_quality_suite(fixture_path)
-        if quality_action == "validate-dataset":
-            print(
-                json.dumps(
-                    {
-                        "suite_version": suite.manifest.suite_version,
-                        "case_count": len(suite.cases),
-                        "dataset_hash": suite.computed_hash,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
-            return 0
-        gates = load_gate_configuration(gate_path)
-        if quality_action == "compare":
-            report = MemoryQualityReport.model_validate_json(
-                report_path.read_text(encoding="utf-8")
-            )
-            baseline = load_baseline(baseline_path)
-            regressions = compare_baseline(report.metrics, baseline, gates)
-            print(
-                json.dumps(
-                    {
-                        "passed": not regressions,
-                        "regressions": regressions,
-                        "baseline_commit": baseline.commit,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
-            return int(bool(regressions))
-        if quality_action == "report":
-            report = MemoryQualityReport.model_validate_json(
-                report_path.read_text(encoding="utf-8")
-            )
-            if args.format == "json":
-                print(report.model_dump_json(indent=2))
-            else:
-                markdown_path = report_path.with_suffix(".md")
-                print(markdown_path.read_text(encoding="utf-8"))
-            return 0 if report.passed else 1
-        real_model_enabled = (
-            quality_action == "run"
-            and os.getenv("MEMORY_QUALITY_REAL_MODEL_ENABLED", "").casefold() == "true"
-        )
-        current_baseline = (
-            load_baseline(baseline_path)
-            if baseline_path.exists() and not real_model_enabled
-            else None
-        )
-        model_pool: ModelClientPool | None = None
-        real_embedding: QwenDashScopeEmbeddingProvider | None = None
-        model_executor: TaskModelExecutor | None = None
-        model_provider_id: str | None = None
-        if real_model_enabled:
-            catalog = _model_catalog(settings)
-            model_pool = ModelClientPool(
-                secret_overrides={
-                    "LLM_API_KEY": settings.llm_api_key,
-                    "LLM_FLASH_API_KEY": settings.llm_flash_api_key,
-                    **read_model_secrets(settings.model_profiles_file)[1],
-                }
-            )
-            router = ModelRouter(catalog)
-            model_executor = TaskModelExecutor(
-                router=router,
-                pool=model_pool,
-                max_concurrency=1,
-            )
-            _route, profile = router.route(ModelTask.MEMORY_EXTRACTION)
-            model_provider_id = f"{profile.provider}/{profile.model}"
-            if os.getenv("MEMORY_QUALITY_REAL_EMBEDDING_ENABLED", "").casefold() == "true":
-                real_embedding = QwenDashScopeEmbeddingProvider(
-                    base_url=settings.memory_embedding_base_url,
-                    api_key=settings.memory_embedding_api_key,
-                    model=settings.memory_embedding_model,
-                    dimensions=settings.memory_embedding_dimensions,
-                    output_type=settings.memory_embedding_output_type,
-                    document_template_version=(settings.memory_embedding_document_template_version),
-                    query_instruct=settings.memory_embedding_query_instruct,
-                    timeout_seconds=settings.memory_embedding_request_timeout_seconds,
-                    http_concurrency=1,
-                )
-        runner = MemoryQualityRunner(
-            suite=suite,
-            gates=gates,
-            repository_root=root,
-            model_executor=model_executor,
-            model_provider_id=model_provider_id,
-            embedding_provider=real_embedding,
-        )
-        try:
-            report = await runner.run(
-                mode=(
-                    QualitySuiteMode.FULL
-                    if quality_action == "update-baseline"
-                    else QualitySuiteMode(str(args.suite))
-                ),
-                baseline=None if quality_action == "update-baseline" else current_baseline,
-            )
-        finally:
-            if model_pool is not None:
-                await model_pool.close()
-            if real_embedding is not None:
-                await real_embedding.close()
-        output = Path(args.output)
-        if real_model_enabled and output == Path("artifacts/memory-quality"):
-            output = Path("artifacts/memory-quality-real")
-        write_reports(output, report)
-        if quality_action == "update-baseline":
-            if report.failed_count or any(not item.passed for item in report.gates):
-                print(report.model_dump_json(indent=2))
-                return 1
-            write_baseline(baseline_path, report)
-        print(report.model_dump_json(indent=2))
-        return 0 if report.passed and not report.baseline_regressions else 1
     if action == "audit":
         database = Database(str(args.database_url))
         try:
@@ -761,9 +598,6 @@ async def _memory_command(settings: Settings, args: argparse.Namespace) -> int:
             stats_report = {
                 "generated_at": datetime.now(UTC).isoformat(),
                 "window_hours": float(args.hours),
-                "recall": await MemoryRecallRepository(database).summarize(
-                    since=datetime.now(UTC) - timedelta(hours=float(args.hours))
-                ),
                 "extraction_queue": await MemoryJobRepository(database).batch_health(
                     trigger_count=settings.memory_batch_trigger_count,
                     max_characters=settings.memory_batch_max_characters,
@@ -791,10 +625,6 @@ async def _memory_command(settings: Settings, args: argparse.Namespace) -> int:
             return 0
         finally:
             await database.close()
-    if action == "release-check":
-        release_report = await MemoryReleaseCheck(root).run(database_url=args.database_url)
-        print(release_report.model_dump_json(indent=2))
-        return 0 if release_report.passed else 1
     return 1
 
 

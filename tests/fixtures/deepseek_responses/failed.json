@@ -1,7 +1,0 @@
-{
-  "id": "resp_fixture_failed",
-  "object": "response",
-  "status": "failed",
-  "error": {"type": "provider_error", "message": "sanitized fixture error"},
-  "output": []
-}

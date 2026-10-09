@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import delete, select, update
+from tests.support.semantic_participation_host_helpers import _event_and_route
 from tests.support.work_session import WorkSession, invoke_tool
-from tests.unit.test_semantic_participation_host import _event_and_route
 from tests.unit.test_work_source_guard import _guard
 
 from qq_ai_bot.conversation.canonical_db_models import (

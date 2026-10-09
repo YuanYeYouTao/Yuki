@@ -49,7 +49,7 @@ checkpoint 与 raw tail 不能重叠或留洞。当前触发事件只在 current
 进入历史。duplicate/suppressed canonical event 不参与候选或 Prompt。
 
 后台模型返回版本化 JSON 摘要，不开放工具。旧摘要、新事件、外部事件和 visual observation 都放在明确的
-不可信 input envelope。模型 timeout、空响应、超长或质量失败可以写 emergency overlay；overlay
+不可信 input envelope。模型 timeout、空响应或质量失败可以写 emergency overlay；overlay
 不能覆盖或伪装语义 checkpoint。
 
 ## 活动窗口与压缩容量
@@ -102,21 +102,19 @@ Main Turn 的可重建投影缓存使用独立的物理资源上限：单视图�
 压缩来源保留内部 event/person ID、说话人、direction、reply_to_event_id、事件时间、提及及
 派生视觉/语音内容。压缩提示词要求保留决定、否定约束、最新纠正、开放问题和可检索引用。
 新语义摘要使用 `conversation_rollup_v1`：`continuity` 连续叙述、`source_event_ids` 内部来源、
-`open_issues` 开放事项及 `corrections` 最新更正。开放事项、更正各最多 16 项，单项正文最多
-1024 字符，全摘要最多 128 个不同内部事件引用，仍受候选热配置的总字符/输出 token 限制。
+`open_issues` 开放事项及 `corrections` 最新更正。条数、单项正文及引用数不设额外经验上限；
+完整请求仍受实际输入容量和显式输出预算限制。
 每项携带来源；更正另有 `supersedes_event_ids`，明确旧说法的来源（未知时留空）。提示词要求
 更新已解决事项、让新更正替换连续叙述中的旧说法，不能将它们无限累积为原始事实日志。
 这些都是可重建派生视图，不新建 Memory、Work 或独立事项表。
 
-模型输出需通过 schema、条数、字段类型、引用与总容量检查。引用只能来自本批事件或原结构
+模型输出需通过 schema、字段类型、引用与实际容量检查。引用只能来自本批事件或原结构
 摘要携带的内部引用；提交前按有界主键集合核验引用仍属于当前 Conversation/generation 的
 有效覆盖范围。该查证与 JSON 校验发生在首次 DML 前，并沿用原来源 fingerprint、lease、
 generation 和 hold CAS。引用存在不证明摘要忠实，更不替代完整来源覆盖校验。
-辅助请求同时使用既有 `response_format=json_schema`、`structured_output=True`，不添加结果工具。
-Gemini 适配器转换为 `generationConfig.responseMimeType=application/json` 与 `responseJsonSchema`；
-Responses/Chat/Claude 使用各自既有 schema 格式。有效 Profile 必须支持 structured output，
-不支持时由既有执行器明确拒绝，不能改能力声明或隐式换路由。Provider 的结构约束不替代
-本地有界/合法来源校验；代理源码保留该格式也不等于实际上游已验收其支持。
+辅助摘要沿 Profile：明确 JSON_SCHEMA 时使用协议原生 Schema；其余无工具摘要路径按已有
+JSON 提示与本地解析处理，不按 Gemini 名称切模式。文本 JSON 不要求原生 Schema 能力；
+声明真实工具或原生 Schema 的请求仍核验对应能力。引用合法性继续由本地来源校验处理。
 2026-10-01 的一次无 QQ、无工具微小能力请求通过当时的 Gemini 3.8/上游代理路由接受
 `responseMimeType`/`responseJsonSchema` 并返回可校验 JSON；它只确认结构输出能力，
 不构成群史摘要质量、长窗口容量或缓存改善验收。
@@ -127,11 +125,11 @@ Responses/Chat/Claude 使用各自既有 schema 格式。有效 Profile 必须�
 不增加普通事件分片持久状态，也不截头后宣称覆盖整个事件。每块的输入包含前块所得摘要，
 以完成当前批次；摘要质量仍需针对真实长会话验收，完整读取不等于无损摘要。
 
-模型输出预算默认 32768 token，包含思考与最终 JSON；摘要正文默认最多 16384 字符。
-增加生成预算不增加落账摘要的默认字符上限，二者独立。WebUI 的群史/Work 摘要输出预算
+模型输出预算默认 32768 token，包含思考与最终 JSON；语义摘要不再按正文字符数拒绝。
+应急尾部截断仍使用已有显式字符预算，并清楚标注不完整。WebUI 的群史/Work 摘要输出预算
 不另设 32768 的界面上限，最小值仍为 1024；有效 Profile 的输出上限与实际输入/联合窗口
 仍由执行器核验。显式保存的热配置和部署环境变量继续覆盖默认值，不自动改写。
-超长、纯 reasoning、空正文、不完整 Provider 响应不能提交语义 checkpoint；正文不裁剪后落账。
+纯 reasoning、空正文、不完整 Provider 响应不能提交语义 checkpoint；正文不裁剪后落账。
 应急 tail overlay 单独显示“不完整应急视图”，提示模型按内部引用查询缺失事实，不能冒充完整语义摘要。
 
 Rollup 模型调用期间不持有 SQLite 事务；候选、计数差额和 protected suffix 在首次写入前准备，

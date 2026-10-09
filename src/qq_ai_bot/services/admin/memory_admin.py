@@ -137,7 +137,6 @@ class MemoryAdminService:
         require_self_or_superuser(actor, target, self._settings)
         return await self._memories.list_person(
             target,
-            limit=self._settings.person_memory_max_entries,
         )
 
     async def set_explicit_preference(
@@ -235,15 +234,9 @@ class MemoryAdminService:
             return row
 
         async def write(session: AsyncSession) -> MemoryFact:
-            if (
-                await self._memories.count_person(target, session=session)
-                >= self._settings.person_memory_max_entries
-            ):
-                raise ValueError("人物记忆已达到上限，请先删除或合并旧记忆")
             row = await self._memories.add_explicit_person(
                 target,
                 normalized,
-                limit=self._settings.person_memory_max_entries,
                 evidence=evidence,
                 session=session,
             )
@@ -316,7 +309,6 @@ class MemoryAdminService:
                     row
                     for row in await self._memories.list_person(
                         target,
-                        limit=self._settings.person_memory_max_entries,
                         session=session,
                     )
                     if row.id == memory_id
@@ -391,7 +383,6 @@ class MemoryAdminService:
                     row
                     for row in await self._memories.list_person(
                         target,
-                        limit=self._settings.person_memory_max_entries,
                         session=session,
                     )
                     if row.id == memory_id
@@ -432,7 +423,6 @@ class MemoryAdminService:
                 row
                 for row in await self._memories.list_person(
                     target,
-                    limit=self._settings.person_memory_max_entries,
                 )
                 if row.id == memory_id
             ),
@@ -642,7 +632,7 @@ class MemoryAdminService:
     ) -> MemoryFact | None:
         fact = await self._fact_audit.get_fact(fact_id)
         await self._require_authorized_fact_mutation(actor, fact)
-        expected = normalize_memory_text(content, maximum=4000)
+        expected = normalize_memory_text(content)
         if not expected:
             raise ValueError("memory correction cannot be empty")
         result: MemoryFact | None = None
@@ -1028,7 +1018,6 @@ class MemoryAdminService:
             return None
         projection = await self._memories.list_person(
             fact.subject_user_id,
-            limit=self._settings.person_memory_max_entries,
         )
         return next((row for row in projection if row.id == fact.id), None)
 

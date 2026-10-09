@@ -6,9 +6,6 @@ import json
 from typing import Any
 
 SCHEMA = "conversation_rollup_v1"
-MAX_ITEMS = 16
-MAX_REFERENCES = 128
-MAX_ITEM_CHARACTERS = 1024
 
 SUMMARY_INSTRUCTION = (
     'Return only a JSON object with exactly these keys: "schema":"conversation_rollup_v1", '
@@ -16,8 +13,7 @@ SUMMARY_INSTRUCTION = (
     '"open_issues": [{"text": string, "source_event_ids": [integers]}], '
     '"corrections": [{"text": string, "source_event_ids": [integers], '
     '"supersedes_event_ids": [integers]}]. '
-    "Keep at most 16 open issues and 16 corrections, each text at most 1024 characters, "
-    "and at most 128 distinct internal references in total. Cite only supplied sources or "
+    "Cite only supplied sources or "
     "references carried in the previous summary. Never use platform IDs as references. "
     "Update resolved open issues instead of accumulating them. New corrections supersede "
     "older claims: rewrite continuity to reflect the correction, keep its source and any "
@@ -27,11 +23,11 @@ SUMMARY_INSTRUCTION = (
 )
 
 
-def summary_response_format() -> dict[str, object]:
+def summary_response_format() -> dict[str, Any]:
     """Use the existing provider schema contract, with no synthetic result tool.
 
-    Keep the wire schema basic across adapters. Size and reference membership
-    remain local checks even when the provider constrains the JSON shape.
+    Keep the wire schema basic across adapters. Reference membership remains
+    a local check even when the provider constrains the JSON shape.
     """
     ids = {"type": "array", "items": {"type": "integer"}}
     properties = {"text": {"type": "string"}, "source_event_ids": ids}
@@ -73,7 +69,6 @@ def summary_response_format() -> dict[str, object]:
 def _ids(value: Any, *, required: bool = False) -> set[int]:
     if (
         not isinstance(value, list)
-        or len(value) > MAX_REFERENCES
         or any(type(item) is not int or item < 1 for item in value)
         or len(set(value)) != len(value)
         or (required and not value)
@@ -96,8 +91,8 @@ def parse_summary(text: str) -> dict[str, Any]:
     references = _ids(value["source_event_ids"], required=True)
     for name in ("open_issues", "corrections"):
         entries = value[name]
-        if not isinstance(entries, list) or len(entries) > MAX_ITEMS:
-            raise ValueError("rollup_summary_too_many_items")
+        if not isinstance(entries, list):
+            raise ValueError("rollup_summary_invalid_items")
         entry_keys = {"text", "source_event_ids"}
         if name == "corrections":
             entry_keys.add("supersedes_event_ids")
@@ -105,13 +100,11 @@ def parse_summary(text: str) -> dict[str, Any]:
             if not isinstance(entry, dict) or set(entry) != entry_keys:
                 raise ValueError("rollup_summary_invalid_item")
             body = entry["text"]
-            if not isinstance(body, str) or not body.strip() or len(body) > MAX_ITEM_CHARACTERS:
+            if not isinstance(body, str) or not body.strip():
                 raise ValueError("rollup_summary_invalid_item_text")
             references.update(_ids(entry["source_event_ids"], required=True))
             if name == "corrections":
                 references.update(_ids(entry["supersedes_event_ids"]))
-    if len(references) > MAX_REFERENCES:
-        raise ValueError("rollup_summary_too_many_references")
     return value
 
 

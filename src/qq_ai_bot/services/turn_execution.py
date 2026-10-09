@@ -11,7 +11,6 @@ from functools import partial
 from typing import Any
 
 from qq_ai_bot.agent_core import (
-    RETRY,
     STOP,
     Continue,
     End,
@@ -50,9 +49,6 @@ from qq_ai_bot.llm.base import (
 from qq_ai_bot.model_runtime.capacity import estimate_request_tokens
 from qq_ai_bot.model_runtime.dispatch_guard import model_dispatch_guard
 from qq_ai_bot.model_runtime.models import ModelCapability, ModelExecutionPriority
-from qq_ai_bot.model_runtime.structured import (
-    tool_free_structured_output_mode,
-)
 from qq_ai_bot.prompting.serializer import serialized_messages_hash
 from qq_ai_bot.runtime.execution_receipts import current_receipts
 from qq_ai_bot.runtime.work_control import WorkControl, WorkInputsPreparing
@@ -94,15 +90,11 @@ class TurnState:
     staged_evidence_results: int = 0
     calls_used: int = 0
     web_was_used: bool = False
-    empty_retries: int = 0
-    malformed_recoveries: int = 0
     native_events: list[NativeToolEvent] = field(default_factory=list)
     citations: list[ResponseCitation] = field(default_factory=list)
     response_status: ModelResponseStatus = ModelResponseStatus.COMPLETED
-    incomplete_recovery_used: bool = False
     continuation_tools: tuple[ChatTool, ...] = ()
     continuation_native_tools: tuple[NativeToolDefinition, ...] = ()
-    repeated_batch_count: int = 0
     reusable_tool_results: dict[tuple[str, str], ReusableToolResult] = field(default_factory=dict)
     input_feedback_watermark: int = 0
     stage_feedback_batch: str | None = None
@@ -362,16 +354,8 @@ class TurnExecution:
                 if await session.rebase_business(TurnTranscript(self.initial_messages)):
                     assert session.transcript is not None
                     self.state.transcript = session.transcript
-            self.state.repeated_batch_count = int(
-                self.runtime.work_control.session.progress.get("repeats", 0)
-            )
             self.state.provider_pause_replay = bool(
                 self.runtime.work_control.session.progress.get("provider_pause_replay", False)
-            )
-            self.state.malformed_recoveries = int(
-                self.runtime.work_control.session.progress.get(
-                    "malformed_function_call_recoveries", 0
-                )
             )
             await initialize_input_feedback(self.runtime.work_control)
             self.state.observations = self.runtime.work_control.session.progress.get(
@@ -457,11 +441,6 @@ class TurnExecution:
                 else message
                 for message in added
             )
-        if added:
-            self.state.repeated_batch_count = 0
-            if control.session is not None:
-                control.session.progress.pop("fingerprint", None)
-                control.session.progress.pop("repeats", None)
         if not self._initial_layout_finalized:
             self._initial_inputs.extend(added)
         for message in added:
@@ -579,15 +558,6 @@ class TurnExecution:
                 return End(waiting)
         return None
 
-    async def confirm_memory_exposure(self) -> None:
-        if self.tools is not None:
-            try:
-                await self.tools.confirm_memory_prompt_exposure()
-            except Exception as exc:
-                self.state.evidence_observation.emit(
-                    "exposure_confirmation_failed", category=type(exc).__name__
-                )
-
     async def request(self, request_index: int) -> ChatResponse | End | LoopSignal:
 
         if self.state.fixed_definitions is not None:
@@ -675,7 +645,6 @@ class TurnExecution:
             # A prepared request may be cancelled while waiting for the LLM
             # slot or rejected by the transport budget before dispatch.
             # Confirm conservatively only after a response was received.
-            await self.confirm_memory_exposure()
             self.state.evidence_observation.emit(
                 "response_received",
                 request_index=request_index + 1,
@@ -732,83 +701,16 @@ class TurnExecution:
                 receipts = current_receipts.get()
                 if receipts is not None:
                     await receipts.confirm()
-                await self.confirm_memory_exposure()
-            has_visible_effects = bool(self.tools is not None and self.tools.has_visible_effects())
-            if has_visible_effects and (
-                self.state.control is None or self.state.control.current is None
-            ):
-                if (
-                    malformed
-                    and self.state.control is not None
-                    and self.state.control.session is not None
-                ):
-                    await self.state.control.session.save("paired")
-                return End(
-                    AgentRunResult(
-                        text="",
-                        tool_calls_used=self.state.calls_used,
-                        model_requests=request_index + 1,
-                        web_was_used=self.state.web_was_used,
-                        native_tool_events=tuple(self.state.native_events),
-                        citations=tuple(self.state.citations),
-                        response_status=self.state.response_status,
-                    )
-                )
-            recovery_exhausted = (
-                self.state.malformed_recoveries >= 2 if malformed else self.state.empty_retries >= 2
-            )
-            if recovery_exhausted or request_index + 1 >= self.runtime.max_model_requests:
-                if (
-                    malformed
-                    and self.state.control is not None
-                    and self.state.control.session is not None
-                ):
-                    await self.state.control.session.save("paired")
-                self.runner._record_failure_usage(
-                    self.tools, tool_calls=self.state.calls_used, model_requests=request_index + 1
-                )
-                raise
-            if malformed:
-                self.state.malformed_recoveries += 1
-                if self.state.control is not None and self.state.control.session is not None:
-                    self.state.control.session.progress["malformed_function_call_recoveries"] = (
-                        self.state.malformed_recoveries
-                    )
-                logger.warning(
-                    "agent_malformed_function_call_recovery retry=%d tool_calls_used=%d",
-                    self.state.malformed_recoveries,
-                    self.state.calls_used,
-                )
-            else:
-                self.state.empty_retries += 1
-                logger.warning(
-                    "agent_empty_response_retry retry=%d tool_calls_used=%d",
-                    self.state.empty_retries,
-                    self.state.calls_used,
-                )
-            self.state.transcript.append(
-                ChatMessage(
-                    role="system",
-                    content=(
-                        "上一响应的工具调用格式无效，未执行其中任何调用。请按当前工具声明"
-                        "生成合法的工具名称和 JSON 参数，或在无需工具时直接结束。继续原任务，"
-                        "核对已有回执，不得重复已完成的操作，也不得声称未成功的操作已完成。"
-                        if malformed
-                        else "上一次模型请求返回了空内容。请继续当前同一轮任务：如果已有工具"
-                        "结果，先核对结果再给出简短、真实的最终答复；如果任务尚未完成，"
-                        "继续调用必要工具。不得声称未成功的操作已经完成。"
-                    ),
-                )
-            )
             if (
                 malformed
                 and self.state.control is not None
                 and self.state.control.session is not None
             ):
-                # Save the correction and bounded count together. A new
-                # activation cannot grant more corrections or reset budgets.
                 await self.state.control.session.save("paired")
-            return RETRY
+            self.runner._record_failure_usage(
+                self.tools, tool_calls=self.state.calls_used, model_requests=request_index + 1
+            )
+            raise
         except LLMError:
             self.runner._record_failure_usage(
                 self.tools, tool_calls=self.state.calls_used, model_requests=request_index + 1
@@ -1089,15 +991,13 @@ class TurnExecution:
             except (WorkCapacityError, LLMError) as exc:
                 candidate_failure = isinstance(exc, LLMError) or str(exc) in {
                     "work_compaction_source_capacity",
-                    "work_compaction_no_capacity_improvement",
+                    "work_compaction_capacity",
                     "work_compaction_incomplete",
                     "work_compaction_invalid_structure",
                     "work_compaction_invalid_reference",
                     "work_compaction_invalid_directive_source",
                     "work_compaction_invalid_correction",
-                    "work_compaction_invalid_input_disposition",
                     "work_compaction_missing_directive",
-                    "work_compaction_missing_input",
                 }
                 if predicted_tokens > input_budget or not candidate_failure:
                     raise
@@ -1178,8 +1078,8 @@ class TurnExecution:
                         self.initial_messages,
                         self.state.transcript,
                         main_request=request,
-                        structured_mode=tool_free_structured_output_mode(
-                            self.runner._models, self.runner._task
+                        structured_mode=self.runner._models.structured_output_mode(
+                            self.runner._task
                         ),
                         summary_budget=capacity.input_budget(
                             context.window_tokens,
@@ -1323,35 +1223,12 @@ class TurnExecution:
             self.state.transcript.append_result(outcome.call.id, outcome.result)
         if self.state.control is not None and self.state.control.session is not None:
             await self.state.control.session.save("paired")
-        if (
-            self.state.incomplete_recovery_used
-            or request_index + 1 >= self.runtime.max_model_requests
-        ):
-            raise LLMIncompleteResponseError(
-                "provider response remained incomplete after bounded recovery"
-            )
-        self.state.incomplete_recovery_used = True
-        if response.incomplete_reason == "pause_turn":
-            if response.continuation is None:
-                raise LLMIncompleteResponseError(
-                    "paused provider response has no resumable checkpoint"
-                )
-            # Claude's paused server tool must be echoed unchanged.
-            # A synthetic user/system message would change that replay.
-        else:
-            self.state.transcript.append(
-                ChatMessage(
-                    role="system",
-                    content=(
-                        "上一响应未完整结束。根据真实回执继续原任务，必要时查询或解释；"
-                        "不要重复任何已经完成的原生搜索或本地工具调用。"
-                    ),
-                )
-            )
-        logger.warning(
-            "agent_incomplete_response_recovery reason=%s",
-            response.incomplete_reason or "unknown",
-        )
+        if response.incomplete_reason != "pause_turn":
+            raise LLMIncompleteResponseError("provider response was incomplete")
+        if response.continuation is None:
+            raise LLMIncompleteResponseError("paused provider response has no resumable checkpoint")
+        # Resume the paid server tool using its original checkpoint. The main
+        # loop still owns the current request budget and cancellation boundary.
         return Continue()
 
     async def settle_final(self, request_index: int, response: ChatResponse) -> TurnDecision:
@@ -1534,15 +1411,6 @@ class TurnExecution:
         if self.runtime.work_control is not None and self.runtime.work_control.session is not None:
             control = self.runtime.work_control
             assert control.session is not None
-            batch_hash = hashlib.sha256(
-                json.dumps(
-                    [
-                        (call.function.name, self.runner._tool_call_signature(call)[1], result)
-                        for call, result, _ in batch
-                    ],
-                    sort_keys=True,
-                ).encode()
-            ).hexdigest()
             persisted_progress = self.runtime.work_control.session.progress
             self.state.observations = persisted_progress.get("model_observations", [])
             if self.state.observations:
@@ -1553,19 +1421,6 @@ class TurnExecution:
                     self.state.stage_feedback_batch, self.state.pending_stage_feedback = (
                         self.state.opportunity
                     )
-            repeats = (
-                int(persisted_progress.get("repeats", 0)) + 1
-                if (
-                    batch
-                    and persisted_progress.get("fingerprint") == batch_hash
-                    and not any(
-                        self.state.coordinated.evidence.get(call.id, {}).get("pending") is True
-                        for call, _, _ in batch
-                    )
-                )
-                else 0
-            )
-            persisted_progress.update(fingerprint=batch_hash, repeats=repeats)
             if self.state.deferred_paid_compaction:
                 await self.runtime.work_control.session.retire_paid_compaction()
                 self.state.deferred_paid_compaction = False
@@ -1601,26 +1456,12 @@ class TurnExecution:
                         work_state=self.runtime.work_control.ending,
                     )
                 )
-        if self.runtime.work_control is not None and self.runtime.work_control.session is not None:
-            # The journal's persisted count, computed above, survives restarts.
-            self.state.repeated_batch_count = int(
-                self.runtime.work_control.session.progress.get("repeats", 0)
-            )
         if self.state.coordinated.reused_count == len(batch) and batch:
             logger.info(
                 "agent_tool_batch_reused reused_calls=%d tool_calls_used=%d",
                 self.state.coordinated.reused_count,
                 self.state.calls_used,
             )
-        if (
-            self.state.repeated_batch_count >= 2
-            and self.runtime.work_control is not None
-            and self.runtime.work_control.current is not None
-            and not await self.runtime.work_control.has_finite_model_budget()
-        ):
-            from qq_ai_bot.runtime.activation_outcome import WorkNoProgress
-
-            raise WorkNoProgress("repeated_tool_results")
         if self.tools is not None and self.tools.did_use_web():
             self.state.web_was_used = True
         # begin() bounds the segment handoff to one admitted model request.

@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import func, select
-from tests.unit.test_control_plane_foundation import context
+from tests.support.control_plane_foundation_helpers import context
 
 from qq_ai_bot.control_plane import (
     ControlCommand,

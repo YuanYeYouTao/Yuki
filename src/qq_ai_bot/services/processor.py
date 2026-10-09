@@ -438,7 +438,6 @@ class MessageProcessor:
             audit=audit,
         )
         self._preference_admin = preference_admin or PreferenceAdminService(
-            settings=settings,
             memories=self._memories,
             audit=audit,
         )

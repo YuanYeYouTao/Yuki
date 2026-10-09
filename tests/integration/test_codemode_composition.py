@@ -12,10 +12,6 @@ from qq_ai_bot.runtime.work_budget_schema import budgets
 pytestmark = requires_worker
 
 
-def ops(body):
-    return [(item["tool"], item["status"]) for item in body["operations"]]
-
-
 async def test_filtered_summary_omits_child_bodies_but_keeps_original_receipts(database, tmp_path):
     env = await environment(database, tmp_path, max_parallel=2)
     marker = "original-child-evidence-" * 400

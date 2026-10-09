@@ -56,11 +56,11 @@ class _DreamModel(BaseModel):
 class DreamEvidenceInput(_DreamModel):
     occurred_at: datetime | None = None
     relation: str
-    excerpt: str = Field(max_length=2000)
+    excerpt: str
 
 
 class DreamMemoryInput(_DreamModel):
-    ref: str = Field(pattern=r"^memory_[1-6]$")
+    ref: str = Field(pattern=r"^memory_[1-9]\d*$")
     kind: str
     category: str
     memory_key: str
@@ -84,19 +84,13 @@ class DreamInput(_DreamModel):
     visibility_user_id: str | None = None
     visibility_group_id: str | None = None
     kind: str
-    memories: tuple[DreamMemoryInput, ...] = Field(min_length=1, max_length=6)
-
-    @model_validator(mode="after")
-    def _single_memory_is_episode_only(self) -> DreamInput:
-        if len(self.memories) == 1 and self.kind != "episode":
-            raise ValueError("only an episode Dream input may contain one memory")
-        return self
+    memories: tuple[DreamMemoryInput, ...] = Field(min_length=1)
 
 
 class DreamRecomposeOutput(_DreamModel):
-    focus: str = Field(min_length=1, max_length=120)
-    source_refs: tuple[str, ...] = Field(min_length=1, max_length=6)
-    content: str = Field(min_length=1, max_length=4000)
+    focus: str = Field(min_length=1)
+    source_refs: tuple[str, ...] = Field(min_length=1)
+    content: str = Field(min_length=1)
     importance: int = Field(ge=1, le=5)
 
     @field_validator("source_refs")
@@ -109,11 +103,11 @@ class DreamRecomposeOutput(_DreamModel):
 
 class DreamAction(_DreamModel):
     operation: DreamOperationType
-    source_refs: tuple[str, ...] = Field(min_length=1, max_length=6)
+    source_refs: tuple[str, ...] = Field(min_length=1)
     anchor_ref: str | None = None
-    content: str | None = Field(default=None, max_length=4000)
+    content: str | None = Field(default=None)
     importance: int | None = Field(default=None, ge=1, le=5)
-    outputs: tuple[DreamRecomposeOutput, ...] = Field(default=(), max_length=4)
+    outputs: tuple[DreamRecomposeOutput, ...] = Field(default=())
 
     @field_validator("source_refs")
     @classmethod
@@ -160,25 +154,16 @@ class DreamAction(_DreamModel):
 
 
 class DreamOutput(_DreamModel):
-    actions: tuple[DreamAction, ...] = Field(default=(), max_length=6)
+    actions: tuple[DreamAction, ...] = Field(default=())
 
     @model_validator(mode="after")
     def _disjoint(self) -> DreamOutput:
         used: set[str] = set()
-        output_count = 0
-        recompose_count = 0
         for action in self.actions:
             overlap = used.intersection(action.source_refs)
             if overlap:
                 raise ValueError("dream actions must use disjoint source refs")
             used.update(action.source_refs)
-            output_count += len(action.outputs)
-            if action.operation is DreamOperationType.RECOMPOSE:
-                recompose_count += 1
-        if output_count > 4:
-            raise ValueError("dream output may contain at most four recomposed episodes")
-        if recompose_count > 1:
-            raise ValueError("dream output may contain at most one recompose action")
         return self
 
 
@@ -286,6 +271,7 @@ class DreamHealth(_DreamModel):
     last_error_category: str | None = None
     preview_ready: int = Field(default=0, ge=0)
     preview_stale: int = Field(default=0, ge=0)
+
     compaction_pending: int = Field(default=0, ge=0)
     compaction_completed: int = Field(default=0, ge=0)
     compaction_skipped: int = Field(default=0, ge=0)
@@ -293,7 +279,6 @@ class DreamHealth(_DreamModel):
     compaction_evidence_before: int = Field(default=0, ge=0)
     compaction_evidence_after: int = Field(default=0, ge=0)
     compaction_last_error_category: str | None = None
-    waiting_for_compaction_lock: bool = False
 
 
 @dataclass(frozen=True, slots=True)

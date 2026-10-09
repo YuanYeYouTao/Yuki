@@ -8,7 +8,7 @@ only ``AUTOMATIC_CONTEXT`` / ``AGENT_TOOL`` may later ``publish_exposure``.
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Protocol, TypedDict
+from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -16,7 +16,6 @@ from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.memory.authorized_scope import AuthorizedMemoryScope
 from qq_ai_bot.memory.enums import (
     MemoryContextMode,
-    MemoryRecallPurpose,
     MemoryRetrievalMode,
     MemorySubjectRole,
 )
@@ -26,23 +25,14 @@ from qq_ai_bot.memory.models import (
     MemoryRetrievalHit,
     MemoryRetrievalResult,
 )
-from qq_ai_bot.memory.receipt import MemoryRecallTurn
-from qq_ai_bot.memory.runtime.errors import MemoryRuntimeError
 
 
 class MemoryReadConsumer(StrEnum):
     """Who initiated a read.  Not a model-writable field."""
 
-    AUTOMATIC_CONTEXT = "automatic_context"
     AGENT_TOOL = "agent_tool"
     PLUGIN = "plugin"
     ADMIN = "admin"
-
-
-class _AutomaticSearchOptions(TypedDict, total=False):
-    automatic: bool
-    automatic_self_target: MemoryEntityTarget | None
-    neutral_ordering: bool
 
 
 class ResolvedReadScope(BaseModel):
@@ -65,13 +55,6 @@ class MemoryReadRequest(BaseModel):
     resolved_scope: ResolvedReadScope
     authorized_scope: AuthorizedMemoryScope | None = None
     # Backend-only automatic projection options, never exposed in a tool schema.
-    automatic_self_target: MemoryEntityTarget | None = None
-    neutral_ordering: bool = False
-
-
-_EXPOSURE_CONSUMERS = frozenset(
-    {MemoryReadConsumer.AUTOMATIC_CONTEXT, MemoryReadConsumer.AGENT_TOOL}
-)
 
 
 class MemoryQueryKernel(Protocol):
@@ -86,16 +69,7 @@ class MemoryQueryKernel(Protocol):
         runtime: RuntimeConfigSnapshot,
         limit: int | None = None,
         intent: MemoryQueryIntent | None = None,
-        automatic: bool = False,
-        automatic_self_target: MemoryEntityTarget | None = None,
-        neutral_ordering: bool = False,
     ) -> MemoryRetrievalResult: ...
-
-    async def mark_injected(
-        self,
-        result: MemoryRetrievalResult,
-        fact_ids: tuple[int, ...],
-    ) -> int: ...
 
     async def search_authorized(
         self,
@@ -106,19 +80,6 @@ class MemoryQueryKernel(Protocol):
         limit: int,
         intent: MemoryQueryIntent | None = None,
     ) -> MemoryRetrievalResult: ...
-
-    async def record_recall(
-        self,
-        *,
-        conversation_key: str,
-        source_key: str,
-        origin: str,
-        intent: MemoryQueryIntent | None,
-        result: MemoryRetrievalResult,
-        injected_fact_ids: tuple[int, ...],
-        runtime: RuntimeConfigSnapshot,
-        consumer: str = "automatic_context",
-    ) -> MemoryRecallTurn | None: ...
 
 
 def retrieval_mode_for_request(request: MemoryReadRequest) -> MemoryRetrievalMode:
@@ -137,23 +98,8 @@ def resolve_read_limit(
     """Consumer budget.  Automatic never reads ``requested_limit``."""
 
     memory = runtime.memory
-    if consumer is MemoryReadConsumer.AUTOMATIC_CONTEXT:
-        if request.intent is not None and request.intent.mode is MemoryContextMode.OVERVIEW:
-            return memory.automatic_recall_overview_limit
-        purpose = (
-            request.intent.purpose if request.intent is not None else MemoryRecallPurpose.BACKGROUND
-        )
-        if purpose is MemoryRecallPurpose.CONTINUATION:
-            return memory.automatic_recall_continuation_limit
-        if purpose is not MemoryRecallPurpose.BACKGROUND:
-            return memory.automatic_recall_focused_limit
-        return memory.automatic_recall_background_limit
     if request.requested_limit is not None:
         return request.requested_limit
-    if consumer is MemoryReadConsumer.AGENT_TOOL:
-        if request.intent is not None and request.intent.mode is MemoryContextMode.OVERVIEW:
-            return memory.automatic_recall_overview_limit
-        return memory.automatic_recall_focused_limit
     return memory.context_limit_per_entity
 
 
@@ -232,55 +178,14 @@ class MemoryQueryPlane:
                 limit=resolve_read_limit(consumer, request, runtime),
                 intent=intent,
             )
-        automatic = consumer is MemoryReadConsumer.AUTOMATIC_CONTEXT
-        options: _AutomaticSearchOptions = {}
-        if automatic:
-            options = {
-                "automatic": True,
-                "automatic_self_target": request.automatic_self_target,
-                "neutral_ordering": request.neutral_ordering,
-            }
         result = await self._kernel.search(
             text=request.text,
             mode=retrieval_mode_for_request(request),
             targets=request.resolved_scope.targets,
             runtime=runtime,
-            limit=None
-            if request.neutral_ordering
-            else resolve_read_limit(consumer, request, runtime),
+            limit=resolve_read_limit(consumer, request, runtime),
             intent=intent,
-            **options,
         )
-        if automatic or consumer in {MemoryReadConsumer.PLUGIN, MemoryReadConsumer.ADMIN}:
+        if consumer in {MemoryReadConsumer.PLUGIN, MemoryReadConsumer.ADMIN}:
             return result
         return apply_total_hit_limit(result, resolve_read_limit(consumer, request, runtime))
-
-    async def publish_exposure(
-        self,
-        consumer: MemoryReadConsumer,
-        *,
-        conversation_key: str,
-        source_key: str,
-        origin: str,
-        intent: MemoryQueryIntent | None,
-        result: MemoryRetrievalResult,
-        injected_fact_ids: tuple[int, ...],
-        runtime: RuntimeConfigSnapshot,
-    ) -> MemoryRecallTurn | None:
-        """Mark injected + write a receipt after payload entered a Main Agent request."""
-
-        if consumer not in _EXPOSURE_CONSUMERS:
-            raise MemoryRuntimeError(
-                f"{consumer.value} reads are side-effect free and cannot publish exposure"
-            )
-        await self._kernel.mark_injected(result, injected_fact_ids)
-        return await self._kernel.record_recall(
-            conversation_key=conversation_key,
-            source_key=source_key,
-            origin=origin,
-            intent=intent,
-            result=result,
-            injected_fact_ids=injected_fact_ids,
-            runtime=runtime,
-            consumer=consumer.value,
-        )

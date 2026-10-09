@@ -3,48 +3,27 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
-from math import cos, radians, sin
-from types import SimpleNamespace
-from typing import cast
-from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import func, select
 from tests.conftest import make_settings
-from tests.support.model_executor import InjectedModelExecutor
 
 from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.memory.candidates import MemoryConflictCandidateResolver
 from qq_ai_bot.memory.claim_processor import MemoryClaimProcessor
-from qq_ai_bot.memory.classifier import MemoryRelationClassifier
 from qq_ai_bot.memory.dream.db_models import (
     MemoryDreamOperationModel,
     MemoryDreamOperationResultModel,
 )
 from qq_ai_bot.memory.dream.models import (
-    DreamAction,
-    DreamClusterStatus,
-    DreamInput,
-    DreamMemoryInput,
     DreamOperationStatus,
     DreamOperationType,
-    DreamOutput,
     DreamPlanStatistics,
-    DreamRecomposeOutput,
     DreamRunMode,
-    DreamRunStatus,
 )
 from qq_ai_bot.memory.dream.repository import (
-    DreamCandidate,
-    DreamCandidateLoad,
     DreamRepository,
     fact_signature,
 )
-from qq_ai_bot.memory.dream.service import DreamService
-from qq_ai_bot.memory.embedding.codec import Float32VectorCodec
-from qq_ai_bot.memory.embedding.models import EmbeddingVector
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
     MemoryEvidenceRelation,
@@ -55,16 +34,13 @@ from qq_ai_bot.memory.enums import (
     MemoryStatus,
 )
 from qq_ai_bot.memory.models import (
-    MemoryEvidence,
     MemoryEvidenceCreate,
     MemoryFact,
     MemoryFactCreate,
 )
 from qq_ai_bot.memory.mutation.service import DreamRecomposePlan, MemoryMutationService
 from qq_ai_bot.memory.repository import MemoryFactRepository
-from qq_ai_bot.memory.resolution import MemoryResolutionPolicy
 from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.model_runtime.structured import StructuredTaskError, StructuredTaskRunner
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     MemoryEvidenceModel,
@@ -72,7 +48,6 @@ from qq_ai_bot.persistence.models import (
     MemoryMutationReceiptModel,
 )
 from qq_ai_bot.persistence.repositories import EventLedgerRepository, PeopleRepository
-from qq_ai_bot.services.concurrency import ConcurrencyManager
 
 
 def _services(
@@ -84,9 +59,6 @@ def _services(
     processor = MemoryClaimProcessor(
         settings=settings,
         facts=facts,
-        candidate_resolver=MemoryConflictCandidateResolver(facts.repository),
-        relation_classifier=cast(MemoryRelationClassifier, object()),
-        resolution_policy=MemoryResolutionPolicy(),
     )
     return (
         MemoryMutationService(
@@ -99,428 +71,6 @@ def _services(
         ledger,
         DreamRepository(database),
     )
-
-
-def test_dream_selects_only_first_and_last_evidence_when_limit_is_two() -> None:
-    service = object.__new__(DreamService)
-    service._settings = cast(
-        object,
-        SimpleNamespace(memory_dream_evidence_per_fact=2),
-    )
-    now = datetime.now(UTC)
-    rows = tuple(
-        SimpleNamespace(id=index, created_at=now + timedelta(seconds=index)) for index in range(5)
-    )
-
-    selected = service._select_evidence(cast(tuple[MemoryEvidence, ...], rows))
-
-    assert [item.id for item in selected] == [0, 4]  # type: ignore[attr-defined]
-
-
-def test_episode_recompose_can_split_one_source_into_multiple_outputs() -> None:
-    action = DreamAction(
-        operation=DreamOperationType.RECOMPOSE,
-        source_refs=("memory_1",),
-        outputs=(
-            DreamRecomposeOutput(
-                focus="第一次独立经历",
-                source_refs=("memory_1",),
-                content="第一次独立经历的压缩回忆。",
-                importance=3,
-            ),
-            DreamRecomposeOutput(
-                focus="第二次独立经历",
-                source_refs=("memory_1",),
-                content="第二次独立经历的压缩回忆。",
-                importance=4,
-            ),
-        ),
-    )
-
-    assert len(action.outputs) == 2
-
-
-def test_dream_keep_can_explicitly_preserve_several_independent_sources() -> None:
-    service = object.__new__(DreamService)
-    service._settings = cast(
-        object,
-        SimpleNamespace(
-            memory_dream_episode_max_characters=800,
-            memory_dream_episode_compression_ratio=0.45,
-        ),
-    )
-    memories = tuple(
-        DreamMemoryInput(
-            ref=f"memory_{index}",
-            kind="episode",
-            category="self_episode",
-            memory_key=f"episode:keep:{index}",
-            content=f"第 {index} 件已经清楚而独立的经历",
-            importance=3,
-            confidence=1.0,
-            source_type="automatic",
-            authority="agent_reflection",
-            status="active",
-            conflict_state="clear",
-        )
-        for index in range(1, 6)
-    )
-    output = DreamOutput(
-        actions=(
-            DreamAction(
-                operation=DreamOperationType.KEEP,
-                source_refs=tuple(memory.ref for memory in memories),
-            ),
-        )
-    )
-
-    service._validate_output(
-        DreamInput(scope_type="self", kind="episode", memories=memories),
-        output,
-    )
-
-
-def test_episode_recompose_accepts_meaning_without_hard_compression_ratio() -> None:
-    service = object.__new__(DreamService)
-    service._settings = cast(
-        object,
-        SimpleNamespace(
-            memory_dream_episode_max_characters=800,
-            memory_dream_episode_compression_ratio=0.45,
-            memory_dream_max_input_characters=5000,
-        ),
-    )
-    payload = DreamInput(
-        scope_type="self",
-        kind="episode",
-        memories=(
-            DreamMemoryInput(
-                ref="memory_1",
-                kind="episode",
-                category="self_episode",
-                memory_key="episode:long",
-                content="甲" * 1000,
-                importance=3,
-                confidence=1.0,
-                source_type="automatic",
-                authority="agent_reflection",
-                status="active",
-                conflict_state="clear",
-            ),
-        ),
-    )
-    output = DreamOutput(
-        actions=(
-            DreamAction(
-                operation=DreamOperationType.RECOMPOSE,
-                source_refs=("memory_1",),
-                outputs=(
-                    DreamRecomposeOutput(
-                        focus="未充分压缩的经历",
-                        source_refs=("memory_1",),
-                        content="乙" * 750,
-                        importance=3,
-                    ),
-                ),
-            ),
-        )
-    )
-
-    service._validate_output(payload, output)
-    too_long = output.model_copy(
-        update={
-            "actions": (
-                output.actions[0].model_copy(
-                    update={
-                        "outputs": (
-                            output.actions[0].outputs[0].model_copy(update={"content": "乙" * 801}),
-                        )
-                    }
-                ),
-            )
-        }
-    )
-    with pytest.raises(ValueError, match="at most 4 outputs"):
-        service._validate_output(payload, too_long)
-    assert service._fit_input(payload).memories[0].content == payload.memories[0].content
-    service._settings.memory_dream_max_input_characters = 500
-    with pytest.raises(ValueError, match="complete source facts"):
-        service._fit_input(payload)
-    assert len(payload.memories[0].content) == 1000
-
-
-def test_episode_recompose_enforces_cluster_wide_output_and_compression_limits() -> None:
-    with pytest.raises(ValueError, match="at most four"):
-        DreamOutput(
-            actions=tuple(
-                DreamAction(
-                    operation=DreamOperationType.RECOMPOSE,
-                    source_refs=(f"memory_{index}",),
-                    outputs=(
-                        DreamRecomposeOutput(
-                            focus=f"经历 {index}",
-                            source_refs=(f"memory_{index}",),
-                            content="简短经历",
-                            importance=3,
-                        ),
-                    ),
-                )
-                for index in range(1, 6)
-            )
-        )
-
-    with pytest.raises(ValueError, match="at most one recompose"):
-        DreamOutput(
-            actions=(
-                DreamAction(
-                    operation=DreamOperationType.RECOMPOSE,
-                    source_refs=("memory_1",),
-                    outputs=(
-                        DreamRecomposeOutput(
-                            focus="第一件事",
-                            source_refs=("memory_1",),
-                            content="第一件独立经历",
-                            importance=3,
-                        ),
-                    ),
-                ),
-                DreamAction(
-                    operation=DreamOperationType.RECOMPOSE,
-                    source_refs=("memory_2",),
-                    outputs=(
-                        DreamRecomposeOutput(
-                            focus="第二件事",
-                            source_refs=("memory_2",),
-                            content="第二件独立经历",
-                            importance=3,
-                        ),
-                    ),
-                ),
-            )
-        )
-
-    service = object.__new__(DreamService)
-    service._settings = cast(
-        object,
-        SimpleNamespace(
-            memory_dream_episode_max_characters=800,
-            memory_dream_episode_compression_ratio=0.45,
-        ),
-    )
-    memories = tuple(
-        DreamMemoryInput(
-            ref=f"memory_{index}",
-            kind="episode",
-            category="self_episode",
-            memory_key=f"episode:{index}",
-            content="甲" * 500,
-            importance=3,
-            confidence=1.0,
-            source_type="automatic",
-            authority="agent_reflection",
-            status="active",
-            conflict_state="clear",
-        )
-        for index in range(1, 3)
-    )
-    payload = DreamInput(scope_type="self", kind="episode", memories=memories)
-    output = DreamOutput(
-        actions=(
-            DreamAction(
-                operation=DreamOperationType.RECOMPOSE,
-                source_refs=tuple(memory.ref for memory in memories),
-                outputs=tuple(
-                    DreamRecomposeOutput(
-                        focus=f"独立经历 {index}",
-                        source_refs=(memory.ref,),
-                        content=f"{index}" + "乙" * 299,
-                        importance=3,
-                    )
-                    for index, memory in enumerate(memories, start=1)
-                ),
-            ),
-        )
-    )
-    service._validate_output(payload, output)
-    assert "软目标" in service._instruction(self_memory=False, payload=payload)
-    shorter = payload.model_copy(
-        update={
-            "memories": tuple(
-                memory.model_copy(update={"content": "甲" * 100}) for memory in memories
-            )
-        }
-    )
-    assert service._instruction(self_memory=False, payload=payload) == service._instruction(
-        self_memory=False, payload=shorter
-    )
-    assert service._structured_input(payload)["episode_compression"]["source_characters"] == 1000
-    assert service._structured_input(shorter)["episode_compression"]["source_characters"] == 200
-
-
-@pytest.mark.asyncio
-async def test_episode_decision_does_not_retry_soft_compression_miss() -> None:
-    service = object.__new__(DreamService)
-    service._settings = cast(
-        object,
-        SimpleNamespace(
-            memory_dream_episode_max_characters=800,
-            memory_dream_episode_compression_ratio=0.45,
-            memory_dream_max_output_tokens=4096,
-            bot_display_name="Yuki",
-            bot_persona="测试人格",
-        ),
-    )
-    payload = DreamInput(
-        scope_type="self",
-        kind="episode",
-        memories=(
-            DreamMemoryInput(
-                ref="memory_1",
-                kind="episode",
-                category="self_episode",
-                memory_key="episode:fallback",
-                content="甲" * 1000,
-                importance=3,
-                confidence=1.0,
-                source_type="automatic",
-                authority="agent_reflection",
-                status="active",
-                conflict_state="clear",
-            ),
-        ),
-    )
-    first = DreamOutput(
-        actions=(
-            DreamAction(
-                operation=DreamOperationType.RECOMPOSE,
-                source_refs=("memory_1",),
-                outputs=(
-                    DreamRecomposeOutput(
-                        focus="第一次合法但未达到目标的整理",
-                        source_refs=("memory_1",),
-                        content="乙" * 600,
-                        importance=3,
-                    ),
-                ),
-            ),
-        )
-    )
-    repaired = first.model_copy(
-        update={
-            "actions": (
-                first.actions[0].model_copy(
-                    update={
-                        "outputs": (
-                            first.actions[0].outputs[0].model_copy(update={"content": "丙" * 750}),
-                        )
-                    }
-                ),
-            )
-        }
-    )
-    provider = FakeLLMProvider(
-        lambda _: (
-            first.model_dump_json() if len(provider.requests) == 1 else repaired.model_dump_json()
-        )
-    )
-    service._structured = StructuredTaskRunner(InjectedModelExecutor(provider))
-    service._concurrency = ConcurrencyManager(1)
-    service._reserve_model_call = AsyncMock(return_value=True)  # type: ignore[method-assign]
-
-    result, calls = await service._decide(
-        payload,
-        self_memory=False,
-        run=cast(object, SimpleNamespace(public_id="run-1")),  # type: ignore[arg-type]
-        cluster=cast(object, SimpleNamespace(id=1)),  # type: ignore[arg-type]
-    )
-
-    assert result == first
-    assert calls == len(provider.requests) == 1
-
-
-@pytest.mark.asyncio
-async def test_episode_decision_repairs_invalid_length_with_original_output() -> None:
-    service = object.__new__(DreamService)
-    service._settings = cast(
-        object,
-        SimpleNamespace(
-            memory_dream_episode_max_characters=800,
-            memory_dream_episode_compression_ratio=0.45,
-            memory_dream_max_output_tokens=4096,
-            bot_display_name="Yuki",
-            bot_persona="测试人格",
-        ),
-    )
-    payload = DreamInput(
-        scope_type="self",
-        kind="episode",
-        memories=(
-            DreamMemoryInput(
-                ref="memory_1",
-                kind="episode",
-                category="self_episode",
-                memory_key="episode:shorter",
-                content="甲" * 1000,
-                importance=3,
-                confidence=1.0,
-                source_type="automatic",
-                authority="agent_reflection",
-                status="active",
-                conflict_state="clear",
-            ),
-        ),
-    )
-
-    def proposal(character: str, length: int) -> DreamOutput:
-        return DreamOutput(
-            actions=(
-                DreamAction(
-                    operation=DreamOperationType.RECOMPOSE,
-                    source_refs=("memory_1",),
-                    outputs=(
-                        DreamRecomposeOutput(
-                            focus="压缩后的单一经历",
-                            source_refs=("memory_1",),
-                            content=character * length,
-                            importance=3,
-                        ),
-                    ),
-                ),
-            )
-        )
-
-    first = proposal("乙", 801)
-    repaired = proposal("丙", 500)
-    provider = FakeLLMProvider(
-        lambda _: (
-            first.model_dump_json() if len(provider.requests) == 1 else repaired.model_dump_json()
-        )
-    )
-    service._structured = StructuredTaskRunner(InjectedModelExecutor(provider))
-    service._concurrency = ConcurrencyManager(1)
-    service._reserve_model_call = AsyncMock(return_value=True)  # type: ignore[method-assign]
-
-    result, calls = await service._decide(
-        payload,
-        self_memory=False,
-        run=cast(object, SimpleNamespace(public_id="run-2")),  # type: ignore[arg-type]
-        cluster=cast(object, SimpleNamespace(id=2)),  # type: ignore[arg-type]
-    )
-
-    assert result == repaired
-    assert calls == 2
-    assert len(provider.requests) == 2
-    assert provider.requests[0].messages == provider.requests[1].messages[:2]
-    repair = json.loads(provider.requests[1].messages[-1].content)
-    assert repair["repair_request"]["reason_code"] == "dream_output_too_long"
-    assert "乙" * 801 in repair["previous_invalid_result"]
-    # Invalid twice must remain a failure, not a fabricated KEEP success.
-    invalid_provider = FakeLLMProvider(lambda _: first.model_dump_json())
-    service._structured = StructuredTaskRunner(InjectedModelExecutor(invalid_provider))
-    with pytest.raises(StructuredTaskError) as failed:
-        await service._preview_decide(payload, self_memory=False)
-    assert failed.value.attempts == len(invalid_provider.requests) == 2
-    assert failed.value.response is not None
 
 
 async def _fact_with_evidence(
@@ -570,93 +120,6 @@ async def _fact_with_evidence(
     )
 
 
-@pytest.mark.asyncio
-async def test_dream_clustering_does_not_bridge_unrelated_endpoints(
-    database: Database,
-) -> None:
-    _mutations, facts, ledger, dreams = _services(database)
-    rows = []
-    for index in range(3):
-        rows.append(
-            await _fact_with_evidence(
-                facts,
-                ledger,
-                message_id=f"dream-chain-{index}",
-                memory_key=f"episode:chain:{index}",
-                content=f"独立事件 {index}",
-                kind=MemoryKind.EPISODE,
-            )
-        )
-    angles = (0, 40, 80)
-    candidates = tuple(
-        DreamCandidate(
-            fact=fact,
-            bot_user_id="8000",
-            vector=EmbeddingVector(
-                values=(cos(radians(angle)), sin(radians(angle))),
-                dimensions=2,
-            ),
-            signature=fact_signature(fact),
-        )
-        for fact, angle in zip(rows, angles, strict=True)
-    )
-    service = object.__new__(DreamService)
-    service._settings = cast(
-        object,
-        SimpleNamespace(
-            memory_dream_similarity_threshold=0.70,
-            memory_dream_max_cluster_size=6,
-            memory_dream_episode_max_characters=800,
-        ),
-    )
-    service._repository = dreams
-    service._codec = Float32VectorCodec()
-
-    clusters, _isolated = await service._clusters(
-        DreamCandidateLoad(
-            candidates=candidates,
-            fact_signatures=tuple((item.fact.id, item.signature) for item in candidates),
-            eligible_facts=3,
-            missing_embeddings=0,
-            ambiguous_bot_facts=0,
-        ),
-        incremental=False,
-    )
-
-    assert len(clusters) == 1
-    assert len(clusters[0]) == 2
-    assert {item.fact.id for item in clusters[0]} != {item.id for item in rows}
-
-
-@pytest.mark.asyncio
-async def test_cancelled_dream_run_can_enter_rollback(database: Database) -> None:
-    dreams = DreamRepository(database)
-    await PeopleRepository(database).observe(user_id="1001", nickname="owner")
-    run = await dreams.create_run(
-        mode=DreamRunMode.FULL,
-        statistics=DreamPlanStatistics(
-            eligible_facts=0,
-            ready_facts=0,
-            missing_embeddings=0,
-            ambiguous_bot_facts=0,
-            partitions=0,
-            candidate_clusters=0,
-            isolated_facts=0,
-            estimated_model_calls=0,
-        ),
-        clusters=(),
-        snapshot_max_fact_id=0,
-        actor_user_id="1001",
-        scheduled_slot=None,
-    )
-    assert await dreams.start_run(run.public_id)
-    assert await dreams.cancel(run.public_id)
-    assert await dreams.mark_run_rolling_back(run.public_id)
-    current = await dreams.get_run(run.public_id)
-    assert current is not None
-    assert current.status is DreamRunStatus.ROLLING_BACK
-
-
 def _empty_dream_statistics() -> DreamPlanStatistics:
     return DreamPlanStatistics(
         eligible_facts=0,
@@ -668,52 +131,6 @@ def _empty_dream_statistics() -> DreamPlanStatistics:
         isolated_facts=0,
         estimated_model_calls=0,
     )
-
-
-@pytest.mark.asyncio
-async def test_dream_health_counts_pending_only_on_live_runs(database: Database) -> None:
-    _mutations, facts, ledger, dreams = _services(database)
-    await PeopleRepository(database).observe(user_id="1001", nickname="owner")
-    source_facts = tuple(
-        [
-            await _fact_with_evidence(
-                facts,
-                ledger,
-                message_id=f"dream-health-{index}",
-                memory_key=f"dream:health:{index}",
-                content=f"梦境健康检查事实 {index}",
-            )
-            for index in range(3)
-        ]
-    )
-    statistics = _empty_dream_statistics()
-    cancelled = await dreams.create_run(
-        mode=DreamRunMode.FULL,
-        statistics=statistics,
-        clusters=(
-            ("dead-1", "partition", "8000", "fact", (source_facts[0].id,), "fp-1"),
-            ("dead-2", "partition", "8000", "fact", (source_facts[1].id,), "fp-2"),
-        ),
-        snapshot_max_fact_id=source_facts[1].id,
-        actor_user_id="1001",
-        scheduled_slot=None,
-    )
-    assert await dreams.cancel(cancelled.public_id)
-    planned = await dreams.create_run(
-        mode=DreamRunMode.FULL,
-        statistics=statistics,
-        clusters=(("live-1", "partition", "8000", "fact", (source_facts[2].id,), "fp-3"),),
-        snapshot_max_fact_id=source_facts[2].id,
-        actor_user_id="1001",
-        scheduled_slot=None,
-    )
-
-    snapshot = await dreams.health(enabled=True)
-
-    assert planned.status is DreamRunStatus.PLANNED
-    assert snapshot.pending_clusters == 1
-    assert snapshot.running is False
-    assert snapshot.active_run_id is None
 
 
 @pytest.mark.asyncio
@@ -1157,108 +574,3 @@ async def test_dream_resolution_records_conflict_provenance(database: Database) 
             )
         )
     assert relation is not None
-
-
-@pytest.mark.asyncio
-async def test_dream_reserves_actual_model_calls_before_execution(database: Database) -> None:
-    _mutations, facts, ledger, dreams = _services(database)
-    source_facts = tuple(
-        [
-            await _fact_with_evidence(
-                facts,
-                ledger,
-                message_id=f"dream-budget-{index}",
-                memory_key=f"dream:budget:{index}",
-                content=f"梦境预算事实 {index}",
-            )
-            for index in range(2)
-        ]
-    )
-    run = await dreams.create_run(
-        mode=DreamRunMode.INCREMENTAL,
-        statistics=DreamPlanStatistics(
-            eligible_facts=2,
-            ready_facts=2,
-            missing_embeddings=0,
-            ambiguous_bot_facts=0,
-            partitions=1,
-            candidate_clusters=2,
-            isolated_facts=0,
-            estimated_model_calls=2,
-        ),
-        clusters=(
-            (
-                "cluster-budget",
-                "partition",
-                "8000",
-                "fact",
-                tuple(item.id for item in source_facts),
-                "fp",
-            ),
-            (
-                "cluster-deferred",
-                "partition",
-                "8000",
-                "fact",
-                tuple(item.id for item in source_facts),
-                "fp-deferred",
-            ),
-        ),
-        snapshot_max_fact_id=max(item.id for item in source_facts),
-        actor_user_id=None,
-        scheduled_slot="2026-08-13:05",
-    )
-    cluster = await dreams.claim_next_cluster(run.public_id)
-    assert cluster is not None
-    assert await dreams.reserve_model_call(
-        run_public_id=run.public_id,
-        cluster_id=cluster.id,
-        maximum=1,
-    )
-    assert not await dreams.reserve_model_call(
-        run_public_id=run.public_id,
-        cluster_id=cluster.id,
-        maximum=1,
-    )
-    refreshed = await dreams.get_run(run.public_id)
-    page = await dreams.run_page(run.public_id)
-    assert refreshed is not None and refreshed.model_calls == 1
-    assert page.clusters[0].model_calls == 1
-    assert "fp" in await dreams.attempted_fingerprints()
-    assert "fp-deferred" not in await dreams.attempted_fingerprints()
-    assert await dreams.reserve_model_call(
-        run_public_id=run.public_id, cluster_id=cluster.id, maximum=24
-    )
-    assert not await dreams.reserve_model_call(
-        run_public_id=run.public_id, cluster_id=cluster.id, maximum=24
-    )
-    await dreams.finish_cluster(cluster.id, status=DreamClusterStatus.COMPLETED, operation_count=0)
-    before = await dreams.checkpoint_map()
-    assert await dreams.defer_pending(run.public_id) == 1
-    assert await dreams.defer_pending(run.public_id) == 0
-    finished = await dreams.finalize_run(run.public_id)
-    assert finished is not None and finished.status is DreamRunStatus.COMPLETED
-    assert finished.failed_clusters == 0 and finished.completed_clusters == 1
-    assert finished.statistics.budget_deferred_clusters == 1
-    page = await dreams.run_page(run.public_id)
-    assert page.clusters[1].status is DreamClusterStatus.SKIPPED
-    assert page.clusters[1].error_category == "budget_deferred"
-    assert page.clusters[1].model_calls == 0
-    assert await dreams.checkpoint_map() == before
-
-
-@pytest.mark.asyncio
-async def test_first_enable_baselines_facts_even_before_embeddings_exist(
-    database: Database,
-) -> None:
-    _mutations, facts, ledger, dreams = _services(database)
-    fact = await _fact_with_evidence(
-        facts,
-        ledger,
-        message_id="dream-baseline-missing-vector",
-        memory_key="baseline:fact",
-        content="首次启用时这条事实还没有 embedding",
-    )
-    assert await dreams.initialize_baseline(((fact.id, fact_signature(fact)),))
-    assert not await dreams.initialize_baseline(((fact.id, "changed"),))
-    assert await dreams.checkpoint_map() == {fact.id: fact_signature(fact)}

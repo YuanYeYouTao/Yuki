@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import re
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
@@ -13,7 +11,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import AliasChoices, Field, PrivateAttr, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from qq_ai_bot.domain.messages import ReasoningEffort, minimum_reasoning_effort
+from qq_ai_bot.domain.messages import ReasoningEffort
 from qq_ai_bot.settings_domains import (
     AppSettings,
     ASRSettings,
@@ -191,7 +189,6 @@ class Settings(BaseSettings):
     max_qq_message_chars: int = 1800
     daily_chat_message_delay_min_seconds: float = 1.0
     daily_chat_message_delay_max_seconds: float = 2.0
-    group_memory_max_entries: int = 100
 
     observe_enabled_groups: bool = True
     recent_history_tool_limit: int = 20
@@ -199,9 +196,6 @@ class Settings(BaseSettings):
     # rollup tail plus the background trigger, otherwise foreground extractive
     # rewrites the checkpoint every turn in the gap below trigger.
     local_context_event_limit: int = 2_048
-    person_memory_max_entries: int = 100
-    person_group_memory_max_entries: int = 50
-    preference_max_entries: int = 30
     memory_batch_seconds: float = 30.0
     memory_batch_trigger_count: int = Field(default=12, gt=0)
     memory_batch_max_events: int = Field(default=12, gt=0)
@@ -221,107 +215,44 @@ class Settings(BaseSettings):
             "MEMORY_SELF_REFLECTION_MAX_SESSIONS_PER_RUN",
         ),
     )
-    memory_self_reflection_max_batches_per_conversation_per_run: int = 16
     memory_self_reflection_max_daily_calls: int = 96
     memory_self_reflection_event_threshold: int = 50
     memory_self_reflection_character_threshold: int = 8000
-    memory_self_reflection_low_event_threshold: int = 30
-    memory_self_reflection_low_character_threshold: int = 4800
-    memory_self_reflection_natural_gap_seconds: float = 300.0
     memory_self_reflection_max_wait_seconds: float = 28800.0
     memory_self_reflection_max_events: int = 200
     memory_self_reflection_max_characters: int = 16000
     memory_self_reflection_max_output_tokens: int = 32768
     memory_self_reflection_timeout_seconds: float = 180.0
-    memory_self_reflection_drain_enabled: bool = False
-    memory_self_reflection_drain_high_events: int = 500
-    memory_self_reflection_drain_critical_events: int = 1000
-    memory_self_reflection_drain_low_events: int = 100
-    memory_self_reflection_drain_interval_seconds: float = 600.0
-    memory_self_reflection_allow_text_json_fallback: bool = False
     memory_self_reflection_tool_receipt_characters: int = 2000
     memory_self_reflection_tool_receipt_retention_days: int = 7
     memory_max_referenced_targets: int = 5
     memory_lexical_candidate_limit: int = 50
     memory_context_limit_per_entity: int = 4
     memory_overview_limit_per_entity: int = 10
-    memory_automatic_recall_per_target_limit: int = Field(default=4, gt=0, le=20)
-    memory_automatic_recall_background_limit: int = Field(default=4, gt=0, le=20)
-    memory_automatic_recall_continuation_limit: int = Field(default=4, gt=0, le=20)
-    memory_automatic_topic_threshold: float = Field(default=0.90, ge=0.35, le=0.90)
-    memory_automatic_background_threshold: float = Field(default=0.90, ge=0.35, le=0.90)
-    memory_automatic_calibrated_profile: str = ""
-    memory_automatic_recall_focused_limit: int = Field(default=3, gt=0, le=20)
-    memory_automatic_recall_overview_limit: int = Field(default=4, gt=0, le=20)
-    memory_always_on_explicit_preference_limit: int = 3
     memory_query_term_limit: int = 12
     memory_short_query_fallback_enabled: bool = True
     memory_semantic_enabled: bool = True
     memory_semantic_candidate_limit: int = 50
-    memory_semantic_min_similarity: float = 0.35
     memory_hybrid_lexical_weight: float = 1.0
     memory_hybrid_semantic_weight: float = 1.0
     memory_hybrid_rrf_k: int = 60
-    memory_intent_rerank_enabled: bool = True
-    memory_activation_ranking_enabled: bool = True
-    memory_usage_attribution_enabled: bool = True
-    memory_usage_attribution_timeout_seconds: float = Field(default=12.0, gt=0, le=120)
-    memory_usage_attribution_job_ttl_seconds: float = Field(default=120.0, gt=0, le=3600)
-    memory_usage_attribution_queue_limit: int = Field(default=128, gt=0, le=4096)
-    memory_reinforcement_enabled: bool = True
-    memory_recall_receipts_enabled: bool = True
-    memory_activation_half_life_episode_days: float = Field(default=14.0, gt=0)
-    memory_activation_half_life_fact_days: float = Field(default=60.0, gt=0)
-    memory_activation_half_life_preference_days: float = Field(default=120.0, gt=0)
-    memory_activation_half_life_explicit_days: float = Field(default=365.0, gt=0)
-    memory_reinforcement_alpha_background: float = Field(default=0.05, ge=0, le=1)
-    memory_reinforcement_alpha_continuation: float = Field(default=0.12, ge=0, le=1)
-    memory_reinforcement_alpha_recall: float = Field(default=0.25, ge=0, le=1)
-    memory_reinforcement_alpha_verify: float = Field(default=0.08, ge=0, le=1)
-    memory_intent_recent_window_days: int = Field(default=90, gt=0)
-    memory_recall_receipt_retention_days: int = Field(default=30, gt=0)
-    memory_recall_trace_candidate_limit: int = Field(default=20, gt=0, le=100)
-    memory_consolidation_enabled: bool = True
-    memory_consolidation_candidate_limit: int = 12
-    memory_consolidation_min_relevance: float = 0.25
-    memory_consolidation_model_task: str = "memory_consolidation"
-    memory_consolidation_max_output_tokens: int = 4096
     memory_dream_enabled: bool = True
     memory_dream_schedule_hour: int = Field(default=5, ge=0, le=23)
     memory_dream_timezone: str = "Asia/Shanghai"
     memory_dream_poll_seconds: float = Field(default=60.0, gt=0)
-    memory_dream_max_clusters_per_run: int = Field(default=12, gt=0, le=100)
-    memory_dream_max_model_calls_per_run: int = Field(default=24, gt=0, le=200)
+    memory_dream_max_clusters_per_run: int = Field(default=12, gt=0)
+    memory_dream_max_model_calls_per_run: int = Field(default=24, gt=0)
     memory_dream_similarity_threshold: float = Field(default=0.70, ge=-1, le=1)
-    memory_dream_max_cluster_size: int = Field(default=6, ge=2, le=20)
-    memory_dream_max_input_characters: int = Field(default=24_000, gt=0, le=100_000)
+    memory_dream_max_cluster_size: int = Field(default=6, gt=0)
+    memory_dream_max_input_characters: int = Field(default=24_000, gt=0)
     memory_dream_max_output_tokens: int = Field(default=4096, gt=0)
-    memory_dream_episode_max_characters: int = Field(default=800, ge=200, le=800)
-    memory_dream_episode_compression_ratio: float = Field(default=0.45, gt=0, le=1)
-    memory_dream_evidence_per_fact: int = Field(default=2, ge=1, le=10)
-    memory_dream_evidence_excerpt_characters: int = Field(default=300, gt=0, le=2000)
+    memory_dream_evidence_per_fact: int = Field(default=2, ge=1)
+    memory_dream_evidence_excerpt_characters: int = Field(default=300, gt=0)
     memory_evidence_compaction_enabled: bool = True
-    memory_evidence_compaction_batch_size: int = Field(default=20, ge=1, le=100)
-    memory_mmr_enabled: bool = True
-    memory_mmr_lambda: float = Field(default=0.75, ge=0, le=1)
-    memory_mmr_candidate_pool_size: int = Field(default=20, gt=0, le=100)
-    memory_evidence_weight_explicit: float = 1.0
-    memory_evidence_weight_self: float = 0.9
-    memory_evidence_weight_group: float = 0.7
-    memory_evidence_weight_third_party: float = 0.55
-    memory_evidence_weight_rebuild: float = 0.75
-    memory_authority_cap_explicit: float = 1.0
-    memory_authority_cap_self: float = 0.98
-    memory_authority_cap_group: float = 0.9
-    memory_authority_cap_third_party: float = 0.75
+    memory_evidence_compaction_batch_size: int = Field(default=20, ge=1)
     memory_maintenance_enabled: bool = True
     memory_maintenance_interval_seconds: float = 300.0
     memory_maintenance_batch_limit: int = 100
-    memory_automatic_stale_days: int = 180
-    memory_third_party_stale_days: int = 30
-    memory_contested_stale_days: int = 14
-    memory_stale_max_importance: int = 2
-    memory_stale_max_confidence: float = 0.7
 
     memory_embedding_enabled: bool = True
     memory_embedding_provider: str = "qwen_dashscope"
@@ -546,16 +477,6 @@ class Settings(BaseSettings):
     automation_max_consecutive_failures: int = 3
     automation_run_retention_days: int = 30
 
-    @field_validator("llm_thinking_enabled", "vision_thinking_enabled")
-    @classmethod
-    def _generation_thinking_required(cls, value: bool | None) -> bool:
-        return True
-
-    @field_validator("llm_reasoning_effort")
-    @classmethod
-    def _generation_reasoning_floor(cls, value: ReasoningEffort | None) -> ReasoningEffort:
-        return minimum_reasoning_effort(value)
-
     @field_validator("web_search_depth")
     @classmethod
     def _web_search_depth(cls, value: str) -> str:
@@ -637,41 +558,6 @@ class Settings(BaseSettings):
     @classmethod
     def _valid_direct_command_bindings(cls, value: dict[str, str]) -> dict[str, str]:
         return validate_direct_command_bindings(value)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _reject_removed_conversation_history_settings(cls, value: object) -> object:
-        removed = {
-            "conversation_history_rollup_enabled",
-            "conversation_history_rollup_worker_concurrency",
-            "conversation_history_rollup_poll_seconds",
-            "conversation_history_rollup_lease_seconds",
-            "conversation_history_rollup_timeout_seconds",
-            "conversation_history_rollup_retry_seconds",
-            "conversation_history_raw_tail_events",
-            "conversation_history_raw_tail_characters",
-            "conversation_history_extractive_max_characters",
-            "conversation_history_llm_origins",
-            "conversation_history_rollup_prompt_version",
-            "conversation_history_raw_tail_budget_ratio",
-            "conversation_history_sync_extractive_max_slices",
-        }
-        supplied = {str(key).casefold() for key in value} if isinstance(value, dict) else set()
-        supplied.update(key.casefold() for key in os.environ)
-        removed_family = re.compile(
-            r"^conversation_history_rollup_(?:"
-            r"max_(?:attempts|level)|"
-            r"l0_(?:min|max)_(?:events|characters)|"
-            r"fan_(?:in|in_characters)"
-            r")$"
-        )
-        found = sorted(
-            (removed & supplied) | {key for key in supplied if removed_family.fullmatch(key)}
-        )
-        if found:
-            names = ", ".join(name.upper() for name in found)
-            raise ValueError(f"removed 3.6 conversation history settings are not accepted: {names}")
-        return value
 
     @model_validator(mode="after")
     def _validate_code_worker_settings(self) -> Self:
@@ -815,16 +701,6 @@ class Settings(BaseSettings):
             raise ValueError("qwen_dashscope currently supports 1024 dimensions")
         if self.memory_embedding_document_template_version != 1:
             raise ValueError("unsupported MEMORY_EMBEDDING_DOCUMENT_TEMPLATE_VERSION")
-        return self
-
-    @model_validator(mode="after")
-    def _validate_memory_consolidation_settings(self) -> Self:
-        if self.memory_consolidation_model_task != "memory_consolidation":
-            raise ValueError("MEMORY_CONSOLIDATION_MODEL_TASK must be memory_consolidation")
-        if self.memory_third_party_stale_days > self.memory_automatic_stale_days:
-            raise ValueError(
-                "MEMORY_THIRD_PARTY_STALE_DAYS must not exceed MEMORY_AUTOMATIC_STALE_DAYS"
-            )
         return self
 
     @cached_property

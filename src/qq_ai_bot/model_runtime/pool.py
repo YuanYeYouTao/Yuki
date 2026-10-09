@@ -17,7 +17,6 @@ from qq_ai_bot.llm.openai_responses import (
     OpenAICompatibleResponsesProvider,
     OpenAIResponsesProvider,
 )
-from qq_ai_bot.llm.vendor_policy import CHAT_VENDORS
 from qq_ai_bot.model_runtime.models import ModelProfile, ModelProtocol
 
 
@@ -51,7 +50,7 @@ class ModelClientPool:
             return existing
         if profile.provider.casefold() == "fake":
             provider: LLMProvider = FakeLLMProvider()
-        elif profile.provider.casefold() in CHAT_VENDORS | {"anthropic", "gemini"}:
+        else:
             api_key = self.api_key_for(profile)
             if not api_key:
                 raise LLMConfigurationError(
@@ -77,9 +76,9 @@ class ModelClientPool:
                     timeout_seconds=profile.timeout_seconds,
                     max_retries=profile.max_retries,
                     client=connection_pool,
-                    provider_name=profile.provider.casefold(),
                     options=profile.wire_options,
                     headers=profile.headers,
+                    provider_name=profile.provider.casefold(),
                 )
             elif profile.protocol in {ModelProtocol.ANTHROPIC_MESSAGES, ModelProtocol.GEMINI}:
                 native_provider = (
@@ -95,6 +94,7 @@ class ModelClientPool:
                     client=connection_pool,
                     options=profile.wire_options,
                     headers=profile.headers,
+                    provider_name=profile.provider.casefold(),
                 )
             elif profile.provider.casefold() == "deepseek":
                 provider = DeepSeekResponsesProvider(
@@ -104,6 +104,7 @@ class ModelClientPool:
                     max_retries=profile.max_retries,
                     client=connection_pool,
                     headers=profile.headers,
+                    provider_name=profile.provider.casefold(),
                 )
             else:
                 response_provider = (
@@ -118,11 +119,8 @@ class ModelClientPool:
                     max_retries=profile.max_retries,
                     client=connection_pool,
                     headers=profile.headers,
+                    provider_name=profile.provider.casefold(),
                 )
-        else:
-            raise LLMConfigurationError(
-                f"model profile {profile.id} uses unsupported provider {profile.provider}"
-            )
         self._clients[key] = provider
         return provider
 

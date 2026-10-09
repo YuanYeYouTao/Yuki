@@ -8,7 +8,12 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import delete, func, select, update
 from tests.conftest import build_harness, make_settings
-from tests.unit.test_semantic_participation_host import _event_and_route, _host, _item, _message
+from tests.support.semantic_participation_host_helpers import (
+    _event_and_route,
+    _host,
+    _item,
+    _message,
+)
 from yuki_participation.controller import Controller
 from yuki_participation.participation import ParticipationCheckpoint
 

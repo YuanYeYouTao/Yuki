@@ -17,7 +17,7 @@ from qq_ai_bot.memory.models import MemoryQueryIntent, MemoryTemporalIntent
 
 def parse_memory_tool_intent(arguments: dict[str, Any]) -> MemoryQueryIntent:
     query = arguments.get("query")
-    if query is not None and (not isinstance(query, str) or len(query) > 400):
+    if query is not None and (not isinstance(query, str)):
         raise ValueError("invalid memory query")
     raw_mode = arguments.get("mode")
     if raw_mode is None:
@@ -30,14 +30,12 @@ def parse_memory_tool_intent(arguments: dict[str, Any]) -> MemoryQueryIntent:
             raise ValueError("none is not a tool read mode")
     purpose = MemoryRecallPurpose(arguments.get("purpose", "recall"))
     entities = arguments.get("entities", [])
-    if (
-        not isinstance(entities, list)
-        or len(entities) > 5
-        or any(not isinstance(item, str) or not item.strip() or len(item) > 64 for item in entities)
+    if not isinstance(entities, list) or any(
+        not isinstance(item, str) or not item.strip() for item in entities
     ):
         raise ValueError("invalid memory entities")
     kinds = arguments.get("preferred_kinds", [])
-    if not isinstance(kinds, list) or len(kinds) > 3:
+    if not isinstance(kinds, list):
         raise ValueError("invalid memory kinds")
     preferred_kinds = tuple(MemoryKind(item) for item in kinds)
     constraint = MemoryTemporalConstraint(arguments.get("temporal_constraint", "strict"))

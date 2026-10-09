@@ -44,37 +44,6 @@ class MemoryClaimOperation(StrEnum):
     RETRACT = "retract"
 
 
-class MemorySubjectBasis(StrEnum):
-    """Model-declared subject evidence; backend policy remains authoritative."""
-
-    FIRST_PERSON = "first_person"
-    OMITTED_SELF = "omitted_self"
-    ADDRESSED_SECOND_PERSON = "addressed_second_person"
-    MENTIONED_SUBJECT = "mentioned_subject"
-    REPLY_SUBJECT = "reply_subject"
-    NAMED_UNRESOLVED = "named_unresolved"
-    GROUP = "group"
-    ABOUT_YUKI = "about_yuki"
-
-
-class MemoryRetention(StrEnum):
-    """Whether a claim belongs in durable memory without an explicit request."""
-
-    DURABLE = "durable"
-    MEANINGFUL_EPISODE = "meaningful_episode"
-    TRANSIENT = "transient"
-
-
-class MemorySourceStyle(StrEnum):
-    """Semantic style of the quoted source rather than its transport origin."""
-
-    NATURAL_STATEMENT = "natural_statement"
-    INSTRUCTION = "instruction"
-    ROLEPLAY = "roleplay"
-    GENERATED_RESULT = "generated_result"
-    QUOTED_TEXT = "quoted_text"
-
-
 class MemoryReviewState(StrEnum):
     LEGACY_UNREVIEWED = "legacy_unreviewed"
     VERIFIED = "verified"

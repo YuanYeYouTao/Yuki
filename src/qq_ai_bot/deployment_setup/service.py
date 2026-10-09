@@ -18,7 +18,6 @@ from typing import Any, get_origin
 from urllib.parse import urlsplit
 
 import httpx
-import tomlkit
 from pydantic import AliasChoices, AliasPath, ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -45,9 +44,7 @@ _FLASH_TASKS = frozenset(
     {
         ModelTask.MEMORY_EXTRACTION,
         ModelTask.MEMORY_SELF_REFLECTION,
-        ModelTask.MEMORY_CONSOLIDATION,
         ModelTask.MEMORY_DREAM,
-        ModelTask.MEMORY_ATTRIBUTION,
         ModelTask.RELATIONSHIP_EVALUATION,
         ModelTask.EMOJI_REPLACEMENT,
         ModelTask.UTILITY_STRUCTURED,
@@ -280,125 +277,28 @@ def build_model_profiles(
                 'capabilities = ["structured_output", "reasoning"]',
             )
         )
-    if main_protocol == "responses":
-        lines.extend(
-            (
-                "",
-                "[profiles.self_reflection]",
-                f'provider = "{provider}"',
-                'protocol = "responses"',
-                'base_url_env = "LLM_BASE_URL"',
-                'api_key_env = "LLM_API_KEY"',
-                'model_env = "LLM_MODEL"',
-                "timeout_seconds = 180.0",
-                "max_retries = 1",
-                "default_temperature = 0.1",
-                "default_max_output_tokens = 32768",
-                'thinking_mode = "enabled"',
-                'reasoning_effort = "low"',
-                'structured_output_mode = "json_schema"',
-                'capabilities = ["structured_output", "reasoning"]',
-            )
-        )
     lines.extend(("", "[routes]"))
     for task in ModelTask:
         profile = "background_tasks" if flash_enabled and task in _FLASH_TASKS else "primary_agent"
-        if main_protocol == "responses" and task is ModelTask.MEMORY_SELF_REFLECTION:
-            profile = "self_reflection"
         lines.append(f'{task.value} = "{profile}"')
     return "\n".join(lines) + "\n"
 
 
-def preserve_model_search_settings(generated: str, previous: str) -> str:
-    """Keep saved search choices when the basic/flash wizard rebuilds its role profiles."""
-    old = tomllib.loads(previous)
-    current = tomlkit.parse(generated)
-    old_profiles, old_routes = old.get("profiles", {}), old.get("routes", {})
-    new_profiles: Any = current["profiles"]
-    new_routes: Any = current["routes"]
-    if not isinstance(old_profiles, dict) or not isinstance(old_routes, dict):
-        raise SetupValidationError("现有模型档案无效，不能保留搜索选择")
-    replacements: dict[str, set[str]] = {}
-    for profile_id, profile in new_profiles.items():
-        choices: set[tuple[str | None, bool]] = set()
-        for task, new_id in new_routes.items():
-            if new_id != profile_id:
-                continue
-            old_id = old_routes.get(task)
-            if not isinstance(old_id, str):
-                continue
-            old_profile = old_profiles.get(old_id)
-            if not isinstance(old_profile, dict):
-                continue
-            old_mode = old_profile.get("search_mode")
-            if old_mode is not None and not isinstance(old_mode, str):
-                raise SetupValidationError("现有模型档案搜索方式无效")
-            choices.add(
-                (
-                    old_mode,
-                    "native_web_search" in old_profile.get("capabilities", []),
-                )
-            )
-            replacements.setdefault(old_id, set()).add(profile_id)
-        if len(choices) > 1:
-            raise SetupValidationError(
-                "现有任务的搜索选择不同，向导无法合并；请在 WebUI 保留独立模型连接"
-            )
-        if choices:
-            mode, native = choices.pop()
-            if mode is not None:
-                profile["search_mode"] = mode
-            elif "search_mode" in profile:
-                del profile["search_mode"]
-            capabilities = [item for item in profile["capabilities"] if item != "native_web_search"]
-            if native:
-                capabilities.append("native_web_search")
-            profile["capabilities"] = capabilities
-    if (connection := old.get("search_connection")) is not None:
-        candidates = (
-            {connection} if connection in new_profiles else replacements.get(connection, set())
-        )
-        if len(candidates) != 1:
-            raise SetupValidationError("现有独立搜索连接不能由向导重建；请在 WebUI 修改模型配置")
-        current["search_connection"] = candidates.pop()
-    return tomlkit.dumps(current)
-
-
-def infer_main_protocol(profile_path: Path, environment: Mapping[str, str]) -> str:
-    if profile_path.is_file():
-        try:
-            import tomllib
-
-            payload = tomllib.loads(profile_path.read_text(encoding="utf-8"))
-            profiles = payload.get("profiles", {})
-            if isinstance(profiles, dict):
-                main = profiles.get("primary_agent", profiles.get("main", profiles.get("pro", {})))
-                if isinstance(main, dict) and main.get("protocol") in {
-                    "responses",
-                    "chat_completions",
-                    "anthropic_messages",
-                    "gemini",
-                }:
-                    return str(main["protocol"])
-        except (OSError, UnicodeError, ValueError):
-            pass
-    if environment.get("LLM_PROVIDER", "").casefold() == "deepseek":
-        return "responses"
-    if environment.get("LLM_PROVIDER", "").casefold() == "anthropic":
-        return "anthropic_messages"
-    if environment.get("LLM_PROVIDER", "").casefold() == "gemini":
-        return "gemini"
-    return "chat_completions"
+def main_protocol(profile_path: Path, environment: Mapping[str, str]) -> str:
+    if not profile_path.is_file():
+        return "chat_completions"
+    catalog = parse_model_profile_catalog(
+        profile_path.read_text(encoding="utf-8"), environment=environment
+    )
+    return catalog.profiles[catalog.routes[ModelTask.CHAT_AGENT].profile_id].protocol.value
 
 
 def model_profiles_use_flash(profile_path: Path) -> bool:
     if not profile_path.is_file():
         return False
-    try:
-        content = profile_path.read_text(encoding="utf-8")
-        return "[profiles.background_tasks]" in content or "[profiles.flash]" in content
-    except (OSError, UnicodeError):
-        return False
+    payload = tomllib.loads(profile_path.read_text(encoding="utf-8"))
+    routes = payload["routes"]
+    return bool(routes["memory_extraction"] != routes["chat_agent"])
 
 
 def validate_configuration(paths: SetupPaths, configuration: SetupConfiguration) -> Settings:

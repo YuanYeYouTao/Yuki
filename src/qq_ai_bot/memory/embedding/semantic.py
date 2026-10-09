@@ -51,7 +51,6 @@ class MemorySemanticIndex:
         profile_id: int,
         candidate_limit: int,
         kinds: tuple[MemoryKind, ...],
-        min_similarity: float,
         temporal: MemoryTemporalIntent | None = None,
     ) -> tuple[tuple[AuthorizedSemanticCandidate, ...], bool, bool]:
         rows, scan_truncated, active_count = await self._repository.load_authorized_vectors(
@@ -74,8 +73,7 @@ class MemorySemanticIndex:
                 continue
             vector = self._codec.decode(row.vector_blob, dimensions=profile.dimensions)
             similarity = self._codec.dot(query_vector, vector)
-            if similarity >= min_similarity:
-                scored.append((row.fact_id, similarity))
+            scored.append((row.fact_id, similarity))
         scored.sort(key=lambda item: (-item[1], item[0]))
         truncated = scan_truncated or len(scored) > candidate_limit
         coverage_complete = not scan_truncated and not stale_count and len(rows) == active_count
@@ -97,7 +95,6 @@ class MemorySemanticIndex:
         profile_id: int,
         candidate_limit: int,
         kinds: tuple[MemoryKind, ...],
-        min_similarity: float,
         temporal: MemoryTemporalIntent | None = None,
     ) -> tuple[MemorySemanticCandidate, ...]:
         rows = await self._repository.load_target_vectors(
@@ -118,8 +115,7 @@ class MemorySemanticIndex:
                 continue
             vector = self._codec.decode(row.vector_blob, dimensions=profile.dimensions)
             similarity = self._codec.dot(query_vector, vector)
-            if similarity >= min_similarity:
-                scored.append((row.fact_id, similarity))
+            scored.append((row.fact_id, similarity))
         scored.sort(key=lambda item: (-item[1], item[0]))
         return tuple(
             MemorySemanticCandidate(
