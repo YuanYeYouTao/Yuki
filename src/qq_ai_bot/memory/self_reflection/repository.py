@@ -199,6 +199,14 @@ class SelfReflectionRepository:
                         MemorySelfReflectionRunModel.conversation_key_hash
                         == state.conversation_key_hash,
                         MemorySelfReflectionRunModel.last_event_id > state.last_event_id,
+                        self._apply_event_scope(
+                            select(ChatEventModel.id).where(
+                                ChatEventModel.id >= MemorySelfReflectionRunModel.first_event_id,
+                                ChatEventModel.id <= MemorySelfReflectionRunModel.last_event_id,
+                                ChatEventModel.event_kind == "message",
+                            ),
+                            state,
+                        ).exists(),
                     )
                 )
             ).all()
@@ -498,14 +506,6 @@ class SelfReflectionRepository:
                         )
                     )
                 )
-                if not (row.has_yuki_reply or row.has_tool_result or has_tool):
-                    if row.pending_since and _utc(row.pending_since) <= waited_before:
-                        await self._advance_state(
-                            session, row, through_event_id=row.latest_event_id, now=now
-                        )
-                        row.last_policy_reason = "no_self_evidence"
-                        row.last_policy_event_id = row.last_event_id
-                    continue
                 outstanding = list(
                     (
                         await session.scalars(
@@ -514,6 +514,16 @@ class SelfReflectionRepository:
                                 MemorySelfReflectionRunModel.conversation_key_hash
                                 == row.conversation_key_hash,
                                 MemorySelfReflectionRunModel.last_event_id > row.last_event_id,
+                                self._apply_event_scope(
+                                    select(ChatEventModel.id).where(
+                                        ChatEventModel.id
+                                        >= MemorySelfReflectionRunModel.first_event_id,
+                                        ChatEventModel.id
+                                        <= MemorySelfReflectionRunModel.last_event_id,
+                                        ChatEventModel.event_kind == "message",
+                                    ),
+                                    row,
+                                ).exists(),
                             )
                             .order_by(MemorySelfReflectionRunModel.first_event_id)
                         )
@@ -577,8 +587,7 @@ class SelfReflectionRepository:
                     item_characters = len(renderer.render_event(_event_record(item)))
                     if input_characters + item_characters > max_characters:
                         if not event_rows:
-                            # Persist this source before classifying it; otherwise an oversized
-                            # event would crash every cycle without a resumable failure record.
+                            # Keep a single large event complete rather than discard its tail.
                             event_rows.append(item)
                         break
                     event_rows.append(item)
@@ -772,7 +781,6 @@ class SelfReflectionRepository:
                             MemoryToolReceiptModel.id <= batch.last_receipt_id,
                         )
                         .order_by(MemoryToolReceiptModel.id)
-                        .limit(max(1, limit))
                     )
                 )
             return tuple(

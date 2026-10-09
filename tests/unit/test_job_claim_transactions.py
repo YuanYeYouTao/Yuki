@@ -6,11 +6,20 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import event, update
+from tests.conftest import make_settings
 from tests.support.canonical_ingress import append_user_event
+from tests.support.model_executor import InjectedModelExecutor
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.memory.repository import MemoryJobRepository
+from qq_ai_bot.domain.messages import ChatRequest, ChatResponse
+from qq_ai_bot.llm.base import LLMProvider, LLMUnavailableError
+from qq_ai_bot.memory.extraction import BatchMemoryExtractionOutput
+from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepository
+from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.memory.worker import MemoryWorker
 from qq_ai_bot.persistence.models import ChatEventModel, MemoryJobModel
+from qq_ai_bot.persistence.repositories import EventLedgerRepository
+from qq_ai_bot.services.concurrency import ConcurrencyManager
 
 
 @pytest.mark.parametrize("kind", ["memory", "memory_batch"])
@@ -115,3 +124,52 @@ async def test_memory_claim_rechecks_reset_between_prepare_and_commit(
     async with database.sessions() as session:
         job = await session.get(MemoryJobModel, 1)
         assert job is not None and job.status == "pending"
+
+
+async def test_memory_worker_recovers_original_job_after_repeated_provider_failure(database):
+    identity = await append_user_event(database, message_id="memory-repeated-provider-failure")
+    repository = MemoryJobRepository(database)
+
+    class Provider(LLMProvider):
+        calls = 0
+
+        async def complete(self, request: ChatRequest) -> ChatResponse:
+            self.calls += 1
+            if self.calls <= 4:
+                raise LLMUnavailableError("temporary provider failure")
+            return ChatResponse(
+                content=BatchMemoryExtractionOutput().model_dump_json(), latency_seconds=0
+            )
+
+    provider = Provider()
+    worker = MemoryWorker(
+        settings=make_settings(database.url, memory_batch_max_wait_seconds=0),
+        jobs=repository,
+        facts=MemoryFactService(MemoryFactRepository(database)),
+        ledger=EventLedgerRepository(database),
+        model_executor=InjectedModelExecutor(provider),
+        concurrency=ConcurrencyManager(1),
+    )
+    assert await worker.enqueue(identity, "private:1001")
+    for attempts in range(1, 5):
+        assert await worker.process_once() == 0
+        async with database.sessions() as session:
+            job = await session.get(MemoryJobModel, 1)
+            assert job is not None and job.event_id == identity
+            assert job.status == "pending" and job.attempts == attempts
+            assert job.error_category == "LLMUnavailableError"
+            assert job.next_attempt_at.replace(tzinfo=UTC) > datetime.now(UTC)
+        # Advance readiness only; the next activation must reclaim the original ID.
+        async with database.sessions() as session, session.begin():
+            await session.execute(
+                update(MemoryJobModel)
+                .where(MemoryJobModel.id == 1)
+                .values(next_attempt_at=datetime.now(UTC) - timedelta(seconds=1))
+            )
+    assert await worker.process_once() == 1
+    async with database.sessions() as session:
+        job = await session.get(MemoryJobModel, 1)
+        assert job is not None and job.event_id == identity and job.attempts == 4
+        assert job.status == "done" and job.outcome == "no_claims"
+        assert job.error_category is None and job.completed_at is not None
+    assert provider.calls == 5

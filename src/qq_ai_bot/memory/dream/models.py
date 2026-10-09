@@ -88,6 +88,7 @@ class DreamInput(_DreamModel):
 
 
 class DreamRecomposeOutput(_DreamModel):
+    model_config = ConfigDict(extra="ignore", frozen=True)
     focus: str = Field(min_length=1)
     source_refs: tuple[str, ...] = Field(min_length=1)
     content: str = Field(min_length=1)
@@ -96,12 +97,11 @@ class DreamRecomposeOutput(_DreamModel):
     @field_validator("source_refs")
     @classmethod
     def _unique_sources(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if len(set(value)) != len(value):
-            raise ValueError("dream recompose output source refs must be unique")
-        return value
+        return tuple(dict.fromkeys(value))
 
 
 class DreamAction(_DreamModel):
+    model_config = ConfigDict(extra="ignore", frozen=True)
     operation: DreamOperationType
     source_refs: tuple[str, ...] = Field(min_length=1)
     anchor_ref: str | None = None
@@ -112,9 +112,13 @@ class DreamAction(_DreamModel):
     @field_validator("source_refs")
     @classmethod
     def _unique_sources(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if len(set(value)) != len(value):
-            raise ValueError("dream action source refs must be unique")
-        return value
+        return tuple(dict.fromkeys(value))
+
+    @property
+    def consumed_source_refs(self) -> set[str]:
+        if self.operation is DreamOperationType.RECOMPOSE:
+            return {ref for output in self.outputs for ref in output.source_refs}
+        return set(self.source_refs)
 
     @model_validator(mode="after")
     def _shape(self) -> DreamAction:
@@ -123,47 +127,34 @@ class DreamAction(_DreamModel):
             DreamOperationType.SYNTHESIZE,
             DreamOperationType.RESOLVE,
         }:
-            if len(self.source_refs) < 2:
-                raise ValueError("dream merge, synthesis, and resolution need two sources")
             if self.anchor_ref not in self.source_refs:
                 raise ValueError("dream anchor must be one of the source refs")
-        elif self.anchor_ref is not None:
-            raise ValueError("dream keep and contest actions do not use an anchor")
         if self.operation is DreamOperationType.RECOMPOSE:
             if not self.outputs:
                 raise ValueError("dream recompose requires one or more outputs")
-            if self.content is not None or self.importance is not None:
-                raise ValueError("dream recompose uses outputs instead of content")
             sources = set(self.source_refs)
-            output_sources = {ref for output in self.outputs for ref in output.source_refs}
-            if output_sources != sources:
-                raise ValueError("dream recompose outputs must cover exactly all action sources")
             if any(not set(output.source_refs).issubset(sources) for output in self.outputs):
                 raise ValueError("dream recompose output referenced a source outside the action")
-            focuses = tuple(output.focus.strip().casefold() for output in self.outputs)
-            if len(set(focuses)) != len(focuses):
-                raise ValueError("dream recompose output focuses must be unique")
         elif self.outputs:
             raise ValueError("only dream recompose may emit multiple outputs")
         elif self.operation is DreamOperationType.SYNTHESIZE:
             if self.content is None or not self.content.strip():
                 raise ValueError("dream synthesis requires content")
-        elif self.content is not None or self.importance is not None:
-            raise ValueError("only dream synthesis may emit content or importance")
         return self
 
 
 class DreamOutput(_DreamModel):
+    model_config = ConfigDict(extra="ignore", frozen=True)
     actions: tuple[DreamAction, ...] = Field(default=())
 
     @model_validator(mode="after")
     def _disjoint(self) -> DreamOutput:
         used: set[str] = set()
         for action in self.actions:
-            overlap = used.intersection(action.source_refs)
+            overlap = used.intersection(action.consumed_source_refs)
             if overlap:
                 raise ValueError("dream actions must use disjoint source refs")
-            used.update(action.source_refs)
+            used.update(action.consumed_source_refs)
         return self
 
 

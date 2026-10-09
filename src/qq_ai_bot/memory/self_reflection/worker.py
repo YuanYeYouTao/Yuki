@@ -185,8 +185,6 @@ class SelfReflectionWorker:
             if rows
             else "all_due_batches_waiting_retry"
             if snapshot["waiting_retry"]["events"]
-            else "all_pending_policy_ineligible"
-            if snapshot["policy_ineligible"]["conversations"]
             else "all_pending_recent_not_due"
             if snapshot["recent_not_due"]["events"]
             else "no_actionable_backlog",

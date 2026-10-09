@@ -35,15 +35,13 @@ class SubagentScheduler:
         executor: ChildExecutor,
         *,
         admission_enabled: bool,
-        global_llm_concurrency: int,
         max_concurrency: int = 1,
     ) -> None:
         self.repository = repository
         self.children = children
         self.executor = executor
         self.admission_enabled = admission_enabled
-        self.global_llm_concurrency = global_llm_concurrency
-        self.max_concurrency = min(max_concurrency, max(1, global_llm_concurrency - 1))
+        self.max_concurrency = max_concurrency
         if self.max_concurrency < 1:
             raise ValueError("invalid_subagent_concurrency")
         self.running: dict[str, asyncio.Task[None]] = {}
@@ -61,8 +59,6 @@ class SubagentScheduler:
         }
 
     async def start(self) -> None:
-        if self.admission_enabled and self.global_llm_concurrency < 2:
-            raise ValueError("subagents_require_foreground_model_slot")
         if self.task is None:
             await self.executor.prepare(admission_enabled=self.admission_enabled)
             self.task = asyncio.create_task(self.loop(), name="subagent-scheduler")

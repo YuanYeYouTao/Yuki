@@ -17,10 +17,29 @@ from tests.support.work_session import WorkSession
 
 from qq_ai_bot.codemode.driver import CodeCompositionYield, CodeModeDriver
 from qq_ai_bot.codemode.driver_types import EngineCall, EngineOutcome, HostCounters
+from qq_ai_bot.codemode.engine_monty import strict_json
+from qq_ai_bot.codemode.limits import CodeModeLimits
+from qq_ai_bot.control_plane.json_types import freeze_json_object
 from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.services.turn_transcript import TurnTranscript
+
+
+def test_json_boundary_preserves_deep_legal_result_and_independent_watchdog():
+    value = "original evidence"
+    for _ in range(65):
+        value = [value]
+    result = strict_json(json.loads(json.dumps(value)), limit=1000)
+    frozen = freeze_json_object({"result": result})["result"]
+    for _ in range(65):
+        frozen = frozen[0]
+    assert frozen == "original evidence"
+    with pytest.raises(ValueError, match="code_value_too_large"):
+        strict_json(value, limit=20)
+    limits = CodeModeLimits(max_feed_seconds=10, request_timeout_seconds=5)
+    assert limits.engine()["max_feed_duration_secs"] == 10
+    assert limits.request_timeout_seconds == 5
 
 
 class SequenceRun:
@@ -222,7 +241,7 @@ async def test_truncated_stdout_survives_two_real_journal_restores(database, tmp
     assert tools == root == 3
 
 
-@pytest.mark.parametrize("limit", [2000, 24000])
+@pytest.mark.parametrize("limit", [1, 2000, 24000])
 @pytest.mark.parametrize("kind", ["chat", "responses", "anthropic", "gemini"])
 async def test_operation_summary_respects_result_limit(database, tmp_path, limit, kind):
     import httpx
@@ -247,11 +266,18 @@ async def test_operation_summary_respects_result_limit(database, tmp_path, limit
         raw,
     )
     assert len(env.domain.log) == 20
-    assert len(raw) <= env.host.result_limit, "Operations alone bypass the result summary limit"
+    if limit == 1:
+        assert len(raw) > limit and body["ok"] is True and body["replay_forbidden"] is True
+    else:
+        assert len(raw) <= env.host.result_limit
     assert body["stdout"] == "" and body["stdout_truncated"] is False
     rows, tools, root = await effect_rows(database, env.control.current["id"])
     assert tools == root == 20 and len(rows) == 21
-    if limit == 2000:
+    assert rows[outer.identity.operation_id]["state"] == "accepted"
+    assert await CodeModeDriver(env.host, outer).run() == raw
+    assert len(env.domain.log) == 20
+    assert await effect_rows(database, env.control.current["id"]) == (rows, tools, root)
+    if limit < 24000:
         assert body["operations_count"] == 20 and body["operations_truncated"]
         assert body["operations_ref"]["source"] == "original composition children"
     else:

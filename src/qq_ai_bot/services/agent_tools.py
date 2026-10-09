@@ -41,6 +41,7 @@ from qq_ai_bot.memory.mutation.models import (
     MemoryMutationAppliedOperation,
     MemoryMutationContext,
     MemoryMutationRequest,
+    MemoryMutationResult,
 )
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.query import MemoryQueryBuilder
@@ -83,7 +84,12 @@ _CQ_CODE = re.compile(r"\[CQ:([a-zA-Z0-9_-]+)(?:,[^\]]*)?\]", re.IGNORECASE)
 _HISTORY_TEXT_MAX = 4000
 _HISTORY_SEGMENT_MAX = 100
 _MEMORY_CHANGE_ORIGINS = frozenset(
-    {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP, TurnOrigin.SCHEDULED_AUTOMATION}
+    {
+        TurnOrigin.USER_MESSAGE,
+        TurnOrigin.AUTONOMOUS_GROUP,
+        TurnOrigin.SCHEDULED_AUTOMATION,
+        TurnOrigin.SELF_INITIATIVE,
+    }
 )
 _MEMORY_INTENT_PROPERTIES = {
     "purpose": {
@@ -588,11 +594,12 @@ class AgentToolService:
                 ChatTool(
                     name="memory_change",
                     description=(
-                        "依据当前用户真实入站证据修改长期记忆的日常入口。visibility 只对 "
+                        "依据真实入站证据或主动 SELF 本轮实际工具回执修改长期记忆。visibility 只对 "
                         "target.scope_type=self 生效；其他目标误填 current_scope 或 global "
-                        "会被后端忽略。只能根据当前用户这条真实入站消息"
+                        "会被后端忽略。根据当前用户真实入站消息"
                         "创建、纠正、撤销、恢复、争议、合并、改归属或更新记忆元数据；"
-                        f"不能把 {bot_name} 自己的输出当证据，也不能传 QQ 号、群号或事件 ID。"
+                        f"主动 SELF 使用原 initiative 的本轮工具回执，只能写自己的记忆；"
+                        f"不能把 {bot_name} 自己的输出当证据，也不能编造真人事件。"
                         "target.subject_ref 可使用 current_speaker、current_group、"
                         "member_{user_id} 等本轮可验证成员引用，或"
                         "replied_message_author；正文中的当前群姓名使用 named_member 并填写"
@@ -732,9 +739,13 @@ class AgentToolService:
                             },
                             "evidence_refs": {
                                 "type": "array",
-                                "items": {"type": "string", "enum": ["current_event"]},
+                                "items": {"type": "string"},
                                 "minItems": 1,
-                                "maxItems": 1,
+                                "description": (
+                                    "入站轮使用 current_event。主动 SELF 可省略，"
+                                    "由 evidence_quote 定位本轮最近匹配的真实工具回执，"
+                                    "或使用已有工具回执 tool_N；不可编造事件。"
+                                ),
                             },
                             "evidence_quote": {"type": "string"},
                             "expected_fact_state": {
@@ -2033,6 +2044,21 @@ class AgentToolService:
                 error="invalid_memory_change",
                 detail=(f"记忆变更参数无效：{location}:{first.get('type', 'validation_error')}"),
             )
+        if runtime.origin is TurnOrigin.SELF_INITIATIVE:
+            context = MemoryMutationContext(
+                event=None,
+                conversation_key=runtime.conversation_key,
+                turn_origin=runtime.origin.value,
+                delegation_mode="main_agent",
+                trigger_actor_user_id="",
+                decision_actor_type=MemoryDecisionActorType.AGENT,
+                decision_actor_id=runtime.effective_execution_id or "",
+                executed_by_bot_user_id=runtime.effective_bot_user_id or "",
+                initiative_run_id=runtime.initiative_run_id,
+                source_group_id=runtime.current_group_id,
+            )
+            result = await service.mutate(request, context)
+            return self._memory_change_result(result)
         actor = runtime.require_actor()
         trigger_event_id = request.evidence_event_id or runtime.effective_trigger_event_id
         event = await self._ledger.get_event(trigger_event_id) if trigger_event_id else None
@@ -2042,7 +2068,8 @@ class AgentToolService:
                 detail="无法从永久账本核验当前入站消息",
             )
         if (
-            event.sender_user_id != actor.user_id
+            event.author_person_id is None
+            or event.author_person_id != actor.person_id
             or event.group_id != runtime.current_group_id
             or event.direction != "inbound"
             or event.bot_user_id != (runtime.effective_bot_user_id or "bot")
@@ -2125,6 +2152,9 @@ class AgentToolService:
             result = await service.mutate(request, context)
         else:
             result = await service.mutate_resolved(request, context, target=named_target)
+        return self._memory_change_result(result)
+
+    def _memory_change_result(self, result: MemoryMutationResult) -> ToolExecutionResult:
         payload: dict[str, Any] = {
             "ok": result.ok,
             "mutation_id": result.mutation_id,

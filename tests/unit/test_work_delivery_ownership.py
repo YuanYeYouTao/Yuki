@@ -2,7 +2,9 @@
 
 import json
 from dataclasses import replace
+from datetime import UTC, datetime
 from itertools import pairwise
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
@@ -18,11 +20,12 @@ from tests.support.workspace_snapshots import snapshot_bytes
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import ChatMessage, ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.identity.db_models import CanonicalSpaceModel
+from qq_ai_bot.identity.db_models import CanonicalSpaceModel, IdentityBindingModel
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.runtime.work_activation import activate_work
 from qq_ai_bot.runtime.work_control import WorkControl, work_control_tools
+from qq_ai_bot.runtime.work_queries import WorkQueries
 from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.services.agent_runner import AgentRuntime
 from qq_ai_bot.social.tools import social_tool_definitions
@@ -90,6 +93,7 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
     source = {
         "origin": "user_message",
         "actor_user_id": "10001",
+        "actor_person_id": env.person,
         "trigger_event_id": original_id,
         "bot_user_id": "80001",
         "presence_id": env.presence,
@@ -321,6 +325,10 @@ async def test_file_receipt_survives_caption_failure_and_other_targets_still_nee
         )
     )
     assert result["ok"]  # Never require uploading the confirmed file again.
+    accepted = json.loads((await repo.get(control.current["id"]))["checkpoint_json"])[
+        "accepted_control"
+    ]
+    assert "artifact_ids" not in accepted
     await repo.release(lease)
 
 
@@ -362,4 +370,104 @@ async def test_accept_handoff_is_atomic_and_recovery_does_not_block_old_work_for
     assert material["goal"] == old["goal"]
     assert material["work_id"] == old["id"]
     assert (await repo.get(new["id"]))["model_requests"] == 0
+    await repo.release(lease)
+
+
+@pytest.mark.asyncio
+async def test_same_person_new_account_keeps_work_scope_and_queues_new_internal_event(
+    database, tmp_path
+):
+    env = await social_env(database, tmp_path)
+    now = datetime.now(UTC)
+    async with database.immediate_session() as session:
+        original = await session.scalar(select(ChatEventModel))
+        session.add(
+            IdentityBindingModel(
+                id=str(uuid4()),
+                person_id=env.person,
+                platform="qq",
+                external_account_id="11099",
+                display_name="same person",
+                status="active",
+                revision=1,
+                first_seen_at=now,
+                last_seen_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    appended = await env.service.writer.append(
+        scope=ConversationScope.group("80001", "20001"),
+        platform_message_id="other-binding-new-request",
+        sender_user_id="11099",
+        direction="inbound",
+        content="new independent request",
+    )
+    latest = appended.event
+    assert latest.author_person_id == original.author_person_id == env.person
+    source = {
+        "origin": "user_message",
+        "principal_kind": "person",
+        "actor_person_id": env.person,
+        "actor_user_id": "10001",
+        "trigger_event_id": original.id,
+        "bot_user_id": "80001",
+        "presence_id": env.presence,
+        "generation": 1,
+        "conversation_id": env.context.conversation_id,
+    }
+    repo = WorkRepository(database)
+    lease = await repo.acquire(env.context.conversation_id, 1)
+    old = await repo.accept(lease, source_key="binding-original", source=source, goal="original")
+    switched = {**source, "actor_user_id": "11099", "trigger_event_id": latest.id}
+    assert await WorkQueries(repo).get(lease, switched, old["id"], local=True) is not None
+    await repo.release(lease)
+
+    async def validate():
+        pass
+
+    async with activate_work(
+        repo,
+        env.context.conversation_id,
+        1,
+        "binding-original",
+        switched,
+        validate,
+        work_id=old["id"],
+    ) as control:
+        assert control.current["id"] == old["id"]
+        response = json.loads(
+            await control.execute(
+                "task_control",
+                {"action": "accept", "goal": "independent", "output_kind": "answer"},
+                "new-binding",
+            )
+        )
+        assert response["ok"], response
+        queued = await repo.get(response["queued_work_id"])
+        saved = json.loads(queued["source_json"])
+        assert saved["actor_person_id"] == env.person
+        assert saved["actor_user_id"] == "11099"
+        assert saved["trigger_event_id"] == latest.id
+
+
+@pytest.mark.asyncio
+async def test_work_report_kind_is_metadata(database, tmp_path):
+    env = await social_env(database, tmp_path)
+    repo = WorkRepository(database)
+    lease = await repo.acquire(env.context.conversation_id, 1)
+
+    async def validate():
+        assert await repo.valid(lease)
+
+    control = WorkControl(repo, lease, "report-metadata", {}, validate)
+    control.current = await repo.accept(
+        lease, source_key="report-metadata", source={}, goal="report"
+    )
+    assert await control.validate_work_report({"work_report": {"kind": "research conclusion"}}) == {
+        "kind": "research conclusion",
+        "reply_to_event_ids": [],
+    }
+    schema = next(t for t in social_tool_definitions() if t.name == "send_message").parameters
+    assert "enum" not in schema["properties"]["work_report"]["properties"]["kind"]
     await repo.release(lease)

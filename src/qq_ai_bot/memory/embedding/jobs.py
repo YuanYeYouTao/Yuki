@@ -480,20 +480,19 @@ class MemoryEmbeddingJobRepository:
         *,
         error_category: str,
         retryable: bool,
-        max_attempts: int,
         initial_delay_seconds: float,
     ) -> None:
-        retry = retryable and job.attempts < max_attempts
         now = next_updated_at(job.updated_at)
-        delay = initial_delay_seconds * (2 ** max(0, job.attempts - 1))
         async with self._database.immediate_session() as writer:
             await writer.execute(
                 update(MemoryEmbeddingJobModel)
                 .where(*self._claim_guard(job))
                 .values(
-                    status="pending" if retry else "failed",
+                    status="pending" if retryable else "failed",
                     updated_at=now,
-                    next_attempt_at=now + timedelta(seconds=delay) if retry else now,
+                    next_attempt_at=now + timedelta(seconds=initial_delay_seconds)
+                    if retryable
+                    else now,
                     error_category=error_category[:64],
                 )
             )

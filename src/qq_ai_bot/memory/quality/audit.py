@@ -206,31 +206,6 @@ class MemoryProductionQualityAudit:
                 ),
             ),
             (
-                "evidence_relation_authority_mismatch",
-                "error",
-                _query(
-                    "memory_evidence e",
-                    "(e.relation='explicit_command' AND e.authority!='explicit') OR "
-                    "(e.relation='group_statement' AND e.authority!='group_report') OR "
-                    "(e.relation='third_party_statement' AND e.authority!='third_party') OR "
-                    "(e.relation IN ('self_statement','confirmation','correction','retraction') "
-                    "AND e.authority NOT IN ('self_report','explicit'))",
-                    id_expression="e.id",
-                ),
-            ),
-            (
-                "evidence_authority_exceeds_fact",
-                "error",
-                _query(
-                    "memory_evidence e JOIN memory_facts f ON f.id=e.fact_id",
-                    "CASE e.authority WHEN 'explicit' THEN 3 WHEN 'self_report' THEN 2 "
-                    "WHEN 'group_report' THEN 1 ELSE 0 END > CASE f.authority "
-                    "WHEN 'explicit' THEN 3 WHEN 'self_report' THEN 2 "
-                    "WHEN 'group_report' THEN 1 ELSE 0 END",
-                    id_expression="e.id",
-                ),
-            ),
-            (
                 "evidence_duplicate_event",
                 "error",
                 """
@@ -417,16 +392,6 @@ class MemoryProductionQualityAudit:
                 ),
             ),
             (
-                "embedding_old_profile",
-                "warning",
-                _query(
-                    "memory_embedding_profiles p",
-                    "p.id!=(SELECT id FROM memory_embedding_profiles ORDER BY id DESC LIMIT 1) "
-                    "AND EXISTS (SELECT 1 FROM memory_embeddings e WHERE e.profile_id=p.id)",
-                    id_expression="p.id",
-                ),
-            ),
-            (
                 "memory_job_source_invalid",
                 "error",
                 _query(
@@ -449,24 +414,6 @@ class MemoryProductionQualityAudit:
                 """,
             ),
             (
-                "rebuild_stuck_processing",
-                "warning",
-                _query(
-                    "memory_rebuild_items i",
-                    "i.status='extracting' AND i.updated_at<datetime('now','-1 hour')",
-                    id_expression="i.id",
-                ),
-            ),
-            (
-                "rebuild_pending_review",
-                "warning",
-                _query(
-                    "memory_rebuild_proposals p",
-                    "p.review_status='pending'",
-                    id_expression="p.id",
-                ),
-            ),
-            (
                 "rebuild_committed_without_receipt",
                 "error",
                 _query(
@@ -487,17 +434,6 @@ class MemoryProductionQualityAudit:
                     "(SELECT 1 FROM memory_rebuild_proposals p WHERE p.event_id=j.event_id "
                     "AND p.run_id=j.rebuild_run_id)",
                     id_expression="j.id",
-                ),
-            ),
-            (
-                "terminal_rebuild_staging",
-                "warning",
-                _query(
-                    "memory_rebuild_runs r",
-                    "r.status IN ('completed','cancelled','failed') AND "
-                    "(EXISTS (SELECT 1 FROM memory_rebuild_items i WHERE i.run_id=r.id) "
-                    "OR EXISTS (SELECT 1 FROM memory_rebuild_proposals p WHERE p.run_id=r.id))",
-                    id_expression="r.id",
                 ),
             ),
         )

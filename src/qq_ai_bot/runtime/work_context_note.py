@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 
 from qq_ai_bot.runtime.work_compaction import SourcedFact
@@ -15,8 +15,7 @@ if TYPE_CHECKING:
 
 
 class ContextNote(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    version: Literal[1]
+    version: int = 1
     facts: list[SourcedFact] = Field(default_factory=list)
     unresolved: list[SourcedFact] = Field(default_factory=list)
     next_steps: list[SourcedFact] = Field(default_factory=list)
@@ -29,8 +28,6 @@ async def validate_note(
     refs: set[str] = set()
     for section in ("facts", "unresolved", "next_steps"):
         for fact in note[section]:
-            if not fact["text"].strip() or len(set(fact["refs"])) != len(fact["refs"]):
-                raise ValueError("work_context_note_invalid")
             refs.update(fact["refs"])
     if control.current is None:
         raise ValueError("no_active_work")

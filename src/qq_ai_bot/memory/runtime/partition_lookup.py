@@ -24,7 +24,7 @@ class MemoryPartitionLookup(Protocol):
     ) -> str: ...
 
     async def resolve_self_origin(
-        self, *, initiative_run_id: str, canonical_conversation_id: str
+        self, *, initiative_run_id: str, canonical_conversation_id: str, group_id: str | None = None
     ) -> SelfMemoryOrigin: ...
 
 
@@ -35,13 +35,14 @@ class DatabaseMemoryPartitionLookup:
         self._database = database
 
     async def resolve_self_origin(
-        self, *, initiative_run_id: str, canonical_conversation_id: str
+        self, *, initiative_run_id: str, canonical_conversation_id: str, group_id: str | None = None
     ) -> SelfMemoryOrigin:
         async with self._database.sessions() as session:
             return await resolve_self_origin(
                 session,
                 initiative_run_id=initiative_run_id,
                 canonical_conversation_id=canonical_conversation_id,
+                group_id=group_id,
             )
 
     async def resolve_from_scope(

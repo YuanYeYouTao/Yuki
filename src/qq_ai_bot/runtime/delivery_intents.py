@@ -9,7 +9,7 @@ from sqlalchemy import select, true, update
 from sqlalchemy.dialects.sqlite import insert
 
 from qq_ai_bot.runtime.work_recovery_schema import deliveries
-from qq_ai_bot.runtime.work_repository import TERMINAL, WorkConflict, bounded_json
+from qq_ai_bot.runtime.work_repository import TERMINAL, WorkConflict, encode_json
 from qq_ai_bot.runtime.work_schema_v1 import work
 
 if TYPE_CHECKING:
@@ -23,10 +23,9 @@ async def reserve(
         return True
     now = time.time()
     identity = control.current["id"]
-    target_value = payload.get("target")
     if isinstance(count, bool) or not isinstance(count, int) or count < 1:
         raise WorkConflict("delivery_message_count_invalid")
-    encoded_payload = bounded_json(payload)
+    encoded_payload = encode_json(payload)
     async with control.repository.database.immediate_session() as session:
         await control.repository._assert_lease(session, control.lease)
         active = await session.scalar(
@@ -39,23 +38,6 @@ async def reserve(
         )
         if active is None:
             raise WorkConflict("work_delivery_obsolete")
-        if isinstance(target_value, dict) and target_value.get("kind") in {"person", "space"}:
-            target = f"{target_value['kind']}:{target_value['id']}"
-        else:
-            from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-
-            conversation = await session.get(
-                CanonicalConversationModel, control.lease.conversation_id
-            )
-            if conversation is None:
-                raise WorkConflict("delivery_conversation_missing")
-            target = (
-                f"space:{conversation.space_id}"
-                if conversation.space_id
-                else f"person:{conversation.person_id}"
-                if conversation.person_id
-                else f"conversation:{conversation.id}"
-            )
         prior = (
             (await session.execute(select(deliveries).where(deliveries.c.id == key)))
             .mappings()
@@ -79,10 +61,8 @@ async def reserve(
                 .where(deliveries.c.id == key)
                 .values(
                     state="reserved",
-                    target_key=target,
                     created=now,
                     updated=now,
-                    not_before=0,
                 )
             )
         else:
@@ -91,9 +71,7 @@ async def reserve(
                     id=key,
                     work_id=identity,
                     kind=kind,
-                    target_key=target,
                     message_count=count,
-                    not_before=0,
                     state="reserved",
                     payload_json=encoded_payload,
                     created=now,
@@ -119,5 +97,5 @@ async def record(control: WorkControl, key: str, state: str, receipt: dict[str, 
                 deliveries.c.state != "accepted",
                 (deliveries.c.state != "unknown") if state != "accepted" else true(),
             )
-            .values(state=state, receipt_json=bounded_json(receipt), updated=time.time())
+            .values(state=state, receipt_json=encode_json(receipt), updated=time.time())
         )

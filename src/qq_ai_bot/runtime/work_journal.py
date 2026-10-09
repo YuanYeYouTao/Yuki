@@ -138,12 +138,6 @@ class WorkJournal:
         loaded = await self._load(
             lease, work_id, contract, retain_source=source_control is not None
         )
-        if (
-            loaded.reason == "source_changed"
-            and loaded.delivery_record
-            and (loaded.record is None or source_control is None)
-        ):
-            raise WorkConflict("work_journal_source_changed")
         if loaded.reason != "source_changed" or loaded.record is None or source_control is None:
             return loaded
         # The read/file-hydration session above is closed before the guard opens
@@ -158,8 +152,6 @@ class WorkJournal:
         except (KeyError, TypeError, ValueError) as exc:
             raise JournalUnavailable("work_journal_corrupt") from exc
         if not await guard.check(source_control):
-            if loaded.delivery_record:
-                raise WorkConflict("work_journal_source_changed")
             return replace(loaded, record=None, compaction_anchor=None)
         if loaded.record["contract"] != contract:
             return replace(
@@ -419,7 +411,7 @@ class WorkJournal:
         }
         blobs: dict[str, bytes] = {}
         # Opaque Responses items retain insertion order all the way to the next
-        # HTTP request; generic bounded_json sorts keys and changes that prefix.
+        # HTTP request; generic encode_json sorts keys and changes that prefix.
         prepared = externalize(
             {
                 "transcript": encoded_transcript,
@@ -439,8 +431,6 @@ class WorkJournal:
             ensure_ascii=False,
             allow_nan=False,
         )
-        if len(payload.encode("utf-8")) > 1024 * 1024:
-            raise ValueError("work_record_too_large")
         # Reference extraction and JSON parsing happen before the writer begins.
         async with self.repository.database.sessions() as reader:
             input_media: set[str] = set()

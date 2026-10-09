@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
@@ -19,9 +19,8 @@ from qq_ai_bot.runtime.activation_outcome import (
 )
 from qq_ai_bot.runtime.work_budget import WorkBudgetExceeded
 from qq_ai_bot.runtime.work_recovery_schema import deliveries, recovery
-from qq_ai_bot.runtime.work_repository import WorkCapacityError, WorkConflict, bounded_json
-from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, journal, work
-from qq_ai_bot.runtime.work_wait_schema import waits
+from qq_ai_bot.runtime.work_repository import WorkCapacityError, WorkConflict, encode_json
+from qq_ai_bot.runtime.work_schema_v1 import work
 
 if TYPE_CHECKING:
     from qq_ai_bot.runtime.work_control import WorkControl
@@ -46,65 +45,12 @@ def _capacity_pause_text(code: str) -> str:
     elif code == "work_protocol_storage_capacity":
         detail = "工作资料存储空间不足"
     elif code in {
-        "work_record_too_large",
-        "work_checkpoint_capacity",
         "work_protocol_object_capacity",
     }:
         detail = "工作记录超出存储容量限制"
     else:
         detail = "上下文整理未能完成"
     return f"{detail}，已暂停并保留已有结果。"
-
-
-async def _has_recorded_effects(control: WorkControl) -> bool:
-    """A changed source cannot automatically replay work with an effect receipt."""
-    assert control.current is not None
-    if control.current["sent_messages"]:
-        return True
-    async with control.repository.database.sessions() as session:
-        return bool(
-            await session.scalar(
-                select(effects.c.effect_key)
-                .where(effects.c.work_id == control.current["id"])
-                .limit(1)
-            )
-            or await session.scalar(
-                select(deliveries.c.id)
-                .where(deliveries.c.work_id == control.current["id"])
-                .limit(1)
-            )
-        )
-
-
-async def _never_started(session: Any, current: dict[str, Any]) -> bool:
-    """Persistent facts prove that no execution of this Work ever began.
-
-    ``model_requests`` is reserved after request admission and before the
-    dispatched journal, so any count excludes this policy even when no
-    journal was saved. Inconsistent rows (journal/effect without a count) are
-    treated as started; nothing is inferred from activation counters.
-    """
-    from qq_ai_bot.runtime.subagent_schema import children
-
-    if (
-        current["model_requests"]
-        or current["tool_calls"]
-        or current["sent_messages"]
-        or json.loads(current["checkpoint_json"]).get("accepted_control") is not None
-    ):
-        return False
-    identity = current["id"]
-    for column in (
-        journal.c.work_id,
-        effects.c.work_id,
-        deliveries.c.work_id,
-        waits.c.work_id,
-        inputs.c.work_id,
-        children.c.root_id,
-    ):
-        if await session.scalar(select(column).where(column == identity).limit(1)) is not None:
-            return False
-    return True
 
 
 def activation_details(control: WorkControl) -> dict[str, Any]:
@@ -140,12 +86,6 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
             if observed is not None and observed["state"] == "cancelled":
                 return _cancelled(control, observed)
             raise exc
-        if failure.code == "work_journal_source_changed" and await _has_recorded_effects(control):
-            failure = replace(
-                failure,
-                retryable=False,
-                diagnostics={**failure.diagnostics, "effect_receipt_recorded": True},
-            )
     await control.refresh_effects()
     assert control.current is not None
     identity = control.current["id"]
@@ -186,12 +126,12 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
         if prior and json.loads(prior["failure_json"]).get("code") == failure.code:
             attempts += int(prior["attempts"])
         not_before = 0.0
-        if failure.retryable and attempts <= 3:
+        if failure.retryable:
             reason = ExitReason.RETRY
             delay = (
-                (0.25, 0.75, 1.5)[attempts - 1]
+                (0.25, 0.75, 1.5)[min(attempts, 3) - 1]
                 if failure.code == "sqlite_busy"
-                else (2, 10, 30)[attempts - 1]
+                else (2, 10, 30)[min(attempts, 3) - 1]
             )
             supplied_delay = failure.diagnostics.get("retry_after_seconds", 0)
             if isinstance(supplied_delay, (int, float)):
@@ -209,22 +149,6 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
         proposed = ACCEPTED_ENDINGS.get(str(accepted.get("action"))) if accepted else None
         if proposed is not None:
             state, reason, not_before = proposed, ACCEPTED_REASONS[proposed], 0
-        elif (
-            # Approved SELF startup policy: the original SELF source's first
-            # scene/Presence boundary was definitely not sent and its bounded
-            # retries are exhausted. Fail by original ID (releases admission
-            # capacity, keeps the fact); any execution evidence keeps the
-            # retained pause instead.
-            state == "suspended"
-            and control.startup_boundary
-            and control.source.get("origin") == "self_initiative"
-            and failure.certainty == "not_sent"
-            and current is not None
-            and current["state"] in {"queued", "running"}
-            and await _never_started(session, dict(current))
-        ):
-            state = "failed"
-            failure = replace(failure, diagnostics={**failure.diagnostics, "startup_failed": True})
         values = dict(
             # Re-observing a suspended episode is not a new pause. Its original
             # delivery key and receipts remain authoritative across activations.
@@ -233,7 +157,7 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
             else control.lease.owner,
             exit_reason=reason.value,
             stage=failure.stage,
-            failure_json=bounded_json(asdict(failure)),
+            failure_json=encode_json(asdict(failure)),
             attempts=attempts,
             not_before=not_before,
             updated=time.time(),
@@ -266,12 +190,7 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
             }
             if failure.diagnostics.get("category") == "work_conflict":
                 if failure.code == "work_journal_source_changed":
-                    text = (
-                        "会话资料在处理期间变化，已执行的操作和回执已保留；"
-                        "后续处理暂停。请先核对任务状态，避免重复执行。"
-                        if failure.diagnostics.get("effect_receipt_recorded")
-                        else "会话资料在处理期间变化，这项工作已暂停并保留已有结果。"
-                    )
+                    text = "会话资料在处理期间变化，这项工作已暂停并保留已有结果。"
                 else:
                     text = "工作状态发生冲突，已暂停并保留已有结果；请先核对任务状态。"
             else:
@@ -282,9 +201,8 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
                     id=f"notice:{identity}:{values['activation_id']}",
                     work_id=identity,
                     kind="notice",
-                    target_key=control.lease.conversation_id,
                     state="planned",
-                    payload_json=bounded_json({"text": text}),
+                    payload_json=encode_json({"text": text}),
                     created=time.time(),
                     updated=time.time(),
                 )

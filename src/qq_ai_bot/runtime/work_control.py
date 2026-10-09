@@ -74,7 +74,7 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                 "普通聊天无需登记，发言用 send_message。"
                 "原工作用 resume(work_id) 续接，不重复 accept；"
                 "独立新工作用 accept 排队，update 只修正当前目标。"
-                "update 也可仅保存 context_note：version=1，facts/unresolved/next_steps "
+                "update 也可仅保存 context_note：facts/unresolved/next_steps "
                 "每项含 text 和 refs（goal、input:ID、event:ID、effect:原键、"
                 "artifact:handle、child:ID）；线索不改变执行状态，研究原文按 artifact 回读。"
                 "分段前保存累积发现、必要中间值与下一步；业务续跑使用当前聊天和 note，"
@@ -83,7 +83,7 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                 "plugin_event(plugin_id,event_type)、owned_run(run_id)，"
                 "wait_mode=any/all，deadline_at 可选；信号到达续原 work_id。"
                 "wait_status 查询，cancel_wait 撤销。need_input 说明缺失信息；"
-                "complete 提出结束并在 result 中给出真实内部结果（调用方或父工作读取它，"
+                "complete 提出结束；可在 result 中给出真实内部结果（调用方或父工作读取它，"
                 "不会自动外发）；后端核对未决执行和 artifact，接受后本次执行立即结束。"
                 "get/list/wait_status 是只读查询；其余生命周期 action 必须独占一个工具批次。"
             ),
@@ -107,7 +107,7 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                             "fail",
                         ],
                     },
-                    "goal": {"type": "string", "maxLength": 8192},
+                    "goal": {"type": "string"},
                     "context_note": note_schema,
                     "reporting": {
                         "type": "string",
@@ -142,18 +142,17 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                             "文件任务默认需要实际发送。用户明确只要求保存在工作区时才设 false。"
                         ),
                     },
-                    "artifact_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 8},
+                    "artifact_ids": {"type": "array", "items": {"type": "string"}},
                     "result": {
                         "type": "string",
-                        "description": "complete 的内部结果；调用方或父工作需要结果时必填。",
+                        "description": "complete 的内部结果；按实际工作需要填写。",
                     },
-                    "reason": {"type": "string", "maxLength": 1000},
+                    "reason": {"type": "string"},
                     "run_id": {"type": "string", "maxLength": 36},
                     "wait_mode": {"type": "string", "enum": ["any", "all"]},
                     "conditions": {
                         "type": "array",
                         "minItems": 1,
-                        "maxItems": 8,
                         "items": {"type": "object", "additionalProperties": True},
                     },
                     "deadline_at": {"type": "string", "maxLength": 40},
@@ -185,7 +184,6 @@ class WorkControl:
     deferred_failure: Any = None
     # Set only by the original SELF source when its first scene/Presence
     # preparation failed before any activation; see work_supervisor.
-    startup_boundary: bool = False
     protocol_recovery_preparation: Any = None
     segment_model_limit: int = 24
     tools_started: int = 0
@@ -305,37 +303,21 @@ class WorkControl:
             delivered_only=delivered_only,
         )
 
-    def _validate_reporting(self, value: Any) -> None:
-        if not isinstance(value, str) or value not in {"interactive", "quiet"}:
-            raise ValueError("work_reporting_invalid")
-        if value == "interactive" and (
-            self.lease.work_id
-            or self.source.get("parent_work_id")
-            or self.source.get("principal_kind") == "self"
-            or self.source.get("delivery_contract") in {"return_to_caller", "none"}
-        ):
-            raise ValueError("work_reporting_delivery_not_interactive")
-
     async def validate_work_report(self, arguments: dict[str, Any]) -> dict[str, Any] | None:
         """Validate host-owned association before any social side effect."""
         if "work_report" not in arguments:
             return None
         report = arguments["work_report"]
-        if self.current is None or self.lease.work_id or self.source.get("parent_work_id"):
-            raise ValueError("work_report_requires_main_work")
+        assert self.current is not None
         if (
             not isinstance(report, dict)
             or set(report) - {"kind", "reply_to_event_ids"}
             or not isinstance(report.get("kind"), str)
-            or report.get("kind") not in {"start", "progress", "reply", "final"}
         ):
             raise ValueError("work_report_invalid")
         event_ids = report.get("reply_to_event_ids", [])
-        if (
-            not isinstance(event_ids, list)
-            or len(event_ids) > 8
-            or any(type(identity) is not int or identity < 1 for identity in event_ids)
-            or len(set(event_ids)) != len(event_ids)
+        if not isinstance(event_ids, list) or any(
+            type(identity) is not int or identity < 1 for identity in event_ids
         ):
             raise ValueError("work_report_event_ids_invalid")
         from sqlalchemy import select
@@ -821,7 +803,7 @@ class WorkControl:
         if "reporting" in args:
             if action not in {"accept", "update"}:
                 raise ValueError("work_reporting_action_invalid")
-            self._validate_reporting(args["reporting"])
+            self.repository.encode_communication_updates({"reporting": args["reporting"]})
         if action in {"get", "list"}:
             from qq_ai_bot.runtime.work_queries import WorkQueries
 
@@ -867,8 +849,17 @@ class WorkControl:
             if self.current is not None or self.lease.work_id:
                 raise ValueError("resume_requires_neutral_foreground")
             identity = args.get("work_id")
-            candidates = await self.available_work()
-            if not isinstance(identity, str) or identity not in {r["work_id"] for r in candidates}:
+            from qq_ai_bot.runtime.work_queries import WorkQueries
+            from qq_ai_bot.runtime.work_repository import TERMINAL
+
+            candidate = (
+                await WorkQueries(self.repository).get(
+                    self.lease, self.source, identity, local=True
+                )
+                if isinstance(identity, str)
+                else None
+            )
+            if candidate is None or candidate["state"] in TERMINAL:
                 raise ValueError("resume_work_not_authorized")
             await self.repository.enqueue(
                 self.lease.conversation_id,
@@ -944,8 +935,6 @@ class WorkControl:
                 from qq_ai_bot.runtime.work_context_note import validate_note
 
                 note_plan = await validate_note(self, args["context_note"])
-            if args.get("reporting") == "quiet" and self.reporting == "interactive":
-                raise ValueError("work_reporting_cannot_quiet_interactive")
             if goal is None:
                 if "reporting" not in args and "context_note" not in args:
                     raise ValueError("work_goal_required")
@@ -968,8 +957,8 @@ class WorkControl:
                 await self.update_context_note(args["context_note"], call_key, note_plan)
         elif action == "wait":
             if args.get("conditions") is not None:
-                if args.get("run_id") is not None or self.lease.work_id:
-                    raise ValueError("signal_wait_requires_parent_work")
+                if args.get("run_id") is not None:
+                    raise ValueError("wait_requires_run_or_conditions")
                 from qq_ai_bot.runtime.work_wait import WorkWaitRepository, normalize_conditions
 
                 conditions = args["conditions"]
@@ -1039,8 +1028,8 @@ class WorkControl:
             if action == "fail" and await self.background_state() is not None:
                 raise ValueError("unfinished_subagents_use_wait_or_cancel_explicitly")
             reason = args.get("reason")
-            if not isinstance(reason, str) or not reason.strip() or len(reason) > 1000:
-                raise ValueError("work_reason_required")
+            if reason is not None and not isinstance(reason, str):
+                raise ValueError("work_reason_invalid")
             await self._accept(action, call_key, reason=reason)
         elif action == "complete":
             prepared = await self._prepare_completion(args, implicit=False)
@@ -1070,7 +1059,6 @@ class WorkControl:
             raise ValueError("work_result_invalid")
         facts = await self.effect_evidence()
         kind = self.current["output_kind"]
-        selected: list[str] = []
         if kind == "artifact":
             known = {
                 identity
@@ -1097,40 +1085,9 @@ class WorkControl:
                 raise ValueError("work_completion_requires_verified_artifacts")
             if self.current["deliver_artifacts"] and not set(chosen) <= delivered:
                 raise ValueError("work_completion_requires_artifact_delivery_receipt")
-            selected = list(dict.fromkeys(chosen))
-        elif (
-            kind == "answer"
-            and self.source.get("delivery_contract") != "return_to_caller"
-            and self.source.get("principal_kind") != "self"
-            and not self.lease.work_id
-            and self.reporting == "interactive"
-            and not await self.communication_reports(kind="final", delivered_only=True)
-        ):
-            raise ValueError("work_completion_requires_final_delivery_receipt")
         elif kind == "state_change" and not any(state_fact(effect) for effect in facts):
             raise ValueError("work_completion_requires_execution_evidence")
-        # The real result consumer decides whether an empty result is legal.
-        caller = (
-            self.source.get("delivery_contract") == "return_to_caller"
-            and self.source.get("principal_kind") != "self"
-        )
-        if (
-            (caller or self.lease.work_id)
-            and not result.strip()
-            and not selected
-            and not (
-                caller
-                and any(
-                    fact.get("ok") is True
-                    and fact.get("delivered_message") is True
-                    and not fact.get("pending")
-                    and not fact.get("uncertain")
-                    for fact in facts
-                )
-            )
-        ):
-            raise ValueError("work_completion_requires_result")
-        return {"result": result, "artifact_ids": selected}
+        return {"result": result}
 
     async def _queue_work(self, args: dict[str, Any]) -> dict[str, Any]:
         from sqlalchemy import select
@@ -1154,7 +1111,7 @@ class WorkControl:
                     ChatEventModel.canonical_conversation_id == self.lease.conversation_id,
                     ChatEventModel.direction == "inbound",
                     ChatEventModel.event_kind == "message",
-                    ChatEventModel.sender_user_id == self.source.get("actor_user_id"),
+                    ChatEventModel.author_person_id == self.source.get("actor_person_id"),
                 )
             )
         if event is None:
@@ -1169,6 +1126,7 @@ class WorkControl:
             raise ValueError("work_goal_and_output_kind_required")
         source = {
             **self.source,
+            "actor_user_id": event.sender_user_id,
             "trigger_event_id": event.id,
             "presence_id": event.ingress_presence_id,
         }

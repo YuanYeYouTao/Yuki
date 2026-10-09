@@ -12,7 +12,7 @@ from tests.support.model_executor import InjectedModelExecutor
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatRequest, ChatResponse
-from qq_ai_bot.llm.base import LLMProvider
+from qq_ai_bot.llm.base import LLMProvider, LLMUnavailableError
 from qq_ai_bot.memory.enums import (
     MemoryRebuildCommitStatus,
     MemoryRebuildExpiredClaimPolicy,
@@ -137,7 +137,12 @@ async def _event(
 async def test_rebuild_requires_review_then_commits_one_receipt(database: Database) -> None:
     settings, ledger, facts, provider, service = await _service(database)
     await _event(ledger, message_id="history")
-    run = await service.plan(MemoryRebuildSelection(all_events=True), actor_user_id="9000")
+    selection = MemoryRebuildSelection(
+        all_events=True,
+        scope_types=(ScopeType.PRIVATE, ScopeType.PRIVATE),
+        sender_user_ids=("1001", "1001"),
+    )
+    run = await service.plan(selection, actor_user_id="9000")
     await service.start(run.public_id, actor_user_id="9000")
     worker = MemoryRebuildWorker(
         service, interval_seconds=settings.memory_rebuild_worker_interval_seconds
@@ -193,6 +198,27 @@ async def test_rebuild_requires_review_then_commits_one_receipt(database: Databa
         assert item.status == MemoryRebuildItemStatus.COMMITTED.value
         assert item.error_category is None
         assert (item.id, item.event_id, item.updated_at, receipt.id, receipt.updated_at) == identity
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("maximum_events", [None, 1])
+async def test_rebuild_selection_quantity_remains_the_requested_boundary(database, maximum_events):
+    settings, ledger, _, provider, service = await _service(database)
+    await _event(ledger, message_id="bounded-first")
+    await _event(ledger, message_id="bounded-second")
+    run = await service.plan(
+        MemoryRebuildSelection(all_events=True, maximum_events=maximum_events), actor_user_id="9000"
+    )
+    await service.start(run.public_id, actor_user_id="9000")
+    worker = MemoryRebuildWorker(
+        service, interval_seconds=settings.memory_rebuild_worker_interval_seconds
+    )
+    expected = maximum_events or 2
+    assert await worker.process_once() == expected
+    assert await worker.process_once() == 0
+    assert provider.requests == expected
+    assert await service.repository.item_count(run.public_id) == expected
+    assert (await service.repository.get_run(run.public_id)).status is MemoryRebuildRunStatus.REVIEW
 
 
 @pytest.mark.asyncio
@@ -474,7 +500,7 @@ async def test_rebuild_commit_receipt_is_atomic_and_usage_cannot_replay(
         proposal = await session.scalar(select(MemoryRebuildProposalModel))
         if failure == "receipt":
             assert applied == 0 and await facts.list_person("1001") == ()
-            assert proposal.commit_status == MemoryRebuildCommitStatus.FAILED.value
+            assert proposal.commit_status == MemoryRebuildCommitStatus.PENDING.value
             assert proposal.actual_fact_id is None
         else:
             assert applied == 1 and len(await facts.list_person("1001")) == 1
@@ -482,9 +508,21 @@ async def test_rebuild_commit_receipt_is_atomic_and_usage_cannot_replay(
             assert proposal.actual_fact_id is not None
         assert proposal.attempts == 1
 
+    if failure == "receipt":
+        async with database.sessions() as session, session.begin():
+            await session.execute(
+                update(MemoryRebuildProposalModel).values(
+                    next_attempt_at=datetime.now(UTC) - timedelta(seconds=1)
+                )
+            )
+        assert await worker.process_once() == 1
+        assert len(await facts.list_person("1001")) == 1
+        assert _provider.requests == 1
+        assert await worker.process_once() == 0
+
 
 @pytest.mark.asyncio
-async def test_rebuild_persistent_database_failure_stops_without_repeating_model(
+async def test_rebuild_database_failure_retains_proposal_until_recovery_without_repeating_model(
     database, monkeypatch
 ):
     from unittest.mock import AsyncMock
@@ -503,16 +541,63 @@ async def test_rebuild_persistent_database_failure_stops_without_repeating_model
     resolver = AsyncMock(wraps=service.processor.resolve)
     monkeypatch.setattr(service.processor, "resolve", resolver)
     database_write = AsyncMock(side_effect=OperationalError("write", {}, RuntimeError("disk")))
+    original_write = facts.repository.apply_evidence_write
     monkeypatch.setattr(facts.repository, "apply_evidence_write", database_write)
-    assert await worker.process_once() == 0
-    assert await worker.process_once() == 0
-    assert resolver.await_count == 1
-    assert database_write.await_count == 1
+    for _ in range(6):
+        assert await worker.process_once() == 0
+        async with database.sessions() as session, session.begin():
+            await session.execute(
+                update(MemoryRebuildProposalModel).values(
+                    next_attempt_at=datetime.now(UTC) - timedelta(seconds=1)
+                )
+            )
+    assert resolver.await_count == database_write.await_count == 6
     assert await facts.list_person("1001") == ()
     assert (
         await service.repository.get_run(run.public_id)
-    ).status is MemoryRebuildRunStatus.COMMIT_PAUSED
+    ).status is MemoryRebuildRunStatus.COMMITTING
     async with database.sessions() as reader:
         proposal = await reader.scalar(select(MemoryRebuildProposalModel))
-        assert proposal.commit_status == "failed"
-        assert proposal.attempts == 1
+        assert proposal.commit_status == "pending"
+        assert proposal.attempts == 6
+    monkeypatch.setattr(facts.repository, "apply_evidence_write", original_write)
+    assert await worker.process_once() == 1
+    assert len(await facts.list_person("1001")) == 1
+    assert _provider.requests == 1
+    assert await worker.process_once() == 0
+
+
+@pytest.mark.asyncio
+async def test_rebuild_extraction_recovers_original_item_past_old_attempt_limit(database):
+    class Provider(_ExtractionProvider):
+        calls = 0
+
+        async def complete(self, request: ChatRequest) -> ChatResponse:
+            self.calls += 1
+            if self.calls <= 6:
+                raise LLMUnavailableError("temporary provider failure")
+            return await super().complete(request)
+
+    provider = Provider()
+    _settings, ledger, _facts, _provider, service = await _service(database, provider=provider)
+    source = await _event(ledger, message_id="repeated-rebuild-extraction")
+    run = await service.plan(MemoryRebuildSelection(all_events=True), actor_user_id="9000")
+    await service.start(run.public_id, actor_user_id="9000")
+    worker = MemoryRebuildWorker(service, interval_seconds=1)
+    for attempts in range(1, 7):
+        assert await worker.process_once() == 0
+        async with database.sessions() as session:
+            item = await session.scalar(select(MemoryRebuildItemModel))
+            assert item.id == 1 and item.event_id == source.id
+            assert item.status == "pending" and item.attempts == attempts
+        async with database.sessions() as session, session.begin():
+            await session.execute(
+                update(MemoryRebuildItemModel).values(
+                    next_attempt_at=datetime.now(UTC) - timedelta(seconds=1)
+                )
+            )
+    assert await worker.process_once() == 1
+    async with database.sessions() as session:
+        item = await session.scalar(select(MemoryRebuildItemModel))
+        assert item.id == 1 and item.status == "staged" and item.attempts == 7
+    assert provider.calls == 7

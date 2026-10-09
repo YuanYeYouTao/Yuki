@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 from pydantic import TypeAdapter
 
@@ -46,7 +46,6 @@ from qq_ai_bot.memory.self_reflection.models import (
     SelfReflectionEvent,
     SelfReflectionFact,
     SelfReflectionInput,
-    SelfReflectionOperation,
     SelfReflectionOutput,
     SelfReflectionProposal,
     SelfReflectionToolReceipt,
@@ -102,7 +101,7 @@ source_kind=initiative_tools 表示自主执行留下的工具回执，events �
 proposals 用于 {bot_name} 自己的记忆及既有 SELF 记忆变更。用户对 {bot_name} 的评价
 可以接受、改写后接受、拒绝或暂缓；接受必须伴随实际记忆变更，拒绝或暂缓必须使用 noop。
 不要创建人物记忆。proposals 只能引用输入提供的
-event_N、tool_N、fact_N、candidate_N 别名；create/correct/merge/contest/invalidate 必须引用
+event_N、tool_N、fact_N、candidate_N 别名；所有实际记忆变更必须引用
 至少一条真实 event/tool evidence。稳定、跨会话成立且不含具体人物隐私的
 self_fact/self_preference/self_reflection/self_principle 可以 global；私聊产生的 self_fact
 保持 current_scope。记忆名称不会赋予系统权限。
@@ -333,11 +332,8 @@ class SelfReflectionService:
         evidence_events = tuple(event for event in batch.events if self._event_evidence_text(event))
         event_map = {f"event_{index}": event for index, event in enumerate(evidence_events, 1)}
         rendered_events: list[SelfReflectionEvent] = []
-        remaining = batch.max_input_characters
         for ref, event in event_map.items():
             rendered = renderer.render_event(event)
-            if len(rendered) > remaining:
-                raise ValueError("reflection_input_budget_exceeded")
             if rendered:
                 rendered_events.append(
                     SelfReflectionEvent(
@@ -351,7 +347,6 @@ class SelfReflectionService:
                         rendered=rendered,
                     )
                 )
-                remaining -= len(rendered)
 
         events = tuple(rendered_events)
         # Only aliases actually shown to the model may become mutation evidence.
@@ -383,16 +378,6 @@ class SelfReflectionService:
             if rendered
         ]
         receipts = await self._repository.tool_receipts(batch)
-        if batch.initiative_run_id:
-            # Receipts retain their redacted source; the model receives bounded
-            # excerpts, and only that displayed excerpt can support its aliases.
-            bounded: list[StoredToolReceipt] = []
-            tool_remaining = max(0, batch.max_input_characters)
-            for item in receipts:
-                excerpt = item.result_excerpt[:tool_remaining]
-                bounded.append(replace(item, result_excerpt=excerpt))
-                tool_remaining -= len(excerpt)
-            receipts = tuple(bounded)
         tool_map = {f"tool_{index}": item for index, item in enumerate(receipts, 1)}
         tools = tuple(
             SelfReflectionToolReceipt(
@@ -460,13 +445,9 @@ class SelfReflectionService:
         )
 
     async def _visible_self_facts(self, batch: SelfReflectionBatch) -> tuple[MemoryFact, ...]:
-        global_rows = await self._facts.repository.list_facts(
-            MemoryFactQuery(
-                scope_type=MemoryScopeType.SELF,
-                visibility_type=SelfMemoryVisibility.GLOBAL,
-                status=MemoryStatus.ACTIVE,
-            ),
-            limit=20,
+        global_query = MemoryFactQuery(
+            scope_type=MemoryScopeType.SELF,
+            visibility_type=SelfMemoryVisibility.GLOBAL,
         )
         if batch.state.canonical_space_id is not None:
             local_query = MemoryFactQuery(
@@ -482,8 +463,15 @@ class SelfReflectionService:
                 visibility_user_id=batch.state.external_person_id,
                 status=MemoryStatus.ACTIVE,
             )
-        local_rows = await self._facts.repository.list_facts(local_query, limit=20)
-        return tuple({item.id: item for item in (*global_rows, *local_rows)}.values())
+        rows: list[MemoryFact] = []
+        for status in (MemoryStatus.ACTIVE, MemoryStatus.CONTESTED, MemoryStatus.INVALIDATED):
+            for query in (global_query, local_query):
+                rows.extend(
+                    await self._facts.repository.list_facts(
+                        query.model_copy(update={"status": status}), limit=20
+                    )
+                )
+        return tuple({item.id: item for item in rows}.values())
 
     async def _apply(
         self,
@@ -497,7 +485,7 @@ class SelfReflectionService:
         result_index: int,
     ) -> bool:
         candidate = candidate_map.get(proposal.candidate_ref or "")
-        if proposal.operation is SelfReflectionOperation.NOOP:
+        if proposal.operation == "noop":
             if (
                 candidate is not None
                 and proposal.candidate_decision is SelfCandidateDecision.REJECT
@@ -515,7 +503,7 @@ class SelfReflectionService:
         )
         tool_receipt_id = tool.id if tool is not None else None
         target = self._target(batch, proposal.visibility)
-        operation = MemoryMutationOperation(proposal.operation.value)
+        operation = proposal.operation
         content = proposal.content
         request = MemoryMutationRequest(
             operation=operation,

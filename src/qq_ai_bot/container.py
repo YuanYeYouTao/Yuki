@@ -357,8 +357,6 @@ class ApplicationContainer:
         )
         self.database.subagents_enabled = self.settings.subagents_enabled
         self.database.subagent_concurrency = self.settings.subagent_concurrency
-        self.database.subagent_max_queued = self.settings.subagent_max_queued
-        self.database.subagent_max_active_per_root = self.settings.subagent_max_active_per_root
         children = SubagentRepository(works)
         self.subagent_execution = SubagentExecution(
             works,
@@ -384,7 +382,6 @@ class ApplicationContainer:
             children,
             self.subagent_execution,
             admission_enabled=self.settings.subagents_enabled,
-            global_llm_concurrency=self.settings.global_llm_concurrency,
             max_concurrency=self.settings.subagent_concurrency,
         )
         self.runtime.register_worker("runtime_work", self.work_scheduler)

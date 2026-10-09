@@ -16,9 +16,12 @@ from yuki_participation.controller import Controller
 from yuki_participation.models import CandidateKind, Proposal, Scope, SourceRef, Support
 
 from qq_ai_bot.conversation.autonomy_binding import AutonomyOwner
-from qq_ai_bot.conversation.autonomy_db_models import InitiativeFeedbackModel
+from qq_ai_bot.conversation.autonomy_db_models import InitiativeFeedbackModel, InitiativeRunModel
 from qq_ai_bot.conversation.autonomy_repository import AutonomyRepository
+from qq_ai_bot.conversation.self_initiative import validate_self_initiative
+from qq_ai_bot.runtime.subagent_repository import SubagentRepository
 from qq_ai_bot.runtime.subagent_schema import budgets, children
+from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import journal, work
 from qq_ai_bot.services import participation_feedback
@@ -172,6 +175,148 @@ async def test_retained_paused_work_keeps_initiative_until_real_terminal(databas
     # A truly terminal initiative is never revived by later Work rows.
     assert (await service.repository.get_run(run.run_id)).state == "interrupted"
     service._dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["suspended", "waiting_user", "waiting_external"])
+async def test_retained_wait_releases_new_opportunity_without_revoking_original_self(
+    database, state
+):
+    service, _item, run, task = await setup(database)
+    await set_work(database, task, state=state)
+    await reconcile_page(service, (run,))
+    binding = await service.repository.get_binding(run.conversation_id, run.generation)
+    result = await service.repository.accept_host_proposal(
+        proposal_id="next-real-opportunity",
+        binding=binding,
+        owner=run.owner,
+        space_id=run.space_id,
+        presence_id=run.presence_id,
+        sources=(),
+        trigger_kind="intrinsic",
+    )
+    assert result.outcome == "accepted" and result.run is not None
+    assert result.run.run_id != run.run_id
+    retained = await validate_self_initiative(
+        service.database,
+        run.run_id,
+        conversation_id=run.conversation_id,
+        space_id=run.space_id,
+        presence_id=run.presence_id,
+    )
+    assert retained.state == "running"
+    assert (await service.work.get(task["id"]))["state"] == state
+    assert set(r.run_id for r in await service.repository.list_active()) == {
+        run.run_id,
+        result.run.run_id,
+    }
+    # The new un-dispatched admission still owns an actual outbox slot.
+    busy = await service.repository.accept_host_proposal(
+        proposal_id="third-opportunity",
+        binding=binding,
+        owner=run.owner,
+        space_id=run.space_id,
+        presence_id=run.presence_id,
+        sources=(),
+        trigger_kind="intrinsic",
+    )
+    assert busy.outcome == "busy"
+
+
+@pytest.mark.asyncio
+async def test_running_child_does_not_block_intrinsic_admission_while_parent_waits(database):
+    service, _item, run, task = await setup(database)
+    lease = await service.work.acquire(run.conversation_id, run.generation)
+    workers = SubagentRepository(service.work)
+    identity = await workers.start(
+        lease,
+        task["id"],
+        "original-child",
+        {"goal": "verify original work", "output_kind": "answer"},
+    )
+    child_lease = await workers.acquire(identity)
+    assert child_lease is not None and child_lease.work_id == identity
+    await service.work.checkpoint(
+        child_lease, identity, {"progress": "original"}, models=2, tools=3
+    )
+
+    async def validate():
+        assert await service.work.valid(lease)
+
+    control = WorkControl(
+        service.work,
+        lease,
+        task["source_key"],
+        json.loads(task["source_json"]),
+        validate,
+        current=await service.work.get(task["id"]),
+    )
+    waited = json.loads(
+        await control.execute(
+            "task_control",
+            {"action": "wait", "conditions": [{"kind": "owned_run", "run_id": identity}]},
+            "wait-original-child",
+        )
+    )
+    assert waited["ok"]
+    await control.settle(pending_inputs=False)
+    assert (await service.work.get(task["id"]))["state"] == "waiting_external"
+    await service.work.release(lease)
+    assert not await service.work.valid(lease) and await service.work.valid(child_lease)
+    before = await service.work.get(identity)
+    child_before = await workers.related(task["id"], identity)
+    assert before["state"] == "running"
+    await reconcile_page(service, (run,))
+    binding = await service.repository.get_binding(run.conversation_id, run.generation)
+    result = await service.repository.accept_host_proposal(
+        proposal_id="intrinsic-while-child-runs",
+        binding=binding,
+        owner=run.owner,
+        space_id=run.space_id,
+        presence_id=run.presence_id,
+        sources=(),
+        trigger_kind="intrinsic",
+    )
+    assert result.outcome == "accepted" and result.run is not None
+    assert result.run.run_id != run.run_id
+    assert await service.work.get(identity) == before
+    assert await workers.related(task["id"], identity) == child_before
+    assert await service.work.valid(child_lease)
+    assert (await service.repository.get_run(run.run_id)).state == "running"
+    assert (await service.work.get(task["id"]))["state"] == "waiting_external"
+    await service.work.release(child_lease)
+
+
+@pytest.mark.asyncio
+async def test_active_outbox_lists_all_retained_runs_past_former_128_limit(database):
+    service, _, original, task = await setup(database)
+    await set_work(database, task, state="suspended")
+    now = datetime.now(UTC)
+    async with database.immediate_session() as session:
+        session.add_all(
+            InitiativeRunModel(
+                id=str(uuid4()),
+                proposal_id=f"retained-{i}",
+                conversation_id=original.conversation_id,
+                generation=original.generation,
+                owner=original.owner.value,
+                controller_epoch=original.controller_epoch_at_acceptance,
+                space_id=original.space_id,
+                presence_id=original.presence_id,
+                payload_hash="0" * 64,
+                sources_json="[]",
+                support_refs_json="[]",
+                trigger_kind="intrinsic",
+                state="running",
+                feedback_sequence=1,
+                created_at=now,
+                updated_at=now,
+            )
+            for i in range(129)
+        )
+    runs = await service.repository.list_active()
+    assert len(runs) == 130
+    assert original.run_id in {run.run_id for run in runs}
 
 
 @pytest.mark.asyncio

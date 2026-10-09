@@ -249,8 +249,6 @@ class WorkStorageRuntimeConfig:
     def __post_init__(self) -> None:
         if min(self.total_max_bytes, self.object_max_bytes, self.disk_reserve_bytes) <= 0:
             raise ValueError("work protocol storage limits must be positive")
-        if self.object_max_bytes > self.total_max_bytes:
-            raise ValueError("work protocol object limit must not exceed total capacity")
 
 
 @dataclass(frozen=True, slots=True)

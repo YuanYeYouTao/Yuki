@@ -142,9 +142,7 @@ def strict_json(value: Any, *, limit: int) -> JsonValue:
             raise ValueError("code_value_too_large")
         charge(len(json.dumps(item, ensure_ascii=False, allow_nan=False).encode()))
 
-    def walk(item: Any, depth: int) -> JsonValue:
-        if depth > 64:
-            raise ValueError("code_value_too_deep")
+    def walk(item: Any) -> JsonValue:
         if item is None or isinstance(item, bool | str):
             scalar(item)
             return item
@@ -158,7 +156,7 @@ def strict_json(value: Any, *, limit: int) -> JsonValue:
             return item
         if isinstance(item, list | tuple):
             charge(2 + max(0, len(item) - 1) * 2)
-            return [walk(x, depth + 1) for x in item]
+            return [walk(x) for x in item]
         if isinstance(item, dict):
             charge(2 + max(0, len(item) - 1) * 2)
             checked = {}
@@ -167,11 +165,11 @@ def strict_json(value: Any, *, limit: int) -> JsonValue:
                     raise ValueError("code_value_not_json")
                 scalar(key)
                 charge(2)
-                checked[key] = walk(child, depth + 1)
+                checked[key] = walk(child)
             return checked
         raise ValueError("code_value_not_json")
 
-    return walk(value, 0)
+    return walk(value)
 
 
 class _OutputSink:

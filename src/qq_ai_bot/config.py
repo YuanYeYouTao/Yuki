@@ -269,7 +269,6 @@ class Settings(BaseSettings):
     memory_embedding_worker_enabled: bool = True
     memory_embedding_worker_interval_seconds: float = 5.0
     memory_embedding_worker_claim_limit: int = 100
-    memory_embedding_retry_attempts: int = 5
     memory_embedding_retry_initial_seconds: float = 30.0
     memory_embedding_http_concurrency: int = 2
     memory_embedding_query_cache_ttl_seconds: float = 600.0
@@ -280,11 +279,9 @@ class Settings(BaseSettings):
     memory_rebuild_extraction_concurrency: int = 2
     memory_rebuild_commit_batch_size: int = 20
     memory_rebuild_context_event_limit: int = 8
-    memory_rebuild_retry_attempts: int = 5
     memory_rebuild_retry_initial_seconds: float = 30.0
     memory_rebuild_review_page_size: int = 20
     memory_rebuild_source_excerpt_characters: int = 500
-    memory_rebuild_max_events_per_run: int | None = None
     agent_max_tool_calls: int = 32
     agent_max_model_requests: int = 24
     agent_tool_result_max_characters: int = 24000
@@ -307,8 +304,6 @@ class Settings(BaseSettings):
     work_protocol_disk_reserve_bytes: int = Field(default=64 * 1024**2, gt=0, le=2**63 - 1)
     subagents_enabled: bool = False
     subagent_concurrency: int = Field(default=2, ge=1)
-    subagent_max_queued: int = Field(default=8, ge=1)
-    subagent_max_active_per_root: int = Field(default=8, ge=1)
     conversation_autonomous_debounce_seconds: float = 3.0
     conversation_autonomous_admission_threshold: int = 80
     conversation_autonomous_batch_limit: int = 8
@@ -484,18 +479,6 @@ class Settings(BaseSettings):
             raise ValueError("EMOJI_REPLACEMENT_MODE must be off, score, llm, or hybrid")
         return normalized
 
-    @field_validator("memory_rebuild_max_events_per_run", mode="before")
-    @classmethod
-    def _optional_memory_rebuild_limit(cls, value: object) -> object:
-        if value is None or (isinstance(value, str) and not value.strip()):
-            return None
-        if isinstance(value, bool):
-            raise ValueError("MEMORY_REBUILD_MAX_EVENTS_PER_RUN must be positive or empty")
-        converted = int(value) if isinstance(value, str) else value
-        if not isinstance(converted, int) or converted <= 0:
-            raise ValueError("MEMORY_REBUILD_MAX_EVENTS_PER_RUN must be positive or empty")
-        return converted
-
     @field_validator("bot_display_name")
     @classmethod
     def _single_line_bot_name(cls, value: str) -> str:
@@ -548,28 +531,6 @@ class Settings(BaseSettings):
             raise ValueError("code worker foreground reserve must be smaller than total capacity")
         if bool(self.code_mode_launcher_path) != bool(self.code_mode_launcher_sha256):
             raise ValueError("code worker launcher path and digest must be configured together")
-        return self
-
-    @model_validator(mode="after")
-    def _validate_work_storage_settings(self) -> Self:
-        if self.work_protocol_object_max_bytes > self.work_protocol_total_max_bytes:
-            raise ValueError("work protocol object limit must not exceed total capacity")
-        return self
-
-    @model_validator(mode="after")
-    def _validate_conversation_rollup_settings(self) -> Self:
-        if self.conversation_rollup_target_ratio >= self.conversation_rollup_trigger_ratio:
-            raise ValueError("rollup target ratio must be below trigger ratio")
-        if self.work_compaction_target_ratio >= self.work_compaction_trigger_ratio:
-            raise ValueError("work compaction target ratio must be below trigger ratio")
-        if (
-            self.conversation_rollup_lease_heartbeat_seconds
-            > self.conversation_rollup_lease_seconds / 3
-        ):
-            raise ValueError(
-                "CONVERSATION_ROLLUP_LEASE_HEARTBEAT_SECONDS must not exceed one third "
-                "of CONVERSATION_ROLLUP_LEASE_SECONDS"
-            )
         return self
 
     @model_validator(mode="after")

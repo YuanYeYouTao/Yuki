@@ -36,7 +36,7 @@ from qq_ai_bot.memory.dream.repository import (
 )
 from qq_ai_bot.memory.embedding.codec import Float32VectorCodec
 from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
-from qq_ai_bot.memory.enums import MemoryAuthority, MemoryKind, MemorySourceType
+from qq_ai_bot.memory.enums import MemoryAuthority, MemorySourceType
 from qq_ai_bot.memory.models import MemoryEvidence, MemoryFact
 from qq_ai_bot.memory.mutation.service import DreamRecomposePlan, MemoryMutationService
 from qq_ai_bot.memory.service import MemoryFactService
@@ -63,7 +63,7 @@ class DreamBudgetExhausted(RuntimeError):
 
 
 _RECOMPOSE_QUALITY_INSTRUCTION = """\
-For Episode recompose, memory_N is a source container, not an indivisible event. The same
+For recompose, memory_N is a source container, not an indivisible event. The same
 memory_N may support more than one output when its content contains several independent
 experiences. Each output must include a focus for decision and audit;
 focus is not part of the Episode body. Each output must express one independently retrievable
@@ -74,8 +74,7 @@ returning, check every
 output: if it can answer two independent questions, it is still mixed and must be split or have
 the less important material removed. Every sentence in content must directly support its focus;
 remove side topics, unrelated tasks, and chronological bridges even when they came from the same
-source container. A broad day, conversation, or sequence is not itself a durable theme. Episode
-changes must use recompose, never synthesize.
+source container. A broad day, conversation, or sequence is not itself a durable theme.
 """
 
 _INSTRUCTION = """\
@@ -85,14 +84,14 @@ _INSTRUCTION = """\
 
 先比较全部输入，再按以下顺序决策：
 1. 一条记忆只是另一条的重复、缩写、子集或近义改写，没有值得单独保留的新内容时，使用 merge。
-2. 非 Episode 记忆确属同一个稳定事实或偏好的互补表达时，才使用 synthesize。
+2. 记忆确属同一个稳定事实、偏好或经历的互补表达时，使用 synthesize。
 3. 输入代表相互独立的事实、偏好或经历时使用 keep；同一天、同一群、相同参与者或前后相邻，
    都不能单独证明它们属于同一件事。Dream 没有义务修改每个候选簇；多条独立且已经清楚的来源
    可以放进同一个 keep action，表示它们都经过检查但保持原样。
 4. evidence 冲突且暂时无法判断时使用 contest；已有争议且证据足以确定可信锚点时使用 resolve。
 
-处理 Episode 时，先判断材料中有几个能够被独立回忆和独立召回的中心事件，再使用 recompose 输出
-适当数量的 Episode。recompose 可以拆分一条臃肿 Episode、合并多个碎片，也可以把混合材料重新分组。
+材料中有多个能够被独立回忆和独立召回的中心事实、偏好或事件时，使用 recompose 输出
+适当数量的记忆。recompose 可以拆分一条混合记忆、合并多个碎片，也可以把混合材料重新分组。
 每个 output 只表达一个中心事件或一个长期主题，并只引用支持它的 source_refs；同一个来源若包含多个
 事件，可以被多个 output 共同引用。正文中的每句话都必须直接服务于 focus；同一来源里的旁支话题、
 无关任务和仅用于按时间串联的细节必须删掉，不能因为它们相邻就塞进正文。focus 若需要用“从 A 到 B”、
@@ -105,7 +104,7 @@ _INSTRUCTION = """\
 merge、synthesize、resolve 必须提供属于 source_refs 的 anchor_ref；不同 action 的 source_refs 不能
 重叠。只有 synthesize 必须输出 content，并且可以输出 importance；keep、merge、contest、resolve
 必须省略 content、importance 和 outputs。recompose 必须省略 anchor_ref、content 和 importance，
-并通过 outputs 给出最终 Episode。keep、contest 必须省略 anchor_ref。只能引用 memory_N 别名，
+并通过 outputs 给出最终记忆。keep、contest 必须省略 anchor_ref。只能引用 memory_N 别名，
 不能输出数据库 ID 或改变 scope/kind/key/category。
 
 source_type=explicit 或 authority=explicit 的记忆是不可变锚点：不能被 synthesize、recompose、
@@ -300,7 +299,6 @@ class DreamService:
             payload,
             self_memory=facts[0].scope_type.value == "self",
         )
-        self._validate_output(payload, output)
         source_characters = sum(len(fact.content) for fact in facts)
         output_characters = self._output_characters(output)
         preview_public_id = await self._repository.save_preview(
@@ -355,7 +353,6 @@ class DreamService:
                 run=run,
                 cluster=cluster,
             )
-        self._validate_output(payload, output)
         operation_public_ids = tuple(str(uuid.uuid4()) for _ in output.actions)
         mutation_ids = tuple(str(uuid.uuid4()) for _ in output.actions)
         embedding_ids, operation_count = await self._facts.repository.apply_evidence_write(
@@ -416,6 +413,9 @@ class DreamService:
             raise RuntimeError("dream_input_snapshot_changed")
         for action in output.actions:
             sources = tuple(current_map[ref] for ref in action.source_refs)
+            if action.operation is DreamOperationType.RECOMPOSE:
+                referenced = {ref for item in action.outputs for ref in item.source_refs}
+                sources = tuple(current_map[ref] for ref in action.source_refs if ref in referenced)
             anchor = self._anchor(action, sources, current_map)
             await self._mutations.prepare_dream_evidence(
                 sources,
@@ -435,9 +435,12 @@ class DreamService:
             sources = tuple(current_map[ref] for ref in action.source_refs if ref in current_map)
             if len(sources) != len(action.source_refs):
                 raise ValueError("dream output referenced an unknown memory alias")
-            if used.intersection(action.source_refs):
+            if used.intersection(action.consumed_source_refs):
                 raise ValueError("dream output reused a memory alias")
-            used.update(action.source_refs)
+            used.update(action.consumed_source_refs)
+            if action.operation is DreamOperationType.RECOMPOSE:
+                referenced = {ref for item in action.outputs for ref in item.source_refs}
+                sources = tuple(current_map[ref] for ref in action.source_refs if ref in referenced)
             anchor = self._anchor(action, sources, current_map)
             recompose_outputs = tuple(
                 DreamRecomposePlan(
@@ -676,7 +679,7 @@ class DreamService:
             content = fact.content
             remaining -= len(content)
             evidence_rows = await self._facts.repository.list_evidence(
-                fact.id, limit=100_000, session=session
+                fact.id, limit=None, session=session
             )
             selected = self._select_evidence(evidence_rows)
             evidence_proofs.append(
@@ -744,34 +747,6 @@ class DreamService:
             json.dumps(proof, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
         return fitted, ref_map, fingerprint
-
-    def _validate_output(self, payload: DreamInput, output: DreamOutput) -> None:
-        by_ref = {item.ref: item for item in payload.memories}
-        for action in output.actions:
-            if payload.kind != MemoryKind.EPISODE.value:
-                if action.operation is DreamOperationType.RECOMPOSE:
-                    raise DreamQualityError(
-                        "dream_episode_operation_invalid",
-                        "dream recompose is only available for episodes",
-                    )
-                continue
-            if action.operation is DreamOperationType.SYNTHESIZE:
-                raise DreamQualityError(
-                    "dream_episode_operation_invalid",
-                    "episodes must use recompose instead of synthesize",
-                )
-            if action.operation is not DreamOperationType.RECOMPOSE:
-                continue
-            source_rows = tuple(by_ref[ref] for ref in action.source_refs)
-            if any(
-                row.source_type == MemorySourceType.EXPLICIT.value
-                or row.authority == MemoryAuthority.EXPLICIT.value
-                for row in source_rows
-            ):
-                raise DreamQualityError(
-                    "dream_explicit_episode_protected",
-                    "dream cannot recompose an explicit episode",
-                )
 
     @staticmethod
     def _output_characters(output: DreamOutput) -> int:
@@ -908,16 +883,6 @@ class DreamService:
         *,
         before_dispatch: Callable[[], Awaitable[None]],
     ) -> DreamOutput:
-        def validate(output: DreamOutput) -> None:
-            try:
-                self._validate_output(payload, output)
-            except ValueError as exc:
-                raise StructuredTaskError(
-                    "Dream result failed semantic validation",
-                    reason_code=self._quality_reason(exc),
-                    detail=self._quality_detail(exc),
-                ) from exc
-
         token = before_provider_request.set(before_dispatch)
         try:
             return await self._concurrency.run_llm(
@@ -930,7 +895,6 @@ class DreamService:
                     temperature=0.1,
                     max_output_tokens=self._settings.memory_dream_max_output_tokens,
                     validation_retries=1,
-                    validate_output=validate,
                     validation_repair_hint=(
                         "Correct the reported fields using only supplied source aliases; "
                         "unhandled memories can remain unchanged."

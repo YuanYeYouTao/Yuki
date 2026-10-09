@@ -1,6 +1,7 @@
 """Durable work goals, input consumption and activation fencing."""
 
 from alembic import op
+from sqlalchemy.schema import CreateIndex, CreateTable
 
 from qq_ai_bot.runtime.work_schema_v1 import TABLES
 
@@ -12,7 +13,11 @@ depends_on = None
 
 def upgrade() -> None:
     for table in TABLES:
-        table.create(op.get_bind(), checkfirst=True)
+        op.get_bind().execute(CreateTable(table, if_not_exists=True))
+        for index in table.indexes:
+            # Work query indexes belong to the frozen 0085/0104 migrations.
+            if not index.name.startswith("ix_runtime_work_query_"):
+                op.get_bind().execute(CreateIndex(index, if_not_exists=True))
 
 
 def downgrade() -> None:

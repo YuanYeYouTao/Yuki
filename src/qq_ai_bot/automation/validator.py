@@ -128,22 +128,14 @@ class AutomationValidator:
                 available_steps.add(step.save_as)
             if step.call not in required:
                 required.append(step.call)
-            if step.call == "yuki.agent":
-                if script.limits.agent_budget_managed:
-                    llm_calls += 1
-                    tool_calls += 1
-                else:
-                    llm_calls += int(step.arguments.get("max_model_requests", 10))
-                    tool_calls += 1 + int(step.arguments.get("max_tool_calls", 6))
-            else:
-                llm_calls += int(step.call in _LLM_CAPABILITIES)
-                tool_calls += 1
+            llm_calls += int(step.call in _LLM_CAPABILITIES)
+            tool_calls += 1
             messages += int(step.call in _MESSAGE_CAPABILITIES)
-        if llm_calls > script.limits.max_llm_calls:
+        if not script.uses_runtime_budget and llm_calls > script.limits.max_llm_calls:
             raise ValueError("脚本中的 LLM 调用数超过 limits.max_llm_calls")
-        if messages > script.limits.max_messages:
+        if not script.uses_runtime_budget and messages > script.limits.max_messages:
             raise ValueError("脚本中的消息发送数超过 limits.max_messages")
-        if tool_calls > script.limits.max_tool_calls:
+        if not script.uses_runtime_budget and tool_calls > script.limits.max_tool_calls:
             raise ValueError("脚本可能使用的工具次数超过 limits.max_tool_calls")
         next_run = initial_run_at(script.schedule, now_utc, script.timezone)
         return ValidatedAutomation(
@@ -159,6 +151,8 @@ class AutomationValidator:
             raise ValueError("脚本步骤数超过后端 AUTOMATION_MAX_STEPS")
         if limits.max_steps > self._settings.automation_max_steps:
             raise ValueError("limits.max_steps 超过后端硬限制")
+        if script.uses_runtime_budget:
+            return
         if limits.max_llm_calls > self._settings.automation_max_llm_calls_per_run:
             raise ValueError("limits.max_llm_calls 超过后端硬限制")
         if limits.max_tool_calls > self._settings.automation_max_tool_calls_per_run:

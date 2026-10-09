@@ -99,7 +99,7 @@ class ControlWorkQueryAdapter:
                 "deliveries": (
                     deliveries,
                     "id",
-                    ("id", "kind", "message_count", "state", "not_before", "created", "updated"),
+                    ("id", "kind", "message_count", "state", "created", "updated"),
                 ),
                 "waits": (
                     waits,

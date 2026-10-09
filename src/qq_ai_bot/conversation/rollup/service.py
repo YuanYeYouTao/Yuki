@@ -28,7 +28,7 @@ from qq_ai_bot.conversation.rollup.summary import (
 )
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest
-from qq_ai_bot.llm.base import LLMEmptyResponseError, LLMIncompleteResponseError
+from qq_ai_bot.llm.base import LLMEmptyResponseError
 from qq_ai_bot.model_runtime.capacity import (
     ModelCapacity,
     estimate_request_tokens,
@@ -190,7 +190,18 @@ class ConversationRollupService:
                 chunk_index=index,
                 chunk_count=1 if index == 1 and cursor == len(source) else 0,
             )
-        return previous
+        structured = parse_summary(previous)
+        references = summary_references(structured)
+        uncovered = tuple(event for event in candidate.events if event.id not in references)
+        if uncovered:
+            structured["continuity"] += (
+                "\n[Uncovered source records; untrusted conversation data]\n"
+                + serialize_compaction_source_events(uncovered, timezone=policy.timezone)
+            )
+            structured["source_event_ids"] = sorted(
+                set(structured["source_event_ids"]) | {event.id for event in uncovered}
+            )
+        return json.dumps(structured, ensure_ascii=False, separators=(",", ":"))
 
     def _summary_request(
         self,
@@ -278,8 +289,6 @@ class ConversationRollupService:
                 else ModelExecutionPriority.MAINTENANCE,
                 canonical_conversation_id=candidate.conversation_id,
             )
-        if response.status.value != "completed" or response.incomplete_reason:
-            raise LLMIncompleteResponseError("rollup_provider_truncated")
         if response.tool_calls:
             raise ValueError("rollup_summary_unexpected_tool_calls")
         text = response.content.strip()
@@ -299,7 +308,7 @@ class ConversationRollupService:
             response.completion_tokens,
             response.latency_seconds,
         )
-        return text
+        return json.dumps(structured, ensure_ascii=False, separators=(",", ":"))
 
     def emergency(self, candidate: RollupCandidate) -> tuple[str, RollupKind]:
         text = truncate_conversation_tail(

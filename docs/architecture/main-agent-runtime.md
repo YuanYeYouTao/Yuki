@@ -82,7 +82,7 @@ SELF 使用数据库内唯一的 `PrincipalRef(self, self)`，不携带真人 us
 主 Agent 工具合同执行。`SelfInitiativeTrigger` 固定原 Conversation、
 generation、Space、Presence 与群传输目标。目标成员和资料来源都不授予其私人权限。
 `ConversationTurnSnapshot` 的事件 ID 与 initiative run 严格二选一；无事件工作不得借
-最近真人消息补锚点。SELF 主入口按需读取当前群及该群可见的 SELF Memory。
+最近真人消息补锚点。SELF主入口按需读取当前群及该群可见的SELF Memory；主动SELF写入沿原initiative和原执行的真实工具回执，不借真人事件。
 每次模型请求、工具执行和发送准备仍复核原 run 与场景权限。SELF 自动化还固定创建时
 Conversation/generation、Space、Presence 和群绑定；场景失效即阻止执行。当前 SELF 社交工具只允许
 当前群发送、通讯录、历史和成员读取；不支持自动结构化 @、私人目标、撤回或戳人。
@@ -95,8 +95,7 @@ Conversation/generation、Space、Presence 和群绑定；场景失效即阻止�
 效果队列不再是模型可调用合同。工作完成可以安静结束，不需要人为制造发送回执。
 模型的无工具 final 在普通聊天、SELF 和自动化入口都是内部终止信号，不触发未发送纠正轮。
 存在原 Work 时经共同 complete 入口核验原目标、真实效果、交付要求和晚到输入；没有
-Work 时返回内部结果。自动化外围继续按原目标和实际发送回执核验交付，内部 final
-不证明 QQ 已回复。参数、权限或预算拒绝不伪造发送尝试，未知发送不盲目重试。
+Work 时返回内部结果。自动化沿原Work终态收尾，完成不强制发送；发送是否发生由原回执证明，内部final不证明QQ已回复。参数、权限或预算拒绝不伪造发送尝试，未知发送不盲目重试。
 共享执行提示明确要求：当前真人请求创建自动化、修改记忆或其他写操作后，Agent 根据
 真实回执用 `send_message` 给当前会话一次简短结果反馈；未确认不宣称成功，已送达的
 同一结果不重复反馈。明确安静执行、自主 SELF、定时任务和后台维护不因此额外发消息。
@@ -163,16 +162,17 @@ canonical Conversation 时同样在模型调用前阻断。
 查询不补写工具结果、解除未知效果围栏或改变 Social 执行语义。
 这证明传输事实，不证明内容在语义上已完成目标；不按措辞猜测进度或最终回答。
 
-`task_control(complete)` 在同一次调用中携带模型撰写的真实内部 `result`（主合同 17、
+`task_control(complete)` 可在同一次调用中携带真实内部 `result`（主合同 17、
 worker 合同 4）。direct 与 Code 共用一个完成准备：先核对未决效果、活子任务、产物与交付
 回执以及结果消费者是否允许空结果，全部通过才把决定写入原 Work `checkpoint_json` 的
 `accepted_control`（complete/fail/need_input/wait 各一份，wait(conditions) 与原 wait
 绑定同事务）。配对保存后本次 activation 立即结束，不再请求后续模型。结算 writer 复核当前
 邮箱、未决效果与子任务，只有真正提交 completed 时才把 result 原子转存为 `sync_result`；
-caller 与子任务通知都只读取已提交行。无工具 final 以净化后的正文走同一完成准备；被拒绝时
+caller 与子任务通知都只读取已提交行。need_input/fail 的 reason 是可选说明，不作为状态提交条件；已验证完成的 state_change 不额外要求 result 正文。无工具 final 以净化后的正文走同一完成准备；被拒绝时
 以稳定拒绝 code 作为暂停原因，不购买纠正轮。合法新输入、update(goal) 或 cancel_wait 在原
 边界撤销候选。恢复时先读取 accepted_control，任何新模型或业务派发前即按原 writer 结算。
-完成条件满足且原 Work 有 confirmed 消息发送事实时，caller 结果可以为空；否则必须返回实际结果。
+结果正文按实际output_kind与消费者使用：已验证的state_change无需附加prose，confirmed发送
+也可构成原完成事实；answer或artifact仍使用其真实结果与交付，不靠装饰性文案替代证据。
 这些边界由 `services/turn_execution.py` 的类型化循环实施，与 `execute_code` 的原 VM
 续接共存；恢复未决 composition 后仍按原来源重新核验完成提议，不回到旧 `_run`。
 
@@ -329,9 +329,9 @@ guard 重新核验一次，再重备同一数据库保存；无原 guard 或真�
 Work 冲突在恢复记录和运维日志中保留受控的具体原因码，不把任意异常文本发到聊天。
 Journal 恢复失败同样保留有限的内部原因码，未知异常文本使用通用码；具体原因不授予
 重试或重放已有操作的资格。
-`work_journal_source_changed` 若尚无效果或投递回执，可用原 Work ID 有界重试，并在新来源
-上建立显式链边界；已有任何效果记录时暂停并提示核对状态，不自动重放已创建的自动任务、
-已执行工具或未知投递。租约失效与其他冲突仍遵守原所有权围栏，不借来源变化扩大重试范围。
+`work_journal_source_changed` 使用原 Work ID 和已有回执接续；当前合法上下文形成新链，
+失效的私有协议和未发送草稿不进入新请求。已有确定效果不重复执行，未知投递继续按原回执
+对账。可重试错误不因固定次数转为长期挂起，累计次数和预算仍保留。
 
 暂停通知交付是原 Work 的维护，不把它改为 running，也不消费 pending 输入或进入业务
 结算，不计任务活动时间。同一暂停期间复用原通知身份与交付回执；真实恢复执行后再次
@@ -357,11 +357,17 @@ paired 检查点。真实主请求超预算且整理不能使其装窗时，暂�
 摘要来源按规范化后的完整请求容量分页，单个较大公开记录以原来源编号的连续片段呈现，
 不得截掉尚未处理的来源。已付摘要页的来源快照和游标随原 paired journal 持久化；真实
 来源与隐私代次不变时，恢复复用已验证的页，不因分段重做付费工作。窗口调整也不重写
-已付最终页的引用范围。只有全部来源与输入处理完毕，才验证并发布压缩候选。
-目标水位是整理策略，候选只需实际缩小且装入完整可用窗口，不要求达到固定缩减百分比。
+已付最终页的引用范围。原协议对象与输入账本保留，不以整齐的全集摘要作为发布资格。
+目标水位是整理策略，候选装入完整可用窗口即可，不要求固定缩减百分比或必须比原请求更小。
 新链记录派生容量水位，后续按新增内容占用剩余空间触发整理，避免刚压缩后立即反复压缩。
-摘要 schema 仅核验类型、非空、来源引用及仍有效指令完整保留，不以固定条数、短字符数或
-另一层小字节常量拒绝合法结果；真实模型输出与协议存储政策独立核验。
+摘要按实际有内容的字段保存，重复引用、重复要求和未回填全部旧指令不导致暂停；不禁止
+额外元数据或把版本号固定为一。原来源引用继续核对，部分付费摘要沿已有paid_observations
+进入恢复材料，未处理资料保留原件。真实模型输出与协议存储政策独立核验。
+
+省略旧要求不删除它，未概括输入原文沿已有recent_inputs保留；covered只推进实际引用的
+连续前缀，后页不能绕过前面的缺口。实际摘要分页继续按本页提供范围前进，不要求先
+填完旧缺口。未提供的观察字段继承旧结果，显式空数组可更新；记录引用带原chain ID，
+旧paid观察与新记录不共用编号。恢复材料已包含的输入不再作为original_inputs重复呈现。
 
 数据库 journal 保存小清单，协议对象与媒体在数据库同目录的 `work-protocol` 中按内容 hash
 保存；新增引用与 journal 在原租约的短事务一起提交。活动 Work 保留引用，归档与隐私清理
@@ -377,7 +383,8 @@ Protocol GC 分 deleting 恢复与普通过期两个索引分支，先取有界 
 owned 页也推进原进程内游标，固定 cutoff 和同排序高水位，次轮回访新插入及状态变化。
 短 writer 重新核对原 metadata、期限和无拥有者条件并提交 deleting 屏障；文件锁只保护
 实际文件查证/删除，释放后批量确认仍 deleting 且无拥有者的 metadata。GC 不持 writer
-等待文件锁；publication 保留文件核验至原 journal/ref 提交的保护和 deleting 全集合检查。
+等待文件锁；publication 保留文件核验至原 journal/ref 提交的保护。同内容对象的新引用在
+原 writer 撤销旧删除标记；GC 取得文件锁后重新读取删除资格，避免删除已复用的对象。
 文件线程在调用方取消后须真正收尾才释放原保护。普通不可变检查点条目可在原 chain
 复用有界 digest/size 缓存，opaque 与会改变媒体外置的条目仍按原协议准备；缓存不代替
 发布前真实文件身份/完整性核验。文件缺失重新准备，变化重新查证，损坏拒绝发布。
@@ -415,11 +422,8 @@ SELF 接纳记录构成持久待派发事实，以 `initiative:<run_id>` 唯一�
 失效；generation reset 或原授权失效仍阻止继续执行。发送沿原 Presence，不借当前主动路由。
 Host 对原 run 独立对账真实效果；终态迟到回执保留，但不复活 Work、重复记账或重发。
 保留型 `suspended`/`waiting_user` 不使原 run 丧失执行资格，管理 resume 由原 SELF 来源继续；
-只有真实终态 Work 才终结 run，参与控制器不自行启动新任务。已获批准的首次启动失败出口：原 SELF
-来源在首次场景/Presence 准备边界得到确定 `not_sent`、有界重试耗尽，且持久事实证明从未开始
-（`model_requests` 为 0——它在请求接纳后、dispatched journal 前预留；无 journal、效果、投递、等待、
-输入或子树、无已接受控制），按原 ID 记录启动失败并置 `failed`，释放接纳容量并保留失败事实，
-failed 后不能 resume。任一执行证据存在时仍保留原暂停；SELF 定时自动化不适用该政策。
+只有真实终态 Work 才终结 run，参与控制器不自行启动新任务。首次连接准备失败继续沿
+原 Work 重排，不因三次重试或未开始执行另判终结失败。
 WorkScheduler 始终启动；普通聊天及无现有 WorkControl 的 Host 调用接纳、模型自动化执行
 仍各自核验 `RUNTIME_WORK_ENABLED`，
 关闭开关不停止 WorkScheduler 所管理的已有 Work；由 AutomationWorker 恢复的模型自动化
@@ -496,13 +500,13 @@ accepted/failed，部分复合交付不充当整个步骤已完成的证据。�
 
 较长的用户交互任务可在 `task_control.accept` 声明 `reporting=interactive`；
 省略沿用原节奏，`quiet` 用于用户要求安静执行。主 Agent 合同固定包含可选字段，
-不按每次任务修改 schema。子任务、SELF 和禁止外发/内部返回来源不采用 interactive。
-`update` 仅改变 reporting 时不修改目标或解除等待；quiet 可提升为 interactive，
-已采用 interactive 的原 Work 不接受模型自行降为 quiet。该元数据保存于原 checkpoint 的
+不按每次任务修改 schema。reporting 不改变原来源的发送权限。
+`update` 仅改变 reporting 时不修改目标或解除等待；quiet 与 interactive 可按任务需要调整。
+该元数据保存于原 checkpoint 的
 有界 `communication` 子路径，原 wait/need_input/fail 检查点不会擦除它。
 
-`send_message.work_report` 只声明 `start/progress/reply/final` 用途和至多八个原内部事件
-引用；它不进入平台消息字段，不授予权限。引用只可指向原 trigger 或同 Work 获准的
+`send_message.work_report` 只声明 `start/progress/reply/final` 用途和原内部事件
+引用；它不进入平台消息字段，不授予权限，普通发送不要求先登记 Work。已有 Work 时保存关联，重复引用不改变所属集合；引用只可指向原 trigger 或同 Work 获准的
 staged/consumed 输入；目标须为当前 canonical 目标。派发前在原 prepared effect 保存关联，
 结果仍取原 Social/Work effect 回执；prepared、失败和 unknown 不当作用户已收到。
 查询原效果事实不依赖最近 64 条展示窗口，不新建投递状态副本。
@@ -517,18 +521,18 @@ staged/consumed 输入；目标须为当前 canonical 目标。派发前在原 p
 机会，quiet 与旧 Work 也适用。消费/提醒并不证明答复，相关发送仍看真实回执。
 同一输入先发送失败后成功，取独立的真实成功见证；有未知发送时提供核对机会，不提示盲重发。
 提醒水位并入原 dispatched journal 原子发布，不单独提交或全量读取旧效果正文。
-模型的无工具 final 是内部终止信号，宿主在 complete 的同一完成准备中核验完整效果证据与交付要求，不生成结束礼仪纠正轮。明确 answer 交付只接受 final 用途的当前目标成功回执，开始、进度和插话回复不代替最终答复。state_change 的事实依据是已执行、确定成功且 `mutation_committed` 或领域 `request_postcondition_satisfied` 为真的非发送效果；有无 work_report 不改变结论。artifact 完成只核对显式 `artifact_ids`（隐式 final 仅取模型实际已发送的产物），不把内部草稿全选为交付义务。文件、业务变更、SELF 静默及内部返回继续各自交付合同，不额外群发。标签和传输成功都不能证明语义目标完成。未决或未知效果、未完成子任务及并发新输入仍由原 writer 围栏阻止完成。
+模型的无工具 final 是内部终止信号，宿主在 complete 的同一完成准备中核验完整效果证据与交付要求，不生成结束礼仪纠正轮。answer 使用当前目标的成功发送回执，不要求额外 final 用途标签；模型的 complete/final 决定是否提交完成。state_change 的事实依据是已执行、确定成功且 `mutation_committed` 或领域 `request_postcondition_satisfied` 为真的非发送效果；有无 work_report 不改变结论。artifact 完成只核对显式 `artifact_ids`（隐式 final 仅取模型实际已发送的产物），不把内部草稿全选为交付义务。文件、业务变更、SELF 静默及内部返回继续各自交付合同，不额外群发。标签和传输成功都不能证明语义目标完成。未决或未知效果、未完成子任务及并发新输入仍由原 writer 围栏阻止完成。
 未知异常文本不进入通知，原因说明不形成新的暂停状态或自动重试资格。
 
 `task_control.wait` 保留单一所属 `run_id` 路径，也可登记一次性 `conditions`：
-`time_due`、当前 canonical Conversation 的新消息、获准插件发布的事件或所属 run。
+`time_due`、当前 canonical Conversation 的新消息、获准插件发布的事件或所属 run。主工作和子工作都可按自己的原 Work ID 登记、接收并消费信号，再沿原 lease 完成。
 集合支持 `any` / `all` 和可选 `deadline_at`；没有隐式 90 秒有效期。绑定持久化在
 `runtime_work_waits`，带 Work ID、generation、主体、事件水位和唯一调用键。消息入口、
 插件发布事务与 WorkScheduler 的时钟分别交付信号；命中时同事务登记原 Work 输入并入队，
 不创建第二项 Agent 工作。局部满足的 `all` 条件留在绑定中；超时向原 Work 交付明确结果，
 不视作同意。插件必须显式设置 SDK 的 `resume_waiting_work`，否则维持原通知和新轮行为；
 命中原 Work 的事件不会同时启动独立的插件 Agent 轮。等待命中与输入只保存事件引用和匹配元数据；构造请求时按当前 canonical Conversation、generation 和可见性读取原账本正文，历史 matched.text 不再采用。
-AutomationWorker 只管理自己的计划、claim 和原 run/step 游标；等待状态通过 Runtime 查询。
+AutomationWorker 只管理自己的计划、claim 和原 run/step 游标；等待状态通过 Runtime 查询。自动化内的 Work 暂停仍是原 step 的 pending 状态，保留原 run/cursor/Work ID；轮询只读原暂停状态，明确恢复后续跑，不将 suspended 升级为关闭整项自动化。
 释放自动化 claim 前后均核对原 Work 等待是否仍活跃，信号先到或后到都唤醒原计划，
 不因停放覆盖已经到达的唤醒，也不创建新 run。
 信号到达不解锁 `suspended`：容量、unknown、generation 等独立暂停原因不被信号覆盖，信号作为待处理

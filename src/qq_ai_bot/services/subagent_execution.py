@@ -39,6 +39,7 @@ from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
 from qq_ai_bot.services.agent_runner import AgentRunner, AgentToolBackend
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.execution_sources import (
+    AutomationTaskSource,
     MessageTaskSource,
     SelfTaskSource,
     recover_execution_source,
@@ -174,6 +175,11 @@ class SubagentExecution:
                     assert row is not None
                     control.current = row
                     source = json.loads(row["source_json"])
+                    settings = (
+                        self.services.runner.code_mode_settings
+                        if source.get("origin") == TurnOrigin.SCHEDULED_AUTOMATION.value
+                        else None
+                    )
                     control.source_key = row["source_key"]
                     control.source = source
                     recovered = await recover_execution_source(
@@ -181,6 +187,7 @@ class SubagentExecution:
                         row["conversation_id"],
                         source,
                         request_id=identity,
+                        settings=settings,
                     )
                     from qq_ai_bot.runtime.observability import (
                         RuntimeTurnCorrelation,
@@ -200,7 +207,7 @@ class SubagentExecution:
                         if recovered.event_id is not None
                         else None
                     )
-                    if original is None and not isinstance(recovered, SelfTaskSource):
+                    if original is None and isinstance(recovered, MessageTaskSource):
                         raise WorkConflict("worker_source_deleted")
                     child = await self.children.related(source["parent_work_id"], identity)
 
@@ -213,6 +220,7 @@ class SubagentExecution:
                                 row["conversation_id"],
                                 source,
                                 request_id=identity,
+                                settings=settings,
                             )
                             != recovered
                         ):
@@ -237,11 +245,10 @@ class SubagentExecution:
                     control.validate = validate
                     control.resolve_child = command
                     group_id: str | None
-                    if isinstance(recovered, SelfTaskSource):
+                    if recovered.target_space_id is not None:
                         group_id = recovered.external_target_id
                     else:
-                        assert original is not None
-                        group_id = original.group_id
+                        group_id = original.group_id if original is not None else None
                     config = await self.services.runtime_config.snapshot(
                         user_id=recovered.actor_user_id, group_id=group_id
                     )
@@ -251,7 +258,18 @@ class SubagentExecution:
                         else None
                     )
 
-                    if isinstance(recovered, SelfTaskSource):
+                    if isinstance(recovered, AutomationTaskSource):
+                        from qq_ai_bot.memory.runtime.resolver import resolve_memory_access
+                        from qq_ai_bot.memory.runtime.turn_session import TurnMemorySession
+                        from qq_ai_bot.runtime.keys import ResolvedMemoryScope
+
+                        memory = TurnMemorySession(
+                            decision=resolve_memory_access(origin=TurnOrigin.SCHEDULED_AUTOMATION),
+                            scope=ResolvedMemoryScope.for_group(recovered.external_target_id)
+                            if recovered.target_space_id
+                            else ResolvedMemoryScope.for_private(recovered.actor_user_id),
+                        )
+                    elif isinstance(recovered, SelfTaskSource):
                         memory = await self.services.open_self_memory(recovered.trigger())
                     else:
                         assert inbound is not None
@@ -260,7 +278,9 @@ class SubagentExecution:
                             autonomous=recovered.origin == "autonomous_group",
                         )
                     actor = (
-                        recovered.actor(identity) if isinstance(recovered, SelfTaskSource) else None
+                        recovered.actor(identity)
+                        if isinstance(recovered, (SelfTaskSource, AutomationTaskSource))
+                        else None
                     )
                     tool_runtime = ToolRuntime(
                         inbound=inbound,
@@ -281,10 +301,10 @@ class SubagentExecution:
                         conversation_id=recovered.conversation_id,
                         person_id=recovered.actor_person_id,
                         space_id=recovered.target_space_id,
-                        allow_work_environment=isinstance(recovered, SelfTaskSource),
+                        allow_work_environment=not isinstance(recovered, MessageTaskSource),
                         scope_type=ScopeType.GROUP
-                        if isinstance(recovered, SelfTaskSource)
-                        else None,
+                        if recovered.target_space_id
+                        else ScopeType.PRIVATE,
                         external_target_id=recovered.external_target_id,
                     )
                     runner = self.services.runner

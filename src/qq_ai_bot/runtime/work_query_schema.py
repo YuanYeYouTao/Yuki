@@ -9,7 +9,6 @@ from sqlalchemy.schema import CreateIndex
 from qq_ai_bot.runtime.work_schema_v1 import WORK_STATES, inputs, work
 
 SOURCE_SCOPE_FIELDS = (
-    "actor_user_id",
     "actor_person_id",
     "origin",
     "plugin_id",
@@ -48,7 +47,7 @@ def work_statuses(status: str) -> tuple[str, ...]:
 def source_scope_column(key: str) -> Any:
     # Literal paths must match the SQLite expression index. These are fixed
     # internal field names, never supplied by the caller.
-    if key not in SOURCE_SCOPE_FIELDS:
+    if key not in SOURCE_SCOPE_FIELDS and key != "actor_user_id":
         raise ValueError("invalid_work_source_field")
     return func.json_extract(work.c.source_json, literal_column(f"'$.{key}'"))
 

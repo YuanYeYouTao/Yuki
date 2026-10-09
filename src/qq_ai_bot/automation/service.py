@@ -890,24 +890,20 @@ class AutomationService:
                     presence_id=actor.presence_id,
                     session=session,
                 )
-            bindings = (
-                await session.scalars(
-                    select(SpaceBindingModel)
-                    .where(
-                        SpaceBindingModel.space_id == conversation.space_id,
-                        SpaceBindingModel.platform == "qq",
-                        SpaceBindingModel.status == "active",
-                    )
-                    .limit(2)
+            binding = await session.scalar(
+                select(SpaceBindingModel).where(
+                    SpaceBindingModel.space_id == conversation.space_id,
+                    SpaceBindingModel.platform == "qq",
+                    SpaceBindingModel.status == "active",
+                    SpaceBindingModel.external_space_id == actor.group_id,
                 )
-            ).all()
+            )
             if (
                 presence is None
                 or not presence.enabled
                 or presence.platform != "qq"
                 or presence.external_account_id != actor.bot_user_id
-                or len(bindings) != 1
-                or bindings[0].external_space_id != actor.group_id
+                or binding is None
             ):
                 raise PermissionError("self_automation_scene_changed")
             return {

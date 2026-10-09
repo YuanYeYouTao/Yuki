@@ -263,7 +263,8 @@ class AutomationCapabilityHandlers:
                 messages_sent=backend.messages_sent,
             ) from exc
         if (
-            result.work_state in {"queued", "running", "waiting_external", "waiting_user"}
+            result.work_state
+            in {"queued", "running", "waiting_external", "waiting_user", "suspended"}
             and result.work_id
         ):
             return CapabilityResult(
@@ -275,7 +276,7 @@ class AutomationCapabilityHandlers:
             )
         if result.work_state not in {None, "completed"}:
             raise AutomationExecutionError(
-                "agent_work_blocked",
+                f"agent_work_{result.work_state}",
                 llm_calls=result.model_requests,
                 tool_calls=result.tool_calls_used,
                 messages_sent=backend.messages_sent,

@@ -134,7 +134,6 @@ async def detailed_work(database):
                 id="original-delivery",
                 work_id=identity,
                 kind="answer",
-                target_key="transport-private-id",
                 state="unknown",
                 payload_json='{"private":"delivery-secret"}',
                 receipt_json='{"private":"receipt-secret"}',

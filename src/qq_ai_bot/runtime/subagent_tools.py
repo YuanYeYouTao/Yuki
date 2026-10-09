@@ -75,10 +75,10 @@ def subagent_tools() -> tuple[ChatTool, ...]:
             "将复杂工作交给后台工作者，立即返回 ID；可以继续聊天。"
             "已有子任务用 control/message，勿重复派生。",
             {
-                "goal": {"type": "string", "maxLength": 8192},
-                "context": {"type": "string", "maxLength": 24000},
-                "acceptance": {"type": "string", "maxLength": 8000},
-                "files": {"type": "array", "items": string, "maxItems": 32},
+                "goal": {"type": "string"},
+                "context": string,
+                "acceptance": string,
+                "files": {"type": "array", "items": string},
                 "output_kind": {"type": "string", "enum": ["answer", "artifact", "state_change"]},
             },
             ("goal", "acceptance", "output_kind"),
@@ -93,7 +93,7 @@ def subagent_tools() -> tuple[ChatTool, ...]:
                     "enum": ["list", "status", "result", "cancel", "resume"],
                 },
                 "child_id": string,
-                "instruction": {"type": "string", "maxLength": 8000},
+                "instruction": string,
                 "limit": {"type": "integer", "minimum": 1, "maximum": 50},
                 "cursor": {"type": "string", "maxLength": 36},
             },
@@ -105,7 +105,7 @@ def subagent_tools() -> tuple[ChatTool, ...]:
             "ask=true 保存后等待回答，释放执行名额。",
             {
                 "child_id": string,
-                "text": {"type": "string", "maxLength": 8000},
+                "text": string,
                 "ask": {"type": "boolean"},
                 "reply_to": string,
             },
@@ -180,9 +180,17 @@ async def execute_subagent(
             await repository.cancel(control.lease, root_id, identity)
         elif action == "resume":
             instruction = args.get("instruction")
-            if not isinstance(instruction, str) or not instruction.strip():
-                raise ValueError("resume_instruction_required")
-            await repository.message(control.lease, root_id, identity, key, instruction)
+            if isinstance(instruction, str) and instruction.strip():
+                await repository.message(control.lease, root_id, identity, key, instruction)
+            else:
+                child = await repository.related(root_id, identity, include_checkpoint=True)
+                if child["archived_at"] is not None:
+                    raise ValueError("subagent_archived")
+                if child["state"] not in {"suspended", "waiting_user"}:
+                    raise ValueError("resume_instruction_required")
+                await control.repository.transition(
+                    control.lease, identity, child["revision"], "queued"
+                )
         elif action not in {"status", "result"}:
             raise ValueError("invalid_subagent_action")
         rows = [await repository.related(root_id, identity, include_checkpoint=action == "result")]

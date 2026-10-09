@@ -36,7 +36,7 @@ def format_report(cycle: dict[str, Any], *, page: int = 1) -> str:
             f"proposal {cycle['proposal_count']}，写入 {cycle['committed_count']}。",
             f"原因 {cycle['reason']}；边界 {cycle['limit_flags']}；错误 {cycle['errors']}。",
         ]
-    for key in ("waiting_retry", "isolated", "policy_ineligible", "recent_not_due", "processing"):
+    for key in ("waiting_retry", "isolated", "recent_not_due", "processing"):
         entry = after.get(key, {})
         lines.append(f"{key}: {entry.get('events', 0)} 事件/{entry.get('conversations', 0)} 会话")
     failures = cycle.get("failures", [])

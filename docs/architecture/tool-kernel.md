@@ -30,6 +30,9 @@ schema、脚本调用名及本轮直调可见性。搜索不返回全部 schema�
 只能查询自己的完整执行子集。`lookup_tools` 可与业务调用同批，仍按原调用顺序、
 执行权限及效果屏障处理。查询结果按原 call_id 配对保存，但不计业务效果或业务调用额度；查询自身仍受模型请求、输入容量及原 Work journal 合同约束。
 Capability Runtime 的执行集合不是模型声明的真源，也不能在请求链中添加 schema 或扩大权限。
+参数 schema 由现有 JSON Schema 库按其声明方言编译并核验，不因固定深度、节点数、
+正则长度或重复量词启发式隔离可编译的工具。真实编译错误仍沿原隔离回执返回；
+本地 `$ref` 可解析，远程引用不触发网络读取。
 
 ## 调用与效果
 
@@ -179,9 +182,13 @@ Code Mode 控制子回执保存其 Host 停止决定。恢复先读取 accepted 
 观察门，再允许 VM settle；不重做控制，也不继续停止后的副作用。等待 owned pending
 执行允许通过同一 WorkControl，external run 仍拒绝，unknown 仍禁止完成和新增写入。
 累计 stdout 与截断标记通过同一 snapshot owner/privacy/引用发布和 GC 持久化；旧边界
-若仅有输出计数而无文本，标记缺失，不重新 print。父结果的最终 JSON 整体受
-`agent.tool_result_max_characters` 限制；大 operations 返回数量、截断标记与原 composition
-引用，完整子回执不裁剪。空 stdout 不因 operations 截断而标记截断。
+若仅有输出计数而无文本，标记缺失，不重新 print。父结果按
+`agent.tool_result_max_characters` 整理展示；保留真实执行身份的必要JSON不因仍超软目标而拒绝。
+大 operations 返回数量、截断标记与原 composition 引用，完整子回执不裁剪。
+空 stdout 不因 operations 截断而标记截断。
+
+完整结果存档或展示失败不抹掉已经确认的操作。原效果回执与fallback已持久化时，沿该
+实际结果继续，不以异常必须为OSError另判整项失败；未确认效果与取消仍按原事实处理。
 
 所有 pending composition 原父调用配对并保存后，在下一模型派发前复用 business rebase，
 携带当前获准公共历史、任务线索、必要媒体及未被模型观察的原父结果。未决协议、Provider

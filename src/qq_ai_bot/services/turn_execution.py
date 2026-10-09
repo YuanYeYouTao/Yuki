@@ -62,6 +62,7 @@ from qq_ai_bot.services.agent_runner import (
     ReusableToolResult,
     _RequestNotStarted,
 )
+from qq_ai_bot.services.concurrency import RequestCancelledError
 from qq_ai_bot.services.context_boundary import ContextBoundary
 from qq_ai_bot.services.evidence_observation import EVIDENCE_TOOLS, EvidenceObservation
 from qq_ai_bot.services.turn_transcript import (
@@ -663,7 +664,7 @@ class TurnExecution:
                 self.tools, tool_calls=self.state.calls_used, model_requests=request_index
             )
             raise exc.cause from exc
-        except (LLMTimeoutError, LLMUnavailableError) as exc:
+        except (LLMTimeoutError, LLMUnavailableError, RequestCancelledError) as exc:
             self.runner._record_failure_usage(
                 self.tools, tool_calls=self.state.calls_used, model_requests=request_index + 1
             )
@@ -671,8 +672,7 @@ class TurnExecution:
             if (
                 prepared_request is not None
                 and prepared_request.request.native_tools
-                and type(physical_count) is int
-                and physical_count > 0
+                and (physical_count > 0 if type(physical_count) is int else dispatch.prepared)
             ):
                 raise LLMNativeToolError(
                     "provider-native request transport outcome is unknown",
@@ -995,9 +995,7 @@ class TurnExecution:
                     "work_compaction_incomplete",
                     "work_compaction_invalid_structure",
                     "work_compaction_invalid_reference",
-                    "work_compaction_invalid_directive_source",
                     "work_compaction_invalid_correction",
-                    "work_compaction_missing_directive",
                 }
                 if predicted_tokens > input_budget or not candidate_failure:
                     raise
@@ -1147,6 +1145,7 @@ class TurnExecution:
                 [(item.url, item.title) for item in response.citations]
             )
         self.state.response_status = response.status
+        self.state.continuation_native_tools = native_definitions
         if response.native_tool_events:
             self.state.web_was_used = True
             if self.tools is not None:
@@ -1196,7 +1195,6 @@ class TurnExecution:
             self.state.response_observation["sequence"] = self.state.control.session.sequence
             self.state.observations.append(self.state.response_observation)
             self.state.continuation_tools = self.state.definitions
-            self.state.continuation_native_tools = native_definitions
         return response
 
     async def settle_truncated(
@@ -1224,6 +1222,8 @@ class TurnExecution:
         if self.state.control is not None and self.state.control.session is not None:
             await self.state.control.session.save("paired")
         if response.incomplete_reason != "pause_turn":
+            if not self.state.continuation_native_tools and not response.native_tool_events:
+                return Continue()
             raise LLMIncompleteResponseError("provider response was incomplete")
         if response.continuation is None:
             raise LLMIncompleteResponseError("paused provider response has no resumable checkpoint")

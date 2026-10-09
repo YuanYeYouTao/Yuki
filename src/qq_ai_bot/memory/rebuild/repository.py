@@ -401,29 +401,17 @@ class MemoryRebuildRepository:
         item_id: int,
         category: str,
         *,
-        max_attempts: int,
         retry_initial_seconds: float,
-    ) -> bool:
+    ) -> None:
         now = datetime.now(UTC)
         async with self.database.sessions() as session, session.begin():
             row = await session.get(MemoryRebuildItemModel, item_id)
             if row is None:
-                return False
-            exhausted = row.attempts >= max_attempts
+                return
             row.error_category = category[:64]
-            row.status = (
-                MemoryRebuildItemStatus.FAILED.value
-                if exhausted
-                else MemoryRebuildItemStatus.PENDING.value
-            )
-            row.next_attempt_at = (
-                None
-                if exhausted
-                else now
-                + timedelta(seconds=retry_initial_seconds * (2 ** max(0, row.attempts - 1)))
-            )
+            row.status = MemoryRebuildItemStatus.PENDING.value
+            row.next_attempt_at = now + timedelta(seconds=retry_initial_seconds)
             row.updated_at = now
-            return exhausted
 
     async def defer_item(self, item_id: int, *, category: str | None = None) -> None:
         now = datetime.now(UTC)
@@ -824,30 +812,18 @@ class MemoryRebuildRepository:
         proposal_id: int,
         category: str,
         *,
-        max_attempts: int,
         retry_initial_seconds: float,
-    ) -> bool:
+    ) -> None:
         now = datetime.now(UTC)
         async with self.database.sessions() as session, session.begin():
             row = await session.get(MemoryRebuildProposalModel, proposal_id)
             if row is None or row.commit_status == MemoryRebuildCommitStatus.COMMITTED.value:
-                return False
+                return
             row.attempts += 1
-            exhausted = row.attempts >= max_attempts
-            row.commit_status = (
-                MemoryRebuildCommitStatus.FAILED.value
-                if exhausted
-                else MemoryRebuildCommitStatus.PENDING.value
-            )
+            row.commit_status = MemoryRebuildCommitStatus.PENDING.value
             row.error_category = category[:64]
-            row.next_attempt_at = (
-                None
-                if exhausted
-                else now
-                + timedelta(seconds=retry_initial_seconds * (2 ** max(0, row.attempts - 1)))
-            )
+            row.next_attempt_at = now + timedelta(seconds=retry_initial_seconds)
             row.updated_at = now
-            return exhausted
 
     async def receipt_status(self, event_id: int) -> str | None:
         async with self.database.sessions() as session:

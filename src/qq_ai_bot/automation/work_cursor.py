@@ -9,7 +9,7 @@ from sqlalchemy.dialects.sqlite import insert
 
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.runtime.work_recovery_schema import invocations
-from qq_ai_bot.runtime.work_repository import bounded_json
+from qq_ai_bot.runtime.work_repository import encode_json
 
 
 async def load(database: Database, run_id: int, script_hash: str) -> tuple[str, dict[str, Any]]:
@@ -41,7 +41,7 @@ async def save(
         run_id=run_id,
         script_hash=script_hash,
         phase=phase,
-        payload_json=bounded_json(payload, 1024 * 1024),
+        payload_json=encode_json(payload),
         updated=time.time(),
     )
     async with database.immediate_session() as session:

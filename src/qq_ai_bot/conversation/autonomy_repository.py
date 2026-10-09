@@ -381,25 +381,30 @@ class AutonomyRepository:
             )
             if claimed is not None:
                 return AdmissionResult("source_considered")
+            from qq_ai_bot.runtime.work_schema_v1 import work
+
             active = await session.scalar(
                 select(InitiativeRunModel.id)
+                .outerjoin(work, work.c.source_key == "initiative:" + InitiativeRunModel.id)
                 .where(
                     InitiativeRunModel.conversation_id == binding.conversation_id,
                     InitiativeRunModel.generation == binding.generation,
                     InitiativeRunModel.state.in_(_ACTIVE),
+                    or_(work.c.id.is_(None), work.c.state.in_(("running", "queued"))),
                 )
                 .limit(1)
             )
             if active is not None:
                 return AdmissionResult("busy")
-            from qq_ai_bot.runtime.work_schema_v1 import work
+            from qq_ai_bot.runtime.subagent_schema import children
 
             existing_work = await session.scalar(
                 select(work.c.id)
                 .where(
                     work.c.conversation_id == binding.conversation_id,
                     work.c.generation == binding.generation,
-                    work.c.state.in_(("running", "queued", "waiting_external")),
+                    work.c.state.in_(("running", "queued")),
+                    work.c.id.not_in(select(children.c.work_id)),
                 )
                 .limit(1)
             )
@@ -458,7 +463,6 @@ class AutonomyRepository:
                         InitiativeRunModel.state.in_(_ACTIVE),
                     )
                     .order_by(InitiativeRunModel.created_at)
-                    .limit(128)
                 )
             ).all()
             return tuple(_run(row) for row in rows)

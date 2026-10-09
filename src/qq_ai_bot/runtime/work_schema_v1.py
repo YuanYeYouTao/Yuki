@@ -119,6 +119,3 @@ journal = sa.Table(
 )
 
 TABLES = (work, scope, inputs, effects, journal)
-
-
-MAX_WORK_RECORD_BYTES = 65536

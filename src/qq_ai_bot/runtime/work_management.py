@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.runtime.subagent_schema import children
 from qq_ai_bot.runtime.work_recovery_schema import deliveries
-from qq_ai_bot.runtime.work_repository import TERMINAL, bounded_json
+from qq_ai_bot.runtime.work_repository import TERMINAL, encode_json
 from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, journal, scope, work
 from qq_ai_bot.runtime.work_wait_schema import waits
 
@@ -95,19 +95,17 @@ async def resume_blocker(
             return "precondition_failed"
         if source is None:
             return "state_mismatch"
-        # plugin_background is queued here and claimed by its bound plugin Job,
-        # never by the root Work scheduler.
+        # Each queued Work stays with its original scheduler or run/step owner.
         supported = source.get("owner") in {
             "plugin_invocation",
             "plugin_background",
+            "automation",
         } or source.get("origin") in {
             "user_message",
             "autonomous_group",
             "self_initiative",
         }
         if not supported:
-            # Automation Work is owned by its original run/step worker, not
-            # the root Work scheduler. Do not invent a second recovery route.
             return "operation_unavailable"
         if source.get("origin") == "self_initiative":
             from qq_ai_bot.conversation.autonomy_db_models import InitiativeRunModel
@@ -182,6 +180,7 @@ async def manage_work(
             .values(
                 state="cancelled",
                 reason="operator_cancelled",
+                checkpoint_json=func.json_remove(work.c.checkpoint_json, "$.accepted_control"),
                 revision=work.c.revision + 1,
                 updated=now,
             )
@@ -220,9 +219,9 @@ async def manage_work(
                         source_key=f"worker-result:{identity}:{revision + 1}",
                         kind="subagent",
                         ready=True,
-                        payload_json=bounded_json(
+                        payload_json=encode_json(
                             {
-                                "text": bounded_json(
+                                "text": encode_json(
                                     {
                                         "child_id": identity,
                                         "state": "cancelled",

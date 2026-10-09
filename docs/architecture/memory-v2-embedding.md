@@ -62,7 +62,6 @@ MEMORY_EMBEDDING_MAX_TEXT_CHARACTERS=4000
 MEMORY_EMBEDDING_WORKER_ENABLED=true
 MEMORY_EMBEDDING_WORKER_INTERVAL_SECONDS=5
 MEMORY_EMBEDDING_WORKER_CLAIM_LIMIT=100
-MEMORY_EMBEDDING_RETRY_ATTEMPTS=5
 MEMORY_EMBEDDING_RETRY_INITIAL_SECONDS=30
 MEMORY_EMBEDDING_HTTP_CONCURRENCY=2
 MEMORY_EMBEDDING_QUERY_CACHE_TTL_SECONDS=600
@@ -88,7 +87,8 @@ MEMORY_HYBRID_RRF_K=60
 普通 reconcile 按内部 fact ID 做 128 条 keyset 页，集合连接当前 profile 的任务与向量；已有
 向量只在事实 updated_at 较新时重新准备 hash。每页在只读连接读取小列并算 hash，writer 只按
 事实字段快照及任务 id/profile/content_hash/status/updated_at 做 CAS。相同内容的 processing
-与 failed 任务保留原领取和尝试预算；显式 rebuild 也不会夺取相同内容的在飞请求。
+与 failed 任务保留原领取和尝试记录；可恢复失败按配置间隔重新领取原任务，不按次数封口。
+显式 rebuild 也不会夺取相同内容的在飞请求。
 
 完成按 128 条页一次读取任务、一次读取事实小列，hash 在锁外计算；短 writer 复核原 claim 的
 updated_at 和 attempts，仅成功 CAS 的结果批量 upsert 向量。late complete/fail/skip 都必须携带
@@ -108,7 +108,7 @@ updated_at 和 attempts，仅成功 CAS 的结果批量 upsert 向量。late com
 
 - `status`：查看开关、当前 profile、覆盖率和任务计数。
 - `doctor`：用固定无隐私测试文本执行一次 Provider 远程连通性与维度检查。
-- `retry`：按 128 条页把当前 profile 的失败任务重新排队，显式重置其重试预算。
+- `retry`：按 128 条页把当前 profile 的失败任务重新排队，显式重置其尝试计数。
   原状态和时间戳条件写入，新的时间戳严格晚于旧值；墙上时钟停滞或回拨时不能复用旧 claim。
 - `rebuild`：为当前 active facts 建立当前 profile 的任务，不修改事实或 FTS。
 - `purge-old`：删除非当前 profile 的旧向量、任务和 profile。

@@ -1,6 +1,6 @@
 # Yuki 使用与运维帮助
 
-当前源码为未发布的 Yuki 3.9.0，Alembic head 为 `0103`，Plugin API 为 `3.4`，只支持 canonical runtime。永久 Yuki、
+当前源码为未发布的 Yuki 3.9.0，Alembic head 为 `0104`，Plugin API 为 `3.4`，只支持 canonical runtime。永久 Yuki、
 Person、Binding、Space、Presence 和 canonical Conversation 的关系见
 [当前架构](architecture/canonical-runtime.md)。
 
@@ -220,7 +220,7 @@ Web、Memory read 和 history read 仍可使用。
 
 ## 数据与升级
 
-当前完整迁移链至 `0102`。`0098` 退役 MCP 状态，`0099` 冻结已提交摘要表示；`0100` 关联插件后台任务的原 Work，`0101` 将旧效果结果归一为明确 outcome 并保留原正文；`0102` 移除同 memory_key 单 active 的唯一索引，同 key 的独立事实可以共存。历史 `0048` bridge 的来源限制仍有效，不能用版本号或
+当前完整迁移链至 `0104`。`0098` 退役 MCP 状态，`0099` 冻结已提交摘要表示；`0100` 关联插件后台任务的原 Work，`0101` 将旧效果结果归一为明确 outcome 并保留原正文；`0102` 移除同 memory_key 单 active 的唯一索引，同 key 的独立事实可以共存。`0103`移除旧人物评分存储；`0104`删除无消费者的检查点配额记账、投递死字段及主动轮唯一占用；原媒体和效果回执保留。历史 `0048` bridge 的来源限制仍有效，不能用版本号或
 手工 stamp 跳过来源校验。`0097` 退役四张 Genie 表及固定配置键，执行前必须核原
 Work/发送回执及被引用 WAV，保全专属事实；不能把生成表当作纯缓存。
 

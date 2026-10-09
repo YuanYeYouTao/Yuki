@@ -19,7 +19,6 @@ async def charge(session: AsyncSession, identity: str, *, models: int, tools: in
     if not models and not tools:
         return
     root = await session.scalar(select(children.c.root_id).where(children.c.work_id == identity))
-    reserve = 8 if root is not None else 0
     root = root or identity
     current = (
         await session.execute(
@@ -49,13 +48,13 @@ async def charge(session: AsyncSession, identity: str, *, models: int, tools: in
                 budgets.c.root_id == root,
                 or_(
                     budgets.c.model_limit.is_(None),
-                    budgets.c.models + models <= budgets.c.model_limit - reserve,
+                    budgets.c.models + models <= budgets.c.model_limit,
                 )
                 if models
                 else true(),
                 or_(
                     budgets.c.tool_limit.is_(None),
-                    budgets.c.tools + tools <= budgets.c.tool_limit - reserve,
+                    budgets.c.tools + tools <= budgets.c.tool_limit,
                 )
                 if tools
                 else true(),

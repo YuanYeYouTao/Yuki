@@ -22,7 +22,6 @@ class MemoryEmbeddingWorker:
         jobs: MemoryEmbeddingJobRepository,
         interval_seconds: float,
         claim_limit: int,
-        max_attempts: int,
         retry_initial_seconds: float,
         codec: Float32VectorCodec | None = None,
         metrics: MemoryEmbeddingMetrics | None = None,
@@ -31,7 +30,6 @@ class MemoryEmbeddingWorker:
         self._jobs = jobs
         self._interval_seconds = interval_seconds
         self._claim_limit = claim_limit
-        self._max_attempts = max_attempts
         self._retry_initial_seconds = retry_initial_seconds
         self._codec = codec or Float32VectorCodec()
         self.metrics = metrics or MemoryEmbeddingMetrics()
@@ -146,7 +144,6 @@ class MemoryEmbeddingWorker:
                     job,
                     error_category=exc.code,
                     retryable=exc.retryable,
-                    max_attempts=self._max_attempts,
                     initial_delay_seconds=self._retry_initial_seconds,
                 )
             return 0
@@ -156,7 +153,6 @@ class MemoryEmbeddingWorker:
                     job,
                     error_category="embedding_invalid_response",
                     retryable=False,
-                    max_attempts=self._max_attempts,
                     initial_delay_seconds=self._retry_initial_seconds,
                 )
             return 0

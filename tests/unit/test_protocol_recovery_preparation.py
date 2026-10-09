@@ -8,8 +8,9 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from tests.conftest import build_harness, make_settings
+from tests.support.agent_backend import StubAgentBackend
 from tests.support.semantic_participation_host_helpers import _event_and_route
 from tests.support.work_compaction import summary_json
 from tests.support.work_compaction_capacity_helpers import _grow, _runtime
@@ -19,6 +20,7 @@ from tests.unit.test_work_journal_source_retry import _change, _session
 from qq_ai_bot.conversation.observation_models import ContextObservationModel
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import (
+    ChatMessage,
     InboundMessage,
     ProviderContinuation,
     SenderIdentity,
@@ -42,6 +44,7 @@ from qq_ai_bot.runtime.work_activation import current_work_control
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_journal import decode_transcript
 from qq_ai_bot.runtime.work_repository import WorkConflict
+from qq_ai_bot.runtime.work_schema_v1 import effects, work
 from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
 from qq_ai_bot.services.context_assembler import ContextAssembler
 from qq_ai_bot.services.main_agent_contract import MainAgentContract
@@ -240,6 +243,80 @@ async def test_original_guard_does_not_excuse_changed_private_sources(database, 
     )
     assert loaded.reason == "source_changed" and loaded.record is None
     assert await select_protocol_recovery(control, "fixed-contract") is None
+
+
+@pytest.mark.parametrize("guarded", [False, True])
+@pytest.mark.parametrize("receipt_state", ["accepted", "unknown"])
+async def test_changed_legacy_delivery_uses_current_context_without_replaying_plan(
+    database, tmp_path, monkeypatch, guarded, receipt_state
+):
+    control, session, selected, _ = await _session(database)
+    identity = control.current["id"]
+    if not guarded:
+        session.source_guard = None
+    session.transcript.accept(
+        ProviderContinuation(
+            provider="gemini", protocol="gemini", payload={"private": "retired-signature"}
+        )
+    )
+    session.progress["delivery_plan"] = [
+        {"text": "already delivered old fragment", "media": []},
+        {"text": "never sent old draft", "media": []},
+    ]
+    old_key = session.call_key("final-1")
+    await control.repository.prepare_effect(control.lease, identity, old_key, "final")
+    await control.repository.record_effect(
+        old_key, receipt_state, {"transport_accepted": True} if receipt_state == "accepted" else {}
+    )
+    await control.repository.checkpoint(control.lease, identity, None, models=1, messages=2)
+    async with database.sessions() as writer, writer.begin():
+        await writer.execute(update(work).where(work.c.id == identity).values(output_kind="answer"))
+    control.current = await control.repository.get(identity)
+    await session.save("delivery")
+    await _change(database, selected)
+    legacy = await session.journal.load(control.lease, identity, session.contract)
+    assert legacy.reason == "source_changed" and legacy.record is None
+    assert legacy.delivery_record is not None
+    assert await select_protocol_recovery(control, "fixed-contract") is None
+    builder = AsyncMock(return_value="current legal context")
+    assert await prepare_context(builder, control, recovery_contract="fixed-contract") == (
+        "current legal context"
+    )
+    builder.assert_awaited_once()
+
+    provider = FakeLLMProvider(lambda _request: "current answer from retained receipts")
+    initial = (ChatMessage("system", "fixed contract"), ChatMessage("user", "current legal input"))
+    runner, runtime = await _runtime(database, control, initial, provider)
+    monkeypatch.setattr(runner, "work_contract", lambda *_args, **_kwargs: "fixed-contract")
+    execute = AsyncMock(side_effect=AssertionError("legacy plan must not dispatch"))
+    result = await runner.run(
+        initial,
+        runtime,
+        StubAgentBackend(
+            definitions=lambda *_args, **_kwargs: (),
+            execute_call=execute,
+            finalize=lambda content, _runtime: content,
+        ),
+    )
+    await control.settle(pending_inputs=False)
+    assert len(provider.requests) == 1
+    rendered = repr(provider.requests[0])
+    assert "current legal input" in rendered and old_key in rendered
+    assert "retired-signature" not in rendered
+    assert "never sent old draft" not in rendered
+    execute.assert_not_awaited()
+    assert control.session.recovered_delivery is None
+    assert control.current["id"] == identity
+    assert control.current["model_requests"] == 2 and control.current["sent_messages"] == 2
+    assert control.current["state"] == ("completed" if receipt_state == "accepted" else "suspended")
+    assert result.model_requests == 1
+    async with database.sessions() as reader:
+        original = (
+            await reader.execute(
+                select(effects.c.effect_key, effects.c.state).where(effects.c.work_id == identity)
+            )
+        ).all()
+    assert original == [(old_key, receipt_state)]
 
 
 async def test_valid_selected_sources_do_not_override_fixed_contract_boundary(database):

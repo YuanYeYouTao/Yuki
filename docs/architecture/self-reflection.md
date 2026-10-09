@@ -28,7 +28,8 @@ schema 0067 扩展可信 SELF 工具来源；完整迁移按当前 Alembic 链�
 
 调度小时沿配置，默认 04/12/20；不要求恰好三个小时。默认每轮 32 批，每批配置
 200 事件/16000 字符的输入预算。撤去每 owner 次数封口、低/高水位排空和自然间隔重复
-调度。批次按实际渲染的输入计数，不能生成前丢弃尾部事件后再把整批标为完成。
+调度。批次按实际渲染的输入计数，单个超过批次字符预算的事件完整进入模型；
+不能生成前丢弃尾部事件后再把整批标为完成。
 
 每日请求限额沿 `MEMORY_SELF_REFLECTION_MAX_DAILY_CALLS`（默认 96），在 Provider
 准备 payload 并通过调度检查后、真正发送 HTTP 前原子登记；
@@ -46,8 +47,7 @@ schema 0067 扩展可信 SELF 工具来源；完整迁移按当前 Alembic 链�
 mutation 的正常拒绝、重复与 no_change 是已处理终态；实际数据库、事务、检查点或
 未预期代码错误保留失败记录。恢复不重复调用已完成模型，也不重复执行已提交操作。
 
-无自身回复或可信工具证据的到期范围不调用模型，不写记忆；记录 `no_self_evidence`
-并推进自省投影。原始事件账本不变。
+到期的真实来源不要求先有自身回复或工具回执；模型可以返回空结果，原始事件账本不变。
 
 ## SELF 自主执行证据
 
@@ -56,7 +56,7 @@ schema 0067 允许工具回执由内部 `trigger_event_id` 或可信 `initiative
 `target_person_id` 不授予任何私人 Memory 权限。执行回执按 run、execution、Provider、
 tool 和真实 tool call ID 去重；没有聊天发言也保留实际成功或失败结果，不制造聊天事件。
 
-每个已结束 initiative 有独立 receipt 水位；窗口最多 8 条回执，保持原有输入字符边界。
+每个已结束 initiative 有独立 receipt 水位；新窗口按真实已存 excerpt 长度分批选择，首条大回执完整输入，剩余回执留待后续窗口。既定窗口重试读取原范围，不因新字符预算或读取分页重新裁剪。
 迟到回执进入该 run 的后续窗口，不受其他 run 进度影响。窗口复用原 SelfReflectionRun、
 cycle、每日请求预算、检查点和原 run 恢复机制；管理输出以 receipt 范围显示，不将它们
 统计成聊天事件。已领取未完成窗口保护其源回执，完成后仍被 Memory evidence 引用的
@@ -68,7 +68,8 @@ cycle、每日请求预算、检查点和原 run 恢复机制；管理输出以 
 tool_receipt_id 非空索引；原 receipt、run 和证据仍是唯一事实来源。
 
 主 SELF 入口使用 actorless TurnMemorySession，按真实来源准备当前群与可见 SELF 范围，
-需要长期事实时通过 `search_memory` 读取，
+需要长期事实时通过 `search_memory` 读取；主SELF的 `memory_change` 沿原initiative和
+原execution的实际工具回执写SELF事实，引用按真实摘录查证，不借真人event。
 不借最近发言者或目标人的身份准备上下文。纯工具自省经同一 MutationService 验证、
 冲突处理和原子回执写入；只能影响有相应证据的 SELF global/当前群范围，不能写私人事实。
 历史 run 证据可保留，不能因此恢复已失效 generation 的执行权限。
@@ -90,9 +91,8 @@ tool_receipt_id 非空索引；原 receipt、run 和证据仍是唯一事实来�
 最终报告复用 Social 的 prepared/succeeded/uncertain 回执。同一 cycle 的固定调用键不重发；
 传输结果未知时标记 unknown，不能声称端到端 exactly-once，也不能猜测失败后重新发送。
 
-健康区分 actionable、waiting_retry、isolated、policy_ineligible、recent_not_due、processing。
+健康区分 actionable、waiting_retry、isolated、recent_not_due、processing。
 后者计数可以在同一 owner 不同范围出现；不能把各组会话数相加当作去重会话数。
-已跳过且没有新消息的 policy-ineligible owner 显示 0 pending events。
 失败详情按 5 项分页，其他原始内容不进入报告。`retry <batch_id>` 可由超级管理员
 重新接纳隔离批次，保留原 ID、尝试次数和总额度。健康快照按最近 24 小时内周期提供
 实际流入/排出速率，观察不足 60 秒时为未知；历史失败不否决当前健康。
@@ -106,6 +106,9 @@ tool_receipt_id 非空索引；原 receipt、run 和证据仍是唯一事实来�
 2026-10-09 的生产临时排空处理 236 批、2905 events，33 项写入，没有新增失败，
 有效积压为 0。227 个旧 generation 的 failed/waiting 批次曾阻挡 current generation 20
 （boundary 91576），旧窗口均无 live source；本次仅临时隔离这 227 条，保留原结果、
-检查点、attempt 和请求账本，包括原 run 484 已提交的 1 项变更。领取逻辑的代码根因
-尚未修改，不能把排空结果写成永久源码修复。
+检查点、attempt 和请求账本，包括原 run 484 已提交的 1 项变更。当时领取逻辑的代码根因
+尚未修改，临时排空结果不代表永久源码修复。
+本轮源码修复在领取与推进游标时仅让仍有 live 消息来源的旧 run 占用范围；
+完整旧 generation 范围不再阻塞当前消息，原 run、检查点与回执保留。
+仍有 live 来源的失败或隔离范围继续约束游标；跨 generation 的源范围变化仍拒绝重放。
 详细操作与部署状态见 [当日任务记录](Yuki-Memory-Provider分工与后台收尾审查任务书-2026-10-09.md)。

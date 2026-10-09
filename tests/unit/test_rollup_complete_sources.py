@@ -1,6 +1,7 @@
 """Compaction preserves the data it claims to have read, including source identity."""
 
 import asyncio
+import json
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -15,7 +16,7 @@ from qq_ai_bot.conversation.rollup.renderer import (
 )
 from qq_ai_bot.conversation.rollup.service import ConversationRollupService
 from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import ChatResponse
+from qq_ai_bot.domain.messages import ChatResponse, ModelResponseStatus
 from qq_ai_bot.model_runtime.models import StructuredOutputMode
 from qq_ai_bot.persistence.repository_records import EventRecord
 
@@ -114,6 +115,149 @@ async def test_failed_source_chunk_cannot_return_semantic_success() -> None:
     with pytest.raises(RuntimeError, match="disconnected"):
         await service.summarize_candidate(candidate())
     assert service.metrics.model_summaries == 0
+
+
+@pytest.mark.parametrize("payload_kind", ["valid", "truncated", "wrong_source"])
+async def test_incomplete_provider_label_uses_actual_rollup_json_and_source(payload_kind):
+    class IncompleteModel(RecordingModel):
+        async def execute(self, task, request, **kwargs):
+            response = await super().execute(task, request, **kwargs)
+            content = response.content
+            if payload_kind == "truncated":
+                content = content[:-1]
+            elif payload_kind == "wrong_source":
+                value = json.loads(content)
+                value["source_event_ids"] = [999999]
+                content = json.dumps(value)
+            return replace(
+                response,
+                content=content,
+                status=ModelResponseStatus.INCOMPLETE,
+                incomplete_reason="max_output_tokens",
+            )
+
+    model = IncompleteModel()
+    service = ConversationRollupService(
+        models=model, config=RollupPolicyConfig(batch_max_characters=256), timeout_seconds=2
+    )
+    if payload_kind != "valid":
+        reason = (
+            "rollup_summary_invalid_json"
+            if payload_kind == "truncated"
+            else "rollup_summary_unsupplied_reference"
+        )
+        with pytest.raises(ValueError, match=reason):
+            await service.summarize_candidate(candidate())
+        assert service.metrics.model_summaries == 0
+        assert len(model.sources) == 1
+    else:
+        text, kind = await service.summarize_candidate(candidate())
+        assert kind.value == "model"
+        assert json.loads(text)["source_event_ids"] == [42]
+        assert "".join(model.sources) == serialize_compaction_source_events(candidate().events)
+        assert service.metrics.model_summaries == 1
+
+
+@pytest.mark.parametrize("mode", list(StructuredOutputMode))
+@pytest.mark.parametrize("complete_json", [False, True])
+async def test_structured_runner_decodes_incomplete_label_without_extra_model_calls(
+    mode, complete_json
+):
+    from pydantic import BaseModel
+    from tests.support.model_executor import InjectedModelExecutor
+
+    from qq_ai_bot.domain.messages import ToolCall, ToolFunction
+    from qq_ai_bot.llm.fake import FakeLLMProvider
+    from qq_ai_bot.model_runtime.models import ModelTask
+    from qq_ai_bot.model_runtime.structured import StructuredTaskError, StructuredTaskRunner
+
+    class Result(BaseModel):
+        value: int
+
+    content = '{"value":1}' if complete_json else '{"value":'
+    response = ChatResponse(
+        content=content if mode is not StructuredOutputMode.FUNCTION_TOOL else "",
+        tool_calls=(ToolCall("result", ToolFunction("emit_result", content)),)
+        if mode is StructuredOutputMode.FUNCTION_TOOL
+        else (),
+        latency_seconds=0,
+        status=ModelResponseStatus.INCOMPLETE,
+        incomplete_reason="max_output_tokens",
+    )
+    provider = FakeLLMProvider(lambda request: response)
+    runner = StructuredTaskRunner(InjectedModelExecutor(provider))
+    arguments = dict(
+        task=ModelTask.CONVERSATION_COMPACTION,
+        instruction="Return the actual value",
+        structured_input={"value": 1},
+        output_model=Result,
+        mode=mode,
+    )
+    if complete_json:
+        result, original = await runner.run_with_response(**arguments)
+        assert result.value == 1
+        assert original is response
+    else:
+        with pytest.raises(StructuredTaskError) as failed:
+            await runner.run_with_response(**arguments)
+        assert failed.value.reason_code == "json_decode"
+        assert failed.value.response is response
+    assert len(provider.requests) == 1
+
+
+@pytest.mark.parametrize("complete_json", [False, True])
+async def test_ordinary_compaction_uses_actual_json_under_incomplete_provider_label(complete_json):
+    from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ToolCall, ToolFunction
+    from qq_ai_bot.runtime.work_repository import WorkCapacityError
+    from qq_ai_bot.services.ordinary_compaction import compact_ordinary
+    from qq_ai_bot.services.turn_transcript import TurnTranscript
+
+    initial = (ChatMessage("system", "fixed contract"), ChatMessage("user", "current request"))
+    transcript = TurnTranscript(initial)
+    call = ToolCall("original-read", ToolFunction("read_probe", "{}"))
+    transcript.append(ChatMessage("assistant", None, tool_calls=(call,)))
+    transcript.append_result(call.id, '{"ok":true,"data":"original result"}')
+    original = transcript.request()
+    requests = []
+
+    async def execute(request):
+        requests.append(request)
+        source = json.loads(request.messages[-1].content)
+        content = json.dumps(
+            {
+                "facts": [{"text": "original read completed", "refs": source["source_refs"]}],
+                "pending": [],
+                "next_steps": [],
+            }
+        )
+        return ChatResponse(
+            content=content if complete_json else content[:-1],
+            latency_seconds=0,
+            status=ModelResponseStatus.INCOMPLETE,
+            incomplete_reason="max_output_tokens",
+        )
+
+    arguments = dict(
+        main_request=ChatRequest(messages=original.messages),
+        structured_mode=StructuredOutputMode.TEXT_JSON,
+        summary_budget=128000,
+        input_budget=128000,
+        output_tokens=8192,
+        prepare=lambda request: request,
+        execute=execute,
+        evidence=[{"effect_key": "original-read-key", "ok": True}],
+    )
+    if complete_json:
+        candidate = await compact_ordinary(initial, transcript, **arguments)
+        capsule = json.loads(candidate.request().messages[-1].content)
+        assert capsule["summary"]["facts"][0]["text"] == "original read completed"
+        assert capsule["execution_evidence"] == arguments["evidence"]
+        assert candidate.request().messages[:2] == initial
+    else:
+        with pytest.raises(WorkCapacityError, match="ordinary_compaction_invalid_structure"):
+            await compact_ordinary(initial, transcript, **arguments)
+    assert transcript.request() == original
+    assert len(requests) == 1
 
 
 @pytest.mark.asyncio
@@ -318,3 +462,147 @@ async def test_plugin_capacity_reads_hot_snapshot_and_shared_fixed_contract_rese
         await assembler.assemble_plugin(**arguments)
     runtime.context.window_tokens = 16_384
     assert (await assembler.assemble_plugin(**arguments)).current_message.content == "x" * 25_000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload_kind", ["partial_metadata", "empty", "missing_text", "unknown_ref"]
+)
+async def test_ordinary_summary_defaults_keep_uncovered_original_pairs(payload_kind):
+    from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ToolCall, ToolFunction
+    from qq_ai_bot.runtime.work_repository import WorkCapacityError
+    from qq_ai_bot.services.ordinary_compaction import compact_ordinary
+    from qq_ai_bot.services.turn_transcript import TurnTranscript
+
+    initial = (ChatMessage("system", "fixed"), ChatMessage("user", "keep actual result"))
+    transcript = TurnTranscript(initial)
+    call = ToolCall("original", ToolFunction("read_probe", "{}"))
+    transcript.append(ChatMessage("assistant", None, tool_calls=(call,)))
+    transcript.append_result(call.id, '{"ok":true,"data":"MUST_KEEP_ACTUAL_RESULT"}')
+    requests = []
+
+    async def execute(request):
+        requests.append(request)
+        payload = {
+            "partial_metadata": {
+                "facts": [
+                    {
+                        "text": "partial summary",
+                        "refs": ["record:0", "record:0"],
+                        "annotation": "unused",
+                    }
+                ],
+                "annotation": "unused",
+            },
+            "empty": {},
+            "missing_text": {"facts": [{"refs": ["record:0"]}]},
+            "unknown_ref": {"facts": [{"text": "invented source", "refs": ["record:999"]}]},
+        }[payload_kind]
+        return ChatResponse(json.dumps(payload), 0)
+
+    arguments = dict(
+        main_request=ChatRequest(messages=transcript.request().messages),
+        structured_mode=StructuredOutputMode.TEXT_JSON,
+        summary_budget=128000,
+        input_budget=128000,
+        output_tokens=8192,
+        prepare=lambda request: request,
+        execute=execute,
+        evidence=[{"effect_key": "original-key", "ok": True}],
+    )
+    if payload_kind in {"missing_text", "unknown_ref"}:
+        with pytest.raises(WorkCapacityError, match="ordinary_compaction_invalid_"):
+            await compact_ordinary(initial, transcript, **arguments)
+    else:
+        compacted = await compact_ordinary(initial, transcript, **arguments)
+        capsule = json.loads(compacted.request().messages[-1].content)
+        assert capsule["summary"]["pending"] == capsule["summary"]["next_steps"] == []
+        assert len(capsule["uncovered_records"]) == 2
+        assert "MUST_KEEP_ACTUAL_RESULT" in json.dumps(capsule)
+        assert capsule["execution_evidence"] == arguments["evidence"]
+        if payload_kind == "empty":
+            assert capsule["summary"]["facts"] == []
+        else:
+            assert capsule["summary"]["facts"][0]["refs"] == ["record:0"]
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload_kind", ["partial_metadata", "uncited", "empty", "missing_text", "unknown_ref"]
+)
+async def test_rollup_format_defaults_preserve_raw_history_through_commit_and_reload(
+    database, payload_kind
+):
+    from qq_ai_bot.conversation.rollup.repository import ConversationRollupRepository
+
+    policy = RollupPolicyConfig(context_token_budget=60)
+    scope = await _seed_private(database, peer="1014", count=5, policy=policy)
+    repository = ConversationRollupRepository(database, policy)
+    claim = await repository.claim_scope_for_foreground(
+        scope, lease_owner="real-summary", lease_seconds=30
+    )
+    original = await repository.candidate_for_claim(claim)
+    assert original is not None and len(original.events) > 1
+    first = original.events[0].id
+
+    class Model(RecordingModel):
+        async def execute(self, *args, **kwargs):
+            self.sources.append(args[1].messages[-1].content)
+            payload = {
+                "partial_metadata": {
+                    "schema": "unused_provider_marker",
+                    "continuity": "first tiny fact",
+                    "source_event_ids": [first, first],
+                    "open_issues": [
+                        {
+                            "text": "pending",
+                            "source_event_ids": [first, first],
+                            "metadata": "unused",
+                        }
+                    ],
+                    "metadata": "unused",
+                },
+                "uncited": {"continuity": "partial narrative without citation fields"},
+                "empty": {},
+                "missing_text": {"source_event_ids": [first]},
+                "unknown_ref": {"continuity": "invented source", "source_event_ids": [999999]},
+            }[payload_kind]
+            return ChatResponse(json.dumps(payload), 0)
+
+    model = Model()
+    service = ConversationRollupService(models=model, config=policy, timeout_seconds=2)
+    if payload_kind in {"empty", "missing_text", "unknown_ref"}:
+        expected = (
+            "rollup_summary_unsupplied_reference"
+            if payload_kind == "unknown_ref"
+            else "rollup_summary_empty_continuity"
+        )
+        with pytest.raises(ValueError, match=expected):
+            await service.summarize_candidate(original)
+        assert (await repository.load_prompt_snapshot(scope)).rollup is None
+        retried = await repository.candidate_for_claim(claim)
+        assert (
+            retried.events == original.events
+            and retried.source_coverage == original.source_coverage
+        )
+    else:
+        text, kind = await service.summarize_candidate(original)
+        value = json.loads(text)
+        assert value["schema"] == "conversation_rollup_v1" and value["corrections"] == []
+        assert value["source_event_ids"] == [event.id for event in original.events]
+        assert "Uncovered source records" in value["continuity"]
+        retained = original.events[1:] if payload_kind == "partial_metadata" else original.events
+        for source_event in retained:
+            assert serialize_compaction_source_events((source_event,)) in value["continuity"]
+        await repository.commit_candidate(claim, original, summary_text=text, summary_kind=kind)
+        reloaded = await ConversationRollupRepository(database, policy).load_prompt_snapshot(scope)
+        assert reloaded.rollup.summary_text == text
+        assert reloaded.rollup.covered_through_event_id == original.events[-1].id
+        prompt = render_rollup_message(
+            reloaded.rollup.summary_text,
+            kind="model",
+            covered_through_event_id=reloaded.rollup.covered_through_event_id,
+        )
+        assert "Uncovered source records" in prompt.content
+    assert len(model.sources) == 1

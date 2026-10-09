@@ -42,7 +42,6 @@ from qq_ai_bot.persistence.event_repository import ConversationReadVersion
 from qq_ai_bot.runtime.subagent_schema import children, media, media_refs
 from qq_ai_bot.runtime.work_recovery_schema import recovery
 from qq_ai_bot.runtime.work_schema_v1 import (
-    MAX_WORK_RECORD_BYTES,
     WORK_STATES,
     effects,
     inputs,
@@ -94,11 +93,8 @@ class WorkLease:
     work_id: str | None = None
 
 
-def bounded_json(value: Any, limit: int = MAX_WORK_RECORD_BYTES) -> str:
-    result = json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
-    if len(result.encode()) > limit:
-        raise ValueError("work_record_too_large")
-    return result
+def encode_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
 
 
 class WorkRepository:
@@ -328,7 +324,7 @@ class WorkRepository:
         Only an owner that must commit its own durable link together with the
         first admission uses this directly; the lease is asserted here.
         """
-        if not 1 <= len(goal) <= 8192 or not 1 <= len(source_key) <= 256:
+        if not goal.strip() or not 1 <= len(source_key) <= 256:
             raise ValueError("invalid_work_goal")
         if output_kind not in {"answer", "artifact", "state_change"}:
             raise ValueError("invalid_work_output_kind")
@@ -336,8 +332,8 @@ class WorkRepository:
             raise ValueError("work_reporting_invalid")
         if initial_state not in {"running", "queued"}:
             raise ValueError("invalid_work_initial_state")
-        source_json, now = bounded_json(source), time.time()
-        initial_checkpoint = bounded_json(
+        source_json, now = encode_json(source), time.time()
+        initial_checkpoint = encode_json(
             {
                 "communication": {
                     "input_feedback_through_id": 0,
@@ -392,23 +388,6 @@ class WorkRepository:
                     or source.get("trigger_event_id") is not None
                 ):
                     raise WorkConflict("invalid_self_work_admission")
-        existing = await session.scalar(select(work.c.id).where(work.c.source_key == source_key))
-        if existing is None:
-            count = await session.scalar(
-                select(func.count()).select_from(work).where(work.c.state.not_in(TERMINAL))
-            )
-            if int(count or 0) >= 128:
-                raise WorkCapacityError("active_work_capacity")
-            scope_count = await session.scalar(
-                select(func.count())
-                .select_from(work)
-                .where(
-                    work.c.state.not_in(TERMINAL),
-                    work.c.conversation_id == lease.conversation_id,
-                )
-            )
-            if int(scope_count or 0) >= 16:
-                raise WorkCapacityError("conversation_work_capacity")
         await session.execute(
             insert(work)
             .values(
@@ -459,7 +438,7 @@ class WorkRepository:
             await session.execute(
                 update(work)
                 .where(work.c.id == handoff_from)
-                .values(checkpoint_json=bounded_json(checkpoint), updated=now)
+                .values(checkpoint_json=encode_json(checkpoint), updated=now)
             )
         return dict(row)
 
@@ -494,7 +473,6 @@ class WorkRepository:
                             work.c.id.not_in(select(children.c.work_id)),
                         )
                         .order_by(work.c.created)
-                        .limit(32)
                     )
                 )
                 .mappings()
@@ -513,9 +491,9 @@ class WorkRepository:
         goal: str | None = None,
         exit_reason: str | None = None,
     ) -> dict[str, Any]:
-        if state not in WORK_STATES or (goal is not None and not 1 <= len(goal) <= 8192):
+        if state not in WORK_STATES or (goal is not None and not goal.strip()):
             raise ValueError("invalid_work_transition")
-        if reason is not None and len(reason) > 128:
+        if reason is not None and not isinstance(reason, str):
             raise ValueError("invalid_work_reason")
         async with self.database.sessions() as session, session.begin():
             await self._assert_lease(session, lease)
@@ -709,9 +687,7 @@ class WorkRepository:
     ) -> dict[str, Any]:
         path = "$.accepted_control"
         checkpoint = (
-            func.json_set(
-                work.c.checkpoint_json, path, func.json(bounded_json(control, 256 * 1024))
-            )
+            func.json_set(work.c.checkpoint_json, path, func.json(encode_json(control)))
             if control is not None
             else func.json_remove(work.c.checkpoint_json, path)
         )
@@ -748,7 +724,7 @@ class WorkRepository:
     ) -> None:
         if min(models, tools, messages) < 0:
             raise ValueError("invalid_work_usage")
-        serialized = bounded_json(payload, 1024 * 1024) if payload is not None else None
+        serialized = encode_json(payload) if payload is not None else None
         replacement: Any = serialized
         if serialized is not None:
             for retained in ("communication", "context_note", "accepted_control"):
@@ -816,7 +792,7 @@ class WorkRepository:
                     raise ValueError("work_communication_marker_invalid")
             elif not isinstance(value, str) or len(value) > 64:
                 raise ValueError("work_communication_marker_invalid")
-        return bounded_json({"communication": updates}, 2048)
+        return encode_json({"communication": updates})
 
     async def patch_context_note(
         self, lease: WorkLease, identity: str, expected_revision: int, note: dict[str, Any]
@@ -825,7 +801,7 @@ class WorkRepository:
         from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
         from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
 
-        encoded = bounded_json(note, 1024 * 1024)
+        encoded = encode_json(note)
         handles = tuple(note["artifact_handles"])
         async with self.database.immediate_session() as session:
             await self._assert_lease(session, lease)
@@ -972,10 +948,6 @@ class WorkRepository:
         delivered_only: bool = False,
     ) -> list[dict[str, Any]]:
         """Query original sends; child effects and unrelated targets never qualify."""
-        if kind is not None and kind not in {"start", "progress", "reply", "final"}:
-            raise ValueError("work_report_kind_invalid")
-        if len(event_ids) > 128:
-            raise ValueError("work_communication_page_invalid")
 
         def matches_target(value: Any) -> bool:
             if isinstance(value, str):
@@ -1175,7 +1147,7 @@ class WorkRepository:
 
         if not 1 <= len(source_key) <= 256 or kind not in {"message", "completion", "control"}:
             raise ValueError("invalid_work_input")
-        serialized = bounded_json(resume[1], 32768) if resume else "{}"
+        serialized = encode_json(resume[1]) if resume else "{}"
 
         def matches(row: Any) -> bool:
             return all(
@@ -1211,20 +1183,6 @@ class WorkRepository:
                     or owned.generation != generation
                 ):
                     raise WorkConflict("work_resume_scope_mismatch")
-            existing = await session.scalar(
-                select(inputs.c.id).where(inputs.c.source_key == source_key)
-            )
-            if existing is None:
-                count = await session.scalar(
-                    select(func.count())
-                    .select_from(inputs)
-                    .where(
-                        inputs.c.conversation_id == conversation_id,
-                        inputs.c.state.in_(("pending", "staged")),
-                    )
-                )
-                if int(count or 0) >= 128:
-                    raise WorkCapacityError("work_input_capacity")
             await session.execute(
                 insert(inputs)
                 .values(
@@ -1293,7 +1251,7 @@ class WorkRepository:
                 return True
         blobs: dict[str, bytes] = {}
         prepared = externalize({**payload, "images": [asdict(image) for image in images]}, blobs)
-        serialized = bounded_json(prepared, 32768)
+        serialized = encode_json(prepared)
         live_owner = (
             select(work.c.id)
             .join(
@@ -1496,7 +1454,7 @@ class WorkRepository:
             await session.execute(
                 update(work)
                 .where(work.c.id == identity)
-                .values(checkpoint_json=bounded_json(checkpoint, 1024 * 1024))
+                .values(checkpoint_json=encode_json(checkpoint))
             )
         return True
 
@@ -1681,6 +1639,7 @@ class WorkRepository:
             .values(
                 state="cancelled",
                 reason="hard_boundary",
+                checkpoint_json=func.json_remove(work.c.checkpoint_json, "$.accepted_control"),
                 revision=work.c.revision + 1,
                 updated=time.time(),
             )
@@ -1925,7 +1884,7 @@ class WorkRepository:
                     work_id=parent["id"],
                     kind="completion",
                     ready=True,
-                    payload_json=bounded_json({"text": json.dumps(payload, ensure_ascii=False)}),
+                    payload_json=encode_json({"text": json.dumps(payload, ensure_ascii=False)}),
                     created=time.time(),
                 )
                 .on_conflict_do_nothing(index_elements=[inputs.c.source_key])
@@ -2096,7 +2055,7 @@ class WorkRepository:
                         .where(inputs.c.id == row["id"])
                         .values(
                             ready=True,
-                            payload_json=bounded_json({"text": content}, 32768),
+                            payload_json=encode_json({"text": content}),
                         )
                     )
                     if row["work_id"]:
@@ -2235,7 +2194,7 @@ class WorkRepository:
     ) -> bool:
         """False means an intent already exists, not that it is safe to send again."""
         now = time.time()
-        receipt = bounded_json(
+        receipt = encode_json(
             {
                 **({"outcome": outcome} if outcome is not None else {}),
                 **({"invocation": invocation} if invocation is not None else {}),
@@ -2365,9 +2324,9 @@ class WorkRepository:
             if output_ref not in store.prepared_refs:
                 raise WorkConflict("code_output_not_prepared")
             store.decode_code_snapshot(await store.get_bytes(output_ref), binding)
-        parent_receipt = bounded_json({**previous, "composition": next_composition})
+        parent_receipt = encode_json({**previous, "composition": next_composition})
         child_receipt = (
-            bounded_json(
+            encode_json(
                 {
                     "invocation": child,
                     "outcome": {
@@ -2550,7 +2509,7 @@ class WorkRepository:
             "budget_admitted": charge,
             "revision": invocation["revision"] + 1,
         }
-        serialized = bounded_json(receipt)
+        serialized = encode_json(receipt)
         from qq_ai_bot.runtime.work_budget import charge as charge_budget
 
         async with self.database.immediate_session() as writer:
@@ -2943,7 +2902,7 @@ class WorkRepository:
                     if merged == previous:
                         continue
                     receipt["outcome"] = merged
-                    encoded = bounded_json(receipt)
+                    encoded = encode_json(receipt)
                     if encoded != row["receipt_json"]:
                         prepared.append((row["effect_key"], row["receipt_json"], encoded))
                 cursor = rows[-1]["effect_key"]
@@ -3055,7 +3014,7 @@ class WorkRepository:
             metadata = candidate.get("invocation")
             if isinstance(metadata, dict) and metadata.get("version") == 1:
                 candidate["invocation"] = {**metadata, "revision": metadata["revision"] + 1}
-            serialized = bounded_json(candidate)
+            serialized = encode_json(candidate)
             async with self.database.immediate_session() as writer:
                 if media_source is not None:
                     from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel

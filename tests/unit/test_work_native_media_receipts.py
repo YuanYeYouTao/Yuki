@@ -217,9 +217,9 @@ async def test_typed_media_survives_text_projection_failure(database, tmp_path):
         )
         raise ValueError("text projection failed")
 
-    with pytest.raises(ValueError, match="text projection failed"):
-        await invoke_tool(session, call, invoke, side_effecting=False)
+    returned = await invoke_tool(session, call, invoke, side_effecting=False)
     recovered = await session.journal.effect_result(session.call_key(call.id))
+    assert returned == recovered
     assert result_images(recovered) == (image,)
     assert json.loads(recovered)["result_unavailable"]
 

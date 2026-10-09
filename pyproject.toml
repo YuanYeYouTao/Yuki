@@ -19,7 +19,7 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0.36,<3",
     "tenacity>=9,<10",
     "tzdata>=2025.2",
-    "yuki-semantic-participation @ https://github.com/YuanYeYouTao/Yuki-Semantic-Participation/archive/68bf033c37a524a2d377d2f67eaa25ce779c9e90.tar.gz",
+    "yuki-semantic-participation @ https://github.com/YuanYeYouTao/Yuki-Semantic-Participation/archive/855f407d61590bcd689e2535c0c30b867560aa66.tar.gz",
     "tomlkit>=0.13,<1",
 ]
 

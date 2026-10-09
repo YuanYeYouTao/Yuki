@@ -36,7 +36,7 @@ from sqlalchemy.dialects.sqlite import insert
 from qq_ai_bot.domain.messages import AttachmentKind
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.runtime.work_recovery_schema import deliveries
-from qq_ai_bot.runtime.work_repository import WorkConflict, bounded_json
+from qq_ai_bot.runtime.work_repository import WorkConflict, encode_json
 from qq_ai_bot.runtime.work_schema_v1 import effects, journal, work
 
 LEGACY_DELIVERY_PAUSE = "legacy_delivery_not_resumed"
@@ -233,7 +233,7 @@ async def _import_one(
                         work_id=work_id,
                         kind="final",
                         state="failed",
-                        receipt_json=bounded_json(
+                        receipt_json=encode_json(
                             {
                                 "error": "delivery_not_dispatched",
                                 "executed": False,
@@ -300,7 +300,7 @@ async def _repair_ledger(
                     effects.c.effect_key == row["effect_key"],
                     effects.c.receipt_json == row["receipt_json"],
                 )
-                .values(receipt_json=bounded_json({**receipt, "ledger_recorded": True}))
+                .values(receipt_json=encode_json({**receipt, "ledger_recorded": True}))
             )
         repaired += 1
     return repaired

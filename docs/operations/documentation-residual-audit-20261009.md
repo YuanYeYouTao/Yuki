@@ -21,7 +21,7 @@
 
 | 问题 | 已核验原因与当前状态 |
 | --- | --- |
-| SELF 旧代次领取阻塞 | `self_reflection/repository.py` 选择无当前源的旧 failed/waiting，再以空范围跳过整 scope；旧未完成空洞同时钳住投影水位。227 个旧批次已临时隔离，原错误、attempt、检查点、已提交记忆和回执保留；current generation 20 的 812 条消息得以处理。两轮共236批/2905聊天事件/33写入，新增失败0，有效工具与聊天积压0；已恢复全部临时设置。领取/水位源码未修。 |
+| SELF 旧代次领取阻塞 | `self_reflection/repository.py` 当时选择无当前源的旧 failed/waiting，再以空范围跳过整 scope；旧未完成空洞同时钳住投影水位。227 个旧批次已临时隔离，原错误、attempt、检查点、已提交记忆和回执保留；current generation 20 的 812 条消息得以处理。两轮共236批/2905聊天事件/33写入，新增失败0，有效工具与聊天积压0；已恢复全部临时设置。当时领取/水位源码未修；当前源码状态见[现行恢复合同](../architecture/self-reflection.md#部署与历史运行证据)，不据此推定已上线。 |
 | 禁用语义 scope 调度 | `autonomy_repository.list_current_autonomous_scopes` 仍交出禁用空间的旧 owner，语义调度继续 hydration，当前 live 身份校验拒绝。应停止新的无效推进并保留旧回执，不放宽权限或重绑 owner；源码未修。 |
 | Provider 健康字段残留 | `config.py:llm_configured` 从旧环境字段推断，`health.py` 直接消费；真实装配只加载 v3 Profile TOML。该字段可能与实际档案配置不一致，配置/协议名也不是端点可用性证明；源码未修。 |
 

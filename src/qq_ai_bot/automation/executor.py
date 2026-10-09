@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any
 
 from sqlalchemy import select
 
@@ -480,60 +480,34 @@ class AutomationExecutor:
                                 definition, arguments, context, on_dispatch=mark_dispatch
                             )
                         completed_result = result
-                        delivery_target = arguments.get("delivery_target")
-                        if (
-                            step.call == "yuki.agent"
-                            and delivery_target in {"self_private", "current_group"}
-                            and result.pending_work_id is None
-                        ):
-                            delivery_state = await self._agent_delivery_state(
-                                automation, run, step.id, conversation_id, str(delivery_target)
-                            )
-                            if delivery_state != "succeeded":
-                                raise AutomationExecutionError(
-                                    "agent_delivery_outcome_uncertain"
-                                    if delivery_state == "uncertain"
-                                    else "agent_delivery_unconfirmed",
-                                    uncertain=delivery_state == "uncertain",
-                                    llm_calls=result.llm_calls,
-                                    tool_calls=result.tool_calls,
-                                    messages_sent=result.messages_sent,
-                                )
                     except AutomationExecutionError as exc:
                         if exc.uncertain and definition.name.startswith("social."):
                             unknown, confirmed, effect_evidence = await failure_evidence()
                             exc.uncertain = unknown
                             exc.messages_sent = max(exc.messages_sent, confirmed)
-                        if (
-                            exc.category == "agent_work_blocked"
-                            and arguments.get("delivery_target")
-                            in {"self_private", "current_group"}
-                            and await self._agent_delivery_state(
-                                automation,
-                                run,
-                                step.id,
-                                conversation_id,
-                                str(arguments["delivery_target"]),
-                            )
-                            == "uncertain"
-                        ):
-                            exc.category = "agent_delivery_outcome_uncertain"
-                            exc.uncertain = True
                         llm_calls += exc.llm_calls
                         tool_calls += exc.tool_calls
                         messages_sent += exc.messages_sent
                         result_usage_recorded = True
                         finished = self._time.clock.now()
+                        step_status = (
+                            "cancelled"
+                            if exc.category == "agent_work_cancelled"
+                            else "uncertain"
+                            if exc.uncertain
+                            else "failed"
+                        )
+                        step_error = None if step_status == "cancelled" else exc.category
                         await self._repository.record_step(
                             run_id=run.id,
                             step_id=step.id,
                             capability=step.call,
-                            status="uncertain" if exc.uncertain else "failed",
+                            status=step_status,
                             input_summary=_summary(arguments),
                             output_summary={},
                             started_at=started,
                             finished_at=finished,
-                            error_category=exc.category,
+                            error_category=step_error,
                         )
                         self._log_step(
                             automation,
@@ -542,8 +516,8 @@ class AutomationExecutor:
                             step_id=step.id,
                             started=started,
                             finished=finished,
-                            status="uncertain" if exc.uncertain else "failed",
-                            error_category=exc.category,
+                            status=step_status,
+                            error_category=step_error,
                         )
                         raise
                     finished = self._time.clock.now()
@@ -629,6 +603,14 @@ class AutomationExecutor:
                 summary=evidence,
             )
         except AutomationExecutionError as exc:
+            if exc.category == "agent_work_cancelled":
+                return ExecutionResult(
+                    status=RunStatus.CANCELLED,
+                    steps_completed=steps_completed,
+                    llm_calls=llm_calls,
+                    tool_calls=tool_calls,
+                    messages_sent=messages_sent,
+                )
             if exc.category == "conversation_activation_busy":
                 return ExecutionResult(
                     status=RunStatus.RUNNING,
@@ -650,7 +632,6 @@ class AutomationExecutor:
                 "target_missing",
                 "operation_unavailable",
                 "agent_work_blocked",
-                "agent_delivery_unconfirmed",
                 "legacy_model_delivery_requires_update",
             }:
                 return ExecutionResult(
@@ -700,32 +681,6 @@ class AutomationExecutor:
             messages_sent=messages_sent,
             summary={"output_steps": list(outputs)},
         )
-
-    async def _agent_delivery_state(
-        self,
-        automation: AutomationRecord,
-        run: AutomationRunRecord,
-        step_id: str,
-        conversation_id: str | None,
-        target: str,
-    ) -> str:
-        kind: Literal["person", "space"]
-        kind, target_id = (
-            ("space", automation.canonical_target_space_id)
-            if target == "current_group"
-            else ("person", automation.canonical_creator_person_id)
-        )
-        if conversation_id is None or target_id is None:
-            return "none"
-        outcome = await self._effect_queries.inspect_automation_delivery(
-            conversation_id=conversation_id,
-            run_id=run.id,
-            step_id=step_id,
-            script_hash=automation.script_hash,
-            target_kind=kind,
-            target_id=target_id,
-        )
-        return outcome.state
 
     async def _begin_execution(
         self, claimed: AutomationRecord, *, allow_completed: bool = False
@@ -862,17 +817,14 @@ class AutomationExecutor:
                 CanonicalConversationModel, scene.get("canonical_conversation_id")
             )
             presence = await session.get(PresenceModel, automation.canonical_presence_id)
-            bindings = (
-                await session.scalars(
-                    select(SpaceBindingModel)
-                    .where(
-                        SpaceBindingModel.space_id == automation.canonical_target_space_id,
-                        SpaceBindingModel.platform == "qq",
-                        SpaceBindingModel.status == "active",
-                    )
-                    .limit(2)
+            binding = await session.scalar(
+                select(SpaceBindingModel).where(
+                    SpaceBindingModel.space_id == automation.canonical_target_space_id,
+                    SpaceBindingModel.platform == "qq",
+                    SpaceBindingModel.status == "active",
+                    SpaceBindingModel.external_space_id == scene.get("current_group_id"),
                 )
-            ).all()
+            )
             if (
                 conversation is None
                 or conversation.space_id != automation.canonical_target_space_id
@@ -881,8 +833,7 @@ class AutomationExecutor:
                 or not presence.enabled
                 or presence.platform != "qq"
                 or presence.external_account_id != automation.bot_user_id
-                or len(bindings) != 1
-                or bindings[0].external_space_id != scene.get("current_group_id")
+                or binding is None
             ):
                 return ExecutionResult(
                     status=RunStatus.BLOCKED, error_category="self_scene_changed"
@@ -1004,10 +955,12 @@ class AutomationExecutor:
         tool_calls: int,
         messages_sent: int,
     ) -> None:
+        if automation.script.uses_runtime_budget:
+            return
         limits = automation.script.limits
-        if not automation.script.uses_runtime_budget and llm_calls > limits.max_llm_calls:
+        if llm_calls > limits.max_llm_calls:
             raise AutomationExecutionError("llm_limit_exceeded")
-        if not automation.script.uses_runtime_budget and tool_calls > limits.max_tool_calls:
+        if tool_calls > limits.max_tool_calls:
             raise AutomationExecutionError("tool_limit_exceeded")
         if messages_sent > limits.max_messages:
             raise AutomationExecutionError("message_limit_exceeded")

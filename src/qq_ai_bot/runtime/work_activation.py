@@ -44,7 +44,7 @@ def _select_work_candidate(
         if all(
             previous.get(key) == source.get(key)
             for key in (
-                "actor_user_id",
+                "actor_person_id",
                 "origin",
                 "plugin_id",
                 "delegation_id",

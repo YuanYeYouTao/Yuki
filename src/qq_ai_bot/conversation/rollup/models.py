@@ -59,8 +59,6 @@ class RollupPolicyConfig:
         )
         if any(value < 1 for value in positive):
             raise ValueError("positive rollup settings must be at least one")
-        if not 0 < self.target_ratio < self.trigger_ratio < 1:
-            raise ValueError("rollup token ratios must satisfy 0 < target < trigger < 1")
         if not self.llm_origins:
             object.__setattr__(self, "llm_origins", frozenset({"user_message"}))
 

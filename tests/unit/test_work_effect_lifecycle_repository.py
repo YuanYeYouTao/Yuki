@@ -14,7 +14,7 @@ from tests.support.social_identity_cases import social_env
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.runtime.subagent_repository import SubagentRepository
 from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository, bounded_json
+from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository, encode_json
 from qq_ai_bot.runtime.work_schema_v1 import effects, scope, work
 from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
 
@@ -373,7 +373,7 @@ async def test_exact_run_pages_use_existing_index_and_preserve_other_effects(own
                     state="accepted",
                     created=time.time(),
                     updated=time.time(),
-                    receipt_json=bounded_json(
+                    receipt_json=encode_json(
                         {
                             "outcome": {
                                 "tool": "terminal_exec",
@@ -457,7 +457,7 @@ async def test_receipt_race_does_not_overwrite_newer_fact(owned, monkeypatch):
         },
     )
     original_session = repo.database.immediate_session
-    newer = bounded_json(
+    newer = encode_json(
         {
             "outcome": {
                 "tool": "terminal_exec",
@@ -600,7 +600,7 @@ async def test_interrupted_second_page_retains_exact_unsettled_originals(
                     state="accepted",
                     created=time.time(),
                     updated=time.time(),
-                    receipt_json=bounded_json(
+                    receipt_json=encode_json(
                         {
                             "outcome": {
                                 "tool": "terminal_exec",
