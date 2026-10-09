@@ -48,8 +48,8 @@ SELF 的 kind、category 和 key 不设固定名称白名单。私聊资料传�
 
 同一原请求的 mutation/operation ID 和持久回执负责幂等，不以同 key 全库唯一代替幂等。
 事实、版本、证据、状态事件和变更回执作为同一纯数据库单元提交。失败整体回滚，取消传播。
-SQLite WAL 读快照在首写前冻结来源和 owner。仅原生 SQLITE_BUSY_SNAPSHOT（517）在新 session
-重备同一数据库单元，复用原 ID，不重跑模型、外部效果或重新发送。提交后的 embedding 调度失败
+SQLite WAL 读快照在首写前冻结来源和 owner。原生 SQLITE_BUSY（主码5，含517）仅在原操作整体回滚确认后，在新 session
+重备同一数据库单元，不设固定次数封口；复用原 ID，不重跑模型、外部效果或重新发送。取消传播，未知提交或回滚确认不重放。提交后的 embedding 调度失败
 不撤销已提交事实。
 
 0102 只移除四个 single-active canonical key 索引。0101 的事实、历史表和回执原样升级；

@@ -91,11 +91,11 @@ Control Plane 仍要求 capability。
   Memory mutation、Dream 与维护批次在同连接显式只读 BEGIN 中先准备完整证据、
   来源和目标归属，再升级为短写事务。SQLite WAL 快照是本次准备的完整依赖围栏；
   任何竞争提交都使旧快照的首次写入被拒绝，不能仅用 fact.updated_at 推断来源未改变。
-  只对原生 SQLITE_BUSY_SNAPSHOT（517）结束整个失败事务并用新 session 至多重备 3 次。
+  原生 SQLITE_BUSY（主码5，含517）仅在原操作整体回滚确认后，用新 session 重备同一计划，不设固定次数封口。
   重备仅执行纯数据库单元，复用原 mutation/operation/request ID，不重跑模型或外部效果；提交后的 embedding 调度不在重试范围内。模型判断所引用的事实还须
   在准备阶段比较原 fact signature 和 canonical target，拒绝已经改变的候选；请求目标与
   操作人的 canonical owner、原内部事件和 tool receipt／SELF 来源证明也必须与原计划一致。
-  ORM flush属于该纯数据库单元；物理commit/rollback确认错误不作为可安全重备的517。
+  ORM flush属于该纯数据库单元；物理commit/rollback确认错误不能按BUSY授予重放资格。取消继续传播。
   Dream 操作失败先核对原 cluster 的 committed operation 回执，保留实际提交计数和累计预算。
   未提交的派生模型判断可由既有恢复流程重新生成；未决提交不授予重放资格。
   来源隐藏、擦除、换绑或会话 generation 变化时拒绝旧计划，不能成功写入一个无证据事实。
@@ -112,8 +112,8 @@ Control Plane 仍要求 capability。
   将记忆变更和管理审计作为一个纯数据库单元准备与提交。
   Evidence compaction 也使用同连接的 SQLite WAL 显式读快照：删除集合、保留证据和元数据
   和 Dream provenance 回写资料均在首个 DELETE 前准备。若任意并发提交使快照过期，
-  写入升级失败并整体回滚，最多重新准备三次；不重新领取 item、不更换 operation ID。
-  DELETE 后只应用已准备的元数据与 provenance，不扫描证据历史。旧 delegation_mode 解析反推 run 的结果回填已删除；新自省结果以实际 run ID 原子登记，
+  写入竞争且整体回滚已确认时沿同一数据库单元重新准备；不重新领取 item、不更换 operation ID。
+  DELETE 后只应用已准备的元数据与 provenance，不扫描证据历史；原 compaction item 的完成/跳过与本次删除、provenance 同事务提交。确认丢失后按原 item 回执聚合原 run，不因候选消失把未结算 item 留在终态 run。关闭会取消当前数据库重备任务，原 job/run/预算保留，未决提交不改写为成功。旧 delegation_mode 解析反推 run 的结果回填已删除；新自省结果以实际 run ID 原子登记，
   不根据旧字符串推断归属。
     候选的已处理过滤在 LIMIT 前完成，避免不可缩减前缀阻塞后续 fact。
     `0093` 的 `(fact_id,evidence_before,status)` 完整非唯一索引支持精确终态回执查找；

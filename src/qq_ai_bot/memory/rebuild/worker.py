@@ -29,7 +29,8 @@ class MemoryRebuildWorker:
     async def close(self) -> None:
         self._stop.set()
         if self._task is not None:
-            await self._task
+            self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
 
     async def _run(self) -> None:
         while not self._stop.is_set():

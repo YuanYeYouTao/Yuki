@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import ValidationError
 from sqlalchemy import select, text
-from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import load_only
 from yuki_participation.models import Effect, Feedback, Scope, SourceRef
@@ -507,42 +506,36 @@ async def _commit_pending(service: SemanticParticipationService, run_id: str) ->
     # Each <=64-ref feedback page is its own atomic transaction, as before.
     # Hot producers cannot monopolize a tick; remaining refs stay in factual tables.
     for _ in range(4):
-        for attempt in range(3):
-            try:
-                async with service.database.sessions() as session:
-                    await session.execute(text("BEGIN"))
-                    facts = await _read_facts(service, (run_id,), session)
-                    if not facts:
-                        return None
-                    fact = facts[0]
-                    if not fact.changed():
-                        return fact
-                    outcome, unseen = fact.pending()
-                    batch = unseen[:64]
-                    targets = tuple(
-                        sorted(
-                            {
-                                fact.run.space_id if target == "group" else target
-                                for ref in batch
-                                if ref in fact.actual
-                                for target in fact.actual[ref].actual_targets
-                            }
-                        )
-                    )
-                    await service.repository.record_feedback(
-                        run_id,
-                        sequence=fact.run.feedback_sequence + 1,
-                        outcome=outcome,
-                        effect_refs=tuple(batch),
-                        actual_target_refs=targets,
-                        considered_sources=fact.run.sources,
-                        session=session,
-                    )
-                    await session.commit()
-                break
-            except OperationalError as exc:
-                if getattr(exc.orig, "sqlite_errorcode", None) != 517 or attempt == 2:
-                    raise
+        async with service.database.sessions() as session:
+            await session.execute(text("BEGIN"))
+            facts = await _read_facts(service, (run_id,), session)
+            if not facts:
+                return None
+            fact = facts[0]
+            if not fact.changed():
+                return fact
+            outcome, unseen = fact.pending()
+            batch = unseen[:64]
+            targets = tuple(
+                sorted(
+                    {
+                        fact.run.space_id if target == "group" else target
+                        for ref in batch
+                        if ref in fact.actual
+                        for target in fact.actual[ref].actual_targets
+                    }
+                )
+            )
+            await service.repository.record_feedback(
+                run_id,
+                sequence=fact.run.feedback_sequence + 1,
+                outcome=outcome,
+                effect_refs=tuple(batch),
+                actual_target_refs=targets,
+                considered_sources=fact.run.sources,
+                session=session,
+            )
+            await session.commit()
     async with service.database.sessions() as session:
         await session.execute(text("BEGIN"))
         facts = await _read_facts(service, (run_id,), session)

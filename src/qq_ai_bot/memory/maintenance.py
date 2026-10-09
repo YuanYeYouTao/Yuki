@@ -7,7 +7,6 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
@@ -62,7 +61,9 @@ class MemoryMaintenanceWorker:
         self._stop.set()
         self._wake.set()
         if self._task is not None:
-            await self._task
+            self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
+            self._task = None
 
     def wake(self) -> None:
         self._wake.set()
@@ -100,19 +101,15 @@ class MemoryMaintenanceWorker:
         rows = await self._facts.repository.list_expired_candidates(
             now=now, limit=runtime.batch_limit
         )
-        for attempt in range(3):
-            try:
-                async with self._facts.repository.transaction(read_snapshot=True) as owned:
-                    await self._facts.prepare_evidence_write(
-                        tuple(candidate.id for candidate in rows), session=owned, targets=rows
-                    )
-                    changed = await self._invalidate_candidates(rows, now=now, session=owned)
-                break
-            except OperationalError as exc:
-                if getattr(exc.orig, "sqlite_errorcode", None) != 517 or attempt == 2:
-                    raise
-                # Only reprepare this original DB batch on a fresh snapshot.
-                # The lifecycle scan, cutoff and any external work stay unchanged.
+
+        async def invalidate(owned: AsyncSession) -> int:
+            await self._facts.prepare_evidence_write(
+                tuple(candidate.id for candidate in rows), session=owned, targets=rows
+            )
+            return await self._invalidate_candidates(rows, now=now, session=owned)
+
+        changed = await self._facts.repository.apply_evidence_write(invalidate)
+        self.metrics.increment("maintenance_expired", changed)
         self.metrics.record_maintenance_success(now)
         return changed
 
@@ -137,7 +134,6 @@ class MemoryMaintenanceWorker:
                 session=session,
             ):
                 changed += 1
-                self.metrics.increment("maintenance_expired")
         return changed
 
     async def _snapshot(self) -> _MaintenanceRuntime:
