@@ -142,7 +142,7 @@ async def test_prepared_input_resumes_same_work_and_media_after_activation_relea
         await ready()
     # Model the stale pre-settlement pending observation: transition must
     # serialize its final mailbox check with preparation's writer transaction.
-    await control.settle(delivered=False, pending_inputs=False)
+    await control.settle(pending_inputs=False)
     await control.repository.release(control.lease)
     if not ready_before_settle:
         assert (await control.repository.get(identity))["state"] == "waiting_external"
@@ -182,7 +182,7 @@ async def test_later_ready_input_does_not_spin_past_preparing_head(database, tmp
     first = await enqueue(control, "first")
     await enqueue(control, "later-ready", ready=True)
     control.ending = "waiting_external"
-    await control.settle(delivered=False, pending_inputs=True)
+    await control.settle(pending_inputs=True)
     assert control.current["state"] == "waiting_external"
     assert await control.repository.prepare_input(first, {"text": "first ready"})
     assert (await control.repository.get(control.current["id"]))["state"] == "queued"

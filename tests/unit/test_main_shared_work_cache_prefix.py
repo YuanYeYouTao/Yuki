@@ -108,8 +108,7 @@ async def test_real_main_shared_history_switches_work_with_one_fixed_gemini_mani
             run_effect=chat.run_effect,
             bindings=chat.runtime.bindings,
         )
-        await resumer.resume(first_work)
-        assert resumer.last_error is None
+        assert await resumer.resume(first_work) is None
         assert len(provider.requests) == len(wires) == 5
         resumed = provider.requests[-1]
         public_positions = [resumed.messages.index(message) for message in current_h.messages()]

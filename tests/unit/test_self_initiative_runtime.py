@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select, update
-from tests.support.work_session import WorkSession
+from tests.support.work_session import WorkSession, invoke_tool
 
 from qq_ai_bot.conversation.autonomy_binding import InitiativeSource, InitiativeSourceKind
 from qq_ai_bot.conversation.autonomy_repository import AutonomyRepository
@@ -25,7 +25,6 @@ from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.identity.canonical_repository import ensure_presence, ensure_space
 from qq_ai_bot.identity.db_models import CanonicalSpaceModel, PresenceModel
 from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.authority import TurnAuthority
 from qq_ai_bot.runtime.errors import InvalidTurnContextError
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.subagent_repository import SubagentRepository
@@ -118,18 +117,54 @@ def test_snapshot_and_authority_require_exactly_one_real_principal():
         replace(snap, trigger_event_id=9)
     with pytest.raises(ValueError):
         replace(snap, initiative_run_id=None)
-    authority = TurnAuthority(
-        "",
-        "8000",
-        TurnOrigin.SELF_INITIATIVE,
-        frozenset(),
-        None,
-        1,
-        principal_kind="self",
-        initiative_run_id="run",
+    from qq_ai_bot.domain.conversations import ScopeType
+    from qq_ai_bot.services.agent_tools import ToolRuntime
+
+    source = ToolRuntime(
+        inbound=None,
+        gateway=None,
+        allow_generic_onebot=False,
+        actor_context=actor(),
+        origin=TurnOrigin.SELF_INITIATIVE,
+        initiative_run_id="initiative",
+        execution_id="work",
+        conversation_id="conversation",
+        scope_type=ScopeType.GROUP,
+        external_target_id="2001",
     )
-    with pytest.raises(InvalidTurnContextError):
-        replace(authority, actor_user_id="1001")
+    source.validate_source()
+    # A SELF run keeps its own identity; it may not borrow a person origin or
+    # drop/add its initiative run, and a person may not claim SELF origin.
+    for fields in (
+        {"origin": TurnOrigin.USER_MESSAGE},
+        {"initiative_run_id": None},
+        {"origin": TurnOrigin.SCHEDULED_AUTOMATION},
+        {
+            "actor_context": replace(
+                actor(),
+                principal_kind="person",
+                user_id="1001",
+                initiative_run_id=None,
+                origin=TurnOrigin.USER_MESSAGE,
+            )
+        },
+        {"actor_context": None},
+    ):
+        with pytest.raises((InvalidTurnContextError, ValueError)):
+            replace(source, **fields).validate_source()
+    # A person GROUP source needs its group id; an unknown scope is rejected.
+    person = replace(
+        source, actor_context=None, origin=TurnOrigin.USER_MESSAGE, initiative_run_id=None
+    )
+    with pytest.raises(InvalidTurnContextError, match="group id"):
+        person.validate_source()
+    with pytest.raises(RuntimeError):
+        replace(person, scope_type=None).validate_source()
+    # Declaration-only construction is not execution and is not tightened.
+    declaration = ToolRuntime(
+        inbound=None, gateway=None, allow_generic_onebot=False, declaration_only=True
+    )
+    assert declaration.declaration_only
 
 
 async def test_memory_origin_recovers_without_any_chat_event_and_survives_master_off(database):
@@ -231,12 +266,13 @@ async def test_self_work_restart_retains_id_budget_prefix_pending_receipt_and_de
     assert restored.request().continuation == transcript.request().continuation
     assert resumed.current["model_requests"] == 24 and resumed.current["tool_calls"] == 3
     invoke = AsyncMock(return_value="unexpected")
-    assert await second.execute(call, invoke) == '{"run_id":"run"}'
+    assert await invoke_tool(second, call, invoke) == '{"run_id":"run"}'
     invoke.assert_not_awaited()
     await second.save("delivered")
     third = WorkSession(resumed, "fixed-contract")
     await third.restore(TurnTranscript(()))
-    assert third.recovered_delivery == "delivered"
+    # A delivered phase without a legacy frozen plan is an ordinary paired record.
+    assert third.recovered_delivery is None and third.uses_recovery_transcript
     await repo.cancel(source["conversation_id"])
     assert not await repo.valid(next_lease)
     with pytest.raises(WorkConflict):
@@ -316,7 +352,7 @@ async def test_self_child_preserves_run_without_adopting_person(database):
     await repo.cancel(source["conversation_id"])
     assert not await repo.valid(child_lease)
     with pytest.raises(WorkConflict):
-        await children.finish(child_lease, "late result")
+        await children.finish(child_lease)
     assert (await repo.get(child_id))["model_requests"] == 24
     async with database.sessions() as db:
         assert not list(await db.scalars(select(effects.c.effect_key)))
@@ -430,7 +466,7 @@ async def test_scheduler_resumes_self_without_reading_a_person_event_or_sending_
 
 async def test_self_worker_uses_existing_runner_without_synthetic_inbound(database):
     from qq_ai_bot.runtime.subagent_tools import WORKER_NAMES
-    from qq_ai_bot.services.subagent_execution import WorkerBackend
+    from qq_ai_bot.services.main_agent_backend import MainAgentBackend
 
     source, _, _ = await self_source(database)
     repo = WorkRepository(database)
@@ -452,16 +488,20 @@ async def test_self_worker_uses_existing_runner_without_synthetic_inbound(databa
     memory = SimpleNamespace(close=AsyncMock())
 
     async def run(messages, runtime, backend):
-        assert isinstance(backend, WorkerBackend)
+        # The real backend carries the frozen worker contract; no wrapper.
+        assert isinstance(backend, MainAgentBackend)
+        assert backend._allowed_tools == WORKER_NAMES
         assert runtime.execution_id == child_id
         assert runtime.actor_user_id == "" and runtime.origin is TurnOrigin.SELF_INITIATIVE
-        inner = backend.delegate._runtime
+        inner = backend._runtime
         assert inner.inbound is None and inner.trigger_event_id is None
         assert inner.require_actor().initiative_run_id == source["initiative_run_id"]
         await runtime.before_model_request()
         assert runtime.work_control.current["model_requests"] == 0
         await runtime.work_control.reserve_request()
-        await runtime.work_control.execute("task_control", {"action": "complete"}, "done")
+        await runtime.work_control.execute(
+            "task_control", {"action": "complete", "result": "checked"}, "done"
+        )
         return SimpleNamespace(text="checked")
 
     runner = SimpleNamespace(run=AsyncMock(side_effect=run), main_contract=None)

@@ -56,6 +56,7 @@ from qq_ai_bot.domain.messages import ToolCall, ToolFunction
 from qq_ai_bot.execution_trace.recorder import record_trace, trace_span
 from qq_ai_bot.runtime.effect_outcomes import (
     ResultCapture,
+    captured_evidence,
     current_result_capture,
     execution_evidence,
 )
@@ -355,14 +356,13 @@ class CodeModeDriver:
                 if child.receipt is None:
                     continue
                 if child.stop is not None:
-                    control.ending = child.stop.get("ending")
+                    # The stop ends this VM; only the Work checkpoint's current
+                    # accepted control may still end the activation.
+                    control.ending = control.accepted_ending(child.operation_id)
                     control.handoff_work_id = child.stop.get("handoff_work_id")
                     raise _Stop(child.stop["reason"], child.operation_id, child.stop["payload"])
                 if self._terminal_control(child):
-                    # Compatible read of old accepted lifecycle receipts.
-                    ending = _loads(child.receipt).get("ending_proposed")
-                    if isinstance(ending, str):
-                        control.ending = ending
+                    control.ending = control.accepted_ending(child.operation_id)
                     raise _Stop(
                         STOP_HOST_CONTROL, child.operation_id, {"control": _loads(child.receipt)}
                     )
@@ -1162,16 +1162,15 @@ class CodeModeDriver:
 
     @staticmethod
     def _captured_evidence(child: _Child, capture: ResultCapture) -> dict[str, Any]:
-        if capture.evidence is not None:
-            return capture.evidence
-        if capture.outcome is None:
-            raise TypeError("Code child execution did not publish typed evidence")
-        return execution_evidence(
-            capture.outcome,
+        evidence = captured_evidence(
+            capture,
             tool=child.tool,
             side_effecting=child.klass.side_effecting,
             arguments=child.arguments,
         )
+        if evidence is None:
+            raise TypeError("Code child execution did not publish typed evidence")
+        return evidence
 
     async def _parent_row(self) -> dict[str, Any] | None:
         from sqlalchemy import select

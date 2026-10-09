@@ -6,16 +6,14 @@ refactor:
 
 - ``origin``: :class:`~qq_ai_bot.runtime.origin.TurnOrigin` (moved here from
   ``automation.models``, which keeps a compatibility re-export).
-- ``trigger``: the four-way ``TurnTrigger`` discriminated union.
+- ``trigger``: host-built non-message turn triggers (SELF initiative,
+  external event, sandbox completion, work resume).
 - ``keys``: strongly typed coordination / memory partition keys.
-- ``authority``: host-built ``TurnAuthority`` plus the neutral delegated
-  authority snapshot and its pure revalidation function.
-- ``turn``: ``TurnContext`` / ``TurnState`` and untrusted-content wrappers.
-- ``result`` / ``delivery``: turn outcome and delivery accounting.
+- ``delivery``: the ``DeliveryStatus`` vocabulary.
 - ``observability``: ambient ``runtime_turn_id`` correlation plus the
   content-free observation row contract.
-- ``contracts``: cross-domain pure data (memory capability view, tool batch
-  results, delivery summary, capability exposure snapshot).
+- ``contracts``: cross-domain pure data (memory capability view, memory
+  receipt handle, delivery summary).
 
 Import rules (enforced by ``tests/unit/test_runtime_dependency_boundaries``):
 this package must never import ``planner`` (not even under ``TYPE_CHECKING``)

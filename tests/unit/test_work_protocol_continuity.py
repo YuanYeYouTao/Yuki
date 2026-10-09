@@ -16,7 +16,7 @@ from tests.conftest import build_harness, make_settings
 from tests.support.agent_backend import StubAgentBackend
 from tests.support.runtime_wire import install_wire
 from tests.support.social_identity_cases import social_env
-from tests.support.work_session import WorkSession
+from tests.support.work_session import WorkSession, invoke_tool
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.domain.messages import (
@@ -301,18 +301,15 @@ async def test_work_malformed_correction_count_survives_restart_without_resettin
     await control.repository.release(control.lease)
 
 
-async def test_caller_completion_revalidation_cannot_bypass_exhausted_malformed_fence(
-    database, tmp_path, monkeypatch
-):
+async def test_unaccepted_caller_ending_cannot_bypass_exhausted_malformed_fence(database, tmp_path):
     control = await _control(database, tmp_path)
     control.source["delivery_contract"] = "return_to_caller"
 
     def respond(_request):
         assert control.session.progress["malformed_function_call_recoveries"] == 2
-        # A new unresolved dependency invalidates a proposed caller completion.
+        # An in-memory ending without a persisted accepted control is only a
+        # projection; it can neither complete the Work nor buy a correction.
         control.ending = "completed"
-        control.session.progress["caller_completion_pending_result"] = {"action": "complete"}
-        monkeypatch.setattr(WorkControl, "pending", AsyncMock(return_value=[{"pending": True}]))
         raise LLMMalformedFunctionCallError("malformed after provisional completion")
 
     provider = FakeLLMProvider(respond)
@@ -348,11 +345,13 @@ async def test_caller_completion_revalidation_cannot_bypass_exhausted_malformed_
     assert result.work_state == "suspended"
     assert result.outcome.failure.code == "LLMMalformedFunctionCallError"
     assert len(provider.requests) == 1
-    assert control.ending != "completed"
-    assert "caller_completion_pending_result" not in control.session.progress
+    assert control.ending != "completed" and control.accepted is None
     assert control.session.progress["malformed_function_call_recoveries"] == 2
     persisted = await control.repository.get(control.current["id"])
+    assert persisted["state"] == "suspended"
     assert persisted["model_requests"] == 1 and persisted["tool_calls"] == 0
+    checkpoint = json.loads(persisted["checkpoint_json"])
+    assert "accepted_control" not in checkpoint and "sync_result" not in checkpoint
     await control.repository.release(control.lease)
 
 
@@ -544,7 +543,7 @@ async def test_work_changes_from_deepseek_to_gemini_without_replaying_old_effect
         executions += 1
         return '{"ok":true,"data":{"run_id":"run-fixed","status":"succeeded"}}'
 
-    await first.execute(old_call, execute_once, side_effecting=False)
+    await invoke_tool(first, old_call, execute_once, side_effecting=False)
     first.record_search_sources(
         [
             (
@@ -733,7 +732,8 @@ async def test_runner_resumes_gemini_work_on_deepseek_without_old_send_or_native
         sent += 1
         return '{"ok":true,"data":{"status":"succeeded","target":"original"}}'
 
-    await first.execute(
+    await invoke_tool(
+        first,
         ToolCall("sent-before-cutover", ToolFunction("send_message", '{"text":"delivered"}')),
         confirmed_send,
     )
@@ -980,10 +980,13 @@ async def test_provider_change_keeps_prepared_sequence_unknown_despite_delivered
             for message in transcript.request().messages
         )
         assert any(effect.get("uncertain") for effect in restarted_control.known_effects)
-        blocked = await resumed.execute(
+        blocked = await invoke_tool(
+            resumed,
             ToolCall("new-send", ToolFunction("send_message", "{}")),
             forbidden_send,
             side_effecting=True,
+            # A direct send bypasses the fence; a composed send never does.
+            child_ordinal=0,
         )
         assert json.loads(blocked)["error_code"] == "unresolved_prior_effect"
     assert invoked == 0
@@ -1285,7 +1288,7 @@ async def test_responses_journal_replays_identical_http_bytes(database, tmp_path
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("protocol", ["chat_completions", "responses", "openai_responses"])
-async def test_no_progress_recovery_keeps_tools_settings_and_local_execution_fence(
+async def test_repeated_read_batches_stop_at_activation_budget_with_stable_tools_and_settings(
     database, protocol
 ):
     fixed = (ChatTool("read_probe", "Read audit data", {"type": "object"}),)

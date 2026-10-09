@@ -98,7 +98,8 @@ class MainAgentContract:
                 json.dumps(
                     {
                         # 14: retired MCP and fixed direct view, discovery and full execution API.
-                        "version": 16,
+                        # 17: complete carries its internal result in the same call.
+                        "version": 17,
                         "mode": self.mode,
                         "code_api": CODE_API_REVISION,
                         "direct_names": sorted(DIRECT_TOOL_NAMES),

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from tests.conftest import build_harness, make_settings
-from tests.support.work_session import WorkSession
+from tests.support.work_session import WorkSession, invoke_tool
 from tests.unit.test_work_protocol_continuity import _control
 
 from qq_ai_bot.capabilities.media import MediaResultText
@@ -168,7 +168,7 @@ async def test_reuse_link_cannot_borrow_mutation_or_different_arguments(
     async def invoke():
         return '{"ok":true}'
 
-    await session.execute(call, invoke, side_effecting=side_effecting)
+    await invoke_tool(session, call, invoke, side_effecting=side_effecting)
     alias = _call("alias", arguments)
     session.transcript.append(ChatMessage("assistant", tool_calls=(alias,)))
     session.pending_readonly_keys = {alias.id: session.call_key(call.id)}

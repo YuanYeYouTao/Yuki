@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.memory.enums import MemoryRecallPurpose
@@ -19,43 +19,33 @@ from qq_ai_bot.memory.runtime.contract import (
     active_read_contract,
     forbidden_contract,
 )
-from qq_ai_bot.runtime.authority import TurnAuthority, TurnSceneFacts
+from qq_ai_bot.runtime.errors import InvalidTurnContextError
 from qq_ai_bot.runtime.keys import ResolvedMemoryScope
 from qq_ai_bot.runtime.origin import TurnOrigin
 
 if TYPE_CHECKING:
-    from qq_ai_bot.domain.conversations import ConversationScope
+    from qq_ai_bot.domain.messages import InboundMessage
 
 _WRITE_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP})
 _MESSAGE_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP})
 
 
-class MemoryScopeResolver(Protocol):
-    """Resolves the trusted memory partition for one turn."""
-
-    async def resolve(
-        self,
-        *,
-        authority: TurnAuthority,
-        scene: TurnSceneFacts,
-        conversation: ConversationScope | None,
-    ) -> ResolvedMemoryScope: ...
-
-
-def resolve_scope_from_scene(
-    *, authority: TurnAuthority, scene: TurnSceneFacts
-) -> ResolvedMemoryScope:
-    """Pure default resolution from trusted scene facts.
+def resolve_inbound_scope(inbound: InboundMessage) -> ResolvedMemoryScope:
+    """Memory partition from the trusted inbound scope, never from message content.
 
     Group scenes map to the group partition; private scenes map to the
-    trusted actor's private partition.  The actor id comes from
-    ``TurnAuthority`` (host-built), never from message content.
+    trusted sender's private partition.
     """
 
-    if scene.scope_type is ScopeType.GROUP:
-        assert scene.group_id is not None  # enforced by TurnSceneFacts
-        return ResolvedMemoryScope.for_group(scene.group_id)
-    return ResolvedMemoryScope.for_private(authority.actor_user_id)
+    if not inbound.sender.user_id:
+        raise InvalidTurnContextError("memory scope requires an actor user id")
+    if inbound.scope_type is ScopeType.GROUP:
+        if not inbound.group_id:
+            raise InvalidTurnContextError("group scene requires a group id")
+        return ResolvedMemoryScope.for_group(inbound.group_id)
+    if inbound.group_id is not None:
+        raise InvalidTurnContextError("private scene must not carry a group id")
+    return ResolvedMemoryScope.for_private(inbound.sender.user_id)
 
 
 class MemoryStructuredCommand(StrEnum):
@@ -95,8 +85,8 @@ def origin_allows_persistent_write(origin: TurnOrigin) -> bool:
 
 def resolve_memory_access(
     *,
-    authority: TurnAuthority,
-    scene: TurnSceneFacts,
+    origin: TurnOrigin,
+    reply_present: bool,
     structured_command: MemoryStructuredCommand = MemoryStructuredCommand.NONE,
     memory_available: bool = True,
     retrieval_enabled: bool = True,
@@ -117,7 +107,6 @@ def resolve_memory_access(
             retrieval_degraded=degraded,
         )
 
-    origin = authority.origin
     write_allowed = origin_allows_persistent_write(origin)
     if origin not in _MESSAGE_ORIGINS:
         return MemoryAccessDecision(
@@ -136,7 +125,7 @@ def resolve_memory_access(
                 retrieval_degraded=degraded,
             )
         return MemoryAccessDecision(
-            contract=_passive_for_scene(scene, persistent_write_allowed=False),
+            contract=_passive_contract(reply_present, persistent_write_allowed=False),
             reason=MemoryAccessReason.ORIGIN_WRITE_DENIED,
             retrieval_degraded=degraded,
         )
@@ -152,16 +141,12 @@ def resolve_memory_access(
     if not origin_allows_persistent_write(origin):
         reason = MemoryAccessReason.ORIGIN_WRITE_DENIED
     return MemoryAccessDecision(
-        contract=_passive_for_scene(scene, persistent_write_allowed=write_allowed),
+        contract=_passive_contract(reply_present, persistent_write_allowed=write_allowed),
         reason=reason,
         retrieval_degraded=degraded,
     )
 
 
-def _passive_for_scene(
-    scene: TurnSceneFacts, *, persistent_write_allowed: bool
-) -> MemoryTurnContract:
-    purpose = (
-        MemoryRecallPurpose.CONTINUATION if scene.reply_present else MemoryRecallPurpose.BACKGROUND
-    )
+def _passive_contract(reply_present: bool, *, persistent_write_allowed: bool) -> MemoryTurnContract:
+    purpose = MemoryRecallPurpose.CONTINUATION if reply_present else MemoryRecallPurpose.BACKGROUND
     return active_read_contract(purpose, persistent_write_allowed=persistent_write_allowed)

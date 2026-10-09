@@ -139,10 +139,10 @@ async def bind_work_activation(
 ) -> AsyncIterator[WorkControl]:
     """Own one already-acquired root or child lease until activation exit.
 
-    The caller reconstructs authority and selects the current Work. The default
-    finish preserves root settlement; child callers provide their own settlement
-    and child-result finalization. A finish callback also sees settled recovery,
-    but never an invalid lease or deferred recovery. It must not replay effects.
+    The caller reconstructs authority and selects the current Work. Settlement
+    always runs first through the one Work writer; a finish callback only consumes
+    the committed state and result (it also sees settled recovery, never an
+    invalid lease or deferred recovery). It must not replay effects.
     """
     repository, lease = control.repository, control.lease
     with ExitStack() as local_bindings:
@@ -180,13 +180,11 @@ async def bind_work_activation(
                     and control.current is not None
                     and not control.recovery_deferred
                 ):
+                    if not control.settled:
+                        pending = bool(await control.pending())
+                        await control.settle(pending_inputs=pending)
                     if finish is not None:
                         await finish(control)
-                    elif not control.settled:
-                        pending = bool(await control.pending())
-                        await control.settle(
-                            delivered=control.final_delivery, pending_inputs=pending
-                        )
             except (SQLAlchemyError, WorkConflict) as exc:
                 # Confirmed effects stay confirmed even if derived cleanup fails.
                 logger.warning("work_cleanup_deferred stage=settle category=%s", type(exc).__name__)

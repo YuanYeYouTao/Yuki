@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol
 
-from qq_ai_bot.runtime.authority import TurnSceneFacts
+from qq_ai_bot.domain.conversations import ScopeType
 
 if TYPE_CHECKING:
     from qq_ai_bot.admin.models import RuntimeConfigSnapshot
@@ -58,7 +58,6 @@ class InboundMessagePolicy(Protocol):
         self,
         message: InboundMessage,
         *,
-        scene: TurnSceneFacts,
         runtime_config: RuntimeConfigSnapshot,
     ) -> AdmissionDecision: ...
 
@@ -67,7 +66,9 @@ class InboundMessagePolicy(Protocol):
 class AutonomousCandidate:
     """Trusted inputs for scoring one autonomous-group participation chance."""
 
-    scene: TurnSceneFacts
+    scope_type: ScopeType
+    mentions_bot: bool
+    replies_to_bot: bool
     latest_content: UntrustedContent
     pending_message_count: int
     bot_recently_active: bool

@@ -79,7 +79,7 @@ async def test_rollup_wait_restarts_and_completion_before_settle_is_not_lost(
         await control.repository.wake_context_rollups()
         assert (await control.repository.get(identity))["state"] == "running"
     control.ending = "waiting_external"
-    await control.settle(delivered=False, pending_inputs=False)
+    await control.settle(pending_inputs=False)
     await control.repository.release(control.lease)
     if not finish_before_settle:
         await finish_rollup(database, control.lease.conversation_id)
@@ -112,7 +112,7 @@ async def test_rollup_wait_wakes_on_original_deadline_or_error_and_never_after_c
         control.lease, identity, await version(control), 0, 90
     )
     control.ending = "waiting_external"
-    await control.settle(delivered=False, pending_inputs=False)
+    await control.settle(pending_inputs=False)
     if wake_reason == "cancel":
         await control.repository.cancel(control.lease.conversation_id)
     else:
@@ -156,7 +156,7 @@ async def test_no_completion_does_not_write_or_overwrite_processing_claim(databa
         control.lease, control.current["id"], await version(control), 0, 90
     )
     control.ending = "waiting_external"
-    await control.settle(delivered=False, pending_inputs=False)
+    await control.settle(pending_inputs=False)
     statements = []
 
     def sql(_connection, _cursor, statement, _parameters, _context, _many):
@@ -370,7 +370,7 @@ async def test_completion_discovery_is_rechecked_after_privacy_cancel(
         control.lease, identity, await version(control), 0, 90
     )
     control.ending = "waiting_external"
-    await control.settle(delivered=False, pending_inputs=False)
+    await control.settle(pending_inputs=False)
     await finish_rollup(database, control.lease.conversation_id)
     original = database.immediate_session
 

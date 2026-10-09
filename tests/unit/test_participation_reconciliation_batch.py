@@ -17,7 +17,7 @@ pytestmark = pytest.mark.asyncio
 async def terminal_clones(database, count):
     service, item, run, task = await setup(database)
     await set_work(database, task, state="completed")
-    await feedback.reconcile_run(service, run)
+    await feedback.reconcile_page(service, (run,))
     async with database.immediate_session() as session:
         original = await session.get(InitiativeRunModel, run.run_id)
         base = {
@@ -181,13 +181,13 @@ async def test_second_feedback_page_failure_keeps_first_and_recovers_without_dup
 
     monkeypatch.setattr(service.repository, "record_feedback", fail_second)
     with pytest.raises(RuntimeError, match="second page"):
-        await feedback.reconcile_run(service, run)
+        await feedback.reconcile_page(service, (run,))
     async with database.sessions() as session:
         rows = list(await session.scalars(select(InitiativeFeedbackModel)))
     assert len(rows) == 1 and len(json.loads(rows[0].payload_json)["effects"]) == 64
     assert (await service.repository.get_run(run.run_id)).state == "no_reply"
     monkeypatch.setattr(service.repository, "record_feedback", original)
-    await feedback.reconcile_run(service, run)
+    await feedback.reconcile_page(service, (run,))
     assert len(item.controller.state.effects) == 120
     assert (await service.repository.get_run(run.run_id)).feedback_sequence == 2
     service._dispatch.assert_not_awaited()
@@ -213,10 +213,10 @@ async def test_hot_run_stops_after_four_pages_then_resumes_original_charges(data
         return result
 
     monkeypatch.setattr(service.repository, "record_feedback", keep_appending)
-    await feedback.reconcile_run(service, run)
+    await feedback.reconcile_page(service, (run,))
     assert commits == 4 and len(item.controller.state.effects) == 256
     monkeypatch.setattr(service.repository, "record_feedback", original)
-    await feedback.reconcile_run(service, run)
+    await feedback.reconcile_page(service, (run,))
     assert len(item.controller.state.effects) == 304
     assert (await service.repository.get_run(run.run_id)).feedback_sequence == 5
     service._dispatch.assert_not_awaited()
@@ -247,7 +247,7 @@ async def test_real_wal_517_reprepares_receipts_and_sequence_without_reexecution
     monkeypatch.setattr(service.repository, "record_feedback", competing_commit)
     event.listen(database.engine.sync_engine, "handle_error", capture_error)
     try:
-        await feedback.reconcile_run(service, run)
+        await feedback.reconcile_page(service, (run,))
     finally:
         event.remove(database.engine.sync_engine, "handle_error", capture_error)
     assert errors == [517]
@@ -325,17 +325,17 @@ async def test_cold_snapshot_without_proposal_restores_committed_host_effects_af
         service, "_save", AsyncMock(side_effect=RuntimeError("snapshot commit fails"))
     )
     with pytest.raises(RuntimeError, match="snapshot commit"):
-        await feedback.reconcile_run(service, run)
+        await feedback.reconcile_page(service, (run,))
     persisted = await service.repository.get_run(run.run_id)
     assert persisted.feedback_sequence == 2 and persisted.state == "completed"
     # Crash loses the controller mutation and its proposal, but not Host receipts.
     item.controller = cold
     monkeypatch.setattr(service, "_save", AsyncMock())
-    await feedback.reconcile_run(service, run)
+    await feedback.reconcile_page(service, (run,))
     expected = dict(item.controller.state.effects)
     assert len(expected) == 121 and not item.controller.state.proposals
     assert not item.controller.state.feedback  # No synthetic admission/proposal.
-    await feedback.reconcile_run(service, run)
+    await feedback.reconcile_page(service, (run,))
     assert item.controller.state.effects == expected
     assert (await service.repository.get_run(run.run_id)).feedback_sequence == 2
     service._dispatch.assert_not_awaited()
@@ -361,11 +361,11 @@ async def test_feedback_commit_confirmation_loss_is_recovered_from_original_rows
 
     monkeypatch.setattr(AsyncSession, "commit", commit_then_lose_confirmation)
     with pytest.raises(RuntimeError, match="confirmation lost"):
-        await feedback.reconcile_run(service, run)
+        await feedback.reconcile_page(service, (run,))
     assert lost and (await service.repository.get_run(run.run_id)).feedback_sequence == 1
     # No blind retry after uncertain acknowledgement. The next pass reads the
     # real committed page before appending the remaining original refs.
-    await feedback.reconcile_run(service, run)
+    await feedback.reconcile_page(service, (run,))
     assert (await service.repository.get_run(run.run_id)).feedback_sequence == 2
     assert len(item.controller.state.effects) == 120
     service._dispatch.assert_not_awaited()
@@ -376,7 +376,7 @@ async def test_present_proposal_conflicting_run_rejection_is_not_bypassed(databa
     await set_work(database, task, state="completed", model_requests=1)
     await social(database, run, "host-send-with-controller-binding-conflict")
     item.controller.state.proposal_runs[run.proposal_id] = "different-original-run"
-    await feedback.reconcile_run(service, run)
+    await feedback.reconcile_page(service, (run,))
     assert (await service.repository.get_run(run.run_id)).feedback_sequence == 1
     assert not item.controller.state.effects and not item.controller.state.feedback
     assert item.controller.state.proposal_runs[run.proposal_id] == "different-original-run"

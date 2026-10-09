@@ -105,7 +105,7 @@
 
 **来源责任：谁让这件事开始，恢复时依据什么事实。**
 
-复用已有 `TurnTrigger`、原始 event/run 标识与来源校验。共享的是 canonical 事实解析、身份绑定核对和一致的返回形状；automation delegation、plugin approval、SELF initiative 仍有各自的证明过程。
+复用已有 `runtime/trigger.py` 中的触发类型（`SelfInitiativeTrigger`、`ExternalEventTurnTrigger`、`SandboxTaskTurnTrigger`、`WorkResumeTrigger`）、原始 event/run 标识与来源校验。共享的是 canonical 事实解析、身份绑定核对和一致的返回形状；automation delegation、plugin approval、SELF initiative 仍有各自的证明过程。
 
 **执行责任：谁拥有这次 activation。**
 

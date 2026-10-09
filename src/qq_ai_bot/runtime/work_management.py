@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Literal
+from collections.abc import Mapping
+from typing import Any, Literal
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import func, literal, literal_column, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,19 +19,22 @@ from qq_ai_bot.runtime.work_repository import TERMINAL, bounded_json
 from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, journal, scope, work
 from qq_ai_bot.runtime.work_wait_schema import waits
 
+ManagementCode = Literal[
+    "not_found",
+    "version_conflict",
+    "precondition_failed",
+    "validation_error",
+    "operation_unavailable",
+    "state_mismatch",
+]
+
+
+# Source keys a management reader may classify by; never payload bodies.
+CLASSIFICATION_KEYS = ("origin", "owner", "initiative_run_id")
+
 
 class WorkManagementError(Exception):
-    def __init__(
-        self,
-        code: Literal[
-            "not_found",
-            "version_conflict",
-            "precondition_failed",
-            "validation_error",
-            "operation_unavailable",
-            "state_mismatch",
-        ],
-    ) -> None:
+    def __init__(self, code: ManagementCode) -> None:
         self.code = code
         super().__init__(code)
 
@@ -45,6 +49,101 @@ def require_work_id(identity: str) -> None:
             raise ValueError("invalid identity")
     except (ValueError, TypeError, AttributeError) as exc:
         raise WorkManagementError("validation_error") from exc
+
+
+async def resume_blocker(
+    session: AsyncSession,
+    row: Mapping[Any, Any],
+    source: Mapping[str, Any] | None,
+    now: float,
+) -> ManagementCode | None:
+    """Read-only resume preconditions shared by ``manage_work`` and Work details.
+
+    ``row`` needs id/state/conversation_id/generation/model_requests; ``source``
+    only the origin/owner/initiative_run_id classification (None if invalid).
+    Returns the code a resume would raise, or None when the original Work can be
+    queued. A delivered wait signal does not unlock a suspended Work by itself.
+    """
+    if row["state"] not in {"suspended", "waiting_user"}:
+        return "precondition_failed"
+    generation = await session.scalar(
+        select(CanonicalConversationModel.generation).where(
+            CanonicalConversationModel.id == row["conversation_id"]
+        )
+    )
+    if generation != row["generation"]:
+        return "precondition_failed"
+    child = (
+        (await session.execute(select(children).where(children.c.work_id == row["id"])))
+        .mappings()
+        .first()
+    )
+    if child:
+        root_state = await session.scalar(select(work.c.state).where(work.c.id == child["root_id"]))
+        if (
+            child["archived_at"] is not None
+            or child["lease_until"] > now
+            or root_state is None
+            or root_state in TERMINAL
+        ):
+            return "precondition_failed"
+    else:
+        leased = await session.scalar(
+            select(scope.c.lease_until).where(scope.c.conversation_id == row["conversation_id"])
+        )
+        if leased is not None and leased > now:
+            return "precondition_failed"
+        if source is None:
+            return "state_mismatch"
+        # plugin_background is queued here and claimed by its bound plugin Job,
+        # never by the root Work scheduler.
+        supported = source.get("owner") in {
+            "plugin_invocation",
+            "plugin_background",
+        } or source.get("origin") in {
+            "user_message",
+            "autonomous_group",
+            "self_initiative",
+        }
+        if not supported:
+            # Automation Work is owned by its original run/step worker, not
+            # the root Work scheduler. Do not invent a second recovery route.
+            return "operation_unavailable"
+        if source.get("origin") == "self_initiative":
+            from qq_ai_bot.conversation.autonomy_db_models import InitiativeRunModel
+
+            # The retained SELF Work continues only through its original run.
+            # A truly terminal initiative is not revived by an operator resume.
+            run_state = await session.scalar(
+                select(InitiativeRunModel.state).where(
+                    InitiativeRunModel.id == source.get("initiative_run_id")
+                )
+            )
+            if run_state not in {"accepted", "running"}:
+                return "precondition_failed"
+    tree = [
+        row["id"],
+        *await session.scalars(select(children.c.work_id).where(children.c.root_id == row["id"])),
+    ]
+    unresolved = await session.scalar(
+        select(effects.c.effect_key)
+        .where(effects.c.work_id.in_(tree), effects.c.state.in_(("prepared", "unknown")))
+        .limit(1)
+    )
+    pending_delivery = await session.scalar(
+        select(deliveries.c.id)
+        .where(deliveries.c.work_id.in_(tree), deliveries.c.state.in_(("dispatching", "unknown")))
+        .limit(1)
+    )
+    active_wait = await session.scalar(
+        select(waits.c.id).where(waits.c.work_id == row["id"], waits.c.status == "active").limit(1)
+    )
+    if unresolved or pending_delivery or active_wait:
+        return "precondition_failed"
+    retained = await session.scalar(select(journal.c.work_id).where(journal.c.work_id == row["id"]))
+    if row["model_requests"] and retained is None:
+        return "state_mismatch"
+    return None
 
 
 async def manage_work(
@@ -143,69 +242,13 @@ async def manage_work(
                         .values(state="queued", revision=work.c.revision + 1, updated=now)
                     )
         return revision + 1, "cancelled"
-    if row["state"] not in {"suspended", "waiting_user"}:
-        raise WorkManagementError("precondition_failed")
-    generation = await session.scalar(
-        select(CanonicalConversationModel.generation).where(
-            CanonicalConversationModel.id == row["conversation_id"]
-        )
-    )
-    if generation != row["generation"]:
-        raise WorkManagementError("precondition_failed")
-    child = (
-        (await session.execute(select(children).where(children.c.work_id == identity)))
-        .mappings()
-        .first()
-    )
-    if child:
-        root_state = await session.scalar(select(work.c.state).where(work.c.id == child["root_id"]))
-        if (
-            child["archived_at"] is not None
-            or child["lease_until"] > now
-            or root_state is None
-            or root_state in TERMINAL
-        ):
-            raise WorkManagementError("precondition_failed")
-    else:
-        leased = await session.scalar(
-            select(scope.c.lease_until).where(scope.c.conversation_id == row["conversation_id"])
-        )
-        if leased is not None and leased > now:
-            raise WorkManagementError("precondition_failed")
-        try:
-            source = json.loads(row["source_json"])
-            supported = isinstance(source, dict) and (
-                source.get("owner") == "plugin_invocation"
-                or source.get("origin") in {"user_message", "autonomous_group", "self_initiative"}
-            )
-        except (ValueError, TypeError) as exc:
-            raise WorkManagementError("state_mismatch") from exc
-        if not supported:
-            # Automation Work is owned by its original run/step worker, not
-            # the root Work scheduler. Do not invent a second recovery route.
-            raise WorkManagementError("operation_unavailable")
-    tree = [
-        identity,
-        *await session.scalars(select(children.c.work_id).where(children.c.root_id == identity)),
-    ]
-    unresolved = await session.scalar(
-        select(effects.c.effect_key)
-        .where(effects.c.work_id.in_(tree), effects.c.state.in_(("prepared", "unknown")))
-        .limit(1)
-    )
-    pending_delivery = await session.scalar(
-        select(deliveries.c.id)
-        .where(deliveries.c.work_id.in_(tree), deliveries.c.state.in_(("dispatching", "unknown")))
-        .limit(1)
-    )
-    active_wait = await session.scalar(
-        select(waits.c.id).where(waits.c.work_id == identity, waits.c.status == "active").limit(1)
-    )
-    if unresolved or pending_delivery or active_wait:
-        raise WorkManagementError("precondition_failed")
-    retained = await session.scalar(select(journal.c.work_id).where(journal.c.work_id == identity))
-    if row["model_requests"] and retained is None:
-        raise WorkManagementError("state_mismatch")
+    try:
+        source = json.loads(row["source_json"])
+    except (ValueError, TypeError):
+        source = None
+    blocker = await resume_blocker(session, row, source if isinstance(source, dict) else None, now)
+    if blocker is not None:
+        raise WorkManagementError(blocker)
     await session.execute(
         update(work)
         .where(work.c.id == identity)
@@ -213,3 +256,82 @@ async def manage_work(
     )
     # Keep journal, budgets, inputs, source, failure attempts and not_before.
     return revision + 1, "queued"
+
+
+async def management_view(session: AsyncSession, identity: str) -> dict[str, Any] | None:
+    """Pause reason, delivered signal and original actions of one Work, read-only.
+
+    Reads only lifecycle metadata and the source's classification keys, never
+    payload bodies. No state is added: a signal held by a suspended Work stays
+    a pending mailbox input until the explicit original resume consumes it.
+    """
+    row = (
+        (
+            await session.execute(
+                select(
+                    work.c.id,
+                    work.c.state,
+                    work.c.reason,
+                    work.c.conversation_id,
+                    work.c.generation,
+                    work.c.model_requests,
+                    *(
+                        # Fixed classification paths only; bodies are never read.
+                        func.json_extract(work.c.source_json, literal_column(f"'$.{key}'")).label(
+                            key
+                        )
+                        for key in CLASSIFICATION_KEYS
+                    ),
+                ).where(work.c.id == identity)
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if row is None:
+        return None
+    source = {key: row[key] for key in CLASSIFICATION_KEYS}
+    terminal = row["state"] in TERMINAL
+    blocker = None if terminal else await resume_blocker(session, row, source, time.time())
+    signal = (
+        (
+            await session.execute(
+                select(
+                    waits.c.id,
+                    waits.c.status,
+                    waits.c.delivered,
+                    inputs.c.state.label("input_state"),
+                )
+                .outerjoin(
+                    inputs,
+                    (inputs.c.work_id == waits.c.work_id)
+                    & (inputs.c.source_key == literal("wait:") + waits.c.id),
+                )
+                .where(
+                    waits.c.work_id == identity,
+                    waits.c.status.in_(("delivered", "expired")),
+                )
+                .order_by(waits.c.created.desc(), waits.c.id.desc())
+                .limit(1)
+            )
+        )
+        .mappings()
+        .first()
+    )
+    return {
+        "pause_reason": row["reason"] if row["state"] in {"suspended", "waiting_user"} else None,
+        "signal": {
+            "wait_id": signal["id"],
+            "status": signal["status"],
+            "delivered": signal["delivered"],
+            # pending: arrived and held for the original owner; consumed: used.
+            "input_state": signal["input_state"],
+        }
+        if signal is not None
+        else None,
+        "actions": {
+            "resume": not terminal and blocker is None,
+            "resume_blocked_by": blocker,
+            "cancel": not terminal,
+        },
+    }

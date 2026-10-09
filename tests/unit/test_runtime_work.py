@@ -11,7 +11,7 @@ from sqlalchemy import select, update
 # P10: explicit Invocation fixture contract; existing assertions are retained.
 from tests.support.agent_backend import StubAgentBackend
 from tests.support.social_identity_cases import social_env
-from tests.support.work_session import observe_fixture_result
+from tests.support.work_session import invoke_tool, observe_fixture_result
 
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
@@ -89,8 +89,10 @@ async def test_completion_cas_retains_input_arriving_after_empty_mailbox_read(
     )
     if ready_before_commit:
         assert await repository.prepare_input(input_id, {"text": "keep a transparent background"})
-    control.ending = "completed"
-    await control.settle(delivered=True, pending_inputs=pending_at_read)
+    control.current = await repository.accept_control(
+        lease, identity, {"action": "complete", "call_key": "complete", "result": "done"}
+    )
+    await control.settle(pending_inputs=pending_at_read)
     saved = await repository.get(identity)
     expected = "queued" if ready_before_commit else "waiting_external"
     assert saved["state"] == expected
@@ -127,7 +129,11 @@ async def test_completion_cas_retains_input_arriving_after_empty_mailbox_read(
     )
     assert completed["state"] == "completed"
     assert not await restarted.pending(resumed, work_id=identity)
-    assert not await WorkWaitRepository(restarted).is_active(identity)
+    # The only wait registered for this Work is the current one, and completion closed it.
+    current_wait = await WorkWaitRepository(restarted).describe(identity)
+    assert current_wait is not None
+    assert current_wait["wait_id"] == original_wait["wait_id"]
+    assert current_wait["status"] != "active"
     await restarted.release(resumed)
 
 
@@ -342,10 +348,10 @@ async def test_work_control_has_no_progress_tool_and_preserves_checkpoint(databa
         work_id=identity,
         ready=True,
     )
-    await control.settle(delivered=True, pending_inputs=True)
+    await control.settle(pending_inputs=True)
     assert (await repository.get(identity))["state"] == "queued"
     # An activation commits one decision; later cleanup cannot overwrite it.
-    await control.settle(delivered=False, pending_inputs=False)
+    await control.settle(pending_inputs=False)
     assert (await repository.get(identity))["state"] == "queued"
 
 
@@ -376,7 +382,7 @@ async def test_root_business_restore_reads_original_effect_without_replaying(
         }
     )
     invoke = AsyncMock(return_value=result)
-    original_result = await first.execute(call, invoke)
+    original_result = await invoke_tool(first, call, invoke)
     # The receipt landed before the model/tool pair was saved. Recovery must
     # pair that original key, then retire the settled provider tail for root H.
     await control.repository.checkpoint(
@@ -399,7 +405,7 @@ async def test_root_business_restore_reads_original_effect_without_replaying(
     if uncertain:
         assert await control.has_unresolved_effects(pending=False)
         blocked = AsyncMock(side_effect=AssertionError("unknown effect must fence new writes"))
-        output = await resumed.execute(ToolCall("new-write", call.function), blocked)
+        output = await invoke_tool(resumed, ToolCall("new-write", call.function), blocked)
         assert json.loads(output)["ok"] is False
         blocked.assert_not_awaited()
 
@@ -533,7 +539,10 @@ async def test_agent_loop_speaks_then_executes_and_proposes_finish(
         (ChatMessage(role="user", content="画图"),), runtime, Backend()
     )
     assert observed == ["render"]
-    assert result.text == ""
+    # An accepted complete ends the activation once paired: the trailing final
+    # is never requested, and the internal result is not sent by itself.
+    assert result.text == "" and result.suppress_delivery
+    assert len(provider.requests) == (4 if steer else 3)
     assert control.ending == "completed"
     assert (await repo.get(control.current["id"]))["state"] == "running"
     for before, after in zip(provider.requests, provider.requests[1:], strict=False):
@@ -694,7 +703,7 @@ async def test_work_recovery_pairs_calls_without_reexecution(
         calls.append("replayed")
         return "wrong"
 
-    await resumed.execute(call, execute_again)
+    await invoke_tool(resumed, call, execute_again)
     assert calls == []
     await resumed.save("paired")
     # A second restart must not append another result for the same call.
@@ -1027,7 +1036,7 @@ async def test_child_completion_has_one_parent_consumer_and_scheduler(
         bindings=chat.runtime.bindings,
         sandbox_tasks=tasks,
     )
-    scheduler = WorkScheduler(repository, resumer, chat_admission_enabled=True)
+    scheduler = WorkScheduler(repository, resumer.resume, chat_admission_enabled=True)
     await scheduler.drain_once()
     if updates > 24:
         assert len(provider.requests) == 24
@@ -1095,59 +1104,8 @@ async def test_artifact_completion_requires_verified_delivery(database, tmp_path
         arguments='{"artifact_id":"png"}',
     )
     assert json.loads(await control.execute("task_control", finish, "sent"))["ok"]
-    await control.settle(delivered=True, pending_inputs=False)
+    await control.settle(pending_inputs=False)
     assert (await repo.get(control.current["id"]))["state"] == "completed"
-
-
-@pytest.mark.asyncio
-async def test_receipt_repair_records_accepted_delivery_without_resending(database, tmp_path):
-    from tests.conftest import build_harness, make_settings
-
-    from qq_ai_bot.persistence.models import ChatEventModel
-    from qq_ai_bot.runtime.work_delivery import repair_receipt_ledger
-
-    env = await social_env(database, tmp_path)
-    harness = build_harness(database, make_settings(database.url))
-    repo = WorkRepository(database)
-    lease = await repo.acquire(env.context.conversation_id, 1)
-    async with database.sessions() as session:
-        event_id = (await session.execute(select(ChatEventModel.id))).scalar_one()
-    source = {"trigger_event_id": event_id, "origin": "user_message"}
-
-    async def validate():
-        assert await repo.valid(lease)
-
-    control = WorkControl(repo, lease, "accepted-delivery", source, validate)
-    control.current = await repo.accept(
-        lease, source_key=control.source_key, source=source, goal="draw"
-    )
-    await repo.prepare_effect(lease, control.current["id"], "delivery", "final")
-    await repo.record_effect(
-        "delivery",
-        "accepted",
-        {
-            "transport_accepted": True,
-            "message_id": "already-sent",
-            "text": "done",
-        },
-    )
-    before = len(env.bot.calls)
-    await repair_receipt_ledger(control, harness.ledger)
-    await repair_receipt_ledger(control, harness.ledger)
-    assert len(env.bot.calls) == before
-    async with database.sessions() as session:
-        rows = (
-            (
-                await session.execute(
-                    select(ChatEventModel).where(
-                        ChatEventModel.platform_message_id == "already-sent"
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        assert len(rows) == 1 and rows[0].caused_by_event_id == event_id
 
 
 @pytest.mark.asyncio

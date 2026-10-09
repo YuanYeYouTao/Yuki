@@ -63,7 +63,7 @@ child 使用自己的 lease，在取得执行权后复用 root 的激活监督�
 根任务未结束时保留子任务；根任务结束七天后清理详细历史，保留最终结果、文件引用和预算。
 归档 ID 明确返回已归档，不自动创建替代 Agent。
 
-完成回执保存结果摘要，不再次复制完整 Work checkpoint。仅单项 `result` 查询按原
+子任务以 `complete(result)` 同次提交真实内部结果；activation 结算后，父输入与完成回执只读取已提交 Work 行（completed 读 `sync_result`，failed 读原因），通知前崩溃由 maintain 按 notified_revision 收拢同一结果。完成回执保存结果摘要，不再次复制完整 Work checkpoint。仅单项 `result` 查询按原
 child Work ID、父子归属和通知 revision 读取对应 checkpoint；恢复后的新版本不冒充
 旧结果。状态与列表查询不加载大笔记，旧已归档结果中已有的快照仍保留。
 

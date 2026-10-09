@@ -351,8 +351,13 @@ class PluginBackgroundTurnWorker:
                         attempt=job.attempts,
                         generation=job.generation,
                     ),
+                    plugin_turn={
+                        "job_id": job.id,
+                        "attempt": job.attempts,
+                        "work_id": job.work_id,
+                    },
                 )
-            if result.work_state in {"queued", "running", "waiting_external", "waiting_user"}:
+            if result.work_state in {"queued", "running"}:
                 await self._repository.defer_turn(
                     job.id,
                     attempt=job.attempts,
@@ -361,13 +366,15 @@ class PluginBackgroundTurnWorker:
                     preserve_budget=True,
                 )
                 return
-            if result.work_state in {"failed", "cancelled"}:
-                await self._repository.abandon_turn(
-                    job.id, attempt=job.attempts, error_category="runtime_work_blocked"
+            if result.work_state in {"suspended", "waiting_external", "waiting_user"}:
+                # The original Work keeps ownership. Release the Job lease; the
+                # Work JOIN keeps it parked until a resume or signal queues it.
+                await self._repository.park_turn(
+                    job.id, attempt=job.attempts, error_category="runtime_work_parked"
                 )
                 return
-            if result.work_state == "suspended":
-                await self._repository.fail_turn(
+            if result.work_state in {"failed", "cancelled"}:
+                await self._repository.abandon_turn(
                     job.id, attempt=job.attempts, error_category="runtime_work_blocked"
                 )
                 return

@@ -13,7 +13,7 @@ from tests.conftest import build_harness, make_settings
 from tests.support.agent_backend import StubAgentBackend
 from tests.support.social_identity_cases import social_env
 from tests.support.work_compaction import session_summary, summary_json
-from tests.support.work_session import WorkSession
+from tests.support.work_session import WorkSession, invoke_tool
 
 from qq_ai_bot.capabilities.results import ToolExecutionResult, ToolResultBudgeter
 from qq_ai_bot.domain.messages import (
@@ -968,7 +968,7 @@ async def test_paid_compaction_uses_soft_window_and_restored_candidate_does_not_
 
     invoke = AsyncMock(side_effect=render_receipt)
     session.transcript.append(ChatMessage("assistant", "Read evidence", tool_calls=(call,)))
-    receipt = await session.execute(call, invoke, side_effecting=False)
+    receipt = await invoke_tool(session, call, invoke, side_effecting=False)
     session.transcript.append_result(call.id, receipt)
     await session.save("paired")
     main = replace(main, messages=session.transcript.request().messages)
@@ -1130,7 +1130,7 @@ async def test_paid_invalid_summary_keeps_original_receipt_and_real_budget(
     invoke = AsyncMock(
         return_value='{"ok":true,"data":{"run_id":"original-run","status":"succeeded"}}'
     )
-    receipt = await session.execute(call, invoke, side_effecting=False)
+    receipt = await invoke_tool(session, call, invoke, side_effecting=False)
     effect_key = session.call_key(call.id)
     session.transcript.append(ChatMessage("assistant", "", tool_calls=(call,)))
     session.transcript.append_result(call.id, receipt)

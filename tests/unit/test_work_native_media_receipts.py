@@ -6,7 +6,7 @@ from hashlib import sha256
 
 import pytest
 from sqlalchemy import select, update
-from tests.support.work_session import WorkSession
+from tests.support.work_session import WorkSession, invoke_tool
 from tests.unit.test_semantic_participation_host import _event_and_route
 from tests.unit.test_work_effect_results import owned_session
 from tests.unit.test_work_protocol_continuity import _control
@@ -60,7 +60,7 @@ async def test_root_business_resume_keeps_pending_selected_pixels_without_old_to
         executed += 1
         return MediaResultText('{"ok":true}', (image,))
 
-    receipt = await session.execute(call, invoke, side_effecting=False)
+    receipt = await invoke_tool(session, call, invoke, side_effecting=False)
     if crash_phase == "paired":
         session.transcript.append_result(call.id, receipt)
         session.transcript.append_tool_media(((call.id, receipt),))
@@ -101,7 +101,7 @@ async def test_accepted_media_receipts_restore_before_paired_without_read_or_ree
             invoked.append(identity)
             return MediaResultText('{"ok":true,"data":{"mode":"image"}}', (image,))
 
-        await session.execute(call, invoke, side_effecting=False)
+        await invoke_tool(session, call, invoke, side_effecting=False)
     # Simulated crash: the last persisted journal is still response/pending.
     resumed = WorkSession(control, "result-test")
     restored = await resumed.restore(TurnTranscript(()))
@@ -117,7 +117,7 @@ async def test_accepted_media_receipts_restore_before_paired_without_read_or_ree
     async def forbidden():
         pytest.fail("Accepted tool preparation must not execute or reread its source")
 
-    replay = await resumed.execute(calls[0], forbidden, side_effecting=False)
+    replay = await invoke_tool(resumed, calls[0], forbidden, side_effecting=False)
     assert result_images(replay) == (originals[0],)
     assert invoked == ["one", "two"]
     assert control.tools_started == 2
@@ -140,7 +140,7 @@ async def test_missing_private_pixels_fail_closed_without_rereading(database, tm
     async def invoke():
         return MediaResultText('{"ok":true}', (image,))
 
-    await session.execute(call, invoke, side_effecting=False)
+    await invoke_tool(session, call, invoke, side_effecting=False)
     digest = sha256(image.data_url.encode()).hexdigest()
     session.journal.objects._path(digest).unlink()
     with pytest.raises(JournalUnavailable, match="work_effect_media_missing"):
@@ -162,7 +162,7 @@ async def test_erasure_during_prepare_cannot_publish_late_image_receipt(database
         return MediaResultText('{"ok":true}', (_image(control, "private"),))
 
     with pytest.raises(WorkConflict, match="work_effect_media_source_changed"):
-        await session.execute(call, invoke, side_effecting=False)
+        await invoke_tool(session, call, invoke, side_effecting=False)
     async with database.sessions() as reader:
         assert await reader.scalar(select(effects.c.state)) == "prepared"
         assert not list(await reader.scalars(select(refs.c.sha256)))
@@ -171,7 +171,7 @@ async def test_erasure_during_prepare_cannot_publish_late_image_receipt(database
     async def forbidden():
         pytest.fail("Erased preparation must not reexecute")
 
-    replay = await session.execute(call, forbidden, side_effecting=False)
+    replay = await invoke_tool(session, call, forbidden, side_effecting=False)
     assert json.loads(replay)["error"] == "execution_outcome_unknown"
     assert not result_images(replay)
 
@@ -185,7 +185,7 @@ async def test_erasure_fences_already_owned_media_on_a_later_receipt(database, t
     async def initial():
         return MediaResultText('{"ok":true}', (image,))
 
-    await session.execute(first, initial, side_effecting=False)
+    await invoke_tool(session, first, initial, side_effecting=False)
     second = ToolCall("second", ToolFunction("workspace_inspect", "{}"))
 
     async def erased():
@@ -194,7 +194,7 @@ async def test_erasure_fences_already_owned_media_on_a_later_receipt(database, t
         return MediaResultText('{"ok":true}', (image,))
 
     with pytest.raises(WorkConflict, match="work_effect_media_source_changed"):
-        await session.execute(second, erased, side_effecting=False)
+        await invoke_tool(session, second, erased, side_effecting=False)
     async with database.sessions() as reader:
         assert (
             await reader.scalar(
@@ -218,7 +218,7 @@ async def test_typed_media_survives_text_projection_failure(database, tmp_path):
         raise ValueError("text projection failed")
 
     with pytest.raises(ValueError, match="text projection failed"):
-        await session.execute(call, invoke, side_effecting=False)
+        await invoke_tool(session, call, invoke, side_effecting=False)
     recovered = await session.journal.effect_result(session.call_key(call.id))
     assert result_images(recovered) == (image,)
     assert json.loads(recovered)["result_unavailable"]
@@ -241,7 +241,7 @@ async def test_protocol_capacity_failure_does_not_accept_incomplete_pixels(
         return MediaResultText('{"ok":true}', (_image(control, "x" * 512),))
 
     with pytest.raises(ValueError, match="work_protocol_object_capacity"):
-        await session.execute(call, invoke, side_effecting=False)
+        await invoke_tool(session, call, invoke, side_effecting=False)
     async with database.sessions() as reader:
         assert await reader.scalar(select(effects.c.state)) == "prepared"
         assert not list(await reader.scalars(select(refs.c.sha256)))

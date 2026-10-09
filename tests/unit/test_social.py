@@ -25,7 +25,6 @@ from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.runtime.authority import TurnAuthority, TurnSceneFacts
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.sandbox.client import sandbox_tools
 from qq_ai_bot.social.automation import automation_name, register_social_automation
@@ -178,16 +177,6 @@ async def test_social_receipt_claim_replay_and_interrupted_delivery(database: Da
     )
     runtime = TurnCapabilityRuntime(
         registry=DescriptorRegistrySnapshot(catalog),
-        authority=TurnAuthority(
-            actor_user_id="10001",
-            bot_user_id="80001",
-            origin=TurnOrigin.USER_MESSAGE,
-            permission_ceiling=frozenset(),
-            delegated_authority=None,
-            authority_revision=1,
-        ),
-        scene=TurnSceneFacts(scope_type=ScopeType.PRIVATE, group_id=None),
-        memory_view=None,
         policy_context=CapabilityPolicyContext(
             authority=AuthorityContext(actor_user_id="10001", is_superuser=False),
             origin=TurnOrigin.USER_MESSAGE,
@@ -883,7 +872,6 @@ async def test_chat_agent_sends_only_via_explicit_tool(
     from tests.conftest import MemorySender, build_harness, make_settings
     from tests.support.social_identity_cases import social_env
 
-    from qq_ai_bot.domain.conversations import ScopeType
     from qq_ai_bot.domain.messages import (
         ChatResponse,
         InboundMessage,
@@ -961,7 +949,6 @@ async def test_chat_agent_does_not_request_courtesy_recovery_for_unsent_final(
     from tests.conftest import MemorySender, build_harness, make_settings
     from tests.support.social_identity_cases import social_env
 
-    from qq_ai_bot.domain.conversations import ScopeType
     from qq_ai_bot.domain.messages import (
         ChatResponse,
         InboundMessage,
@@ -1015,7 +1002,6 @@ async def test_chat_agent_can_choose_silent_final(database: Database, tmp_path: 
     from tests.conftest import MemorySender, build_harness, make_settings
     from tests.support.social_identity_cases import social_env
 
-    from qq_ai_bot.domain.conversations import ScopeType
     from qq_ai_bot.domain.messages import ChatResponse, InboundMessage, SenderIdentity
     from qq_ai_bot.llm.fake import FakeLLMProvider
     from qq_ai_bot.services.main_agent_contract import MainAgentContract
@@ -1069,7 +1055,6 @@ async def test_chat_agent_keeps_unsent_final_internal_without_error_notice(
     from tests.conftest import MemorySender, build_harness, make_settings
     from tests.support.social_identity_cases import social_env
 
-    from qq_ai_bot.domain.conversations import ScopeType
     from qq_ai_bot.domain.messages import ChatResponse, InboundMessage, SenderIdentity
     from qq_ai_bot.llm.fake import FakeLLMProvider
     from qq_ai_bot.services.main_agent_contract import MainAgentContract

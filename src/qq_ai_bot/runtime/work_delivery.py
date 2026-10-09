@@ -1,175 +1,48 @@
-"""Record final-reply transport intents before entering the gateway."""
+"""Offline reconciliation of legacy frozen Work delivery plans.
+
+Support window: only the v3.8.3 Main Agent (alembic heads 0059–0061) wrote a
+frozen final ``delivery_plan`` into the Work journal; v3.8.4 (head 0072) wrapped
+but never sent through it and the current runtime has no writer. A database
+restored from a v3.8.3/v3.8.4 backup and upgraded to head may still hold such
+plans. The online runtime never executes them: a restored ``delivery`` journal
+pauses its Work with ``legacy_delivery_not_resumed``.
+
+``qq-ai-bot-cli work import-legacy-deliveries`` runs this module on a stopped
+copy. It never calls a gateway, never resends and never re-reserves budget:
+
+* accepted shards keep their original receipts; their missing outbound ledger
+  rows are appended from the stored text (idempotent, CAS on receipt bytes);
+* shards that were never claimed are recorded as definite not-sent facts on the
+  original ``final-N`` keys and the Work stays paused for an operator;
+* a plan whose final intent is ``dispatching``/``unknown``, any prepared/unknown
+  shard, or a partial plan without its reservation is left as is;
+* a fully delivered plan completes its Work.
+
+Only the frozen plan/hash shapes below are accepted; anything else fails closed.
+"""
 
 from __future__ import annotations
 
-import base64
 import hashlib
-from collections.abc import Awaitable, Callable
+import json
+import time
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import dataclass, field
 from typing import Any
 
-from qq_ai_bot.domain.messages import (
-    AttachmentKind,
-    OutboundMedia,
-    OutboundMessage,
-    OutboundSendReceipt,
-)
-from qq_ai_bot.runtime.delivery_intents import record, reserve
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_repository import WorkConflict
+from sqlalchemy import select, update
+from sqlalchemy.dialects.sqlite import insert
+
+from qq_ai_bot.domain.messages import AttachmentKind
+from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.runtime.work_recovery_schema import deliveries
+from qq_ai_bot.runtime.work_repository import WorkConflict, bounded_json
+from qq_ai_bot.runtime.work_schema_v1 import effects, journal, work
+
+LEGACY_DELIVERY_PAUSE = "legacy_delivery_not_resumed"
 
 
-class WorkDeliverySender:
-    def __init__(self, delegate: Any, control: WorkControl) -> None:
-        self.delegate, self.control = delegate, control
-        self.index = 0
-        self.planned = False
-
-    async def plan(self, messages: list[OutboundMessage]) -> None:
-        control = self.control
-        if control.current is None or control.session is None or not messages:
-            return
-        values = []
-        for message in messages:
-            value = asdict(message)
-            for media in value["media"]:
-                media["content"] = base64.b64encode(media["content"]).decode("ascii")
-            values.append(value)
-        control.session.progress["delivery_plan"] = values
-        # Persist the entire sequence before reserving or sending any fragment.
-        await control.session.save("delivery")
-        await reserve(
-            control,
-            control.session.delivery_call_key("final-plan"),
-            "final",
-            {"plan_hash": hashlib.sha256(repr(values).encode()).hexdigest()},
-            count=len(values),
-        )
-        self.planned = True
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.delegate, name)
-
-    async def send(self, message: OutboundMessage) -> OutboundSendReceipt:
-        control = self.control
-        if control.current is None or control.session is None:
-            receipt = await self.delegate.send(message)
-            if not isinstance(receipt, OutboundSendReceipt):
-                raise TypeError("work_sender_missing_receipt")
-            return receipt
-        await control.validate()
-        await control.session.validate_delivery_source()
-        if await control.pending():
-            raise WorkConflict("new_input_before_final_delivery")
-        self.index += 1
-        key = control.session.delivery_call_key(f"final-{self.index}")
-        if not self.planned:
-            await self.plan([message])
-        # The durable plan identifies the sequence; these receipts track individual sends.
-        await control.session.save("delivery")
-        if not await control.repository.prepare_effect(
-            control.lease, control.current["id"], key, "final"
-        ):
-            raise WorkConflict("final_delivery_replay_forbidden")
-        await record(control, key, "dispatching", {})
-        dispatched = False
-        try:
-            # Preparation/receipt persistence can yield. Recheck the selected
-            # source/privacy fence after those writers close, before the gateway.
-            await control.validate()
-            await control.session.validate_delivery_source()
-            prepared_send = getattr(self.delegate, "send_prepared", None)
-            dispatched = True
-            receipt = (
-                await prepared_send(message, key)
-                if callable(prepared_send)
-                else await self.delegate.send(message)
-            )
-            if not isinstance(receipt, OutboundSendReceipt):
-                raise TypeError("work_sender_missing_receipt")
-        except BaseException as exc:
-            try:
-                state = "unknown" if dispatched else "failed"
-                failure = (
-                    {"error": "delivery_outcome_unknown"}
-                    if dispatched
-                    else {
-                        "error": "delivery_not_dispatched",
-                        "executed": False,
-                        "mutation_committed": False,
-                    }
-                )
-                await record(control, key, state, failure)
-                await control.repository.record_effect(key, state, failure)
-            except Exception as secondary:
-                exc.add_note(f"delivery reconciliation deferred: {type(secondary).__name__}")
-            raise
-        await record(control, key, "accepted", {"message_id": receipt.platform_message_id})
-        await control.repository.record_effect(
-            key,
-            "accepted",
-            {
-                "transport_accepted": True,
-                "message_id": receipt.platform_message_id,
-                "transport": receipt.transport,
-                "text": message.text,
-                "media": [
-                    {
-                        "kind": media.kind.value,
-                        "summary": media.summary,
-                        "sha256": hashlib.sha256(media.content).hexdigest(),
-                    }
-                    for media in message.media
-                ],
-            },
-        )
-        return receipt
-
-
-def _persisted_message(value: dict[str, Any]) -> OutboundMessage:
-    """Decode an executable copy, never upgrade the frozen delivery journal."""
-    legacy_defaults = {
-        "spoken_text": "",
-        "generation_id": None,
-        "voice_profile_id": None,
-        "voice_reference_key": None,
-        "voice_language": None,
-    }
-    decoded = deepcopy(value)
-    try:
-        if set(decoded) - {"text", "reply_to_message_id", "media"}:
-            raise ValueError("unknown message field")
-        if not isinstance(decoded["text"], str):
-            raise ValueError("invalid message text")
-        media_values = []
-        for media in decoded["media"]:
-            if AttachmentKind(media["kind"]) is AttachmentKind.AUDIO:
-                raise WorkConflict("retired_speech_delivery")
-            if AttachmentKind(media["kind"]) is not AttachmentKind.IMAGE:
-                raise ValueError("unsupported media")
-            for key, default in legacy_defaults.items():
-                if key in media:
-                    if type(media[key]) is not type(default) or media[key] != default:
-                        raise ValueError("nondefault retired metadata")
-                    del media[key]
-            # These formerly shared DTO fields lost their last output consumer;
-            # old images carried only None. Keep this separate from speech tags.
-            for key in ("local_path", "duration_milliseconds"):
-                if key in media:
-                    if media[key] is not None:
-                        raise ValueError("nondefault retired media metadata")
-                    del media[key]
-            media["kind"] = AttachmentKind.IMAGE
-            media["content"] = base64.b64decode(media["content"], validate=True)
-            media_values.append(OutboundMedia(**media))
-        decoded["media"] = tuple(media_values)
-        return OutboundMessage(**decoded)
-    except (KeyError, TypeError, ValueError) as exc:
-        raise WorkConflict("persisted_delivery_plan_invalid") from exc
-
-
-def _frozen_plan_hash(values: list[dict[str, Any]]) -> str:
+def frozen_plan_hash(values: list[dict[str, Any]]) -> str:
     # asdict originally retained tuple media and StrEnum kinds. JSON changes
     # those two representations; restore them without removing/reordering fields.
     original = deepcopy(values)
@@ -180,168 +53,232 @@ def _frozen_plan_hash(values: list[dict[str, Any]]) -> str:
     return hashlib.sha256(repr(original).encode()).hexdigest()
 
 
-async def resume_delivery_plan(control: WorkControl, sender: Any) -> bool:
-    """Only dispatch persisted, definitely unsubmitted parts; never regenerate an answer."""
-    import json
+def _valid_plan(values: Any) -> bool:
+    return (
+        isinstance(values, list)
+        and bool(values)
+        and all(
+            isinstance(value, dict)
+            and isinstance(value.get("text"), str)
+            and isinstance(value.get("media"), list)
+            and all(isinstance(media, dict) and "kind" in media for media in value["media"])
+            for value in values
+        )
+    )
 
-    from sqlalchemy import select
 
-    from qq_ai_bot.runtime.work_recovery_schema import deliveries
-    from qq_ai_bot.runtime.work_schema_v1 import effects
+@dataclass
+class ImportReport:
+    plans: int = 0
+    completed: int = 0
+    paused: int = 0
+    not_sent_recorded: int = 0
+    ledger_repaired: int = 0
+    unresolved: int = 0
+    invalid: int = 0
+    work_ids: list[str] = field(default_factory=list)
 
-    if control.session is None:
-        return False
-    values = control.session.progress.get("delivery_plan")
-    if not values:
-        return False
-    if control.current is None or not isinstance(values, list):
-        raise WorkConflict("persisted_delivery_plan_invalid")
-    keys = [
-        control.session.delivery_call_key(f"final-{index}") for index in range(1, len(values) + 1)
-    ]
-    # Read original receipts before attempting to decode obsolete AUDIO/metadata.
-    async with control.repository.database.sessions() as session:
-        rows = await session.execute(select(effects).where(effects.c.effect_key.in_(keys)))
-        previous_by_key = {row["effect_key"]: row for row in rows.mappings()}
+    def as_counts(self) -> dict[str, int]:
+        return {key: value for key, value in vars(self).items() if isinstance(value, int)}
+
+
+async def import_legacy_deliveries(
+    database: Database, ledger: Any, *, dry_run: bool = False, page: int = 64
+) -> ImportReport:
+    """Page through journals by stable work ID; each write rechecks its own read."""
+    report = ImportReport()
+    cursor = ""
+    while True:
+        async with database.sessions() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(journal.c.work_id, journal.c.chain_id, journal.c.payload_json)
+                        .join(work, work.c.id == journal.c.work_id)
+                        .where(
+                            journal.c.work_id > cursor,
+                            journal.c.phase.in_(("delivery", "delivered")),
+                            work.c.state.not_in(("completed", "failed", "cancelled")),
+                        )
+                        .order_by(journal.c.work_id)
+                        .limit(page)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        if not rows:
+            return report
+        cursor = rows[-1]["work_id"]
+        for row in rows:
+            await _import_one(database, ledger, dict(row), report, dry_run=dry_run)
+
+
+async def _import_one(
+    database: Database,
+    ledger: Any,
+    row: dict[str, Any],
+    report: ImportReport,
+    *,
+    dry_run: bool,
+) -> None:
+    from qq_ai_bot.runtime.protocol_store import ProtocolStore
+
+    work_id = row["work_id"]
+    try:
+        payload = await ProtocolStore(database).hydrate(json.loads(row["payload_json"]))
+        metadata = payload["metadata"]
+        values = metadata["progress"]["delivery_plan"]
+        origin = metadata.get(
+            "delivery_origin",
+            {
+                "work_id": work_id,
+                "chain_id": row["chain_id"],
+                "sequence": metadata.get("sequence", 0),
+            },
+        )
+        chain, sequence = origin["chain_id"], origin["sequence"]
+    except (KeyError, TypeError, ValueError, OSError):
+        report.invalid += 1
+        return
+    if (
+        not _valid_plan(values)
+        or origin.get("work_id") != work_id
+        or not isinstance(chain, str)
+        or type(sequence) is not int
+    ):
+        report.invalid += 1
+        return
+    report.plans += 1
+    report.work_ids.append(work_id)
+    prefix = f"{chain}:{sequence}:"
+    keys = [f"{prefix}final-{index}" for index in range(1, len(values) + 1)]
+    async with database.sessions() as session:
+        receipts = {
+            item["effect_key"]: dict(item)
+            for item in (
+                await session.execute(select(effects).where(effects.c.effect_key.in_(keys)))
+            ).mappings()
+        }
         intent = (
             (
                 await session.execute(
-                    select(deliveries).where(
-                        deliveries.c.id == control.session.delivery_call_key("final-plan")
-                    )
+                    select(deliveries).where(deliveries.c.id == f"{prefix}final-plan")
                 )
             )
             .mappings()
             .first()
         )
-        issued_final = await session.scalar(
-            select(effects.c.effect_key)
-            .where(effects.c.work_id == control.current["id"], effects.c.kind == "final")
-            .limit(1)
+        current = dict(
+            (await session.execute(select(work).where(work.c.id == work_id))).mappings().one()
         )
-        existing_plan = await session.scalar(
-            select(deliveries.c.id)
-            .where(deliveries.c.work_id == control.current["id"], deliveries.c.kind == "final")
-            .limit(1)
-        )
-    remaining = []
-    for index, (key, value) in enumerate(zip(keys, values, strict=True), 1):
-        previous = previous_by_key.get(key)
-        if previous:
-            if (
-                previous["work_id"] == control.current["id"]
-                and previous["state"] == "accepted"
-                and json.loads(previous["receipt_json"]).get("transport_accepted") is True
-            ):
-                continue
-            raise WorkConflict("delivery_outcome_requires_reconciliation")
-        remaining.append((index, value))
-    if intent:
+    if intent is not None:
         try:
-            payload = json.loads(intent["payload_json"])
-            if (
-                intent["work_id"] != control.current["id"]
-                or intent["kind"] != "final"
-                or intent["message_count"] != len(values)
-                or payload != {"plan_hash": _frozen_plan_hash(values)}
-            ):
-                raise WorkConflict("delivery_intent_conflict")
-        except (KeyError, TypeError, ValueError) as exc:
-            raise WorkConflict("delivery_intent_conflict") from exc
-        if intent["state"] in {"unknown", "dispatching"} or (
-            remaining and intent["state"] == "accepted"
+            reserved = json.loads(intent["payload_json"])
+        except ValueError:
+            reserved = None
+        if (
+            intent["work_id"] != work_id
+            or intent["kind"] != "final"
+            or reserved != {"plan_hash": frozen_plan_hash(values)}
+            or intent["message_count"] != len(values)
         ):
-            raise WorkConflict("delivery_replay_forbidden")
-    elif remaining and (issued_final is not None or existing_plan is not None):
-        # Receipts prove an earlier dispatch but cannot reconstruct its missing
-        # reservation/accounting. Re-reserving would grant another send budget.
-        raise WorkConflict("delivery_outcome_requires_reconciliation")
-    # Validate *all* unsubmitted fragments before reserving or sending any of them.
-    messages = [(index, _persisted_message(value)) for index, value in remaining]
-    if messages:
-        payload = payload if intent else {"plan_hash": _frozen_plan_hash(values)}
-        await reserve(
-            control,
-            control.session.delivery_call_key("final-plan"),
-            "final",
-            payload,
-            count=len(values),
-        )
-    wrapped = WorkDeliverySender(sender, control)
-    wrapped.planned = True
-    for index, message in messages:
-        wrapped.index = index - 1
-        await wrapped.send(message)
-    control.final_delivery = True
-    control.ending = "completed"
-    await control.session.save("delivered")
-    return True
-
-
-async def deliver_final_text(
-    control: WorkControl,
-    text: str,
-    deliver: Callable[[str, str], Awaitable[dict[str, Any]]],
-) -> None:
-    if control.session is None:
-        raise WorkConflict("final_delivery_requires_journal")
-    key = control.session.delivery_call_key("final-1")
-
-    class Sender:
-        async def send(self, message: OutboundMessage) -> OutboundSendReceipt:
-            outcome = await deliver(message.text, key)
-            if not outcome.get("transport_accepted"):
-                raise WorkConflict("final_delivery_unconfirmed")
-            return OutboundSendReceipt(str(outcome["message_id"]))
-
-    await WorkDeliverySender(Sender(), control).send(OutboundMessage(text=text))
-    control.final_delivery = True
-    await control.session.save("delivered")
-
-
-async def repair_receipt_ledger(control: WorkControl, ledger: Any) -> None:
-    """Repair local evidence for accepted transport receipts; never call a gateway."""
-    import json
-
-    from sqlalchemy import select
-
-    from qq_ai_bot.runtime.work_schema_v1 import effects
-
-    if control.current is None:
+            report.invalid += 1
+            return
+        if intent["state"] in {"dispatching", "unknown"}:
+            # The gateway may have accepted part of it; never decide for it.
+            report.unresolved += 1
+            return
+    accepted = [
+        receipts[key]
+        for key in keys
+        if key in receipts
+        and receipts[key]["work_id"] == work_id
+        and receipts[key]["state"] == "accepted"
+        and json.loads(receipts[key]["receipt_json"]).get("transport_accepted") is True
+    ]
+    if len(accepted) != len(receipts):
+        # A prepared/unknown/failed shard may have reached the gateway.
+        report.unresolved += 1
         return
-    original = await ledger.get_event(control.source.get("trigger_event_id"))
-    if original is None:
+    unsent = [key for key in keys if key not in receipts]
+    if unsent and (
+        (intent is None and receipts) or (intent is not None and intent["state"] == "accepted")
+    ):
+        # Partial dispatch without a reservation, or an "accepted" plan with
+        # missing shards, cannot be re-accounted; leave it for an operator.
+        report.unresolved += 1
         return
-    async with control.repository.database.sessions() as session:
-        rows = (
-            (
-                await session.execute(
-                    select(effects)
-                    .where(
-                        effects.c.work_id == control.current["id"],
-                        effects.c.state == "accepted",
-                        effects.c.kind.in_(("progress", "final")),
-                    )
-                    .order_by(effects.c.created)
-                    .limit(128)
+    if not dry_run:
+        report.ledger_repaired += await _repair_ledger(database, ledger, current, accepted)
+        async with database.immediate_session() as session:
+            changed = await session.execute(
+                update(work)
+                .where(work.c.id == work_id, work.c.revision == current["revision"])
+                .values(
+                    state="suspended" if unsent else "completed",
+                    reason=LEGACY_DELIVERY_PAUSE if unsent else "legacy_delivery_imported",
+                    revision=work.c.revision + 1,
+                    updated=time.time(),
                 )
             )
-            .mappings()
-            .all()
-        )
+            if not changed.rowcount:  # type: ignore[attr-defined]
+                raise WorkConflict("legacy_delivery_import_changed")
+            for key in unsent:
+                # Never claimed, never dispatched: a definite not-sent fact.
+                await session.execute(
+                    insert(effects)
+                    .values(
+                        effect_key=key,
+                        work_id=work_id,
+                        kind="final",
+                        state="failed",
+                        receipt_json=bounded_json(
+                            {
+                                "error": "delivery_not_dispatched",
+                                "executed": False,
+                                "mutation_committed": False,
+                            }
+                        ),
+                        created=time.time(),
+                        updated=time.time(),
+                    )
+                    .on_conflict_do_nothing(index_elements=[effects.c.effect_key])
+                )
+            # The plan is no longer executable; later restores read a paired record.
+            await session.execute(
+                update(journal).where(journal.c.work_id == work_id).values(phase="paired")
+            )
+    report.not_sent_recorded += len(unsent)
+    if unsent:
+        report.paused += 1
+    else:
+        report.completed += 1
+
+
+async def _repair_ledger(
+    database: Database, ledger: Any, current: dict[str, Any], rows: list[dict[str, Any]]
+) -> int:
+    """Append missing outbound ledger rows from stored receipts; never call a gateway."""
+    source = json.loads(current["source_json"])
+    original = await ledger.get_event(source.get("trigger_event_id"))
+    if original is None:
+        return 0
+    repaired = 0
     for row in rows:
         receipt = json.loads(row["receipt_json"])
-        if receipt.get("ledger_recorded") or not receipt.get("message_id"):
+        if (
+            receipt.get("ledger_recorded")
+            or not receipt.get("message_id")
+            or not isinstance(receipt.get("text"), str)
+        ):
             continue
-        if not isinstance(receipt.get("text"), str):
-            continue
-        await control.validate()
-        if not await control.repository.valid(control.lease):
-            raise WorkConflict("work_receipt_repair_obsolete")
-        existing = await ledger.find_by_platform_message(
-            bot_user_id=original.bot_user_id, platform_message_id=receipt["message_id"]
-        )
-        if existing is None:
+        if (
+            await ledger.find_by_platform_message(
+                bot_user_id=original.bot_user_id, platform_message_id=receipt["message_id"]
+            )
+            is None
+        ):
             await ledger.append(
                 bot_user_id=original.bot_user_id,
                 platform_message_id=receipt["message_id"],
@@ -355,11 +292,15 @@ async def repair_receipt_ledger(control: WorkControl, ledger: Any) -> None:
                 origin="system_task",
                 caused_by_event_id=original.id,
             )
-        await control.repository.record_effect(
-            row["effect_key"],
-            "accepted",
-            {
-                **receipt,
-                "ledger_recorded": True,
-            },
-        )
+        async with database.immediate_session() as session:
+            # CAS on the original receipt bytes; a concurrent writer wins.
+            await session.execute(
+                update(effects)
+                .where(
+                    effects.c.effect_key == row["effect_key"],
+                    effects.c.receipt_json == row["receipt_json"],
+                )
+                .values(receipt_json=bounded_json({**receipt, "ledger_recorded": True}))
+            )
+        repaired += 1
+    return repaired

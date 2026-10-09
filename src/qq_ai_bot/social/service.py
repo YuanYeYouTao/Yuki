@@ -1398,92 +1398,17 @@ class SocialService:
                 if caption or caption_segments
                 else await self._receipt_result(current, context)
             )
-        dispatched = False
-        try:
-            self.router.validate_prepared_connection(route)
-            dispatched = True
-            result = await self._call(route, action, params)
-            reference = None
-            if action in {"send_private_msg", "send_group_msg"}:
-                reference = parse_onebot_send_receipt(result).platform_message_id
-            file_upload = action in {"upload_private_file", "upload_group_file"}
-            if file_upload and isinstance(result, dict):
-                # Upload completion is independent of a retractable chat receipt.
-                # Only retain genuine scalar IDs; no fabricated handles from objects.
-                for field_name, prefix in (("message_id", ""), ("file_id", "file:")):
-                    candidate = result.get(field_name)
-                    if (
-                        isinstance(candidate, (str, int))
-                        and not isinstance(candidate, bool)
-                        and str(candidate).strip()
-                    ):
-                        reference = prefix + str(candidate).strip()
-                        break
-            appended = None
-            async with self.database.immediate_session() as session:
-                if content is not None:
-                    scope = (
-                        ConversationScope.private(route.sender_account_id, route.external_target_id)
-                        if target.kind == "person"
-                        else ConversationScope.group(
-                            route.sender_account_id, route.external_target_id
-                        )
-                    )
-                    appended = await self.writer.append(
-                        scope=scope,
-                        platform_message_id=reference or f"social-operation:{receipt.operation_id}",
-                        sender_user_id=route.sender_account_id,
-                        direction="outbound",
-                        content=content,
-                        segments=ledger_segments
-                        if ledger_segments is not None
-                        else tuple(params["message"]),
-                        sender_is_bot=True,
-                        origin=context.origin,
-                        caused_by_event_id=context.caused_by_event_id,
-                        reply_to_message_id=next(
-                            (
-                                str(segment["data"]["id"])
-                                for segment in params.get("message", ())
-                                if segment.get("type") == "reply"
-                            ),
-                            None,
-                        ),
-                        reply_to_event_id=args.get("reply_to_event_id"),
-                        session=session,
-                    )
-                await self.receipts.finish(
-                    receipt.operation_id,
-                    status=OperationStatus.SUCCEEDED,
-                    platform_reference=reference,
-                    event_id=appended.event.id if appended is not None else None,
-                    session=session,
-                )
-        except BaseException as exc:
-            try:
-                async with self.database.sessions() as session, session.begin():
-                    await self.receipts.finish(
-                        receipt.operation_id,
-                        status=OperationStatus.UNCERTAIN if dispatched else OperationStatus.FAILED,
-                        error_category=type(exc).__name__[:64],
-                        session=session,
-                    )
-            except Exception as secondary:
-                exc.add_note(f"social receipt reconciliation deferred: {type(secondary).__name__}")
-                raise exc from secondary
-            if not isinstance(exc, Exception):
-                raise
-        else:
-            if appended is not None:
-                try:
-                    self.writer.notify_committed(appended)
-                except Exception:
-                    # The send and ledger already committed. A wakeup failure
-                    # cannot downgrade success or create a retryable delivery.
-                    logging.getLogger(__name__).exception("social_post_commit_notify_failed")
-                from qq_ai_bot.execution_trace.recorder import record_confirmed_delivery
-
-                await record_confirmed_delivery(receipt.operation_id, appended.event.id)
+        await self._dispatch_claimed(
+            receipt.operation_id,
+            route,
+            action,
+            params,
+            target=target,
+            context=context,
+            content=content,
+            ledger_segments=ledger_segments,
+            reply_to_event_id=args.get("reply_to_event_id"),
+        )
         completed = await self.receipts.get(receipt.operation_id)
         await self._record_work_delivery(completed)
         if caption or caption_segments:
@@ -1534,6 +1459,111 @@ class SocialService:
                                 )
             return await self._file_result(receipt.operation_id, context)
         return await self._receipt_result(completed, context)
+
+    async def _dispatch_claimed(
+        self,
+        operation_id: str,
+        route: ResolvedSend,
+        action: str,
+        params: dict[str, Any],
+        *,
+        target: SocialTarget,
+        context: SocialContext,
+        content: str | None,
+        ledger_segments: tuple[dict[str, Any], ...] | None,
+        reply_to_event_id: Any,
+    ) -> None:
+        """The one gateway call and receipt/ledger settlement of a claimed operation.
+
+        Callers own preparation, authority and the durable claim; this core only
+        dispatches once and records success, failure or uncertainty.
+        """
+        dispatched = False
+        try:
+            self.router.validate_prepared_connection(route)
+            dispatched = True
+            result = await self._call(route, action, params)
+            reference = None
+            if action in {"send_private_msg", "send_group_msg"}:
+                reference = parse_onebot_send_receipt(result).platform_message_id
+            file_upload = action in {"upload_private_file", "upload_group_file"}
+            if file_upload and isinstance(result, dict):
+                # Upload completion is independent of a retractable chat receipt.
+                # Only retain genuine scalar IDs; no fabricated handles from objects.
+                for field_name, prefix in (("message_id", ""), ("file_id", "file:")):
+                    candidate = result.get(field_name)
+                    if (
+                        isinstance(candidate, (str, int))
+                        and not isinstance(candidate, bool)
+                        and str(candidate).strip()
+                    ):
+                        reference = prefix + str(candidate).strip()
+                        break
+            appended = None
+            async with self.database.immediate_session() as session:
+                if content is not None:
+                    scope = (
+                        ConversationScope.private(route.sender_account_id, route.external_target_id)
+                        if target.kind == "person"
+                        else ConversationScope.group(
+                            route.sender_account_id, route.external_target_id
+                        )
+                    )
+                    appended = await self.writer.append(
+                        scope=scope,
+                        platform_message_id=reference or f"social-operation:{operation_id}",
+                        sender_user_id=route.sender_account_id,
+                        direction="outbound",
+                        content=content,
+                        segments=ledger_segments
+                        if ledger_segments is not None
+                        else tuple(params["message"]),
+                        sender_is_bot=True,
+                        origin=context.origin,
+                        caused_by_event_id=context.caused_by_event_id,
+                        reply_to_message_id=next(
+                            (
+                                str(segment["data"]["id"])
+                                for segment in params.get("message", ())
+                                if segment.get("type") == "reply"
+                            ),
+                            None,
+                        ),
+                        reply_to_event_id=reply_to_event_id,
+                        session=session,
+                    )
+                await self.receipts.finish(
+                    operation_id,
+                    status=OperationStatus.SUCCEEDED,
+                    platform_reference=reference,
+                    event_id=appended.event.id if appended is not None else None,
+                    session=session,
+                )
+        except BaseException as exc:
+            try:
+                async with self.database.sessions() as session, session.begin():
+                    await self.receipts.finish(
+                        operation_id,
+                        status=OperationStatus.UNCERTAIN if dispatched else OperationStatus.FAILED,
+                        error_category=type(exc).__name__[:64],
+                        session=session,
+                    )
+            except Exception as secondary:
+                exc.add_note(f"social receipt reconciliation deferred: {type(secondary).__name__}")
+                raise exc from secondary
+            if not isinstance(exc, Exception):
+                raise
+        else:
+            if appended is not None:
+                try:
+                    self.writer.notify_committed(appended)
+                except Exception:
+                    # The send and ledger already committed. A wakeup failure
+                    # cannot downgrade success or create a retryable delivery.
+                    logging.getLogger(__name__).exception("social_post_commit_notify_failed")
+                from qq_ai_bot.execution_trace.recorder import record_confirmed_delivery
+
+                await record_confirmed_delivery(operation_id, appended.event.id)
 
     async def _replay_send(
         self, args: dict[str, Any], context: SocialContext

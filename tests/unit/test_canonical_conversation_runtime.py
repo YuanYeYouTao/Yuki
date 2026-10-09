@@ -13,7 +13,11 @@ from tests.support.gateway import napcat_registry
 
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.conversation.canonical_db_models import ConversationLegacyAliasModel
-from qq_ai_bot.conversation.scope import ConversationTurnSnapshot, turn_matches_hydrated_scope
+from qq_ai_bot.conversation.scope import (
+    ConversationTurnSnapshot,
+    runtime_conversation_key,
+    turn_matches_hydrated_scope,
+)
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.identity.canonical_repository import (
@@ -275,7 +279,6 @@ def test_runtime_conversation_key_fails_closed_when_v2_primary_missing() -> None
 
 def test_plugin_facade_uses_inbound_legacy_key_and_fails_closed_without_primary() -> None:
     from qq_ai_bot.domain.conversations import ConversationScope
-    from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
 
     primary = ConversationScope.private("8000", "1001").key
     hydrated = InboundMessage(
@@ -296,7 +299,7 @@ def test_plugin_facade_uses_inbound_legacy_key_and_fails_closed_without_primary(
         inbound=hydrated,
     )
     assert invocation.conversation_key == primary
-    assert ConversationTurnCoordinator.key_for(hydrated) == primary
+    assert runtime_conversation_key(identity=hydrated.scope(), inbound=hydrated) == primary
 
     missing_primary = InboundMessage(
         message_id="facade-missing",
@@ -318,7 +321,7 @@ def test_plugin_facade_uses_inbound_legacy_key_and_fails_closed_without_primary(
     with pytest.raises(ValueError, match="missing primary runtime key"):
         _ = closed.conversation_key
     with pytest.raises(ValueError, match="missing primary runtime key"):
-        ConversationTurnCoordinator.key_for(missing_primary)
+        runtime_conversation_key(identity=missing_primary.scope(), inbound=missing_primary)
 
     scheduled = PluginInvocation(
         plugin_id="demo.plugin",
@@ -347,7 +350,7 @@ def test_plugin_facade_uses_inbound_legacy_key_and_fails_closed_without_primary(
     )
     assert fallback_invocation.conversation_key == ConversationScope.private("8001", "1001").key
     assert (
-        ConversationTurnCoordinator.key_for(fallback_inbound)
+        runtime_conversation_key(identity=fallback_inbound.scope(), inbound=fallback_inbound)
         == fallback_invocation.conversation_key
     )
 

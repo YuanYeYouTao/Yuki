@@ -7,7 +7,7 @@ import hashlib
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from contextlib import AbstractContextManager, ExitStack
+from contextlib import ExitStack
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
@@ -16,21 +16,14 @@ from sqlalchemy import func, select
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
-from qq_ai_bot.capabilities.invocation import Invocation
 from qq_ai_bot.codemode.api_projection import ScriptApi, project
 from qq_ai_bot.codemode.contract import CODE_API_REVISION
 from qq_ai_bot.codemode.tool_visibility import DIRECT_TOOL_NAMES, model_definitions
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import (
-    ChatImage,
     ChatMessage,
-    ChatResponse,
     ChatTool,
-    InboundMessage,
-    SenderIdentity,
 )
-from qq_ai_bot.domain.tool_actor import ToolActor
-from qq_ai_bot.llm.base import LLMError
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.runtime.activation_bindings import ActiveWorkBindings
 from qq_ai_bot.runtime.origin import TurnOrigin
@@ -43,9 +36,13 @@ from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import work
 from qq_ai_bot.sandbox.client import SandboxClient
 from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
-from qq_ai_bot.services.agent_runner import AgentRunner, AgentRuntime, AgentToolBackend
+from qq_ai_bot.services.agent_runner import AgentRunner, AgentToolBackend
 from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.services.execution_sources import SelfTaskSource, recover_execution_source
+from qq_ai_bot.services.execution_sources import (
+    MessageTaskSource,
+    SelfTaskSource,
+    recover_execution_source,
+)
 from qq_ai_bot.services.invocation_context import InvocationContextFactory
 from qq_ai_bot.time.models import TimeContext
 
@@ -63,91 +60,10 @@ class SubagentExecutionDependencies:
     load_tools: Callable[[], Awaitable[tuple[ChatTool, ...]]]
     open_memory: Callable[..., Any]
     open_self_memory: Callable[..., Awaitable[Any]]
-    backend_factory: Callable[[ToolRuntime], AgentToolBackend]
+    # The real backend receives the worker's complete frozen tool contract as
+    # its execution ceiling; there is no separate worker wrapper.
+    backend_factory: Callable[[ToolRuntime, frozenset[str]], AgentToolBackend]
     web_capabilities: Callable[[RuntimeConfigSnapshot], frozenset[str]]
-
-
-class WorkerBackend(AgentToolBackend):
-    def __init__(self, delegate: AgentToolBackend, names: frozenset[str]) -> None:
-        self.delegate, self.names = delegate, names
-
-    @property
-    def media_max_bytes(self) -> int:
-        return int(getattr(self.delegate, "media_max_bytes", 16_777_216))
-
-    async def validate_images(self, images: tuple[ChatImage, ...], runtime: AgentRuntime) -> None:
-        validator = getattr(self.delegate, "validate_images", None)
-        if not callable(validator):
-            raise LLMError("tool_media_source_validator_unavailable")
-        await validator(images, runtime)
-
-    def definitions(self, runtime: AgentRuntime, *, web_was_used: bool) -> tuple[ChatTool, ...]:
-        return tuple(
-            t
-            for t in self.delegate.definitions(runtime, web_was_used=web_was_used)
-            if t.name in self.names
-        )
-
-    async def prepare(self, runtime: AgentRuntime) -> None:
-        await self.delegate.prepare(runtime)
-
-    def refresh_catalog(self, runtime: AgentRuntime, *, web_was_used: bool) -> None:
-        self.delegate.refresh_catalog(runtime, web_was_used=web_was_used)
-
-    def parallel_safe(self, name: str, runtime: AgentRuntime) -> bool:
-        return self.delegate.parallel_safe(name, runtime)
-
-    def is_side_effecting(self, name: str, arguments_json: str, runtime: AgentRuntime) -> bool:
-        return self.delegate.is_side_effecting(name, arguments_json, runtime)
-
-    def counts_toward_limit(self, name: str, runtime: AgentRuntime) -> bool:
-        return self.delegate.counts_toward_limit(name, runtime)
-
-    def finalize(self, content: str, runtime: AgentRuntime) -> str:
-        return self.delegate.finalize(content, runtime)
-
-    def exhausted(self, runtime: AgentRuntime) -> str:
-        return self.delegate.exhausted(runtime)
-
-    def record_failure_usage(self, *, tool_calls: int, model_requests: int) -> None:
-        self.delegate.record_failure_usage(tool_calls=tool_calls, model_requests=model_requests)
-
-    def pin_web_provider(self) -> AbstractContextManager[None]:
-        return self.delegate.pin_web_provider()
-
-    async def archive_code_result(self, text: str) -> str | None:
-        return await self.delegate.archive_code_result(text)
-
-    async def confirm_memory_prompt_exposure(self) -> None:
-        await self.delegate.confirm_memory_prompt_exposure()
-
-    def mark_native_web_used(self) -> None:
-        self.delegate.mark_native_web_used()
-
-    def did_use_web(self) -> bool:
-        return self.delegate.did_use_web()
-
-    async def observe_response(self, response: ChatResponse, runtime: AgentRuntime) -> None:
-        await self.delegate.observe_response(response, runtime)
-
-    def has_visible_effects(self) -> bool:
-        return self.delegate.has_visible_effects()
-
-    def allow_silent_final(self, runtime: AgentRuntime) -> bool:
-        return self.delegate.allow_silent_final(runtime)
-
-    def work_control_allowed(self, name: str) -> bool:
-        return name in self.names
-
-    def work_query_allowed(self, action: str) -> bool:
-        # A worker's lifecycle view is fenced to its own Work by WorkQueries;
-        # it does not inherit the main Agent's global Automation read authority.
-        return "task_control" in self.names and action in {"get", "list"}
-
-    async def execute_call(self, invocation: Invocation) -> str:
-        if invocation.call.function.name not in self.names:
-            return '{"ok":false,"error":"worker_tool_not_declared"}'
-        return await self.delegate.execute_call(invocation)
 
 
 class SubagentExecution:
@@ -190,7 +106,7 @@ class SubagentExecution:
         revision = hashlib.sha256(
             json.dumps(
                 {
-                    "worker_contract": 3,
+                    "worker_contract": 4,
                     "code_api": CODE_API_REVISION,
                     "direct_names": sorted(DIRECT_TOOL_NAMES),
                     "tools": [asdict(tool) for tool in self.definitions],
@@ -241,16 +157,11 @@ class SubagentExecution:
 
             control = WorkControl(self.repository, lease, "recovery", {}, validate_lease)
             bindings = ExitStack()
-            result_text = ""
             error_category: str | None = None
 
             async def finish(owned: WorkControl) -> None:
-                if not owned.settled:
-                    await owned.settle(delivered=True, pending_inputs=bool(await owned.pending()))
-                await self.children.finish(
-                    owned.lease,
-                    "工作暂停，已保留执行记录。" if owned.ending == "suspended" else result_text,
-                )
+                # Only the committed Work row decides what the parent reads.
+                await self.children.finish(owned.lease)
 
             try:
                 async with bind_work_activation(
@@ -335,22 +246,8 @@ class SubagentExecution:
                         user_id=recovered.actor_user_id, group_id=group_id
                     )
                     inbound = (
-                        InboundMessage(
-                            message_id=original.platform_message_id,
-                            source_event_id=original.id,
-                            event_type="message",
-                            scope_type=original.scope_type,
-                            sender=SenderIdentity(recovered.actor_user_id),
-                            text=original.content,
-                            bot_user_id=recovered.bot_user_id,
-                            group_id=original.group_id,
-                            received_at=original.occurred_at,
-                            person_id=recovered.actor_person_id,
-                            space_id=recovered.target_space_id,
-                            conversation_id=recovered.conversation_id,
-                            presence_id=recovered.presence_id,
-                        )
-                        if original is not None
+                        recovered.inbound(original)
+                        if isinstance(recovered, MessageTaskSource) and original is not None
                         else None
                     )
                     from qq_ai_bot.memory.runtime.resolver import MemoryStructuredCommand
@@ -367,24 +264,10 @@ class SubagentExecution:
                             row["goal"],
                             config,
                             autonomous=recovered.origin == "autonomous_group",
-                            visual_input_present=False,
                             structured_command=MemoryStructuredCommand.NONE,
                         )
                     actor = (
-                        ToolActor(
-                            user_id="",
-                            bot_user_id=recovered.bot_user_id,
-                            group_id=group_id,
-                            origin=TurnOrigin.SELF_INITIATIVE,
-                            instruction=recovered.content,
-                            execution_id=identity,
-                            conversation_id=recovered.conversation_id,
-                            presence_id=recovered.presence_id,
-                            principal_kind="self",
-                            initiative_run_id=recovered.run_id,
-                        )
-                        if isinstance(recovered, SelfTaskSource)
-                        else None
+                        recovered.actor(identity) if isinstance(recovered, SelfTaskSource) else None
                     )
                     tool_runtime = ToolRuntime(
                         inbound=inbound,
@@ -418,7 +301,7 @@ class SubagentExecution:
                     names = frozenset(t.name for t in self.definitions)
                     if not self.required_names() <= names:
                         raise ValueError("incomplete_worker_tool_manifest")
-                    backend = WorkerBackend(self.services.backend_factory(tool_runtime), names)
+                    backend = self.services.backend_factory(tool_runtime, names)
                     now = datetime.now(UTC)
                     brief = json.loads(child["brief_json"])
                     brief.update(
@@ -427,7 +310,7 @@ class SubagentExecution:
                     brief_message = ChatMessage(
                         role="user", content=json.dumps(brief, ensure_ascii=False)
                     )
-                    result = await runner.run(
+                    await runner.run(
                         (
                             ChatMessage(
                                 role="system",
@@ -455,7 +338,6 @@ class SubagentExecution:
                         ),
                         backend,
                     )
-                    result_text = result.text
                     error_category = (
                         control.outcome.failure.code
                         if control.outcome and control.outcome.failure

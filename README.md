@@ -1,4 +1,4 @@
-<!-- release-baseline: version=3.9.0 schema=0099 -->
+<!-- release-baseline: version=3.9.0 schema=0101 -->
 
 中文（默认） · [English](README.en.md)
 

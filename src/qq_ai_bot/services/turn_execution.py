@@ -102,7 +102,6 @@ class TurnState:
     incomplete_recovery_used: bool = False
     continuation_tools: tuple[ChatTool, ...] = ()
     continuation_native_tools: tuple[NativeToolDefinition, ...] = ()
-    previous_batch_fingerprint: tuple[tuple[str, str, str], ...] | None = None
     repeated_batch_count: int = 0
     reusable_tool_results: dict[tuple[str, str], ReusableToolResult] = field(default_factory=dict)
     input_feedback_watermark: int = 0
@@ -125,7 +124,6 @@ class TurnState:
     observations: list[dict[str, Any]] = field(default_factory=list)
     opportunity: tuple[str, str] | None = None
     segment_handoff_index: int | None = None
-    caller_completion_checked: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -389,10 +387,24 @@ class TurnExecution:
                     )
             if self.runtime.work_control.handoff_work_id is not None:
                 await self.runtime.work_control.session.save("paired")
-            if (
-                self.runtime.work_control.session.recovered_delivery
-                or self.runtime.work_control.handoff_work_id is not None
-            ):
+            if self.runtime.work_control.accepted_ending() is not None:
+                await self.runtime.work_control.validate()
+                await self.runtime.work_control.session.save("paired")
+                return self._accepted_result(0)
+            if self.runtime.work_control.session.recovered_delivery:
+                # Pause by original ID; never execute a legacy frozen plan.
+                from qq_ai_bot.runtime.work_delivery import LEGACY_DELIVERY_PAUSE
+
+                self.runtime.work_control.completion_rejected = LEGACY_DELIVERY_PAUSE
+                return AgentRunResult(
+                    text="",
+                    tool_calls_used=0,
+                    model_requests=0,
+                    web_was_used=False,
+                    suppress_delivery=True,
+                    work_state="suspended",
+                )
+            if self.runtime.work_control.handoff_work_id is not None:
                 return AgentRunResult(
                     text="",
                     tool_calls_used=0,
@@ -409,59 +421,6 @@ class TurnExecution:
         )
         assert isinstance(result, AgentRunResult)
         return result
-
-    async def revalidate_caller_completion(self) -> bool:
-        control = self.runtime.work_control
-        if (
-            control is None
-            or control.current is None
-            or control.ending != "completed"
-            or control.source.get("delivery_contract") != "return_to_caller"
-        ):
-            return False
-        if await control.pending():
-            control.ending = None
-            if control.session is not None:
-                control.session.progress.pop("caller_completion_pending_result", None)
-            return False
-        proposed = (
-            control.session.progress.get("caller_completion_pending_result", {})
-            if control.session is not None
-            else {}
-        )
-        # The prior proposal cannot survive a failed fresh receipt check.
-        control.ending = None
-        await control.execute(
-            "task_control",
-            {
-                "action": "complete",
-                "artifact_ids": proposed.get("artifact_ids", [])
-                if isinstance(proposed, dict)
-                else [],
-            },
-            "caller-result-revalidate",
-        )
-        if control.ending != "completed":
-            control.ending = None
-            if control.session is not None:
-                control.session.progress.pop("caller_completion_pending_result", None)
-            return False
-        return True
-
-    async def caller_has_confirmed_delivery(self) -> bool:
-        if not await self.revalidate_caller_completion():
-            return False
-        control = self.runtime.work_control
-        assert control is not None
-        # A fresh backend has no turn-local send count. Only an original
-        # confirmed receipt permits an empty internal result.
-        return any(
-            fact.get("ok") is True
-            and fact.get("delivered_message") is True
-            and not fact.get("pending")
-            and not fact.get("uncertain")
-            for fact in await control.effect_evidence()
-        )
 
     async def take_boundary_inputs(
         self, request_index: int, boundary: ContextBoundary | None
@@ -499,7 +458,6 @@ class TurnExecution:
                 for message in added
             )
         if added:
-            self.state.previous_batch_fingerprint = None
             self.state.repeated_batch_count = 0
             if control.session is not None:
                 control.session.progress.pop("fingerprint", None)
@@ -508,36 +466,6 @@ class TurnExecution:
             self._initial_inputs.extend(added)
         for message in added:
             self.state.transcript.append(message)
-        if control.session is not None:
-            proposed = control.session.progress.get("caller_completion_pending_result")
-            if added:
-                control.session.progress.pop("caller_completion_pending_result", None)
-            elif (
-                not self.state.caller_completion_checked
-                and isinstance(proposed, dict)
-                and proposed.get("action") == "complete"
-                and control.source.get("delivery_contract") == "return_to_caller"
-                and control.ending is None
-            ):
-                # The saved proposal is evidence, never completion authority.
-                await control.execute(
-                    "task_control",
-                    {"action": "complete", "artifact_ids": proposed.get("artifact_ids", [])},
-                    "caller-completion-revalidate",
-                )
-                if control.ending == "completed":
-                    self.state.transcript.append(
-                        ChatMessage(
-                            role="system",
-                            content=(
-                                "原 Work 的完成条件已按当前来源与真实回执重新核验；"
-                                "现在仅返回调用方需要的内部结果，不重复已完成的操作。"
-                            ),
-                        )
-                    )
-                else:
-                    control.session.progress.pop("caller_completion_pending_result", None)
-            self.state.caller_completion_checked = True
         self.state.input_feedback_watermark = await append_input_feedback(
             control,
             self.state.transcript,
@@ -805,25 +733,9 @@ class TurnExecution:
                 if receipts is not None:
                     await receipts.confirm()
                 await self.confirm_memory_exposure()
-            if (
-                self.state.control is not None
-                and self.state.control.session is not None
-                and self.state.control.source.get("delivery_contract") == "return_to_caller"
-                and "caller_completion_pending_result" in self.state.control.session.progress
-                and not await self.revalidate_caller_completion()
-            ):
-                self.state.control.ending = None
-                self.state.control.session.progress.pop("caller_completion_pending_result", None)
-                if not malformed:
-                    await self.state.control.session.save("paired")
-                    return RETRY
             has_visible_effects = bool(self.tools is not None and self.tools.has_visible_effects())
-            if not has_visible_effects:
-                has_visible_effects = await self.caller_has_confirmed_delivery()
             if has_visible_effects and (
-                self.state.control is None
-                or self.state.control.current is None
-                or self.state.control.ending == "completed"
+                self.state.control is None or self.state.control.current is None
             ):
                 if (
                     malformed
@@ -929,19 +841,8 @@ class TurnExecution:
             native_empty
             and response.status is ModelResponseStatus.COMPLETED
             and response.incomplete_reason != "duplicate_tool_call_id"
-            and (
-                self.state.control is None
-                or self.state.control.current is None
-                or self.state.control.ending == "completed"
-            )
-            and (
-                not response.native_tool_events
-                or (
-                    self.state.control is not None
-                    and self.state.control.current is not None
-                    and self.state.control.ending == "completed"
-                )
-            )
+            and (self.state.control is None or self.state.control.current is None)
+            and not response.native_tool_events
         ):
             # Preserve the ordinary empty-final boundary after a real send.
             # A progress report cannot complete an accepted Work, and a
@@ -952,15 +853,6 @@ class TurnExecution:
                 and self.tools.has_visible_effects()
             )
             try:
-                if (
-                    delivered
-                    and self.state.control is not None
-                    and self.state.control.current is not None
-                    and self.state.control.source.get("delivery_contract") == "return_to_caller"
-                ):
-                    delivered = await self.revalidate_caller_completion()
-                elif not delivered:
-                    delivered = await self.caller_has_confirmed_delivery()
                 if (
                     delivered
                     and self.state.control is not None
@@ -1492,47 +1384,14 @@ class TurnExecution:
                 )
             )
             return Continue()
-        if (
-            self.state.control is not None
-            and self.state.control.session is not None
-            and self.state.control.ending == "completed"
-            and self.state.control.source.get("delivery_contract") == "return_to_caller"
-            and "caller_completion_pending_result" in self.state.control.session.progress
-            and not await self.revalidate_caller_completion()
-        ):
-            if response.continuation is None and not assistant_recorded:
-                self.state.transcript.append(assistant_message)
-            self.state.transcript.append(
-                ChatMessage(
-                    role="system",
-                    content=(
-                        "原完成条件已变化或原执行回执仍未决，不能宣告完成。"
-                        "保留已有结果，按真实来源与回执接续，不重复已完成操作。"
-                    ),
-                )
-            )
-            await self.state.control.session.save("paired")
-            return Continue()
         if self.tools is not None:
             content = self.tools.finalize(content, self.runtime)
         control = self.state.control
-        if (
-            control is not None
-            and control.current is not None
-            and control.source.get("delivery_contract") == "return_to_caller"
-            and control.source.get("principal_kind") != "self"
-            and not content.strip()
-            and not await self.caller_has_confirmed_delivery()
-        ):
-            # Empty caller output is not a delivered result. This preserves the
-            # original receipt requirement without buying a courtesy retry.
-            control.ending = None
-            raise LLMEmptyResponseError("caller returned no result or confirmed delivery")
         if control is not None and control.current is not None and control.ending is None:
-            # WorkControl owns exactly the same receipt decision for model control,
-            # internal final and caller recovery. A rejected internal final ends
-            # this activation; it is never an instruction to buy a correction turn.
-            await control.complete_internal(f"final-answer:{request_index}")
+            # The same completion preparation as complete(result), using the
+            # sanitized final as the result. A rejection keeps its stable code
+            # as the pause reason; it never buys a correction turn.
+            await control.complete_final(content, f"final-answer:{request_index}")
         if self.state.control is not None and self.state.control.session is not None:
             if response.continuation is None and not assistant_recorded:
                 self.state.transcript.append(assistant_message)
@@ -1675,23 +1534,6 @@ class TurnExecution:
         if self.runtime.work_control is not None and self.runtime.work_control.session is not None:
             control = self.runtime.work_control
             assert control.session is not None
-            if control.ending != "completed":
-                control.session.progress.pop("caller_completion_pending_result", None)
-            if (
-                control.ending == "completed"
-                and control.source.get("delivery_contract") == "return_to_caller"
-            ):
-                for call, _result, _ in batch:
-                    if (
-                        call.function.name == "task_control"
-                        and self.state.coordinated.evidence.get(call.id, {}).get("ok") is True
-                    ):
-                        arguments = json.loads(call.function.arguments)
-                        if arguments.get("action") == "complete":
-                            control.session.progress["caller_completion_pending_result"] = {
-                                "action": "complete",
-                                "artifact_ids": arguments.get("artifact_ids", []),
-                            }
             batch_hash = hashlib.sha256(
                 json.dumps(
                     [
@@ -1740,24 +1582,11 @@ class TurnExecution:
                         work_state="suspended",
                     )
                 )
-            if (
-                self.runtime.work_control.ending == "completed"
-                and self.runtime.work_control.source.get("delivery_contract") != "return_to_caller"
-                and not self.runtime.work_control.lease.work_id
-                and not await self.runtime.work_control.pending()
-            ):
-                self.runtime.work_control.final_delivery = True
-                await self.runtime.work_control.session.save("delivered")
-                return End(
-                    AgentRunResult(
-                        text="",
-                        tool_calls_used=self.state.calls_used,
-                        model_requests=request_index + 1,
-                        web_was_used=self.state.web_was_used,
-                        suppress_delivery=True,
-                        work_state="completed",
-                    )
-                )
+            if self.runtime.work_control.accepted_ending() is not None:
+                # An accepted complete/fail/wait/need_input, direct or nested in
+                # Code, ends this activation once its call is paired. The writer
+                # commits the actual state; no further model request is bought.
+                return End(self._accepted_result(request_index + 1))
             if self.runtime.work_control.ending in {
                 "waiting_user",
                 "waiting_external",
@@ -1812,9 +1641,27 @@ class TurnExecution:
             work_state="queued",
         )
 
+    def _accepted_result(self, model_requests: int) -> AgentRunResult:
+        control = self.runtime.work_control
+        assert control is not None
+        accepted = control.accepted or {}
+        result = accepted.get("result")
+        return AgentRunResult(
+            text=result if isinstance(result, str) else "",
+            tool_calls_used=self.state.calls_used,
+            model_requests=model_requests,
+            web_was_used=self.state.web_was_used,
+            # The internal result returns to its owner; it is never sent by itself.
+            suppress_delivery=True,
+            work_state=control.accepted_ending(),
+        )
+
     async def exhausted(
         self,
     ) -> AgentRunResult:
+        control = self.runtime.work_control
+        if control is not None and control.current is not None and control.accepted_ending():
+            return self._accepted_result(control.requests_started)
         if self.runtime.work_control is not None and self.runtime.work_control.current is not None:
             self.runtime.work_control.yield_segment = True
             self.runtime.work_control.ending = "queued"

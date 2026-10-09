@@ -229,12 +229,7 @@ async def test_confirmed_send_native_empty_tail_stops_without_failure_or_paid_re
         assert not rows
 
 
-@pytest.mark.parametrize("native_event", [False, True])
-@pytest.mark.parametrize("checkpoint_failure", [False, True])
-async def test_completed_caller_native_empty_keeps_real_delivery_and_paid_private_state(
-    database, tmp_path, monkeypatch, native_event, checkpoint_failure
-):
-    case = await setup_run(database, tmp_path, delivery="current_group")
+def _native_caller(case, monkeypatch):
     case.executor._settings.web_enabled = True
     case.executor._settings.web_mode = WebMode.BOTH
     case.executor._settings.tavily_api_key = "test-placeholder"
@@ -252,25 +247,31 @@ async def test_completed_caller_native_empty_keeps_real_delivery_and_paid_privat
         )
 
     monkeypatch.setattr(handler.main_turns, "run", authorized_native_caller)
+    return chat
+
+
+CONFIRMED_SEND = native_response(
+    {
+        "type": "function_call",
+        "id": "fc-send",
+        "call_id": "confirmed-send",
+        "name": "send_message",
+        "arguments": '{"text":"已确认交付。"}',
+    }
+)
+
+
+@pytest.mark.parametrize("native_event", [False, True])
+@pytest.mark.parametrize("checkpoint_failure", [False, True])
+async def test_caller_native_empty_before_completion_suspends_and_keeps_paid_private_state(
+    database, tmp_path, monkeypatch, native_event, checkpoint_failure
+):
+    """send -> implicit native empty: no completion candidate exists, so the paid
+    native tail is a no-final native boundary, never an implicit success."""
+    case = await setup_run(database, tmp_path, delivery="current_group")
+    chat = _native_caller(case, monkeypatch)
     outputs = [
-        native_response(
-            {
-                "type": "function_call",
-                "id": "fc-complete",
-                "call_id": "completion-proposal",
-                "name": "task_control",
-                "arguments": '{"action":"complete"}',
-            }
-        ),
-        native_response(
-            {
-                "type": "function_call",
-                "id": "fc-send",
-                "call_id": "confirmed-send",
-                "name": "send_message",
-                "arguments": '{"text":"已确认交付。"}',
-            }
-        ),
+        CONFIRMED_SEND,
         native_response(
             {
                 "type": "reasoning",
@@ -312,24 +313,28 @@ async def test_completed_caller_native_empty_keeps_real_delivery_and_paid_privat
         result = await case.executor.execute(case.row, case.run)
     finally:
         await client.aclose()
-    assert len(wire) == 3 and all(payload["tools"] == wire[0]["tools"] for payload in wire)
+    # No paid replay and no extra model request after the native empty tail.
+    assert len(wire) == 2 and all(payload["tools"] == wire[0]["tools"] for payload in wire)
     assert any(tool["type"] == "web_search" for tool in wire[0]["tools"])
     assert len([action for action, _ in case.env.bot.calls if action.startswith("send_")]) == 1
     async with database.sessions() as reader:
         saved = (
-            await reader.execute(select(work.c.state, work.c.model_requests, work.c.id).limit(1))
+            await reader.execute(
+                select(
+                    work.c.state, work.c.model_requests, work.c.id, work.c.checkpoint_json
+                ).limit(1)
+            )
         ).one()
         invocations = list(await reader.scalars(select(ModelInvocationModel).limit(4)))
-    assert saved.model_requests == 3
-    assert len(invocations) == 3 and sum(row.total_tokens for row in invocations) == 39
-    assert sum(row.physical_request_count for row in invocations) == 3
-    if checkpoint_failure:
-        assert saved.state == "suspended" and result.status is not RunStatus.SUCCEEDED
-    else:
-        assert saved.state == "completed" and result.status is RunStatus.SUCCEEDED
-        # The completed Work keeps the actual private tail and the provider's
-        # unresolved native status; a delivered business result is not proof
-        # that this later server search succeeded.
+    assert saved.model_requests == 2
+    assert len(invocations) == 2 and sum(row.total_tokens for row in invocations) == 26
+    assert sum(row.physical_request_count for row in invocations) == 2
+    assert saved.state == "suspended" and result.status is not RunStatus.SUCCEEDED
+    checkpoint = json.loads(saved.checkpoint_json)
+    assert "sync_result" not in checkpoint and "accepted_control" not in checkpoint
+    if not checkpoint_failure:
+        # The suspended Work keeps the actual private tail and the provider's
+        # unresolved native status for the next owner.
         from qq_ai_bot.runtime.protocol_store import ProtocolStore
         from qq_ai_bot.runtime.work_schema_v1 import journal
 
@@ -338,12 +343,55 @@ async def test_completed_caller_native_empty_keeps_real_delivery_and_paid_privat
                 select(journal.c.payload_json).where(journal.c.work_id == saved.id).limit(1)
             )
         assert record is not None
-        # The journal may externalize private protocol objects. Its direct
-        # payload and immutable protocol records together remain authoritative.
         private = await ProtocolStore(database).hydrate(json.loads(record))
         assert "retained-paid-tail" in str(private)
         if native_event:
             assert "in_progress" in str(private)
+
+
+async def test_caller_send_then_complete_result_ends_without_third_request(
+    database, tmp_path, monkeypatch
+):
+    """send -> complete(result): the accepted completion ends the activation."""
+    case = await setup_run(database, tmp_path, delivery="current_group")
+    chat = _native_caller(case, monkeypatch)
+    outputs = [
+        CONFIRMED_SEND,
+        native_response(
+            {
+                "type": "function_call",
+                "id": "fc-complete",
+                "call_id": "completion",
+                "name": "task_control",
+                "arguments": json.dumps(
+                    {"action": "complete", "result": "内部结果不外发"}, ensure_ascii=False
+                ),
+            }
+        ),
+    ]
+    client, wire = install_native_response_wire(
+        SimpleNamespace(processor=SimpleNamespace(_chat=chat)), outputs
+    )
+    chat.runtime.runner._models._invocations = ModelInvocationRepository(database)
+    try:
+        result = await case.executor.execute(case.row, case.run)
+    finally:
+        await client.aclose()
+    assert len(wire) == 2 and all(payload["tools"] == wire[0]["tools"] for payload in wire)
+    sends = [params for action, params in case.env.bot.calls if action.startswith("send_")]
+    assert len(sends) == 1 and "内部结果不外发" not in str(sends)
+    async with database.sessions() as reader:
+        saved = (
+            await reader.execute(
+                select(work.c.state, work.c.model_requests, work.c.checkpoint_json).limit(1)
+            )
+        ).one()
+        invocations = list(await reader.scalars(select(ModelInvocationModel).limit(4)))
+    assert saved.state == "completed" and result.status is RunStatus.SUCCEEDED
+    assert saved.model_requests == 2 and len(invocations) == 2
+    checkpoint = json.loads(saved.checkpoint_json)
+    assert checkpoint["sync_result"] == "内部结果不外发"
+    assert "accepted_control" not in checkpoint
 
 
 def empty_native_reply(kind):

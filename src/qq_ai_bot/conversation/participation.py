@@ -141,10 +141,10 @@ class LocalAutonomousParticipationPolicy:
         """Protocol-shaped scorer for one autonomous candidate."""
 
         features = AdmissionFeatures(
-            scope_type=candidate.scene.scope_type,
+            scope_type=candidate.scope_type,
             text=candidate.latest_content.text,
-            reply_target_is_bot=candidate.scene.replies_to_bot,
-            mentions_bot=candidate.scene.mentions_bot,
+            reply_target_is_bot=candidate.replies_to_bot,
+            mentions_bot=candidate.mentions_bot,
             pending_message_count=candidate.pending_message_count,
             recent_bot_messages=1 if candidate.bot_recently_active else 0,
             media_only=candidate.latest_content.source == "media_only",

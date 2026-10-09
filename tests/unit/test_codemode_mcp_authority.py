@@ -10,6 +10,7 @@ import importlib.util
 import json
 
 import pytest
+from tests.support.work_session import invoke_tool
 from tests.unit.test_tool_effect_audit import active_work
 
 from qq_ai_bot.capabilities.results import ToolExecutionResult
@@ -46,12 +47,12 @@ async def test_original_unknown_effect_is_never_replayed_and_reads_do_not_own_mu
         )
         return json.dumps(result.model_payload())
 
-    await owner.execute(call, invoke, side_effecting=not read_only)
-    await owner.execute(call, invoke, side_effecting=not read_only)
+    await invoke_tool(owner, call, invoke, side_effecting=not read_only)
+    await invoke_tool(owner, call, invoke, side_effecting=not read_only)
     assert len(external.read_text().splitlines()) == 1
     if not read_only:
-        rejected = await owner.execute(
-            ToolCall("new-write", call.function), invoke, side_effecting=True
+        rejected = await invoke_tool(
+            owner, ToolCall("new-write", call.function), invoke, side_effecting=True
         )
         assert json.loads(rejected)["error_code"] == "unresolved_prior_effect"
         assert len(external.read_text().splitlines()) == 1

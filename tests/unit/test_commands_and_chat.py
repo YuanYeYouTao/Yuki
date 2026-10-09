@@ -9,7 +9,7 @@ import pytest
 from tests.conftest import MemorySender, build_harness, make_settings
 from tests.support.fixed_contract_fixture import bind_main_contract
 
-from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
+from qq_ai_bot.conversation.scope import ConversationTurnSnapshot, runtime_conversation_key
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import (
     ChatMessage,
@@ -642,9 +642,8 @@ async def test_stop_cancels_only_current_task(
     other_sender = MemorySender()
     chat_message = inbound("slow", message_id="slow")
     other_message = inbound("other", message_id="other", user_id="1002")
-    coordinator = harness.processor._turn_coordinator
-    chat_key = coordinator.key_for(chat_message)
-    other_key = coordinator.key_for(other_message)
+    chat_key = runtime_conversation_key(identity=chat_message.scope(), inbound=chat_message)
+    other_key = runtime_conversation_key(identity=other_message.scope(), inbound=other_message)
     assert chat_key == ConversationScope.private("9999", "1001").key
     assert other_key == ConversationScope.private("9999", "1002").key
     assert chat_key != other_key

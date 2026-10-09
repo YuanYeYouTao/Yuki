@@ -19,15 +19,12 @@ from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, InboundMessage, 
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.event_prompt import (
     EXTERNAL_EVENT_CONTENT_TRUST,
-    EXTERNAL_EVENT_DIGEST_SUMMARY_MAX_CHARACTERS,
     ChatEventPromptRenderer,
     external_event_digest_appended_growth,
     external_event_digest_encoded_characters,
-    recent_external_event_digest,
 )
 from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.memory.enums import MemoryTargetRole
 from qq_ai_bot.model_runtime.executor import provider_cache_shape_diagnostics
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.people_repository import PersonPromptMetadata
@@ -274,119 +271,160 @@ def test_bounded_history_keeps_current_external_out_of_main_history() -> None:
     assert all("abc" not in (item.content or "") for item in bounded.history_messages)
 
 
-def test_private_wakeup_memory_targets_include_person_without_an_actor() -> None:
-    current = _external(3, "current trigger")
-    trigger = ExternalEventTurnTrigger(
-        plugin_id="github-monitor",
-        source_event_id=current.id,
-        target_type="private",
-        target_id="1001",
-        agent_intent="comment briefly",
+async def _assemble_wakeup(
+    current: EventRecord,
+    recent: tuple[EventRecord, ...] = (),
+    *,
+    target_type: str = "private",
+    target_id: str = "1001",
+) -> tuple[ContextAssembler, AssembledContext]:
+    """Run the real actorless ``assemble`` entry for one plugin wakeup."""
+
+    assembler = _assembler(relationship_enabled=False)
+    assembler._ensure_turn_generation = AsyncMock()  # type: ignore[method-assign]
+    assembler._load_history_snapshot = AsyncMock(  # type: ignore[method-assign]
+        return_value=_HistoryPromptWindow(
+            recent=recent,
+            rollup_text="",
+            coverage_end=0,
+            revision=1,
+            rollup=None,
+            rollup_mode="llm",
+        )
+    )
+    assembler._memory_context.retrieve_for_targets = AsyncMock()
+    assembler._memory_context.retrieve_for_turn = AsyncMock()
+    assembler._people.get = AsyncMock(
+        return_value=UserProfileSnapshot(
+            user_id=target_id,
+            scope_type=ScopeType.PRIVATE,
+            nickname="Ada",
+        )
+    )
+    assembler._people.aliases = AsyncMock(return_value=())
+    assembler._time.current = AsyncMock(return_value=_time())
+    assembler._time.current_default = MagicMock(return_value=_time())
+    identity = current.scope
+    turn = ConversationTurnSnapshot(
+        conversation_id="test-conversation-1",
+        scope_key=identity.key,
+        generation=1,
+        trigger_event_id=current.id,
+        coordinator_version=1,
+        transport_scope_key=identity.key,
+    )
+    runtime = MagicMock()
+    runtime.context.local_event_limit = 2_048
+    runtime.context.window_tokens = 96_000
+    runtime.context.compaction_window_tokens = 90_000
+    context = await assembler.assemble(
+        inbound=None,
+        profile=None,
+        identity=identity,
+        turn=turn,
+        content=current.content,
+        runtime=runtime,
+        external_event=current,
+        external_trigger=ExternalEventTurnTrigger(
+            plugin_id="github-monitor",
+            source_event_id=current.id,
+            target_type=target_type,
+            target_id=target_id,
+            agent_intent="comment briefly",
+        ),
+    )
+    return assembler, context
+
+
+def _metadata_items(context: AssembledContext) -> dict[str, object]:
+    items = context.metadata_payload["items"]
+    assert isinstance(items, list)
+    return {item["id"]: item["data"] for item in items if isinstance(item, dict)}
+
+
+@pytest.mark.asyncio
+async def test_private_wakeup_targets_the_person_without_an_actor() -> None:
+    current = replace(_external(3, "current trigger"), canonical_conversation_id="conv-private")
+
+    assembler, context = await _assemble_wakeup(current)
+
+    items = _metadata_items(context)
+    assert items["scene"] == {
+        "type": "private",
+        "group_id": None,
+        "trigger": "external_event",
+        "current_actor": None,
+    }
+    # The target is the conversation person, never a fabricated current speaker.
+    assert "current_person" not in items
+    assert "current_group" not in items
+    target = items["conversation_target_person"]
+    assert isinstance(target, dict)
+    assert target["user_id"] == "1001" and target["not_current_speaker"] is True
+    assembler._people.get.assert_awaited_once_with(user_id="1001")
+    assembler._time.current.assert_awaited_once_with("1001")
+    # Automatic memory recall stays off; the agent must use memory tools explicitly.
+    assembler._memory_context.retrieve_for_targets.assert_not_called()
+    assembler._memory_context.retrieve_for_turn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_group_wakeup_targets_the_group_without_a_person() -> None:
+    current = replace(
+        _external(3, "current trigger"),
+        scope_type=ScopeType.GROUP,
+        group_id="group-100",
+        private_peer_user_id=None,
+        canonical_conversation_id="conv-group",
     )
 
-    targets = ContextAssembler._actorless_memory_targets(current, trigger)
+    assembler, context = await _assemble_wakeup(current, target_type="group", target_id="group-100")
 
-    assert {target.role for target in targets} == {
-        MemoryTargetRole.CURRENT_SELF,
-        MemoryTargetRole.CURRENT_PERSON,
+    items = _metadata_items(context)
+    assert items["scene"] == {
+        "type": "group",
+        "group_id": "group-100",
+        "trigger": "external_event",
+        "current_actor": None,
     }
-    person = next(target for target in targets if target.role is MemoryTargetRole.CURRENT_PERSON)
-    assert person.subject_user_id == "1001"
+    assert items["current_group"] == {"group_id": "group-100"}
+    assert "conversation_target_person" not in items and "current_person" not in items
+    assembler._people.get.assert_not_called()
+    assembler._memory_context.retrieve_for_targets.assert_not_called()
 
 
-def test_digest_has_host_fields_only_excludes_current_and_caps_summary() -> None:
+@pytest.mark.asyncio
+async def test_wakeup_never_attaches_external_digest_or_payload() -> None:
+    """Older external rows and payloads stay out of every assembled prompt part."""
+
     huge = "x" * 2_000
-    rows = (
-        _external(1, "old", payload={"body": "secret-1"}),
+    recent = (
+        _external(1, "old notice", payload={"body": "secret-1"}),
         _message(2, "hello"),
         _external(3, huge, payload={"body": "secret-3"}),
-        _external(4, "current", payload={"body": "secret-4"}),
     )
-    digest = recent_external_event_digest(
-        rows,
-        timezone="Asia/Shanghai",
-        exclude_event_id=4,
-        limit=10,
-        character_limit=6_000,
-    )
-    assert tuple(item["source"] for item in digest) == ("github", "github")
-    for item in digest:
-        assert set(item) == {
-            "source",
-            "source_plugin_id",
-            "event_type",
-            "occurred_at",
-            "summary",
-            "content_trust",
-        }
-        assert "payload" not in item
-        assert item["content_trust"] == EXTERNAL_EVENT_CONTENT_TRUST
-        assert len(str(item["summary"])) <= EXTERNAL_EVENT_DIGEST_SUMMARY_MAX_CHARACTERS
-        encoded = json.dumps(item)
-        assert "secret-" not in encoded
-        assert "body" not in encoded
-    assert all(item["summary"] != "current" for item in digest)
-    assert any(
-        len(str(item["summary"])) == EXTERNAL_EVENT_DIGEST_SUMMARY_MAX_CHARACTERS for item in digest
+    current = replace(
+        _external(4, "current trigger", payload={"body": "secret-4"}),
+        canonical_conversation_id="conv-private",
     )
 
+    _assembler_used, context = await _assemble_wakeup(current, recent)
 
-def test_digest_respects_total_character_budget() -> None:
-    rows = tuple(_external(index, f"summary-{index}" + ("y" * 200)) for index in range(1, 8))
-    newest = recent_external_event_digest(
-        rows,
-        timezone="Asia/Shanghai",
-        limit=1,
-        character_limit=6_000,
-    )
-    newest_growth = external_event_digest_appended_growth(newest)
-    digest = recent_external_event_digest(
-        rows,
-        timezone="Asia/Shanghai",
-        limit=10,
-        character_limit=newest_growth,
-    )
-    assert digest == newest
-    assert external_event_digest_appended_growth(digest) <= newest_growth
-    assert all("payload" not in item for item in digest)
-    skipped = recent_external_event_digest(
-        rows,
-        timezone="Asia/Shanghai",
-        limit=10,
-        character_limit=newest_growth - 1,
-    )
-    assert skipped == ()
-    two = recent_external_event_digest(
-        rows,
-        timezone="Asia/Shanghai",
-        limit=2,
-        character_limit=6_000,
-    )
-    two_growth = external_event_digest_appended_growth(two)
-    assert len(two) == 2
-    almost_two = recent_external_event_digest(
-        rows,
-        timezone="Asia/Shanghai",
-        limit=10,
-        character_limit=two_growth - 1,
-    )
-    assert len(almost_two) == 1
-    assert almost_two[0]["summary"].startswith("summary-7")
-
-
-def test_digest_summary_cap_default_and_settings_override() -> None:
-    default_settings = make_settings("sqlite+aiosqlite:///:memory:")
-    assert (
-        default_settings.plugin_external_event_summary_characters
-        == EXTERNAL_EVENT_DIGEST_SUMMARY_MAX_CHARACTERS
-    )
-    default_digest = _assembler()._external_event_context((_external(1, "x" * 2_000),))
-    assert len(str(default_digest[0]["summary"])) == EXTERNAL_EVENT_DIGEST_SUMMARY_MAX_CHARACTERS
-    override = 24
-    overridden = _assembler(
-        plugin_external_event_summary_characters=override
-    )._external_event_context((_external(1, "x" * 2_000),))
-    assert len(str(overridden[0]["summary"])) == override
+    metadata = json.dumps(context.metadata_payload, ensure_ascii=False, default=str)
+    history = "\n".join(item.content or "" for item in context.history_messages)
+    current_text = context.current_message.content or ""
+    assert context.external_events == ()
+    assert "recent_external_events" not in metadata
+    for blob in (metadata, history, current_text):
+        assert "secret-" not in blob
+        assert '"body"' not in blob
+    assert "old notice" not in metadata + history
+    assert huge[:100] not in metadata + history
+    assert "hello" in history
+    assert context.current_message.role == "user"
+    assert current_text.count("current trigger") == 1
+    assert "current trigger" not in history + metadata
+    assert all(item.role != "system" for item in context.history_messages)
 
 
 def test_digest_items_are_required_contributions_within_budget() -> None:
@@ -410,41 +448,6 @@ def test_digest_items_are_required_contributions_within_budget() -> None:
     assert digest_items[0].cost == external_event_digest_appended_growth(events)
     selected = ContextBudgeter().select(contributions, character_budget=4_000)
     assert any(item.id == "recent_external_events" for item in selected.selected)
-
-
-def test_assembler_attaches_digest_from_final_uncovered_tail() -> None:
-    assembler = _assembler()
-    covered = _external(1, "should vanish after coverage")
-    remaining = _external(3, "still uncovered")
-    current = _external(4, "current trigger")
-    payload = assembler._with_external_digest(
-        {"items": [{"id": "scene", "data": {"type": "private"}}]},
-        assembler._external_event_context((covered, remaining, current), exclude_event_id=4),
-    )
-    digest = next(
-        item["data"]
-        for item in payload["items"]  # type: ignore[index]
-        if isinstance(item, dict) and item.get("id") == "recent_external_events"
-    )
-    assert isinstance(digest, dict)
-    events = digest["events"]
-    assert isinstance(events, list)
-    summaries = [item["summary"] for item in events if isinstance(item, dict)]
-    assert "still uncovered" in summaries
-    assert "should vanish after coverage" in summaries
-    final_only = assembler._external_event_context((remaining,), exclude_event_id=4)
-    replaced = assembler._with_external_digest(payload, final_only)
-    final_digest = next(
-        item["data"]
-        for item in replaced["items"]  # type: ignore[index]
-        if isinstance(item, dict) and item.get("id") == "recent_external_events"
-    )
-    assert isinstance(final_digest, dict)
-    final_events = final_digest["events"]
-    assert isinstance(final_events, list)
-    assert [item["summary"] for item in final_events if isinstance(item, dict)] == [
-        "still uncovered"
-    ]
 
 
 @pytest.mark.asyncio
@@ -1025,64 +1028,49 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     assert "memory_change" not in {tool.name for tool in tools.definitions(group_runtime)}
 
 
-def _pad_external_to_encoded_size(event_id: int, target: int) -> EventRecord:
-    content = "x"
-    for _ in range(target + 8):
-        row = _external(event_id, content)
-        digest = recent_external_event_digest(
-            (row,),
-            timezone="Asia/Shanghai",
-            limit=1,
-            character_limit=10_000,
-        )
-        encoded = external_event_digest_encoded_characters(digest)
-        if encoded == target:
-            return row
-        if encoded > target:
-            raise AssertionError(f"digest item overshot encoded size {encoded} > {target}")
-        content += "x" * max(1, target - encoded)
-    raise AssertionError("could not pad digest item to target encoded size")
+def _digest_item_with_encoded_size(target: int) -> dict[str, object]:
+    item: dict[str, object] = {
+        "source": "github",
+        "source_plugin_id": "github-monitor",
+        "event_type": "PushEvent",
+        "occurred_at": "2026-08-26T20:00:00+08:00",
+        "summary": "",
+        "content_trust": EXTERNAL_EVENT_CONTENT_TRUST,
+    }
+    padding = target - external_event_digest_encoded_characters((item,))
+    assert padding > 0
+    item["summary"] = "x" * padding
+    assert external_event_digest_encoded_characters((item,)) == target
+    return item
 
 
-def test_digest_parent_comma_stays_within_context_cap() -> None:
+def test_digest_parent_comma_stays_within_contribution_cost() -> None:
     cap = 400
-    assembler = _assembler(plugin_external_event_context_characters=cap)
-    parent, _selected = assembler._fit_metadata(
-        {
-            "scene": {"type": "private", "group_id": None},
-            "current_person": {
-                "user_id": "1001",
-                "nickname": "Ada",
-                "display_name": "Ada",
-            },
-        },
-        4_000,
-    )
+    assembler = _assembler()
+    context: dict[str, object] = {
+        "scene": {"type": "private", "group_id": None},
+        "current_person": {"user_id": "1001", "nickname": "Ada", "display_name": "Ada"},
+    }
+    parent, _selected = assembler._fit_metadata(context, 4_000)
     items = parent["items"]
     assert isinstance(items, list)
     assert items
-    exact = assembler._external_event_context((_pad_external_to_encoded_size(11, cap - 1),))
-    assert external_event_digest_encoded_characters(exact) == cap - 1
+    exact = (_digest_item_with_encoded_size(cap - 1),)
     assert external_event_digest_appended_growth(exact) == cap
-    payload = assembler._with_external_digest(parent, exact)
-    before = json.dumps(parent, ensure_ascii=False, separators=(",", ":"), default=str)
-    after = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
-    assert len(after) - len(before) == cap
-    assert len(after) - len(before) <= assembler._settings.plugin_external_event_context_characters
-    contributions = assembler._context_contributions(
-        {
-            "scene": {"type": "private", "group_id": None},
-            "current_person": {"user_id": "1001", "nickname": "Ada", "display_name": "Ada"},
-            "recent_external_events": list(exact),
-        }
-    )
+    with_digest = {**context, "recent_external_events": list(exact)}
+    contributions = assembler._context_contributions(with_digest)
     digest_item = next(item for item in contributions if item.id == "recent_external_events")
     assert digest_item.required
     assert digest_item.cost == external_event_digest_appended_growth(exact)
-    selected = ContextBudgeter().select(contributions, character_budget=8_000)
-    assert any(item.id == "recent_external_events" for item in selected.selected)
-    oversized = assembler._external_event_context((_pad_external_to_encoded_size(12, cap),))
-    assert oversized == ()
+    # The real metadata fit appends exactly the costed growth, comma included.
+    payload, _selected = assembler._fit_metadata(with_digest, 8_000)
+    before = json.dumps(parent, ensure_ascii=False, separators=(",", ":"), default=str)
+    after = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
+    assert len(after) - len(before) == digest_item.cost == cap
+    assert payload["items"][-1] == {  # type: ignore[index]
+        "id": "recent_external_events",
+        "data": {"events": list(exact), "content_trust": EXTERNAL_EVENT_CONTENT_TRUST},
+    }
 
 
 def _covered_external_turn(

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 import tomlkit
-from tests.support.work_session import WorkSession
+from tests.support.work_session import WorkSession, invoke_tool
 
 from qq_ai_bot.domain.messages import ChatMessage, ToolCall, ToolFunction
 from qq_ai_bot.model_runtime.executor import TaskModelExecutor
@@ -212,9 +212,12 @@ async def test_production_backup_preserves_five_legacy_works_without_gateway(
                     return "unexpected-send"
 
                 outcome = json.loads(
-                    await session.execute(
+                    await invoke_tool(
+                        session,
                         ToolCall("offline-audit-send", ToolFunction("send_message", "{}")),
                         forbidden_send,
+                        # A direct send bypasses the fence; a composed send never does.
+                        child_ordinal=0,
                     )
                 )
                 assert not invoked and outcome["executed"] is False

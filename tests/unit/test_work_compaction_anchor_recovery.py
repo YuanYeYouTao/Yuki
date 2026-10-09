@@ -5,7 +5,7 @@ import json
 import pytest
 from sqlalchemy import select, update
 from tests.support.social_identity_cases import social_env
-from tests.support.work_session import WorkSession
+from tests.support.work_session import WorkSession, invoke_tool
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.domain.messages import ChatMessage, ToolCall, ToolFunction
@@ -93,7 +93,7 @@ async def test_public_tail_recovery_keeps_original_confirmed_effect(database, tm
 
     transcript.append(ChatMessage("assistant", None, tool_calls=(call,)))
     await first.save("response", (call,))
-    result = await first.execute(call, invoke)
+    result = await invoke_tool(first, call, invoke)
     key = first.call_key(call.id)
     transcript.append_result(call.id, result)
     await first.save("paired")

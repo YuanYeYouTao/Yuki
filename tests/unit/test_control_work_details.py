@@ -177,8 +177,14 @@ async def test_metadata_projection_does_not_read_private_payload_columns(databas
     assert history["effects"].items[0].fields["state"] == "unknown"
     assert history["deliveries"].items[0].resource_id == "original-delivery"
     assert "goal" not in fields and "conditions" not in history["waits"].items[0].fields
+    from qq_ai_bot.runtime.work_management import CLASSIFICATION_KEYS
+
+    # Management actions classify the original owner by fixed source paths only.
+    joined = " ".join(statements)
+    for key in CLASSIFICATION_KEYS:
+        joined = joined.replace(f"json_extract(runtime_work.source_json, '$.{key}')", "")
     assert not any(
-        token in " ".join(statements)
+        token in joined
         for token in (
             "goal",
             "payload_json",

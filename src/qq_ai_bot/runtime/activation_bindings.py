@@ -27,10 +27,6 @@ class ActiveWorkBindings:
     def get(self, scope_key: str) -> WorkControl | None:
         return self._controls.get(scope_key)
 
-    def is_active(self, scope_key: str) -> bool:
-        control = self.get(scope_key)
-        return control is not None and control.current is not None
-
     @contextmanager
     def bind(self, scope_key: str, control: WorkControl) -> Iterator[None]:
         with self.executions.track():

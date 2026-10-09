@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import delete, select
 from tests.conftest import build_harness, make_settings
 from tests.support.work_compaction import summary_json
-from tests.support.work_session import WorkSession
+from tests.support.work_session import WorkSession, invoke_tool
 from tests.unit.test_semantic_participation_host import _event_and_route
 from tests.unit.test_work_compaction_capacity import _grow, _runtime
 from tests.unit.test_work_journal_source_retry import _change, _session
@@ -404,7 +404,7 @@ async def test_response_paid_stage_prepares_current_main_history_before_retiring
         )
         await save("response", (call,))
         invoke = AsyncMock(return_value='{"ok":true,"data":"Original recorded effect"}')
-        await session.execute(call, invoke)
+        await invoke_tool(session, call, invoke)
         ledger = EventLedgerRepository(database)
         ambient_text = "Ambient group history after the paid candidate."
         steer_text = "Directed input after the saved original response."

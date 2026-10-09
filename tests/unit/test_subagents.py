@@ -46,9 +46,11 @@ async def test_foreground_answer_and_finalization_keep_worker_alive(database, tm
     with pytest.raises(ValueError, match="unfinished_subagents"):
         await control._control({"action": "complete"}, "complete")
     assert await control.background_state() == "waiting_external"
-    # Also defend against a runner falling through to implicit failure.
-    control.ending = "failed"
-    await control.settle(delivered=True, pending_inputs=False)
+    # An accepted failure still cannot terminate a parent with live children.
+    control.current = await repo.accept_control(
+        lease, parent["id"], {"action": "fail", "call_key": "f", "reason": "x"}
+    )
+    await control.settle(pending_inputs=False)
     assert (await repo.get(parent["id"]))["state"] == "waiting_external"
     child_lease = await workers.acquire(identity)
     assert child_lease is not None
@@ -60,7 +62,7 @@ async def test_foreground_answer_and_finalization_keep_worker_alive(database, tm
     assert await control.background_state() is None
     await control._control({"action": "fail", "reason": "已明确取消子任务"}, "cancelled")
     control.settled = False  # A distinct activation owns the explicit cancellation.
-    await control.settle(delivered=True, pending_inputs=False)
+    await control.settle(pending_inputs=False)
     assert (await repo.get(parent["id"]))["state"] == "failed"
 
 
@@ -211,7 +213,7 @@ async def test_worker_independent_lease_messages_and_dormant_resume(database, tm
     assert "Which color?" in pending[0]["payload_json"]
     child = await repo.get(identity)
     await repo.transition(child_lease, identity, child["revision"], "completed")
-    await workers.finish(child_lease, "done")
+    await workers.finish(child_lease)
     await repo.release(child_lease)
     await workers.message(
         parent_lease, parent["id"], identity, "answer", "Use blue", reply_to="question"
@@ -697,7 +699,7 @@ async def test_cancel_fences_media_recovery_and_privacy_cleanup(database, tmp_pa
         await repo.cancel_in_session(db, lease.conversation_id)
     assert not await repo.valid(lease)
     with pytest.raises(WorkConflict):
-        await workers.finish(lease, "late output must not notify")
+        await workers.finish(lease)
     with pytest.raises(WorkConflict):
         await WorkJournal(repo).save(
             lease,

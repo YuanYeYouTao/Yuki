@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import delete, select, update
-from tests.support.work_session import WorkSession
+from tests.support.work_session import WorkSession, invoke_tool
 from tests.unit.test_semantic_participation_host import _event_and_route
 from tests.unit.test_work_source_guard import _guard
 
@@ -77,7 +77,7 @@ async def test_unselected_event_revision_preserves_normal_journal(database, phas
     session.transcript.append(ChatMessage("assistant", "", tool_calls=(call,)))
     if phase == "paired":
         invoke = AsyncMock(return_value='{"status":"running","run_id":"original-run"}')
-        result = await session.execute(call, invoke)
+        result = await invoke_tool(session, call, invoke)
         session.transcript.append_result(call.id, result)
     await _change(database, unselected)
     await session.save(phase, (call,) if phase == "response" else ())
@@ -92,7 +92,7 @@ async def test_unselected_event_revision_preserves_normal_journal(database, phas
     if phase == "paired":
         invoke.assert_awaited_once()
         # Original effect receipt, not another invocation, serves subsequent recovery.
-        assert await session.execute(call, invoke) == result
+        assert await invoke_tool(session, call, invoke) == result
         invoke.assert_awaited_once()
 
 

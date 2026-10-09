@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import AbstractContextManager, AsyncExitStack, nullcontext
 from dataclasses import dataclass, replace
 from functools import partial
-from typing import Any, Protocol, TypedDict, TypeVar, cast
+from typing import Any, Protocol, TypeVar, cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -79,7 +79,7 @@ from qq_ai_bot.memory.runtime.turn_session import (
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.targets import MemoryTargetResolver
 from qq_ai_bot.model_runtime.executor import ModelExecutor
-from qq_ai_bot.model_runtime.models import ModelProtocol, ModelTask
+from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.persistence.event_repository import ConversationReadVersion
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
@@ -88,7 +88,6 @@ from qq_ai_bot.persistence.repositories import (
     WebSearchSourceRepository,
 )
 from qq_ai_bot.persistence.repository_records import EventRecord
-from qq_ai_bot.runtime.authority import TurnAuthority
 from qq_ai_bot.runtime.context_preparation import prepare_context
 from qq_ai_bot.runtime.contracts import DeliverySummary
 from qq_ai_bot.runtime.delivery import DeliveryStatus
@@ -247,22 +246,6 @@ class ToolInvocationRecorder(Protocol):
         execution_id: str | None = None,
         audit_source: tuple[str, int, int] | None = None,
     ) -> None: ...
-
-
-class _TrustedConversationWrite(TypedDict):
-    canonical_conversation_id: str | None
-    bot_user_id: str | None
-    ingress_presence_id: str | None
-
-
-def _trusted_conversation_write_kwargs(inbound: InboundMessage) -> _TrustedConversationWrite:
-    """Pass Host-stamped Conversation and ingress provenance. Never infer from hash."""
-
-    return {
-        "canonical_conversation_id": inbound.conversation_id,
-        "bot_user_id": inbound.bot_user_id or None,
-        "ingress_presence_id": inbound.presence_id,
-    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -463,15 +446,6 @@ class ChatService:
         if maintenance:
             budget = int(budget * runtime.context.compaction_trigger_ratio)
         return max(1, budget - fixed - (4096 if maintenance else 0))
-
-    def _responses_append_only(self) -> bool:
-        protocol = getattr(self.runtime.runner._models, "protocol", None)
-        if not callable(protocol):
-            return False
-        try:
-            return protocol(ModelTask.CHAT_AGENT) is ModelProtocol.RESPONSES
-        except (AttributeError, KeyError, RuntimeError, ValueError):
-            return False
 
     def _build_tool_registry(
         self,
@@ -740,10 +714,6 @@ class ChatService:
         """Apply HOT controls shared by the Agent prompt pipeline."""
 
         self._prompt_composer.configure_plugin_limits(runtime)
-
-    def _record_memory_mutation_turn_outcome(self, outcome: str) -> None:
-        if self._memory_context is not None:
-            self._memory_context.metrics.record_mutation_turn_outcome(outcome)
 
     def set_event_publisher(self, publisher: LifecycleEventPublisher) -> None:
         """Attach the host notification bus without changing reply control flow."""
@@ -1135,16 +1105,10 @@ class ChatService:
                     content,
                     runtime_config,
                     autonomous=autonomous,
-                    visual_input_present=visual_input_present,
                     structured_command=structured_memory_command,
                 )
                 if memory_session is not None:
                     memory_cleanup.push_async_callback(memory_session.close)
-
-                if work_control is not None:
-                    from qq_ai_bot.runtime.work_delivery import repair_receipt_ledger
-
-                    await repair_receipt_ledger(work_control, self._ledger)
 
                 preparation.advance("build_messages")
                 (
@@ -1227,10 +1191,6 @@ class ChatService:
                         completed_agent = await self._run_agent(conversation_key, messages, runtime)
                 else:
                     completed_agent = await self._run_agent(conversation_key, messages, runtime)
-                if work_control is not None:
-                    from qq_ai_bot.runtime.work_delivery import WorkDeliverySender
-
-                    sender = WorkDeliverySender(sender, work_control)
                 agent_result = completed_agent.result
                 if agent_result.native_tool_events:
                     native_response = recover_native_web_response(
@@ -1259,12 +1219,6 @@ class ChatService:
                     )
 
                 await self.run_effect(turn_snapshot, finish_explicit_delivery)
-                if (
-                    work_control is not None
-                    and work_control.final_delivery
-                    and work_control.session
-                ):
-                    await work_control.session.save("delivered")
                 return completed_agent.messages_sent
 
     def open_memory_session(
@@ -1275,17 +1229,12 @@ class ChatService:
         runtime: RuntimeConfigSnapshot,
         *,
         autonomous: bool,
-        visual_input_present: bool,
         structured_command: MemoryStructuredCommand,
     ) -> TurnMemorySession | None:
         if self._memory_context is None:
             return None
         origin = (
             RuntimeTurnOrigin.AUTONOMOUS_GROUP if autonomous else RuntimeTurnOrigin.USER_MESSAGE
-        )
-        attachments = (*inbound.attachments, *inbound.reply_attachments)
-        image_present = visual_input_present or any(
-            item.kind is AttachmentKind.IMAGE for item in attachments
         )
         return TurnMemorySession.open(
             inbound=inbound,
@@ -1295,16 +1244,7 @@ class ChatService:
             partition_lookup=self._memory_partition_lookup,
             origin=origin,
             user_question=content,
-            authority=TurnAuthority(
-                actor_user_id=inbound.sender.user_id,
-                bot_user_id=inbound.bot_user_id or "bot",
-                origin=origin,
-                permission_ceiling=frozenset(),
-                delegated_authority=None,
-                authority_revision=1,
-            ),
             structured_command=structured_command,
-            image_present=image_present,
             attribution=self._memory_attribution,
         )
 
@@ -1355,7 +1295,7 @@ class ChatService:
     ) -> None:
         if self._tool_invocations is None:
             return
-        from qq_ai_bot.runtime.work_session import defer_tool_audit, tool_audit_source
+        from qq_ai_bot.services.invocation_service import defer_tool_audit, tool_audit_source
 
         audit_source = tool_audit_source(tool_call_id) if tool_call_id is not None else None
 
@@ -1840,8 +1780,6 @@ class ChatService:
                     delivered=bool(completed.sent_current_texts),
                     cancelled=False,
                 )
-                if control.final_delivery and control.session is not None:
-                    await control.session.save("delivered")
                 return completed.result
 
     async def generate_main_agent_wakeup(
@@ -1860,8 +1798,13 @@ class ChatService:
         conversation_id: str | None = None,
         before_model_request: Callable[[], Awaitable[None]] | None = None,
         source_runtime: ToolRuntime | None = None,
+        plugin_turn: dict[str, Any] | None = None,
     ) -> AgentRunResult:
-        """Wake the normal Main Agent without inventing a message or Person actor."""
+        """Wake the normal Main Agent without inventing a message or Person actor.
+
+        ``plugin_turn`` carries the owning Job attempt and its bound Work ID so
+        the first admission binds atomically and later turns resume that Work.
+        """
 
         with self.runtime.executions.track():
             conversation_key = runtime_conversation_key(
@@ -1959,6 +1902,7 @@ class ChatService:
                     "presence_id": presence_id,
                     "space_id": space_id,
                     "bot_user_id": event.bot_user_id,
+                    **({"_plugin_turn": plugin_turn} if plugin_turn is not None else {}),
                 }
                 if isinstance(trigger, ExternalEventTurnTrigger)
                 else None

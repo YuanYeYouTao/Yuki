@@ -25,6 +25,9 @@ class ToolExecutionResult:
     public_message: str | None = None
     retryable: bool = False
     mutation_committed: bool | None = None
+    # True only when the owning domain verified, under current authority, that
+    # this exact request's target state already holds. None means unknown.
+    request_postcondition_satisfied: bool | None = None
     uncertain: bool = False
     finalize_after_commit: bool | None = None
     provider_id: str = ""
@@ -38,7 +41,11 @@ class ToolExecutionResult:
         for name in ("ok", "retryable", "uncertain"):
             if type(getattr(self, name)) is not bool:
                 raise TypeError(f"{name} must be a bool")
-        for name in ("mutation_committed", "finalize_after_commit"):
+        for name in (
+            "mutation_committed",
+            "finalize_after_commit",
+            "request_postcondition_satisfied",
+        ):
             value = getattr(self, name)
             if value is not None and type(value) is not bool:
                 raise TypeError(f"{name} must be a bool or None")

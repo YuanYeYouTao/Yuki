@@ -106,15 +106,6 @@ class WorkWaitRepository:
     def __init__(self, repository: WorkRepository) -> None:
         self.repository = repository
 
-    async def is_active(self, work_id: str) -> bool:
-        async with self.repository.database.sessions() as session:
-            return (
-                await session.scalar(
-                    select(waits.c.id).where(waits.c.work_id == work_id, waits.c.status == "active")
-                )
-                is not None
-            )
-
     async def describe(self, work_id: str) -> dict[str, Any] | None:
         async with self.repository.database.sessions() as session:
             row = (
@@ -135,6 +126,11 @@ class WorkWaitRepository:
             for condition in conditions:
                 if isinstance(condition.get("matched"), dict):
                     condition["matched"].pop("text", None)
+            from qq_ai_bot.runtime.work_management import management_view
+
+            # A delivered signal on a paused Work is held, not a new state:
+            # show it with the original pause reason and resume/cancel actions.
+            managed = await management_view(session, work_id)
             return {
                 "wait_id": row["id"],
                 "status": row["status"],
@@ -142,6 +138,7 @@ class WorkWaitRepository:
                 "registered_at": row["created"],
                 "deadline": row["deadline"],
                 "conditions": conditions,
+                **({"work": managed} if managed is not None else {}),
             }
 
     async def cancel(self, lease: WorkLease, work_id: str) -> bool:
@@ -172,6 +169,7 @@ class WorkWaitRepository:
         mode: str,
         conditions: list[dict[str, Any]],
         deadline_at: str | None,
+        accepted: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if mode not in {"any", "all"} or not 1 <= len(call_key) <= 256:
             raise ValueError("invalid_wait_registration")
@@ -284,6 +282,11 @@ class WorkWaitRepository:
                     updated=now,
                 )
             )
+            if accepted is not None:
+                # The binding and the accepted control that references it commit together.
+                await self.repository.set_accepted_control(
+                    session, lease, work_id, {**accepted, "wait_id": identity}
+                )
             return {
                 "id": identity,
                 "work_id": work_id,

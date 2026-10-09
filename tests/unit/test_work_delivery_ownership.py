@@ -187,7 +187,7 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
                 backend,
             )
             assert result.suppress_delivery and result.work_state == "completed"
-            assert control.final_delivery and len(captured) == 3
+            assert control.accepted_ending() == "completed" and len(captured) == 3
             # Crash after the delivered checkpoint, before the lifecycle transition.
             recovered = WorkControl(repo, control.lease, source_key, source, validate)
             recovered.current = await repo.get(new_id)
@@ -257,7 +257,7 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
                 replace(runtime, work_control=control),
                 backend,
             )
-            assert resend.suppress_delivery and control.final_delivery
+            assert resend.suppress_delivery and control.accepted_ending() == "completed"
         assert len(backend.owners) == 2 and backend.owners[0] != backend.owners[1]
         assert [name for name, _ in env.bot.calls].count("upload_group_file") == 2
         assert [name for name, _ in env.bot.calls].count("send_group_msg") == 2
@@ -351,7 +351,7 @@ async def test_accept_handoff_is_atomic_and_recovery_does_not_block_old_work_for
     await session.restore(TurnTranscript((ChatMessage(role="user", content="original"),)))
     assert recovered.handoff_work_id == new["id"]
     await session.save("paired")
-    await recovered.settle(delivered=False, pending_inputs=True)
+    await recovered.settle(pending_inputs=True)
     assert (await repo.get(old["id"]))["state"] == "queued"  # Later input is not stranded.
     resumed = WorkControl(repo, lease, "old", {}, validate)
     resumed.current = await repo.get(old["id"])

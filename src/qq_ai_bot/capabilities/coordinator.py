@@ -141,8 +141,8 @@ class ToolInvocationCoordinator:
             )
             from qq_ai_bot.runtime.effect_outcomes import (
                 ResultCapture,
+                captured_evidence,
                 current_result_capture,
-                execution_evidence,
             )
 
             capture = ResultCapture("", invocations[call.id].identity.operation_id)
@@ -153,15 +153,14 @@ class ToolInvocationCoordinator:
                 )
             finally:
                 current_result_capture.reset(token)
-            if capture.evidence is not None:
-                facts[call.id] = capture.evidence
-            elif capture.outcome is not None:
-                facts[call.id] = execution_evidence(
-                    capture.outcome,
-                    tool=call.function.name,
-                    side_effecting=side_effecting,
-                    arguments=call.function.arguments,
-                )
+            fact = captured_evidence(
+                capture,
+                tool=call.function.name,
+                side_effecting=side_effecting,
+                arguments=call.function.arguments,
+            )
+            if fact is not None:
+                facts[call.id] = fact
             if facts.get(call.id, {}).get("executed") is False:
                 rejected_ids.add(call.id)
                 if counts_toward_limit(call):

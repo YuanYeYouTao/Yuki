@@ -22,7 +22,7 @@ from qq_ai_bot.runtime.subagent_schema import budgets, children
 from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import journal, work
 from qq_ai_bot.services import participation_feedback
-from qq_ai_bot.services.participation_feedback import reconcile_run, sync_scope_effects
+from qq_ai_bot.services.participation_feedback import reconcile_page, sync_scope_effects
 from qq_ai_bot.social.db_models import SocialOperationModel
 
 
@@ -127,41 +127,50 @@ async def test_all_120_compute_charges_page_and_replay_after_checkpoint_loss(dat
     service, item, run, task = await setup(database)
     original = item.controller.state.model_copy(deep=True)
     await set_work(database, task, state="completed", model_requests=120)
-    await reconcile_run(service, run)
+    await reconcile_page(service, (run,))
     assert len(item.controller.state.effects) == 120
     assert all(record.effect.kind == "compute" for record in item.controller.state.effects.values())
     async with database.sessions() as session:
         rows = list(await session.scalars(select(InitiativeFeedbackModel)))
         assert len(rows) == 2
         assert sorted(len(json.loads(row.payload_json)["effects"]) for row in rows) == [56, 64]
-    await reconcile_run(service, run)  # stale caller snapshot cannot write the same feedback again
+    # A stale caller snapshot cannot write the same feedback again.
+    await reconcile_page(service, (run,))
     async with database.sessions() as session:
         assert await session.scalar(select(func.count()).select_from(InitiativeFeedbackModel)) == 2
     effects = item.controller.state.effects.copy()
     item.controller = Controller.restore(original, time.time())
-    await reconcile_run(service, run)
+    await reconcile_page(service, (run,))
     assert item.controller.state.effects == effects
     assert item.controller.state.feedback[run.run_id].outcome == "no_reply"
     # Terminal outbox history cannot recreate an already cleaned-up Work row.
     service.work.by_source = AsyncMock(return_value=None)
     item.controller = Controller.restore(original, time.time())
-    await reconcile_run(service, run)
+    await reconcile_page(service, (run,))
     assert item.controller.state.effects == effects
     service._dispatch.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state", ["suspended", "waiting_user"])
-async def test_paused_work_is_terminal_and_late_send_does_not_restart_it(database, state):
+async def test_retained_paused_work_keeps_initiative_until_real_terminal(database, state):
     service, item, run, task = await setup(database)
     await set_work(database, task, state=state)
-    await reconcile_run(service, run)
-    assert (await service.repository.get_run(run.run_id)).state == "interrupted"
+    await reconcile_page(service, (run,))
+    # A retained pause is not an end: the run keeps its legal execution.
+    assert (await service.repository.get_run(run.run_id)).state == "running"
     await social(database, run, "late-send")
-    await reconcile_run(service, run)
+    await reconcile_page(service, (run,))
+    assert (await service.repository.get_run(run.run_id)).state == "running"
+    assert len(item.controller.state.effects) == 1
+    await set_work(database, task, state="failed")
+    await reconcile_page(service, (run,))
     assert (await service.repository.get_run(run.run_id)).state == "interrupted"
     assert item.controller.state.feedback[run.run_id].outcome == "interrupted"
-    assert len(item.controller.state.effects) == 1
+    await set_work(database, task, state=state)
+    await reconcile_page(service, (run,))
+    # A truly terminal initiative is never revived by later Work rows.
+    assert (await service.repository.get_run(run.run_id)).state == "interrupted"
     service._dispatch.assert_not_awaited()
 
 
@@ -177,7 +186,7 @@ async def test_sequence_caption_direct_and_semantic_paths_share_one_logical_effe
     await sync_scope_effects(service, item)
     assert len(item.controller.state.effects) == 1
     await set_work(database, task, state="completed")
-    await reconcile_run(service, run)
+    await reconcile_page(service, (run,))
     await sync_scope_effects(service, item)
     assert len(item.controller.state.effects) == 1
     assert item.controller.state.feedback[run.run_id].outcome == "completed"
@@ -238,12 +247,12 @@ async def test_legacy_self_report_uses_real_charged_run_without_semantic_proposa
                 ),
             )
         )
-    await reconcile_run(service, run)
+    await reconcile_page(service, (run,))
     assert item.controller.state.engagement_report.run_ref == run.run_id
     assert item.controller._willingness(time.time()) < 0
     assert not item.controller.state.proposals
     assert not item.controller.state.feedback
-    await reconcile_run(service, run)
+    await reconcile_page(service, (run,))
     assert len(item.controller.state.self_reports) == 1
 
 
@@ -270,7 +279,7 @@ async def test_worker_and_root_model_charges_are_paged_without_summing_budget_tw
             )
         )
         await session.execute(budgets.insert().values(root_id=task["id"], models=120, tools=0))
-    await reconcile_run(service, run)
+    await reconcile_page(service, (run,))
     assert len(item.controller.state.effects) == 120
     assert (
         sum(key.startswith(f"work-model:{task['id']}:") for key in item.controller.state.effects)

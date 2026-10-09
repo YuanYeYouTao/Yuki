@@ -30,11 +30,6 @@ class QQFaceResolver:
             return "ID 未知"
         return self._mapping.get(normalized, f"ID {normalized}")
 
-    def format_placeholder(self, face_id: str | int) -> str:
-        """Format the placeholder injected into normalized plain text."""
-
-        return f"[QQ表情：{self.resolve(face_id)}]"
-
 
 def _default_mapping_path() -> Path:
     working_copy = Path.cwd() / "config" / "qq_face_map.json"

@@ -83,7 +83,7 @@ async def test_quantum_result_and_error_are_observed_once_without_effect_replay(
         original_chat, replace(runtime, max_model_requests=2), backend
     )
     assert result.work_state == "queued"
-    await settle(control, delivered=False, pending_inputs=False)
+    await settle(control, pending_inputs=False)
     old_chain = control.session.transcript.chain_id
     fresh = WorkControl(
         repo, control.lease, control.source_key, dict(control.source), control.validate
@@ -181,7 +181,7 @@ async def test_three_quantum_handoffs_keep_each_new_result_and_a_valid_task_anch
     )
     for index in range(1, 4):
         assert result.work_state == "queued"
-        await settle(control, delivered=False, pending_inputs=False)
+        await settle(control, pending_inputs=False)
         fresh = WorkControl(
             repo, control.lease, control.source_key, dict(control.source), control.validate
         )
@@ -288,7 +288,7 @@ async def test_segment_allows_one_handoff_request_before_retiring_observed_worki
     assert result.work_state == "queued"
     assert seen == ["business", "handoff"]
     assert len(provider.requests) == 2
-    await settle(control, delivered=False, pending_inputs=False)
+    await settle(control, pending_inputs=False)
     fresh = WorkControl(
         repo, control.lease, control.source_key, dict(control.source), control.validate
     )

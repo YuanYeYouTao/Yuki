@@ -61,7 +61,7 @@ async def test_old_task_exit_does_not_remove_new_activation_binding():
         leave_old.set()
         await task
         assert bindings.get("scope") is new
-        assert bindings.is_active("scope")
+        assert new.current is not None
     assert bindings.get("scope") is None
 
 
@@ -85,11 +85,11 @@ async def test_root_binding_follows_accept_and_releases_empty_scope(database, tm
     ) as control:
         assert current_work_control.get() is control
         assert bindings.get("scope") is control
-        assert not bindings.is_active("scope")
+        assert control.current is None
         control.current = await repository.accept(
             control.lease, source_key="source", source={}, goal="root"
         )
-        assert bindings.is_active("scope")
+        assert bindings.get("scope") is control and control.current is not None
         control.ending = "waiting_external"
     assert current_work_control.get() is None
     assert bindings.get("scope") is None
@@ -101,13 +101,18 @@ async def test_child_finish_uses_own_lease_and_keeps_parent_lease(database, tmp_
     repository, workers, parent_lease, control = await child_stack(database, tmp_path)
 
     async def finish(active):
-        await active.settle(delivered=True, pending_inputs=bool(await active.pending()))
-        await workers.finish(active.lease, "child result")
+        # Settlement already committed; the callback only consumes the result.
+        assert active.settled
+        await workers.finish(active.lease)
 
     async with bind_work_activation(control, finish=finish):
         assert current_work_control.get() is control
         assert await repository.valid(parent_lease)
-        control.ending = "completed"
+        control.current = await repository.accept_control(
+            control.lease,
+            control.current["id"],
+            {"action": "complete", "call_key": "c", "result": "child result"},
+        )
     assert not await repository.valid(control.lease)
     assert await repository.valid(parent_lease)
     async with database.sessions() as session:

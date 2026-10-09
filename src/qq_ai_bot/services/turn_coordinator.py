@@ -10,8 +10,6 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 
 from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.conversation.scope import runtime_conversation_key
-from qq_ai_bot.domain.messages import InboundMessage
 
 if TYPE_CHECKING:
     from qq_ai_bot.persistence.event_repository import ConversationReadVersion
@@ -82,12 +80,6 @@ class ConversationTurnCoordinator:
         """Apply HOT cancellation policy before admitting a new real message."""
 
         self._interrupt_autonomous = interrupt_autonomous_on_new_message
-
-    @staticmethod
-    def key_for(message: InboundMessage) -> str:
-        """Runtime conversation identity: v2 primary alias, otherwise transport key."""
-
-        return runtime_conversation_key(identity=message.scope(), inbound=message)
 
     async def notify_message(
         self,

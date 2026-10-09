@@ -28,7 +28,11 @@ from qq_ai_bot.domain.messages import ChatMessage, ChatResponse
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.runtime.work_schema_v1 import work
 from qq_ai_bot.services.main_agent_backend import MainAgentBackend
-from qq_ai_bot.services.participation_feedback import admission_unit_binding, sync_scope_effects
+from qq_ai_bot.services.participation_feedback import (
+    admission_unit_binding,
+    reconcile_page,
+    sync_scope_effects,
+)
 from qq_ai_bot.social.db_models import SocialOperationModel
 
 
@@ -402,7 +406,7 @@ async def test_third_old_self_reply_anchor_reaches_real_observation_queue(databa
                     )
                 )
             await set_work(database, task, state="completed")
-            await host._reconcile(run)
+            await reconcile_page(host, (run,))
             await sync_scope_effects(host, item)
             await host._hydrate(item)
             await sync_scope_effects(host, item)

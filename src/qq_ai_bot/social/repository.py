@@ -34,6 +34,11 @@ _ACTIONS = frozenset(
 )
 
 
+def sequence_prefix(tool_call_id: str) -> str:
+    """The stable child-key prefix of one send_message_sequence parent."""
+    return f"seq:{hashlib.sha256(tool_call_id.encode()).hexdigest()[:24]}:"
+
+
 class SocialOperationRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
@@ -234,6 +239,95 @@ class SocialOperationRepository:
                 )
             )
             return cast(CursorResult[Any], result).rowcount
+
+    @staticmethod
+    async def delivery_facts(
+        session: AsyncSession,
+        operation_id: str,
+        *,
+        conversation_id: str,
+        tool_call_id: str,
+        planned_file_parts: int | None,
+    ) -> dict[str, Any] | None:
+        """Complete delivery facts of one original operation in the caller's snapshot.
+
+        The prospective plan is the parent's ``planned_parts`` (a sequence) or the
+        caller's reserved file+caption count; a missing plan is never inferred from
+        surviving successes. Absent planned parts read as ``not_sent``.
+        """
+        parent = await session.get(SocialOperationModel, operation_id)
+        if parent is None or (
+            parent.source_conversation_id != conversation_id
+            or parent.tool_call_id != social_call_key(tool_call_id)
+        ):
+            return None
+
+        def receipt(row: SocialOperationModel | None) -> dict[str, Any]:
+            if row is None:
+                return {"status": "not_sent"}
+            return {
+                "operation_id": row.id,
+                "status": row.status,
+                "target": {"kind": row.target_kind, "id": row.target_id},
+                "event_id": row.event_id,
+                "error_category": row.error_category,
+            }
+
+        result = receipt(parent)
+        parts = [result.copy()]
+        complete_plan = True
+        if parent.action == "send_message_sequence":
+            count = parent.planned_parts
+            if count is None or count <= 1:
+                result["status"] = "uncertain"
+                return result
+            prefix = sequence_prefix(parent.tool_call_id)
+            children = {
+                row.tool_call_id: row
+                for row in await session.scalars(
+                    select(SocialOperationModel).where(
+                        SocialOperationModel.source_turn_id == parent.source_turn_id,
+                        SocialOperationModel.source_conversation_id == conversation_id,
+                        SocialOperationModel.target_kind == parent.target_kind,
+                        SocialOperationModel.target_id == parent.target_id,
+                        SocialOperationModel.action == "send_message",
+                        SocialOperationModel.tool_call_id.startswith(prefix),
+                    )
+                )
+            }
+            parts = [receipt(children.get(f"{prefix}{index}")) for index in range(count)]
+            result.update(
+                planned_messages=count,
+                sent_messages=sum(part["status"] == "succeeded" for part in parts),
+                parts=parts,
+            )
+        elif planned_file_parts is not None:
+            result["file"] = parts[0]
+            if planned_file_parts > 1:
+                caption = await session.scalar(
+                    select(SocialOperationModel).where(
+                        SocialOperationModel.source_turn_id == f"social-caption:{parent.id}",
+                        SocialOperationModel.tool_call_id == "caption",
+                        SocialOperationModel.source_conversation_id == conversation_id,
+                        SocialOperationModel.target_kind == parent.target_kind,
+                        SocialOperationModel.target_id == parent.target_id,
+                        SocialOperationModel.action == "send_file_caption",
+                    )
+                )
+                result["caption"] = receipt(caption)
+                parts.append(result["caption"])
+        elif parent.action == "send_message":
+            # An unplanned legacy file/caption cannot prove whole-call success.
+            complete_plan = False
+        result["status"] = (
+            "succeeded"
+            if complete_plan and all(p["status"] == "succeeded" for p in parts)
+            else "uncertain"
+            if not complete_plan
+            or any(p["status"] in {"prepared", "executing", "uncertain", "not_sent"} for p in parts)
+            else "failed"
+        )
+        return result
 
     @staticmethod
     def _receipt(row: SocialOperationModel) -> SocialReceipt:

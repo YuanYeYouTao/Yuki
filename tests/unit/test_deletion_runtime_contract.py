@@ -167,12 +167,10 @@ async def test_new_input_alone_resets_derived_repeat_fingerprint(monkeypatch, ha
     )
     runner = SimpleNamespace(_models=SimpleNamespace(capabilities=lambda task: ()), _task=None)
     turn = TurnExecution(runner, (ChatMessage("user", "original"),), runtime, None)
-    turn.state.previous_batch_fingerprint = (("old", "old", "old"),)
     turn.state.repeated_batch_count = 2
     assert await turn.take_boundary_inputs(0, None) is None
     if has_input:
         assert progress == {}
-        assert turn.state.previous_batch_fingerprint is None
         assert turn.state.repeated_batch_count == 0
     else:
         assert progress == {"fingerprint": "old", "repeats": 2}

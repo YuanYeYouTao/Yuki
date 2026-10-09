@@ -320,11 +320,14 @@ class _RunFacts:
         outcome = self.run.state
         if self.run.state in _ACTIVE and self.task:
             state = self.task["state"]
+            # Only a real terminal Work ends the run. A retained suspended/
+            # waiting_user Work keeps its accepted/running initiative, so an
+            # explicit resume continues through the original SELF source.
             outcome = (
                 ("completed" if self.actual else "no_reply")
                 if state == "completed"
                 else "interrupted"
-                if state in {"failed", "cancelled", "suspended", "waiting_user"}
+                if state in {"failed", "cancelled"}
                 else "running"
             )
         known = {
@@ -598,10 +601,6 @@ async def reconcile_page(
                 failures.append(exc)
     if failures:
         raise failures[0]
-
-
-async def reconcile_run(service: SemanticParticipationService, run: AcceptedInitiative) -> None:
-    await reconcile_page(service, (run,))
 
 
 def _replay(item: _Session, fact: _RunFacts) -> None:

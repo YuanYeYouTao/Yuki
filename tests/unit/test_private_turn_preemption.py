@@ -11,6 +11,7 @@ from tests.support.social_identity_cases import social_env
 from tests.unit.test_commands_and_chat import inbound
 from tests.unit.test_model_telemetry_failures import executor
 
+from qq_ai_bot.conversation.scope import runtime_conversation_key
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import (
     ChatRequest,
@@ -233,8 +234,9 @@ async def test_processor_new_private_message_interrupts_original_provider(databa
     assert first.reason in {"cancelled", "turn_interrupted"} and first.sent_messages == 0
     assert second.reason == "chat" and calls == 2
     assert not old_sender.messages and not new_sender.messages
+    key_message = inbound("", message_id="key")
     assert not harness.processor._turn_coordinator._states[
-        harness.processor._turn_coordinator.key_for(inbound("", message_id="key"))
+        runtime_conversation_key(identity=key_message.scope(), inbound=key_message)
     ].registrations
 
 

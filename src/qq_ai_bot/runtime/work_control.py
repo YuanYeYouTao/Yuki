@@ -23,6 +23,37 @@ WORK_CONTROL_NAMES = frozenset(
 )
 
 
+# Accepted lifecycle actions and the Work state each one proposes to the writer.
+ACCEPTED_ENDINGS = {
+    "complete": "completed",
+    "fail": "failed",
+    "need_input": "waiting_user",
+    "wait": "waiting_external",
+}
+
+
+def state_fact(effect: dict[str, Any]) -> bool:
+    """A typed, settled business mutation; a platform send is never a state change.
+
+    send_message is the only PLATFORM_SEND tool and receipts keep its original
+    tool name. Receipts written before commit tracking carry no commit fact, so
+    only an explicit no-op (False) is rejected unless the domain verified the
+    request's postcondition.
+    """
+    return (
+        effect.get("tool") not in {"send_message", "sandbox_completion"}
+        and effect.get("side_effecting") is not False
+        and effect.get("ok") is True
+        and effect.get("executed") is not False
+        and not effect.get("pending")
+        and not effect.get("uncertain")
+        and (
+            effect.get("mutation_committed") is not False
+            or effect.get("request_postcondition_satisfied") is True
+        )
+    )
+
+
 class WorkInputsPreparing(RuntimeError):
     """Input is durable but its admitted attachment preparation is unfinished."""
 
@@ -52,7 +83,8 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                 "plugin_event(plugin_id,event_type)、owned_run(run_id)，"
                 "wait_mode=any/all，deadline_at 可选；信号到达续原 work_id。"
                 "wait_status 查询，cancel_wait 撤销。need_input 说明缺失信息；"
-                "complete 提出结束，后端核对未决执行和 artifact。"
+                "complete 提出结束并在 result 中给出真实内部结果（调用方或父工作读取它，"
+                "不会自动外发）；后端核对未决执行和 artifact，接受后本次执行立即结束。"
                 "get/list/wait_status 是只读查询；其余生命周期 action 必须独占一个工具批次。"
             ),
             parameters={
@@ -111,6 +143,10 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                         ),
                     },
                     "artifact_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 8},
+                    "result": {
+                        "type": "string",
+                        "description": "complete 的内部结果；调用方或父工作需要结果时必填。",
+                    },
                     "reason": {"type": "string", "maxLength": 1000},
                     "run_id": {"type": "string", "maxLength": 36},
                     "wait_mode": {"type": "string", "enum": ["any", "all"]},
@@ -142,10 +178,14 @@ class WorkControl:
     current_message: ChatMessage | None = None
     current: dict[str, Any] | None = None
     ending: str | None = None
+    # Stable code of the last rejected implicit completion; it becomes the pause reason.
+    completion_rejected: str | None = None
     known_effects: list[dict[str, Any]] = field(default_factory=list)
-    final_delivery: bool = False
     requests_started: int = 0
     deferred_failure: Any = None
+    # Set only by the original SELF source when its first scene/Presence
+    # preparation failed before any activation; see work_supervisor.
+    startup_boundary: bool = False
     protocol_recovery_preparation: Any = None
     segment_model_limit: int = 24
     tools_started: int = 0
@@ -355,29 +395,56 @@ class WorkControl:
             return None
         from qq_ai_bot.runtime.subagent_repository import SubagentRepository
 
-        children = await SubagentRepository(self.repository).unfinished(self.current["id"])
-        unfinished = children
+        unfinished = await SubagentRepository(self.repository).unfinished(self.current["id"])
         if any(r["state"] in {"queued", "running", "waiting_external"} for r in unfinished):
             return "waiting_external"
         if unfinished:
             return "suspended"
         return None
 
-    async def complete_internal(self, call_key: str) -> None:
-        """Settle an internal final using the existing complete receipt contract."""
+    @property
+    def accepted(self) -> dict[str, Any] | None:
+        """The committed lifecycle decision; WorkControl.ending only projects it."""
+        if self.current is None:
+            return None
+        value = json.loads(self.current["checkpoint_json"]).get("accepted_control")
+        return value if isinstance(value, dict) else None
+
+    def accepted_ending(self, call_key: str | None = None) -> str | None:
+        accepted = self.accepted
+        if accepted is None or (call_key is not None and accepted.get("call_key") != call_key):
+            return None
+        return ACCEPTED_ENDINGS.get(str(accepted.get("action")))
+
+    async def _accept(self, action: str, call_key: str, **payload: Any) -> None:
+        assert self.current is not None
+        self.current = await self.repository.accept_control(
+            self.lease, self.current["id"], {"action": action, "call_key": call_key, **payload}
+        )
+        self.ending = ACCEPTED_ENDINGS[action]
+
+    async def retire_accepted(self) -> None:
+        """Legal new input or an explicit revision withdraws the accepted decision."""
+        self.ending = None
+        if self.accepted is not None:
+            assert self.current is not None
+            self.current = await self.repository.accept_control(
+                self.lease, self.current["id"], None
+            )
+
+    async def complete_final(self, text: str, call_key: str) -> None:
+        """An ordinary final uses the same completion preparation as complete(result)."""
         try:
             await self.validate()
             if not await self.repository.valid(self.lease):
                 raise WorkConflict("work_activation_obsolete")
-            await self._control({"action": "complete"}, call_key, all_artifacts=True)
+            prepared = await self._prepare_completion({"result": text}, implicit=True)
+        except ValueError as exc:
+            # The original stable code stays visible as the pause reason; no
+            # correction model turn is bought and nothing is accepted.
+            self.completion_rejected = str(exc)
             return
-        except (ValueError, WorkConflict):
-            pass
-        self.ending = await self.background_state()
-        if self.ending is None and await self.has_unresolved_effects(uncertain=False):
-            self.ending = "waiting_external"
-        if await self.has_unresolved_effects(pending=False):
-            self.ending = None
+        await self._accept("complete", call_key, **prepared)
 
     async def has_finite_model_budget(self) -> bool:
         """Read the actual persistent root/run limit; never invent a default."""
@@ -636,7 +703,7 @@ class WorkControl:
             await self.reconcile_completed_children()
             await self.repository.stage(self.lease, selected, attempt)
             self.staged_attempt = attempt
-            self.ending = None
+            await self.retire_accepted()
         return tuple(messages)
 
     async def confirm_inputs(self) -> None:
@@ -778,9 +845,7 @@ class WorkControl:
         except (ValueError, ProjectionConflict):
             pass
 
-    async def _control(
-        self, args: dict[str, Any], call_key: str, *, all_artifacts: bool = False
-    ) -> dict[str, Any]:
+    async def _control(self, args: dict[str, Any], call_key: str) -> dict[str, Any]:
         action = args.get("action")
         if not isinstance(action, str):
             raise ValueError("work_action_required")
@@ -903,7 +968,7 @@ class WorkControl:
                 self.lease, self.current["id"]
             )
             if cancelled:
-                self.ending = None
+                await self.retire_accepted()
             return {"work_id": self.current["id"], "wait_cancelled": cancelled}
         elif action == "update":
             goal = args.get("goal")
@@ -929,7 +994,7 @@ class WorkControl:
                     "running",
                     goal=goal,
                 )
-                self.ending = None
+                await self.retire_accepted()
                 if "reporting" in args:
                     await self.patch_communication(reporting=args["reporting"])
             if "context_note" in args:
@@ -966,7 +1031,9 @@ class WorkControl:
                     mode=args.get("wait_mode", "any"),
                     conditions=conditions,
                     deadline_at=args.get("deadline_at"),
+                    accepted={"action": "wait", "call_key": call_key},
                 )
+                self.current = await self.repository.get(self.current["id"]) or self.current
                 self.ending = "waiting_external"
                 return {
                     "work_id": self.current["id"],
@@ -1000,79 +1067,17 @@ class WorkControl:
                     pass
             if not child or not child.get("pending"):
                 raise ValueError("waiting_requires_owned_pending_execution")
-            await self.repository.checkpoint(
-                self.lease, self.current["id"], {"pending_run_id": identity}
-            )
-            self.ending = "waiting_external"
+            await self._accept("wait", call_key, run_id=identity)
         elif action in {"need_input", "fail"}:
             if action == "fail" and await self.background_state() is not None:
                 raise ValueError("unfinished_subagents_use_wait_or_cancel_explicitly")
             reason = args.get("reason")
             if not isinstance(reason, str) or not reason.strip() or len(reason) > 1000:
                 raise ValueError("work_reason_required")
-            await self.repository.checkpoint(self.lease, self.current["id"], {"reason": reason})
-            self.ending = "waiting_user" if action == "need_input" else "failed"
+            await self._accept(action, call_key, reason=reason)
         elif action == "complete":
-            if not self.lease.work_id:
-                from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-
-                children = await SubagentRepository(self.repository).unfinished(self.current["id"])
-                if children:
-                    raise ValueError("work_has_unfinished_subagents")
-            await self.reconcile_completed_children()
-            if await self.has_unresolved_effects():
-                raise ValueError("work_has_unresolved_execution")
-            facts = await self.effect_evidence()
-            kind = self.current["output_kind"]
-            if kind == "artifact":
-                known = {
-                    identity
-                    for effect in facts
-                    if effect.get("ok") or effect.get("delivered_artifacts")
-                    for identity in effect.get("artifacts", [])
-                }
-                selected = list(known) if all_artifacts else args.get("artifact_ids")
-                if (
-                    not isinstance(selected, list)
-                    or not selected
-                    or any(
-                        not isinstance(identity, str) or identity not in known
-                        for identity in selected
-                    )
-                ):
-                    raise ValueError("work_completion_requires_verified_artifacts")
-                delivered = {
-                    identity
-                    for effect in facts
-                    for identity in effect.get("delivered_artifacts", [])
-                }
-                if self.current["deliver_artifacts"] and not set(selected) <= delivered:
-                    raise ValueError("work_completion_requires_artifact_delivery_receipt")
-            elif (
-                kind == "answer"
-                and self.source.get("delivery_contract") != "return_to_caller"
-                and self.source.get("principal_kind") != "self"
-            ):
-                if self.reporting == "interactive" and not await self.communication_reports(
-                    kind="final", delivered_only=True
-                ):
-                    raise ValueError("work_completion_requires_final_delivery_receipt")
-                # Explicit completion may be silent. The model's final text is
-                # internal state; it never becomes a fallback outbound message.
-                self.final_delivery = True
-            elif kind == "answer" and self.source.get("principal_kind") == "self":
-                # A SELF decision may end with NO_REPLY. Completion acknowledges
-                # the internal decision, not a QQ transport effect. Side effects
-                # remain separately backed by their original tool receipts.
-                self.final_delivery = True
-            elif kind == "state_change" and not any(
-                effect.get("ok")
-                and effect.get("side_effecting", True)
-                and not effect.get("work_report")
-                for effect in facts
-            ):
-                raise ValueError("work_completion_requires_execution_evidence")
-            self.ending = "completed"
+            prepared = await self._prepare_completion(args, implicit=False)
+            await self._accept("complete", call_key, **prepared)
         else:
             raise ValueError("invalid_work_action")
         return {
@@ -1081,6 +1086,84 @@ class WorkControl:
             "revision": self.current["revision"],
             "ending_proposed": self.ending,
         }
+
+    async def _prepare_completion(self, args: dict[str, Any], *, implicit: bool) -> dict[str, Any]:
+        """Domain checks outside the writer; the writer rechecks current competing facts."""
+        assert self.current is not None
+        if not self.lease.work_id:
+            from qq_ai_bot.runtime.subagent_repository import SubagentRepository
+
+            if await SubagentRepository(self.repository).unfinished(self.current["id"]):
+                raise ValueError("work_has_unfinished_subagents")
+        await self.reconcile_completed_children()
+        if await self.has_unresolved_effects():
+            raise ValueError("work_has_unresolved_execution")
+        result = args.get("result", "")
+        if not isinstance(result, str):
+            raise ValueError("work_result_invalid")
+        facts = await self.effect_evidence()
+        kind = self.current["output_kind"]
+        selected: list[str] = []
+        if kind == "artifact":
+            known = {
+                identity
+                for effect in facts
+                if effect.get("ok") or effect.get("delivered_artifacts")
+                for identity in effect.get("artifacts", [])
+            }
+            delivered = {
+                identity for effect in facts for identity in effect.get("delivered_artifacts", [])
+            }
+            chosen = args.get("artifact_ids")
+            if chosen is None and implicit:
+                # An ordinary final selects what the model itself explicitly
+                # delivered (or, for workspace-only tasks, produced); drafts
+                # that were never sent are never promoted into a delivery duty.
+                chosen = sorted(delivered if self.current["deliver_artifacts"] else known)
+            if (
+                not isinstance(chosen, list)
+                or not chosen
+                or any(
+                    not isinstance(identity, str) or identity not in known for identity in chosen
+                )
+            ):
+                raise ValueError("work_completion_requires_verified_artifacts")
+            if self.current["deliver_artifacts"] and not set(chosen) <= delivered:
+                raise ValueError("work_completion_requires_artifact_delivery_receipt")
+            selected = list(dict.fromkeys(chosen))
+        elif (
+            kind == "answer"
+            and self.source.get("delivery_contract") != "return_to_caller"
+            and self.source.get("principal_kind") != "self"
+            and not self.lease.work_id
+            and self.reporting == "interactive"
+            and not await self.communication_reports(kind="final", delivered_only=True)
+        ):
+            raise ValueError("work_completion_requires_final_delivery_receipt")
+        elif kind == "state_change" and not any(state_fact(effect) for effect in facts):
+            raise ValueError("work_completion_requires_execution_evidence")
+        # The real result consumer decides whether an empty result is legal.
+        caller = (
+            self.source.get("delivery_contract") == "return_to_caller"
+            and self.source.get("principal_kind") != "self"
+        )
+        if (
+            (caller or self.lease.work_id)
+            and not result.strip()
+            and not selected
+            and not (
+                caller
+                and any(
+                    fact.get("ok") is True
+                    and fact.get("delivered_message") is True
+                    and not fact.get("pending")
+                    and not fact.get("uncertain")
+                    for fact in facts
+                )
+            )
+        ):
+            raise ValueError("work_completion_requires_result")
+        return {"result": result, "artifact_ids": selected}
 
     async def _queue_work(self, args: dict[str, Any]) -> dict[str, Any]:
         from sqlalchemy import select
@@ -1175,7 +1258,7 @@ class WorkControl:
 
         return await WorkQueries(self.repository).available(self.lease, self.source)
 
-    async def settle(self, *, delivered: bool, pending_inputs: bool) -> None:
+    async def settle(self, *, pending_inputs: bool) -> None:
         from qq_ai_bot.runtime.work_supervisor import settle
 
-        await settle(self, delivered=delivered, pending_inputs=pending_inputs)
+        await settle(self, pending_inputs=pending_inputs)

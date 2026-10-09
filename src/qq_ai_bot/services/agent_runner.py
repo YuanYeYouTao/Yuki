@@ -52,8 +52,8 @@ from qq_ai_bot.model_runtime.structured import (
 from qq_ai_bot.runtime.activation_outcome import ActivationOutcome
 from qq_ai_bot.runtime.effect_outcomes import (
     ResultCapture,
+    captured_evidence,
     current_result_capture,
-    execution_evidence,
 )
 from qq_ai_bot.runtime.execution_receipts import ExecutionReceipts, current_receipts
 from qq_ai_bot.runtime.work_control import WORK_CONTROL_NAMES, WorkControl
@@ -1082,14 +1082,12 @@ class AgentRunner:
                 )
             finally:
                 current_result_capture.reset(token)
-            fact = capture.evidence
-            if fact is None and capture.outcome is not None:
-                fact = execution_evidence(
-                    capture.outcome,
-                    tool=call.function.name,
-                    side_effecting=True,
-                    arguments=call.function.arguments,
-                )
+            fact = captured_evidence(
+                capture,
+                tool=call.function.name,
+                side_effecting=True,
+                arguments=call.function.arguments,
+            )
             return CoordinatedToolResult(
                 calls=((call, result, executed),),
                 # Lifecycle controls use the model and message budgets, not

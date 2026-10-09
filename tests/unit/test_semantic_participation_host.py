@@ -38,6 +38,7 @@ from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.runtime.work_schema_v1 import work
+from qq_ai_bot.services.participation_feedback import reconcile_page
 from qq_ai_bot.services.participation_snapshot import AsyncSnapshotStore
 from qq_ai_bot.services.policies import EffectiveGroupPolicy, evaluate_message
 from qq_ai_bot.services.semantic_participation import SemanticParticipationService
@@ -321,8 +322,8 @@ async def test_real_route_admission_dispatch_and_reconcile_create_one_actorless_
         proposal = _proposal(item, binding, source)
         await host._admit(item, binding, proposal)
         (run,) = await host.repository.list_active()
-        await host._reconcile(run)
-        await host._reconcile(run)
+        await reconcile_page(host, (run,))
+        await reconcile_page(host, (run,))
         await host._dispatch(run)
         saved = await host.work.by_source(f"initiative:{run.run_id}")
         assert saved is not None
@@ -787,8 +788,8 @@ async def test_accepted_pending_recovery_after_mode_and_route_change_uses_origin
         host._sessions.clear()
         recovered = await host._session(await host._scene(event.canonical_conversation_id))
         await host._advance_scene(recovered)
-        await host._reconcile(result.run)
-        await host._reconcile(result.run)
+        await reconcile_page(host, (result.run,))
+        await reconcile_page(host, (result.run,))
         saved = await host.work.by_source(f"initiative:{result.run.run_id}")
         assert saved is not None
         assert json.loads(saved["source_json"])["presence_id"] == old_presence

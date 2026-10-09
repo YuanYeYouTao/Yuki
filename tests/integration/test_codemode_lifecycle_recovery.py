@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 from tests.support.codemode_cases import effect_rows, environment, outer_call, requires_worker
+from tests.support.work_session import invoke_tool
 from tests.unit.test_work_effect_results import execute, owned_session
 
 from qq_ai_bot.capabilities.results import ToolExecutionResult
@@ -114,7 +115,8 @@ async def test_control_receipt_crash_must_not_resume_after_need_input(
         async def prior_write():
             return await env.domain("workspace_write", '{"path":"already-done"}')
 
-        await env.owner.execute(
+        await invoke_tool(
+            env.owner,
             ToolCall("prerequisite", ToolFunction("workspace_write", "{}")),
             prior_write,
             side_effecting=True,

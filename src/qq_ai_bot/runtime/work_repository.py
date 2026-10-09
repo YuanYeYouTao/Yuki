@@ -11,7 +11,20 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from sqlalchemy import and_, case, delete, false, func, literal_column, or_, select, text, update
+from sqlalchemy import (
+    and_,
+    case,
+    column,
+    delete,
+    false,
+    func,
+    literal_column,
+    or_,
+    select,
+    table,
+    text,
+    update,
+)
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,6 +56,16 @@ if TYPE_CHECKING:
     from qq_ai_bot.runtime.protocol_store import CodeSnapshotBinding, ProtocolStore
 
 TERMINAL = frozenset({"completed", "failed", "cancelled"})
+
+# Owner rows referencing runtime_work (RESTRICT). A lightweight column view keeps
+# core Work storage free of plugin ORM imports while honoring reference order.
+_OWNER_JOBS = table(
+    "plugin_background_turn_jobs",
+    column("work_id"),
+    column("status"),
+    column("last_error_category"),
+    column("lease_until"),
+)
 
 
 class WorkCapacityError(ValueError):
@@ -272,6 +295,39 @@ class WorkRepository:
         reporting: str | None = None,
         initial_state: str = "running",
     ) -> dict[str, Any]:
+        async with self.database.sessions() as session, session.begin():
+            return await self.accept_in_session(
+                session,
+                lease,
+                source_key=source_key,
+                source=source,
+                goal=goal,
+                output_kind=output_kind,
+                deliver_artifacts=deliver_artifacts,
+                handoff_from=handoff_from,
+                reporting=reporting,
+                initial_state=initial_state,
+            )
+
+    async def accept_in_session(
+        self,
+        session: AsyncSession,
+        lease: WorkLease,
+        *,
+        source_key: str,
+        source: dict[str, Any],
+        goal: str,
+        output_kind: str = "state_change",
+        deliver_artifacts: bool = True,
+        handoff_from: str | None = None,
+        reporting: str | None = None,
+        initial_state: str = "running",
+    ) -> dict[str, Any]:
+        """Admit in a writer transaction owned by the caller.
+
+        Only an owner that must commit its own durable link together with the
+        first admission uses this directly; the lease is asserted here.
+        """
         if not 1 <= len(goal) <= 8192 or not 1 <= len(source_key) <= 256:
             raise ValueError("invalid_work_goal")
         if output_kind not in {"answer", "artifact", "state_change"}:
@@ -289,126 +345,123 @@ class WorkRepository:
                 }
             }
         )
-        async with self.database.sessions() as session, session.begin():
-            await self._assert_lease(session, lease)
-            if source.get("origin") == "self_initiative" or source.get("principal_kind") == "self":
+        await self._assert_lease(session, lease)
+        if source.get("origin") == "self_initiative" or source.get("principal_kind") == "self":
+            if (
+                source.get("origin") == "scheduled_automation"
+                and source.get("principal_kind") == "self"
+            ):
+                from qq_ai_bot.persistence.models import AutomationModel, AutomationRunModel
+
+                run = await session.get(AutomationRunModel, source.get("automation_run_id"))
+                owner = await session.get(AutomationModel, run.automation_id) if run else None
                 if (
-                    source.get("origin") == "scheduled_automation"
-                    and source.get("principal_kind") == "self"
+                    run is None
+                    or owner is None
+                    or owner.creator_kind != "self"
+                    or run.status != "running"
+                    or source.get("automation_id") != owner.id
+                    or source.get("conversation_id") != lease.conversation_id
+                    or source.get("generation") != lease.generation
+                    or source.get("actor_user_id")
+                    or source.get("actor_person_id")
+                    or source.get("trigger_event_id") is not None
                 ):
-                    from qq_ai_bot.persistence.models import AutomationModel, AutomationRunModel
+                    raise WorkConflict("invalid_self_automation_work_admission")
+            else:
+                from qq_ai_bot.conversation.autonomy_db_models import InitiativeRunModel
 
-                    run = await session.get(AutomationRunModel, source.get("automation_run_id"))
-                    owner = await session.get(AutomationModel, run.automation_id) if run else None
-                    if (
-                        run is None
-                        or owner is None
-                        or owner.creator_kind != "self"
-                        or run.status != "running"
-                        or source.get("automation_id") != owner.id
-                        or source.get("conversation_id") != lease.conversation_id
-                        or source.get("generation") != lease.generation
-                        or source.get("actor_user_id")
-                        or source.get("actor_person_id")
-                        or source.get("trigger_event_id") is not None
-                    ):
-                        raise WorkConflict("invalid_self_automation_work_admission")
-                else:
-                    from qq_ai_bot.conversation.autonomy_db_models import InitiativeRunModel
-
-                    initiative_run = await session.get(
-                        InitiativeRunModel, source.get("initiative_run_id")
-                    )
-                    if (
-                        initiative_run is None
-                        or initiative_run.state not in {"accepted", "running"}
-                        or source.get("principal_kind") != "self"
-                        or source.get("origin") != "self_initiative"
-                        or source_key != f"initiative:{initiative_run.id}"
-                        or initiative_run.conversation_id != lease.conversation_id
-                        or initiative_run.generation != lease.generation
-                        or source.get("conversation_id") != initiative_run.conversation_id
-                        or source.get("generation") != initiative_run.generation
-                        or source.get("presence_id") != initiative_run.presence_id
-                        or source.get("space_id") != initiative_run.space_id
-                        or source.get("actor_user_id")
-                        or source.get("person_id")
-                        or source.get("actor_person_id")
-                        or source.get("trigger_event_id") is not None
-                    ):
-                        raise WorkConflict("invalid_self_work_admission")
-            existing = await session.scalar(
-                select(work.c.id).where(work.c.source_key == source_key)
+                initiative_run = await session.get(
+                    InitiativeRunModel, source.get("initiative_run_id")
+                )
+                if (
+                    initiative_run is None
+                    or initiative_run.state not in {"accepted", "running"}
+                    or source.get("principal_kind") != "self"
+                    or source.get("origin") != "self_initiative"
+                    or source_key != f"initiative:{initiative_run.id}"
+                    or initiative_run.conversation_id != lease.conversation_id
+                    or initiative_run.generation != lease.generation
+                    or source.get("conversation_id") != initiative_run.conversation_id
+                    or source.get("generation") != initiative_run.generation
+                    or source.get("presence_id") != initiative_run.presence_id
+                    or source.get("space_id") != initiative_run.space_id
+                    or source.get("actor_user_id")
+                    or source.get("person_id")
+                    or source.get("actor_person_id")
+                    or source.get("trigger_event_id") is not None
+                ):
+                    raise WorkConflict("invalid_self_work_admission")
+        existing = await session.scalar(select(work.c.id).where(work.c.source_key == source_key))
+        if existing is None:
+            count = await session.scalar(
+                select(func.count()).select_from(work).where(work.c.state.not_in(TERMINAL))
             )
-            if existing is None:
-                count = await session.scalar(
-                    select(func.count()).select_from(work).where(work.c.state.not_in(TERMINAL))
+            if int(count or 0) >= 128:
+                raise WorkCapacityError("active_work_capacity")
+            scope_count = await session.scalar(
+                select(func.count())
+                .select_from(work)
+                .where(
+                    work.c.state.not_in(TERMINAL),
+                    work.c.conversation_id == lease.conversation_id,
                 )
-                if int(count or 0) >= 128:
-                    raise WorkCapacityError("active_work_capacity")
-                scope_count = await session.scalar(
-                    select(func.count())
-                    .select_from(work)
-                    .where(
-                        work.c.state.not_in(TERMINAL),
-                        work.c.conversation_id == lease.conversation_id,
-                    )
-                )
-                if int(scope_count or 0) >= 16:
-                    raise WorkCapacityError("conversation_work_capacity")
-            await session.execute(
-                insert(work)
-                .values(
-                    id=str(uuid4()),
-                    conversation_id=lease.conversation_id,
-                    generation=lease.generation,
-                    source_key=source_key,
-                    source_json=source_json,
-                    goal=goal,
-                    output_kind=output_kind,
-                    deliver_artifacts=deliver_artifacts,
-                    checkpoint_json=initial_checkpoint,
-                    state="queued" if handoff_from else initial_state,
-                    created=now,
-                    updated=now,
-                )
-                .on_conflict_do_nothing(index_elements=[work.c.source_key])
             )
-            row = (
-                (await session.execute(select(work).where(work.c.source_key == source_key)))
+            if int(scope_count or 0) >= 16:
+                raise WorkCapacityError("conversation_work_capacity")
+        await session.execute(
+            insert(work)
+            .values(
+                id=str(uuid4()),
+                conversation_id=lease.conversation_id,
+                generation=lease.generation,
+                source_key=source_key,
+                source_json=source_json,
+                goal=goal,
+                output_kind=output_kind,
+                deliver_artifacts=deliver_artifacts,
+                checkpoint_json=initial_checkpoint,
+                state="queued" if handoff_from else initial_state,
+                created=now,
+                updated=now,
+            )
+            .on_conflict_do_nothing(index_elements=[work.c.source_key])
+        )
+        row = (
+            (await session.execute(select(work).where(work.c.source_key == source_key)))
+            .mappings()
+            .one()
+        )
+        if (
+            row["conversation_id"] != lease.conversation_id
+            or row["generation"] != lease.generation
+            or row["source_json"] != source_json
+        ):
+            raise WorkConflict("work_source_conflict")
+        if row["state"] in TERMINAL:
+            raise WorkConflict("work_already_terminal")
+        if handoff_from is not None:
+            previous = (
+                (await session.execute(select(work).where(work.c.id == handoff_from)))
                 .mappings()
                 .one()
             )
             if (
-                row["conversation_id"] != lease.conversation_id
-                or row["generation"] != lease.generation
-                or row["source_json"] != source_json
+                previous["id"] == row["id"]
+                or previous["conversation_id"] != lease.conversation_id
+                or previous["generation"] != lease.generation
+                or previous["state"] in TERMINAL
+                or lease.work_id
             ):
-                raise WorkConflict("work_source_conflict")
-            if row["state"] in TERMINAL:
-                raise WorkConflict("work_already_terminal")
-            if handoff_from is not None:
-                previous = (
-                    (await session.execute(select(work).where(work.c.id == handoff_from)))
-                    .mappings()
-                    .one()
-                )
-                if (
-                    previous["id"] == row["id"]
-                    or previous["conversation_id"] != lease.conversation_id
-                    or previous["generation"] != lease.generation
-                    or previous["state"] in TERMINAL
-                    or lease.work_id
-                ):
-                    raise WorkConflict("work_handoff_source_invalid")
-                checkpoint = json.loads(previous["checkpoint_json"])
-                checkpoint["handoff_work_id"] = row["id"]
-                await session.execute(
-                    update(work)
-                    .where(work.c.id == handoff_from)
-                    .values(checkpoint_json=bounded_json(checkpoint), updated=now)
-                )
-            return dict(row)
+                raise WorkConflict("work_handoff_source_invalid")
+            checkpoint = json.loads(previous["checkpoint_json"])
+            checkpoint["handoff_work_id"] = row["id"]
+            await session.execute(
+                update(work)
+                .where(work.c.id == handoff_from)
+                .values(checkpoint_json=bounded_json(checkpoint), updated=now)
+            )
+        return dict(row)
 
     async def by_source(self, source_key: str) -> dict[str, Any] | None:
         async with self.database.sessions() as session:
@@ -464,114 +517,224 @@ class WorkRepository:
             raise ValueError("invalid_work_transition")
         if reason is not None and len(reason) > 128:
             raise ValueError("invalid_work_reason")
+        async with self.database.sessions() as session, session.begin():
+            await self._assert_lease(session, lease)
+            return await self.commit_state(
+                session,
+                lease,
+                identity,
+                state,
+                revision=revision,
+                reason=reason,
+                goal=goal,
+                exit_reason=exit_reason,
+            )
+
+    async def commit_state(
+        self,
+        session: AsyncSession,
+        lease: WorkLease,
+        identity: str,
+        state: str,
+        *,
+        revision: int | None,
+        reason: str | None = None,
+        goal: str | None = None,
+        exit_reason: str | None = None,
+        recovery_detail: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """The single state writer shared by normal settlement and failure recovery.
+
+        Callers own the transaction and lease assertion. Current competing facts
+        (mailbox, unresolved effects, live children) are rechecked here, and the
+        accepted control is consumed in the same statement that commits the
+        actual state: a completed result is published only with completion.
+        """
         values: dict[str, Any] = {
             "state": state,
             "reason": reason,
-            "revision": revision + 1,
+            "revision": work.c.revision + 1 if revision is None else revision + 1,
             "updated": time.time(),
         }
         if goal is not None:
             values["goal"] = goal
+        if state in {"completed", "failed", "waiting_user", "waiting_external"}:
+            mailbox = (
+                await session.execute(
+                    select(inputs.c.ready)
+                    .where(
+                        inputs.c.work_id == identity,
+                        inputs.c.state.in_(("pending", "staged")),
+                    )
+                    .order_by(inputs.c.id)
+                    .limit(1)
+                )
+            ).first()
+            if mailbox is not None:
+                # Admitted input keeps a live owner. A failure is retained in
+                # recovery facts but cannot strand input on a terminal Work.
+                ready = bool(mailbox[0])
+                values.update(
+                    state="queued" if ready else "waiting_external",
+                    reason="work_input_arrived" if ready else "work_input_preparing",
+                )
+                if exit_reason is not None:
+                    exit_reason = "waiting_input" if ready else "waiting_external"
+        if values["state"] == "completed":
+            # Complete's domain preparation is outside the writer. Only
+            # current SQL facts that can change across awaits are rechecked.
+            unresolved = await session.scalar(
+                select(effects.c.effect_key)
+                .where(effects.c.work_id == identity, self._unresolved_clause())
+                .limit(1)
+            )
+            child = await session.scalar(
+                select(children.c.work_id)
+                .join(work, work.c.id == children.c.work_id)
+                .where(children.c.root_id == identity, work.c.state.not_in(TERMINAL))
+                .limit(1)
+            )
+            if unresolved is not None or child is not None:
+                unknown = await session.scalar(
+                    select(effects.c.effect_key)
+                    .where(effects.c.work_id == identity, self._unresolved_clause(pending=False))
+                    .limit(1)
+                )
+                values.update(
+                    state="suspended" if unknown is not None else "waiting_external",
+                    reason="work_completion_facts_changed",
+                )
+                if exit_reason is not None:
+                    exit_reason = "paused" if unknown is not None else "waiting_external"
+        if values["state"] != "running":
+            # Settlement consumes the accepted control; its durable payload moves
+            # to the existing result/reason slots only when the state it proposed
+            # is the state actually committed.
+            accepted = "$.accepted_control"
+            checkpoint: Any = func.json_remove(work.c.checkpoint_json, accepted)
+            if values["state"] == "completed":
+                checkpoint = case(
+                    (
+                        func.json_type(work.c.checkpoint_json, f"{accepted}.result") == "text",
+                        func.json_set(
+                            checkpoint,
+                            "$.sync_result",
+                            func.json_extract(work.c.checkpoint_json, f"{accepted}.result"),
+                        ),
+                    ),
+                    else_=checkpoint,
+                )
+            if values["state"] in {"failed", "waiting_user"}:
+                checkpoint = case(
+                    (
+                        func.json_type(work.c.checkpoint_json, f"{accepted}.reason") == "text",
+                        func.json_set(
+                            checkpoint,
+                            "$.reason",
+                            func.json_extract(work.c.checkpoint_json, f"{accepted}.reason"),
+                        ),
+                    ),
+                    else_=checkpoint,
+                )
+            values["checkpoint_json"] = checkpoint
+        conditions = [
+            work.c.id == identity,
+            work.c.conversation_id == lease.conversation_id,
+            work.c.generation == lease.generation,
+            work.c.state.not_in(TERMINAL),
+        ]
+        if revision is not None:
+            conditions.append(work.c.revision == revision)
+        row = (
+            (
+                await session.execute(
+                    update(work).where(*conditions).values(**values).returning(work)
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if row is None:
+            raise WorkConflict("work_revision_conflict")
+        if recovery_detail is not None:
+            detail = {**recovery_detail, "work_id": identity}
+            if exit_reason is not None:
+                detail["exit_reason"] = exit_reason
+        elif exit_reason is not None:
+            detail = dict(
+                work_id=identity,
+                activation_id=lease.owner,
+                exit_reason=exit_reason,
+                stage="activation",
+                updated=time.time(),
+                not_before=0,
+            )
+            if exit_reason in {
+                "segment_budget",
+                "completed",
+                "waiting_input",
+                "waiting_external",
+            }:
+                detail.update(attempts=0, failure_json="{}")
+        else:
+            detail = None
+        if detail is not None:
+            await session.execute(
+                insert(recovery)
+                .values(**detail)
+                .on_conflict_do_update(index_elements=[recovery.c.work_id], set_=detail)
+            )
+        if row["state"] in TERMINAL:
+            await session.execute(
+                update(waits)
+                .where(waits.c.work_id == identity, waits.c.status == "active")
+                .values(status="cancelled", updated=time.time())
+            )
+        return dict(row)
+
+    async def accept_control(
+        self, lease: WorkLease, identity: str, control: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        """Persist, or retire, the one host-owned accepted lifecycle decision."""
         async with self.database.sessions() as session, session.begin():
             await self._assert_lease(session, lease)
-            if state in {"completed", "waiting_user", "waiting_external"}:
-                mailbox = (
-                    await session.execute(
-                        select(inputs.c.ready)
-                        .where(
-                            inputs.c.work_id == identity,
-                            inputs.c.state.in_(("pending", "staged")),
-                        )
-                        .order_by(inputs.c.id)
-                        .limit(1)
-                    )
-                ).first()
-                if mailbox is not None:
-                    # Attachment preparation can finish after this activation.
-                    # Its admitted input must retain a live owner until then.
-                    ready = bool(mailbox[0])
-                    values.update(
-                        state="queued" if ready else "waiting_external",
-                        reason="work_input_arrived" if ready else "work_input_preparing",
-                    )
-                    if exit_reason is not None:
-                        exit_reason = "waiting_input" if ready else "waiting_external"
-            if values["state"] == "completed":
-                # Complete's domain preparation is outside the writer. Only
-                # current SQL facts that can change across awaits are rechecked.
-                unresolved = await session.scalar(
-                    select(effects.c.effect_key)
-                    .where(effects.c.work_id == identity, self._unresolved_clause())
-                    .limit(1)
-                )
-                child = await session.scalar(
-                    select(children.c.work_id)
-                    .join(work, work.c.id == children.c.work_id)
-                    .where(children.c.root_id == identity, work.c.state.not_in(TERMINAL))
-                    .limit(1)
-                )
-                if unresolved is not None or child is not None:
-                    unknown = await session.scalar(
-                        select(effects.c.effect_key)
-                        .where(
-                            effects.c.work_id == identity, self._unresolved_clause(pending=False)
-                        )
-                        .limit(1)
-                    )
-                    values.update(
-                        state="suspended" if unknown is not None else "waiting_external",
-                        reason="work_completion_facts_changed",
-                    )
-                    if exit_reason is not None:
-                        exit_reason = "paused" if unknown is not None else "waiting_external"
-            row = (
-                (
-                    await session.execute(
-                        update(work)
-                        .where(
-                            work.c.id == identity,
-                            work.c.conversation_id == lease.conversation_id,
-                            work.c.generation == lease.generation,
-                            work.c.revision == revision,
-                            work.c.state.not_in(TERMINAL),
-                        )
-                        .values(**values)
-                        .returning(work)
-                    )
-                )
-                .mappings()
-                .first()
+            return await self.set_accepted_control(session, lease, identity, control)
+
+    async def set_accepted_control(
+        self,
+        session: AsyncSession,
+        lease: WorkLease,
+        identity: str,
+        control: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        path = "$.accepted_control"
+        checkpoint = (
+            func.json_set(
+                work.c.checkpoint_json, path, func.json(bounded_json(control, 256 * 1024))
             )
-            if row is None:
-                raise WorkConflict("work_revision_conflict")
-            if exit_reason is not None:
-                detail = dict(
-                    work_id=identity,
-                    activation_id=lease.owner,
-                    exit_reason=exit_reason,
-                    stage="activation",
-                    updated=time.time(),
-                    not_before=0,
-                )
-                if exit_reason in {
-                    "segment_budget",
-                    "completed",
-                    "waiting_input",
-                    "waiting_external",
-                }:
-                    detail.update(attempts=0, failure_json="{}")
+            if control is not None
+            else func.json_remove(work.c.checkpoint_json, path)
+        )
+        row = (
+            (
                 await session.execute(
-                    insert(recovery)
-                    .values(**detail)
-                    .on_conflict_do_update(index_elements=[recovery.c.work_id], set_=detail)
+                    update(work)
+                    .where(
+                        work.c.id == identity,
+                        work.c.conversation_id == lease.conversation_id,
+                        work.c.generation == lease.generation,
+                        work.c.state.not_in(TERMINAL),
+                    )
+                    .values(checkpoint_json=checkpoint, updated=time.time())
+                    .returning(work)
                 )
-            if row["state"] in TERMINAL:
-                await session.execute(
-                    update(waits)
-                    .where(waits.c.work_id == identity, waits.c.status == "active")
-                    .values(status="cancelled", updated=time.time())
-                )
-            return dict(row)
+            )
+            .mappings()
+            .first()
+        )
+        if row is None:
+            raise WorkConflict("work_checkpoint_obsolete")
+        return dict(row)
 
     async def checkpoint(
         self,
@@ -588,7 +751,7 @@ class WorkRepository:
         serialized = bounded_json(payload, 1024 * 1024) if payload is not None else None
         replacement: Any = serialized
         if serialized is not None:
-            for retained in ("communication", "context_note"):
+            for retained in ("communication", "context_note", "accepted_control"):
                 path = f"$.{retained}"
                 replacement = case(
                     (
@@ -1584,6 +1747,22 @@ class WorkRepository:
         await session.execute(delete(effects).where(effects.c.work_id.in_(identities)))
         await session.execute(delete(inputs).where(inputs.c.conversation_id == conversation_id))
         await session.execute(delete(children).where(children.c.work_id.in_(identities)))
+        # Owner tables that reference runtime_work with RESTRICT are retired in
+        # this same privacy transaction first: a live Job is cancelled (never
+        # left pending with a null link that would look like a new Job), then
+        # dereferenced, so the Work rows can be removed.
+        owner_jobs = _OWNER_JOBS
+        await session.execute(
+            update(owner_jobs)
+            .where(
+                owner_jobs.c.work_id.in_(identities),
+                owner_jobs.c.status.in_(("pending", "processing")),
+            )
+            .values(status="cancelled", last_error_category="privacy_purged", lease_until=None)
+        )
+        await session.execute(
+            update(owner_jobs).where(owner_jobs.c.work_id.in_(identities)).values(work_id=None)
+        )
         await session.execute(delete(work).where(work.c.conversation_id == conversation_id))
         await session.execute(
             delete(media).where(media.c.sha256.not_in(select(media_refs.c.sha256)))
@@ -1956,6 +2135,13 @@ class WorkRepository:
                     ),
                     work.c.id.not_in(select(children.c.work_id)),
                     work.c.id.not_in(select(children.c.root_id)),
+                    # A live owner Job closes from its Work first; archive later.
+                    work.c.id.not_in(
+                        select(_OWNER_JOBS.c.work_id).where(
+                            _OWNER_JOBS.c.work_id.is_not(None),
+                            _OWNER_JOBS.c.status.in_(("pending", "processing")),
+                        )
+                    ),
                 )
                 .order_by(work.c.updated.desc())
                 .offset(128)
@@ -2021,6 +2207,10 @@ class WorkRepository:
                 delete(work).where(
                     work.c.id.in_(selected),
                     func.json_extract(work.c.checkpoint_json, "$.archived").is_(None),
+                    # A referenced Work keeps its row; never CASCADE/SET NULL a Job.
+                    work.c.id.not_in(
+                        select(_OWNER_JOBS.c.work_id).where(_OWNER_JOBS.c.work_id.is_not(None))
+                    ),
                 )
             )
 
@@ -2531,47 +2721,11 @@ class WorkRepository:
             == "false",
         )
         malformed.append(and_(~absent, ~meaningful))
-        raw = func.json_extract(receipt, "$.result")
-        safe = case((func.json_valid(raw) == 1, raw), else_="{}")
-        legacy_proven = and_(
-            func.json_type(safe) == "object",
-            func.coalesce(func.json_type(safe, "$.ok"), "missing").in_(("true", "false")),
-            func.coalesce(func.json_extract(safe, "$.truncated"), 0) != 1,
-        )
-        for field in ("mutation_committed", "finalize_after_commit", "retryable", "uncertain"):
-            legacy_proven = and_(
-                legacy_proven,
-                func.coalesce(func.json_type(safe, "$." + field), "missing").in_(
-                    ("missing", "null", "true", "false")
-                ),
-            )
-        body = case(
-            (func.json_type(safe, "$.data") == "object", func.json_extract(safe, "$.data")),
-            else_=safe,
-        )
-        body = case(
-            (func.json_type(body, "$.progress") == "object", func.json_extract(body, "$.progress")),
-            else_=body,
-        )
-        legacy_proven = and_(
-            legacy_proven, func.coalesce(func.json_extract(body, "$.truncated"), 0) != 1
-        )
-        legacy_proven = and_(
-            legacy_proven,
-            func.coalesce(func.json_type(body, "$.status"), "missing").in_(
-                ("missing", "null", "text")
-            ),
-        )
-        for field in ("pending", "uncertain", "executed"):
-            legacy_proven = and_(
-                legacy_proven,
-                func.coalesce(func.json_type(body, "$." + field), "missing").in_(
-                    ("missing", "true", "false")
-                ),
-            )
+        # Migration 0101 gave every legacy receipt a canonical outcome; one that
+        # is still absent (other than an exact final transport receipt) is unknown.
         return and_(
             ~WorkRepository._known_native_final_clause(),
-            or_(*malformed, and_(absent, ~legacy_proven)),
+            or_(*malformed, absent),
         )
 
     @staticmethod
@@ -2601,43 +2755,6 @@ class WorkRepository:
         malformed = WorkRepository._unknown_historical_outcome_clause()
         if uncertain:
             clauses.append(malformed)
-        raw = func.json_extract(effects.c.receipt_json, "$.result")
-        legacy = case((func.json_valid(raw) == 1, raw), else_="{}")
-        body = case(
-            (func.json_type(legacy, "$.data") == "object", func.json_extract(legacy, "$.data")),
-            else_=legacy,
-        )
-        body = case(
-            (func.json_type(body, "$.progress") == "object", func.json_extract(body, "$.progress")),
-            else_=body,
-        )
-        legacy_absent = or_(
-            func.coalesce(func.json_type(effects.c.receipt_json, "$.outcome"), "missing").in_(
-                ("missing", "null")
-            ),
-            func.json_extract(effects.c.receipt_json, "$.outcome") == "{}",
-        )
-        if pending:
-            clauses.append(
-                and_(
-                    legacy_absent,
-                    or_(
-                        func.json_extract(body, "$.pending") == 1,
-                        func.json_extract(body, "$.status").in_(("running", "queued", "waiting")),
-                    ),
-                )
-            )
-        if uncertain:
-            clauses.append(
-                and_(
-                    legacy_absent,
-                    or_(
-                        func.json_extract(legacy, "$.uncertain") == 1,
-                        func.json_extract(body, "$.uncertain") == 1,
-                        func.json_extract(body, "$.status").in_(("unknown", "uncertain")),
-                    ),
-                )
-            )
         unresolved = or_(*clauses) if clauses else false()
         # A versioned intent whose T2 never committed was never dispatched: it is
         # not an unknown effect. Legacy prepared rows keep the conservative fence.
@@ -2911,9 +3028,25 @@ class WorkRepository:
             if existing["state"] == "accepted":
                 if state == "unknown":
                     return  # Bookkeeping failure cannot undo known acceptance.
-                if state != "accepted" or any(candidate.get(k) != v for k, v in previous.items()):
+                # Compare one canonical meaning: a migrated outcome and a late
+                # legacy-shaped rewrite of the same receipt are not a conflict.
+                # The UPDATE CAS below still compares the original stored bytes.
+                from qq_ai_bot.runtime.effect_outcomes import historical_evidence
+
+                def canonical(value: dict[str, Any]) -> dict[str, Any]:
+                    outcome = historical_evidence(value, state="accepted")
+                    return {
+                        **{k: v for k, v in value.items() if k != "outcome"},
+                        "outcome": {
+                            k: outcome.get(k)
+                            for k in ("ok", "pending", "uncertain", "executed", "status", "run_id")
+                        },
+                    }
+
+                before, after = canonical(previous), canonical(candidate)
+                if state != "accepted" or any(after.get(k) != v for k, v in before.items()):
                     raise WorkConflict("work_effect_receipt_conflict")
-                if candidate == previous:
+                if after == before:
                     return
             elif existing["state"] not in {"prepared", "unknown"}:
                 if existing["state"] == state and candidate == previous:

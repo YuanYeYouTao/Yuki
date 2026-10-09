@@ -118,7 +118,6 @@ async def test_recall_receipt_tracks_zero_partial_evaluation_and_interruption(da
     from qq_ai_bot.memory.receipt import MemoryRecallTurn
     from qq_ai_bot.memory.runtime.partition_lookup import DatabaseMemoryPartitionLookup
     from qq_ai_bot.memory.runtime.turn_session import TurnMemorySession
-    from qq_ai_bot.runtime.authority import TurnAuthority
     from qq_ai_bot.runtime.origin import TurnOrigin
     from qq_ai_bot.services.agent_tools import ToolRuntime
 
@@ -161,14 +160,6 @@ async def test_recall_receipt_tracks_zero_partial_evaluation_and_interruption(da
         partition_lookup=DatabaseMemoryPartitionLookup(database),
         origin=TurnOrigin.USER_MESSAGE,
         user_question="synthetic",
-        authority=TurnAuthority(
-            actor_user_id="1001",
-            bot_user_id="8000",
-            origin=TurnOrigin.USER_MESSAGE,
-            permission_ceiling=frozenset(),
-            delegated_authority=None,
-            authority_revision=1,
-        ),
     )
     # No prefetch or prompt exposure: execution creates only a zero-exposure receipt.
     await memory_session.record_read_outcome("success")

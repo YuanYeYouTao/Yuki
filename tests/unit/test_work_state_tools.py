@@ -17,7 +17,6 @@ from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
 from qq_ai_bot.runtime.work_wait import WorkWaitRepository
 from qq_ai_bot.services.agent_runner import AgentRunResult, AgentRuntime
 from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
-from qq_ai_bot.services.subagent_execution import WorkerBackend
 
 
 async def completed_work(database, tmp_path):
@@ -247,15 +246,34 @@ async def test_worker_can_query_own_work_but_not_root_or_obsolete_parent(databas
 
     control = WorkControl(repository, lease, "child", json.loads(child["source_json"]), validate)
     control.current = child
-    # The main backend denies Automation reads. The explicit worker profile
-    # still permits inspection of its own lifecycle, without exposing the root.
-    delegate = SimpleNamespace(work_query_allowed=lambda _action: False)
-    backend = WorkerBackend(delegate, frozenset({"task_control"}))
-    assert backend.work_query_allowed("get")
-    assert not WorkerBackend(delegate, frozenset()).work_query_allowed("get")
+    sibling = await children.start(
+        parent_lease, parent["id"], "sibling", {"goal": "other facts", "output_kind": "answer"}
+    )
     chat = build_harness(database, make_settings(database.url)).processor._chat
+    from qq_ai_bot.runtime.work_activation import current_work_control
+    from qq_ai_bot.services.agent_tools import ToolRuntime
+    from qq_ai_bot.services.main_agent_backend import MainAgentBackend
+
+    # The real backend without Automation authority: a child lease reads its own
+    # lifecycle through WorkQueries' ownership fence, never the root directory.
+    tool_runtime = ToolRuntime(inbound=None, gateway=None, allow_generic_onebot=False)
+    backend = MainAgentBackend(chat, tool_runtime, allowed_tools=frozenset({"task_control"}))
+    without = MainAgentBackend(chat, tool_runtime, allowed_tools=frozenset({"search_memory"}))
+    token = current_work_control.set(control)
+    try:
+        assert backend.work_query_allowed("get") and backend.work_query_allowed("list")
+        assert not without.work_query_allowed("get")
+    finally:
+        current_work_control.reset(token)
 
     async def query(work_id):
+        token = current_work_control.set(control)
+        try:
+            return await _query(work_id)
+        finally:
+            current_work_control.reset(token)
+
+    async def _query(work_id):
         result = await chat.runtime.runner._execute_tool_batch(
             (
                 ToolCall(
@@ -274,9 +292,10 @@ async def test_worker_can_query_own_work_but_not_root_or_obsolete_parent(databas
         return json.loads(result.calls[0][1])
 
     assert (await query(identity))["work"]["work_id"] == identity
-    assert await query(parent["id"]) == {
-        "ok": False,
-        "error": "work_not_found_or_not_authorized",
-    }
+    for other in (parent["id"], sibling):
+        assert await query(other) == {
+            "ok": False,
+            "error": "work_not_found_or_not_authorized",
+        }
     await repository.transition(parent_lease, parent["id"], parent["revision"], "completed")
     assert await query(identity) == {"ok": False, "error": "worker_parent_obsolete"}

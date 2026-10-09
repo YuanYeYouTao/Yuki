@@ -146,9 +146,9 @@ async def test_self_main_segment_resume_preserves_real_wire_prefix_and_silent_co
         first = await repo.get(item["id"])
         assert first["state"] == "queued", failures or first
         assert first["model_requests"] == 24
-        await resumer.resume(first)
+        error = await resumer.resume(first)
         final = await repo.get(item["id"])
-        assert final["state"] == "completed", (final, resumer.last_error)
+        assert final["state"] == "completed", (final, error)
         assert final["model_requests"] == 25
         assert len(captured) == 25
         field = "input" if protocol == "responses" else "messages"

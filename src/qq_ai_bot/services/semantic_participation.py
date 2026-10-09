@@ -1284,11 +1284,6 @@ class SemanticParticipationService:
         finally:
             await self.work.release(lease)
 
-    async def _reconcile(self, run: AcceptedInitiative) -> None:
-        from qq_ai_bot.services.participation_feedback import reconcile_run
-
-        await reconcile_run(self, run)
-
     async def _reconcile_outbox(self) -> None:
         from qq_ai_bot.services.participation_feedback import reconcile_page
 
