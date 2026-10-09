@@ -122,24 +122,6 @@ class MemoryProductionQualityAudit:
                 ),
             ),
             (
-                "active_slot_duplicate",
-                "error",
-                """
-                WITH bad AS (
-                  SELECT MIN(id) AS id FROM memory_facts WHERE status='active'
-                  GROUP BY scope_type, COALESCE(canonical_subject_person_id,''),
-                           COALESCE(canonical_subject_space_id,''),
-                           COALESCE(visibility_type,''),
-                           COALESCE(canonical_visibility_person_id,''),
-                           COALESCE(canonical_visibility_space_id,''),
-                           CASE WHEN scope_type='self' THEN '' ELSE kind END,
-                           memory_key HAVING COUNT(*) > 1
-                ), tally AS (SELECT COUNT(*) AS n FROM bad)
-                SELECT tally.n, sample.id FROM tally LEFT JOIN
-                  (SELECT id FROM bad ORDER BY id LIMIT 20) sample ON 1=1
-                """,
-            ),
-            (
                 "contested_state_invalid",
                 "error",
                 _query(

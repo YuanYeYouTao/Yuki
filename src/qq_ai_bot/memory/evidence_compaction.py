@@ -9,7 +9,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import delete, func, select, tuple_, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.exc import OperationalError
 
@@ -47,7 +47,6 @@ class EvidenceCompactionService:
         self._facts = facts
 
     async def run_batch(self) -> int:
-        await self._backfill_reflection_results()
         candidates = await self._candidate_facts(
             limit=self._settings.memory_evidence_compaction_batch_size
         )
@@ -101,165 +100,6 @@ class EvidenceCompactionService:
             processed += 1
         await self._refresh_run(run_id)
         return processed
-
-    async def _backfill_reflection_results(self) -> None:
-        async with self._database.sessions() as session:
-            receipts = tuple(
-                (
-                    await session.scalars(
-                        select(MemoryMutationReceiptModel)
-                        .where(
-                            MemoryMutationReceiptModel.decision_actor_type == "reflection",
-                            MemoryMutationReceiptModel.delegation_mode.like("self_episode:%"),
-                            MemoryMutationReceiptModel.new_fact_id.is_not(None),
-                            ~select(MemorySelfReflectionResultModel.id)
-                            .where(
-                                MemorySelfReflectionResultModel.fact_id
-                                == MemoryMutationReceiptModel.new_fact_id
-                            )
-                            .exists(),
-                        )
-                        .order_by(MemoryMutationReceiptModel.id)
-                        .limit(200)
-                    )
-                ).all()
-            )
-            prepared = {}
-            for receipt in receipts:
-                parts = receipt.delegation_mode.split(":")
-                if len(parts) != 3:
-                    continue
-                try:
-                    first_event_id, last_event_id = int(parts[1]), int(parts[2])
-                except ValueError:
-                    continue
-                prepared[receipt.id] = (
-                    receipt.executed_by_bot_user_id,
-                    first_event_id,
-                    last_event_id,
-                )
-            if not prepared:
-                return
-            run_query = select(MemorySelfReflectionRunModel).where(
-                tuple_(
-                    MemorySelfReflectionRunModel.bot_user_id,
-                    MemorySelfReflectionRunModel.first_event_id,
-                    MemorySelfReflectionRunModel.last_event_id,
-                ).in_(tuple(set(prepared.values())))
-            )
-            runs = tuple((await session.scalars(run_query)).all())
-            expected_runs = {
-                key: tuple(
-                    row.id
-                    for row in runs
-                    if (row.bot_user_id, row.first_event_id, row.last_event_id) == key
-                )
-                for key in set(prepared.values())
-            }
-            prepared = {
-                receipt_id: key
-                for receipt_id, key in prepared.items()
-                if len(expected_runs[key]) == 1
-            }
-            if not prepared:
-                return
-            expected_runs = {key: expected_runs[key] for key in set(prepared.values())}
-            run_query = select(MemorySelfReflectionRunModel).where(
-                tuple_(
-                    MemorySelfReflectionRunModel.bot_user_id,
-                    MemorySelfReflectionRunModel.first_event_id,
-                    MemorySelfReflectionRunModel.last_event_id,
-                ).in_(tuple(expected_runs))
-            )
-            original_receipts = {row.id: row for row in receipts if row.id in prepared}
-
-        # Only bounded identity checks precede the single write. Recheck ambiguous
-        # runs and receipts under the writer so a changed mapping is never inferred.
-        async with self._database.immediate_session() as session:
-            current_receipts = tuple(
-                (
-                    await session.execute(
-                        select(
-                            MemoryMutationReceiptModel.id,
-                            MemoryMutationReceiptModel.executed_by_bot_user_id,
-                            MemoryMutationReceiptModel.delegation_mode,
-                            MemoryMutationReceiptModel.decision_actor_type,
-                            MemoryMutationReceiptModel.new_fact_id,
-                            MemoryMutationReceiptModel.created_at,
-                        ).where(MemoryMutationReceiptModel.id.in_(tuple(prepared)))
-                    )
-                ).all()
-            )
-            current_runs = tuple(
-                (
-                    await session.execute(
-                        run_query.with_only_columns(
-                            MemorySelfReflectionRunModel.id,
-                            MemorySelfReflectionRunModel.bot_user_id,
-                            MemorySelfReflectionRunModel.first_event_id,
-                            MemorySelfReflectionRunModel.last_event_id,
-                        )
-                    )
-                ).all()
-            )
-            current_run_ids = {
-                key: tuple(
-                    row.id
-                    for row in current_runs
-                    if (row.bot_user_id, row.first_event_id, row.last_event_id) == key
-                )
-                for key in expected_runs
-            }
-            existing_facts = set(
-                await session.scalars(
-                    select(MemorySelfReflectionResultModel.fact_id).where(
-                        MemorySelfReflectionResultModel.fact_id.in_(
-                            tuple(
-                                row.new_fact_id
-                                for row in current_receipts
-                                if row.new_fact_id is not None
-                            )
-                        )
-                    )
-                )
-            )
-            values = []
-            for current_receipt in current_receipts:
-                original = original_receipts[current_receipt.id]
-                if any(
-                    getattr(current_receipt, field) != getattr(original, field)
-                    for field in (
-                        "executed_by_bot_user_id",
-                        "delegation_mode",
-                        "decision_actor_type",
-                        "new_fact_id",
-                        "created_at",
-                    )
-                ):
-                    continue
-                key = prepared[current_receipt.id]
-                run_ids = current_run_ids[key]
-                if len(run_ids) != 1 or set(run_ids) != set(expected_runs[key]):
-                    continue
-                if (
-                    current_receipt.new_fact_id is None
-                    or current_receipt.new_fact_id in existing_facts
-                ):
-                    continue
-                existing_facts.add(current_receipt.new_fact_id)
-                values.append(
-                    {
-                        "run_id": run_ids[0],
-                        "fact_id": current_receipt.new_fact_id,
-                        "result_kind": "episode",
-                        "result_index": 1,
-                        "created_at": current_receipt.created_at,
-                    }
-                )
-            if values:
-                await session.execute(
-                    insert(MemorySelfReflectionResultModel).values(values).on_conflict_do_nothing()
-                )
 
     async def _ensure_run(self, *, create: bool = True) -> int | None:
         now = datetime.now(UTC)
@@ -581,25 +421,6 @@ class EvidenceCompactionService:
         if nonempty:
             selected.extend((nonempty[0], nonempty[-1]))
         selected.extend(row for row in evidence if row.tool_receipt_id is not None)
-        authority_rank = {
-            "explicit": 5,
-            "agent_reflection": 4,
-            "self_report": 3,
-            "group_report": 2,
-            "third_party": 1,
-        }
-        selected.extend(
-            sorted(
-                evidence,
-                key=lambda row: (
-                    authority_rank.get(row.authority, 0),
-                    row.confidence,
-                    row.created_at,
-                    row.id,
-                ),
-                reverse=True,
-            )
-        )
         unique: list[Any] = []
         seen: set[int] = set()
         for row in selected:
@@ -831,11 +652,9 @@ class EvidenceCompactionWorker:
         *,
         settings: Settings,
         service: EvidenceCompactionService,
-        process_lock: asyncio.Lock,
     ) -> None:
         self._settings = settings
         self._service = service
-        self._process_lock = process_lock
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self.waiting_for_lock = False
@@ -865,8 +684,7 @@ class EvidenceCompactionWorker:
     async def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                self.waiting_for_lock = self._process_lock.locked()
-                async with asyncio.timeout(_BATCH_TIMEOUT_SECONDS), self._process_lock:
+                async with asyncio.timeout(_BATCH_TIMEOUT_SECONDS):
                     self.waiting_for_lock = False
                     self.holding_lock = True
                     try:

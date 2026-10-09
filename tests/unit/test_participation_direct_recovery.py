@@ -1,7 +1,7 @@
 """A lost controller checkpoint does not replay an already accepted direct source."""
 
 from sqlalchemy import select, update
-from tests.unit.test_semantic_participation_host import _event_and_route, _host, _item
+from tests.support.semantic_participation_host_helpers import _event_and_route, _host, _item
 
 from qq_ai_bot.runtime.work_schema_v1 import inputs, work
 from qq_ai_bot.services.participation_snapshot import AsyncSnapshotStore

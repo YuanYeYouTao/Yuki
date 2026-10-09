@@ -87,7 +87,6 @@ class EmojiReplacementService:
                 output_model=EmojiReplacementOutput,
                 temperature=0,
                 max_output_tokens=None,
-                allow_text_json=True,
             )
         except (LLMError, StructuredTaskError, TimeoutError):
             return ranked[0]

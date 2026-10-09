@@ -36,7 +36,6 @@ from qq_ai_bot.memory.dream.models import (
     DreamOperationStatus,
     DreamOperationType,
 )
-from qq_ai_bot.memory.dream.quality import validate_output_lengths
 from qq_ai_bot.memory.dream.repository import fact_signature
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
@@ -53,11 +52,9 @@ from qq_ai_bot.memory.enums import (
     MemorySourceType,
     MemoryStateAction,
     MemoryStatus,
-    MemorySubjectBasis,
     MemoryTemporalMode,
     SelfMemoryVisibility,
 )
-from qq_ai_bot.memory.extraction import MemoryClaim
 from qq_ai_bot.memory.job_claims import fence_memory_job_claim
 from qq_ai_bot.memory.models import (
     MemoryCandidate,
@@ -69,7 +66,6 @@ from qq_ai_bot.memory.models import (
     MemoryResolutionPlan,
 )
 from qq_ai_bot.memory.mutation.models import (
-    SELF_MEMORY_CATEGORIES,
     MemoryDecisionActorType,
     MemoryMutationAppliedOperation,
     MemoryMutationCandidate,
@@ -80,14 +76,12 @@ from qq_ai_bot.memory.mutation.models import (
     MemoryMutationRequestBasis,
     MemoryMutationResult,
     MemoryMutationSelector,
-    MemoryMutationTarget,
     SelfMemoryVisibilityMode,
 )
 from qq_ai_bot.memory.mutation.repository import MemoryMutationReceiptRepository
 from qq_ai_bot.memory.partition import (
     MemoryFactCanonicalOwners,
     MemoryPartitionResolutionError,
-    format_canonical_memory_partition,
 )
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import ResolvedSubject, SubjectResolver
@@ -204,25 +198,7 @@ class MemoryMutationService:
 
         if not facts:
             raise ValueError("dream anchor selection requires at least one fact")
-        authority_rank = {
-            MemoryAuthority.THIRD_PARTY: 0,
-            MemoryAuthority.GROUP_REPORT: 1,
-            MemoryAuthority.SELF_REPORT: 2,
-            MemoryAuthority.AGENT_REFLECTION: 3,
-            MemoryAuthority.EXPLICIT: 4,
-        }
-        return max(
-            facts,
-            key=lambda fact: (
-                fact.source_type is MemorySourceType.EXPLICIT
-                or fact.authority is MemoryAuthority.EXPLICIT,
-                fact.status is MemoryStatus.ACTIVE,
-                authority_rank[fact.authority],
-                fact.evidence_count,
-                fact.updated_at.timestamp(),
-                -fact.id,
-            ),
-        )
+        return min(facts, key=lambda fact: fact.id)
 
     async def mutate_dream(
         self,
@@ -243,8 +219,6 @@ class MemoryMutationService:
 
         if not source_facts:
             raise ValueError("dream mutation requires source facts")
-        if content is not None:
-            validate_output_lengths((content,))
         current: list[MemoryFact] = []
         for snapshot in source_facts:
             fact = await self._facts.repository.get_fact(snapshot.id, session=session)
@@ -385,7 +359,7 @@ class MemoryMutationService:
             outcome = MemoryMutationOutcome.COMMITTED if changed else outcome
         elif operation_type is DreamOperationType.SYNTHESIZE:
             assert anchor is not None
-            normalized = normalize_memory_text(content or "", maximum=4000)
+            normalized = normalize_memory_text(content or "")
             if not normalized:
                 raise ValueError("dream synthesis content cannot be empty")
             for source in sources:
@@ -427,9 +401,6 @@ class MemoryMutationService:
                 validation_version=anchor.validation_version,
                 review_state=anchor.review_state,
             )
-            collision = await self._facts.repository.find_active(replacement, session=session)
-            if collision is not None:
-                raise ValueError("dream synthesis collided with an unrelated active key")
             created = await self._facts.repository.create_fact(
                 replacement,
                 normalized_content=normalized.casefold(),
@@ -481,22 +452,13 @@ class MemoryMutationService:
                 for output in recompose_outputs
             ):
                 raise ValueError("dream recompose output has invalid sources")
-            validate_output_lengths(
-                tuple(output.content for output in recompose_outputs),
-                per_output=self._settings.memory_dream_episode_max_characters,
-            )
             normalized_outputs = tuple(
-                normalize_memory_text(output.content, maximum=4000) for output in recompose_outputs
+                normalize_memory_text(output.content) for output in recompose_outputs
             )
             if any(not item for item in normalized_outputs):
                 raise ValueError("dream recompose content cannot be empty")
             if len({item.casefold() for item in normalized_outputs}) != len(normalized_outputs):
                 raise ValueError("dream recompose content must be unique")
-            if any(
-                len(item) > self._settings.memory_dream_episode_max_characters
-                for item in normalized_outputs
-            ):
-                raise ValueError("dream recompose content exceeds the character limit")
             for source in sources:
                 await self._facts.repository.transition(
                     source.id,
@@ -555,9 +517,6 @@ class MemoryMutationService:
                     validation_version=output_anchor.validation_version,
                     review_state=output_anchor.review_state,
                 )
-                collision = await self._facts.repository.find_active(replacement, session=session)
-                if collision is not None:
-                    raise ValueError("dream recompose collided with an active key")
                 created = await self._facts.repository.create_fact(
                     replacement,
                     normalized_content=normalized.casefold(),
@@ -590,7 +549,9 @@ class MemoryMutationService:
                         source_event_id=None,
                         session=session,
                     )
-                created_ids.append(created.id)
+                created_ids.append(
+                    created.id,
+                )
             output_fact_ids = tuple(created_ids)
             changed = True
             outcome = MemoryMutationOutcome.COMMITTED
@@ -622,7 +583,9 @@ class MemoryMutationService:
             for source in sources:
                 if source.id == anchor.id:
                     continue
-                if self._dream_explicit(source):
+                if self._dream_explicit(
+                    source,
+                ):
                     raise ValueError("dream cannot invalidate an explicit memory")
                 await self._facts.repository.add_relation(
                     source_fact_id=source.id,
@@ -844,7 +807,6 @@ class MemoryMutationService:
             for fact_id, rows in remaining_evidence.items():
                 session.info["memory_evidence_rows"][fact_id] = rows
                 session.info["memory_evidence_counts"][fact_id] = len(rows)
-                session.info["memory_evidence_aggregates"].pop(fact_id, None)
         if added_relations:
             await session.execute(
                 delete(MemoryFactRelationModel).where(
@@ -1144,7 +1106,7 @@ class MemoryMutationService:
                 or receipt.bot_user_id != source.bot_user_id
             ):
                 raise MemoryMutationRejected("initiative_evidence_source_mismatch")
-            quote = (request.evidence_quote or "")[:500].strip()
+            quote = (request.evidence_quote or "").strip()
             if not quote or quote not in receipt.result_excerpt:
                 raise MemoryMutationRejected("evidence_quote_not_in_tool_receipt")
             if (
@@ -1208,7 +1170,7 @@ class MemoryMutationService:
             "target": target_payload,
             "namespace": context.delegation_mode,
             "memory_key": request.memory_key or (fact.memory_key if fact else ""),
-            "content": normalize_memory_text(request.new_content or "", maximum=4000).casefold(),
+            "content": normalize_memory_text(request.new_content or "").casefold(),
         }
         return _PreparedMutation(
             request,
@@ -1260,10 +1222,7 @@ class MemoryMutationService:
                     context.event, evidence_sources, session=source_session
                 )
             claim_resolution: MemoryClaimResolution | None = None
-            if request.operation in {
-                MemoryMutationOperation.CREATE,
-                MemoryMutationOperation.CORRECT,
-            }:
+            if request.operation is MemoryMutationOperation.CREATE:
                 if prepared.claim is None:
                     raise MemoryMutationRejected("validated_claim_required")
                 claim_resolution = await self._processor.resolve(
@@ -1377,6 +1336,12 @@ class MemoryMutationService:
                                 raise MemoryMutationRejected("merge_fact_required")
                             await self._facts.prepare_evidence_copy(
                                 (source.id,), target, session=session
+                            )
+                        elif request.operation is MemoryMutationOperation.CORRECT:
+                            source = self._required_fact(prepared)
+                            assert prepared.claim is not None
+                            await self._facts.prepare_evidence_copy(
+                                (source.id,), prepared.claim.fact, session=session,
                             )
                         elif replacement is not None:
                             source = self._required_fact(prepared)
@@ -1657,10 +1622,9 @@ class MemoryMutationService:
         common = {
             "event_id": event.id,
             "target": target_payload,
-            "memory_key": normalize_memory_text(claim.fact.memory_key, maximum=128),
+            "memory_key": normalize_memory_text(claim.fact.memory_key),
             "content": normalize_memory_text(
                 claim.fact.content,
-                maximum=4000,
             ).casefold(),
         }
         claim_fingerprint = _fingerprint(common)
@@ -1821,68 +1785,6 @@ class MemoryMutationService:
         await self._schedule_embedding_after_commit(receipt.new_fact_id)
         return MemoryMutationResult.from_receipt(receipt, deduplicated=False)
 
-    async def mutate_reflection(
-        self,
-        fact: MemoryFact,
-        *,
-        operation: MemoryMutationOperation,
-        reason: MemoryInvalidationReason | str,
-        merge_fact_id: int | None = None,
-    ) -> MemoryMutationResult:
-        """Apply one bounded background-governance decision using existing evidence."""
-
-        evidence_rows = await self._facts.list_evidence(fact.id, limit=20)
-        evidence = next((row for row in evidence_rows if row.event_id is not None), None)
-        if evidence is None or evidence.event_id is None:
-            return self._rejected(operation, "reflection_evidence_not_found")
-        event = await self._ledger.get_event(evidence.event_id)
-        if event is None:
-            return self._rejected(operation, "reflection_trigger_event_not_found")
-        quote = (
-            evidence.excerpt
-            if evidence.excerpt and evidence.excerpt in event.content
-            else event.content[:500]
-        )
-        reason_code = reason.value if isinstance(reason, MemoryInvalidationReason) else reason
-        return await self.mutate_resolved(
-            MemoryMutationRequest(
-                operation=operation,
-                fact_id=fact.id,
-                merge_fact_id=merge_fact_id,
-                target=MemoryMutationTarget(
-                    subject_ref="current_speaker",
-                    scope_type=fact.scope_type,
-                ),
-                reason=reason_code,
-                evidence_quote=quote,
-            ),
-            MemoryMutationContext(
-                event=event,
-                conversation_key=(
-                    format_canonical_memory_partition(
-                        person_id=(
-                            fact.canonical_subject_person_id
-                            if fact.canonical_subject_space_id is None
-                            else None
-                        ),
-                        space_id=fact.canonical_subject_space_id,
-                    )
-                    + ":reflection"
-                ),
-                turn_origin="memory_reflection",
-                delegation_mode=f"reflection:{reason_code}"[:32],
-                trigger_actor_user_id=event.sender_user_id,
-                decision_actor_type=MemoryDecisionActorType.REFLECTION,
-                decision_actor_id="memory_maintenance",
-                executed_by_bot_user_id=event.bot_user_id,
-            ),
-            target=ResolvedSubject(
-                fact.scope_type,
-                fact.subject_user_id,
-                fact.group_id,
-            ),
-        )
-
     async def _prepare(
         self,
         request: MemoryMutationRequest,
@@ -1997,7 +1899,7 @@ class MemoryMutationService:
             actor_person_id=actor_person_id,
         )
         if trusted_self_reflection and context.evidence_tool_receipt_id is not None:
-            quote = normalize_memory_text(request.evidence_quote or "", maximum=500)
+            quote = normalize_memory_text(request.evidence_quote or "")
         elif trusted_self_reflection:
             quote = self._self_reflection_evidence_quote(request, event)
         else:
@@ -2036,11 +1938,9 @@ class MemoryMutationService:
         )
         content = normalize_memory_text(
             request.new_content or (fact.content if fact is not None else ""),
-            maximum=4000,
         )
         key = normalize_memory_text(
             request.memory_key or (fact.memory_key if fact is not None else ""),
-            maximum=128,
         )
         target_payload = _canonical_target_payload(
             target.scope_type,
@@ -2093,7 +1993,28 @@ class MemoryMutationService:
         claim_resolution: MemoryClaimResolution | None = None,
     ) -> _AppliedMutation:
         operation = prepared.request.operation
-        if operation in {MemoryMutationOperation.CREATE, MemoryMutationOperation.CORRECT}:
+        if operation is MemoryMutationOperation.CORRECT:
+            fact = self._required_fact(prepared)
+            claim = prepared.claim
+            if claim is None:
+                raise MemoryMutationRejected("validated_claim_required")
+            updated = await self._facts.version_fact(
+                fact.id,
+                replacement=claim.fact,
+                evidence=prepared.evidence,
+                actor_user_id=prepared.context.trigger_actor_user_id,
+                reason_code="explicit_correction",
+                copy_existing_evidence=True,
+                confirmed_at=prepared.context.occurred_at,
+                session=session,
+            )
+            return self._claim_result(
+                prepared,
+                MemoryResolutionAction.SUPERSEDE,
+                updated.id if updated else None,
+                "explicit_correction",
+            )
+        if operation is MemoryMutationOperation.CREATE:
             claim = prepared.claim
             if claim is None:
                 raise MemoryMutationRejected("validated_claim_required")
@@ -2108,8 +2029,8 @@ class MemoryMutationService:
             )
         if operation is MemoryMutationOperation.CONTEST and prepared.request.new_content:
             claim = prepared.claim
-            fact = prepared.fact
-            if claim is None or fact is None:
+            fact = self._required_fact(prepared)
+            if claim is None:
                 raise MemoryMutationRejected("contest_fact_required")
             result = await self._facts.apply_claim(
                 claim,
@@ -2132,7 +2053,6 @@ class MemoryMutationService:
                     append_evidence=True,
                     create_new_fact=True,
                 ),
-                limit=self._scope_limit(claim.fact.scope_type),
                 session=session,
             )
             return _AppliedMutation(
@@ -2264,12 +2184,10 @@ class MemoryMutationService:
             kind=request.kind or fact.kind,
             memory_key=normalize_memory_text(
                 request.memory_key or fact.memory_key,
-                maximum=128,
             ),
-            category=normalize_memory_text(request.category or fact.category, maximum=64),
+            category=normalize_memory_text(request.category or fact.category),
             content=normalize_memory_text(
                 request.new_content or fact.content,
-                maximum=4000,
             ),
             importance=request.importance or fact.importance,
             confidence=request.confidence,
@@ -2301,7 +2219,6 @@ class MemoryMutationService:
             evidence=prepared.evidence,
             actor_user_id=prepared.context.trigger_actor_user_id,
             reason_code="memory_reassigned" if reassign else "metadata_updated",
-            limit=self._scope_limit(replacement.scope_type),
             copy_existing_evidence=True,
             copied_evidence_authority=authority if reassign else None,
             confirmed_at=prepared.context.occurred_at,
@@ -2341,131 +2258,55 @@ class MemoryMutationService:
             return None
         if request.operation is MemoryMutationOperation.CONTEST and request.new_content is None:
             return None
-        content = normalize_memory_text(request.new_content or "", maximum=4000)
+        content = normalize_memory_text(request.new_content or "")
         key = normalize_memory_text(
             request.memory_key or (fact.memory_key if fact is not None else ""),
-            maximum=128,
         )
         category = normalize_memory_text(
             request.category or (fact.category if fact is not None else ""),
-            maximum=64,
         )
         if not content or not key or not category:
             raise MemoryMutationRejected("memory_content_key_and_category_required")
-        automatic_creation = request.operation is MemoryMutationOperation.CREATE and (
-            request.request_basis is MemoryMutationRequestBasis.AGENT_INITIATED
-            or context.decision_actor_type
-            in {
-                MemoryDecisionActorType.WORKER,
-                MemoryDecisionActorType.REFLECTION,
-                MemoryDecisionActorType.SYSTEM,
-            }
-            or context.turn_origin in {"plugin_background", "scheduled_automation"}
-        )
-        if automatic_creation:
-            from qq_ai_bot.memory.enums import MemoryRetention
-            from qq_ai_bot.memory.quality_policy import AutomaticValuePolicy
-
-            value = AutomaticValuePolicy.evaluate(
-                importance=request.importance or 0,
-                retention=MemoryRetention.DURABLE,
-                value_reason=(
-                    request.reason if request.reason != "agent_requested_memory_change" else ""
-                ),
-            )
-            if not value.accepted:
-                raise MemoryMutationRejected(value.reason_code)
-        quote = evidence.excerpt
-        claim = MemoryClaim(
-            operation=(
-                MemoryClaimOperation.ASSERT
-                if request.operation is MemoryMutationOperation.CREATE
-                else MemoryClaimOperation.CORRECT
-            ),
-            subject_ref=subject_ref,
-            scope_type=resolved_target.scope_type,
-            kind=request.kind or (fact.kind if fact is not None else MemoryKind.FACT),
-            memory_key=key,
-            category=category,
-            content=content,
-            evidence_quote=quote,
-            importance=request.importance or (fact.importance if fact is not None else 3),
-            confidence=request.confidence,
-            source_type=source_type,
-            subject_basis=(
-                MemorySubjectBasis.GROUP
-                if resolved_target.scope_type is MemoryScopeType.GROUP
-                else MemorySubjectBasis.REPLY_SUBJECT
-                if subject_ref == "reply_author"
-                else MemorySubjectBasis.MENTIONED_SUBJECT
-                if subject_ref.startswith("mentioned_")
-                else MemorySubjectBasis.OMITTED_SELF
-            ),
-            value_reason=request.reason,
-            temporal_mode=(
-                MemoryTemporalMode.TEMPORARY
+        try:
+            temporal = self._temporal.resolve(
+                mode=MemoryTemporalMode.TEMPORARY
                 if request.valid_until is not None
-                else MemoryTemporalMode.PERSISTENT
-            ),
-            valid_from=request.valid_from,
-            valid_until=request.valid_until,
-        )
-        direct_target = target_override or (
-            resolved_target
-            if request.target is None or resolved_target.scope_type is MemoryScopeType.SELF
-            else None
-        )
-        if direct_target is not None:
-            try:
-                temporal = self._temporal.resolve(
-                    mode=claim.temporal_mode,
-                    valid_from=claim.valid_from,
-                    valid_until=claim.valid_until,
-                    occurred_at=context.occurred_at,
-                    timezone_name=self._settings.default_timezone,
-                )
-            except ValueError as exc:
-                raise MemoryMutationRejected("invalid_memory_temporal_range") from exc
-            authority, _source_type = self._provenance(
-                direct_target,
-                context,
-                request,
-                actor_owns_target=actor_owns_target,
-            )
-            return ValidatedMemoryClaim(
-                operation=claim.operation,
-                fact=MemoryFactCreate(
-                    scope_type=direct_target.scope_type,
-                    subject_user_id=direct_target.subject_user_id,
-                    group_id=direct_target.group_id,
-                    visibility_type=direct_target.visibility_type,
-                    visibility_user_id=direct_target.visibility_user_id,
-                    visibility_group_id=direct_target.visibility_group_id,
-                    kind=claim.kind,
-                    memory_key=key,
-                    category=category,
-                    content=content,
-                    importance=claim.importance,
-                    confidence=claim.confidence,
-                    source_type=source_type,
-                    authority=authority,
-                    valid_from=temporal.valid_from,
-                    valid_until=temporal.valid_until,
-                    last_audited_at=(
-                        datetime.now(UTC) if request.review_state is not None else None
-                    ),
-                    review_state=request.review_state or MemoryReviewState.VERIFIED,
-                ),
-                evidence=evidence,
-                subject_is_speaker=actor_owns_target,
+                else MemoryTemporalMode.PERSISTENT,
+                valid_from=request.valid_from,
+                valid_until=request.valid_until,
                 occurred_at=context.occurred_at,
+                timezone_name=self._settings.default_timezone,
             )
-        if context.event is None:
-            raise MemoryMutationRejected("claim_not_supported_by_current_event")
-        validated = self._processor.validate(claim, context.event)
-        if validated is None:
-            raise MemoryMutationRejected("claim_not_supported_by_current_event")
-        return validated
+        except ValueError as exc:
+            raise MemoryMutationRejected("invalid_memory_temporal_range") from exc
+        return ValidatedMemoryClaim(
+            operation=MemoryClaimOperation.ASSERT
+            if request.operation is MemoryMutationOperation.CREATE
+            else MemoryClaimOperation.CORRECT,
+            fact=MemoryFactCreate(
+                scope_type=resolved_target.scope_type,
+                subject_user_id=resolved_target.subject_user_id,
+                group_id=resolved_target.group_id,
+                visibility_type=resolved_target.visibility_type,
+                visibility_user_id=resolved_target.visibility_user_id,
+                visibility_group_id=resolved_target.visibility_group_id,
+                kind=request.kind or (fact.kind if fact else MemoryKind.FACT),
+                memory_key=key,
+                category=category,
+                content=content,
+                importance=request.importance or (fact.importance if fact else 3),
+                confidence=request.confidence,
+                source_type=source_type,
+                authority=evidence.authority,
+                valid_from=temporal.valid_from,
+                valid_until=temporal.valid_until,
+                last_audited_at=datetime.now(UTC) if request.review_state is not None else None,
+                review_state=request.review_state or MemoryReviewState.VERIFIED,
+            ),
+            evidence=evidence,
+            subject_is_speaker=actor_owns_target,
+            occurred_at=context.occurred_at,
+        )
 
     async def _load_fact(self, fact_id: int | None) -> MemoryFact | None:
         if fact_id is None:
@@ -2483,19 +2324,15 @@ class MemoryMutationService:
         statuses: tuple[MemoryStatus, ...],
     ) -> MemoryFact:
         memory_key = (
-            normalize_memory_text(selector.memory_key, maximum=128)
-            if selector.memory_key is not None
-            else None
+            normalize_memory_text(selector.memory_key) if selector.memory_key is not None else None
         )
         normalized_content = (
-            normalize_memory_text(selector.old_content, maximum=4000)
+            normalize_memory_text(selector.old_content)
             if selector.old_content is not None
             else None
         )
         category = (
-            normalize_memory_text(selector.category, maximum=64)
-            if selector.category is not None
-            else None
+            normalize_memory_text(selector.category) if selector.category is not None else None
         )
         if memory_key == "":
             memory_key = None
@@ -2644,57 +2481,16 @@ class MemoryMutationService:
     ) -> None:
         if target.scope_type is not MemoryScopeType.SELF:
             return
-        category = normalize_memory_text(
-            request.category or (fact.category if fact is not None else ""),
-            maximum=64,
-        ).casefold()
-        if category and category not in SELF_MEMORY_CATEGORIES:
-            raise MemoryMutationRejected("invalid_self_memory_category")
-        keys = (
-            request.memory_key,
-            fact.memory_key if fact is not None else None,
-            merge_fact.memory_key if merge_fact is not None else None,
-        )
-        if any(
-            MemoryMutationService._is_protected_self_key(key) for key in keys if key is not None
-        ):
-            raise MemoryMutationRejected("protected_self_memory_key")
-        kind = request.kind or (fact.kind if fact is not None else MemoryKind.FACT)
-        if request.operation in {
-            MemoryMutationOperation.CREATE,
-            MemoryMutationOperation.CORRECT,
-        } and ((kind is MemoryKind.EPISODE) != (category == "self_episode")):
-            raise MemoryMutationRejected("self_episode_kind_category_mismatch")
-        if target.visibility_type is SelfMemoryVisibility.GLOBAL:
-            if kind is MemoryKind.EPISODE or category == "self_episode":
-                raise MemoryMutationRejected("self_episode_cannot_be_global")
-            if (
-                event is not None
-                and event.scope_type is ScopeType.PRIVATE
-                and category
-                not in {
-                    "self_preference",
-                    "self_reflection",
-                    "self_principle",
-                }
-            ):
+        if target.visibility_type is SelfMemoryVisibility.GLOBAL and event is not None:
+            category = normalize_memory_text(
+                request.category or (fact.category if fact else "")
+            ).casefold()
+            if event.scope_type is ScopeType.PRIVATE and category not in {
+                "self_preference",
+                "self_reflection",
+                "self_principle",
+            }:
                 raise MemoryMutationRejected("private_self_fact_cannot_be_global")
-
-    @staticmethod
-    def _is_protected_self_key(value: str) -> bool:
-        key = normalize_memory_text(value, maximum=128).casefold()
-        if key in {"identity:name", "identity:age", "identity:birthday"}:
-            return True
-        return key.startswith(
-            (
-                "identity:appearance:",
-                "core:",
-                "safety:",
-                "system:",
-                "permission:",
-                "runtime:",
-            )
-        )
 
     @staticmethod
     def _validate_fact_requirements(
@@ -2841,25 +2637,21 @@ class MemoryMutationService:
             available = tuple(
                 item
                 for item in SubjectResolver.available(event)
-                if item.subject_ref.startswith("mentioned_")
+                if item.subject_ref.startswith("member_")
             )
             if len(available) != 1:
                 raise MemoryMutationRejected("mentioned_user_is_ambiguous")
             return available[0].subject_ref
-        if normalized.startswith("mentioned_user_"):
-            return "mentioned_" + normalized.removeprefix("mentioned_user_")
         return normalized
 
     @staticmethod
     def _evidence_quote(request: MemoryMutationRequest, event_content: str) -> str:
-        source = normalize_memory_text(event_content, maximum=4000)
+        source = normalize_memory_text(event_content)
         if not source:
             raise MemoryMutationRejected("empty_trigger_event")
         if request.evidence_quote is None:
-            if len(source) > 500:
-                raise MemoryMutationRejected("evidence_quote_required_for_long_event")
             return source
-        quote = normalize_memory_text(request.evidence_quote, maximum=500)
+        quote = normalize_memory_text(request.evidence_quote)
         if not quote or quote not in source:
             raise MemoryMutationRejected("evidence_quote_not_in_current_event")
         return quote
@@ -2871,11 +2663,10 @@ class MemoryMutationService:
     ) -> str:
         source = normalize_memory_text(
             ChatEventPromptRenderer.event_content(event, None, ""),
-            maximum=4000,
         )
         if not source:
             raise MemoryMutationRejected("empty_trigger_event")
-        quote = normalize_memory_text(request.evidence_quote or "", maximum=500)
+        quote = normalize_memory_text(request.evidence_quote or "")
         if not quote or quote not in source:
             raise MemoryMutationRejected("evidence_quote_not_in_current_event")
         return quote
@@ -2933,15 +2724,6 @@ class MemoryMutationService:
         if authority is MemoryAuthority.GROUP_REPORT:
             return MemoryEvidenceRelation.GROUP_STATEMENT
         return MemoryEvidenceRelation.SELF_STATEMENT
-
-    def _scope_limit(self, scope_type: MemoryScopeType) -> int:
-        if scope_type is MemoryScopeType.PERSON:
-            return self._settings.person_memory_max_entries
-        if scope_type is MemoryScopeType.GROUP:
-            return self._settings.group_memory_max_entries
-        if scope_type is MemoryScopeType.SELF:
-            return self._settings.person_memory_max_entries
-        return self._settings.person_group_memory_max_entries
 
     @staticmethod
     def _invalidation_reason(prepared: _PreparedMutation) -> MemoryInvalidationReason:

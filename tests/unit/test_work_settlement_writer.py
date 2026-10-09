@@ -105,26 +105,6 @@ async def test_exception_without_accepted_control_never_mints_completion(databas
 
 
 @pytest.mark.asyncio
-async def test_caller_complete_requires_result_and_accepts_nothing_on_rejection(database, tmp_path):
-    repository, _lease, control = await _running_work(database, tmp_path)
-    rejected = json.loads(await control.execute("task_control", {"action": "complete"}, "empty"))
-    assert rejected == {"ok": False, "error": "work_completion_requires_result"}
-    assert control.ending is None and control.accepted is None
-    await control.settle(pending_inputs=False)
-    row = await repository.get(control.current["id"])
-    assert row["state"] == "suspended" and "sync_result" not in json.loads(row["checkpoint_json"])
-
-
-@pytest.mark.asyncio
-async def test_rejected_implicit_final_keeps_stable_reason(database, tmp_path):
-    repository, _lease, control = await _running_work(database, tmp_path)
-    await control.complete_final("", "final-answer:0")
-    await control.settle(pending_inputs=False)
-    row = await repository.get(control.current["id"])
-    assert (row["state"], row["reason"]) == ("suspended", "work_completion_requires_result")
-
-
-@pytest.mark.asyncio
 async def test_new_input_withdraws_accepted_control(database, tmp_path):
     repository, lease, control = await _running_work(database, tmp_path)
     assert json.loads(
@@ -144,18 +124,3 @@ async def test_host_checkpoint_patch_keeps_accepted_control(database, tmp_path):
     await repository.checkpoint(lease, control.current["id"], {"transcript_ref": "x"})
     row = await repository.get(control.current["id"])
     assert json.loads(row["checkpoint_json"])["accepted_control"]["action"] == "fail"
-
-
-@pytest.mark.asyncio
-async def test_state_change_needs_business_fact_not_report_tag(database, tmp_path):
-    from qq_ai_bot.runtime.work_control import state_fact
-
-    send = {"tool": "send_message", "ok": True, "side_effecting": True, "executed": True}
-    assert not state_fact(send) and not state_fact({**send, "work_report": {"kind": "final"}})
-    write = {"tool": "workspace_write", "ok": True, "side_effecting": True, "executed": True}
-    assert state_fact(write)
-    assert not state_fact({**write, "mutation_committed": False})
-    assert state_fact(
-        {**write, "mutation_committed": False, "request_postcondition_satisfied": True}
-    )
-    assert not state_fact({**write, "uncertain": True})

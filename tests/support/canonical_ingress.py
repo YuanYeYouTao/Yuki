@@ -3,10 +3,11 @@
 from dataclasses import replace
 from types import SimpleNamespace
 
+from tests.support.gateway import napcat_registry
+
 from qq_ai_bot.identity.canonical_uow import CanonicalIngressUnitOfWork
 from qq_ai_bot.identity.ingress import CanonicalIngressResolver
 from qq_ai_bot.identity.routing import PresenceRouter
-from tests.support.gateway import napcat_registry
 
 
 async def _member(*args, **kwargs):

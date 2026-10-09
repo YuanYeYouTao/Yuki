@@ -9,8 +9,6 @@ from datetime import datetime
 
 from qq_ai_bot.memory.enums import (
     MemoryAccessMode,
-    MemoryContextMode,
-    MemoryRecallPurpose,
     MemoryRetrievalMode,
 )
 from qq_ai_bot.memory.runtime.contract import (
@@ -40,30 +38,6 @@ OPERATIONAL_LIFECYCLE_COUNTERS = (
     "memory_unknown_subject_rejections",
 )
 
-ADAPTIVE_MEMORY_STAGES = ("candidate", "selected", "injected", "used", "reinforced")
-ADAPTIVE_ATTRIBUTION_OUTCOMES = (
-    "interrupted",
-    "enqueue",
-    "duplicate",
-    "queue_full",
-    "expired",
-    "preempted",
-    "timeout",
-    "model_error",
-    "invalid",
-    "success",
-    "no_used",
-    "disabled",
-)
-ADAPTIVE_ATTRIBUTION_LATENCY_BUCKETS = ("lt_1s", "1_3s", "3_10s", "gte_10s")
-ADAPTIVE_REINFORCEMENT_SKIP_REASONS = (
-    "disabled",
-    "activation_unavailable",
-    "alpha_zero",
-    "not_used",
-    "fact_ineligible",
-)
-ADAPTIVE_ACTIVATION_BUCKETS = ("0_025", "025_050", "050_075", "075_100")
 MEMORY_MUTATION_TURN_OUTCOMES = (
     "attempted",
     "committed",
@@ -94,7 +68,6 @@ class MemoryRetrievalMetric:
     semantic_degraded: bool = False
     semantic_search_latency: float = 0
     hybrid_rank_latency: float = 0
-    intent_rerank_latency: float = 0
 
 
 class MemoryRetrievalMetrics:
@@ -103,7 +76,6 @@ class MemoryRetrievalMetrics:
     def __init__(self) -> None:
         self._latest: MemoryRetrievalMetric | None = None
         self._counts: Counter[str] = Counter()
-        self._attribution_queue_depth = 0
 
     @property
     def latest(self) -> MemoryRetrievalMetric | None:
@@ -126,7 +98,7 @@ class MemoryRetrievalMetrics:
             "selected=%d context_selected=%d fts_latency=%.6f total_latency=%.6f "
             "overview=%s short_fallback=%s referenced_people=%d semantic_candidates=%d "
             "semantic_selected=%d hybrid_selected=%d semantic_degraded=%s "
-            "semantic_latency=%.6f hybrid_latency=%.6f rerank_latency=%.6f",
+            "semantic_latency=%.6f hybrid_latency=%.6f",
             metric.mode.value,
             metric.query_hash,
             metric.target_count,
@@ -144,7 +116,6 @@ class MemoryRetrievalMetrics:
             metric.semantic_degraded,
             metric.semantic_search_latency,
             metric.hybrid_rank_latency,
-            metric.intent_rerank_latency,
         )
 
     def operational_snapshot(self) -> dict[str, int]:
@@ -158,24 +129,12 @@ class MemoryRetrievalMetrics:
         }
         return {name: int(values[name]) for name in OPERATIONAL_RETRIEVAL_COUNTERS}
 
-    def record_context_selected(self, metric: MemoryRetrievalMetric) -> None:
-        """Update the latest query projection without counting the query twice."""
-
-        previous = self._latest.context_selected_count if self._latest is not None else 0
-        self._latest = metric
-        self._counts["context_fact_count"] += max(
-            0,
-            metric.context_selected_count - previous,
-        )
-
 
 class MemoryLifecycleMetrics:
-    """Content-free counters and timestamps shared by consolidation and maintenance."""
+    """Content-free counters and timestamps for memory operations."""
 
     def __init__(self) -> None:
         self._counts: Counter[str] = Counter()
-        self._attribution_queue_depth = 0
-        self.classifier_recent_errors = 0
         self.maintenance_last_success_at: datetime | None = None
 
     def increment(self, name: str, count: int = 1) -> None:
@@ -238,35 +197,13 @@ class MemoryLifecycleMetrics:
                 )
             ),
             *(f"memory_access_{access.value}" for access in MemoryAccessMode),
-            *(f"memory_intent_mode_{mode.value}" for mode in MemoryContextMode),
-            *(f"memory_intent_purpose_{purpose.value}" for purpose in MemoryRecallPurpose),
-            *(f"memory_recall_{stage}_count" for stage in ADAPTIVE_MEMORY_STAGES),
-            *(f"memory_attribution_{outcome}_count" for outcome in ADAPTIVE_ATTRIBUTION_OUTCOMES),
-            *(
-                f"memory_attribution_latency_{bucket}_count"
-                for bucket in ADAPTIVE_ATTRIBUTION_LATENCY_BUCKETS
-            ),
-            *(
-                f"memory_reinforcement_skipped_{reason}_count"
-                for reason in ADAPTIVE_REINFORCEMENT_SKIP_REASONS
-            ),
-            *(f"memory_activation_bucket_{bucket}_count" for bucket in ADAPTIVE_ACTIVATION_BUCKETS),
-            "memory_activation_state_missing_count",
-            "memory_recall_receipts_cleaned_count",
-            "memory_attribution_used_count",
-            "memory_attribution_reinforced_count",
             "memory_mutation_locator_unique_count",
             "memory_mutation_locator_ambiguous_count",
             "memory_mutation_locator_not_found_count",
             *(f"memory_mutation_turn_{outcome}_count" for outcome in MEMORY_MUTATION_TURN_OUTCOMES),
         ]
         snapshot = {name: int(self._counts[name]) for name in names}
-        snapshot["memory_attribution_queue_depth"] = self._attribution_queue_depth
         return snapshot
-
-    def record_intent(self, *, mode: MemoryContextMode, purpose: MemoryRecallPurpose) -> None:
-        self.increment(f"memory_intent_mode_{mode.value}")
-        self.increment(f"memory_intent_purpose_{purpose.value}")
 
     def record_access(self, access: MemoryAccessMode) -> None:
         self.increment(f"memory_access_{access.value}")
@@ -286,49 +223,6 @@ class MemoryLifecycleMetrics:
         if outcome not in MEMORY_MUTATION_TURN_OUTCOMES:
             raise ValueError(f"unsupported memory mutation turn outcome: {outcome}")
         self.increment(f"memory_mutation_turn_{outcome}_count")
-
-    def record_recall_stage(self, stage: str, count: int) -> None:
-        if stage not in ADAPTIVE_MEMORY_STAGES:
-            raise ValueError(f"unsupported memory recall stage: {stage}")
-        self.increment(f"memory_recall_{stage}_count", count)
-
-    def record_attribution(self, outcome: str) -> None:
-        if outcome not in ADAPTIVE_ATTRIBUTION_OUTCOMES:
-            raise ValueError(f"unsupported memory attribution outcome: {outcome}")
-        self.increment(f"memory_attribution_{outcome}_count")
-
-    def set_attribution_queue_depth(self, depth: int) -> None:
-        self._attribution_queue_depth = max(0, depth)
-
-    def record_attribution_latency(self, seconds: float) -> None:
-        if seconds < 1:
-            bucket = "lt_1s"
-        elif seconds < 3:
-            bucket = "1_3s"
-        elif seconds < 10:
-            bucket = "3_10s"
-        else:
-            bucket = "gte_10s"
-        self.increment(f"memory_attribution_latency_{bucket}_count")
-
-    def record_reinforcement_skip(self, reason: str, count: int = 1) -> None:
-        if reason not in ADAPTIVE_REINFORCEMENT_SKIP_REASONS:
-            raise ValueError(f"unsupported reinforcement skip reason: {reason}")
-        self.increment(f"memory_reinforcement_skipped_{reason}_count", count)
-
-    def record_activation(self, value: float) -> None:
-        if value < 0.25:
-            bucket = "0_025"
-        elif value < 0.5:
-            bucket = "025_050"
-        elif value < 0.75:
-            bucket = "050_075"
-        else:
-            bucket = "075_100"
-        self.increment(f"memory_activation_bucket_{bucket}_count")
-
-    def record_classifier_error(self) -> None:
-        self.classifier_recent_errors += 1
 
     def record_maintenance_success(self, occurred_at: datetime) -> None:
         self.maintenance_last_success_at = occurred_at

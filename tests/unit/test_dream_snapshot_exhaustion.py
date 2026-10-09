@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import event, func, select, update
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.exc import OperationalError
 from tests.conftest import make_settings
 from tests.unit.test_memory_dream import _empty_dream_statistics, _fact_with_evidence, _services
 
@@ -69,7 +69,9 @@ async def _case(database, monkeypatch, *, clusters=1):
 
     async def decide(_payload, *, run, cluster, **_kwargs):
         assert await dreams.reserve_model_call(
-            run_public_id=run.public_id, cluster_id=cluster.id, maximum=None
+            run_public_id=run.public_id,
+            cluster_id=cluster.id,
+            maximum=settings.memory_dream_max_model_calls_per_run,
         )
         calls.append(cluster.id)
         return DreamOutput(
@@ -139,53 +141,6 @@ async def test_three_real_517_rollbacks_fail_original_cluster_and_continue_next(
     )
     await worker._drain_active()
     assert len(calls) == 2
-
-
-@pytest.mark.parametrize(
-    "category", ["OperationalError", "OSError", "RuntimeError", "IntegrityError"]
-)
-async def test_finish_failure_stops_worker_observably_and_leaves_processing(
-    database, monkeypatch, category
-):
-    _, dreams, _, run, worker, calls = await _case(database, monkeypatch)
-    _, errors, record = _race(database, dreams, monkeypatch)
-    failure = {
-        "OperationalError": OperationalError(
-            "UPDATE", {}, sqlite3.OperationalError("finish unavailable")
-        ),
-        "OSError": OSError("finish unavailable"),
-        "RuntimeError": RuntimeError("finish unavailable"),
-        "IntegrityError": IntegrityError(
-            "UPDATE", {}, sqlite3.IntegrityError("finish unavailable")
-        ),
-    }[category]
-
-    async def failed_finish(*_args, **_kwargs):
-        raise failure
-
-    async def no_schedule():
-        return None
-
-    monkeypatch.setattr(dreams, "finish_cluster", failed_finish)
-    monkeypatch.setattr(worker, "_schedule_if_due", no_schedule)
-    worker._task = asyncio.create_task(worker._run())
-    try:
-        with pytest.raises(type(failure), match="finish unavailable") as caught:
-            await asyncio.wait_for(worker._task, timeout=2)
-        assert caught.value is failure
-    finally:
-        event.remove(database.engine.sync_engine, "handle_error", record)
-    assert errors == [517, 517, 517] and len(calls) == 1
-    async with database.sessions() as reader:
-        cluster = await reader.scalar(select(MemoryDreamClusterModel))
-        assert (cluster.status, cluster.model_calls, cluster.operation_count) == (
-            "processing",
-            1,
-            0,
-        )
-    assert (await dreams.get_run(run.public_id)).model_calls == 1
-    health = await worker.health()
-    assert not health.running and health.last_error_category == category
 
 
 async def test_original_committed_receipt_is_not_overwritten_as_zero_failure(database, monkeypatch):

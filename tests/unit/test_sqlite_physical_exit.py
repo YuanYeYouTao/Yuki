@@ -9,7 +9,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.util.concurrency import await_only
-from tests.unit.test_sqlite_diagnostics import holders
+from tests.support.sqlite_diagnostics_helpers import holders
 
 from qq_ai_bot.persistence.sqlite_diagnostics import install_sqlite_diagnostics
 

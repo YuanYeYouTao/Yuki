@@ -27,10 +27,9 @@ from qq_ai_bot.deployment_setup.service import (
     build_model_profiles,
     commit_configuration,
     compose_profiles_with_features,
-    infer_main_protocol,
     load_plugin_setup_states,
+    main_protocol,
     model_profiles_use_flash,
-    preserve_model_search_settings,
     require_migrated_model_profiles,
     selected_gateway_providers,
     validate_configuration,
@@ -173,7 +172,7 @@ def _configure(paths: SetupPaths, ui: TerminalUI) -> int:
     initial = not paths.env.is_file()
     draft = _SetupDraft(
         environment=environment,
-        protocol=infer_main_protocol(paths.model_profiles, environment),
+        protocol=main_protocol(paths.model_profiles, environment),
         flash_enabled=model_profiles_use_flash(paths.model_profiles),
         initial=initial,
     )
@@ -310,6 +309,9 @@ def _page_basic(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
         ui,
         default=_real_value(environment.get("SUPERUSERS", "")),
     )
+    if not draft.initial:
+        ui.info("模型连接与任务路由请在 WebUI 的模型档案中修改。")
+        return
     draft.protocol = ui.choose(
         "主模型接入类型",
         (
@@ -336,7 +338,7 @@ def _page_basic(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
         )
     else:
         environment["LLM_PROVIDER"] = default_provider
-    ui.info("主模型必须支持思考和 Function Calling；原生搜索取决于供应商与模型能力。")
+    ui.info("主模型需支持 Function Calling；原生搜索取决于供应商与模型能力。")
     environment["LLM_BASE_URL"] = ui.ask(
         "主模型 Base URL",
         default=_real_value(environment.get("LLM_BASE_URL", "")),
@@ -575,7 +577,7 @@ def _review_and_commit(
     sections: tuple[str, ...],
     initial: bool,
 ) -> int:
-    write_model_profiles = initial or bool({"basic", "flash"}.intersection(sections))
+    write_model_profiles = initial or not paths.model_profiles.is_file()
     if write_model_profiles:
         profiles = build_model_profiles(
             main_protocol=draft.protocol,
@@ -586,10 +588,6 @@ def _review_and_commit(
             and draft.environment.get("WEB_MODE") == "native"
             and draft.environment.get("LLM_PROVIDER", "").casefold() == "deepseek",
         )
-        if not initial:
-            profiles = preserve_model_search_settings(
-                profiles, paths.model_profiles.read_text(encoding="utf-8")
-            )
     else:
         try:
             profiles = paths.model_profiles.read_text(encoding="utf-8")
@@ -666,7 +664,7 @@ def _select_sections(ui: TerminalUI, draft: _SetupDraft) -> tuple[str, ...]:
     }
     return ui.choose_many(
         "配置区块：",
-        tuple((section, labels[section]) for section in _SECTIONS),
+        tuple((section, labels[section]) for section in _SECTIONS if section != "flash"),
     )
 
 

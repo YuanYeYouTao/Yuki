@@ -6,8 +6,8 @@ import httpx
 from sqlalchemy import func, select
 from tests.conftest import make_settings
 from tests.support.model_executor import InjectedModelExecutor
-from tests.unit.test_relationships import append_user_event
-from tests.unit.test_rollup_scheduling import executor
+from tests.support.relationships_helpers import append_user_event
+from tests.support.rollup_scheduling_helpers import executor
 
 from qq_ai_bot.conversation.hydrate import bump_canonical_generation
 from qq_ai_bot.domain.conversations import ScopeType

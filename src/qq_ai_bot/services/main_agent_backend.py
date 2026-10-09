@@ -152,11 +152,6 @@ class MainAgentBackend(AgentToolBackend):
             MemoryReadPolicy.EAGER,
         }
 
-    async def confirm_memory_prompt_exposure(self) -> None:
-        session = self._memory()
-        if session is not None:
-            await session.confirm_prompt_exposure()
-
     def mark_native_web_used(self) -> None:
         """Apply post-Web isolation before same-response local calls execute."""
 
@@ -470,7 +465,6 @@ class MainAgentBackend(AgentToolBackend):
             effective_descriptor.namespace_id.startswith("memory.")
             and effective_descriptor.effect is CapabilityEffect.READ_STATE
         )
-        is_memory_write_tool = effective_descriptor.namespace_id == "memory.state.write"
         if is_memory_read_tool and not self._eager_memory_read():
             self._service._tool_metrics.record_automatic_memory_read_tool_call(
                 locator_fallback=False
@@ -680,9 +674,6 @@ class MainAgentBackend(AgentToolBackend):
                 self._web_calls_used += 1
                 self._web_was_used = True
         decoded = self._service._decode_tool_result(result)
-        session = self._memory()
-        if session is not None and (is_memory_write_tool or is_memory_read_tool):
-            await session.observe_tool_result(name, result)
         if self._is_mutating_call(call):
             if descriptor.provider_id != "admin" and not decoded.get("ok"):
                 self._admin_retry_constraint = None

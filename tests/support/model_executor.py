@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
 
-from qq_ai_bot.domain.messages import ChatRequest, ChatResponse, minimum_reasoning_effort
+from qq_ai_bot.domain.messages import ChatRequest, ChatResponse
 from qq_ai_bot.execution_trace.recorder import TraceRecorder
 from qq_ai_bot.model_runtime.capacity import ModelCapacity
 from qq_ai_bot.model_runtime.dispatch_guard import check_model_dispatch
@@ -38,8 +38,6 @@ class InjectedModelExecutor:
         del task, priority, canonical_conversation_id
         normalized = replace(
             request,
-            thinking_enabled=True,
-            reasoning_effort=minimum_reasoning_effort(request.reasoning_effort),
             request_shape_hash=request_shape_hash(
                 request,
                 provider="fake",
@@ -57,11 +55,7 @@ class InjectedModelExecutor:
 
     def capacity_request(self, task: ModelTask, request: ChatRequest) -> ChatRequest:
         del task
-        return replace(
-            request,
-            thinking_enabled=True,
-            reasoning_effort=minimum_reasoning_effort(request.reasoning_effort),
-        )
+        return request
 
     def structured_output_mode(self, task: ModelTask) -> StructuredOutputMode:
         del task

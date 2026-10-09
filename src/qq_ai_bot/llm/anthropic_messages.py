@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 from copy import deepcopy
-from dataclasses import replace
 from typing import Any
 
 import httpx
@@ -27,7 +26,6 @@ from qq_ai_bot.domain.messages import (
 )
 from qq_ai_bot.llm.base import (
     LLMEmptyResponseError,
-    LLMError,
     LLMInvalidRequestError,
     LLMInvalidResponseError,
     LLMUnsupportedFeatureError,
@@ -39,7 +37,7 @@ from qq_ai_bot.llm.protocol_state import (
     ordered_delta,
     tool_result_failed,
 )
-from qq_ai_bot.llm.vendor_policy import ChatWireOptions, effort_value, thinking_budget, wire_options
+from qq_ai_bot.llm.vendor_policy import ChatWireOptions, wire_options
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +48,7 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
 
     def __init__(self, *, options: ChatWireOptions | None = None, **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self.options = wire_options(self.provider_name, options)
+        self.options = wire_options("anthropic", options)
 
     def _path(self, request: ChatRequest) -> str:
         return "messages"
@@ -61,120 +59,6 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
             **self._headers,
             "x-api-key": self._api_key,
         }
-
-    async def complete(self, request: ChatRequest) -> ChatResponse:
-        """Resume a bounded server-search pause with the original opaque blocks."""
-        response = await super().complete(request)
-        for _ in range(2):
-            if response.incomplete_reason != "pause_turn":
-                return response
-            if response.continuation is None:
-                raise LLMInvalidResponseError("Claude search pause has no checkpoint")
-            from qq_ai_bot.runtime.work_activation import current_work_control
-
-            work = current_work_control.get()
-            if work is not None:
-                from qq_ai_bot.runtime.activation_outcome import SegmentBudgetReached
-
-                try:
-                    await work.reserve_request(auxiliary=True)
-                except SegmentBudgetReached:
-                    return response
-            try:
-                followup = await super().complete(
-                    replace(request, continuation=response.continuation, continuation_items=())
-                )
-            except LLMError as exc:
-                later = exc.diagnostics.get("usage")
-                later = later if isinstance(later, dict) else {}
-                previous = {
-                    "prompt_tokens": response.prompt_tokens,
-                    "completion_tokens": response.completion_tokens,
-                    "total_tokens": response.total_tokens,
-                    "cached_prompt_tokens": response.cached_prompt_tokens,
-                    "cache_creation_input_tokens": response.cache_creation_input_tokens,
-                    "cache_creation_5m_input_tokens": response.cache_creation_5m_input_tokens,
-                    "cache_creation_1h_input_tokens": response.cache_creation_1h_input_tokens,
-                }
-                # A partial input sum cannot serve as the denominator for a
-                # cache-read/write total spanning both physical requests.
-                complete_input = (
-                    previous["prompt_tokens"] is not None
-                    and integer(later.get("prompt_tokens")) is not None
-                )
-                usage = {
-                    key: (
-                        self._sum_known_usage(previous[key], later.get(key))
-                        if key in {"prompt_tokens", "completion_tokens", "total_tokens"}
-                        else self._add_usage(previous[key], integer(later.get(key)))
-                        if complete_input
-                        else None
-                    )
-                    for key in previous
-                }
-                logger.warning(
-                    "claude_search_pause_followup_failed category=%s",
-                    type(exc).__name__,
-                )
-                return replace(
-                    response,
-                    prompt_tokens=usage["prompt_tokens"],
-                    completion_tokens=usage["completion_tokens"],
-                    total_tokens=usage["total_tokens"],
-                    cached_prompt_tokens=usage["cached_prompt_tokens"],
-                    cache_creation_input_tokens=usage["cache_creation_input_tokens"],
-                    cache_creation_5m_input_tokens=usage["cache_creation_5m_input_tokens"],
-                    cache_creation_1h_input_tokens=usage["cache_creation_1h_input_tokens"],
-                )
-            response = replace(
-                followup,
-                content=response.content + followup.content,
-                latency_seconds=response.latency_seconds + followup.latency_seconds,
-                prompt_tokens=self._add_usage(response.prompt_tokens, followup.prompt_tokens),
-                completion_tokens=self._add_usage(
-                    response.completion_tokens, followup.completion_tokens
-                ),
-                total_tokens=self._add_usage(response.total_tokens, followup.total_tokens),
-                cached_prompt_tokens=self._add_usage(
-                    response.cached_prompt_tokens, followup.cached_prompt_tokens
-                ),
-                cache_creation_input_tokens=self._add_usage(
-                    response.cache_creation_input_tokens,
-                    followup.cache_creation_input_tokens,
-                ),
-                cache_creation_5m_input_tokens=self._add_usage(
-                    response.cache_creation_5m_input_tokens,
-                    followup.cache_creation_5m_input_tokens,
-                ),
-                cache_creation_1h_input_tokens=self._add_usage(
-                    response.cache_creation_1h_input_tokens,
-                    followup.cache_creation_1h_input_tokens,
-                ),
-                native_tool_events=response.native_tool_events + followup.native_tool_events,
-                citations=response.citations + followup.citations,
-                reasoning_content="\n".join(
-                    part
-                    for part in (response.reasoning_content, followup.reasoning_content)
-                    if part
-                )
-                or None,
-            )
-        # Let the Runner retain the opaque checkpoint and perform its own bounded
-        # incomplete-response recovery instead of losing a paid server-tool turn.
-        return response
-
-    @staticmethod
-    def _add_usage(first: int | None, second: int | None) -> int | None:
-        return first + second if first is not None and second is not None else None
-
-    @staticmethod
-    def _sum_known_usage(first: object, second: object) -> int | None:
-        values = [
-            value
-            for value in (first, second)
-            if isinstance(value, int) and not isinstance(value, bool) and value >= 0
-        ]
-        return sum(values) if values else None
 
     @staticmethod
     def _cache_creation_breakdown(usage: dict[str, Any]) -> tuple[int | None, int | None]:
@@ -312,7 +196,7 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
             payload["system"] = system
         if request.thinking_enabled:
             if self.options.reasoning == "budget":
-                budget = thinking_budget(self.options, request.reasoning_effort)
+                budget = self.options.thinking_budget_tokens
                 if budget >= payload["max_tokens"]:
                     raise LLMInvalidRequestError(
                         "Claude thinking budget must be below output limit"
@@ -323,8 +207,11 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
                 }
             elif self.options.reasoning == "effort":
                 payload["thinking"] = {"type": "adaptive"}
-                effort = effort_value(self.options, request.reasoning_effort)
-                payload["output_config"] = {"effort": effort}
+                effort = (
+                    request.reasoning_effort.value if request.reasoning_effort is not None else None
+                )
+                if effort is not None:
+                    payload["output_config"] = {"effort": effort}
             else:
                 raise LLMUnsupportedFeatureError("Claude requires adaptive effort or manual budget")
         if request.tools:
@@ -347,7 +234,7 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
             )
         if request.native_tools:
             payload.setdefault("tools", []).append(
-                {"type": "web_search_20250305", "name": "web_search", "max_uses": 5}
+                {"type": "web_search_20250305", "name": "web_search"}
             )
         if payload.get("tools"):
             # Claude caches tool definitions in order. The breakpoint must land

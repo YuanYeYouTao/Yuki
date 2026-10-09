@@ -1351,7 +1351,6 @@ class _MemoryFacade:
                 authority=MemoryAuthority.EXPLICIT,
                 excerpt=normalize_memory_text(
                     invocation.inbound.text if invocation.inbound is not None else "",
-                    maximum=500,
                 ),
             )
             if source_event_ids and invocation.source_event_id is not None
@@ -3070,7 +3069,7 @@ async def _visible_person_projection_fact(
 ) -> Any | None:
     if fact_id is None:
         return None
-    expected = normalize_memory_text(content, maximum=4000)
+    expected = normalize_memory_text(content)
     return next(
         (
             row

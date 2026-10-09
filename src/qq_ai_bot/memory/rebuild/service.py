@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import logging
 from dataclasses import dataclass, replace
 from typing import Any
 from weakref import WeakSet
@@ -25,6 +24,7 @@ from qq_ai_bot.memory.enums import (
     MemoryProcessingSource,
     MemoryRebuildCommitStatus,
     MemoryRebuildExpiredClaimPolicy,
+    MemoryRebuildItemStatus,
     MemoryRebuildReviewStatus,
     MemoryRebuildRunStatus,
     MemoryRebuildThirdPartyMode,
@@ -198,7 +198,12 @@ async def manage_rebuild_core(
     if run is None:
         raise ValueError("memory rebuild run not found")
     if action in {"approve", "reject"}:
-        if run.status is not MemoryRebuildRunStatus.REVIEW:
+        if run.status not in {
+            MemoryRebuildRunStatus.REVIEW,
+            MemoryRebuildRunStatus.COMMIT_PAUSED,
+            MemoryRebuildRunStatus.EXTRACTION_PAUSED,
+            MemoryRebuildRunStatus.FAILED,
+        }:
             raise ValueError("run is not ready for review")
         await repository.set_review(
             run_id,
@@ -222,23 +227,24 @@ async def manage_rebuild_core(
                 MemoryRebuildRunStatus.EXTRACTION_PAUSED: MemoryRebuildRunStatus.EXTRACTING,
                 MemoryRebuildRunStatus.COMMIT_PAUSED: MemoryRebuildRunStatus.COMMITTING,
             }.get(run.status)
-            if (
-                target is MemoryRebuildRunStatus.EXTRACTING
-                and run.extraction_fingerprint
-                != extraction_fingerprint(settings, model_name=model_name)
-            ):
-                raise ValueError("extraction_fingerprint_changed; create a new run")
         elif action == "retry":
-            if run.status is not MemoryRebuildRunStatus.FAILED:
-                raise ValueError("only failed runs can be retried")
+            if run.status not in {
+                MemoryRebuildRunStatus.FAILED,
+                MemoryRebuildRunStatus.REVIEW,
+                MemoryRebuildRunStatus.COMMIT_PAUSED,
+                MemoryRebuildRunStatus.EXTRACTION_PAUSED,
+            }:
+                raise ValueError("run is not ready for retry")
             target = await repository.reset_failed(run_id, session=session)
         elif action == "commit":
             if not settings.memory_rebuild_enabled:
                 raise RuntimeError("MEMORY_REBUILD_ENABLED is false")
-            if run.status is not MemoryRebuildRunStatus.REVIEW:
-                raise ValueError("run is not in review")
-            if await repository.pending_review_count(run_id, session=session):
-                raise ValueError("all proposals must be approved or rejected before commit")
+            if run.status not in {
+                MemoryRebuildRunStatus.REVIEW,
+                MemoryRebuildRunStatus.COMMIT_PAUSED,
+                MemoryRebuildRunStatus.EXTRACTION_PAUSED,
+            }:
+                raise ValueError("run is not ready for commit")
             target = MemoryRebuildRunStatus.COMMITTING
         else:
             raise ValueError("unsupported rebuild action")
@@ -469,7 +475,12 @@ class MemoryRebuildService:
     ) -> int:
         self._authorize(actor_user_id)
         run = await self._require(run_id)
-        if run.status is not MemoryRebuildRunStatus.REVIEW:
+        if run.status not in {
+            MemoryRebuildRunStatus.REVIEW,
+            MemoryRebuildRunStatus.COMMIT_PAUSED,
+            MemoryRebuildRunStatus.EXTRACTION_PAUSED,
+            MemoryRebuildRunStatus.FAILED,
+        }:
             raise ValueError("run is not ready for review")
         proposal_ids: tuple[int, ...] | None
         if selector.casefold() == "all":
@@ -529,17 +540,15 @@ class MemoryRebuildService:
     async def process_extraction_once(self, run: MemoryRebuildRun) -> int:
         if run.status is not MemoryRebuildRunStatus.EXTRACTING:
             return 0
-        if run.extraction_fingerprint != extraction_fingerprint(
-            self.settings,
-            model_name=self.extractor.model_name,
-        ):
-            await self.repository.transition(
-                run.public_id,
-                expected={MemoryRebuildRunStatus.EXTRACTING},
-                status=MemoryRebuildRunStatus.EXTRACTION_PAUSED,
-                error_category="extraction_fingerprint_changed",
+        pending = await self.repository.pending_extraction_events(
+            run.public_id, limit=self.settings.memory_rebuild_scan_batch_size
+        )
+        if pending:
+            semaphore = asyncio.Semaphore(self.settings.memory_rebuild_extraction_concurrency)
+            results = await asyncio.gather(
+                *(self._extract_one(run, event, semaphore) for event in pending)
             )
-            return 0
+            return sum(state == "processed" for state in results)
         scanned = await self.repository.item_count(run.public_id)
         if run.selection.maximum_events is not None and scanned >= run.selection.maximum_events:
             await self.repository.transition(
@@ -574,7 +583,7 @@ class MemoryRebuildService:
             *(self._extract_one(run, source_event, semaphore) for source_event in rows)
         )
         for source_event, state in zip(rows, results, strict=True):
-            if state not in {"processed", "complete"}:
+            if state not in {"processed", "complete", "failed"}:
                 break
             await self.repository.update_scan_checkpoint(run.public_id, source_event)
         return sum(state == "processed" for state in results)
@@ -597,7 +606,7 @@ class MemoryRebuildService:
                 source_event_hash=event_hash,
             )
             if not acquired:
-                if item_status in {"staged", "no_claims", "skipped", "committed"}:
+                if item_status in {"staged", "no_claims", "skipped", "committed", "failed"}:
                     return "complete"
                 return "deferred"
             current = await self._require(run.public_id)
@@ -644,23 +653,6 @@ class MemoryRebuildService:
                 for raw_claim in extracted.output.claims:
                     claim = raw_claim
                     claim = claim.model_copy(update={"source_type": MemorySourceType.REBUILD})
-                    from qq_ai_bot.memory.enums import MemoryClaimOperation
-                    from qq_ai_bot.memory.quality_policy import (
-                        AutomaticValuePolicy,
-                        RetentionPolicy,
-                    )
-
-                    if claim.operation is MemoryClaimOperation.ASSERT:
-                        value = AutomaticValuePolicy.evaluate(
-                            importance=claim.importance,
-                            retention=claim.retention,
-                            value_reason=claim.value_reason,
-                        )
-                        if value.accepted:
-                            value = RetentionPolicy.evaluate(claim, event, explicit_request=False)
-                        if not value.accepted:
-                            self.metrics.increment(f"claims_rejected_{value.reason_code}")
-                            continue
                     validated = self.processor.validate(
                         claim,
                         event,
@@ -691,12 +683,6 @@ class MemoryRebuildService:
                 )
                 self.metrics.increment("rebuild_events_failed")
                 if exhausted:
-                    await self.repository.transition(
-                        run.public_id,
-                        expected={MemoryRebuildRunStatus.EXTRACTING},
-                        status=MemoryRebuildRunStatus.FAILED,
-                        error_category=type(exc).__name__,
-                    )
                     return "failed"
                 return "deferred"
             self.metrics.increment("rebuild_events_scanned")
@@ -812,7 +798,6 @@ class MemoryRebuildService:
                         event=event,
                         rebuild_run_id=run.public_id,
                         proposal_id=proposal.id,
-                        preserve_capacity=True,
                         force_expired_invalidated=expired,
                     ),
                 )
@@ -855,38 +840,33 @@ class MemoryRebuildService:
                     return result
 
                 commit_prepared = True
-                for attempt in range(3):
-                    try:
-                        result = await self.processor._facts.repository.apply_evidence_write(commit)
-                        break
-                    except Exception:
-                        # The proposal is atomic with the fact. Read it before
-                        # retrying a rolled-back pure DB plan or classifying failure.
-                        commit_receipt = await self.repository.proposal_result(proposal.id)
+                try:
+                    result = await self.processor._facts.repository.apply_evidence_write(commit)
+                except Exception:
+                    # The proposal is atomic with the fact. Read it before
+                    # classifying failure; an unknown outcome does not grant replay authority.
+                    commit_receipt = await self.repository.proposal_result(proposal.id)
+                    if (
+                        commit_receipt
+                        and commit_receipt.commit_status
+                        == MemoryRebuildCommitStatus.COMMITTED.value
+                    ):
                         if (
-                            commit_receipt
-                            and commit_receipt.commit_status
-                            == MemoryRebuildCommitStatus.COMMITTED.value
+                            commit_receipt.actual_action is None
+                            or commit_receipt.actual_reason_code is None
                         ):
-                            if (
-                                commit_receipt.actual_action is None
-                                or commit_receipt.actual_reason_code is None
-                            ):
-                                raise RuntimeError(
-                                    "committed_proposal_receipt_incomplete"
-                                ) from None
-                            result = MemoryClaimProcessResult(
-                                commit_receipt.actual_fact_id,
-                                MemoryResolutionAction(commit_receipt.actual_action),
-                                commit_receipt.actual_reason_code,
-                            )
-                            break
-                        if attempt == 2:
-                            raise
+                            raise RuntimeError("committed_proposal_receipt_incomplete") from None
+                        result = MemoryClaimProcessResult(
+                            commit_receipt.actual_fact_id,
+                            MemoryResolutionAction(commit_receipt.actual_action),
+                            commit_receipt.actual_reason_code,
+                        )
+                    else:
+                        raise
             except asyncio.CancelledError:
                 raise
             except (OSError, RuntimeError, TypeError, ValueError, SQLAlchemyError) as exc:
-                exhausted = await self.repository.fail_proposal(
+                await self.repository.fail_proposal(
                     proposal.id,
                     type(exc).__name__,
                     max_attempts=1
@@ -895,40 +875,7 @@ class MemoryRebuildService:
                     retry_initial_seconds=self.settings.memory_rebuild_retry_initial_seconds,
                 )
                 self.metrics.increment("rebuild_proposals_failed")
-                if exhausted:
-                    await self.repository.transition(
-                        run.public_id,
-                        expected={MemoryRebuildRunStatus.COMMITTING},
-                        status=MemoryRebuildRunStatus.FAILED,
-                        error_category=type(exc).__name__,
-                    )
-                    break
                 continue
-            # These fields have only status/metrics readers; execution budgets
-            # are enforced by the model executor, independently of this counter.
-            try:
-                if result.model_requests:
-                    self.metrics.increment("rebuild_consolidation_requests", result.model_requests)
-                    if result.input_tokens is not None:
-                        self.metrics.increment("rebuild_input_tokens", result.input_tokens)
-                    if result.output_tokens is not None:
-                        self.metrics.increment("rebuild_output_tokens", result.output_tokens)
-                    self.metrics.increment(
-                        "rebuild_latency", max(0, round(result.latency_seconds * 1000))
-                    )
-                    await self.repository.record_model_usage(
-                        run.public_id,
-                        consolidation_requests=result.model_requests,
-                        input_tokens=result.input_tokens,
-                        output_tokens=result.output_tokens,
-                        latency_seconds=result.latency_seconds,
-                    )
-            except Exception as exc:
-                logging.getLogger(__name__).warning(
-                    "rebuild_usage_missing category=%s proposal_id=%d",
-                    type(exc).__name__,
-                    proposal.id,
-                )
             self.metrics.increment("rebuild_proposals_committed")
             if result.action.value == "create":
                 self.metrics.increment("rebuild_facts_created")
@@ -956,17 +903,28 @@ class MemoryRebuildService:
             include_failed_live_jobs=run.selection.include_failed_live_jobs,
             limit=self.settings.memory_rebuild_commit_batch_size,
         )
-        if (
-            not await self.repository.remaining_commit_count(run.public_id)
-            and not await self.repository.failed_commit_count(run.public_id)
-            and not await self.repository.remaining_item_receipt_count(run.public_id)
-        ):
-            completed = await self.repository.transition(
+        if not await self.repository.remaining_commit_count(run.public_id):
+            if await self.repository.failed_commit_count(run.public_id):
+                target = MemoryRebuildRunStatus.COMMIT_PAUSED
+            elif await self.repository.pending_review_count(run.public_id):
+                target = MemoryRebuildRunStatus.REVIEW
+            elif await self.repository.remaining_item_receipt_count(run.public_id):
+                return processed
+            elif await self.repository.item_count(
                 run.public_id,
-                expected={MemoryRebuildRunStatus.COMMITTING},
-                status=MemoryRebuildRunStatus.COMPLETED,
+                statuses=(
+                    MemoryRebuildItemStatus.PENDING,
+                    MemoryRebuildItemStatus.EXTRACTING,
+                    MemoryRebuildItemStatus.FAILED,
+                ),
+            ):
+                target = MemoryRebuildRunStatus.EXTRACTION_PAUSED
+            else:
+                target = MemoryRebuildRunStatus.COMPLETED
+            completed = await self.repository.transition(
+                run.public_id, expected={MemoryRebuildRunStatus.COMMITTING}, status=target
             )
-            if completed:
+            if completed and target is MemoryRebuildRunStatus.COMPLETED:
                 self.metrics.increment("rebuild_runs_completed")
         return processed
 

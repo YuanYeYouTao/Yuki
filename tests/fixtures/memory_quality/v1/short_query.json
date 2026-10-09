@@ -1,6 +1,0 @@
-{
-  "schema_version":"1","case_id":"short_query","category":"retrieval","description":"Short query LIKE fallback remains target-scoped.",
-  "initial_facts":[{"fact_ref":"fact_tea","scope_type":"person","subject":"person_a","memory_key":"drink:tea","category":"drink","content":"爱茶"}],
-  "queries":[{"query_ref":"query_tea","text":"茶","scope_type":"person","subject":"person_a","expected_fact_refs":["fact_tea"]}],
-  "expected_facts":[{"fact_ref":"fact_tea","scope_type":"person","subject":"person_a","memory_key":"drink:tea","category":"drink","content":"爱茶"}],"expected_claims":[],"expected_evidence":[],"tags":["short_query"]
-}

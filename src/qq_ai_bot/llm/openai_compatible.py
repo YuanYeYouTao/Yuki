@@ -29,7 +29,7 @@ from qq_ai_bot.llm.base import (
 from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
 from qq_ai_bot.llm.json_http import JSONHTTPProvider
 from qq_ai_bot.llm.protocol_state import checkpoint_items, integer, ordered_delta
-from qq_ai_bot.llm.vendor_policy import ChatWireOptions, effort_value, thinking_budget, wire_options
+from qq_ai_bot.llm.vendor_policy import ChatWireOptions, wire_options
 
 
 class OpenAICompatibleProvider(JSONHTTPProvider):
@@ -136,27 +136,30 @@ class OpenAICompatibleProvider(JSONHTTPProvider):
                 )
             payload["web_search_options"] = {}
         if request.thinking_enabled:
-            effort = effort_value(self.options, request.reasoning_effort)
+            effort = (
+                request.reasoning_effort.value if request.reasoning_effort is not None else None
+            )
             match self.options.reasoning:
                 case "effort":
-                    payload["reasoning_effort"] = effort
+                    if effort is not None:
+                        payload["reasoning_effort"] = effort
                 case "thinking":
                     payload["thinking"] = {"type": "enabled"}
-                    if self.options.send_reasoning_effort:
+                    if self.options.send_reasoning_effort and effort is not None:
                         payload["reasoning_effort"] = effort
-                    elif effort not in {"none", "minimal", "low"}:
+                    elif effort not in {None, "none", "minimal", "low"}:
                         raise LLMUnsupportedFeatureError(
                             "this thinking dialect has no effort control"
                         )
                 case "enable_thinking":
                     payload["enable_thinking"] = True
-                    payload["thinking_budget"] = thinking_budget(
-                        self.options, request.reasoning_effort
-                    )
+                    payload["thinking_budget"] = self.options.thinking_budget_tokens
                 case "openrouter":
-                    payload["reasoning"] = {"effort": effort, "exclude": False}
+                    payload["reasoning"] = {"enabled": True, "exclude": False}
+                    if effort is not None:
+                        payload["reasoning"]["effort"] = effort
                 case "builtin":
-                    if effort not in {"none", "minimal", "low"}:
+                    if effort not in {None, "none", "minimal", "low"}:
                         raise LLMUnsupportedFeatureError(
                             "this thinking-only model has no effort control"
                         )
@@ -247,36 +250,6 @@ class OpenAICompatibleProvider(JSONHTTPProvider):
             if chunks:
                 reasoning = "\n".join(chunks)
         truncated = finish == "length"
-        if (
-            not truncated
-            and self.provider_name == "deepseek"
-            and DeepSeekResponsesProvider._contains_dsml(content)
-        ):
-            if calls:
-                raise LLMInvalidResponseError("mixed DSML tool response")
-            calls = list(
-                DeepSeekResponsesProvider._parse_dsml_tool_calls(
-                    content,
-                    allowed_tool_names=frozenset(tool.name for tool in request.tools),
-                    response_id=str(payload.get("id") or ""),
-                )
-            )
-            content = ""
-            message = {
-                **message,
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": call.id,
-                        "type": "function",
-                        "function": {
-                            "name": call.function.name,
-                            "arguments": call.function.arguments,
-                        },
-                    }
-                    for call in calls
-                ],
-            }
         if not content.strip() and not calls and not truncated and not request.native_tools:
             raise LLMEmptyResponseError(
                 "provider returned empty content",

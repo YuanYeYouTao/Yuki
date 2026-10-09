@@ -28,7 +28,6 @@ from qq_ai_bot.memory.dream.models import (
     DreamRunMode,
 )
 from qq_ai_bot.memory.dream.planning import PreparedDreamCluster, prepare_clusters_from_facts
-from qq_ai_bot.memory.dream.quality import episode_compression_limit, validate_output_lengths
 from qq_ai_bot.memory.dream.repository import (
     DreamCandidate,
     DreamCandidateLoad,
@@ -43,6 +42,7 @@ from qq_ai_bot.memory.mutation.service import DreamRecomposePlan, MemoryMutation
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.model_runtime.executor import ModelExecutor
 from qq_ai_bot.model_runtime.models import ModelTask
+from qq_ai_bot.model_runtime.request_accounting import before_provider_request
 from qq_ai_bot.model_runtime.structured import StructuredTaskError, StructuredTaskRunner
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 
@@ -65,10 +65,10 @@ class DreamBudgetExhausted(RuntimeError):
 _RECOMPOSE_QUALITY_INSTRUCTION = """\
 For Episode recompose, memory_N is a source container, not an indivisible event. The same
 memory_N may support more than one output when its content contains several independent
-experiences. Each output must include a unique focus (1-120 characters) for decision and audit;
+experiences. Each output must include a focus for decision and audit;
 focus is not part of the Episode body. Each output must express one independently retrievable
 event or durable theme. It is acceptable to omit ordinary chat details with no long-term value,
-but every source container must be handled by at least one action. A reviewed cluster does not
+unhandled source containers may remain for a later review. A reviewed cluster does not
 have to be changed: use one keep action for several independent, already-clear memories. Before
 returning, check every
 output: if it can answer two independent questions, it is still mixed and must be split or have
@@ -92,7 +92,7 @@ _INSTRUCTION = """\
 4. evidence 冲突且暂时无法判断时使用 contest；已有争议且证据足以确定可信锚点时使用 resolve。
 
 处理 Episode 时，先判断材料中有几个能够被独立回忆和独立召回的中心事件，再使用 recompose 输出
-1 至 4 条 Episode。recompose 可以拆分一条臃肿 Episode、合并多个碎片，也可以把混合材料重新分组。
+适当数量的 Episode。recompose 可以拆分一条臃肿 Episode、合并多个碎片，也可以把混合材料重新分组。
 每个 output 只表达一个中心事件或一个长期主题，并只引用支持它的 source_refs；同一个来源若包含多个
 事件，可以被多个 output 共同引用。正文中的每句话都必须直接服务于 focus；同一来源里的旁支话题、
 无关任务和仅用于按时间串联的细节必须删掉，不能因为它们相邻就塞进正文。focus 若需要用“从 A 到 B”、
@@ -101,18 +101,7 @@ _INSTRUCTION = """\
 即使它们在同一来源、同一晚或前后连续，也必须拆成不同 output，预算不足时舍弃较不重要的一件。
 完成后逐句反查：删掉某句话若不改变 focus 所描述的核心经过、结果或认识，这句话就不应保留。
 
-整个簇最多使用一个 recompose action。需要改写或拆分的所有来源都放进这个 action.source_refs；
-所有新 Episode 都放进同一个 action.outputs。同一个 memory_N 若支持多个事件，就在这个 outputs 数组中
-重复引用它，绝不能把同一个 memory_N 分散到两个 action。边界已经清楚且无需改写的来源应当 keep；
-多个相互独立、均无需改写的来源可以由同一个 keep action 一次覆盖。
-例如两个来源要拆为两件事时，应返回一个 source_refs=[memory_1,memory_2] 的 recompose action，下面
-放两个都完整包含 focus、source_refs、content、importance 的 output。
-
-Episode 要略写和压缩。保留核心经过、结果、关系或认识的变化，以及值得长期记住的主要感受；省略
-逐轮问答、候选枚举、重复解释、无关玩笑和不影响结果的工具中间步骤。普通正文以 80 至 300 字为宜，
-复杂经历也不得超过 800 字。宁可输出两条边界清楚的短回忆，也不要输出一条跨越多个话题的长回忆。
-
-每条 memory_N 必须且只能出现在一个 action 中，不得遗漏；一个 keep 可以包含多条无需改写的来源。
+未处理的来源保持原样，可留给后续整理；显式keep表示已经审查并保持不变。
 merge、synthesize、resolve 必须提供属于 source_refs 的 anchor_ref；不同 action 的 source_refs 不能
 重叠。只有 synthesize 必须输出 content，并且可以输出 importance；keep、merge、contest、resolve
 必须省略 content、importance 和 outputs。recompose 必须省略 anchor_ref、content 和 importance，
@@ -249,10 +238,6 @@ class DreamService:
         await self._repository.mark_run_rolled_back(public_id)
         return count
 
-    async def initialize_baseline(self) -> bool:
-        loaded = await self._load()
-        return await self._repository.initialize_baseline(loaded.fact_signatures)
-
     async def plan_full(
         self, *, actor_user_id: str, session: AsyncSession | None = None
     ) -> DreamRun:
@@ -280,8 +265,6 @@ class DreamService:
                 ),
             )
         )
-        if isolated:
-            await self._repository.checkpoint_candidates(isolated)
         clusters = clusters[: self._settings.memory_dream_max_clusters_per_run]
         statistics = self._statistics(loaded, clusters=clusters, isolated=isolated)
         return await self._repository.create_run(
@@ -524,12 +507,6 @@ class DreamService:
                 )
                 embedding_ids.add(output_fact.id)
             operation_count += 1
-        for ref, fact in current_map.items():
-            if ref in used:
-                continue
-            latest = await self._facts.repository.get_fact(fact.id, session=session)
-            if latest is not None:
-                await self._repository.checkpoint_fact(latest, operation_id=None, session=session)
         if preview_id is not None:
             await self._repository.mark_preview_applied(preview_id, session=session)
         return embedding_ids, operation_count
@@ -608,16 +585,6 @@ class DreamService:
                         group.append(candidate_id)
                         remaining.remove(candidate_id)
                 ids = tuple(sorted(group))
-                should_recompose_single = (
-                    len(ids) == 1
-                    and by_id[ids[0]].fact.kind is MemoryKind.EPISODE
-                    and len(by_id[ids[0]].fact.content)
-                    > self._settings.memory_dream_episode_max_characters
-                    and by_id[ids[0]].fact.source_type is not MemorySourceType.EXPLICIT
-                    and by_id[ids[0]].fact.authority is not MemoryAuthority.EXPLICIT
-                )
-                if len(ids) < 2 and not should_recompose_single:
-                    continue
                 if not incremental or changed.intersection(ids):
                     cluster = tuple(by_id[fact_id] for fact_id in ids)
                     clusters.append(cluster)
@@ -779,27 +746,6 @@ class DreamService:
         return fitted, ref_map, fingerprint
 
     def _validate_output(self, payload: DreamInput, output: DreamOutput) -> None:
-        contents = tuple(
-            content
-            for action in output.actions
-            for content in ((action.content,) if action.content is not None else ())
-            + tuple(item.content for item in action.outputs)
-        )
-        try:
-            validate_output_lengths(
-                contents, per_output=self._settings.memory_dream_episode_max_characters
-            )
-        except ValueError as exc:
-            raise DreamQualityError(
-                str(exc), "at most 4 outputs; each <=800, total <=1600 characters"
-            ) from exc
-        expected = {item.ref for item in payload.memories}
-        used = {ref for action in output.actions for ref in action.source_refs}
-        if used != expected:
-            raise DreamQualityError(
-                "dream_source_coverage_failed",
-                "dream output must cover every input memory exactly once",
-            )
         by_ref = {item.ref: item for item in payload.memories}
         for action in output.actions:
             if payload.kind != MemoryKind.EPISODE.value:
@@ -825,20 +771,6 @@ class DreamService:
                 raise DreamQualityError(
                     "dream_explicit_episode_protected",
                     "dream cannot recompose an explicit episode",
-                )
-            contents = tuple(item.content.strip() for item in action.outputs)
-            if len({item.casefold() for item in contents}) != len(contents):
-                raise DreamQualityError(
-                    "dream_duplicate_outputs",
-                    "dream recompose emitted duplicate episode outputs",
-                )
-            if any(
-                len(content) > self._settings.memory_dream_episode_max_characters
-                for content in contents
-            ):
-                raise DreamQualityError(
-                    "dream_output_too_long",
-                    "dream recompose episode exceeds the character limit",
                 )
 
     @staticmethod
@@ -912,7 +844,7 @@ class DreamService:
                 raise DreamBudgetExhausted("memory_dream_model_call_budget_exhausted")
             calls += 1
 
-        result = await self._run_model(instruction, payload, before_attempt=reserve)
+        result = await self._run_model(instruction, payload, before_dispatch=reserve)
         return result, calls
 
     async def _preview_decide(
@@ -928,7 +860,7 @@ class DreamService:
             nonlocal calls
             calls += 1
 
-        result = await self._run_model(instruction, payload, before_attempt=count)
+        result = await self._run_model(instruction, payload, before_dispatch=count)
         return result, calls
 
     @staticmethod
@@ -949,62 +881,24 @@ class DreamService:
 
     def _instruction(self, *, self_memory: bool, payload: DreamInput) -> str:
         instruction = f"{_INSTRUCTION}\n{_RECOMPOSE_QUALITY_INSTRUCTION}"
-        if payload.kind == MemoryKind.EPISODE.value:
-            instruction += (
-                "\n本簇 Episode 原文字数与合计软目标见输入的 episode_compression；"
-                "若全部 recompose，所有 output 正文合计应尽量在软目标以内；"
-                "意义完整优先，不达软目标不会拒绝或重试。"
-                "所有新正文合计最多 1600 字，单条最多 800 字。不要为了压缩而混合或损坏经历。"
-                "来源彼此独立且已经清楚时可 keep；总硬上限不会随来源长度缩小。"
-            )
         if self_memory:
             instruction += (
                 f"\n【{self._settings.bot_display_name} 共享核心人格】\n"
                 f"{self._settings.bot_persona}\n"
                 "SELF 记忆应保持第一人称和这一人格的自然口吻。"
             )
-        if payload.kind == MemoryKind.EPISODE.value:
-            instruction += (
-                "\n【返回前最终验收】\n"
-                "1. 每个 focus 只能命名一件可独立提问的经历，不能用时间顺序把两件事粘起来。\n"
-                "2. 错误示例：同一 output 同时记录深夜私密谈话和第二天点单、提醒；"
-                "正确做法是拆成两个 output，或在预算不足时只保留更重要的一件。\n"
-                "3. 逐句删除不直接支撑 focus 的内容；整个簇最多 4 个 outputs，"
-                "且不得超过上述总预算。"
-            )
         return instruction
 
     def _structured_input(self, payload: DreamInput) -> dict[str, Any]:
         """Keep cluster-specific sizes in the user input, after the reusable instruction."""
 
-        data = payload.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
-        if payload.kind == MemoryKind.EPISODE.value:
-            source_characters = sum(len(item.content) for item in payload.memories)
-            data["episode_compression"] = {
-                "source_characters": source_characters,
-                "soft_target_characters": self._episode_compression_limit(
-                    source_characters,
-                    ratio=self._settings.memory_dream_episode_compression_ratio,
-                ),
-            }
-        return data
-
-    def _episode_compression_limit(self, source_characters: int, *, ratio: float) -> int:
-        return episode_compression_limit(
-            source_characters,
-            ratio=ratio,
-            maximum=1600,
-        )
+        return payload.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
 
     async def _reserve_model_call(self, run: DreamRun, cluster: DreamCluster) -> bool:
         return await self._repository.reserve_model_call(
             run_public_id=run.public_id,
             cluster_id=cluster.id,
-            maximum=(
-                self._settings.memory_dream_max_model_calls_per_run
-                if run.mode is DreamRunMode.INCREMENTAL
-                else None
-            ),
+            maximum=self._settings.memory_dream_max_model_calls_per_run,
         )
 
     async def _run_model(
@@ -1012,7 +906,7 @@ class DreamService:
         instruction: str,
         payload: DreamInput,
         *,
-        before_attempt: Callable[[], Awaitable[None]],
+        before_dispatch: Callable[[], Awaitable[None]],
     ) -> DreamOutput:
         def validate(output: DreamOutput) -> None:
             try:
@@ -1024,32 +918,28 @@ class DreamService:
                     detail=self._quality_detail(exc),
                 ) from exc
 
-        return await self._concurrency.run_llm(
-            "memory-dream",
-            lambda: self._structured.run(
-                task=ModelTask.MEMORY_DREAM,
-                instruction=instruction,
-                structured_input=self._structured_input(payload),
-                output_model=DreamOutput,
-                temperature=0.1,
-                max_output_tokens=self._settings.memory_dream_max_output_tokens,
-                allow_text_json=True,
-                compact_schema=True,
-                validation_retries=1,
-                before_attempt=before_attempt,
-                validate_output=validate,
-                validation_repair_hint=(
-                    "Correct the reported failure, keeping the original task and source facts. "
-                    "For schema errors fix the named fields; for source coverage errors use only "
-                    "the supplied memory_N aliases and cover each exactly once across actions. "
-                    "For length errors shorten output without losing meaning. Do not invent "
-                    "facts, bypass explicit-source protection, or keep everything just to hide "
-                    "invalid output. Recompose has at most 4 outputs, each with focus, "
-                    "source_refs, content and importance."
+        token = before_provider_request.set(before_dispatch)
+        try:
+            return await self._concurrency.run_llm(
+                "memory-dream",
+                lambda: self._structured.run(
+                    task=ModelTask.MEMORY_DREAM,
+                    instruction=instruction,
+                    structured_input=self._structured_input(payload),
+                    output_model=DreamOutput,
+                    temperature=0.1,
+                    max_output_tokens=self._settings.memory_dream_max_output_tokens,
+                    validation_retries=1,
+                    validate_output=validate,
+                    validation_repair_hint=(
+                        "Correct the reported fields using only supplied source aliases; "
+                        "unhandled memories can remain unchanged."
+                    ),
                 ),
-            ),
-            translate_cancellation=False,
-        )
+                translate_cancellation=False,
+            )
+        finally:
+            before_provider_request.reset(token)
 
     def _anchor(
         self,

@@ -19,9 +19,6 @@ from scripts.release_validate import project_version
 _ROOT_FILES = frozenset({"docker-compose.yml", ".env.example", "install.sh", "install.ps1"})
 _CONFIG_FILES = frozenset(
     {
-        "config/memory_contracts.toml",
-        "config/memory_quality_gates.example.toml",
-        "config/memory_quality_gates.toml",
         "config/model_profiles.example.toml",
         "config/persona.md",
         "config/qq_face_map.json",

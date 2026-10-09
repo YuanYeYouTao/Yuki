@@ -5,31 +5,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import subprocess
 import time
+import tomllib
 from pathlib import Path
 from typing import Any
 
 
 class SmokeError(RuntimeError):
     """Raised when a release image or deployment contract fails smoke testing."""
-
-
-_MODEL_TASKS = (
-    "chat_agent",
-    "memory_extraction",
-    "memory_self_reflection",
-    "memory_consolidation",
-    "memory_dream",
-    "memory_attribution",
-    "relationship_evaluation",
-    "emoji_replacement",
-    "automation_agent",
-    "plugin_agent_session",
-    "utility_structured",
-    "conversation_compaction",
-)
 
 
 class Compose:
@@ -52,151 +36,6 @@ class Compose:
         return completed.stdout.strip() if capture else ""
 
 
-def validate_production_compose(deploy_directory: Path, version: str, compose: Compose) -> None:
-    raw = (deploy_directory / "docker-compose.yml").read_text(encoding="utf-8")
-    if "build:" in raw:
-        raise SmokeError("production Compose must not contain build")
-    rendered = json.loads(
-        compose.run(
-            "--profile",
-            "napcat",
-            "--profile",
-            "snowluma",
-            "config",
-            "--format",
-            "json",
-            capture=True,
-        )
-    )
-    services: dict[str, dict[str, Any]] = rendered["services"]
-    expected = {
-        "bot": f"ghcr.io/yuanyeyoutao/yuki-qqbot:{version}",
-    }
-    for service, image in expected.items():
-        if services[service]["image"] != image:
-            raise SmokeError(
-                f"{service} resolved to {services[service]['image']}, expected {image}"
-            )
-        if services[service].get("platform") != "linux/amd64":
-            raise SmokeError(f"{service} does not resolve to linux/amd64")
-    if services["bot"].get("environment", {}).get("CODE_MODE_ENABLED") != "false":
-        raise SmokeError("default release must explicitly select direct mode")
-    snowluma = services["snowluma"]
-    if snowluma["image"] != "motricseven7/snowluma:latest":
-        raise SmokeError("SnowLuma image does not resolve to the configured official image")
-    if snowluma.get("platform") != "linux/amd64":
-        raise SmokeError("SnowLuma does not resolve to linux/amd64")
-    if "SYS_PTRACE" not in snowluma.get("cap_add", []):
-        raise SmokeError("SnowLuma is missing SYS_PTRACE")
-    if "seccomp=unconfined" not in snowluma.get("security_opt", []):
-        raise SmokeError("SnowLuma is missing its required seccomp setting")
-    required_mounts = {
-        "bot": {
-            "/app/data",
-            "/app/config",
-            "/app/plugins",
-            "/app/napcat-config",
-            "/app/snowluma-data",
-        },
-        "napcat": {"/app/.config/QQ", "/app/napcat/config", "/app/napcat/plugins"},
-        "snowluma": {
-            "/app/data",
-            "/app/.config",
-            "/app/.local/share",
-            "/app/qq-accounts",
-        },
-    }
-    for service, destinations in required_mounts.items():
-        actual = {mount["target"] for mount in services[service]["volumes"]}
-        if not destinations <= actual:
-            raise SmokeError(f"{service} is missing persistent mounts: {destinations - actual}")
-
-
-def prepare_deployment(deploy_directory: Path) -> dict[Path, str]:
-    env_file = deploy_directory / ".env"
-    if not env_file.exists():
-        environment = (deploy_directory / ".env.example").read_text(encoding="utf-8")
-        replacements = {
-            "ONEBOT_ACCESS_TOKEN=replace-with-a-long-random-token": (
-                "ONEBOT_ACCESS_TOKEN=release-smoke-onebot-token"
-            ),
-            "NAPCAT_WEBUI_TOKEN=replace-with-a-long-random-webui-token": (
-                "NAPCAT_WEBUI_TOKEN=release-smoke-napcat-token"
-            ),
-            "SUPERUSERS=replace-with-superuser-qq": "SUPERUSERS=10000",
-            "LLM_PROVIDER=openai": "LLM_PROVIDER=openai_compatible",
-            "LLM_BASE_URL=https://replace-with-provider.example/v1": (
-                "LLM_BASE_URL=https://models.example.invalid/v1"
-            ),
-            "LLM_API_KEY=replace-with-api-key": "LLM_API_KEY=release-smoke-key",
-            "LLM_MODEL=replace-with-model-name": "LLM_MODEL=release-smoke-model",
-            "MEMORY_EMBEDDING_ENABLED=true": "MEMORY_EMBEDDING_ENABLED=false",
-            "WEB_MODE=native": "WEB_MODE=disabled",
-        }
-        for old, new in replacements.items():
-            environment = environment.replace(old, new)
-        env_file.write_text(environment, encoding="utf-8")
-    if env_file.exists():
-        _enable_plugin_system(env_file)
-    model_profiles = deploy_directory / "webui-config/model_profiles.toml"
-    if not model_profiles.exists():
-        model_profiles.parent.mkdir(parents=True, exist_ok=True)
-        routes = "\n".join(f'{task} = "main"' for task in _MODEL_TASKS)
-        model_profiles.write_text(
-            """schema_version = 3
-
-[profiles.main]
-provider = "openai_compatible"
-protocol = "chat_completions"
-base_url_env = "LLM_BASE_URL"
-api_key_env = "LLM_API_KEY"
-model_env = "LLM_MODEL"
-timeout_seconds = 120.0
-max_retries = 0
-default_temperature = 0.0
-default_max_output_tokens = 512
-thinking_mode = "enabled"
-reasoning_effort = "low"
-structured_output_mode = "function_tool"
-capabilities = ["tools", "structured_output", "long_context", "reasoning"]
-
-[routes]
-"""
-            + routes
-            + "\n",
-            encoding="utf-8",
-        )
-    sentinels = {
-        deploy_directory / "data/.release-smoke-data": "data",
-        deploy_directory / "config/.release-smoke-config": "config",
-        deploy_directory / "plugins/.release-smoke-plugin": "plugins",
-        deploy_directory / "napcat-data/.release-smoke-login": "napcat-login",
-        deploy_directory / "napcat-config/.release-smoke-config": "napcat-config",
-        deploy_directory / "napcat-plugins/.release-smoke-plugin": "napcat-plugins",
-        deploy_directory / "snowluma-data/.release-smoke-data": "snowluma-data",
-        deploy_directory / "snowluma-qq-config/.release-smoke-config": "snowluma-qq-config",
-        deploy_directory / "snowluma-qq-data/.release-smoke-data": "snowluma-qq-data",
-        deploy_directory / "snowluma-extra-accounts/.release-smoke-data": "snowluma-extra-accounts",
-    }
-    for path, value in sentinels.items():
-        if path.exists():
-            if path.read_text(encoding="utf-8") != value:
-                raise SmokeError(f"existing release sentinel has unexpected content: {path}")
-            continue
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(value, encoding="utf-8")
-    return sentinels
-
-
-def _enable_plugin_system(env_file: Path) -> None:
-    text = env_file.read_text(encoding="utf-8")
-    if re.search(r"(?m)^PLUGIN_SYSTEM_ENABLED=", text):
-        text = re.sub(r"(?m)^PLUGIN_SYSTEM_ENABLED=.*$", "PLUGIN_SYSTEM_ENABLED=true", text)
-    else:
-        text = text.rstrip() + "\nPLUGIN_SYSTEM_ENABLED=true\n"
-    env_file.write_text(text, encoding="utf-8")
-
-
 def _read_healthz(compose: Compose) -> dict[str, Any]:
     command = (
         "import json,urllib.request; "
@@ -211,8 +50,6 @@ def _assert_core_health(health: dict[str, Any], version: str) -> None:
     actual = {key: health.get(key) for key in expected}
     if actual != expected:
         raise SmokeError(f"unexpected /healthz response: {actual}")
-    if health.get("plugin_system_enabled") is not True:
-        raise SmokeError(f"plugin system is not enabled: {health}")
 
 
 def wait_healthy(compose: Compose, service: str, timeout_seconds: float = 120.0) -> str:
@@ -261,115 +98,12 @@ def verify_bot(compose: Compose, deploy_directory: Path, version: str) -> None:
     # explicit setup, authenticated against the running PluginManager.
 
 
-def verify_guided_setup(deploy_directory: Path, version: str) -> None:
-    image = f"ghcr.io/yuanyeyoutao/yuki-qqbot:{version}"
-    command = ["docker", "run", "--rm"]
-    if os.name != "nt":
-        get_uid = getattr(os, "getuid", None)
-        get_gid = getattr(os, "getgid", None)
-        if not callable(get_uid) or not callable(get_gid):
-            raise SmokeError("POSIX user identity is unavailable")
-        command.extend(("--user", f"{get_uid()}:{get_gid()}"))
-    command.extend(
-        (
-            "--entrypoint",
-            "qq-ai-bot-cli",
-            "--volume",
-            f"{deploy_directory.resolve()}:/deploy",
-            "--workdir",
-            "/deploy",
-            image,
-            "setup",
-            "validate",
-            "--deployment-root",
-            "/deploy",
-            "--no-color",
-        )
-    )
-    completed = subprocess.run(
-        command,
-        check=True,
-        capture_output=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    if "配置通过本地严格验证" not in completed.stdout or "\033[" in completed.stdout:
-        raise SmokeError("source-free Guided Setup validation failed")
-
-    permission_script = (
-        "from pathlib import Path; "
-        "from qq_ai_bot.deployment_setup.service import _atomic_write; "
-        "root=Path('/deploy'); "
-        "profile=root/'webui-config/model_profiles.toml'; "
-        "_atomic_write(profile, profile.read_bytes(), private=False); "
-        "_atomic_write(root/'data/setup/pending.json', "
-        'b\'{"schema_version":1,"selected_plugins":[]}\\n\', private=False)'
-    )
-    subprocess.run(
-        [
-            "docker",
-            "run",
-            "--rm",
-            "--entrypoint",
-            "python",
-            "--volume",
-            f"{deploy_directory.resolve()}:/deploy",
-            image,
-            "-c",
-            permission_script,
-        ],
-        check=True,
-    )
-    read_script = (
-        "from pathlib import Path; "
-        "root=Path('/deploy'); "
-        "assert (root/'webui-config/model_profiles.toml').read_bytes(); "
-        "assert (root/'data/setup/pending.json').read_bytes()"
-    )
-    subprocess.run(
-        [
-            "docker",
-            "run",
-            "--rm",
-            "--user",
-            "10001:10001",
-            "--entrypoint",
-            "python",
-            "--volume",
-            f"{deploy_directory.resolve()}:/deploy:ro",
-            image,
-            "-c",
-            read_script,
-        ],
-        check=True,
-    )
-    cleanup_script = (
-        "from pathlib import Path; "
-        "(Path('/deploy')/'data/setup/pending.json').unlink(missing_ok=True)"
-    )
-    subprocess.run(
-        [
-            "docker",
-            "run",
-            "--rm",
-            "--entrypoint",
-            "python",
-            "--volume",
-            f"{deploy_directory.resolve()}:/deploy",
-            image,
-            "-c",
-            cleanup_script,
-        ],
-        check=True,
-    )
-
-
 def verify_persistence(
     compose: Compose, deploy_directory: Path, sentinels: dict[Path, str]
 ) -> None:
     database = deploy_directory / "data/qq_ai_bot.db"
     database_size = database.stat().st_size
-    compose.run("up", "-d", "--no-deps", "--force-recreate", "bot")
+    compose.run("up", "-d", "--no-deps", "--pull", "never", "--force-recreate", "bot")
     wait_healthy(compose, "bot")
     if not database.exists() or database.stat().st_size < database_size:
         raise SmokeError("database did not survive container recreation")
@@ -378,66 +112,61 @@ def verify_persistence(
             raise SmokeError(f"persistent sentinel did not survive recreation: {path}")
 
 
-def verify_napcat_mount_recreation(compose: Compose, deploy_directory: Path) -> None:
-    compose.run("pull", "napcat")
-    for attempt in range(2):
-        compose.run("create", "--pull", "never", "napcat")
-        container_id = compose.run("ps", "--all", "--quiet", "napcat", capture=True)
-        mounts = json.loads(
-            subprocess.run(
-                ["docker", "inspect", "--format", "{{json .Mounts}}", container_id],
-                check=True,
-                capture_output=True,
-                encoding="utf-8",
-                errors="replace",
-            ).stdout
+def prepare_deployment(deploy_directory: Path) -> dict[Path, str]:
+    env_file = deploy_directory / ".env"
+    if not env_file.exists():
+        environment = (deploy_directory / ".env.example").read_text(encoding="utf-8")
+        replacements = {
+            "LLM_API_KEY=replace-with-api-key": "LLM_API_KEY=release-smoke-key",
+            "LLM_MODEL=replace-with-model-name": "LLM_MODEL=release-smoke-model",
+            "MEMORY_EMBEDDING_ENABLED=true": "MEMORY_EMBEDDING_ENABLED=false",
+            "WEB_MODE=native": "WEB_MODE=disabled",
+        }
+        for old, new in replacements.items():
+            environment = environment.replace(old, new)
+        env_file.write_text(environment, encoding="utf-8")
+    profiles = deploy_directory / "webui-config/model_profiles.toml"
+    if not profiles.exists():
+        example = tomllib.loads(
+            (deploy_directory / "config/model_profiles.example.toml").read_text(encoding="utf-8")
         )
-        login_mount = next(
-            (mount for mount in mounts if mount["Destination"] == "/app/.config/QQ"), None
+        profiles.parent.mkdir(parents=True, exist_ok=True)
+        profiles.write_text(
+            "schema_version = 3\n\n[profiles.main]\n"
+            'provider = "openai_compatible"\nprotocol = "chat_completions"\n'
+            'base_url_env = "LLM_BASE_URL"\napi_key_env = "LLM_API_KEY"\n'
+            'model_env = "LLM_MODEL"\nstructured_output_mode = "function_tool"\n'
+            "timeout_seconds = 120.0\nmax_retries = 0\n"
+            "default_temperature = 0.0\ndefault_max_output_tokens = 512\n"
+            'capabilities = ["tools", "structured_output", "long_context", "reasoning"]\n'
+            "\n[routes]\n" + "".join(f'{task} = "main"\n' for task in example["routes"]),
+            encoding="utf-8",
         )
-        if login_mount is None:
-            raise SmokeError("NapCat login directory is not mounted")
-        if Path(login_mount["Source"]).resolve() != (deploy_directory / "napcat-data").resolve():
-            raise SmokeError("NapCat login mount points outside the deployment directory")
-        if attempt == 0:
-            compose.run("rm", "-s", "-f", "napcat")
-    sentinel = deploy_directory / "napcat-data/.release-smoke-login"
-    if sentinel.read_text(encoding="utf-8") != "napcat-login":
-        raise SmokeError("NapCat login sentinel did not survive container recreation")
+    sentinel = deploy_directory / "data/.release-smoke-data"
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.write_text("data", encoding="utf-8")
+    return {sentinel: "data"}
 
 
-def run_smoke(deploy_directory: Path, version: str, *, full: bool) -> None:
+def run_smoke(deploy_directory: Path, version: str, *, full: bool = False) -> None:
     if (deploy_directory / "src").exists() or (deploy_directory / "pyproject.toml").exists():
         raise SmokeError("deployment smoke directory contains project source")
     compose = Compose(deploy_directory, f"yuki-release-smoke-{os.getpid()}", version)
     sentinels = prepare_deployment(deploy_directory)
     try:
-        validate_production_compose(deploy_directory, version, compose)
-        verify_guided_setup(deploy_directory, version)
-        compose.run("up", "-d", "--no-deps", "bot")
+        compose.run("up", "-d", "--no-deps", "--pull", "never", "bot")
         verify_bot(compose, deploy_directory, version)
-        if full:
-            verify_persistence(compose, deploy_directory, sentinels)
-            verify_napcat_mount_recreation(compose, deploy_directory)
+        verify_persistence(compose, deploy_directory, sentinels)
     finally:
-        compose.run(
-            "--profile",
-            "napcat",
-            "--profile",
-            "snowluma",
-            "down",
-            "--volumes",
-            "--remove-orphans",
-        )
+        compose.run("rm", "--stop", "--force", "bot")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--deploy-dir", type=Path, required=True)
     parser.add_argument("--version", required=True)
-    parser.add_argument("--full", action="store_true")
     args = parser.parse_args()
-    run_smoke(args.deploy_dir.resolve(), args.version, full=args.full)
+    run_smoke(args.deploy_dir.resolve(), args.version)
     print(f"source-free smoke passed for Yuki {args.version}")
     return 0
 

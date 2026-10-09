@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import event, select
-from tests.unit.test_conversation_rollup_370 import _policy, _prepare_v2_private
+from tests.support.conversation_rollup_370_helpers import _policy, _prepare_v2_private
 
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,

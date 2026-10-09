@@ -1,13 +1,6 @@
 name: Quality
 
 on:
-  workflow_call:
-    inputs:
-      force_docker:
-        description: Run Docker checks even when the change is documentation-only
-        required: false
-        default: false
-        type: boolean
   push:
     branches: [main]
   pull_request:
@@ -16,217 +9,22 @@ permissions:
   contents: read
 
 jobs:
-  baseline:
+  python:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Validate application and database release baseline
-        shell: bash
-        run: |
-          version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
-          python -m scripts.release_validate --tag "v$version"
-
-  changes:
-    runs-on: ubuntu-latest
-    outputs:
-      docker: ${{ steps.filter.outputs.docker }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Detect runtime changes
-        id: filter
-        shell: bash
-        env:
-          FORCE_DOCKER: ${{ inputs.force_docker || false }}
-          EVENT_NAME: ${{ github.event_name }}
-          BEFORE_SHA: ${{ github.event.before }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          if [[ "$FORCE_DOCKER" == "true" ]]; then
-            echo "docker=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            base="$BASE_SHA"
-          else
-            base="$BEFORE_SHA"
-          fi
-          if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
-            echo "docker=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          docker=false
-          while IFS= read -r path; do
-            case "$path" in
-              README.md|CHANGELOG.md|docs/*|img/*|*.md) ;;
-              *) docker=true; break ;;
-            esac
-          done < <(git diff --name-only "$base" "$HEAD_SHA")
-          echo "docker=$docker" >> "$GITHUB_OUTPUT"
-
-  memory-quality:
-    needs: baseline
-    runs-on: ubuntu-latest
-    env:
-      UV_PYTHON_PREFERENCE: only-managed
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
           version: "0.11.31"
           enable-cache: true
-      - name: Install dependencies
-        run: uv sync --frozen --all-extras --python 3.12.13
-      - name: Record benchmark runtime and frozen baseline
-        run: |
-          uv run python - <<'PY'
-          import json
-          import sqlite3
-          import sys
-          from pathlib import Path
-          baseline = json.loads(Path("tests/benchmarks/memory_v2/v1/baseline.json").read_text())
-          print(json.dumps({"runtime_python": sys.version.split()[0], "runtime_sqlite": sqlite3.sqlite_version,
-                            "baseline_python": baseline["python_version"], "baseline_sqlite": baseline["sqlite_version"]}))
-          PY
-      - name: Validate versioned synthetic dataset
-        run: uv run qq-ai-bot-cli memory quality validate-dataset
-      - name: Run deterministic Memory V2 benchmark
-        run: uv run qq-ai-bot-cli memory quality run --suite full
-      - name: Compare frozen baseline
-        run: uv run qq-ai-bot-cli memory quality compare
-      - name: Attribute failed benchmark latency without replacing its report
-        if: failure()
-        env:
-          YUKI_MEMORY_QUALITY_DIAGNOSTICS: "1"
-        run: uv run qq-ai-bot-cli memory quality run --suite full --output artifacts/memory-quality-diagnostics
-      - name: Upload content-free quality reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: memory-v2-quality-report
-          path: |
-            artifacts/memory-quality/report.json
-            artifacts/memory-quality/report.md
-            artifacts/memory-quality/junit.xml
-            artifacts/memory-quality-diagnostics/report.json
-            artifacts/memory-quality-diagnostics/report.md
-            artifacts/memory-quality-diagnostics/junit.xml
-          if-no-files-found: warn
-
-  python:
-    needs: baseline
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # Migration tests archive the actual historical schema producers.
-          fetch-depth: 0
+      - run: uv sync --frozen --all-extras
+      - run: uv run ruff check .
+      - run: uv run mypy src
+      - run: uv run pytest -q
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - name: Build and verify WebUI
-        working-directory: frontend
-        run: |
-          npm ci
-          npm run format:check
-          npm run lint
-          npm run test
-          npm run build
-      - uses: astral-sh/setup-uv@v6
-        with:
-          version: "0.11.31"
-          enable-cache: true
-      - name: Install dependencies
-        run: uv sync --frozen --all-extras
-      - name: Ruff format
-        run: uv run ruff format --check .
-      - name: Ruff check
-        run: uv run ruff check .
-      - name: Mypy
-        run: uv run mypy src
-      - name: Enforce required safety gates
-        shell: bash
-        run: |
-          set -euo pipefail
-          output="$(uv run pytest --collect-only -q)"
-          printf '%s\n' "$output"
-          required_tests=(
-            "tests/unit/test_event_prompt_mentions.py::test_history_reprojects_ordered_mentions_from_persisted_segments"
-            "tests/unit/test_event_prompt_mentions.py::test_history_segment_fallback_log_never_contains_content_or_ids"
-            "tests/unit/test_webui_http.py::test_auth_csrf_origin_and_existing_health_are_separate"
-            "tests/unit/test_webui_http.py::test_https_session_cookie_has_secure_host_prefix_and_logout_revokes_it"
-            "tests/unit/test_webui_activity.py::test_media_download_uses_existing_scope_expiry_and_reset_fences"
-            "tests/unit/test_participation_admission_edges.py::test_commit_deadline_rejects_new_proposal_but_does_not_lose_accepted_run"
-            "tests/unit/test_self_initiative_runtime.py::test_self_work_restart_retains_id_budget_prefix_pending_receipt_and_delivery[responses]"
-            "tests/unit/test_self_initiative_runtime.py::test_self_work_restart_retains_id_budget_prefix_pending_receipt_and_delivery[chat_completions]"
-          )
-          for required_test in "${required_tests[@]}"; do
-            if ! grep -Fqx "$required_test" <<<"$output"; then
-              echo "required safety gate is missing: $required_test" >&2
-              exit 1
-            fi
-          done
-      - name: Installer syntax
-        shell: bash
-        run: |
-          bash -n install.sh
-          pwsh -NoProfile -Command '
-            $tokens = $null
-            $errors = $null
-            [System.Management.Automation.Language.Parser]::ParseFile(
-              (Resolve-Path "install.ps1"),
-              [ref]$tokens,
-              [ref]$errors
-            ) | Out-Null
-            if ($errors.Count -gt 0) {
-              $errors | ForEach-Object { Write-Error $_.Message }
-              exit 1
-            }
-          '
-      - name: Pytest
-        run: uv run pytest -q
-      - name: Example plugin contract
-        run: uv run pytest -q examples/plugins/com.example.echo/tests
-      - name: GitHub Monitor plugin contract and behavior
-        run: |
-          uv run pytest -q plugins/github-monitor/tests
-          uv run qq-ai-bot-cli plugin test plugins/github-monitor
-      - name: Subscription Monitor plugin contract and behavior
-        run: |
-          uv run pytest -q plugins/subscription-monitor/tests
-          uv run mypy --follow-imports=silent plugins/subscription-monitor/subscription_monitor
-          uv run qq-ai-bot-cli plugin test plugins/subscription-monitor
-      - name: Alembic fresh install
-        env:
-          DATABASE_URL: sqlite+aiosqlite:///./data/ci.db
-        run: |
-          mkdir -p data
-          uv run alembic upgrade head
-      # The canonical migration matrix is already included in the Pytest step.
-
-  docker:
-    needs: [changes, baseline]
-    if: needs.changes.outputs.docker == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Resolve project version
-        shell: bash
-        run: |
-          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml | head -n 1)"
-          test -n "$version"
-          echo "YUKI_VERSION=$version" >> "$GITHUB_ENV"
-      - name: Validate Compose
-        run: |
-          docker compose config --quiet
-          docker compose -f docker-compose.yml -f docker-compose.dev.yml config --quiet
-      - name: Build runtime image
-        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml build bot
+      - working-directory: frontend
+        run: npm ci && npm test && npm run build

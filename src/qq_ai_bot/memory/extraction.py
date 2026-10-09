@@ -12,11 +12,8 @@ from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.memory.enums import (
     MemoryClaimOperation,
     MemoryKind,
-    MemoryRetention,
     MemoryScopeType,
-    MemorySourceStyle,
     MemorySourceType,
-    MemorySubjectBasis,
     MemoryTemporalMode,
 )
 from qq_ai_bot.persistence.repository_records import EventRecord
@@ -29,7 +26,7 @@ BATCH_EXTRACTION_SCHEMA_VERSION = "3"
 
 
 class _ExtractionModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
 
 class PrimaryEvent(_ExtractionModel):
@@ -58,35 +55,23 @@ class MemoryExtractionInput(_ExtractionModel):
 
 class MemoryClaim(_ExtractionModel):
     operation: MemoryClaimOperation = MemoryClaimOperation.ASSERT
-    subject_ref: str = Field(min_length=1, max_length=32)
-    subject_name: str | None = Field(default=None, min_length=1, max_length=128)
+    subject_ref: str = Field(min_length=1)
+    subject_name: str | None = Field(default=None, min_length=1)
     scope_type: MemoryScopeType
     kind: MemoryKind = MemoryKind.FACT
-    memory_key: str = Field(min_length=1, max_length=128)
-    category: str = Field(min_length=1, max_length=64)
-    content: str = Field(min_length=1, max_length=4000)
-    evidence_quote: str = Field(min_length=1, max_length=500)
+    memory_key: str = Field(min_length=1)
+    category: str = Field(min_length=1)
+    content: str = Field(min_length=1)
+    evidence_quote: str = Field(min_length=1)
     importance: int = Field(default=3, ge=1, le=5)
     confidence: float = Field(default=0.8, ge=0, le=1)
     source_type: MemorySourceType = MemorySourceType.AUTOMATIC
-    subject_basis: MemorySubjectBasis = MemorySubjectBasis.OMITTED_SELF
-    retention: MemoryRetention = MemoryRetention.DURABLE
-    source_style: MemorySourceStyle = MemorySourceStyle.NATURAL_STATEMENT
-    value_reason: str = Field(default="", max_length=240)
     temporal_mode: MemoryTemporalMode = MemoryTemporalMode.PERSISTENT
     valid_from: str | None = None
     valid_until: str | None = None
 
 
-class ExtractedMemoryClaim(MemoryClaim):
-    """Model extraction must declare value; internal mutations keep their own contract."""
-
-    importance: int = Field(ge=1, le=5)
-    confidence: float = Field(ge=0, le=1)
-    subject_basis: MemorySubjectBasis
-    retention: MemoryRetention
-    source_style: MemorySourceStyle
-    value_reason: str = Field(min_length=1, max_length=240)
+ExtractedMemoryClaim = MemoryClaim
 
 
 class MemoryExtractionOutput(_ExtractionModel):
@@ -96,23 +81,22 @@ class MemoryExtractionOutput(_ExtractionModel):
 class BatchPrimaryEvent(_ExtractionModel):
     source_event_id: int = Field(gt=0)
     scope_type: ScopeType
-    sender_label: str = Field(min_length=1, max_length=128)
-    content: str = Field(max_length=8000)
+    sender_label: str = Field(min_length=1)
+    content: str
     occurred_at: datetime
     available_subjects: tuple[AvailableSubject, ...]
 
 
 class BatchConversationContextEvent(_ExtractionModel):
     speaker_role: str = Field(pattern=r"^(member|bot)$")
-    sender_label: str = Field(min_length=1, max_length=128)
-    content: str = Field(max_length=1000)
+    sender_label: str = Field(min_length=1)
+    content: str
 
 
 class BatchMemoryExtractionInput(_ExtractionModel):
-    events: tuple[BatchPrimaryEvent, ...] = Field(min_length=1, max_length=12)
+    events: tuple[BatchPrimaryEvent, ...] = Field(min_length=1)
     conversation_context: tuple[BatchConversationContextEvent, ...] = Field(
         default=(),
-        max_length=8,
     )
 
 
@@ -122,7 +106,7 @@ class BatchMemoryClaim(_ExtractionModel):
 
 
 class BatchMemoryExtractionOutput(_ExtractionModel):
-    claims: tuple[BatchMemoryClaim, ...] = Field(default=(), max_length=36)
+    claims: tuple[BatchMemoryClaim, ...] = Field(default=())
 
 
 def source_event_fingerprint(event: EventRecord) -> str:

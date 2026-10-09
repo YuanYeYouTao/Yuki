@@ -244,6 +244,27 @@ class MemoryRebuildRepository:
             row = await session.get(ChatEventModel, event_id)
         return _event_record(row) if row is not None else None
 
+    async def pending_extraction_events(
+        self, public_id: str, *, limit: int
+    ) -> tuple[EventRecord, ...]:
+        now = datetime.now(UTC)
+        async with self.database.sessions() as session:
+            rows = await session.scalars(
+                select(ChatEventModel)
+                .join(MemoryRebuildItemModel, MemoryRebuildItemModel.event_id == ChatEventModel.id)
+                .join(
+                    MemoryRebuildRunModel, MemoryRebuildRunModel.id == MemoryRebuildItemModel.run_id
+                )
+                .where(
+                    MemoryRebuildRunModel.public_id == public_id,
+                    MemoryRebuildItemModel.status == MemoryRebuildItemStatus.PENDING.value,
+                    MemoryRebuildItemModel.next_attempt_at <= now,
+                )
+                .order_by(ChatEventModel.occurred_at, ChatEventModel.id)
+                .limit(limit)
+            )
+            return tuple(_event_record(row) for row in rows)
+
     async def ensure_item(
         self,
         public_id: str,
@@ -341,7 +362,6 @@ class MemoryRebuildRepository:
                     actual_fact_id=None,
                     actual_action=None,
                     actual_reason_code=None,
-                    attempts=0,
                     next_attempt_at=now,
                     error_category=None,
                     created_at=now,
@@ -445,7 +465,9 @@ class MemoryRebuildRepository:
                 )
             )
 
-    async def item_count(self, public_id: str) -> int:
+    async def item_count(
+        self, public_id: str, *, statuses: tuple[MemoryRebuildItemStatus, ...] = ()
+    ) -> int:
         async with self.database.sessions() as session:
             return int(
                 await session.scalar(
@@ -455,7 +477,14 @@ class MemoryRebuildRepository:
                         MemoryRebuildRunModel,
                         MemoryRebuildRunModel.id == MemoryRebuildItemModel.run_id,
                     )
-                    .where(MemoryRebuildRunModel.public_id == public_id)
+                    .where(
+                        MemoryRebuildRunModel.public_id == public_id,
+                        *(
+                            (MemoryRebuildItemModel.status.in_(tuple(x.value for x in statuses)),)
+                            if statuses
+                            else ()
+                        ),
+                    )
                 )
                 or 0
             )
@@ -549,7 +578,6 @@ class MemoryRebuildRepository:
             "actions": {str(key): int(value) for key, value in action_rows},
             "extraction_attempts": attempts,
             "extraction_requests": run_row.extraction_requests,
-            "consolidation_requests": run_row.consolidation_requests,
             "input_tokens": run_row.input_tokens,
             "output_tokens": run_row.output_tokens,
             "latency_milliseconds": run_row.latency_milliseconds,
@@ -562,7 +590,6 @@ class MemoryRebuildRepository:
         public_id: str,
         *,
         extraction_requests: int = 0,
-        consolidation_requests: int = 0,
         input_tokens: int | None = None,
         output_tokens: int | None = None,
         latency_seconds: float = 0.0,
@@ -576,9 +603,6 @@ class MemoryRebuildRepository:
                 .values(
                     extraction_requests=(
                         MemoryRebuildRunModel.extraction_requests + extraction_requests
-                    ),
-                    consolidation_requests=(
-                        MemoryRebuildRunModel.consolidation_requests + consolidation_requests
                     ),
                     input_tokens=MemoryRebuildRunModel.input_tokens + (input_tokens or 0),
                     output_tokens=MemoryRebuildRunModel.output_tokens + (output_tokens or 0),
@@ -924,7 +948,6 @@ class MemoryRebuildRepository:
                     )
                     .values(
                         commit_status=MemoryRebuildCommitStatus.PENDING.value,
-                        attempts=0,
                         next_attempt_at=now,
                         error_category=None,
                         updated_at=now,
@@ -939,7 +962,6 @@ class MemoryRebuildRepository:
                 )
                 .values(
                     status=MemoryRebuildItemStatus.PENDING.value,
-                    attempts=0,
                     next_attempt_at=now,
                     error_category=None,
                     updated_at=now,

@@ -243,18 +243,11 @@ class ReflectionControlRepository:
                     * 3600
                     / rate_window
                 )
-        recent_reports = [json.loads(r.report_json) for r in recent_cycles[-3:]]
-        not_decreasing = len(recent_reports) == 3 and all(
-            r.get("after", {}).get("actionable", {}).get("events", 0)
-            >= max(1, r.get("before", {}).get("actionable", {}).get("events", 0))
-            for r in recent_reports
-        )
         return {
             "initiative_tools": initiative_tools,
             "rate_window_seconds": rate_window,
             "ingress_events_per_hour": ingress_rate,
             "drain_events_per_hour": drain_rate,
-            "three_cycles_without_decrease": not_decreasing,
             **groups,
             "ingress_events_total": ingress,
             "processed_events_total": processed,
@@ -300,9 +293,6 @@ class ReflectionControlRepository:
                             "before": before,
                             "bounds": {
                                 "batches": self.settings.memory_self_reflection_max_batches_per_run,
-                                "per_conversation": (
-                                    self.settings.memory_self_reflection_max_batches_per_conversation_per_run
-                                ),
                                 "events": self.settings.memory_self_reflection_max_events,
                                 "characters": self.settings.memory_self_reflection_max_characters,
                             },
@@ -457,22 +447,6 @@ class ReflectionControlRepository:
                     else "failed",
                     delivery_receipt_json=json.dumps(receipt),
                 )
-            )
-
-    async def drain_active(self) -> bool:
-        async with self.database.sessions() as session:
-            row = await session.scalar(
-                select(Cycle)
-                .where(Cycle.trigger == "drain")
-                .order_by(Cycle.created_at.desc())
-                .limit(1)
-            )
-            if row is None:
-                return False
-            report = json.loads(row.report_json)
-            return bool(
-                report.get("after", report.get("before", {})).get("actionable", {}).get("events", 0)
-                >= self.settings.memory_self_reflection_drain_low_events
             )
 
     async def resume_batch(self, run_id: int) -> bool:

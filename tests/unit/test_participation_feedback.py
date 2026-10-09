@@ -11,7 +11,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select, update
-from tests.unit.test_autonomy_repository import _accept, _enable, _scene
+from tests.support.autonomy_repository_helpers import _accept, _enable, _scene
 from yuki_participation.controller import Controller
 from yuki_participation.models import CandidateKind, Proposal, Scope, SourceRef, Support
 

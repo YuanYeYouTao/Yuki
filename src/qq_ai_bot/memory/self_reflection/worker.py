@@ -64,14 +64,12 @@ class SelfReflectionWorker:
         await self._repository.scan_new_events()
         self._task = asyncio.create_task(self._run(), name="memory-self-reflection-worker")
         logger.info(
-            "memory_self_reflection_started max_batches=%d per_conversation=%d "
-            "daily_requests=%d output_tokens=%d timeout=%s drain=%s",
+            "memory_self_reflection_started max_batches=%d "
+            "daily_requests=%d output_tokens=%d timeout=%s",
             self._settings.memory_self_reflection_max_batches_per_run,
-            self._settings.memory_self_reflection_max_batches_per_conversation_per_run,
             self._settings.memory_self_reflection_max_daily_calls,
             self._settings.memory_self_reflection_max_output_tokens,
             self._settings.memory_self_reflection_timeout_seconds,
-            self._settings.memory_self_reflection_drain_enabled,
         )
 
     async def close(self) -> None:
@@ -97,28 +95,13 @@ class SelfReflectionWorker:
         async with self._process_lock:
             await self._repository.scan_new_events()
             local = (now or datetime.now(UTC)).astimezone(self._timezone)
-            snapshot = await self.control.snapshot()
             base = f"{local.date().isoformat()}:{local.hour:02d}"
-            if local.hour in self._hours:
+            if local.hour in self._hours or force:
                 await self.control.enqueue(trigger="scheduled", key=base)
-            if force:
-                await self.control.enqueue(trigger="drain", key=f"force:{local.isoformat()}")
-            elif snapshot["calls_today"] < snapshot["daily_limit"]:
-                events = snapshot["actionable"]["events"]
-                active = events >= self._settings.memory_self_reflection_drain_high_events or (
-                    events >= self._settings.memory_self_reflection_drain_low_events
-                    and await self.control.drain_active()
+            elif await self.control.retry_due():
+                await self.control.enqueue(
+                    trigger="retry", key=f"retry:{int(local.timestamp() // 300)}"
                 )
-                if self._settings.memory_self_reflection_drain_enabled and active:
-                    slot = int(
-                        local.timestamp()
-                        // self._settings.memory_self_reflection_drain_interval_seconds
-                    )
-                    await self.control.enqueue(trigger="drain", key=f"drain:{slot}")
-                elif await self.control.retry_due():
-                    await self.control.enqueue(
-                        trigger="retry", key=f"retry:{int(local.timestamp() // 300)}"
-                    )
             cycle = await self.control.claim()
             count = await self._process_cycle(cycle, local) if cycle else 0
             await self._deliver_reports()
@@ -126,7 +109,6 @@ class SelfReflectionWorker:
 
     async def _process_cycle(self, cycle: dict[str, Any], local: datetime) -> int:
         rows = await self.control.cycle_runs(cycle["id"])
-        seen = Counter(r["owner"] for r in rows)
         attempted = len(rows)
         exhausted = False
         while (
@@ -138,52 +120,25 @@ class SelfReflectionWorker:
             if snapshot["calls_today"] >= snapshot["daily_limit"]:
                 exhausted = True
                 break
-            # Rotate through every owner before granting its next share.
-            floor = min(seen.values(), default=0)
-            excluded = frozenset(
-                k
-                for k, count in seen.items()
-                if count > floor
-                or count
-                >= self._settings.memory_self_reflection_max_batches_per_conversation_per_run
+            batches = await self._repository.claim_due(
+                scheduled_slot=f"{local.date().isoformat()}:{cycle['id'][3:15]}:{attempted}",
+                local_date=local.date().isoformat(),
+                event_threshold=self._settings.memory_self_reflection_event_threshold,
+                character_threshold=self._settings.memory_self_reflection_character_threshold,
+                max_wait_seconds=self._settings.memory_self_reflection_max_wait_seconds,
+                max_sessions=1,
+                max_daily_calls=self._settings.memory_self_reflection_max_daily_calls,
+                max_events=self._settings.memory_self_reflection_max_events,
+                max_characters=self._settings.memory_self_reflection_max_characters,
+                force=cycle["trigger"] == "manual",
+                cycle_id=cycle["id"],
+                bot_display_name=self._settings.bot_display_name,
+                timezone=self._settings.memory_self_reflection_timezone,
             )
-            batch = None
-            for exclusion in (
-                frozenset(seen),
-                excluded,
-                frozenset(
-                    k
-                    for k, v in seen.items()
-                    if v
-                    >= self._settings.memory_self_reflection_max_batches_per_conversation_per_run
-                ),
-            ):
-                batches = await self._repository.claim_due(
-                    scheduled_slot=f"{local.date().isoformat()}:{cycle['id'][3:15]}:{attempted}",
-                    local_date=local.date().isoformat(),
-                    event_threshold=self._settings.memory_self_reflection_event_threshold,
-                    character_threshold=self._settings.memory_self_reflection_character_threshold,
-                    low_event_threshold=self._settings.memory_self_reflection_low_event_threshold,
-                    low_character_threshold=self._settings.memory_self_reflection_low_character_threshold,
-                    natural_gap_seconds=self._settings.memory_self_reflection_natural_gap_seconds,
-                    max_wait_seconds=self._settings.memory_self_reflection_max_wait_seconds,
-                    max_sessions=1,
-                    max_daily_calls=self._settings.memory_self_reflection_max_daily_calls,
-                    max_events=self._settings.memory_self_reflection_max_events,
-                    max_characters=self._settings.memory_self_reflection_max_characters,
-                    force=cycle["trigger"] == "retry",
-                    excluded_conversation_keys=exclusion,
-                    cycle_id=cycle["id"],
-                    bot_display_name=self._settings.bot_display_name,
-                    timezone=self._settings.memory_self_reflection_timezone,
-                )
-                if batches:
-                    batch = batches[0]
-                    break
+            batch = batches[0] if batches else None
             if batch is None:
                 break
             attempted += 1
-            seen[batch.state.conversation_key_hash] += 1
             try:
                 proposals, committed = await self._service.reflect(batch)
                 await self._repository.complete(batch, proposals=proposals, committed=committed)
@@ -223,11 +178,6 @@ class SelfReflectionWorker:
                 "daily": exhausted,
                 "batches": len(rows) >= self._settings.memory_self_reflection_max_batches_per_run,
                 "output": "output_budget_exhausted" in errors,
-                "per_conversation": any(
-                    count
-                    >= self._settings.memory_self_reflection_max_batches_per_conversation_per_run
-                    for count in seen.values()
-                ),
             },
             "reason": "daily_limit_reached"
             if exhausted
@@ -242,24 +192,7 @@ class SelfReflectionWorker:
             else "no_actionable_backlog",
         }
         await self._repository.scan_new_events()
-        result = await self.control.finish(cycle["id"], report)
-        after = result["after"]
-        if (
-            after["actionable"]["events"]
-            >= self._settings.memory_self_reflection_drain_critical_events
-            or after["isolated"]["events"]
-            or report["limit_flags"]["output"]
-            or after["oldest_actionable_age_seconds"] > 28800
-            or after["three_cycles_without_decrease"]
-        ):
-            logger.warning(
-                "self_reflection_backlog_alert cycle_id=%s actionable=%d "
-                "isolated=%d output_budget=%s",
-                cycle["id"],
-                after["actionable"]["events"],
-                after["isolated"]["events"],
-                report["limit_flags"]["output"],
-            )
+        await self.control.finish(cycle["id"], report)
         await self._repository.cleanup_receipts()
         return len(completed)
 

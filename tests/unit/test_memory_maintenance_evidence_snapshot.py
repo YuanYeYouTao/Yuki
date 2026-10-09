@@ -42,7 +42,7 @@ async def test_maintenance_prepares_entire_invalidation_batch_before_any_write(
             assert not session.info.get("memory_evidence_write_started")
             prepared.append(fact_ids)
         elif session.info.get("memory_evidence_write_started"):
-            assert set(fact_ids) <= session.info["memory_evidence_aggregates"].keys()
+            assert set(fact_ids) <= session.info["memory_evidence_rows"].keys()
         await prepare(fact_ids, session=session, targets=targets)
         if race and targets and len(prepared) == 1:
             # Commit on another real WAL connection after the read snapshot.

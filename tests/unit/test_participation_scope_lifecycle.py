@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 from sqlalchemy import update
-from tests.unit.test_semantic_participation_host import _event_and_route, _host, _message
+from tests.support.semantic_participation_host_helpers import _event_and_route, _host, _message
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.identity.canonical_repository import ensure_space

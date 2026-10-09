@@ -47,7 +47,6 @@ class ExitReason(StrEnum):
     RETRY = "retry"
     BUDGET = "root_budget"
     CAPACITY = "checkpoint_capacity"
-    NO_PROGRESS = "no_progress"
     PAUSED = "paused"
     CANCELLED = "cancelled"
 
@@ -58,10 +57,6 @@ class WorkActivationHandled(RuntimeError):
 
 class SegmentBudgetReached(RuntimeError):
     """An auxiliary HTTP retry cannot borrow a request from the next activation."""
-
-
-class WorkNoProgress(RuntimeError):
-    """The model repeatedly fails to advance or explicitly manage the active work."""
 
 
 class WorkRecoveryDeferred(RuntimeError):
@@ -98,13 +93,6 @@ class ActivationOutcome:
 
 def failure_status_text(failure: RuntimeFailure) -> str:
     """Operational status when no owned activation can recover; never provider details."""
-    if failure.code == "WorkNoProgress":
-        return {
-            "repeated_tool_results": "连续取得相同工具结果且没有进展，已暂停并保留已有结果。",
-        }.get(
-            str(failure.diagnostics.get("reason", "")),
-            "连续执行没有取得进展，已暂停并保留已有结果。",
-        )
     if failure.code == "sqlite_busy":
         return "数据存储暂时繁忙，本次处理未完成，请稍后重试。"
     if failure.code in {"database_failure", "sqlite_locked"}:
@@ -159,18 +147,6 @@ def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFa
         return RuntimeFailure("database_failure", stage)
     if isinstance(exc, SQLAlchemyError):
         return RuntimeFailure("database_failure", stage)
-    if isinstance(exc, WorkNoProgress):
-        reason = str(exc)
-        return RuntimeFailure(
-            "WorkNoProgress",
-            "agent_output",
-            diagnostics={"reason": reason}
-            if reason
-            in {
-                "repeated_tool_results",
-            }
-            else {},
-        )
     if isinstance(exc, ContextBoundaryChanged):
         return RuntimeFailure("context_boundary_changed", "context", True)
     from qq_ai_bot.runtime.work_journal import JournalUnavailable

@@ -96,12 +96,12 @@ def test_original_message_is_the_only_authoritative_segment_source() -> None:
 
     normalized = normalize_event(event)
 
-    assert normalized.text == "原始[提及成员1]内容"
+    assert normalized.text == "原始[提及12345678]内容"
     assert normalized.mentioned_user_ids == ("12345678",)
     assert "被适配器改写" not in normalized.text
 
 
-def test_mentions_keep_order_and_reuse_member_indices_across_yuki_presences() -> None:
+def test_mentions_keep_real_targets_and_order_across_yuki_presences() -> None:
     normalized = normalize_event(
         group_event(
             Message(
@@ -122,7 +122,7 @@ def test_mentions_keep_order_and_reuse_member_indices_across_yuki_presences() ->
     assert normalized.mentions_bot
     assert normalized.mentioned_user_ids == ("12345678", "87654321")
     assert normalized.text == (
-        "[提及Yuki]和[提及成员1][提及全体成员][提及成员1][提及成员2][提及Yuki]"
+        "[提及Yuki]和[提及12345678][提及全体成员][提及12345678][提及87654321][提及Yuki]"
     )
 
 
@@ -130,7 +130,7 @@ def test_canonical_reprojection_reclassifies_another_presence() -> None:
     normalized = normalize_event(
         group_event(Message([MessageSegment.at(8001), MessageSegment.text("回来啦")]))
     )
-    assert normalized.text == "[提及成员1]回来啦"
+    assert normalized.text == "[提及8001]回来啦"
     assert normalized.mentioned_user_ids == ("8001",)
 
     projected = reproject_inbound_mentions(normalized, frozenset({"9999", "8001"}))
@@ -141,7 +141,7 @@ def test_canonical_reprojection_reclassifies_another_presence() -> None:
     assert projected.yuki_account_ids == frozenset({"9999", "8001"})
 
 
-def test_other_member_mentions_use_opaque_placeholders() -> None:
+def test_other_member_mentions_keep_real_identity() -> None:
     normalized = normalize_event(
         group_event(
             Message(
@@ -155,8 +155,8 @@ def test_other_member_mentions_use_opaque_placeholders() -> None:
     )
 
     assert normalized.mentioned_user_ids == ("12345678",)
-    assert "[提及成员1]叫小明" in normalized.text
-    assert "12345678" not in normalized.text
+    assert "[提及12345678]叫小明" in normalized.text
+    assert normalized.segments[1]["data"]["qq"] == "12345678"
 
 
 def test_at_all_is_not_exposed_as_a_user_target() -> None:
@@ -211,7 +211,7 @@ def test_reply_text_uses_the_same_yuki_and_member_projection() -> None:
 
     normalized = normalize_event(event, yuki_account_ids=frozenset({"8001"}))
 
-    assert normalized.reply_text == "[提及Yuki]与[提及成员1]"
+    assert normalized.reply_text == "[提及Yuki]与[提及12345678]"
 
 
 def test_image_attachment_has_stable_history_marker() -> None:

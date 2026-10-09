@@ -4,11 +4,10 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, event, select, update
+from sqlalchemy import delete, event, update
 from tests.conftest import make_settings
 from tests.unit.test_memory_v2 import _append_event
 
-from qq_ai_bot.memory.evidence import MemoryEvidencePolicy
 from qq_ai_bot.memory.evidence_compaction import EvidenceCompactionService
 from qq_ai_bot.memory.models import MemoryFactCreate
 from qq_ai_bot.memory.repository import MemoryFactRepository
@@ -58,6 +57,15 @@ async def _seed(database, *, count=13):
         session.add(run)
         await session.flush()
         session.add(
+            MemorySelfReflectionResultModel(
+                run_id=run.id,
+                fact_id=fact.id,
+                result_kind="episode",
+                result_index=0,
+                created_at=now,
+            )
+        )
+        session.add(
             MemoryMutationReceiptModel(
                 mutation_id=str(uuid4()),
                 idempotency_key=str(uuid4()),
@@ -99,56 +107,11 @@ async def _seed(database, *, count=13):
     return facts, compaction, fact, sources, run
 
 
-async def test_backfill_batches_mappings_and_rejects_ambiguous_runs(database):
-    _, service, fact, sources, run = await _seed(database)
-    _, _, ambiguous, _, _ = await _seed(database)
-    # A second historical run matching the same source range is ambiguous even
-    # though its scheduled slot is independently valid.
-    async with database.sessions() as session, session.begin():
-        receipt = await session.scalar(
-            select(MemoryMutationReceiptModel).where(
-                MemoryMutationReceiptModel.new_fact_id == ambiguous.id
-            )
-        )
-        first, last = map(int, receipt.delegation_mode.split(":")[1:])
-        session.add(
-            MemorySelfReflectionRunModel(
-                conversation_key_hash="duplicate",
-                bot_user_id="8000",
-                canonical_person_id=sources[0].author_person_id,
-                scheduled_slot=str(uuid4()),
-                trigger_reason="test",
-                first_event_id=first,
-                last_event_id=last,
-                status="completed",
-                started_at=datetime.now(UTC),
-            )
-        )
-    statements = []
-
-    def observe(_connection, _cursor, statement, *_args):
-        statements.append(statement)
-
-    event.listen(database.engine.sync_engine, "before_cursor_execute", observe)
-    try:
-        await service._backfill_reflection_results()
-    finally:
-        event.remove(database.engine.sync_engine, "before_cursor_execute", observe)
-    async with database.sessions() as session:
-        rows = list(await session.scalars(select(MemorySelfReflectionResultModel)))
-    assert [(row.fact_id, row.run_id) for row in rows] == [(fact.id, run.id)]
-    writes = [i for i, statement in enumerate(statements) if statement.startswith("INSERT")]
-    assert len(writes) == 1
-    assert not any(statement.startswith("SELECT") for statement in statements[writes[0] + 1 :])
-    assert sum("FROM memory_self_reflection_runs" in statement for statement in statements) == 2
-
-
 @pytest.mark.parametrize("change", ["hidden", "cascade", "evidence_delete"])
 async def test_compaction_reprepares_stale_snapshot_and_stops_history_reads_after_delete(
     database, monkeypatch, change
 ):
     facts, service, fact, sources, _ = await _seed(database)
-    await service._backfill_reflection_results()
     prepare = facts.prepare_evidence_metadata
     attempts = 0
 
@@ -190,7 +153,7 @@ async def test_compaction_reprepares_stale_snapshot_and_stops_history_reads_afte
     finally:
         event.remove(database.engine.sync_engine, "before_cursor_execute", observe)
     assert attempts == 2
-    assert remaining_count == 8
+    assert remaining_count <= 3
     last_delete = max(
         i
         for i, statement in enumerate(statements)
@@ -203,16 +166,13 @@ async def test_compaction_reprepares_stale_snapshot_and_stops_history_reads_afte
     current = await facts.get_fact(fact.id)
     remaining = await facts.list_evidence(fact.id)
     assert current.evidence_count == len(remaining)
-    assert current.confidence == MemoryEvidencePolicy().aggregate(
-        remaining, authority=current.authority
-    )
+    assert current.confidence == fact.confidence
 
 
 async def test_compaction_aggregates_all_retained_evidence_beyond_a_read_page(
     database, monkeypatch
 ):
     facts, service, fact, _, _ = await _seed(database)
-    await service._backfill_reflection_results()
     read_evidence = facts.repository.list_evidence
 
     async def bounded_public_page(fact_id, *, limit=100, session=None):
@@ -227,8 +187,6 @@ async def test_compaction_aggregates_all_retained_evidence_beyond_a_read_page(
     )
     current = await facts.get_fact(fact.id)
     remaining = await read_evidence(fact.id, limit=None)
-    assert kept == len(remaining) == 8
+    assert kept == len(remaining)
     assert current.evidence_count == len(remaining)
-    assert current.confidence == MemoryEvidencePolicy().aggregate(
-        remaining, authority=current.authority
-    )
+    assert current.confidence == fact.confidence

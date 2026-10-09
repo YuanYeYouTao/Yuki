@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.memory.enums import MemoryScopeType, SelfMemoryVisibility
@@ -43,10 +43,16 @@ class SubjectResolver:
         available = [
             AvailableSubject(
                 subject_ref="speaker",
-                display_label="当前发送者",
+                display_label=f"{event.sender_display_name}（ID {event.sender_user_id}）",
                 allowed_scopes=tuple(scopes),
                 relation_to_speaker="self",
-            )
+            ),
+            AvailableSubject(
+                subject_ref="self",
+                display_label=f"本 Agent（ID {event.bot_user_id}）",
+                allowed_scopes=(MemoryScopeType.SELF,),
+                relation_to_speaker="agent_observation",
+            ),
         ]
         resolved: list[tuple[str, ResolvedSubject]] = [
             ("speaker:person", ResolvedSubject(MemoryScopeType.PERSON, event.sender_user_id, None))
@@ -65,7 +71,7 @@ class SubjectResolver:
             available.append(
                 AvailableSubject(
                     subject_ref="group",
-                    display_label="当前群",
+                    display_label=f"群 {event.group_id}",
                     allowed_scopes=(MemoryScopeType.GROUP,),
                     relation_to_speaker="current_group",
                 )
@@ -82,17 +88,15 @@ class SubjectResolver:
                 ("group:group", ResolvedSubject(MemoryScopeType.GROUP, None, event.group_id))
             )
             seen = {"", event.sender_user_id}
-            mention_number = 0
             for user_id in event.mentioned_user_ids:
                 if user_id in seen:
                     continue
                 seen.add(user_id)
-                mention_number += 1
-                subject_ref = f"mentioned_{mention_number}"
+                subject_ref = f"member_{user_id}"
                 available.append(
                     AvailableSubject(
                         subject_ref=subject_ref,
-                        display_label=f"被提及成员{mention_number}",
+                        display_label=f"ID {user_id}",
                         allowed_scopes=(MemoryScopeType.PERSON_GROUP,),
                         relation_to_speaker="mentioned_member",
                     )
@@ -104,11 +108,11 @@ class SubjectResolver:
                     )
                 )
             reply_author = event.reply_sender_user_id or ""
-            if reply_author not in seen:
+            if reply_author:
                 available.append(
                     AvailableSubject(
                         subject_ref="reply_author",
-                        display_label="回复消息作者",
+                        display_label=f"ID {reply_author}",
                         allowed_scopes=(MemoryScopeType.PERSON_GROUP,),
                         relation_to_speaker="reply_author",
                     )
@@ -149,14 +153,46 @@ class SubjectContextBuilder:
     def __init__(
         self,
         people: PeopleRepository | None = None,
-        *,
-        bot_aliases: tuple[str, ...] | None = None,
     ) -> None:
-        del bot_aliases
         self._people = people
 
     async def build(self, event: EventRecord) -> SubjectResolutionContext:
-        return SubjectResolver.context(event)
+        context = SubjectResolver.context(event)
+        if self._people is None:
+            return context
+        subjects = dict(context.resolved_subjects)
+        user_ids = tuple(
+            dict.fromkeys(
+                value.subject_user_id for value in subjects.values() if value.subject_user_id
+            )
+        )
+        profiles = await self._people.get_many(user_ids, group_id=event.group_id)
+        available = []
+        for item in context.available_subjects:
+            target = next(
+                (
+                    subjects.get(f"{item.subject_ref}:{scope.value}")
+                    for scope in item.allowed_scopes
+                ),
+                None,
+            )
+            if target is not None and target.subject_user_id is not None:
+                profile = profiles.get(target.subject_user_id)
+                name = (
+                    event.sender_group_card or event.sender_nickname
+                    if target.subject_user_id == event.sender_user_id
+                    else profile.group_card or profile.nickname
+                    if profile
+                    else ""
+                )
+                label = (
+                    f"{name}（ID {target.subject_user_id}）"
+                    if name
+                    else f"ID {target.subject_user_id}"
+                )
+                item = item.model_copy(update={"display_label": label})
+            available.append(item)
+        return replace(context, available_subjects=tuple(available))
 
     async def resolve_claim_names(
         self,
@@ -192,7 +228,7 @@ class SubjectContextBuilder:
                 available.append(
                     AvailableSubject(
                         subject_ref=ref,
-                        display_label=f"当前群唯一成员：{match.display_name}",
+                        display_label=f"{match.display_name}（ID {match.user_id}）",
                         allowed_scopes=(MemoryScopeType.PERSON_GROUP,),
                         relation_to_speaker="unique_group_name",
                     )

@@ -6,7 +6,6 @@ import time
 
 from qq_ai_bot.admin.audit import AdminAuditService
 from qq_ai_bot.admin.models import ControlAuditRef
-from qq_ai_bot.config import Settings
 from qq_ai_bot.control_plane.principal import ControlPrincipal, PrincipalSource
 from qq_ai_bot.control_plane.targets import PersonControlTarget
 from qq_ai_bot.domain.control import DecisionContext
@@ -28,12 +27,10 @@ class PreferenceAdminService:
     def __init__(
         self,
         *,
-        settings: Settings,
         memories: MemoryFactService,
         audit: AdminAuditService,
         memory_mutations: MemoryAdminService | None = None,
     ) -> None:
-        self._settings = settings
         self._memories = memories
         self._audit = audit
         self._memory_mutations = memory_mutations
@@ -47,7 +44,6 @@ class PreferenceAdminService:
         require_capability(context, "control.preference.read")
         return await self._memories.list_preferences(
             person_storage_id(context),
-            limit=self._settings.preference_max_entries,
         )
 
     async def set_preference(
@@ -66,13 +62,16 @@ class PreferenceAdminService:
             raise ValueError("偏好键和值不能为空")
         started = time.perf_counter()
         if self._memory_mutations is not None:
-            existing = {
-                row.key: row
+            matching = [
+                row
                 for row in await self._memories.list_preferences(
                     target,
-                    limit=self._settings.preference_max_entries,
                 )
-            }.get(normalized_key)
+                if row.key == normalized_key
+            ]
+            if len(matching) > 1:
+                raise ValueError("同一偏好键存在多条记忆，请按事实 ID 指定要修改的记录")
+            existing = matching[0] if matching else None
             row = await self._memory_mutations.set_explicit_preference(
                 _preference_trigger(context, audit),
                 target,
@@ -96,19 +95,21 @@ class PreferenceAdminService:
             )
             return row
         async with self._audit.transaction() as session:
-            existing = {
-                row.key: row
+            matching = [
+                row
                 for row in await self._memories.list_preferences(
                     target,
-                    limit=self._settings.preference_max_entries,
                     session=session,
                 )
-            }.get(normalized_key)
+                if row.key == normalized_key
+            ]
+            if len(matching) > 1:
+                raise ValueError("同一偏好键存在多条记忆，请按事实 ID 指定要修改的记录")
+            existing = matching[0] if matching else None
             row = await self._memories.set_preference(
                 target,
                 normalized_key,
                 normalized_value,
-                limit=self._settings.preference_max_entries,
                 session=session,
             )
             await self._audit.record(
@@ -141,13 +142,16 @@ class PreferenceAdminService:
         normalized_key = key.strip()
         started = time.perf_counter()
         if self._memory_mutations is not None:
-            existing = {
-                row.key: row
+            matching = [
+                row
                 for row in await self._memories.list_preferences(
                     target,
-                    limit=self._settings.preference_max_entries,
                 )
-            }.get(normalized_key)
+                if row.key == normalized_key
+            ]
+            if len(matching) > 1:
+                raise ValueError("同一偏好键存在多条记忆，请按事实 ID 指定要修改的记录")
+            existing = matching[0] if matching else None
             deleted = bool(
                 existing is not None
                 and await self._memory_mutations.delete_explicit_preference(
@@ -173,14 +177,17 @@ class PreferenceAdminService:
             )
             return deleted
         async with self._audit.transaction() as session:
-            existing = {
-                row.key: row
+            matching = [
+                row
                 for row in await self._memories.list_preferences(
                     target,
-                    limit=self._settings.preference_max_entries,
                     session=session,
                 )
-            }.get(normalized_key)
+                if row.key == normalized_key
+            ]
+            if len(matching) > 1:
+                raise ValueError("同一偏好键存在多条记忆，请按事实 ID 指定要修改的记录")
+            existing = matching[0] if matching else None
             deleted = await self._memories.delete_preference(
                 target,
                 normalized_key,

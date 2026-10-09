@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import select
 from tests.support.work_compaction import summary_json
+from tests.support.work_compaction_capacity_helpers import _runtime, _session
 from tests.support.work_session import WorkSession, invoke_tool
-from tests.unit.test_work_compaction_capacity import _runtime, _session
 
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ToolCall, ToolFunction
 from qq_ai_bot.llm.fake import FakeLLMProvider

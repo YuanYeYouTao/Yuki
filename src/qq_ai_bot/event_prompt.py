@@ -295,6 +295,7 @@ class ChatEventPromptRenderer:
             current_content,
             yuki_account_ids=self._yuki_account_ids,
         )
+        content = self._mention_content(content, row.mentioned_user_ids, row.bot_user_id)
         if not content:
             return ""
         if row.event_kind == "external_event":
@@ -321,6 +322,7 @@ class ChatEventPromptRenderer:
             current_content,
             yuki_account_ids=self._yuki_account_ids,
         )
+        content = self._mention_content(content, row.mentioned_user_ids, row.bot_user_id)
         if not content:
             return ""
         if row.event_kind == "external_event":
@@ -364,6 +366,7 @@ class ChatEventPromptRenderer:
     def render_inbound(self, inbound: InboundMessage, content: str) -> str:
         """Render an inbound message that has not been recovered from the ledger."""
 
+        content = self._mention_content(content, inbound.mentioned_user_ids, inbound.bot_user_id)
         display_name = self._display_name(
             user_id=inbound.sender.user_id,
             bot_user_id=inbound.bot_user_id,
@@ -406,6 +409,7 @@ class ChatEventPromptRenderer:
     def render_reference_inbound(self, inbound: InboundMessage, content: str) -> str:
         """Render the rare unpersisted current input without inventing an event id."""
 
+        content = self._mention_content(content, inbound.mentioned_user_ids, inbound.bot_user_id)
         display_name = self._display_name(
             user_id=inbound.sender.user_id,
             bot_user_id=inbound.bot_user_id,
@@ -413,6 +417,12 @@ class ChatEventPromptRenderer:
             group_card=inbound.sender.group_card,
         )
         return f"[{display_name}|QQ:{inbound.sender.user_id}]\n{content}"
+
+    def _mention_content(self, content: str, targets: tuple[str, ...], bot_user_id: str) -> str:
+        for target in targets:
+            label = self._identity_label(target, bot_user_id=bot_user_id)
+            content = content.replace(f"[提及{target}]", f"[提及{label}]")
+        return content
 
     @staticmethod
     def event_content(

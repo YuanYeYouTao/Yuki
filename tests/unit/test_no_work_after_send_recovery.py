@@ -6,9 +6,9 @@ from dataclasses import replace
 import pytest
 from sqlalchemy import select
 from tests.conftest import MemorySender, build_harness, make_settings
+from tests.support.commands_and_chat_helpers import inbound
 from tests.support.fixed_contract_fixture import bind_main_contract
 from tests.support.social_identity_cases import social_env
-from tests.unit.test_commands_and_chat import inbound
 
 from qq_ai_bot.conversation.hydrate import require_primary_alias_for_conversation
 from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction

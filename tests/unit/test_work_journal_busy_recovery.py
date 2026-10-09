@@ -7,8 +7,8 @@ from dataclasses import replace
 import pytest
 from sqlalchemy import event, text, update
 from sqlalchemy.exc import OperationalError
+from tests.support.work_reporting_runner_helpers import case, run, tool
 from tests.unit.test_work_journal_source_retry import _change, _saved, _session
-from tests.unit.test_work_reporting_runner import case, run, tool
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.domain.messages import ChatMessage, ChatResponse

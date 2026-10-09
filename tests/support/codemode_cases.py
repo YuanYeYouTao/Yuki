@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy import select
+from tests.unit.test_tool_effect_audit import active_work
 
 from qq_ai_bot.capabilities.invocation import direct_invocations
 from qq_ai_bot.codemode.api_projection import project
@@ -27,7 +28,6 @@ from qq_ai_bot.domain.messages import ChatMessage, ChatTool, ToolCall, ToolFunct
 from qq_ai_bot.runtime.work_budget_schema import budgets
 from qq_ai_bot.runtime.work_schema_v1 import effects, work
 from qq_ai_bot.services.invocation_service import InvocationService
-from tests.unit.test_tool_effect_audit import active_work
 
 BINARY = Path(os.environ.get("YUKI_MONTY_BINARY", "/nonexistent/monty"))
 try:

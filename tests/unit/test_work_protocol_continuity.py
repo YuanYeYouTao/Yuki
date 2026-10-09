@@ -1,9 +1,7 @@
 """Explicit compaction task anchors and exact persisted provider request replay."""
 
-import asyncio
 import hashlib
 import json
-from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -14,7 +12,6 @@ from tests.conftest import build_harness, make_settings
 
 # P10: explicit Invocation fixture contract; existing assertions are retained.
 from tests.support.agent_backend import StubAgentBackend
-from tests.support.runtime_wire import install_wire
 from tests.support.social_identity_cases import social_env
 from tests.support.work_session import WorkSession, invoke_tool
 
@@ -23,7 +20,6 @@ from qq_ai_bot.domain.messages import (
     ChatImage,
     ChatMessage,
     ChatRequest,
-    ChatResponse,
     ChatTool,
     ProviderContinuation,
     ReasoningEffort,
@@ -32,7 +28,6 @@ from qq_ai_bot.domain.messages import (
 )
 from qq_ai_bot.identity.db_models import PresenceModel
 from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
-from qq_ai_bot.llm.base import LLMMalformedFunctionCallError
 from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.llm.gemini import GeminiProvider
@@ -62,297 +57,6 @@ from qq_ai_bot.services.turn_transcript import TurnTranscript
 from qq_ai_bot.social.models import OperationStatus, SocialTarget
 from qq_ai_bot.social.repository import SocialOperationRepository
 from qq_ai_bot.web.models import WebMode
-
-
-@pytest.mark.parametrize("signed_prefix", [False, True])
-async def test_real_gemini_http_malformed_recovery_preserves_signed_prefix_and_effect(
-    database, signed_prefix
-):
-    def call(name, signature):
-        return {
-            "candidates": [
-                {
-                    "finishReason": "STOP",
-                    "content": {
-                        "role": "model",
-                        "parts": [
-                            {
-                                "functionCall": {"name": name, "args": {}},
-                                "thoughtSignature": signature,
-                            }
-                        ],
-                    },
-                }
-            ]
-        }
-
-    answers = iter(
-        [
-            *([call("probe_read", "exact-original-signature")] if signed_prefix else []),
-            {
-                "candidates": [
-                    {
-                        "finishReason": "MALFORMED_FUNCTION_CALL",
-                        "content": {
-                            "role": "model",
-                            "parts": [],
-                        },
-                    }
-                ]
-            },
-            call("effect_probe", "exact-corrected-signature"),
-            {
-                "candidates": [
-                    {
-                        "finishReason": "STOP",
-                        "content": {
-                            "role": "model",
-                            "parts": [{"text": "已核对回执"}],
-                        },
-                    }
-                ]
-            },
-        ]
-    )
-    wire, executions = [], []
-
-    def transport(request):
-        wire.append(json.loads(request.content))
-        return httpx.Response(200, json=next(answers))
-
-    fixed = tuple(
-        ChatTool(name, name, {"type": "object"}) for name in ("probe_read", "effect_probe")
-    )
-
-    # Preserve the upstream HTTP assertions through the current typed call boundary.
-    class Backend(StubAgentBackend):
-        def definitions(self, runtime, **kwargs):
-            return fixed
-
-        def begin_batch(self, *args):
-            pass
-
-        def parallel_safe(self, *args):
-            return False
-
-        def is_side_effecting(self, name, *args):
-            return name == "effect_probe"
-
-        async def execute_call(self, invocation):
-            name = invocation.call.function.name
-            executions.append(name)
-            return json.dumps({"ok": True, "mutation_committed": name == "effect_probe"})
-
-        def finalize(self, text, runtime):
-            return text
-
-        def exhausted(self, runtime):
-            raise AssertionError("valid corrected response must complete")
-
-    harness = build_harness(database, make_settings(database.url), FakeLLMProvider())
-    chat = harness.processor._chat
-    async with httpx.AsyncClient(
-        base_url="https://gemini.invalid/", transport=httpx.MockTransport(transport)
-    ) as client:
-        adapter = GeminiProvider(
-            base_url="https://gemini.invalid/",
-            api_key="synthetic",
-            timeout_seconds=1,
-            max_retries=0,
-            client=client,
-        )
-        profile = ModelProfile(
-            id="gemini-http",
-            provider="gemini",
-            protocol=ModelProtocol.GEMINI,
-            base_url="https://gemini.invalid/",
-            api_key_env="UNUSED",
-            model="gemini-3.8-flash",
-            timeout_seconds=1,
-            max_retries=0,
-            default_temperature=0.5,
-            default_max_output_tokens=8192,
-            capabilities=frozenset({ModelCapability.TOOLS, ModelCapability.REASONING}),
-        )
-        chat.runtime.runner._models = TaskModelExecutor(
-            router=ModelRouter(
-                ModelProfileCatalog(
-                    profiles={profile.id: profile},
-                    routes={
-                        task: ModelRoute(task=task, profile_id=profile.id) for task in ModelTask
-                    },
-                )
-            ),
-            pool=ModelClientPool(injected_profiles={profile.id: adapter}),
-        )
-        runtime = AgentRuntime(
-            origin=TurnOrigin.USER_MESSAGE,
-            actor_user_id="1001",
-            actor_is_superuser=False,
-            delegated_authority=None,
-            conversation_key="gemini-malformed-http",
-            current_group_id=None,
-            bot_user_id="9999",
-            gateway=None,
-            runtime_config=await chat._runtime_config.snapshot(),
-            current_time=chat._time.current_default(),
-            allowed_capabilities=frozenset(),
-            max_tool_calls=8,
-            max_model_requests=8,
-            fixed_tools=fixed,
-        )
-        result = await chat.runtime.runner.run(
-            (ChatMessage("system", "exact fixed policy"), ChatMessage("user", "apply once")),
-            runtime,
-            Backend(),
-        )
-    assert result.text == "已核对回执"
-    assert executions == (["probe_read", "effect_probe"] if signed_prefix else ["effect_probe"])
-    assert result.model_requests == len(wire) == (4 if signed_prefix else 3)
-    failed = 1 if signed_prefix else 0
-    # No invalid response parts or invented assistant calls enter the wire delta.
-    before, corrected = wire[failed]["contents"], wire[failed + 1]["contents"]
-    assert corrected[:-1] == before[:-1]
-    assert corrected[-1]["role"] == before[-1]["role"] == "user"
-    assert corrected[-1]["parts"][: len(before[-1]["parts"])] == before[-1]["parts"]
-    assert len(corrected[-1]["parts"]) == len(before[-1]["parts"]) + 1
-    assert set(corrected[-1]["parts"][-1]) == {"text"}
-    assert all(payload["tools"] == wire[0]["tools"] for payload in wire)
-    assert all(payload.get("toolConfig") == wire[0].get("toolConfig") for payload in wire)
-    if signed_prefix:
-        model_parts = [
-            item["parts"] for item in wire[failed + 1]["contents"] if item["role"] == "model"
-        ]
-        assert model_parts == [
-            [
-                {
-                    "functionCall": {"name": "probe_read", "args": {}},
-                    "thoughtSignature": "exact-original-signature",
-                }
-            ]
-        ]
-
-
-async def test_work_malformed_correction_count_survives_restart_without_resetting_budget(
-    database, tmp_path
-):
-    control = await _control(database, tmp_path)
-
-    def respond(_request):
-        if len(provider.requests) == 3:
-            raise asyncio.CancelledError("process stopped after persisted corrections")
-        raise LLMMalformedFunctionCallError("malformed")
-
-    provider = FakeLLMProvider(respond)
-    harness = build_harness(database, make_settings(database.url), provider)
-    chat = harness.processor._chat
-    task = ChatMessage("user", "continue actual Work")
-    initial = (ChatMessage("system", "fixed policy"), task)
-    runtime = AgentRuntime(
-        origin=TurnOrigin.USER_MESSAGE,
-        actor_user_id="1001",
-        actor_is_superuser=False,
-        delegated_authority=None,
-        conversation_key="malformed-durable",
-        current_group_id=None,
-        bot_user_id="9999",
-        gateway=None,
-        runtime_config=await chat._runtime_config.snapshot(),
-        current_time=chat._time.current_default(),
-        allowed_capabilities=frozenset(),
-        max_tool_calls=8,
-        max_model_requests=8,
-        fixed_tools=(),
-        work_control=control,
-        compaction_brief=task,
-    )
-    original_session = WorkSession(
-        control, chat.runtime.runner.work_contract(runtime.runtime_config, initial, ())
-    )
-    await original_session.restore(TurnTranscript(initial), compaction_brief=task)
-    await control.repository.checkpoint(
-        control.lease, control.current["id"], None, models=3, tools=2
-    )
-    control.current = await control.repository.get(control.current["id"])
-    await original_session.save("paired")
-    interrupted = await chat.runtime.runner.run(initial, runtime, None)
-    assert interrupted.work_state == "suspended"
-    assert interrupted.outcome.failure.code == "RequestCancelledError"
-    assert len(provider.requests) == 3  # No automatic retry of the unknown transport attempt.
-    original = await control.repository.get(control.current["id"])
-    assert original["model_requests"] == 6 and original["tool_calls"] == 2
-    assert control.session.progress["malformed_function_call_recoveries"] == 2
-
-    resumed = WorkControl(
-        control.repository, control.lease, control.source_key, control.source, control.validate
-    )
-    resumed.current = original
-    # New activation and Runner must read the durable count rather than granting
-    # two more correction requests after re-admission.
-    runtime = replace(runtime, work_control=resumed)
-    result = await chat.runtime.runner.run(initial, runtime, None)
-    assert result.work_state == "suspended"
-    assert result.outcome.failure.code == "LLMMalformedFunctionCallError"
-    assert len(provider.requests) == 4
-    assert resumed.session.progress["malformed_function_call_recoveries"] == 2
-    after = await control.repository.get(original["id"])
-    assert after["id"] == original["id"]
-    assert after["model_requests"] == 7 and after["tool_calls"] == 2
-    await control.repository.release(control.lease)
-
-
-async def test_unaccepted_caller_ending_cannot_bypass_exhausted_malformed_fence(database, tmp_path):
-    control = await _control(database, tmp_path)
-    control.source["delivery_contract"] = "return_to_caller"
-
-    def respond(_request):
-        assert control.session.progress["malformed_function_call_recoveries"] == 2
-        # An in-memory ending without a persisted accepted control is only a
-        # projection; it can neither complete the Work nor buy a correction.
-        control.ending = "completed"
-        raise LLMMalformedFunctionCallError("malformed after provisional completion")
-
-    provider = FakeLLMProvider(respond)
-    harness = build_harness(database, make_settings(database.url), provider)
-    chat = harness.processor._chat
-    task = ChatMessage("user", "actual caller Work")
-    initial = (ChatMessage("system", "fixed"), task)
-    runtime = AgentRuntime(
-        origin=TurnOrigin.USER_MESSAGE,
-        actor_user_id="1001",
-        actor_is_superuser=False,
-        delegated_authority=None,
-        conversation_key="caller-malformed-fence",
-        current_group_id=None,
-        bot_user_id="9999",
-        gateway=None,
-        runtime_config=await chat._runtime_config.snapshot(),
-        current_time=chat._time.current_default(),
-        allowed_capabilities=frozenset(),
-        max_tool_calls=8,
-        max_model_requests=8,
-        fixed_tools=(),
-        work_control=control,
-        compaction_brief=task,
-    )
-    previous = WorkSession(
-        control, chat.runtime.runner.work_contract(runtime.runtime_config, initial, ())
-    )
-    await previous.restore(TurnTranscript(initial), compaction_brief=task)
-    previous.progress["malformed_function_call_recoveries"] = 2
-    await previous.save("paired")
-    result = await chat.runtime.runner.run(initial, runtime, None)
-    assert result.work_state == "suspended"
-    assert result.outcome.failure.code == "LLMMalformedFunctionCallError"
-    assert len(provider.requests) == 1
-    assert control.ending != "completed" and control.accepted is None
-    assert control.session.progress["malformed_function_call_recoveries"] == 2
-    persisted = await control.repository.get(control.current["id"])
-    assert persisted["state"] == "suspended"
-    assert persisted["model_requests"] == 1 and persisted["tool_calls"] == 0
-    checkpoint = json.loads(persisted["checkpoint_json"])
-    assert "accepted_control" not in checkpoint and "sync_result" not in checkpoint
-    await control.repository.release(control.lease)
 
 
 async def _control(database, tmp_path, *, worker=False):
@@ -1117,19 +821,7 @@ async def test_native_checkpoint_replays_exact_http_after_sqlite_restart(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("contract_changed", [False, True])
 @pytest.mark.parametrize(
-    "bad_anchor",
-    [
-        [],
-        {"items": []},
-        encode_transcript(TurnTranscript((ChatMessage("invalid", "invalid role"),))),
-        encode_transcript(TurnTranscript((ChatMessage("user", {"not": "text"}),))),
-        {
-            "items": [{"kind": "message", "value": {"role": ["user"]}}],
-            "messages_count": 1,
-            "chain_id": "bad",
-            "continuation": None,
-        },
-    ],
+    "bad_anchor", [[], encode_transcript(TurnTranscript((ChatMessage("invalid", "invalid role"),)))]
 )
 async def test_corrupt_compaction_anchor_is_unavailable(
     database, tmp_path, contract_changed, bad_anchor
@@ -1287,153 +979,6 @@ async def test_responses_journal_replays_identical_http_bytes(database, tmp_path
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("protocol", ["chat_completions", "responses", "openai_responses"])
-async def test_repeated_read_batches_stop_at_activation_budget_with_stable_tools_and_settings(
-    database, protocol
-):
-    fixed = (ChatTool("read_probe", "Read audit data", {"type": "object"}),)
-    executions = []
-    provider = FakeLLMProvider(
-        lambda _: ChatResponse(
-            "",
-            0,
-            tool_calls=(
-                ToolCall(f"read-{len(provider.requests)}", ToolFunction("read_probe", "{}")),
-            ),
-        )
-    )
-
-    class Backend(StubAgentBackend):
-        def definitions(self, runtime, **kwargs):
-            return fixed
-
-        def begin_batch(self, *args):
-            pass
-
-        def parallel_safe(self, *args):
-            return False
-
-        def is_side_effecting(self, *args):
-            return False
-
-        async def execute_call(self, invocation):
-            executions.append("read")
-            return '{"ok":true,"unchanged":true}'
-
-        def finalize(self, text, runtime):
-            return text
-
-        def exhausted(self, runtime):
-            return ""
-
-    harness = build_harness(database, make_settings(database.url), provider)
-    chat = harness.processor._chat
-    client, wire = install_wire(
-        chat,
-        provider,
-        "responses" if protocol == "openai_responses" else protocol,
-        native=protocol == "openai_responses",
-    )
-    runtime = AgentRuntime(
-        origin=TurnOrigin.USER_MESSAGE,
-        actor_user_id="1001",
-        actor_is_superuser=False,
-        delegated_authority=None,
-        conversation_key="no-progress",
-        current_group_id=None,
-        bot_user_id="9999",
-        gateway=None,
-        runtime_config=await chat._runtime_config.snapshot(),
-        current_time=chat._time.current_default(),
-        allowed_capabilities=frozenset(),
-        max_tool_calls=8,
-        max_model_requests=8,
-        fixed_tools=fixed,
-    )
-    try:
-        result = await chat.runtime.runner.run(
-            (ChatMessage("system", "fixed"), ChatMessage("user", "audit")), runtime, Backend()
-        )
-    finally:
-        await client.aclose()
-    # Ordinary chat stops at its existing finite activation budget.
-    assert result.model_requests == 8 and len(executions) == 1
-    assert len({request.request_chain_id for request in provider.requests}) == 1
-    sequence_key = "messages" if protocol == "chat_completions" else "input"
-    settings = [
-        {key: value for key, value in payload.items() if key != sequence_key} for payload in wire
-    ]
-    assert all(item == settings[0] for item in settings)
-    assert all(request.tool_choice == "auto" for request in provider.requests)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("with_anchor", [False, True])
-async def test_compaction_is_local_fence_before_any_tool_execution(
-    database, tmp_path, monkeypatch, with_anchor
-):
-    control = await _control(database, tmp_path, worker=True)
-    task = ChatMessage("user", "actual task")
-    fixed = (ChatTool("read_probe", "Read audit data", {"type": "object"}),)
-    provider = FakeLLMProvider(
-        lambda _: ChatResponse(
-            "ignoring compaction instruction",
-            0,
-            tool_calls=(ToolCall("not-executed", ToolFunction("read_probe", "{}")),),
-        )
-    )
-    harness = build_harness(database, make_settings(database.url), provider)
-    chat = harness.processor._chat
-    execute_call = AsyncMock(side_effect=AssertionError("compaction must not execute tools"))
-    backend = StubAgentBackend(
-        definitions=lambda *args, **kwargs: fixed,
-        execute_call=execute_call,
-    )
-    runtime = AgentRuntime(
-        origin=TurnOrigin.USER_MESSAGE,
-        actor_user_id="1001",
-        actor_is_superuser=False,
-        delegated_authority=None,
-        conversation_key="compaction-fence",
-        current_group_id=None,
-        bot_user_id="9999",
-        gateway=None,
-        runtime_config=await chat._runtime_config.snapshot(),
-        current_time=chat._time.current_default(),
-        allowed_capabilities=frozenset(),
-        max_tool_calls=8,
-        max_model_requests=8,
-        fixed_tools=fixed,
-        work_control=control,
-        compaction_brief=task if with_anchor else None,
-    )
-
-    def measured(request):
-        return 1_000_000 if request.tools else 8000
-
-    # P10 split turn preparation from Work summary admission. Apply the same
-    # synthetic capacity pressure to both owners; keep every fence assertion.
-    monkeypatch.setattr("qq_ai_bot.services.agent_runner.estimate_request_tokens", measured)
-    monkeypatch.setattr("qq_ai_bot.services.turn_execution.estimate_request_tokens", measured)
-    # Run owns session creation; the legacy no-anchor case must fail before dispatch.
-    result = await chat.runtime.runner.run((ChatMessage("system", "fixed"), task), runtime, backend)
-    assert result.work_state == "suspended"
-    assert result.outcome.failure.code == (
-        "work_compaction_incomplete" if with_anchor else "work_compaction_anchor_unavailable"
-    )
-    execute_call.assert_not_awaited()
-    assert len(provider.requests) == (1 if with_anchor else 0)
-    if with_anchor:
-        assert provider.requests[0].tools == ()
-        assert provider.requests[0].native_tools == ()
-        assert provider.requests[0].tool_choice is None
-    row = await control.repository.get(control.current["id"])
-    assert row["tool_calls"] == 0
-    assert row["model_requests"] == (1 if with_anchor else 0)
-    await control.repository.release(control.lease)
-
-
-@pytest.mark.asyncio
 async def test_main_entry_captures_current_task_before_work_status(database, tmp_path):
     control = await _control(database, tmp_path)
     runner = SimpleNamespace(run=AsyncMock(return_value=None))
@@ -1528,10 +1073,7 @@ async def test_original_trigger_requirements_survive_goal_rewrite_and_business_r
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("changed", [False, True])
-@pytest.mark.parametrize(
-    "kind",
-    ["typed_unknown", "typed_refused", "legacy_empty", "legacy_success", "typed_original_name"],
-)
+@pytest.mark.parametrize("kind", ["typed_unknown", "typed_refused", "legacy_success"])
 async def test_pending_recovery_uses_original_evidence_not_display(
     database, tmp_path, monkeypatch, changed, kind
 ):

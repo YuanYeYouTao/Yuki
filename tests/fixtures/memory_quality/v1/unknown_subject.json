@@ -1,6 +1,0 @@
-{
-  "schema_version":"1","case_id":"unknown_subject","category":"identity","description":"Model-selected unknown subjects are rejected.",
-  "events":[{"event_ref":"event_unknown","speaker":"person_a","scope_type":"group","group":"group_a","content":"小王喜欢围棋","occurred_at":"2026-01-04T01:00:00Z"}],
-  "fake_model_outputs":[{"event_ref":"event_unknown","subject_ref":"mentioned_1","scope_type":"person_group","memory_key":"hobby:go","category":"hobby","content":"喜欢围棋","evidence_quote":"小王喜欢围棋"}],
-  "expected_claims":[],"expected_facts":[],"expected_evidence":[],"forbidden_facts":["hobby:go"],"tags":["unknown_subject"]
-}

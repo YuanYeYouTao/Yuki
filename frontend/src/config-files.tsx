@@ -34,9 +34,7 @@ export const taskNames: Record<string, string> = {
   chat_agent: "主对话",
   memory_extraction: "记忆提取",
   memory_self_reflection: "自省",
-  memory_consolidation: "记忆整理",
   memory_dream: "记忆归纳",
-  memory_attribution: "记忆归属",
   relationship_evaluation: "关系评估",
   emoji_replacement: "表情替换",
   automation_agent: "自动化执行",
@@ -284,26 +282,6 @@ function ModelDocument({
   }
   const profile = profiles[selected];
   const resolved = resolvedProfiles[selected];
-  const legacyGeminiBudget =
-    profile?.protocol === "gemini" &&
-    String(profile.model) === "gemini-3.8-flash" &&
-    (profile.wire_options as Row | undefined)?.reasoning === "budget";
-  const displayedEffort = String(
-    profile?.reasoning_effort_env
-      ? resolved?.reasoning_effort || profile.reasoning_effort || "low"
-      : profile?.reasoning_effort || "low",
-  );
-  function setEffort(value: string) {
-    const next: Row = { ...profile, reasoning_effort: value };
-    delete next.reasoning_effort_env;
-    if (legacyGeminiBudget) {
-      const options = { ...(profile.wire_options as Row) };
-      options.reasoning = "gemini";
-      delete options.thinking_budget_tokens;
-      next.wire_options = options;
-    }
-    update(next);
-  }
   const savedKeyProfiles = (fields.saved_api_key_profiles || []) as string[];
   return (
     <>
@@ -483,38 +461,6 @@ function ModelDocument({
               <small>只在保存时提交新输入；页面不会取回原密钥。</small>
             </label>
           </div>
-          {profile.protocol === "gemini" && (
-            <label className="form-group">
-              思考强度
-              <select
-                className="form-control"
-                aria-label="思考强度"
-                value={displayedEffort}
-                onChange={(event) => setEffort(event.target.value)}
-              >
-                <option value="low">低</option>
-                <option value="medium">中</option>
-                <option value="high">高</option>
-              </select>
-              <small>
-                {profile.reasoning_effort_env
-                  ? `当前由服务器环境变量 ${String(profile.reasoning_effort_env)} 覆盖；在这里改档会解除覆盖。`
-                  : "保存后新模型请求使用所选档位；进行中的请求保持原档位。"}
-                {legacyGeminiBudget &&
-                  " 当前旧连接使用固定预算；改档会切换为 thinkingLevel。"}
-              </small>
-            </label>
-          )}
-          {profile.protocol === "gemini" &&
-            (profile.reasoning_effort_env || legacyGeminiBudget) && (
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={() => setEffort(displayedEffort)}
-              >
-                使用当前档位并移除旧覆盖
-              </button>
-            )}
           <label className="form-group">
             此连接的联网搜索
             <select
@@ -582,28 +528,13 @@ function ModelDocument({
               omit={[
                 "id",
                 "headers",
-                "thinking_enabled",
-                "thinking_mode",
                 "provider",
                 "protocol",
                 "base_url",
                 "model",
                 "api_key_env",
                 "search_mode",
-                ...(profile.protocol === "gemini" ? ["reasoning_effort"] : []),
               ]}
-              choices={(name, values) => {
-                if (!["reasoning_effort", "effort_levels"].includes(name))
-                  return values;
-                const supported =
-                  profile.provider === "gemini" &&
-                  String(profile.model) === "gemini-3.8-flash"
-                    ? ["low", "medium", "high"]
-                    : values.filter(
-                        (value) => !["none", "minimal"].includes(value),
-                      );
-                return values.filter((value) => supported.includes(value));
-              }}
               schema={schema}
               root={schema}
               prefix={`profile-${selected}`}
@@ -813,7 +744,6 @@ function Draft({ fields, props }: { fields: Row; props: PageProps }) {
         throw new Error(`${id} 缺少 API Base URL。`);
       if (!profile.api_key_env && !keyInputs[id]?.trim())
         throw new Error(`${id} 缺少 API Key。`);
-      delete profile.thinking_mode;
     }
     for (const [id, value] of Object.entries(keyInputs)) {
       if (!value.trim() || !profiles[id]) continue;

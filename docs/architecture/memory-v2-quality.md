@@ -1,53 +1,11 @@
-# Memory V2 质量与治理架构
+# Memory 来源审计与显式治理
 
-## 自动首次收录的现行合同
+记忆收录、纠正和检索遵循 [Memory](memory-v2.md)、[修改入口](memory-change.md)及真实来源和权限。模型声明的 importance、confidence、来源类型保留，不以固定分数、风格、长度或版本化合成样本裁决内容。
 
-自动提取采用必填价值声明（retention、source_style、importance、confidence、
-value_reason），与内部 mutation DTO 分开，避免让删除/纠正多出无意义字段。语义由
-已有提取模型判断，不加正则或新 Agent。importance 1–2 不自动长期保存，>=3 的稳定
-事实和有意义单次经历可收录；低价值直接跳过，不能转移为候选积压。后台不能自封 explicit。
+旧 synthetic suite、冻结 baseline、质量门禁与 release-check 已退休。生产来源审计保留：`memory audit` 只读取数据库，报告问题类型、数量和有限内部行 ID，不输出正文，也不自动修改事实。相同 key 可对应多个独立事实，不再将它们报为单值槽冲突。
 
-self-reflection 新增同样执行价值门槛，正常跳过推进水位；已有事实维护不强制重新收录。
-提取最长等待一小时，数量/字符仍可提前触发。这不是 Rollup/反思的间隔，不影响即时工具。
+`memory hygiene scan` 提供派生数据问题清单，显式 apply 复核原指纹、授权和来源；FTS 全量重建仍是独立维护操作。写入前冻结证据和 owner，事务内不等待模型或扫描历史，已提交效果按原回执恢复。
 
-Memory V2 正式版用四层机制防止“把人记串”：
+验证以真实 SQL 原子性、隐私和来源、请求协议、累计预算及原回执恢复为主。测试和 CI 不冻结工具数量、提示词措辞或经验策略。诊断不证明记忆的语义质量，healthz 不等于自然聊天验收。
 
-1. 版本化合成 fixture 描述事件、Fake Model 输出、预期事实、证据、检索、上下文与 rebuild。
-2. `MemoryQualityRunner` 为每个 case 建立一个已迁移到当前 Alembic head 的独立临时 SQLite，
-   复用生产 EventExtractor、ClaimProcessor、FactService、FTS、Fake Embedding、Retriever、
-   ContextService 和 rebuild 状态机。
-3. Evaluator 只做 symbolic stable key 精确比较；Metrics 按固定分母聚合；外部 TOML 门禁与
-   baseline comparator 共同阻止绝对质量或相对性能回退。
-4. Production Audit 只输出 issue code/count/有限行 ID；Hygiene 需要先 scan，再以完全匹配的
-   fingerprint 显式 apply。启动、healthz 与 release-check 都不会自动修复数据库。
-
-合成数据不会包含真实 QQ、群号、聊天、向量、Secret 或临时路径。确定性 CI 只使用
-`memory-quality-fake-model-v1` 与 `fake-embedding/local-test/v1`，不调用 DeepSeek、Qwen 或网络。
-
-质量数据集 `memory-v2-quality-v2` 还冻结历史共同群读取：直接共同群可读 Person、Group 与
-PersonGroup；无直接关系和传递关系拒绝。它不以合成 fixture 中的目标字段替代后端授权。
-
-正式契约由 `config/memory_contracts.toml` 和
-`tests/contracts/memory_v2/contracts.json` 冻结。Plugin API 保持 `3.0`，插件只能通过受作用域
-限制的 MemoryFacade list/search/add/update/delete；不能访问向量、rebuild、全局 audit、其他人物
-证据、质量数据集或 Provider Secret。
-
-## 性能基准
-
-baseline 保留旧版固定 100 用户、10,000 facts、10 个群和 100,000 条事件的数值快照，仅用于
-证明发布合同没有丢失。依赖 pre-3.8 carrier 表的生成器已随 canonical-only 收口退役，当前 CLI
-不提供 `memory quality performance`。不能为了重跑旧数值恢复 `people/groups` 等旧表；未来的
-大规模 runner 必须直接生成 canonical 身份、会话和事件。当前 CI 使用完整确定性套件的质量、
-请求数及宽松延迟门禁，跨硬件不设绝对毫秒 SLA。微基准延迟只有同时超过相对比例与 20ms
-绝对增量才构成回归，避免把 SQLite/调度抖动误报为性能问题；质量、污染和请求数门禁不受影响。
-
-运行和故障处理参见 [Memory V2 质量运维](../operations/memory-quality.md)，指标定义参见
-[质量指标与分母](memory-v2-quality-metrics.md)。
-
-治理 apply 维持每轮最多 500 facts、1000 embedding candidates、500 terminal runs，并以 128 条页
-在显式 SQLite readonly snapshot 内完成 provenance/状态准备，再升级同一事务写入。并发提交
-会使陈旧快照整页回滚；管理员重新 scan 后继续，不扩大自动治理策略或重置 embedding 重试预算。
-事实正常内容更新继续依赖既有 FTS trigger，检索仍按事实资格过滤；普通 apply 不执行全量 FTS
-rebuild。检测到索引缺陷时 plan.rebuild_fts 保留为 true，必须在独立维护窗口显式执行
-`memory hygiene rebuild-fts <fingerprint> --database-url ...`；该命令会重新核对 scan 指纹，并明确
-持有 writer 完成全索引重建。
+操作入口见 [运维](../operations/memory-quality.md)。

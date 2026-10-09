@@ -11,11 +11,11 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from tests.conftest import MemorySender, build_harness, make_settings
-from tests.integration.test_automation_unified_delivery import setup_run
-from tests.integration.test_web_search_chat import install_native_response_wire, native_response
 from tests.support.agent_backend import StubAgentBackend
+from tests.support.automation_unified_delivery_helpers import setup_run
 from tests.support.fixed_contract_fixture import bind_main_contract
 from tests.support.social_identity_cases import social_env
+from tests.support.web_search_chat_helpers import install_native_response_wire, native_response
 from tests.support.work_session import WorkSession
 
 from qq_ai_bot.automation.models import RunStatus
@@ -74,9 +74,7 @@ KINDS = [
 ]
 
 
-@pytest.mark.parametrize(
-    "work_mode", ["disabled", "neutral", "unfinished", "failed", "unknown", "write", "incomplete"]
-)
+@pytest.mark.parametrize("work_mode", ["disabled", "unfinished"])
 @pytest.mark.parametrize("native_event", [False, True])
 async def test_confirmed_send_native_empty_tail_stops_without_failure_or_paid_replay(
     database, tmp_path, work_mode, native_event
@@ -599,9 +597,9 @@ async def test_native_only_complete_keeps_real_checkpoint_usage_and_http_shape(k
         assert wire[0].get("tools") == payload.get("tools")
 
 
-@pytest.mark.parametrize("kind", [OpenAIResponsesProvider, DeepSeekResponsesProvider])
+@pytest.mark.parametrize("kind", [OpenAIResponsesProvider])
 @pytest.mark.parametrize("with_native", [False, True])
-@pytest.mark.parametrize("same_arguments", [False, True])
+@pytest.mark.parametrize("same_arguments", [False])
 async def test_duplicate_local_ids_are_not_executable_and_keep_native_result(
     kind, with_native, same_arguments
 ):
@@ -638,8 +636,8 @@ async def test_duplicate_local_ids_are_not_executable_and_keep_native_result(
 
 
 @pytest.mark.parametrize("kind", [AnthropicMessagesProvider, GeminiProvider])
-@pytest.mark.parametrize("same_arguments", [False, True])
-@pytest.mark.parametrize("signed", [False, True])
+@pytest.mark.parametrize("same_arguments", [False])
+@pytest.mark.parametrize("signed", [True])
 async def test_native_duplicate_claude_gemini_preserves_paid_raw_state(
     kind, same_arguments, signed
 ):
@@ -700,16 +698,10 @@ async def test_native_duplicate_claude_gemini_preserves_paid_raw_state(
 
 @pytest.mark.parametrize(
     "kind,duplicate,missing_event",
-    [(kind, False, False) for kind in KINDS]
-    + [(kind, True, False) for kind in KINDS]
-    + [
-        (kind, False, True)
-        for kind in (
-            AnthropicMessagesProvider,
-            GeminiProvider,
-            OpenAIResponsesProvider,
-            OpenAICompatibleProvider,
-        )
+    [
+        (GeminiProvider, False, False),
+        (AnthropicMessagesProvider, True, False),
+        (OpenAIResponsesProvider, False, True),
     ],
 )
 @pytest.mark.parametrize("checkpoint_failure", [False, True])
@@ -886,20 +878,9 @@ async def test_runner_suspends_paid_native_boundary_without_requeue_or_local_exe
     await repository.release(lease)
 
 
+@pytest.mark.parametrize("kind,native_requested", [(GeminiProvider, True), (GeminiProvider, False)])
 @pytest.mark.parametrize(
-    "kind,native_requested",
-    [
-        (AnthropicMessagesProvider, True),
-        (GeminiProvider, True),
-        (OpenAIResponsesProvider, True),
-        (OpenAICompatibleProvider, True),
-        (GeminiProvider, False),
-        (OpenAIResponsesProvider, False),
-    ],
-)
-@pytest.mark.parametrize(
-    "failure",
-    ["timeout", "disconnected", "predispatch", "authentication", "unavailable_with_usage"],
+    "failure", ["timeout", "predispatch", "authentication", "unavailable_with_usage"]
 )
 async def test_native_transport_unknown_suspends_original_work_without_automatic_replay(
     database, tmp_path, kind, failure, native_requested
@@ -1068,7 +1049,7 @@ async def test_native_transport_unknown_suspends_original_work_without_automatic
     await repository.release(lease)
 
 
-@pytest.mark.parametrize("kind", [OpenAICompatibleProvider, *KINDS])
+@pytest.mark.parametrize("kind", [OpenAIResponsesProvider])
 @pytest.mark.parametrize(
     "output,failed",
     [

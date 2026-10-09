@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select, update
-from tests.unit.test_self_initiative_memory_quality import reflection_fact
+from tests.support.self_initiative_memory_quality_helpers import reflection_fact
 
 from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
 from qq_ai_bot.memory.repository import MemoryFactRepository

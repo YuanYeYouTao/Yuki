@@ -82,12 +82,12 @@ class _MutationModel(BaseModel):
 class MemoryMutationTarget(_MutationModel):
     """A model-safe alias and scope; it never carries raw QQ or group IDs."""
 
-    subject_ref: str = Field(min_length=1, max_length=32)
+    subject_ref: str = Field(min_length=1)
     scope_type: MemoryScopeType
-    subject_name: str | None = Field(default=None, min_length=1, max_length=128)
+    subject_name: str | None = Field(default=None, min_length=1)
     candidate_ref: str | None = Field(
         default=None,
-        pattern=r"^member_candidate_[1-5]$",
+        pattern=r"^member_candidate_[1-9][0-9]*$",
     )
 
     @model_validator(mode="after")
@@ -104,9 +104,9 @@ class MemoryMutationTarget(_MutationModel):
 class MemoryMutationSelector(_MutationModel):
     """A bounded, target-local selector for one existing memory fact."""
 
-    memory_key: str | None = Field(default=None, min_length=1, max_length=128)
-    old_content: str | None = Field(default=None, min_length=1, max_length=4000)
-    category: str | None = Field(default=None, min_length=1, max_length=64)
+    memory_key: str | None = Field(default=None, min_length=1)
+    old_content: str | None = Field(default=None, min_length=1)
+    category: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def validate_lookup_basis(self) -> MemoryMutationSelector:
@@ -126,23 +126,22 @@ class MemoryMutationRequest(_MutationModel):
     merge_selector: MemoryMutationSelector | None = None
     target: MemoryMutationTarget | None = None
     visibility: SelfMemoryVisibilityMode | None = None
-    new_content: str | None = Field(default=None, max_length=4000)
-    memory_key: str | None = Field(default=None, max_length=128)
-    category: str | None = Field(default=None, max_length=64)
+    new_content: str | None = Field(default=None)
+    memory_key: str | None = Field(default=None)
+    category: str | None = Field(default=None)
     kind: MemoryKind | None = None
     reason: str = Field(
         default="agent_requested_memory_change",
         min_length=1,
-        max_length=500,
     )
     confidence: float = Field(default=0.9, ge=0, le=1)
     importance: int | None = Field(default=None, ge=1, le=5)
     evidence_event_id: int | None = Field(default=None, ge=1)
     evidence_refs: tuple[str, ...] = ("current_event",)
-    evidence_quote: str | None = Field(default=None, max_length=500)
+    evidence_quote: str | None = Field(default=None)
     expected_fact_state: MemoryStatus | None = None
-    valid_from: str | None = Field(default=None, max_length=64)
-    valid_until: str | None = Field(default=None, max_length=64)
+    valid_from: str | None = Field(default=None)
+    valid_until: str | None = Field(default=None)
     review_state: MemoryReviewState | None = None
 
     @model_validator(mode="after")

@@ -1,9 +1,0 @@
-{
-  "schema_version":"1","case_id":"interaction_preference","category":"extraction","description":"Interaction instructions are preferences, not person facts.",
-  "events":[{"event_ref":"event_preference","speaker":"person_a","scope_type":"private","content":"以后回复我时请简短一点","occurred_at":"2026-01-07T01:00:00Z"}],
-  "fake_model_outputs":[{"event_ref":"event_preference","kind":"preference","memory_key":"reply:brevity","category":"interaction","content":"回复时简短一点","evidence_quote":"以后回复我时请简短一点"}],
-  "queries":[{"query_ref":"query_preference","text":"回复时简短一点","scope_type":"person","subject":"person_a","expected_fact_refs":["fact_preference"]}],
-  "expected_claims":["event_preference|person|person_a|reply:brevity|回复时简短一点"],
-  "expected_facts":[{"fact_ref":"fact_preference","scope_type":"person","subject":"person_a","kind":"preference","memory_key":"reply:brevity","category":"interaction","content":"回复时简短一点"}],
-  "expected_evidence":[{"fact_ref":"fact_preference","event_ref":"event_preference","speaker":"person_a","excerpt":"以后回复我时请简短一点","relation":"self_statement"}],"tags":["preference"]
-}

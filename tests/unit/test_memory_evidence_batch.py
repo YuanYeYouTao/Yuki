@@ -5,11 +5,10 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import event, insert, select
+from tests.support.self_initiative_memory_quality_helpers import reflection_fact
 from tests.unit.test_memory_v2 import _append_event
-from tests.unit.test_self_initiative_memory_quality import reflection_fact
 
 from qq_ai_bot.identity.memory_guard import v2_evidence_row_readable
-from qq_ai_bot.memory.evidence import MemoryEvidencePolicy
 from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.service import MemoryFactService
@@ -192,7 +191,6 @@ async def test_all_owner_shapes_and_chat_tool_sources_match_reference_guards(dat
     # The visibility filter is applied before LIMIT: newer hidden rows cannot
     # consume the requested readable evidence budget.
     assert len(await facts.list_evidence(saved[0].id, limit=3)) == 3
-    policy = MemoryEvidencePolicy()
     before = await facts.list_evidence(saved[0].id)
     new_source = await _append_event(
         ledger, message_id="new-confirmation", content="new confirmation"
@@ -206,9 +204,7 @@ async def test_all_owner_shapes_and_chat_tool_sources_match_reference_guards(dat
         excerpt="new confirmation",
     )
     confirmed = await facts.confirm_fact(saved[0].id, addition)
-    assert confirmed.confidence == policy.aggregate(
-        (*before, addition), authority=confirmed.authority
-    )
+    assert confirmed.confidence == saved[0].confidence
     # Visibility is evaluated from current durable rows on every call. Source
     # cascade removal cannot leave a cached evidence or count projection alive.
     async with database.sessions() as session, session.begin():

@@ -59,7 +59,6 @@ from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.job_claims import PreparedJobClaim, commit_job_claims
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
-    MemoryActivationStateModel,
     MemoryEvidenceModel,
     MemoryFactModel,
     MemoryFactRelationModel,
@@ -244,16 +243,6 @@ def readable_evidence_count_expression() -> Any:
     )
 
 
-def _initial_activation(fact: MemoryFactCreate) -> float:
-    if fact.source_type.value == "explicit" or fact.authority is MemoryAuthority.EXPLICIT:
-        return 0.95
-    if fact.kind.value == "preference":
-        return 0.80
-    if fact.kind.value == "episode":
-        return 0.75 if fact.importance >= 4 else 0.65
-    return 0.70
-
-
 class MemoryFactRepository:
     """Store and query facts without extraction or prompt logic."""
 
@@ -289,91 +278,6 @@ class MemoryFactRepository:
             projected_rows = await project_memory_fact_rows(session, rows)
         projected = {fact.id: fact for fact in projected_rows}
         return tuple(projected[fact_id] for fact_id in unique_ids if fact_id in projected)
-
-    async def activation_repair_window(
-        self, *, after_id: int, through_id: int | None, limit: int
-    ) -> tuple[tuple[int, ...], tuple[int, ...], int]:
-        """Scan one PK window, including healthy rows, before testing for missing states."""
-        if limit <= 0:
-            raise ValueError("activation repair limit must be positive")
-        async with self._database.sessions() as reader:
-            if through_id is None:
-                through_id = int(await reader.scalar(select(func.max(MemoryFactModel.id))) or 0)
-            identities = tuple(
-                await reader.scalars(
-                    select(MemoryFactModel.id)
-                    .where(MemoryFactModel.id > after_id, MemoryFactModel.id <= through_id)
-                    .order_by(MemoryFactModel.id)
-                    .limit(limit)
-                )
-            )
-            if not identities:
-                return (), (), through_id
-            missing = tuple(
-                await reader.scalars(
-                    select(MemoryFactModel.id)
-                    .where(
-                        MemoryFactModel.id.in_(identities),
-                        ~select(MemoryActivationStateModel.fact_id)
-                        .where(MemoryActivationStateModel.fact_id == MemoryFactModel.id)
-                        .exists(),
-                    )
-                    # Active-first is local to the bounded source window.
-                    .order_by(
-                        case((MemoryFactModel.status == "active", 0), else_=1), MemoryFactModel.id
-                    )
-                )
-            )
-        return identities, missing, through_id
-
-    async def repair_missing_activation(
-        self, *, fact_ids: tuple[int, ...], session: AsyncSession
-    ) -> int:
-        """Initialize missing states only; retain original age and no invented usage."""
-        if not fact_ids:
-            return 0
-        initial = case(
-            (
-                or_(
-                    MemoryFactModel.source_type == "explicit",
-                    MemoryFactModel.authority == "explicit",
-                ),
-                0.95,
-            ),
-            (MemoryFactModel.kind == "preference", 0.80),
-            (and_(MemoryFactModel.kind == "episode", MemoryFactModel.importance >= 4), 0.75),
-            (MemoryFactModel.kind == "episode", 0.65),
-            else_=0.70,
-        )
-        source = select(
-            MemoryFactModel.id,
-            initial,
-            MemoryFactModel.created_at,
-            literal(None),
-            literal(0),
-            literal(0),
-        ).where(
-            MemoryFactModel.id.in_(fact_ids),
-            ~select(MemoryActivationStateModel.fact_id)
-            .where(MemoryActivationStateModel.fact_id == MemoryFactModel.id)
-            .exists(),
-        )
-        result = await session.execute(
-            insert(MemoryActivationStateModel)
-            .from_select(
-                [
-                    "fact_id",
-                    "activation",
-                    "activation_updated_at",
-                    "last_recalled_at",
-                    "recall_count",
-                    "revision",
-                ],
-                source,
-            )
-            .on_conflict_do_nothing(index_elements=["fact_id"])
-        )
-        return int(cast(CursorResult[Any], result).rowcount or 0)
 
     async def _execute_facts_with_count(
         self,
@@ -516,25 +420,11 @@ class MemoryFactRepository:
                     ) from exc
         raise AssertionError("unreachable evidence snapshot retry")
 
-    async def count_active_for_create(self, fact: MemoryFactCreate) -> int:
-        """Count current active facts in the exact target without mutating capacity."""
-
-        return await self.count_active(
-            MemoryFactQuery(
-                scope_type=fact.scope_type,
-                subject_user_id=fact.subject_user_id,
-                group_id=fact.group_id,
-                visibility_type=fact.visibility_type,
-                visibility_user_id=fact.visibility_user_id,
-                visibility_group_id=fact.visibility_group_id,
-            )
-        )
-
     async def list_facts(
         self,
         query: MemoryFactQuery,
         *,
-        limit: int = 100,
+        limit: int | None = 100,
         after_id: int | None = None,
         include_quarantined: bool = False,
         order_by_id: bool = False,
@@ -580,7 +470,7 @@ class MemoryFactRepository:
         else:
             order = (MemoryFactModel.importance.desc(), MemoryFactModel.updated_at.desc())
         rows = await self._execute_facts_with_count(
-            session, conditions, order_by=order, limit=max(1, limit)
+            session, conditions, order_by=order, limit=max(1, limit) if limit is not None else None
         )
         return await project_memory_fact_rows(session, rows)
 
@@ -938,25 +828,6 @@ class MemoryFactRepository:
             )
         return int(cast(CursorResult[Any], result).rowcount or 0)
 
-    async def find_active(
-        self,
-        fact: MemoryFactCreate,
-        *,
-        session: AsyncSession,
-    ) -> MemoryFactModel | None:
-        conditions = [
-            MemoryFactModel.scope_type == fact.scope_type.value,
-            MemoryFactModel.memory_key == fact.memory_key,
-            MemoryFactModel.status == MemoryStatus.ACTIVE.value,
-            *(await self._query_identity_conditions(session, fact)),
-        ]
-        if fact.scope_type is not MemoryScopeType.SELF:
-            conditions.append(MemoryFactModel.kind == fact.kind.value)
-        return cast(
-            MemoryFactModel | None,
-            await session.scalar(select(MemoryFactModel).where(*conditions)),
-        )
-
     async def create_fact(
         self,
         fact: MemoryFactCreate,
@@ -1005,23 +876,6 @@ class MemoryFactRepository:
         if "memory_evidence_counts" in session.info:
             session.info["memory_evidence_counts"][row.id] = 0
             session.info["memory_evidence_rows"][row.id] = ()
-            policies = session.info.get("memory_evidence_policies", {})
-            policy = policies.get((fact.subject_user_id, fact.group_id))
-            if policy is not None:
-                session.info["memory_evidence_aggregates"][row.id] = policy.prepare(
-                    (), authority=fact.authority
-                )
-        session.add(
-            MemoryActivationStateModel(
-                fact_id=row.id,
-                activation=_initial_activation(fact),
-                activation_updated_at=now,
-                last_recalled_at=None,
-                recall_count=0,
-                revision=0,
-            )
-        )
-        await session.flush()
         return row
 
     async def transition(
@@ -1096,8 +950,6 @@ class MemoryFactRepository:
         self,
         fact_id: int,
         *,
-        authority: str,
-        confidence: float,
         confirmed_at: datetime,
         session: AsyncSession,
         updated_at: datetime | None = None,
@@ -1114,8 +966,6 @@ class MemoryFactRepository:
             update(MemoryFactModel)
             .where(MemoryFactModel.id == fact_id)
             .values(
-                authority=authority,
-                confidence=confidence,
                 last_confirmed_at=max(previous, confirmed_at),
                 updated_at=updated_at or datetime.now(UTC),
             )
@@ -1305,7 +1155,7 @@ class MemoryFactRepository:
         values = tuple(
             {
                 **item.model_dump(mode="json"),
-                "excerpt": item.excerpt[:500],
+                "excerpt": item.excerpt,
                 "created_at": created_at,
             }
             for item in by_source.values()
@@ -1347,9 +1197,6 @@ class MemoryFactRepository:
                 for key in dict.fromkeys((item.event_id, item.tool_receipt_id) for item in selected)
                 if key in prepared.by_source
             )
-        aggregate = session.info["memory_evidence_aggregates"].get(fact_id)
-        if aggregate is None:
-            raise RuntimeError("memory evidence copy aggregate was not prepared")
         added = 0
         for offset in range(0, len(values), 128):
             rows = (
@@ -1366,7 +1213,6 @@ class MemoryFactRepository:
             ).all()
             for evidence_id, event_id, receipt_id in rows:
                 item = prepared.by_source[(event_id, receipt_id)]
-                aggregate.append(item)
                 session.info["memory_evidence_additions"].setdefault(fact_id, []).append(
                     MemoryEvidence(
                         id=evidence_id,
@@ -1443,7 +1289,7 @@ class MemoryFactRepository:
             relation=evidence.relation.value,
             confidence=evidence.confidence,
             authority=evidence.authority.value,
-            excerpt=evidence.excerpt[:500],
+            excerpt=evidence.excerpt,
             created_at=created_at,
         )
         index_elements = (
@@ -1471,9 +1317,6 @@ class MemoryFactRepository:
                         **evidence.model_dump(),
                     )
                 )
-                aggregate = session.info.get("memory_evidence_aggregates", {}).get(fact_id)
-                if aggregate is not None:
-                    aggregate.append(evidence)
             # Evidence may make an earlier unreadable fact usable. Advance its
             # change cursor atomically, but do not wake readers for duplicate evidence.
             previous = fact_row.updated_at
@@ -1631,66 +1474,26 @@ class MemoryFactRepository:
             )
             return await project_memory_fact_rows(session, rows)
 
-    async def list_lifecycle_candidates(
+    async def list_expired_candidates(
         self,
         *,
         now: datetime,
-        automatic_cutoff: datetime,
-        third_party_cutoff: datetime,
-        contested_cutoff: datetime,
-        max_importance: int,
-        max_confidence: float,
         limit: int,
         session: AsyncSession | None = None,
     ) -> tuple[MemoryFact, ...]:
-        stale_window = or_(
-            (
-                (MemoryFactModel.authority == "third_party")
-                & (MemoryFactModel.last_confirmed_at <= third_party_cutoff)
-            ),
-            (
-                (MemoryFactModel.status == MemoryStatus.CONTESTED.value)
-                & (MemoryFactModel.last_confirmed_at <= contested_cutoff)
-            ),
-            (
-                (MemoryFactModel.authority != "third_party")
-                & (MemoryFactModel.status != MemoryStatus.CONTESTED.value)
-                & (MemoryFactModel.last_confirmed_at <= automatic_cutoff)
-            ),
-        )
-        conditions = [
-            MemoryFactModel.status.in_((MemoryStatus.ACTIVE.value, MemoryStatus.CONTESTED.value)),
-            MemoryFactModel.review_state != "quarantined",
-            or_(
-                MemoryFactModel.valid_until <= now,
-                and_(
-                    MemoryFactModel.source_type != "explicit",
-                    MemoryFactModel.authority != "explicit",
-                    MemoryFactModel.scope_type != MemoryScopeType.SELF.value,
-                    MemoryFactModel.source_type == "automatic",
-                    MemoryFactModel.importance <= max_importance,
-                    MemoryFactModel.confidence <= max_confidence,
-                    stale_window,
-                ),
-            ),
-        ]
         if session is None:
             async with self._database.sessions() as owned:
-                return await self.list_lifecycle_candidates(
-                    now=now,
-                    automatic_cutoff=automatic_cutoff,
-                    third_party_cutoff=third_party_cutoff,
-                    contested_cutoff=contested_cutoff,
-                    max_importance=max_importance,
-                    max_confidence=max_confidence,
-                    limit=limit,
-                    session=owned,
-                )
+                return await self.list_expired_candidates(now=now, limit=limit, session=owned)
         rows = await self._execute_facts_with_count(
             session,
-            conditions,
+            [
+                MemoryFactModel.status.in_(
+                    (MemoryStatus.ACTIVE.value, MemoryStatus.CONTESTED.value)
+                ),
+                MemoryFactModel.valid_until <= now,
+            ],
             order_by=(MemoryFactModel.valid_until.asc(), MemoryFactModel.id),
-            limit=max(1, limit),
+            limit=limit,
         )
         return await project_memory_fact_rows(session, rows)
 
@@ -1724,53 +1527,6 @@ class MemoryFactRepository:
             )
             or 0
         )
-
-    async def make_room(
-        self,
-        query: MemoryFactQuery,
-        *,
-        limit: int,
-        session: AsyncSession,
-    ) -> bool:
-        """Invalidate the least useful automatic fact when a scope is full."""
-
-        if await self.count_active(query, session=session) < max(1, limit):
-            return True
-        conditions = [
-            MemoryFactModel.scope_type == query.scope_type.value,
-            MemoryFactModel.status == MemoryStatus.ACTIVE.value,
-            MemoryFactModel.source_type != "explicit",
-            *(await self._query_identity_conditions(session, query)),
-        ]
-        row = await session.scalar(
-            select(MemoryFactModel)
-            .where(*conditions)
-            .order_by(MemoryFactModel.importance.asc(), MemoryFactModel.updated_at.asc())
-            .limit(1)
-        )
-        if row is None:
-            return False
-        prior_conflict = row.conflict_state
-        row.status = MemoryStatus.INVALIDATED.value
-        row.conflict_state = MemoryConflictState.CLEAR.value
-        row.invalidated_reason = MemoryInvalidationReason.STALE.value
-        row.updated_at = datetime.now(UTC)
-        session.add(
-            MemoryFactStateEventModel(
-                fact_id=row.id,
-                action=MemoryStateAction.STALE_INVALIDATED.value,
-                from_status=MemoryStatus.ACTIVE.value,
-                to_status=MemoryStatus.INVALIDATED.value,
-                from_conflict_state=prior_conflict,
-                to_conflict_state=MemoryConflictState.CLEAR.value,
-                reason_code="capacity_retention",
-                source_event_id=None,
-                actor_user_id=None,
-                created_at=datetime.now(UTC),
-            )
-        )
-        await session.flush()
-        return True
 
     async def delete_orphaned_automatic_facts(
         self,

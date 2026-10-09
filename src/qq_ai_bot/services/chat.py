@@ -58,23 +58,14 @@ from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.execution_trace.phases import collect_phase_metrics, timed_lock
 from qq_ai_bot.execution_trace.recorder import trace_span
 from qq_ai_bot.llm.base import LLMEmptyResponseError
-from qq_ai_bot.memory.attribution import (
-    MemoryAttributionWorker,
-    MemoryExposure,
-    MemoryExposureRegistry,
-)
 from qq_ai_bot.memory.context import MemoryContextService
-from qq_ai_bot.memory.enums import MemoryContextMode
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
-from qq_ai_bot.memory.models import MemoryQueryIntent
 from qq_ai_bot.memory.query import MemoryQueryBuilder
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.retrieval import MemoryRetriever
 from qq_ai_bot.memory.runtime.partition_lookup import MemoryPartitionLookup
-from qq_ai_bot.memory.runtime.resolver import MemoryStructuredCommand
 from qq_ai_bot.memory.runtime.turn_session import (
     TurnMemorySession,
-    empty_retrieval,
 )
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.targets import MemoryTargetResolver
@@ -89,8 +80,6 @@ from qq_ai_bot.persistence.repositories import (
 )
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.runtime.context_preparation import prepare_context
-from qq_ai_bot.runtime.contracts import DeliverySummary
-from qq_ai_bot.runtime.delivery import DeliveryStatus
 from qq_ai_bot.runtime.observability import identifier_hash
 from qq_ai_bot.runtime.origin import TurnOrigin as RuntimeTurnOrigin
 from qq_ai_bot.runtime.trigger import (
@@ -251,7 +240,6 @@ class ToolInvocationRecorder(Protocol):
 @dataclass(frozen=True, slots=True)
 class _CompletedAgentRun:
     result: AgentRunResult
-    memory_exposures: tuple[MemoryExposure, ...]
     messages_sent: int
     sent_current_texts: tuple[str, ...]
 
@@ -280,7 +268,6 @@ class ChatService:
         time_service: TimeContextService,
         memory_context: MemoryContextService | None = None,
         memory_partition_lookup: MemoryPartitionLookup,
-        memory_attribution: MemoryAttributionWorker | None = None,
         context_assembler: ContextAssembler | None = None,
         prompt_composer: PromptComposer | None = None,
         turn_coordinator: ConversationTurnCoordinator | None = None,
@@ -330,7 +317,6 @@ class ChatService:
                 facts=self._memories,
             )
         self._memory_context = memory_context
-        self._memory_attribution = memory_attribution
         if context_assembler is not None:
             self._context_assembler = context_assembler
         else:
@@ -340,7 +326,6 @@ class ChatService:
                 settings=settings,
                 ledger=self._ledger,
                 people=self._people,
-                memory_context=memory_context,
                 relationships=self._relationships,
                 time_service=self._time,
                 rollup_repository=rollup_repository,
@@ -852,7 +837,6 @@ class ChatService:
         visual_failure: bool = False,
         turn_token: TurnToken | None = None,
         turn_snapshot: ConversationTurnSnapshot | None = None,
-        structured_memory_command: MemoryStructuredCommand = MemoryStructuredCommand.NONE,
     ) -> int:
         """Coalesce unowned chat retries; accepted work keeps its own recovery."""
         with self.runtime.executions.track():
@@ -872,7 +856,6 @@ class ChatService:
                 visual_failure=visual_failure,
                 turn_token=turn_token,
                 turn_snapshot=turn_snapshot,
-                structured_memory_command=structured_memory_command,
             )
             ticket = self.rollup_wakeups.enter(inbound.conversation_id)
             changed = None
@@ -956,7 +939,6 @@ class ChatService:
         visual_failure: bool = False,
         turn_token: TurnToken | None = None,
         turn_snapshot: ConversationTurnSnapshot | None = None,
-        structured_memory_command: MemoryStructuredCommand = MemoryStructuredCommand.NONE,
     ) -> int:
         """Run one ordered Agent turn and return the sent message count."""
 
@@ -1101,11 +1083,7 @@ class ChatService:
                 preparation.advance("memory_and_repair")
                 memory_session = self.open_memory_session(
                     inbound,
-                    identity,
-                    content,
-                    runtime_config,
                     autonomous=autonomous,
-                    structured_command=structured_memory_command,
                 )
                 if memory_session is not None:
                     memory_cleanup.push_async_callback(memory_session.close)
@@ -1114,9 +1092,6 @@ class ChatService:
                 (
                     messages,
                     visible_event_ids,
-                    memory_turn_id,
-                    automatic_memory_exposures,
-                    memory_intent,
                     prompt_diagnostics,
                     read_version,
                     commit_projection,
@@ -1177,9 +1152,6 @@ class ChatService:
                     turn_snapshot=turn_snapshot,
                     visible_event_ids=visible_event_ids,
                     selection_query=content,
-                    memory_turn_id=memory_turn_id,
-                    memory_exposures=automatic_memory_exposures,
-                    memory_intent=memory_intent,
                     memory_session=memory_session,
                     prompt_diagnostics=prompt_diagnostics,
                     before_model_request=validate_context,
@@ -1209,75 +1181,20 @@ class ChatService:
                             len(agent_result.native_tool_events),
                         )
 
-                async def finish_explicit_delivery() -> None:
-                    await self._finish_memory_turn(
-                        memory_session,
-                        run_id=inbound.source_key,
-                        delivered_text="\n".join(completed_agent.sent_current_texts),
-                        delivered=bool(completed_agent.sent_current_texts),
-                        cancelled=False,
-                    )
-
-                await self.run_effect(turn_snapshot, finish_explicit_delivery)
                 return completed_agent.messages_sent
 
     def open_memory_session(
         self,
         inbound: InboundMessage,
-        identity: ConversationScope,
-        content: str,
-        runtime: RuntimeConfigSnapshot,
         *,
         autonomous: bool,
-        structured_command: MemoryStructuredCommand,
     ) -> TurnMemorySession | None:
         if self._memory_context is None:
             return None
         origin = (
             RuntimeTurnOrigin.AUTONOMOUS_GROUP if autonomous else RuntimeTurnOrigin.USER_MESSAGE
         )
-        return TurnMemorySession.open(
-            inbound=inbound,
-            identity=identity,
-            runtime=runtime,
-            memory_context=self._memory_context,
-            partition_lookup=self._memory_partition_lookup,
-            origin=origin,
-            user_question=content,
-            structured_command=structured_command,
-            attribution=self._memory_attribution,
-        )
-
-    async def _finish_memory_turn(
-        self,
-        session: TurnMemorySession | None,
-        *,
-        run_id: str,
-        delivered_text: str,
-        delivered: bool,
-        cancelled: bool,
-    ) -> None:
-        if session is None:
-            return
-        if cancelled:
-            status = DeliveryStatus.CANCELLED
-        elif delivered:
-            status = DeliveryStatus.COMPLETE
-        else:
-            status = DeliveryStatus.FAILED
-        try:
-            await session.on_delivery_confirmed(
-                DeliverySummary(
-                    final_agent_run_id=run_id, status=status, delivered_text=delivered_text
-                )
-            )
-        except Exception as exc:
-            logger.warning(
-                "memory_attribution_handoff_failed category=%s coverage_incomplete=true",
-                type(exc).__name__,
-            )
-        finally:
-            await session.close()
+        return TurnMemorySession.open(inbound=inbound, origin=origin)
 
     async def _record_tool_invocation(
         self,
@@ -1358,19 +1275,12 @@ class ChatService:
     ) -> tuple[
         tuple[ChatMessage, ...],
         frozenset[int],
-        str,
-        tuple[MemoryExposure, ...],
-        MemoryQueryIntent | None,
         PromptRequestDiagnostics,
         ConversationReadVersion | None,
         Callable[[], Awaitable[None]] | None,
         ContextBoundaryReader | None,
         str | None,
     ]:
-        retrieval = empty_retrieval()
-        persist_exposure = True
-        memory_mode = MemoryContextMode.LEXICAL
-        memory_intent: MemoryQueryIntent | None = None
         if turn_snapshot is None:
             raise ConversationCoverageError("chat turn requires a conversation snapshot")
         with preparation_detail("context_assembly"):
@@ -1383,12 +1293,6 @@ class ChatService:
                     turn=turn_snapshot,
                     content=content,
                     runtime=runtime,
-                    memory_mode=memory_mode,
-                    self_recall=False,
-                    memory_intent=memory_intent,
-                    turn_origin=turn_origin.value,
-                    memory_retrieval=retrieval,
-                    persist_memory_exposure=persist_exposure,
                 ),
                 current_work_control.get(),
                 recovery_contract=await self.runtime.main_turns.recovery_contract(runtime),
@@ -1453,9 +1357,6 @@ class ChatService:
         return (
             messages,
             composition.visible_event_ids,
-            context.memory_turn_id,
-            context.memory_exposures,
-            context.memory_intent,
             PromptRequestDiagnostics(
                 conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
                 prompt_snapshot_fingerprint=(composition.metrics.prompt_snapshot_fingerprint),
@@ -1560,8 +1461,6 @@ class ChatService:
                 group_id=runtime.inbound.group_id,
             )
             runtime = replace(runtime, runtime_config=config)
-        exposure_registry = MemoryExposureRegistry(runtime.memory_exposures)
-        runtime = replace(runtime, memory_exposure_registry=exposure_registry)
         runtime = await self._prepare_tool_candidates(runtime)
         current_time = (
             self._time.current_in_timezone(runtime.prepared_timezone)
@@ -1616,7 +1515,6 @@ class ChatService:
         )
         return _CompletedAgentRun(
             result=result,
-            memory_exposures=exposure_registry.snapshot(),
             messages_sent=backend.messages_sent,
             sent_current_texts=tuple(backend.sent_current_texts),
         )
@@ -1650,27 +1548,14 @@ class ChatService:
     async def open_self_memory_session(
         self,
         trigger: SelfInitiativeTrigger,
-        runtime: RuntimeConfigSnapshot,
-        goal: str,
     ) -> TurnMemorySession | None:
         if self._memory_context is None:
             return None
-        from qq_ai_bot.runtime.work_activation import current_work_control
-
-        control = current_work_control.get()
         return await TurnMemorySession.open_self_origin(
             initiative_run_id=trigger.run_id,
             canonical_conversation_id=trigger.conversation_id,
             identity=ConversationScope.group(trigger.bot_user_id, trigger.group_id),
-            runtime=runtime,
-            memory_context=self._memory_context,
             partition_lookup=self._memory_partition_lookup,
-            user_question=goal,
-            runtime_turn_id=(
-                str(control.current["id"])
-                if control is not None and control.current is not None
-                else f"initiative:{trigger.run_id}"
-            ),
         )
 
     async def generate_self_initiative(
@@ -1717,7 +1602,7 @@ class ChatService:
                 )
 
             await validate()
-            memory = await self.open_self_memory_session(trigger, runtime, trigger.instruction)
+            memory = await self.open_self_memory_session(trigger)
             async with AsyncExitStack() as cleanup:
                 if memory is not None:
                     cleanup.push_async_callback(memory.close)
@@ -1727,7 +1612,6 @@ class ChatService:
                         trigger=trigger,
                         runtime=runtime,
                         turn=turn_snapshot,
-                        memory_retrieval=empty_retrieval(),
                     ),
                     current_work_control.get(),
                     recovery_contract=await self.runtime.main_turns.recovery_contract(runtime),
@@ -1750,10 +1634,6 @@ class ChatService:
                     memory_session=memory,
                     visible_event_ids=composition.visible_event_ids,
                     observation_boundary=composition.observation_boundary,
-                    memory_exposures=(
-                        context.memory_exposures if not control.current["model_requests"] else ()
-                    ),
-                    memory_intent=None,
                     selection_query=trigger.instruction,
                     prompt_diagnostics=PromptRequestDiagnostics(
                         conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
@@ -1771,14 +1651,6 @@ class ChatService:
                     source_runtime.conversation_key,
                     composition.messages,
                     tool_runtime,
-                )
-                # QQ effects are committed by send_message; final text is an internal decision.
-                await self._finish_memory_turn(
-                    memory,
-                    run_id=str(control.current["id"]),
-                    delivered_text="\n".join(completed.sent_current_texts),
-                    delivered=bool(completed.sent_current_texts),
-                    cancelled=False,
                 )
                 return completed.result
 

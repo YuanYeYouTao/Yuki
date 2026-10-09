@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -16,34 +16,15 @@ from qq_ai_bot.domain.messages import (
     ChatTool,
     ModelResponseStatus,
 )
-from qq_ai_bot.llm.base import LLMInvalidRequestError, LLMUnsupportedFeatureError
 from qq_ai_bot.model_runtime.executor import ModelExecutor
 from qq_ai_bot.model_runtime.models import (
-    ModelCapability,
     ModelExecutionPriority,
-    ModelProtocol,
     ModelTask,
     StructuredOutputMode,
 )
 
 OutputT = TypeVar("OutputT", bound=BaseModel)
 logger = logging.getLogger(__name__)
-
-_MAX_REPAIR_RESULT_CHARACTERS = 8000
-
-
-def tool_free_structured_output_mode(
-    models: ModelExecutor, task: ModelTask
-) -> StructuredOutputMode:
-    """Select a supported object format for auxiliary requests without tools."""
-    mode = models.structured_output_mode(task)
-    if (
-        mode is StructuredOutputMode.FUNCTION_TOOL
-        and models.protocol(task) is ModelProtocol.GEMINI
-        and ModelCapability.STRUCTURED_OUTPUT in models.capabilities(task)
-    ):
-        return StructuredOutputMode.JSON_SCHEMA
-    return mode
 
 
 def tool_free_json_format(
@@ -94,13 +75,9 @@ class StructuredTaskRunner:
         temperature: float | None = None,
         max_output_tokens: int | None = None,
         mode: StructuredOutputMode | None = None,
-        allow_text_json: bool = False,
-        allow_schema_fallback: bool = False,
-        compact_schema: bool = False,
         validation_retries: int = 0,
         validation_repair_hint: str = "",
         validate_output: Callable[[OutputT], None] | None = None,
-        before_attempt: Callable[[], Awaitable[None]] | None = None,
         priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
         canonical_conversation_id: str | None = None,
     ) -> OutputT:
@@ -112,13 +89,9 @@ class StructuredTaskRunner:
             temperature=temperature,
             max_output_tokens=max_output_tokens,
             mode=mode,
-            allow_text_json=allow_text_json,
-            allow_schema_fallback=allow_schema_fallback,
-            compact_schema=compact_schema,
             validation_retries=validation_retries,
             validation_repair_hint=validation_repair_hint,
             validate_output=validate_output,
-            before_attempt=before_attempt,
             priority=priority,
             canonical_conversation_id=canonical_conversation_id,
         )
@@ -134,13 +107,9 @@ class StructuredTaskRunner:
         temperature: float | None = None,
         max_output_tokens: int | None = None,
         mode: StructuredOutputMode | None = None,
-        allow_text_json: bool = False,
-        allow_schema_fallback: bool = False,
-        compact_schema: bool = False,
         validation_retries: int = 0,
         validation_repair_hint: str = "",
         validate_output: Callable[[OutputT], None] | None = None,
-        before_attempt: Callable[[], Awaitable[None]] | None = None,
         priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
         canonical_conversation_id: str | None = None,
     ) -> tuple[OutputT, ChatResponse]:
@@ -149,12 +118,8 @@ class StructuredTaskRunner:
         if not instruction.strip():
             raise ValueError("structured task instruction must not be empty")
         effective_mode = mode or self._models.structured_output_mode(task)
-        if effective_mode is StructuredOutputMode.TEXT_JSON and not allow_text_json:
-            raise ValueError("text_json mode must be explicitly enabled for this task")
-        if not 0 <= validation_retries <= 1:
-            raise ValueError("validation_retries must be zero or one")
-        if len(validation_repair_hint) > 1000:
-            raise ValueError("validation_repair_hint must not exceed 1000 characters")
+        if validation_retries < 0:
+            raise ValueError("validation_retries must be nonnegative")
         if isinstance(structured_input, BaseModel):
             payload: Any = structured_input.model_dump(
                 mode="json",
@@ -165,8 +130,6 @@ class StructuredTaskRunner:
         else:
             payload = structured_input
         schema = output_model.model_json_schema()
-        if compact_schema:
-            schema = _compact_json_schema(schema)
         tools: tuple[ChatTool, ...] = ()
         tool_choice: str | None = None
         response_format: dict[str, object] | None = None
@@ -211,56 +174,18 @@ class StructuredTaskRunner:
                 response_format=response_format,
                 structured_output=True,
             )
-            if before_attempt is not None:
-                await before_attempt()
-            try:
-                response = await self._models.execute(
-                    task,
-                    request,
-                    priority=priority,
-                    canonical_conversation_id=canonical_conversation_id,
-                )
-            except (LLMInvalidRequestError, LLMUnsupportedFeatureError) as exc:
-                if not (
-                    allow_schema_fallback
-                    and effective_mode is StructuredOutputMode.JSON_SCHEMA
-                    and exc.diagnostics.get("code")
-                    in {"unsupported_json_schema", "json_schema_not_supported"}
-                ):
-                    raise
-                logger.warning(
-                    "structured_schema_fallback task=%s reason=json_schema_not_supported",
-                    task.value,
-                )
-                return await self.run_with_response(
-                    task=task,
-                    instruction=instruction
-                    + "\nReturn only one strict JSON object matching this schema: "
-                    + json.dumps(schema),
-                    structured_input=structured_input,
-                    output_model=output_model,
-                    temperature=temperature,
-                    max_output_tokens=max_output_tokens,
-                    mode=StructuredOutputMode.TEXT_JSON,
-                    allow_text_json=True,
-                    validation_retries=validation_retries,
-                    validation_repair_hint=validation_repair_hint,
-                    validate_output=validate_output,
-                    before_attempt=before_attempt,
-                    priority=priority,
-                    canonical_conversation_id=canonical_conversation_id,
-                )
-            if response.status is ModelResponseStatus.INCOMPLETE or (
-                max_output_tokens is not None
-                and response.completion_tokens is not None
-                and response.completion_tokens >= max_output_tokens
-            ):
+            response = await self._models.execute(
+                task,
+                request,
+                priority=priority,
+                canonical_conversation_id=canonical_conversation_id,
+            )
+            if response.status is ModelResponseStatus.INCOMPLETE:
                 raise StructuredTaskError(
                     "structured output was not complete",
                     reason_code=(
                         "output_budget_exhausted"
                         if response.incomplete_reason == "max_output_tokens"
-                        or (response.completion_tokens or 0) >= (max_output_tokens or 2**63)
                         else "incomplete_response"
                     ),
                     response=response,
@@ -451,23 +376,8 @@ def _repair_message(
                 ),
                 "task_specific_hint": repair_hint or None,
             },
-            "previous_invalid_result": serialized[:_MAX_REPAIR_RESULT_CHARACTERS],
-            "previous_invalid_result_truncated": len(serialized) > _MAX_REPAIR_RESULT_CHARACTERS,
+            "previous_invalid_result": serialized,
         },
         ensure_ascii=False,
         separators=(",", ":"),
     )
-
-
-def _compact_json_schema(value: Any) -> Any:
-    """Remove non-validating prose while preserving one stable strict schema."""
-
-    if isinstance(value, dict):
-        return {
-            key: _compact_json_schema(item)
-            for key, item in value.items()
-            if key not in {"title", "description", "default"}
-        }
-    if isinstance(value, list):
-        return [_compact_json_schema(item) for item in value]
-    return value

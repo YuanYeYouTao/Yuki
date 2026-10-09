@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
+from tests.support.work_effect_results_helpers import execute, owned_session
 from tests.support.work_session import invoke_tool
-from tests.unit.test_work_effect_results import execute, owned_session
 
 from qq_ai_bot.capabilities.results import ToolExecutionResult
 from qq_ai_bot.domain.messages import ToolCall, ToolFunction
@@ -224,7 +224,7 @@ async def test_unknown_mutation_blocks_following_mutations_and_completion(databa
 async def test_external_running_read_through_real_kernel_does_not_block_completion(
     database, tmp_path, monkeypatch, tool
 ):
-    from tests.unit.test_sandbox_submission_unknown_lifecycle import (
+    from tests.support.sandbox_submission_unknown_lifecycle_helpers import (
         host_case,
         invoke,
         socket_receipts,

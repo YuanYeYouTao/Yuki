@@ -19,14 +19,6 @@ def summary_json(source, text="Continue the original task."):
             "version": 1,
             "task_directives": directives,
             "superseded_directives": [],
-            "input_dispositions": [
-                {
-                    "input_ref": f"input:{item['input_id']}",
-                    "kind": "directive",
-                    "reason": "Explicit requirement.",
-                }
-                for item in source["task_inputs"]
-            ],
             "completed": [],
             "pending": [{"text": text, "refs": ["goal"]}],
             "failures": [],

@@ -26,7 +26,6 @@ from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import ChatTool, InboundMessage, PromptRequestDiagnostics
 from qq_ai_bot.domain.tool_actor import ToolActor
-from qq_ai_bot.memory.attribution import MemoryExposure, MemoryExposureRegistry
 from qq_ai_bot.memory.authorized_scope import AuthorizedMemoryScope
 from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE, MemoryContextService
 from qq_ai_bot.memory.enums import (
@@ -36,10 +35,8 @@ from qq_ai_bot.memory.enums import (
 )
 from qq_ai_bot.memory.errors import MemoryRetrievalError
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
-from qq_ai_bot.memory.match_projection import match_projection
 from qq_ai_bot.memory.models import MemoryEntityTarget, MemoryQueryIntent
 from qq_ai_bot.memory.mutation.models import (
-    SELF_MEMORY_CATEGORIES,
     MemoryDecisionActorType,
     MemoryMutationAppliedOperation,
     MemoryMutationContext,
@@ -96,12 +93,10 @@ _MEMORY_INTENT_PROPERTIES = {
     },
     "entities": {
         "type": "array",
-        "maxItems": 5,
-        "items": {"type": "string", "maxLength": 64},
+        "items": {"type": "string"},
     },
     "preferred_kinds": {
         "type": "array",
-        "maxItems": 3,
         "items": {"type": "string", "enum": ["fact", "preference", "episode"]},
     },
     "start_at": {
@@ -180,10 +175,6 @@ class ToolRuntime:
     sandbox_source: dict[str, Any] | None = None
     execution_id: str = ""
     initiative_run_id: str | None = None
-    memory_turn_id: str = ""
-    memory_exposures: tuple[MemoryExposure, ...] = ()
-    memory_exposure_registry: MemoryExposureRegistry | None = None
-    memory_intent: MemoryQueryIntent | None = None
     memory_session: object | None = None
     memory_allowed_scopes: tuple[MemoryScopeType, ...] | None = None
     prompt_diagnostics: PromptRequestDiagnostics | None = None
@@ -555,21 +546,13 @@ class AgentToolService:
                     {
                         "subject_ref": {
                             "type": "string",
-                            "enum": [
-                                "current_speaker",
-                                "mentioned_user",
-                                "mentioned_user_1",
-                                "mentioned_user_2",
-                                "mentioned_user_3",
-                                "mentioned_user_4",
-                                "mentioned_user_5",
-                                "replied_message_author",
-                            ],
-                            "description": "当前真实事件绑定的人物引用，优先使用",
+                            "description": (
+                                "本轮事件人物引用：current_speaker、"
+                                "member_{user_id} 或 replied_message_author"
+                            ),
                         },
                         "display_name": {
                             "type": "string",
-                            "maxLength": 128,
                             "description": "全局精确匹配的昵称、历史昵称或群名片",
                         },
                         "user_id": {
@@ -590,7 +573,7 @@ class AgentToolService:
                 ),
                 parameters=_object_schema(
                     {
-                        "query": {"type": "string", "minLength": 1, "maxLength": 400},
+                        "query": {"type": "string", "minLength": 1},
                         "target": {
                             "type": "object",
                             "additionalProperties": False,
@@ -598,21 +581,15 @@ class AgentToolService:
                                 "scope": {"type": "string", "enum": ["person", "group", "self"]},
                                 "subject_ref": {
                                     "type": "string",
-                                    "enum": [
-                                        "current_speaker",
-                                        "mentioned_user",
-                                        "mentioned_user_1",
-                                        "mentioned_user_2",
-                                        "mentioned_user_3",
-                                        "mentioned_user_4",
-                                        "mentioned_user_5",
-                                        "replied_message_author",
-                                    ],
+                                    "description": (
+                                        "本轮事件人物引用：current_speaker、"
+                                        "member_{user_id} 或 replied_message_author"
+                                    ),
                                 },
-                                "display_name": {"type": "string", "maxLength": 128},
+                                "display_name": {"type": "string"},
                                 "user_id": {"type": "string"},
                                 "group_id": {"type": "string"},
-                                "group_name": {"type": "string", "maxLength": 128},
+                                "group_name": {"type": "string"},
                             },
                             "required": ["scope"],
                         },
@@ -655,18 +632,14 @@ class AgentToolService:
                         "创建、纠正、撤销、恢复、争议、合并、改归属或更新记忆元数据；"
                         f"不能把 {bot_name} 自己的输出当证据，也不能传 QQ 号、群号或事件 ID。"
                         "target.subject_ref 可使用 current_speaker、current_group、"
-                        "mentioned_user、mentioned_user_1 等本轮可验证别名，或"
+                        "member_{user_id} 等本轮可验证成员引用，或"
                         "replied_message_author；正文中的当前群姓名使用 named_member 并填写"
                         f" subject_name；{bot_name} 自我记忆使用 self + self。"
                         f"自我记忆仅在功能开启且 {bot_name} 根据当前真实用户消息形成自己的"
                         "判断时变更，SELF 的 visibility"
                         "只能用 current_scope 或 global；global 只适合抽象偏好、反思和原则，"
-                        "SELF 的 category 必须精确使用 self_fact、self_preference、self_episode、"
-                        "self_reflection 或 self_principle；"
-                        "self_episode 必须与 kind=episode 配对，"
-                        "私聊原始经历只能保存为当前私聊可见，不能提升为 global；不能修改 "
-                        "identity/core/safety/system/permission/"
-                        "runtime 等保护键。工具回执中的 applied_operation 和 outcome"
+                        "私聊原始经历只能保存为当前私聊可见，不能提升为 global。"
+                        "工具回执中的 applied_operation 和 outcome"
                         "才是真实结果，回复用户时必须以回执为准；被降级为 contest 或 noop"
                         "时不得声称已经覆盖、删除或纠正成功。create 必须提供 target、"
                         "new_content、memory_key 和 category；correct 可通过 fact_id 继承目标、"
@@ -697,9 +670,9 @@ class AgentToolService:
                             "merge_fact_id": {"type": "integer", "minimum": 1},
                             "selector": _object_schema(
                                 {
-                                    "memory_key": {"type": "string", "maxLength": 128},
-                                    "old_content": {"type": "string", "maxLength": 4000},
-                                    "category": {"type": "string", "maxLength": 64},
+                                    "memory_key": {"type": "string"},
+                                    "old_content": {"type": "string"},
+                                    "category": {"type": "string"},
                                 }
                             )
                             | {
@@ -713,9 +686,9 @@ class AgentToolService:
                             },
                             "merge_selector": _object_schema(
                                 {
-                                    "memory_key": {"type": "string", "maxLength": 128},
-                                    "old_content": {"type": "string", "maxLength": 4000},
-                                    "category": {"type": "string", "maxLength": 64},
+                                    "memory_key": {"type": "string"},
+                                    "old_content": {"type": "string"},
+                                    "category": {"type": "string"},
                                 }
                             )
                             | {
@@ -728,19 +701,11 @@ class AgentToolService:
                                 {
                                     "subject_ref": {
                                         "type": "string",
-                                        "enum": [
-                                            "current_speaker",
-                                            "current_group",
-                                            "mentioned_user",
-                                            "mentioned_user_1",
-                                            "mentioned_user_2",
-                                            "mentioned_user_3",
-                                            "mentioned_user_4",
-                                            "mentioned_user_5",
-                                            "replied_message_author",
-                                            "named_member",
-                                            "self",
-                                        ],
+                                        "description": (
+                                            "本轮提供的主体引用，如 current_speaker、"
+                                            "member_{user_id}、replied_message_author、"
+                                            "named_member、self 或 current_group"
+                                        ),
                                     },
                                     "scope_type": {
                                         "type": "string",
@@ -748,18 +713,10 @@ class AgentToolService:
                                     },
                                     "subject_name": {
                                         "type": "string",
-                                        "maxLength": 128,
                                         "description": "subject_ref=named_member 时填写当前群姓名",
                                     },
                                     "candidate_ref": {
                                         "type": "string",
-                                        "enum": [
-                                            "member_candidate_1",
-                                            "member_candidate_2",
-                                            "member_candidate_3",
-                                            "member_candidate_4",
-                                            "member_candidate_5",
-                                        ],
                                         "description": "姓名歧义后从工具返回候选中选择",
                                     },
                                 },
@@ -781,25 +738,16 @@ class AgentToolService:
                                     "用户要求变更时用 user_requested；自主决定时用 agent_initiated"
                                 ),
                             },
-                            "new_content": {"type": "string", "maxLength": 4000},
-                            "memory_key": {"type": "string", "maxLength": 128},
-                            "category": {
-                                "type": "string",
-                                "maxLength": 64,
-                                "description": (
-                                    "target.scope_type=self 时必须精确使用："
-                                    "self_fact、self_preference、self_episode、"
-                                    "self_reflection、self_principle；其他作用域使用其普通分类。"
-                                ),
-                            },
+                            "new_content": {"type": "string"},
+                            "memory_key": {"type": "string"},
+                            "category": {"type": "string"},
                             "kind": {
                                 "type": "string",
                                 "enum": ["fact", "preference", "episode"],
                             },
                             "reason": {
                                 "type": "string",
-                                "maxLength": 500,
-                                "description": "自主 create 必填：简述未来记忆价值，不写思考过程。",
+                                "description": "简述记忆变更理由，不写思考过程。",
                             },
                             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                             "importance": {
@@ -807,7 +755,7 @@ class AgentToolService:
                                 "minimum": 1,
                                 "maximum": 5,
                                 "description": (
-                                    "自主 create 必须明确且至少为 3；1–2 是临时琐事，3 是未来有用的"
+                                    "1–2 是临时琐事，3 是未来有用的"
                                     "事实或有意义的单次经历，4–5 是重要变化/承诺/里程碑。"
                                 ),
                             },
@@ -826,13 +774,13 @@ class AgentToolService:
                                 "minItems": 1,
                                 "maxItems": 1,
                             },
-                            "evidence_quote": {"type": "string", "maxLength": 500},
+                            "evidence_quote": {"type": "string"},
                             "expected_fact_state": {
                                 "type": "string",
                                 "enum": ["active", "contested", "superseded", "invalidated"],
                             },
-                            "valid_from": {"type": "string", "maxLength": 64},
-                            "valid_until": {"type": "string", "maxLength": 64},
+                            "valid_from": {"type": "string"},
+                            "valid_until": {"type": "string"},
                         },
                         required=("operation",),
                     ),
@@ -1447,8 +1395,8 @@ class AgentToolService:
         runtime: ToolRuntime,
     ) -> ToolExecutionResult:
         query = arguments.get("query")
-        if not isinstance(query, str) or not query.strip() or len(query) > 400:
-            raise ValueError("query 必须是 1～400 字符的非空字符串")
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError("query 必须是非空字符串")
         allowed_arguments = {
             "query",
             "target",
@@ -1625,7 +1573,6 @@ class AgentToolService:
                             if hit.fact.scope_type is MemoryScopeType.SELF
                             else self._memory_json(hit.fact, retrieval_reason=hit.selection_reason)
                         ),
-                        "match": match_projection(hit, result, self._runtime()),
                     }
                     for hit in result.hits
                 ],
@@ -1703,8 +1650,6 @@ class AgentToolService:
             display_name = arguments.get("display_name")
             if not isinstance(display_name, str) or not display_name.strip():
                 return _ToolFailure("invalid_display_name", "display_name 必须是非空字符串")
-            if len(display_name) > 128:
-                return _ToolFailure("invalid_display_name", "display_name 不能超过 128 个字符")
             matches = await self._people.find_people_by_exact_name(display_name)
             if not matches:
                 return _ToolFailure("person_not_found", "没有找到全局精确匹配的已知人物")
@@ -1764,8 +1709,6 @@ class AgentToolService:
             display_name = arguments.get("display_name")
             if not isinstance(display_name, str) or not display_name.strip():
                 return _ToolFailure("invalid_display_name", "display_name 必须是非空字符串")
-            if len(display_name) > 128:
-                return _ToolFailure("invalid_display_name", "display_name 不能超过 128 个字符")
             requester = self._social_requester(runtime)
             if requester is not None:
                 matches = await self._memory_reads.people_named(requester, display_name)
@@ -1835,23 +1778,14 @@ class AgentToolService:
                 )
             return targets[0]
 
-        mentioned = await self._mentioned_people(runtime)
-        if subject_ref == "mentioned_user":
-            if not mentioned:
-                return _ToolFailure("subject_not_found", "本轮没有明确 @ 其他群成员")
-            if len(mentioned) > 1:
-                return _ToolFailure(
-                    "ambiguous_subject",
-                    "本轮 @ 了多名成员，请使用 mentioned_user_1 等具体引用",
-                )
-            return mentioned[0]
-        matched = re.fullmatch(r"mentioned_user_([1-5])", subject_ref)
-        if matched is None:
+        prefix = "member_"
+        if not subject_ref.startswith(prefix):
             return _ToolFailure("invalid_subject_ref", "subject_ref 不是受支持的事件引用")
-        index = int(matched.group(1)) - 1
-        if index >= len(mentioned):
-            return _ToolFailure("subject_not_found", "该提及引用在本轮不存在")
-        return mentioned[index]
+        user_id = subject_ref.removeprefix(prefix)
+        mentioned = await self._mentioned_people(runtime)
+        if user_id not in mentioned:
+            return _ToolFailure("subject_not_found", "该成员引用在本轮不存在")
+        return user_id
 
     async def _mentioned_people(self, runtime: ToolRuntime) -> tuple[str, ...]:
         inbound = runtime.require_inbound()
@@ -1958,8 +1892,8 @@ class AgentToolService:
             return _ToolFailure("invalid_group_selector", "group_id 与 group_name 只能提供一个")
         key = selectors[0]
         value = arguments[key]
-        if not isinstance(value, str) or not value.strip() or len(value) > 128:
-            return _ToolFailure("invalid_group_selector", "群目标必须是 1～128 字符的字符串")
+        if not isinstance(value, str) or not value.strip():
+            return _ToolFailure("invalid_group_selector", "群目标必须是非空字符串")
         if key == "group_id":
             return value.strip()
         requester = self._social_requester(runtime)
@@ -2352,8 +2286,6 @@ class AgentToolService:
         }
         if result.ok and result.applied_operation is MemoryMutationAppliedOperation.INVALIDATE:
             payload["persistence_semantics"] = "invalidated_not_deleted"
-        if result.reason_code == "invalid_self_memory_category":
-            payload["allowed_self_categories"] = list(SELF_MEMORY_CATEGORIES)
         if not result.ok:
             retryable = result.reason_code in {
                 "memory_candidate_ambiguous",
@@ -2479,7 +2411,6 @@ class AgentToolService:
             "status": row.status.value,
             "authority": row.authority.value,
             "conflict_state": row.conflict_state.value,
-            "reported": row.authority.value == "third_party",
             "evidence_count": row.evidence_count,
             "last_confirmed_at": row.last_confirmed_at.isoformat(),
             "retrieval_reason": retrieval_reason,
@@ -2560,11 +2491,6 @@ class AgentToolService:
             await self._record_memory_tool_outcome(runtime, "unavailable", result_count=0)
             return self._result(error="result_too_large", detail="完整结果与证据元数据超过本轮预算")
         await self._record_memory_tool_outcome(runtime, outcome, result_count=len(unique_ids))
-        if unique_ids:
-            if runtime.memory_session is None and runtime.origin in _MEMORY_CHANGE_ORIGINS:
-                await self._memory_context.mark_tool_injected(runtime.memory_turn_id, unique_ids)
-            if runtime.memory_exposure_registry is not None:
-                runtime.memory_exposure_registry.register_tool_payload(payload)
         return replace(
             result,
             evidence_state=payload["evidence_state"],
@@ -2587,26 +2513,6 @@ class AgentToolService:
             result_count,
         )
         self._memory_context.metrics.record_read_outcome(outcome)
-        if outcome == "unavailable":
-            return
-        try:
-            from qq_ai_bot.memory.runtime.turn_session import TurnMemorySession
-
-            if isinstance(runtime.memory_session, TurnMemorySession):
-                await runtime.memory_session.record_read_outcome(outcome)
-            elif runtime.origin in _MEMORY_CHANGE_ORIGINS:
-                await self._memory_context.record_tool_read_outcome(runtime.memory_turn_id, outcome)
-        except Exception as exc:
-            # Observability must not turn a successful read or a handled database
-            # failure into another user-visible tool failure.
-            logger.warning(
-                "memory_tool_outcome_persist_failed correlation_id=%s tool=%s "
-                "outcome=%s category=%s",
-                correlation.turn_id if correlation else "unbound",
-                _MEMORY_READ_TOOL.get(),
-                outcome,
-                type(exc).__name__,
-            )
 
     async def _call_onebot(
         self, arguments: dict[str, Any], runtime: ToolRuntime

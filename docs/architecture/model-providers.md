@@ -87,14 +87,14 @@ Gemini 使用显式 bridge；支持原生搜索的连接仍须声明实际能力
 | provider | 思考参数与差异 |
 | --- | --- |
 | openai、azure_openai | reasoning_effort、max_completion_tokens；不回传非标准 reasoning_content |
-| deepseek | thinking.type=enabled + reasoning_effort；不发送 tool_choice；合法整段 DSML 转为声明内工具调用 |
+| deepseek | thinking.type=enabled + reasoning_effort；不发送 tool_choice |
 | qwen | enable_thinking + thinking_budget |
 | moonshot、zhipu | thinking.type=enabled；不同型号的 effort 支持须显式配置 |
 | doubao | thinking.type=enabled + reasoning_effort；保留 encrypted_content |
 | minimax | 声明思考专用模型；reasoning_split=true，完整保留 reasoning_details |
 | openrouter | reasoning.effort、reasoning.exclude=false，保留 reasoning_details |
 | groq | reasoning_effort、max_completion_tokens、include_reasoning=true；默认针对 GPT-OSS 方言 |
-| mistral | reasoning_effort 最低发 high，保留 thinking 内容块；须选支持该字段的模型 |
+| mistral | 显式 reasoning_effort，保留 thinking 内容块；须选支持该字段的模型 |
 | siliconflow、together、xai、openai_compatible | 通用 reasoning_effort 方言，必须选支持该字段的模型或显式覆盖 |
 
 Azure 仅接入 `/openai/v1/` API，model 填部署名；旧的 deployment URL 和 api-version 路径不在此预设内。
@@ -111,29 +111,25 @@ Chat 默认省略 temperature，避免思考模型不支持或仅支持固定温
 reasoning = "effort"             # 例如使用 reasoning_effort 的 Kimi 型号
 token_field = "max_completion_tokens"
 send_temperature = false
-effort_levels = ["low", "high", "max"] # 可选，按具体型号声明支持的档位
 ```
 
 可用 reasoning 方言：`effort`、`thinking`、`enable_thinking`、`openrouter`、`builtin`；
 Claude 使用 `effort`（adaptive）或 `budget`，Gemini 使用 `gemini`（thinkingLevel）或 `budget`。
-Responses 不使用此配置表；Claude 只接受 reasoning/budget/effort_levels，Gemini 另接受
-send_temperature，以及 `gemini_schema_format`。后者默认 `response_json_schema`；显式
-`response_schema` 将结构化输出投影为 Gemini Schema 方言，仅 Gemini 允许。投影保留可表示的
-结构和引用展开，额外属性、长度和数值限制继续由本地原 schema 与来源校验执行；不支持的
-组合或递归引用在提交前拒绝。此字段不改变主 Agent 工具参数、Provider 或任务路由，
-显式修改进入恢复合同 hash。填入另一协议的字段在配置加载时拒绝，不会悄悄忽略。
+Responses 不使用此配置表；Claude 接受 reasoning/budget，Gemini 另接受 send_temperature。
+Gemini 原生 Schema 直接使用 responseJsonSchema，不再投影另一套 responseSchema。
+思考开关和强度沿显式请求或 Profile；省略时使用 Profile 默认，不强制开启、不设置 low 下限。
+显式 false 省略启用参数，不再被后台改成 true；供应商未收到参数后的默认行为由该 Provider 决定，不保证所有协议在物理上关闭思考。
+Profile 未配置 effort 时也不补 low；显式预算不依赖 effort。
+供应商名称选择现有参数预设，明确的 protocol 选择适配器；自定义名称沿同一协议并保留其续跑归属。
 `thinking` 可用 `send_reasoning_effort=true` 表明该型号同时支持 effort。
 `builtin` 只适用于已经验证、始终思考且不接受思考控制参数的模型，不能用来接入无思考模型。
 没有 effort 控制的 `thinking` / `builtin` 方言拒绝高于 low 的请求，不静默降低要求。
-声明 `effort_levels` 后，取不低于请求的最小支持档位，没有更高档位则在请求前拒绝。
-因此 Mistral 支持 none/high 的型号用 high 满足 low 下限，DeepSeek medium 映射 high。
+显式 effort 原样发送，不按供应商整族抬档；实际型号不支持时如实返回上游错误。
 Groq 的其他型号可显式设置 `reasoning_format="parsed"`；此时不发送 include_reasoning，
 两种字段不混用，不按模型名猜测方言。
 
-预算接口用 `thinking_budget_tokens` 表示 low 的预算（默认 4096，至少 1024）；
-medium/high/xhigh/max 分别为该基数的 2/4/8/16 倍。这是一项明确的单调转换策略，
-不声称与供应商 effort 精确等价。Claude 手动思考预算必须小于输出预算，否则在请求前拒绝；
-其他供应商的型号上限也须自行核对，不能靠降低预算掩盖不支持的配置。
+预算接口直接使用 `thinking_budget_tokens` 的显式值，不从 effort 推算倍数。
+Claude 手动思考预算必须小于输出预算；实际协议参数、认证和续跑归属继续核验。
 
 旧型号 Claude 可配置 `reasoning="budget"`；Gemini 2.5 可配置同一方言。
 Gemini 3 各型号支持的 thinkingLevel 可能不同，不支持的档位由服务明确拒绝。
@@ -148,7 +144,7 @@ WebUI 查询不会回传密钥；客户端不跨供应商或密钥来源共享�
 Gemini 3.8 Flash 的官方模型 ID 是 `gemini-3.8-flash`。WebUI 的 Google Gemini 预设使用
 `https://generativelanguage.googleapis.com/v1beta` 与原生 GenerateContent，预填该 ID、
 `low` 思考强度及文字、图片、工具、结构化输出能力。Gemini 3.8 的 Yuki 连接使用
-`thinkingLevel`，拒绝该型号的固定 `thinkingBudget` 配置；代理转发仍需另行核对，不能把
+所选思考参数；不按型号名称前缀提前禁止显式预算。代理转发仍需另行核对，不能把
 代理改写误认为 Yuki 请求。适配器保留工具回合的 thought signature，
 按上游 `cachedContentTokenCount` 统计缓存。Google 搜索桥须在此连接明确选择；旧连接保留
 原搜索选择，未配置可用搜索后端时明确不可用。此连接不实现 Interactions API 或 Live/TTS；这些能力不能因为模型
@@ -162,7 +158,7 @@ Gemini 3.8 Flash 的官方模型 ID 是 `gemini-3.8-flash`。WebUI 的 Google Ge
 
 群史 Rollup 默认使用 600 秒专用请求/整批等待期限，独立于主任务 Profile 超时；
 Work compaction 继续使用原任务 Profile 的超时。两类摘要的生成预算默认 32768 token，
-包含思考与最终结构输出；群史摘要正文默认上限仍为 16384 字符。输出预算热配置没有
+包含思考与最终结构输出；语义摘要不再另设总字符和单项数量限制。输出预算热配置没有
 额外的 32768 界面上限，但执行器继续拒绝超过 Profile `max_output_tokens_limit` 或真实
 输入/联合窗口的请求，不静默减量或更换模型。已有显式配置不会因默认值调整自动改变。
 
@@ -179,11 +175,10 @@ Work compaction 继续使用原任务 Profile 的超时。两类摘要的生成�
   合同或来源变化按原原因建立新链，不改写旧聊天事件；各协议的原生块跨 Work 复用并不等价。
 - Chat `length`、Claude `max_tokens`、Gemini `MAX_TOKENS` 均转为 INCOMPLETE；
   Runner 的既有截断处理不会执行其中的工具。不自动增加预算。
-- Gemini 明确返回 `MALFORMED_FUNCTION_CALL`，且请求没有原生服务端工具、响应仅含空文本而无
-  可执行调用或原生效果证据时，Runner 在原链追加工具格式纠正反馈，最多纠正两次。
-  每次仍走原请求接纳、来源核验和累计预算；Work journal 保存纠正次数和反馈，重启不重置。
-  不构造缺失的工具调用，不改工具声明或重发已确认效果；安全拦截、非法 JSON、矛盾响应和
-  结果不明的传输失败不进入此纠正路径。已有确认交付的普通聊天按原收尾规则结束。
+- 空输出、畸形工具调用和非 pause 的不完整响应按真实错误收尾，不追加强制纠正轮或重置预算。
+  截断调用仍保存未执行回执。Claude pause 使用原 checkpoint 在主循环继续，适配器不购买额外请求；
+  直接结构化任务收到 INCOMPLETE 时返回真实失败，不能假装有主循环恢复。
+- 文本中的 DSML 不再转为工具调用或生成协议记录；工具执行只接受实际协议 tool_calls/function_call。
 - reasoning、签名、完整工具回执不进入对外消息或普通运行日志；只有显式 send_message 交付。
 - [执行诊断](execution-trace.md) 单独保存实际返回的可读思考和工具结果；正文权限查询，按期清理。
   不透明签名/加密状态只留摘要，原恢复 journal 继续按协议私有合同保存。
@@ -207,11 +202,13 @@ Work compaction 继续使用原任务 Profile 的超时。两类摘要的生成�
 
 ## 用量与 HTTP 请求口径
 
+适配器先准备完整 httpx Request，包括路径、Header 和 JSON 编码，再沿原派发核验与预算登记进入 send。准备失败不登记实际请求，也不调用上一条请求的失败收尾；登记后 HTTP 段的异常仍按原请求收尾。
+
 `model_invocations` 一行表示一次逻辑模型调用，`calls` 继续按该行计数。`physical_request_count`
 只统计实际进入 HTTP 客户端的请求尝试，包括传输重试和 Claude 原生搜索暂停后的续发；
 路由、配置或本地校验失败不计入。`unknown_usage_request_count` 统计其中未获得上游总 Token
 报告的尝试，不能按零 Token 或零费用处理。每次物理响应（包括兼容错误包）已明确报告的 usage 由 transport 记录，executor 是逻辑
-归并的唯一边界；同一次解析重复上报不重复计数，Claude pause 已汇总字段不会再叠加。
+归并的唯一边界；同一次解析重复上报不重复计数，Claude pause 每次物理请求分别记账。
 输入/缓存字段只有全部物理尝试均报告该字段时才有完整总量，任一缺项保持 NULL，避免用部分
 输入与完整缓存构造错误覆盖率。输出/总 Token 保留已报告的小计，并同时记录未知物理请求
 数，不把小计称为完整账单。显式零仍为零，缺失仍为未知；这些合成兼容错误形状不

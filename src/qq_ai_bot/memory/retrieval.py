@@ -6,20 +6,13 @@ import hashlib
 import logging
 import time
 
-from qq_ai_bot.memory.activation import (
-    MemoryActivationRepository,
-    MemoryIntentRanker,
-    apply_strict_temporal_constraint,
-)
 from qq_ai_bot.memory.authorized_scope import (
     AuthorizedMemoryScope,
     target_for_authorized_fact,
 )
-from qq_ai_bot.memory.embedding.codec import Float32VectorCodec
 from qq_ai_bot.memory.embedding.metrics import MemoryEmbeddingMetrics
 from qq_ai_bot.memory.embedding.models import (
     EmbeddingBatchResult,
-    EmbeddingVector,
     MemoryEmbeddingProfileRecord,
     MemorySemanticCandidate,
 )
@@ -29,7 +22,6 @@ from qq_ai_bot.memory.embedding.semantic import AuthorizedSemanticCandidate, Mem
 from qq_ai_bot.memory.embedding.text import EmbeddingQueryBuilder
 from qq_ai_bot.memory.enums import (
     MemoryRetrievalMode,
-    MemoryScopeType,
     MemoryTargetRole,
 )
 from qq_ai_bot.memory.fts import (
@@ -40,7 +32,6 @@ from qq_ai_bot.memory.fts import (
 )
 from qq_ai_bot.memory.metrics import MemoryRetrievalMetric, MemoryRetrievalMetrics
 from qq_ai_bot.memory.models import (
-    MemoryActivationState,
     MemoryEntityTarget,
     MemoryFact,
     MemoryLexicalCandidate,
@@ -64,8 +55,6 @@ class MemoryRetriever:
         repository: MemoryFactRepository,
         lexical_index: MemoryLexicalIndex,
         ranker: MemoryRanker | None = None,
-        activation_repository: MemoryActivationRepository | None = None,
-        intent_ranker: MemoryIntentRanker | None = None,
         metrics: MemoryRetrievalMetrics | None = None,
         semantic_index: MemorySemanticIndex | None = None,
         embedding_provider: EmbeddingProvider | None = None,
@@ -73,15 +62,10 @@ class MemoryRetriever:
         embedding_queries: EmbeddingQueryBuilder | None = None,
         embedding_metrics: MemoryEmbeddingMetrics | None = None,
         query_embedding_cache: QueryEmbeddingCache | None = None,
-        mmr_enabled: bool = True,
-        mmr_lambda: float = 0.75,
-        mmr_candidate_pool_size: int = 20,
     ) -> None:
         self._repository = repository
         self._index = lexical_index
         self._ranker = ranker or MemoryRanker()
-        self._activation_repository = activation_repository
-        self._intent_ranker = intent_ranker or MemoryIntentRanker()
         self._metrics = metrics or MemoryRetrievalMetrics()
         self._semantic_index = semantic_index
         self._embedding_provider = embedding_provider
@@ -89,10 +73,6 @@ class MemoryRetriever:
         self._embedding_queries = embedding_queries
         self._embedding_metrics = embedding_metrics
         self._query_embedding_cache = query_embedding_cache
-        self._mmr_enabled = mmr_enabled
-        self._mmr_lambda = mmr_lambda
-        self._mmr_candidate_pool_size = mmr_candidate_pool_size
-        self._vector_codec = Float32VectorCodec()
 
     @property
     def metrics(self) -> MemoryRetrievalMetrics:
@@ -183,7 +163,6 @@ class MemoryRetriever:
                             profile_id=profile.id,
                             candidate_limit=query.semantic_candidate_limit,
                             kinds=query.kinds,
-                            min_similarity=query.semantic_min_similarity,
                             temporal=query.intent.temporal if query.intent else None,
                         )
                         semantic_status = (
@@ -253,10 +232,6 @@ class MemoryRetriever:
                 )
             )
         ranked = self._ranker.rank_global(tuple(pooled), query)
-        if query.intent is not None and query.intent_rerank_enabled:
-            ranked = self._intent_ranker.rerank(
-                ranked, query=query, states=await self._load_activation_states(ranked)
-            )
         selected = ranked[:limit]
         blocks = tuple(
             MemoryRetrievalBlock(
@@ -291,7 +266,6 @@ class MemoryRetriever:
                 if semantic and self._embedding_profile is not None
                 else None
             ),
-            trace_hits=ranked[: query.recall_trace_candidate_limit],
             exhaustive=not candidate_truncated
             and not semantic_degraded
             and not semantic_unavailable
@@ -307,19 +281,16 @@ class MemoryRetriever:
         query: MemoryQuery,
         *,
         lexical_enabled: bool = True,
-        diversify: bool = False,
     ) -> MemoryRetrievalResult:
         started = time.perf_counter()
         fts_latency = 0.0
         semantic_latency = 0.0
         hybrid_latency = 0.0
-        rerank_latency = 0.0
         candidate_count = 0
         semantic_candidate_count = 0
         candidate_truncated = False
         blocks: list[MemoryRetrievalBlock] = []
         all_hits: list[MemoryRetrievalHit] = []
-        trace_hits: list[MemoryRetrievalHit] = []
         short_fallback_used = False
         query_vector = None
         semantic_degraded = False
@@ -398,11 +369,7 @@ class MemoryRetriever:
         for target in query.targets:
             hits: tuple[MemoryRetrievalHit, ...]
             if query.mode is MemoryRetrievalMode.OVERVIEW or not lexical_enabled:
-                overview_pool_limit = (
-                    max(query.limit_per_target, query.recall_trace_candidate_limit)
-                    if query.intent is not None and query.intent_rerank_enabled
-                    else query.limit_per_target
-                )
+                overview_pool_limit = query.limit_per_target
                 facts = await self._repository.list_overview(
                     target,
                     limit=overview_pool_limit + 1,
@@ -417,19 +384,7 @@ class MemoryRetriever:
                     limit=overview_pool_limit,
                     reason=("overview" if lexical_enabled else "retrieval_disabled_fallback"),
                 )
-                hits = apply_strict_temporal_constraint(hits, query.intent)
             else:
-                preferences = (
-                    await self._repository.list_explicit_preferences(
-                        target,
-                        limit=query.always_on_explicit_preference_limit,
-                        temporal=query.intent.temporal if query.intent is not None else None,
-                    )
-                    if target.scope_type is MemoryScopeType.PERSON
-                    and target.role is MemoryTargetRole.CURRENT_PERSON
-                    and query.always_on_explicit_preference_limit > 0
-                    else ()
-                )
                 safe = build_safe_lexical_query(
                     query.normalized_text,
                     term_limit=query.query_term_limit,
@@ -462,7 +417,6 @@ class MemoryRetriever:
                             profile_id=self._embedding_profile.id,
                             candidate_limit=query.semantic_candidate_limit + 1,
                             kinds=query.kinds,
-                            min_similarity=query.semantic_min_similarity,
                             temporal=query.intent.temporal if query.intent is not None else None,
                         )
                     except ValueError:
@@ -487,18 +441,8 @@ class MemoryRetriever:
                 candidate_facts = await self._repository.get_active_for_target(
                     target, candidate_ids
                 )
-                candidate_count += len(preferences) + len(candidates) + len(semantic_candidates)
+                candidate_count += len(candidates) + len(semantic_candidates)
                 semantic_candidate_count += len(semantic_candidates)
-                preference_hits = self._ranker.rank_overview(
-                    preferences,
-                    target=target,
-                    limit=query.always_on_explicit_preference_limit,
-                    reason="always_on_explicit_preference",
-                )
-                preference_hits = apply_strict_temporal_constraint(
-                    preference_hits,
-                    query.intent,
-                )
                 hybrid_started = time.perf_counter()
                 lexical_hits = self._ranker.rank_hybrid(
                     facts=candidate_facts,
@@ -512,19 +456,7 @@ class MemoryRetriever:
                     limit=len(candidate_facts),
                 )
                 hybrid_latency += time.perf_counter() - hybrid_started
-                preference_ids = {hit.fact.id for hit in preference_hits}
-                deduplicated = tuple(
-                    hit for hit in lexical_hits if hit.fact.id not in preference_ids
-                )
-                deduplicated = apply_strict_temporal_constraint(
-                    deduplicated,
-                    query.intent,
-                )
-                combined = (*preference_hits, *deduplicated)
-                hits = tuple(
-                    hit.model_copy(update={"rank": rank})
-                    for rank, hit in enumerate(combined, start=1)
-                )
+                hits = lexical_hits
             blocks.append(MemoryRetrievalBlock(target=target, hits=hits))
             all_hits.extend(hits)
 
@@ -546,22 +478,6 @@ class MemoryRetriever:
                     1,
                 )
             )
-        if query.intent is not None and query.intent_rerank_enabled:
-            rerank_started = time.perf_counter()
-            ranked = self._intent_ranker.rerank(
-                ranked, query=query, states=await self._load_activation_states(ranked)
-            )
-            rerank_latency += time.perf_counter() - rerank_started
-        if self._mmr_enabled and diversify and query_vector is not None:
-            ranked = await self._diversify_mmr(
-                ranked,
-                query_vector=query_vector,
-                valid_fact_ids=frozenset(
-                    hit.fact.id for hit in ranked if hit.semantic_score is not None
-                ),
-                limit=len(ranked),
-            )
-        trace_hits = list(ranked[: query.recall_trace_candidate_limit])
         all_hits = []
         per_target: dict[str, int] = {}
         output_truncated = False
@@ -608,7 +524,6 @@ class MemoryRetriever:
                 if query_vector is not None and self._embedding_profile is not None
                 else None
             ),
-            trace_hits=tuple(trace_hits),
             exhaustive=not candidate_truncated
             and not output_truncated
             and not query.semantic_enabled,
@@ -646,115 +561,6 @@ class MemoryRetriever:
                 semantic_degraded=semantic_degraded,
                 semantic_search_latency=semantic_latency,
                 hybrid_rank_latency=hybrid_latency,
-                intent_rerank_latency=rerank_latency,
             )
         )
         return result
-
-    async def _load_activation_states(
-        self,
-        hits: tuple[MemoryRetrievalHit, ...],
-    ) -> dict[int, MemoryActivationState]:
-        if self._activation_repository is None:
-            return {}
-        return await self._activation_repository.load(tuple(hit.fact.id for hit in hits))
-
-    async def _diversify_mmr(
-        self,
-        hits: tuple[MemoryRetrievalHit, ...],
-        *,
-        query_vector: EmbeddingVector,
-        valid_fact_ids: frozenset[int],
-        limit: int,
-    ) -> tuple[MemoryRetrievalHit, ...]:
-        """Diversify the RRF tail while pinning exact matches and using local vectors only."""
-
-        semantic_index = self._semantic_index
-        if (
-            limit <= 0
-            or len(hits) <= 1
-            or self._embedding_profile is None
-            or semantic_index is None
-        ):
-            return hits[:limit]
-        profile = self._embedding_profile.profile
-        vectors = await semantic_index.repository.load_vectors_for_fact_ids(
-            fact_ids=tuple(
-                hit.fact.id
-                for hit in hits[: self._mmr_candidate_pool_size]
-                if hit.fact.id in valid_fact_ids
-            ),
-            profile_id=self._embedding_profile.id,
-        )
-        decoded = {
-            fact_id: self._vector_codec.decode(payload, dimensions=profile.dimensions)
-            for fact_id, payload in vectors.items()
-        }
-        pinned = [hit for hit in hits if hit.selection_reason.endswith("_exact")][:limit]
-        selected = list(pinned)
-        selected_ids = {hit.fact.id for hit in selected}
-        candidates = [
-            hit
-            for hit in hits[: self._mmr_candidate_pool_size]
-            if hit.fact.id not in selected_ids and hit.fact.id in decoded
-        ]
-        if not candidates:
-            return hits[:limit]
-        while candidates and len(selected) < limit:
-            best = max(
-                candidates,
-                key=lambda hit: (
-                    self._mmr_score(
-                        hit,
-                        query_vector=query_vector,
-                        selected=selected,
-                        vectors=decoded,
-                    ),
-                    -(hit.rank),
-                    -hit.fact.id,
-                ),
-            )
-            selected.append(best)
-            candidates.remove(best)
-        for hit in hits:
-            if len(selected) >= limit:
-                break
-            if hit.fact.id not in {item.fact.id for item in selected}:
-                selected.append(hit)
-        return tuple(selected)
-
-    def _mmr_score(
-        self,
-        hit: MemoryRetrievalHit,
-        *,
-        query_vector: EmbeddingVector,
-        selected: list[MemoryRetrievalHit],
-        vectors: dict[int, EmbeddingVector],
-    ) -> float:
-        vector = vectors[hit.fact.id]
-        relevance = (
-            hit.rerank_score
-            if hit.rerank_score > 0
-            else (self._vector_codec.dot(query_vector, vector) + 1.0) / 2.0
-        )
-        redundancy = max(
-            (
-                self._vector_codec.dot(vector, vectors[item.fact.id])
-                for item in selected
-                if item.fact.id in vectors and self._mmr_partition(item) == self._mmr_partition(hit)
-            ),
-            default=0.0,
-        )
-        return self._mmr_lambda * relevance - (1.0 - self._mmr_lambda) * redundancy
-
-    @staticmethod
-    def _mmr_partition(hit: MemoryRetrievalHit) -> tuple[object, ...]:
-        fact = hit.fact
-        return (
-            fact.scope_type,
-            fact.canonical_subject_person_id,
-            fact.canonical_subject_space_id,
-            fact.visibility_type,
-            fact.canonical_visibility_person_id,
-            fact.canonical_visibility_space_id,
-        )

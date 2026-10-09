@@ -446,39 +446,6 @@ class WorkControl:
             return
         await self._accept("complete", call_key, **prepared)
 
-    async def has_finite_model_budget(self) -> bool:
-        """Read the actual persistent root/run limit; never invent a default."""
-        if self.current is None:
-            return False
-        from sqlalchemy import select
-
-        from qq_ai_bot.runtime.subagent_schema import children
-        from qq_ai_bot.runtime.work_budget_schema import automation_budgets, budgets
-
-        async with self.repository.database.sessions() as session:
-            root = (
-                await session.scalar(
-                    select(children.c.root_id).where(children.c.work_id == self.current["id"])
-                )
-                or self.current["id"]
-            )
-            limit = await session.scalar(
-                select(budgets.c.model_limit).where(budgets.c.root_id == root)
-            )
-            if limit is not None:
-                return True
-            run_id = self.source.get("automation_run_id")
-            if self.source.get("owner") == "automation" and isinstance(run_id, int):
-                return (
-                    await session.scalar(
-                        select(automation_budgets.c.model_limit).where(
-                            automation_budgets.c.run_id == run_id
-                        )
-                    )
-                    is not None
-                )
-        return False
-
     async def effect_evidence(self) -> list[dict[str, Any]]:
         if self.current is None:
             return []

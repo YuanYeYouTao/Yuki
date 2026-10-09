@@ -175,9 +175,9 @@ class MemoryFactCreate(_MemoryModel):
     visibility_user_id: str | None = None
     visibility_group_id: str | None = None
     kind: MemoryKind = MemoryKind.FACT
-    memory_key: str = Field(min_length=1, max_length=128)
-    category: str = Field(min_length=1, max_length=64)
-    content: str = Field(min_length=1, max_length=4000)
+    memory_key: str = Field(min_length=1)
+    category: str = Field(min_length=1)
+    content: str = Field(min_length=1)
     importance: int = Field(default=3, ge=1, le=5)
     confidence: float = Field(default=1.0, ge=0, le=1)
     source_type: MemorySourceType
@@ -283,7 +283,6 @@ class MemoryResolutionPlan(_MemoryModel):
 
 
 class MemoryConsistencyHealth(_MemoryModel):
-    active_slot_conflicts: int = Field(ge=0)
     contested_fact_count: int = Field(ge=0)
     active_contested_count: int = Field(ge=0)
     orphan_relation_count: int = Field(ge=0)
@@ -291,17 +290,13 @@ class MemoryConsistencyHealth(_MemoryModel):
     orphan_state_event_count: int = Field(ge=0)
     invalidated_without_reason_count: int = Field(ge=0)
     superseded_without_chain_count: int = Field(ge=0)
-    evidence_authority_mismatch_count: int = Field(ge=0)
     expired_active_count: int = Field(ge=0)
-    stale_backlog_count: int = Field(ge=0)
-    classifier_recent_errors: int = Field(ge=0)
     maintenance_last_success_at: datetime | None = None
 
     @property
     def healthy(self) -> bool:
         return not any(
             (
-                self.active_slot_conflicts,
                 self.orphan_relation_count,
                 self.cross_target_relation_count,
                 self.orphan_state_event_count,
@@ -457,10 +452,10 @@ class MemoryQueryIntent(_MemoryModel):
 
     mode: MemoryContextMode = MemoryContextMode.LEXICAL
     purpose: MemoryRecallPurpose = MemoryRecallPurpose.BACKGROUND
-    subjects: tuple[MemorySubjectRole, ...] = Field(default=(), max_length=4)
-    entities: tuple[str, ...] = Field(default=(), max_length=5)
+    subjects: tuple[MemorySubjectRole, ...] = Field(default=())
+    entities: tuple[str, ...] = Field(default=())
     temporal: MemoryTemporalIntent = MemoryTemporalIntent()
-    preferred_kinds: tuple[MemoryKind, ...] = Field(default=(), max_length=3)
+    preferred_kinds: tuple[MemoryKind, ...] = Field(default=())
 
     @field_validator("subjects", "preferred_kinds", mode="after")
     @classmethod
@@ -472,7 +467,7 @@ class MemoryQueryIntent(_MemoryModel):
     def _normalize_entities(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         normalized: list[str] = []
         for item in value:
-            clean = " ".join(item.split()).strip()[:64]
+            clean = " ".join(item.split()).strip()
             if clean and clean not in normalized:
                 normalized.append(clean)
         return tuple(normalized)
@@ -490,24 +485,14 @@ class MemoryQuery(_MemoryModel):
     kinds: tuple[MemoryKind, ...] = ()
     candidate_limit: int = Field(gt=0)
     limit_per_target: int = Field(gt=0)
-    always_on_explicit_preference_limit: int = Field(ge=0)
     query_term_limit: int = Field(gt=0)
     short_query_fallback_enabled: bool = True
     semantic_enabled: bool = True
     semantic_candidate_limit: int = Field(default=50, gt=0)
-    semantic_min_similarity: float = Field(default=0.35, ge=-1, le=1)
     hybrid_lexical_weight: float = Field(default=1.0, ge=0)
     hybrid_semantic_weight: float = Field(default=1.0, ge=0)
     hybrid_rrf_k: int = Field(default=60, gt=0)
     intent: MemoryQueryIntent | None = None
-    intent_rerank_enabled: bool = True
-    activation_ranking_enabled: bool = True
-    activation_half_life_episode_days: float = Field(default=14.0, gt=0)
-    activation_half_life_fact_days: float = Field(default=60.0, gt=0)
-    activation_half_life_preference_days: float = Field(default=120.0, gt=0)
-    activation_half_life_explicit_days: float = Field(default=365.0, gt=0)
-    intent_recent_window_days: int = Field(default=90, gt=0)
-    recall_trace_candidate_limit: int = Field(default=20, gt=0, le=100)
 
 
 class MemoryLexicalCandidate(_MemoryModel):
@@ -531,13 +516,6 @@ class MemoryRetrievalHit(_MemoryModel):
     exact_match: bool = False
     matched_terms: tuple[str, ...] = ()
     selection_reason: str
-    base_rank_score: float = Field(default=0, ge=0, le=1)
-    subject_score: float = Field(default=0.5, ge=0, le=1)
-    entity_score: float = Field(default=0.5, ge=0, le=1)
-    temporal_score: float = Field(default=0.5, ge=0, le=1)
-    kind_score: float = Field(default=0.5, ge=0, le=1)
-    activation_score: float = Field(default=0.5, ge=0, le=1)
-    rerank_score: float = Field(default=0, ge=0, le=1)
 
 
 class MemoryRetrievalBlock(_MemoryModel):
@@ -555,58 +533,10 @@ class MemoryRetrievalResult(_MemoryModel):
     semantic_status: str = "disabled"
     semantic_degraded: bool = False
     embedding_profile: str | None = None
-    trace_hits: tuple[MemoryRetrievalHit, ...] = ()
     exhaustive: bool = True
     truncated: bool = False
     partial_reason: str | None = None
     ranked_count: int = 0
-
-
-class MemoryActivationState(_MemoryModel):
-    fact_id: int = Field(gt=0)
-    activation: float = Field(ge=0, le=1)
-    activation_updated_at: datetime
-    last_recalled_at: datetime | None = None
-    recall_count: int = Field(default=0, ge=0)
-    revision: int = Field(default=0, ge=0)
-
-    @field_validator("activation_updated_at", "last_recalled_at", mode="after")
-    @classmethod
-    def _activation_utc(cls, value: datetime | None) -> datetime | None:
-        if value is None:
-            return None
-        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
-
-
-class MemoryRecallItem(_MemoryModel):
-    fact_id: int = Field(gt=0)
-    target_role: MemoryTargetRole
-    candidate: bool = True
-    selected: bool = False
-    injected: bool = False
-    used: bool = False
-    reinforced: bool = False
-    base_rank_score: float = Field(default=0, ge=0, le=1)
-    subject_score: float = Field(default=0.5, ge=0, le=1)
-    entity_score: float = Field(default=0.5, ge=0, le=1)
-    temporal_score: float = Field(default=0.5, ge=0, le=1)
-    kind_score: float = Field(default=0.5, ge=0, le=1)
-    activation_score: float = Field(default=0.5, ge=0, le=1)
-    rerank_score: float = Field(default=0, ge=0, le=1)
-    selection_reason: str = Field(default="", max_length=64)
-
-
-class MemoryRecallReceipt(_MemoryModel):
-    turn_id: str = Field(min_length=1, max_length=64)
-    mode: MemoryContextMode
-    purpose: MemoryRecallPurpose
-    origin: str = Field(max_length=32)
-    candidate_count: int = Field(default=0, ge=0)
-    selected_count: int = Field(default=0, ge=0)
-    injected_count: int = Field(default=0, ge=0)
-    used_count: int = Field(default=0, ge=0)
-    reinforced_count: int = Field(default=0, ge=0)
-    items: tuple[MemoryRecallItem, ...] = ()
 
 
 class MemoryIndexHealth(_MemoryModel):

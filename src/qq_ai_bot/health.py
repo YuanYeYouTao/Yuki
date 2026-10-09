@@ -46,7 +46,6 @@ class HealthPayload(TypedDict):
     memory_active_contested_facts: int
     memory_consistency_healthy: bool
     memory_expired_active_facts: int
-    memory_classifier_recent_errors: int
     memory_maintenance_last_success_at: str | None
     memory_rebuild: dict[str, object]
     memory_self_reflection: dict[str, object]
@@ -119,7 +118,6 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
         memory_active_contested_facts=memory_health.active_contested_count,
         memory_consistency_healthy=memory_health.healthy,
         memory_expired_active_facts=memory_health.expired_active_count,
-        memory_classifier_recent_errors=memory_health.classifier_recent_errors,
         memory_maintenance_last_success_at=(
             memory_health.maintenance_last_success_at.isoformat()
             if memory_health.maintenance_last_success_at

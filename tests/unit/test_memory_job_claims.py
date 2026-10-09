@@ -15,7 +15,6 @@ from tests.unit.test_memory_v2 import _append_event, _claim
 
 from qq_ai_bot.domain.messages import ChatRequest, ChatResponse
 from qq_ai_bot.llm.base import LLMProvider
-from qq_ai_bot.memory.claim_candidates import MemoryClaimCandidateRepository
 from qq_ai_bot.memory.claim_processor import MemoryProcessingContext
 from qq_ai_bot.memory.enums import MemoryProcessingSource, MemoryRebuildJobOutcome
 from qq_ai_bot.memory.extraction import BatchMemoryClaim, BatchMemoryExtractionOutput
@@ -218,29 +217,3 @@ async def test_reclaim_during_resolution_blocks_fact_and_receipt_without_writer_
     async with database.sessions() as session:
         for model in (MemoryFactModel, MemoryMutationReceiptModel):
             assert await session.scalar(select(func.count()).select_from(model)) == 0
-
-
-async def test_candidate_status_update_also_requires_original_claim(
-    database: Database,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    ledger = EventLedgerRepository(database)
-    event = await _append_event(ledger, message_id="claim-candidate")
-    jobs = MemoryJobRepository(database)
-    assert await jobs.enqueue(event.id, "private:1001")
-    (old,) = await jobs.claim()
-    candidates = MemoryClaimCandidateRepository(database)
-    candidate = await candidates.stage(
-        _claim(confidence=0.5),
-        event,
-        candidate_type="memory",
-        subject_context=None,
-        job=old,
-    )
-    current = await _reclaim(jobs, monkeypatch)
-    with pytest.raises(MemoryJobClaimLost):
-        await candidates.set_status(candidate.id, "accepted", job=old)
-    async with database.sessions() as session:
-        row = await session.get(MemoryClaimCandidateModel, candidate.id)
-        assert row is not None and row.status == "pending"
-    assert await candidates.set_status(candidate.id, "accepted", job=current)

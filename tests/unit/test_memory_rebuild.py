@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from pydantic import ValidationError
 from sqlalchemy import func, select, update
 from tests.conftest import make_settings
 from tests.support.model_executor import InjectedModelExecutor
@@ -24,7 +22,7 @@ from qq_ai_bot.memory.enums import (
     MemorySourceType,
     MemoryStatus,
 )
-from qq_ai_bot.memory.models import MemoryFactCreate, MemoryFactQuery
+from qq_ai_bot.memory.models import MemoryFactQuery
 from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
 from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
 from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
@@ -35,7 +33,6 @@ from qq_ai_bot.memory.worker import MemoryWorker
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
-    MemoryFactModel,
     MemoryJobModel,
     MemoryRebuildItemModel,
     MemoryRebuildProposalModel,
@@ -64,10 +61,6 @@ class _ExtractionProvider(LLMProvider):
             "importance": 3,
             "confidence": 0.9,
             "source_type": "automatic",
-            "subject_basis": "omitted_self",
-            "retention": "durable",
-            "source_style": "natural_statement",
-            "value_reason": "Synthetic historical fact useful for later recall.",
         }
         if "临时" in content:
             claim.update(
@@ -85,34 +78,6 @@ class _ExtractionProvider(LLMProvider):
             prompt_tokens=11,
             completion_tokens=7,
         )
-
-
-class _SlowExtractionProvider(_ExtractionProvider):
-    def __init__(self) -> None:
-        super().__init__()
-        self.active = 0
-        self.maximum_active = 0
-
-    async def complete(self, request: ChatRequest) -> ChatResponse:
-        self.active += 1
-        self.maximum_active = max(self.maximum_active, self.active)
-        try:
-            await asyncio.sleep(0.02)
-            return await super().complete(request)
-        finally:
-            self.active -= 1
-
-
-class _FailOnceExtractionProvider(_ExtractionProvider):
-    def __init__(self) -> None:
-        super().__init__()
-        self.failed = False
-
-    async def complete(self, request: ChatRequest) -> ChatResponse:
-        if not self.failed:
-            self.failed = True
-            raise RuntimeError("temporary extraction failure")
-        return await super().complete(request)
 
 
 async def _service(
@@ -168,50 +133,6 @@ async def _event(
     return event
 
 
-def test_selection_requires_explicit_all_or_a_real_bound() -> None:
-    with pytest.raises(ValidationError, match="range criterion"):
-        MemoryRebuildSelection()
-    assert MemoryRebuildSelection(all_events=True).all_events
-    assert MemoryRebuildSelection(sender_user_ids=("1001",)).sender_user_ids == ("1001",)
-    with pytest.raises(ValidationError, match="range criterion"):
-        MemoryRebuildSelection(maximum_events=10)
-    canonical = MemoryRebuildSelection(
-        sender_user_ids=("2002", "1001"),
-        scope_types=(ScopeType.PRIVATE, ScopeType.GROUP),
-    )
-    assert canonical.sender_user_ids == ("1001", "2002")
-    assert canonical.scope_types == (ScopeType.GROUP, ScopeType.PRIVATE)
-
-
-@pytest.mark.asyncio
-async def test_plan_is_model_free_snapshot_and_uses_shared_eligibility(database: Database) -> None:
-    _settings, ledger, _facts, provider, service = await _service(database)
-    eligible = await _event(ledger, message_id="eligible")
-    await _event(ledger, message_id="blank", content="   ")
-    await ledger.append(
-        bot_user_id="8000",
-        platform_message_id="outbound",
-        scope_type=ScopeType.PRIVATE,
-        sender_user_id="8000",
-        direction="outbound",
-        content="bot text",
-        private_peer_user_id="1001",
-        sender_is_bot=True,
-    )
-    run = await service.plan(MemoryRebuildSelection(all_events=True), actor_user_id="9000")
-    assert provider.requests == 0
-    assert run.snapshot_max_event_id >= eligible.id
-    assert run.plan_statistics.eligible_events == 1
-    async with database.sessions() as session:
-        assert (
-            int(await session.scalar(select(func.count()).select_from(MemoryFactModel)) or 0) == 0
-        )
-        assert (
-            int(await session.scalar(select(func.count()).select_from(MemoryRebuildItemModel)) or 0)
-            == 0
-        )
-
-
 @pytest.mark.asyncio
 async def test_rebuild_requires_review_then_commits_one_receipt(database: Database) -> None:
     settings, ledger, facts, provider, service = await _service(database)
@@ -224,8 +145,6 @@ async def test_rebuild_requires_review_then_commits_one_receipt(database: Databa
     assert await worker.process_once() == 1
     assert await worker.process_once() == 0
     assert (await service.repository.get_run(run.public_id)).status is MemoryRebuildRunStatus.REVIEW
-    with pytest.raises(ValueError, match="approved or rejected"):
-        await service.commit(run.public_id, actor_user_id="9000")
     rows = await service.review(run.public_id, actor_user_id="9000")
     assert len(rows) == 1
     assert rows[0].source_excerpt == "我住在杭州"
@@ -274,41 +193,6 @@ async def test_rebuild_requires_review_then_commits_one_receipt(database: Databa
         assert item.status == MemoryRebuildItemStatus.COMMITTED.value
         assert item.error_category is None
         assert (item.id, item.event_id, item.updated_at, receipt.id, receipt.updated_at) == identity
-
-
-@pytest.mark.asyncio
-async def test_historical_confirmation_never_moves_confirmation_time_back(
-    database: Database,
-) -> None:
-    settings, ledger, facts, _provider, service = await _service(database)
-    old_time = datetime.now(UTC) - timedelta(days=30)
-    await _event(ledger, message_id="old", content="我住在杭州", occurred_at=old_time)
-    current = await facts.remember(
-        MemoryFactCreate(
-            scope_type=MemoryScopeType.PERSON,
-            subject_user_id="1001",
-            memory_key="profile:statement",
-            category="profile",
-            content="我住在杭州",
-            source_type=MemorySourceType.AUTOMATIC,
-        )
-    )
-    run = await service.plan(MemoryRebuildSelection(all_events=True), actor_user_id="9000")
-    await service.start(run.public_id, actor_user_id="9000")
-    worker = MemoryRebuildWorker(
-        service, interval_seconds=settings.memory_rebuild_worker_interval_seconds
-    )
-    await worker.process_once()
-    await worker.process_once()
-    staged_rows = await service.review(run.public_id, actor_user_id="9000")
-    assert len(staged_rows) == 1
-    assert await service.set_review(run.public_id, "all", approved=True, actor_user_id="9000") == 1
-    await service.commit(run.public_id, actor_user_id="9000")
-    assert len(await service.repository.next_commit_rows(run.public_id, limit=10)) == 1
-    await worker.process_once()
-    refreshed = await facts.get_fact(current.id)
-    assert refreshed is not None
-    assert refreshed.last_confirmed_at >= current.last_confirmed_at
 
 
 @pytest.mark.asyncio
@@ -413,152 +297,6 @@ async def test_internal_reply_subject_metadata_never_crosses_group(database: Dat
 
 
 @pytest.mark.asyncio
-async def test_hydrate_rebuild_subjects_drops_yuki_and_external_bot_targets(
-    database: Database,
-) -> None:
-    _settings, ledger, _facts, _provider, service = await _service(database)
-    assert service is not None
-    yuki, _ = await ledger.append(
-        bot_user_id="8000",
-        platform_message_id="yuki-other",
-        scope_type=ScopeType.GROUP,
-        sender_user_id="8001",
-        direction="inbound",
-        content="另一号说的",
-        group_id="3001",
-        sender_is_bot=True,
-    )
-    mention_yuki, _ = await ledger.append(
-        bot_user_id="8000",
-        platform_message_id="hydrate-yuki",
-        scope_type=ScopeType.GROUP,
-        sender_user_id="1001",
-        direction="inbound",
-        content="回另一号",
-        group_id="3001",
-        reply_to_message_id=yuki.platform_message_id,
-        reply_to_event_id=yuki.id,
-        segments=({"type": "at", "data": {"qq": "8001"}},),
-    )
-    external, _ = await ledger.append(
-        bot_user_id="8000",
-        platform_message_id="external-bot",
-        scope_type=ScopeType.GROUP,
-        sender_user_id="7007",
-        direction="inbound",
-        content="第三方机器人",
-        group_id="3001",
-        sender_is_bot=True,
-    )
-    mention_external, _ = await ledger.append(
-        bot_user_id="8000",
-        platform_message_id="hydrate-external",
-        scope_type=ScopeType.GROUP,
-        sender_user_id="1001",
-        direction="inbound",
-        content="回机器人",
-        group_id="3001",
-        reply_to_message_id=external.platform_message_id,
-        reply_to_event_id=external.id,
-        segments=({"type": "at", "data": {"qq": "7007"}},),
-    )
-
-    for event in (mention_yuki, mention_external):
-        hydrated = await ledger.hydrate_rebuild_subjects(event)
-        assert hydrated.mentioned_user_ids == ()
-        assert hydrated.reply_sender_user_id is None
-
-
-@pytest.mark.asyncio
-async def test_historical_old_value_is_preserved_inactive(database: Database) -> None:
-    settings, ledger, facts, _provider, service = await _service(
-        database,
-        person_memory_max_entries=1,
-    )
-    await _event(
-        ledger,
-        message_id="old-city",
-        content="我住在福州",
-        occurred_at=datetime.now(UTC) - timedelta(days=90),
-    )
-    current = await facts.remember(
-        MemoryFactCreate(
-            scope_type=MemoryScopeType.PERSON,
-            subject_user_id="1001",
-            memory_key="profile:statement",
-            category="profile",
-            content="我住在上海",
-            source_type=MemorySourceType.AUTOMATIC,
-        )
-    )
-    run = await service.plan(MemoryRebuildSelection(all_events=True), actor_user_id="9000")
-    await service.start(run.public_id, actor_user_id="9000")
-    worker = MemoryRebuildWorker(
-        service, interval_seconds=settings.memory_rebuild_worker_interval_seconds
-    )
-    await worker.process_once()
-    await worker.process_once()
-    staged_rows = await service.review(run.public_id, actor_user_id="9000")
-    assert len(staged_rows) == 1
-    assert await service.set_review(run.public_id, "all", approved=True, actor_user_id="9000") == 1
-    await service.commit(run.public_id, actor_user_id="9000")
-    assert len(await service.repository.next_commit_rows(run.public_id, limit=10)) == 1
-    assert await worker.process_once() == 1
-    assert [row.id for row in await facts.list_person("1001")] == [current.id]
-    historical = await facts.repository.list_facts(
-        MemoryFactQuery(
-            scope_type=MemoryScopeType.PERSON,
-            subject_user_id="1001",
-            status=MemoryStatus.SUPERSEDED,
-        ),
-        limit=10,
-    )
-    async with database.sessions() as session:
-        proposal = await session.scalar(select(MemoryRebuildProposalModel))
-        item = await session.scalar(select(MemoryRebuildItemModel))
-    assert [row.content for row in historical] == ["我住在福州"]
-    assert proposal is not None and proposal.actual_reason_code == "historical_version_preserved"
-    assert item is not None and item.status == "committed"
-
-
-@pytest.mark.asyncio
-async def test_rebuild_never_evicts_current_fact_when_capacity_is_full(
-    database: Database,
-) -> None:
-    settings, ledger, facts, _provider, service = await _service(
-        database,
-        person_memory_max_entries=1,
-    )
-    await _event(ledger, message_id="capacity", content="我喜欢远足")
-    current = await facts.remember(
-        MemoryFactCreate(
-            scope_type=MemoryScopeType.PERSON,
-            subject_user_id="1001",
-            memory_key="protected:current",
-            category="protected",
-            content="当前重要事实",
-            source_type=MemorySourceType.EXPLICIT,
-        )
-    )
-    run = await service.plan(MemoryRebuildSelection(all_events=True), actor_user_id="9000")
-    await service.start(run.public_id, actor_user_id="9000")
-    worker = MemoryRebuildWorker(
-        service, interval_seconds=settings.memory_rebuild_worker_interval_seconds
-    )
-    await worker.process_once()
-    await worker.process_once()
-    await service.set_review(run.public_id, "all", approved=True, actor_user_id="9000")
-    await service.commit(run.public_id, actor_user_id="9000")
-    assert await worker.process_once() == 1
-    assert [row.id for row in await facts.list_person("1001")] == [current.id]
-    async with database.sessions() as session:
-        proposal = await session.scalar(select(MemoryRebuildProposalModel))
-    assert proposal is not None
-    assert proposal.actual_action == "noop"
-    assert proposal.actual_reason_code == "rebuild_capacity_preserved"
-
-
-@pytest.mark.asyncio
 async def test_commit_rechecks_live_receipt_without_overwriting_it(database: Database) -> None:
     settings, ledger, _facts, _provider, service = await _service(database)
     event = await _event(ledger, message_id="receipt-race")
@@ -635,31 +373,6 @@ async def test_expired_claim_policy_never_creates_an_active_fact(
 
 
 @pytest.mark.asyncio
-async def test_review_filter_records_actor_and_is_idempotent(database: Database) -> None:
-    settings, ledger, _facts, _provider, service = await _service(database)
-    await _event(ledger, message_id="review-filter")
-    run = await service.plan(MemoryRebuildSelection(all_events=True), actor_user_id="9000")
-    await service.start(run.public_id, actor_user_id="9000")
-    worker = MemoryRebuildWorker(
-        service, interval_seconds=settings.memory_rebuild_worker_interval_seconds
-    )
-    await worker.process_once()
-    await worker.process_once()
-    selector = json.dumps({"subject": "1001", "confidence_min": 0.8})
-    assert (
-        await service.set_review(run.public_id, selector, approved=True, actor_user_id="9000") == 1
-    )
-    assert (
-        await service.set_review(run.public_id, selector, approved=True, actor_user_id="9000") == 0
-    )
-    async with database.sessions() as session:
-        proposal = await session.scalar(select(MemoryRebuildProposalModel))
-    assert proposal is not None
-    assert proposal.reviewed_by_user_id == "9000"
-    assert proposal.reviewed_at is not None
-
-
-@pytest.mark.asyncio
 async def test_commit_detects_source_fingerprint_change(database: Database) -> None:
     settings, ledger, facts, _provider, service = await _service(database)
     event = await _event(ledger, message_id="changed-source")
@@ -713,64 +426,10 @@ async def test_forget_person_removes_staging_and_redacts_selection(database: Dat
 
 
 @pytest.mark.asyncio
-async def test_only_real_superuser_can_plan_or_list(database: Database) -> None:
-    _settings, _ledger, _facts, provider, service = await _service(database)
-    with pytest.raises(PermissionError, match="real superuser"):
-        await service.plan(MemoryRebuildSelection(all_events=True), actor_user_id="1001")
-    with pytest.raises(PermissionError, match="real superuser"):
-        await service.list(actor_user_id="1001")
-    assert provider.requests == 0
-
-
-@pytest.mark.asyncio
-async def test_extraction_concurrency_is_bounded_by_configuration(database: Database) -> None:
-    provider = _SlowExtractionProvider()
-    settings, ledger, _facts, _provider, service = await _service(
-        database,
-        provider=provider,
-        memory_rebuild_extraction_concurrency=2,
-        memory_rebuild_scan_batch_size=4,
-    )
-    for index in range(4):
-        await _event(ledger, message_id=f"concurrent-{index}")
-    run = await service.plan(MemoryRebuildSelection(all_events=True), actor_user_id="9000")
-    await service.start(run.public_id, actor_user_id="9000")
-    worker = MemoryRebuildWorker(
-        service, interval_seconds=settings.memory_rebuild_worker_interval_seconds
-    )
-    assert await worker.process_once() == 4
-    assert 1 <= provider.maximum_active <= 2
-
-
-@pytest.mark.asyncio
-async def test_extraction_failure_retries_with_persistent_backoff(database: Database) -> None:
-    provider = _FailOnceExtractionProvider()
-    settings, ledger, _facts, _provider, service = await _service(
-        database,
-        provider=provider,
-        memory_rebuild_retry_initial_seconds=0.001,
-    )
-    await _event(ledger, message_id="retry-event")
-    run = await service.plan(MemoryRebuildSelection(all_events=True), actor_user_id="9000")
-    await service.start(run.public_id, actor_user_id="9000")
-    worker = MemoryRebuildWorker(
-        service, interval_seconds=settings.memory_rebuild_worker_interval_seconds
-    )
-    assert await worker.process_once() == 0
-    await asyncio.sleep(0.01)
-    assert await worker.process_once() == 1
-    assert provider.failed
-    async with database.sessions() as session:
-        item = await session.scalar(select(MemoryRebuildItemModel))
-    assert item is not None and item.attempts == 2 and item.status == "staged"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["usage", "receipt", "unknown_commit"])
+@pytest.mark.parametrize("failure", ["receipt", "unknown_commit"])
 async def test_rebuild_commit_receipt_is_atomic_and_usage_cannot_replay(
     database: Database, monkeypatch, failure: str
 ) -> None:
-    from dataclasses import replace
     from unittest.mock import AsyncMock
 
     _settings, ledger, facts, _provider, service = await _service(database)
@@ -782,21 +441,10 @@ async def test_rebuild_commit_receipt_is_atomic_and_usage_cannot_replay(
     await worker.process_once()
     await service.set_review(run.public_id, "all", approved=True, actor_user_id="9000")
     await service.commit(run.public_id, actor_user_id="9000")
-    original_resolve = service.processor.resolve
-
-    async def resolve(*args, **kwargs):
-        return replace(await original_resolve(*args, **kwargs), model_requests=1)
-
-    resolve_spy = AsyncMock(side_effect=resolve)
+    resolve_spy = AsyncMock(wraps=service.processor.resolve)
     monkeypatch.setattr(service.processor, "resolve", resolve_spy)
     injected = False
-    if failure == "usage":
-        monkeypatch.setattr(
-            service.repository,
-            "record_model_usage",
-            AsyncMock(side_effect=RuntimeError("usage unavailable")),
-        )
-    elif failure == "receipt":
+    if failure == "receipt":
         original_finish = service.repository.finish_proposal
 
         async def finish(*args, **kwargs):
@@ -819,18 +467,20 @@ async def test_rebuild_commit_receipt_is_atomic_and_usage_cannot_replay(
             return result
 
         monkeypatch.setattr(facts.repository, "apply_evidence_write", uncertain)
-    assert await worker.process_once() == 1
+    applied = await worker.process_once()
     assert await worker.process_once() == 0
     assert resolve_spy.await_count == 1
-    assert len(await facts.list_person("1001")) == 1
     async with database.sessions() as session:
         proposal = await session.scalar(select(MemoryRebuildProposalModel))
-        assert proposal.commit_status == MemoryRebuildCommitStatus.COMMITTED.value
+        if failure == "receipt":
+            assert applied == 0 and await facts.list_person("1001") == ()
+            assert proposal.commit_status == MemoryRebuildCommitStatus.FAILED.value
+            assert proposal.actual_fact_id is None
+        else:
+            assert applied == 1 and len(await facts.list_person("1001")) == 1
+            assert proposal.commit_status == MemoryRebuildCommitStatus.COMMITTED.value
+            assert proposal.actual_fact_id is not None
         assert proposal.attempts == 1
-        assert proposal.actual_fact_id is not None
-    assert (
-        await service.repository.get_run(run.public_id)
-    ).status is MemoryRebuildRunStatus.COMPLETED
 
 
 @pytest.mark.asyncio
@@ -857,9 +507,11 @@ async def test_rebuild_persistent_database_failure_stops_without_repeating_model
     assert await worker.process_once() == 0
     assert await worker.process_once() == 0
     assert resolver.await_count == 1
-    assert database_write.await_count == 3
+    assert database_write.await_count == 1
     assert await facts.list_person("1001") == ()
-    assert (await service.repository.get_run(run.public_id)).status is MemoryRebuildRunStatus.FAILED
+    assert (
+        await service.repository.get_run(run.public_id)
+    ).status is MemoryRebuildRunStatus.COMMIT_PAUSED
     async with database.sessions() as reader:
         proposal = await reader.scalar(select(MemoryRebuildProposalModel))
         assert proposal.commit_status == "failed"

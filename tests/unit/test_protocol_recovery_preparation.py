@@ -10,10 +10,10 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import delete, select
 from tests.conftest import build_harness, make_settings
+from tests.support.semantic_participation_host_helpers import _event_and_route
 from tests.support.work_compaction import summary_json
+from tests.support.work_compaction_capacity_helpers import _grow, _runtime
 from tests.support.work_session import WorkSession, invoke_tool
-from tests.unit.test_semantic_participation_host import _event_and_route
-from tests.unit.test_work_compaction_capacity import _grow, _runtime
 from tests.unit.test_work_journal_source_retry import _change, _session
 
 from qq_ai_bot.conversation.observation_models import ContextObservationModel

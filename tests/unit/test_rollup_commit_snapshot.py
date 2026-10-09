@@ -12,8 +12,8 @@ import pytest
 from sqlalchemy import event, select, update
 from sqlalchemy.exc import OperationalError
 from tests.support.canonical_ingress import append_new_generation
+from tests.support.conversation_rollup_370_helpers import _append, _policy
 from tests.unit.rollup_test_helpers import candidate_summary
-from tests.unit.test_conversation_rollup_370 import _append, _policy
 
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,

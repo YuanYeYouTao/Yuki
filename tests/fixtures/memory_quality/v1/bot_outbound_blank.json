@@ -1,9 +1,0 @@
-{
-  "schema_version":"1","case_id":"bot_outbound_blank","category":"privacy","description":"Blank, outbound, and bot-authored events never produce memory jobs.",
-  "events":[
-    {"event_ref":"event_blank","speaker":"person_a","scope_type":"private","content":"   ","occurred_at":"2026-01-06T01:00:00Z"},
-    {"event_ref":"event_outbound","speaker":"bot","scope_type":"private","content":"机器人回复","direction":"outbound","occurred_at":"2026-01-06T01:01:00Z"},
-    {"event_ref":"event_bot","speaker":"bot","scope_type":"group","group":"group_a","content":"机器人消息","occurred_at":"2026-01-06T01:02:00Z"}
-  ],
-  "fake_model_outputs":[],"expected_claims":[],"expected_facts":[],"expected_evidence":[],"tags":["blank","bot","outbound"]
-}

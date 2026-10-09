@@ -11,9 +11,9 @@ from tests.conftest import build_harness, make_settings
 # P10: explicit Invocation fixture contract; existing assertions are retained.
 from tests.support.agent_backend import StubAgentBackend
 from tests.support.runtime_wire import install_wire
+from tests.support.runtime_work_helpers import _persisted_tool_receipt
 from tests.support.social_identity_cases import social_env
 from tests.support.workspace_snapshots import snapshot_bytes
-from tests.unit.test_runtime_work import _persisted_tool_receipt
 
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ConversationScope

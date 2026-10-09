@@ -136,25 +136,14 @@ async def compact_ordinary(
             continuation_items=(),
         )
     )
-    before_tokens = estimate_request_tokens(prepare(main_request))
     candidate_tokens = estimate_request_tokens(final)
-    reason = (
-        "candidate_hard_overflow"
-        if candidate_tokens > input_budget
-        else "candidate_not_smaller"
-        if candidate_tokens >= before_tokens
-        else None
-    )
-    if reason is not None:
+    if candidate_tokens > input_budget:
         logging.getLogger(__name__).info(
-            "ordinary_compaction_rejected reason=%s before_tokens=%d "
-            "candidate_tokens=%d input_budget=%d",
-            reason,
-            before_tokens,
+            "ordinary_compaction_rejected candidate_tokens=%d input_budget=%d",
             candidate_tokens,
             input_budget,
         )
-        raise WorkCapacityError("ordinary_compaction_" + reason)
+        raise WorkCapacityError("ordinary_compaction_candidate_hard_overflow")
     return result
 
 
