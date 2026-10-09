@@ -6,7 +6,7 @@
 
 默认构建与发行使用 direct：同一 Agent loop 提供固定完整工具声明，不包含 Monty binding、worker 或 launcher，`CODE_MODE_ENABLED=false`。Code Mode 已合入主线，是显式 `--target codemode` 构建与启用的可选能力。切换模式保留原 Work、composition、预算和回执，不能取得重派发资格。
 
-本地 NapCat 退役修改正在实施，另见[任务书与交付状态](architecture/Yuki-NapCat删除与既有网关抽象保留任务书-2026-10-09.md)。下述旧部署处理用于准备该目标源码，不表示修改已合并、发布或部署。
+后续 NapCat 退役已通过 [PR #276](https://github.com/YuanYeYouTao/Yuki/pull/276) 合并，并按开发提交部署；另见[任务书与交付状态](architecture/Yuki-NapCat删除与既有网关抽象保留任务书-2026-10-09.md)及[上线回执](operations/napcat-retirement-20261009.md)。下述旧部署处理适用于包含该修改的源码；3.9.0仍未正式发布。
 
 ## 版本与迁移范围
 

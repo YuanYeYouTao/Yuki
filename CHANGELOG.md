@@ -15,7 +15,7 @@
 - 大幅裁剪冻结策略的测试、夹具、质量维护链与重复 CI；保留源码检查、真实回归、单 direct 镜像与部署包 smoke。
 - [升级草案](docs/upgrade-3.9.0.md)说明实际迁移链、旧配置/授权清退和原数据保全；现存 SELF 旧代次领取与禁用语义 scope 问题见[残留核查](docs/operations/documentation-residual-audit-20261009.md)。
 
-本地待交付的 NapCat 退役修改：Yuki 不再支持 NapCat，保留 SnowLuma 与既有网关抽象；旧 Compose/环境文件需逐项撤去专属配置，其他 profile、共享媒体、QQ 资料及历史来源保留。范围与实际状态见[任务书](docs/architecture/Yuki-NapCat删除与既有网关抽象保留任务书-2026-10-09.md)，操作见[升级草案](docs/upgrade-3.9.0.md#旧-napcat-部署配置)。此项尚不表示合并、发行或上线。
+后续 [PR #276](https://github.com/YuanYeYouTao/Yuki/pull/276) 已合并并按开发提交部署：Yuki 不再支持 NapCat，保留 SnowLuma 与既有网关抽象；旧 Compose/环境文件逐项撤去专属配置，其他 profile、共享媒体、QQ 资料及历史来源保留。范围与实际状态见[任务书](docs/architecture/Yuki-NapCat删除与既有网关抽象保留任务书-2026-10-09.md)，操作见[升级草案](docs/upgrade-3.9.0.md#旧-napcat-部署配置)，实际结果见[上线及清理回执](docs/operations/napcat-retirement-20261009.md)。3.9.0仍未正式发行。
 
 ## 3.8.4 - 2026-09-25
 

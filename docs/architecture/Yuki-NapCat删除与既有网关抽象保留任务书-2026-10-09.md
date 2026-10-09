@@ -11,7 +11,7 @@
 ## 1. 范围与基线
 
 - 审计基线：main `e783175d41fb48dc5c7e7a352c255e9099258115`。完整路径相对仓库根目录；源码模块短路径相对 `src/qq_ai_bot/`，同段短文件名沿所指模块。行号只用于定位该基线。
-- 当前交付：本地实现已完成，定向验证通过；完整验证、PR、合并与上线正在进行，实际回执见任务索引与 §12。
+- 当前交付：实现、验证、PR 合并、镜像构建、生产上线与服务器清理均已完成；实际回执见任务索引、§12 与[上线报告](../operations/napcat-retirement-20261009.md)。3.9.0 仍未正式发行。
 - 实施目标：Yuki 不再附带、装配、安装或承诺兼容 NapCat；当前附带网关为 SnowLuma，网关层继续可替换。
 - 用户于 2026-10-09 追加授权：按老规矩 PR、合并、本地构建、上传上线，并清理服务器旧镜像，只保留最新与第二新。只更新 Bot，保持 SnowLuma 实例和 QQ 登录资料；清理先核实际容器、挂载和持久引用。
 - 不把“NapCat 上游停止维护”写成事实：2026-10-09 核查官方仓库时仍未归档，且当天发布了 [v4.18.34](https://github.com/NapNeko/NapCatQQ/releases/tag/v4.18.34)。本任务依据是用户决定让 **Yuki 停止支持 NapCat**，不依赖对上游维护状态的判断。
@@ -28,16 +28,16 @@
 | N01 | 删除 NapCat Provider、适配器、入口、孤立启动元数据和公开导出 | 已完成：真实 SnowLuma 路由注册、原 socket 生命周期及自定义 Provider 回归通过 |
 | N02 | 删除核心品牌分派、失效继承与无人使用的来源兜底 | 已完成：通用社交操作、自定义 Provider、原 ingress 与历史来源回归通过 |
 | N03 | 删除 NapCat 渲染器、CLI 和管理占位配置 | 已完成：doctor 沿既有 catalog；旧命令和配置占位删除，定向检查通过 |
-| N04 | 删除 Compose、镜像构建、启动脚本与环境模板专属支持 | 已完成：Compose 实际解析仅 bot/snowluma，bot 无旧环境/挂载，构建中 |
+| N04 | 删除 Compose、镜像构建、启动脚本与环境模板专属支持 | 已完成：Compose 实际解析仅 bot/snowluma，bot 无旧环境/挂载；direct 镜像构建及上线验证通过 |
 | N05 | 简化 setup：删除 NapCat/both、隐式默认和无消费者切换状态 | 已完成：8 个 setup 行为用例通过，空选择/自定义 profile/原备份语义保留 |
 | N06 | 停止创建、打包 NapCat 目录；核对旧部署与资料保护 | 已完成：新 zip/tar 各 66 项，无专属目录或实际 .env；遗留私密资料排除保留 |
 | N07 | 删除重复主机品牌名单与无效发送重选 | 已完成：真实 send 本地失败/断连/未知结果不换 Bot 不重发；URL/DNS/Base64 smoke 通过 |
 | N08 | 删除专属和源码关键词测试，调整现有通用 fixture | 已完成：4 组首轮 84 passed，补充路由/社交/历史来源后相关回归通过 |
 | N09 | 同步当前 README、帮助、架构、部署、3.9.0 与插件文档 | 已完成：15 份当前文档与 Plugin API 3.3 同步，168 本地链接/锚点通过 |
-| N10 | 完成定向行为验证、包检查与适用的现有 CI | 本地已完成，CI 待 PR：1088 passed/50 skipped；Ruff、Linux mypy 649 文件、direct 构建、实际 token/路由握手、source-free 启动/重建/持久化通过 |
-| N11 | 终审可执行残留、既有抽象及历史数据边界 | 已完成源码终审：独立审查无阻断发现；原 Registry/migrations 未改；生产旧字段与挂载清退由 N12 负责 |
-| N12 | 按用户授权记录 PR、合并、部署和线上状态 | 进行中：用户明确授权老规矩交付；源代码尚未提交、推送或上线 |
-| N13 | 清理服务器旧镜像与无引用垃圾 | 未开始：上线健康后保留 Yuki 最新两份，核对其他运行镜像与持久引用 |
+| N10 | 完成定向行为验证、包检查与适用的现有 CI | 已完成：本地1088 passed/50 skipped；PR276 Linux CI1089 passed/49 skipped及静态/前端通过；direct构建、token/路由握手、source-free持久化通过 |
+| N11 | 终审可执行残留、既有抽象及历史数据边界 | 已完成：独立审查无阻断发现；原 Registry/migrations 未改；生产旧字段、服务与挂载也已清退，历史来源与私密资料保护保留 |
+| N12 | 按用户授权记录 PR、合并、部署和线上状态 | 已完成：PR276 合并main528e2adc，本地构建后上传ops-528e2adc；Bot healthy/restart0/OneBot connected，SnowLuma原容器不变 |
+| N13 | 清理服务器旧镜像与无引用垃圾 | 已完成：Yuki仅留528e2adc和31d12022；移除3旧镜像、旧备份、上传包、临时构建、空旧volume/APT缓存；释放约3.0GB，磁盘54% |
 
 ## 3. 保留什么
 
@@ -193,4 +193,8 @@
 - 删除统计：实现及部署配置 23 个文件，删除 346 行、增加 40 行，净减少 306 行；不把文档、任务书和行为回归的变化混入该数字。
 - 生产起点：ops-31d12022，Bot healthy、restart 0、OneBot connected；磁盘使用 57%。实际 Compose 文件列表已从运行容器 labels 获取，旧 NapCat 专属环境与 mount 来自原 base 和一个旧 bot override，部署时按实际文件清退。
 - Registry pins 处置：保留；隔离复现公开 connect 重绑定后同 Presence live_count=2，原 pin 继续择原连接。正常 Adapter/main 装配仍不走此路径；这是独立未决问题，不计为本次已修复，也不以它扩大为新协调器。
-- PR、完整验证、构建、备份、上线和清理结果：待实际完成后补记。
+- [PR276](https://github.com/YuanYeYouTao/Yuki/pull/276) 于 21:35:19（Asia/Taipei）合并，main `528e2adc73a42cf25af04771ab864718a840886d`；Linux CI 1089 passed/49 skipped，静态检查与前端测试/构建通过。PR 与合并树一致，未重复修改执行源码。
+- 最新一致性部署备份通过 quick_check、外键检查，schema0102；65个实际Compose原文件与配置同批保全。生产base与一个frozen override的专属项逐键清退，其余frozen环境/挂载及SnowLuma定义保持。
+- 镜像 `ops-528e2adc` 本地构建、压缩、上传，两端 SHA-256 一致；只重建 Bot。21:43:52（Asia/Taipei）核心健康通过、OneBot已连接、restart0，SnowLuma原ID/镜像/StartedAt不变，direct包装验证通过。没有QQ测试发信或自然回复验收声明。
+- 清理保留新Yuki镜像与上一版31d12022，以及其它在用服务/有效checkpoint/QQ资料；旧应用备份换为最新一份，释放3,044,302,848字节，磁盘54%。详细回执见[上线报告](../operations/napcat-retirement-20261009.md)。
+- 记忆既有标记：`superseded_without_chain_count=162`，部署前备份与部署后线上按相同原谓词均为162，足以使memory_consistency_healthy=false；未声明Memory全健康，不改写事实或伪造后继来压标记，也未重跑模型任务。该旧问题与Registry重绑定另行追踪。
