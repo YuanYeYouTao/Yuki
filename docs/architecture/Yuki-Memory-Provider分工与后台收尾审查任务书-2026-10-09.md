@@ -356,6 +356,12 @@ Memory quality套件有真实CI/CLI消费者，不能说是无人调用。但`qu
 
 合并版本 direct 镜像已在本地 source-free 部署：启动健康、schema 0102，重建后数据库和持久资料保留。镜像上传 SHA256 与本地一致；停机前以新镜像解析实际模型配置，并确认 Bot 挂载和 SnowLuma 服务定义不变。模型配置只移除已退役 memory_consolidation/memory_attribution routes 和 gemini_schema_format 等旧 wire_options，不改现行连接地址、密钥或模型选择。
 
-首次上线验证：4f582c06 的 health/database 正常、OneBot 已连接，SnowLuma 容器 ID、启动时间、镜像和 onebot.json 摘要前后完全一致。停写备份与引用文件校验通过，0101→0102 副本演练和生产迁移都核对了 14 个关键表内容摘要；2470 条事实、3050 条证据及原身份/Work/预算/效果回执不变。备份先保留，等交付收尾后执行单份保留。
+首次上线验证：4f582c06 的 health/database 正常、OneBot 已连接，SnowLuma 容器 ID、启动时间、镜像和 onebot.json 摘要前后完全一致。停写备份与引用文件校验通过，0101→0102 副本演练和生产迁移都核对了 14 个关键表内容摘要；2470 条事实、3050 条证据及原身份/Work/预算/效果回执不变。交付结束后已执行单份保留，旧备份及迁移演练副本已清理。
 
-生产启动暴露并确认了一处真实竞争：Dream 恢复页只核对执行元数据，却借用事实写入的 deferred 读快照，先 SELECT 后 UPDATE。另一 writer 持锁时会直接报 SQLITE_BUSY(5)，不是仅处理 517 的证据快照重备。容器第二次启动恢复健康，仍须修复根因。D17 补充修复改用现有 Database.immediate_session：先取得 writer，再按索引核对最多 128 个 cluster 的原操作回执并更新状态；空页仍只读，不扫描事实/证据/聊天历史，不加入全局锁、超时或额外重试。真实两连接竞争、260 cluster 分页、原累计预算/attempt/调用数、重复恢复和快照耗尽等 15 项既有回归通过；该修复的合并与部署另以实际回执补齐。
+生产启动暴露并确认了一处真实竞争：Dream 恢复页只核对执行元数据，却借用事实写入的 deferred 读快照，先 SELECT 后 UPDATE。另一 writer 持锁时会直接报 SQLITE_BUSY(5)，不是仅处理 517 的证据快照重备。容器第二次启动恢复健康，仍须修复根因。D17 补充修复改用现有 Database.immediate_session：先取得 writer，再按索引核对最多 128 个 cluster 的原操作回执并更新状态；空页仍只读，不扫描事实/证据/聊天历史，不加入全局锁、超时或额外重试。真实两连接竞争、260 cluster 分页、原累计预算/attempt/调用数、重复恢复和快照耗尽等 15 项既有回归通过；该修复合并与最终部署回执如下。
+
+最终交付：Dream 恢复修复 PR [#273](https://github.com/YuanYeYouTao/Yuki/pull/273) 已合并，应用 revision `31d12022f0ae24e29eab3a5b5bfc9455bfc4b22a`。该 PR 完整 CI 再次通过：1081 passed / 49 skipped、前端 18 项与生产构建、Ruff/mypy；真实 Dream SQL 竞争定向 15 项亦在 Linux 通过。合并版本 direct 镜像完成本地部署和重建持久性验收，上传校验和一致，仅替换生产 Bot。2026-10-09 10:43 UTC 确认首次启动完成、自动重启 0、health/database 正常、OneBot 已连接；schema 0102，SnowLuma 原容器 ID/启动时间/镜像/config 摘要不变。
+
+D01–D33 交付闭环完成。最近的一份已验证升级备份保留于 `/opt/yuki-qqbot/ops/rollout-memory-delete-4f582c06/backup`，全目录核查只有这一份；旧备份、演练副本与本次上传 tar 已清理。备份是首次升级前的一致性 0101 快照，包含完整数据库和 Work 引用文件；最终补丁沿同一 0102 数据格式更新，无需再次迁移。生产数据在应用恢复后继续自然增长，不把启动前的摘要相同误写成线上数据永不变化。
+
+补充现存问题（本次仅核查记录）：语义参与的 CanonicalIdentityError 来自一个已禁用空间仍有旧 semantic owner，调度继续新 hydration，live 配置读取按权限拒绝并报 canonical_owner_disabled。旧 2ce7 备份和本次升级前备份均已有该状态，相关调用链未被本次改动改变；5 个发现 scope 中 4 个启用空间的实际配置读取成功。普通消息、Provider 200 和真实发送回执已有自然流量，但不据此宣称所有语义参与场景验收通过。后续应停止禁用 scope 的新推进并保留原回执对账；权限拒绝、身份数据和旧 run 所有权不应被放宽或重绑。定位：autonomy_repository.list_current_autonomous_scopes → semantic_participation._scene/_advance_scene/_hydrate → runtime_config.snapshot → canonical_owners.require_live_space。
