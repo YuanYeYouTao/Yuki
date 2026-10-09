@@ -129,7 +129,7 @@ class RunStatus(StrEnum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
-    SKIPPED = "skipped"
+    CANCELLED = "cancelled"
     MISSED = "missed"
     UNCERTAIN = "uncertain"
     BLOCKED = "blocked"

@@ -76,6 +76,7 @@ class TurnMemorySession:
         source = await partition_lookup.resolve_self_origin(
             initiative_run_id=initiative_run_id,
             canonical_conversation_id=canonical_conversation_id,
+            group_id=identity.group_id,
         )
         if (
             identity.scope_type is not ScopeType.GROUP
@@ -85,7 +86,7 @@ class TurnMemorySession:
             raise ValueError("SELF Memory scope does not match its initiative")
         decision = MemoryAccessDecision(
             contract=active_read_contract(
-                persistent_write_allowed=False,
+                persistent_write_allowed=True,
             )
             if memory_available
             else forbidden_contract(),

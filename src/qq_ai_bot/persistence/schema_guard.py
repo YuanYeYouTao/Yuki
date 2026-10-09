@@ -113,15 +113,12 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "state",
             "payload_json",
             "receipt_json",
-            "not_before",
-            "target_key",
             "message_count",
         }
     ),
     "canonical_rollup_signals": frozenset(
         {"conversation_id", "generation", "event_id", "revision"}
     ),
-    "runtime_checkpoint_quota": frozenset({"id", "bytes"}),
     "runtime_automation_cursors": frozenset({"run_id", "script_hash", "phase", "payload_json"}),
     "runtime_subagents": frozenset(
         {
@@ -523,7 +520,6 @@ async def require_canonical_schema(database_url: str) -> None:
             )
             triggers = {str(row[0]): str(row[1]) for row in trigger_rows}
             from qq_ai_bot.runtime.protocol_schema import QUOTA_SQL
-            from qq_ai_bot.runtime.work_recovery_schema import quota_trigger_sql
 
             protocol_triggers = {
                 statement.split()[5]: statement
@@ -533,7 +529,6 @@ async def require_canonical_schema(database_url: str) -> None:
 
             for name, expected in {
                 **PROJECTION_TRIGGERS_CURRENT,
-                **quota_trigger_sql(),
                 **protocol_triggers,
             }.items():
                 actual = triggers.get(name, "").replace("IF NOT EXISTS ", "")

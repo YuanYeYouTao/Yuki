@@ -117,17 +117,15 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
                 "work_report": {
                     "type": "object",
                     "description": (
-                        "当前持久工作的本地沟通关联，不发送到平台。"
+                        "可选的本地沟通用途，不发送到平台；已有工作时关联原工作。"
                         "interactive 开工用 start，最终交付用 final；"
                         "答复新增输入用 reply 并关联内部事件 ID。"
                         "省略 target 或明确当前 canonical 目标；关联不能扩大权限。"
                     ),
                     "properties": {
-                        "kind": {"type": "string", "enum": ["start", "progress", "reply", "final"]},
+                        "kind": {"type": "string"},
                         "reply_to_event_ids": {
                             "type": "array",
-                            "maxItems": 8,
-                            "uniqueItems": True,
                             "items": {"type": "integer", "minimum": 1},
                         },
                     },

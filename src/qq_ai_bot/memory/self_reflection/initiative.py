@@ -146,12 +146,15 @@ async def claim_initiative(
                 )
             else:
                 query = query.where(MemoryToolReceiptModel.expires_at > now)
-            rows = list(await session.scalars(query.order_by(MemoryToolReceiptModel.id).limit(8)))
+            query = query.order_by(MemoryToolReceiptModel.id)
+            if window is None:
+                query = query.limit(8)
+            rows = list(await session.scalars(query))
             selected: list[MemoryToolReceiptModel] = []
             characters = 0
             for receipt in rows:
-                size = min(2000, len(receipt.result_excerpt))
-                if selected and characters + size > max_characters:
+                size = len(receipt.result_excerpt)
+                if window is None and selected and characters + size > max_characters:
                     break
                 selected.append(receipt)
                 characters += size

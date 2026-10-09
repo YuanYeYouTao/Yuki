@@ -1,5 +1,6 @@
 """SELF recovery preserves identity, original work and append-only request history."""
 
+import asyncio
 import json
 from dataclasses import replace
 from types import SimpleNamespace
@@ -464,7 +465,20 @@ async def test_scheduler_resumes_self_without_reading_a_person_event_or_sending_
     assert (await repo.get(item["id"]))["state"] == "completed"
 
 
-async def test_self_worker_uses_existing_runner_without_synthetic_inbound(database):
+async def test_self_worker_runs_with_one_model_slot_without_synthetic_inbound(database, tmp_path):
+    from tests.support.model_profiles import write_fake_profiles
+
+    from qq_ai_bot.domain.messages import ChatRequest
+    from qq_ai_bot.llm.fake import FakeLLMProvider
+    from qq_ai_bot.model_runtime import (
+        ModelClientPool,
+        ModelExecutionPriority,
+        ModelRouter,
+        ModelTask,
+        TaskModelExecutor,
+        load_model_profile_catalog,
+    )
+    from qq_ai_bot.runtime.subagent_scheduler import SubagentScheduler
     from qq_ai_bot.runtime.subagent_tools import WORKER_NAMES
     from qq_ai_bot.services.main_agent_backend import MainAgentBackend
 
@@ -486,6 +500,16 @@ async def test_self_worker_uses_existing_runner_without_synthetic_inbound(databa
     )
     await repo.release(lease)
     memory = SimpleNamespace(close=AsyncMock())
+    provider = FakeLLMProvider(lambda _: "checked")
+    profiles = load_model_profile_catalog(
+        write_fake_profiles(tmp_path / "profiles.toml"), environment={}
+    )
+    models = TaskModelExecutor(
+        router=ModelRouter(profiles),
+        pool=ModelClientPool(injected_profiles={"main": provider}),
+        max_concurrency=1,
+    )
+    responded = asyncio.Event()
 
     async def run(messages, runtime, backend):
         # The real backend carries the frozen worker contract; no wrapper.
@@ -499,9 +523,16 @@ async def test_self_worker_uses_existing_runner_without_synthetic_inbound(databa
         await runtime.before_model_request()
         assert runtime.work_control.current["model_requests"] == 0
         await runtime.work_control.reserve_request()
+        response = await models.execute(
+            ModelTask.CHAT_AGENT,
+            ChatRequest(messages=messages),
+            priority=ModelExecutionPriority.BACKGROUND,
+        )
+        assert response.content == "checked"
         await runtime.work_control.execute(
             "task_control", {"action": "complete", "result": "checked"}, "done"
         )
+        responded.set()
         return SimpleNamespace(text="checked")
 
     runner = SimpleNamespace(run=AsyncMock(side_effect=run), main_contract=None)
@@ -530,7 +561,18 @@ async def test_self_worker_uses_existing_runner_without_synthetic_inbound(databa
             )
         ),
     )
-    assert await executor.run(child_id) is None
+    scheduler = SubagentScheduler(
+        repo, children, executor, admission_enabled=True, max_concurrency=1
+    )
+    try:
+        await scheduler.start()
+        await asyncio.wait_for(responded.wait(), timeout=10)
+        await asyncio.gather(*tuple(scheduler.running.values()))
+        assert scheduler.last_error is None
+        assert len(provider.requests) == 1
+    finally:
+        await scheduler.close()
+        await models.close()
     runner.run.assert_awaited_once()
     chat.open_memory_session.assert_not_called()
     memory.close.assert_awaited_once()
@@ -569,7 +611,6 @@ async def test_worker_recovery_starts_when_new_chat_and_child_admission_are_off(
         SubagentRepository(repo),
         executor,
         admission_enabled=False,
-        global_llm_concurrency=2,
     )
     try:
         await scheduler.start()

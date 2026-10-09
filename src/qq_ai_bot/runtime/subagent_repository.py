@@ -19,7 +19,7 @@ from qq_ai_bot.runtime.work_repository import (
     WorkConflict,
     WorkLease,
     WorkRepository,
-    bounded_json,
+    encode_json,
 )
 from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, journal, work
 
@@ -29,8 +29,6 @@ class SubagentRepository:
         self.repository = repository
         self.database = repository.database
         self.max_concurrency = int(getattr(self.database, "subagent_concurrency", 1))
-        self.max_queued = int(getattr(self.database, "subagent_max_queued", 8))
-        self.max_active_per_root = int(getattr(self.database, "subagent_max_active_per_root", 8))
 
     async def reopen_parent(
         self, lease: WorkLease, identity: str, *, models: int
@@ -52,8 +50,6 @@ class SubagentRepository:
                 .mappings()
                 .one()
             )
-            if root["updated"] < time.time() - 7 * 86400:
-                raise ValueError("subagent_archived")
             child_state = await session.scalar(select(work.c.state).where(work.c.id == identity))
             if child_state in {"cancelled", "failed"}:
                 raise ValueError("subagent_not_resumable")
@@ -63,18 +59,6 @@ class SubagentRepository:
                 or root["state"] != "completed"
             ):
                 raise ValueError("subagent_parent_not_resumable")
-            active = await session.scalar(
-                select(work.c.id)
-                .where(
-                    work.c.conversation_id == lease.conversation_id,
-                    work.c.generation == lease.generation,
-                    work.c.state.not_in(TERMINAL),
-                    work.c.id.not_in(select(children.c.work_id)),
-                )
-                .limit(1)
-            )
-            if active:
-                raise ValueError("finish_current_work_before_resuming_other_root")
             from qq_ai_bot.runtime.work_budget import charge
 
             await charge(session, root["id"], models=models, tools=0)
@@ -100,11 +84,11 @@ class SubagentRepository:
         if lease.work_id:
             raise ValueError("recursive_subagent_forbidden")
         goal = brief.get("goal")
-        if not isinstance(goal, str) or not 1 <= len(goal) <= 8192:
+        if not isinstance(goal, str) or not goal.strip():
             raise ValueError("invalid_subagent_goal")
         if brief.get("output_kind") not in {"answer", "artifact", "state_change"}:
             raise ValueError("invalid_subagent_output_kind")
-        encoded = bounded_json(brief)
+        encoded = encode_json(brief)
         async with self.database.sessions() as reader:
             snapshot = (
                 (await reader.execute(select(work).where(work.c.id == root_id))).mappings().one()
@@ -112,7 +96,7 @@ class SubagentRepository:
         identity, now = str(uuid4()), time.time()
         source = json.loads(snapshot["source_json"])
         source.update(work_id=identity, parent_work_id=root_id, worker=True)
-        encoded_source = bounded_json(source)
+        encoded_source = encode_json(source)
         async with self.database.immediate_session() as session:
             await self.repository._assert_lease(session, lease)
             root = (
@@ -135,22 +119,6 @@ class SubagentRepository:
                 if previous["root_id"] != root_id or previous["brief_json"] != encoded:
                     raise WorkConflict("subagent_start_conflict")
                 return str(previous["work_id"])
-            count = await session.scalar(
-                select(func.count())
-                .select_from(children.join(work, children.c.work_id == work.c.id))
-                .where(
-                    children.c.root_id == root_id,
-                    work.c.state.not_in(TERMINAL),
-                    children.c.archived_at.is_(None),
-                )
-            )
-            queued = await session.scalar(
-                select(func.count())
-                .select_from(children.join(work, children.c.work_id == work.c.id))
-                .where(work.c.state == "queued", children.c.archived_at.is_(None))
-            )
-            if int(count or 0) >= self.max_active_per_root or int(queued or 0) >= self.max_queued:
-                raise ValueError("subagent_capacity")
             await session.execute(
                 insert(work).values(
                     id=identity,
@@ -200,7 +168,14 @@ class SubagentRepository:
                 await session.execute(
                     update(work)
                     .where(work.c.id == identity)
-                    .values(state="cancelled", reason="parent_obsolete", updated=now)
+                    .values(
+                        state="cancelled",
+                        reason="parent_obsolete",
+                        checkpoint_json=func.json_remove(
+                            work.c.checkpoint_json, "$.accepted_control"
+                        ),
+                        updated=now,
+                    )
                 )
                 return None
             active = await session.scalar(
@@ -444,7 +419,7 @@ class SubagentRepository:
         ask: bool = False,
         reply_to: str | None = None,
     ) -> str:
-        if not 1 <= len(text) <= 8000:
+        if not text.strip():
             raise ValueError("invalid_subagent_message")
         if lease.work_id and lease.work_id != identity:
             raise ValueError("subagent_not_owned")
@@ -469,7 +444,7 @@ class SubagentRepository:
             ):
                 raise ValueError("subagent_message_target_terminal")
             payload = {
-                "text": bounded_json(
+                "text": encode_json(
                     {
                         "kind": "subagent_question" if ask else "subagent_message",
                         "child_id": identity,
@@ -490,7 +465,7 @@ class SubagentRepository:
                         work_id=destination,
                         kind="subagent",
                         ready=True,
-                        payload_json=bounded_json(payload),
+                        payload_json=encode_json(payload),
                         created=time.time(),
                     )
                     .on_conflict_do_nothing(index_elements=[inputs.c.source_key])
@@ -520,6 +495,7 @@ class SubagentRepository:
                 .values(
                     state="cancelled",
                     reason="parent_cancelled",
+                    checkpoint_json=func.json_remove(work.c.checkpoint_json, "$.accepted_control"),
                     revision=work.c.revision + 1,
                     updated=time.time(),
                 )
@@ -549,7 +525,7 @@ class SubagentRepository:
             receipt = {
                 "child_id": lease.work_id,
                 "state": row["state"],
-                "text": str(result or "").encode("utf-8")[:12000].decode("utf-8", errors="ignore"),
+                "text": str(result or ""),
             }
             saved = await session.scalar(
                 select(journal.c.payload_json).where(journal.c.work_id == lease.work_id)
@@ -565,7 +541,7 @@ class SubagentRepository:
                 update(children)
                 .where(children.c.work_id == lease.work_id)
                 .values(
-                    result_json=bounded_json(private_receipt, 256 * 1024),
+                    result_json=encode_json(private_receipt),
                     notified_revision=row["revision"],
                 )
             )
@@ -587,9 +563,9 @@ class SubagentRepository:
                     work_id=child["root_id"],
                     kind="subagent",
                     ready=True,
-                    payload_json=bounded_json(
+                    payload_json=encode_json(
                         {
-                            "text": bounded_json(
+                            "text": encode_json(
                                 {
                                     "child_id": lease.work_id,
                                     "state": row["state"],

@@ -35,9 +35,6 @@ class CodeModeLimits:
                 raise ValueError(f"code_mode_limit_invalid:{name}")
         if not 0 <= self.foreground_reserved_processes < self.max_worker_processes:
             raise ValueError("code_mode_limit_invalid:foreground_reserved_processes")
-        if self.request_timeout_seconds <= self.max_feed_seconds:
-            # The watchdog must back the engine limit, not pre-empt it.
-            raise ValueError("code_mode_limit_invalid:request_timeout_seconds")
 
     @classmethod
     def from_settings(cls, settings: Any) -> CodeModeLimits:

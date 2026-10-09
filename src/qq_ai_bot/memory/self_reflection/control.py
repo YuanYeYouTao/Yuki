@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, literal, or_, select, update
+from sqlalchemy import func, literal, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import load_only
 
@@ -96,7 +96,6 @@ class ReflectionControlRepository:
                 "actionable",
                 "waiting_retry",
                 "isolated",
-                "policy_ineligible",
                 "recent_not_due",
                 "processing",
             )
@@ -105,13 +104,7 @@ class ReflectionControlRepository:
 
         initiative_tools = await initiative_backlog(self.database)
         async with self.database.sessions() as session:
-            states = (
-                await session.scalars(
-                    select(State).where(
-                        or_(State.pending_events > 0, State.last_policy_reason.is_not(None))
-                    )
-                )
-            ).all()
+            states = (await session.scalars(select(State).where(State.pending_events > 0))).all()
             runs = (
                 await session.scalars(
                     select(Run)
@@ -176,9 +169,6 @@ class ReflectionControlRepository:
         oldest = 0.0
         scopes: list[dict[str, Any]] = []
         for state in states:
-            if state.pending_events == 0:
-                groups["policy_ineligible"]["conversations"] += 1
-                continue
             own = [
                 r
                 for r in runs
@@ -204,16 +194,13 @@ class ReflectionControlRepository:
                 if state.pending_since
                 else 0.0
             )
-            eligible = state.has_yuki_reply or state.has_tool_result
             due = (
                 state.pending_events >= self.settings.memory_self_reflection_event_threshold
                 or state.pending_characters
                 >= self.settings.memory_self_reflection_character_threshold
                 or age >= self.settings.memory_self_reflection_max_wait_seconds
             )
-            kind = (
-                "policy_ineligible" if not eligible else "actionable" if due else "recent_not_due"
-            )
+            kind = "actionable" if due else "recent_not_due"
             counts[kind] += free
             for name, events in counts.items():
                 groups[name]["events"] += events

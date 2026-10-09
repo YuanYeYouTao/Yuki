@@ -139,16 +139,15 @@ class InvocationService:
 
         report = None
         report_target = None
-        if call.function.name == "send_message":
-            if control.current is not None:
-                child_intent = (
-                    identity.parent_operation_id is not None
-                    and await control.repository.undispatched_intent(control.current["id"], key)
-                )
-                if not child_intent and await journal.effect_state(key) is not None:
-                    if not await control.repository.valid(control.lease):
-                        raise WorkConflict("work_activation_obsolete")
-                    return await journal.effect_result(key)
+        if call.function.name == "send_message" and control.current is not None:
+            child_intent = (
+                identity.parent_operation_id is not None
+                and await control.repository.undispatched_intent(control.current["id"], key)
+            )
+            if not child_intent and await journal.effect_state(key) is not None:
+                if not await control.repository.valid(control.lease):
+                    raise WorkConflict("work_activation_obsolete")
+                return await journal.effect_result(key)
             try:
                 arguments = json.loads(call.function.arguments)
                 if isinstance(arguments, dict):
@@ -296,7 +295,7 @@ class InvocationService:
                         },
                         media_source=audit_source,
                     )
-                    if isinstance(exc, OSError) and not capture.outcome.uncertain:
+                    if isinstance(exc, Exception) and not capture.outcome.uncertain:
                         return MediaResultText(fallback, capture.outcome.images)
             except Exception as secondary:
                 exc.add_note(f"effect receipt persistence deferred: {type(secondary).__name__}")

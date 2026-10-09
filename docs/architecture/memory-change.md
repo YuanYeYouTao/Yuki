@@ -12,6 +12,11 @@
 CREATE 不搜索同 key 的旧事实，不调用关系分类模型，不争议化、替换或淘汰已有事实。
 事实的 confidence、authority 和各条 evidence 的原始值保留，不经固定权重、权威等级或证据乘积重算。
 
+Dream 可按实际内容重组 fact、preference 或 episode，不要求 focus、正文和 key 唯一，
+不限制固定输出条数。部分整理只替换输出实际引用的来源；其余事实保持原样，不提前写处理
+checkpoint。新事实复制全部获准原证据，模型输入采样不裁剪持久来源；回滚沿原签名和回执。
+单条真实来源也可参与 merge、synthesize 或 resolve，沿原操作语义处理。
+
 | 操作 | 行为 |
 |---|---|
 | create | 创建独立事实及来源证据 |
@@ -35,6 +40,8 @@ CREATE 不搜索同 key 的旧事实，不调用关系分类模型，不争议�
 已完成 target/owner/evidence 准备的变更直接构造有效事实，不再把同一资料转回提取 DTO 二次解析。
 SELF 的 kind、category 和 key 不设固定名称白名单。私聊资料传播到 global 仍执行已有隐私边界。
 可信自省可为每条 SELF 事实附加多条真实来源；每条来源分别核验 owner 和可见范围。
+主SELF沿原initiative和execution的实际工具回执进入同一领域事务；重复摘录及未消费的
+补充引用不阻止有效来源写入，不伪造真人事件或借用平台账号作为所有者。
 
 ## 原子提交与恢复
 

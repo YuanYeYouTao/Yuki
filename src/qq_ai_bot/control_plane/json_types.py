@@ -10,14 +10,10 @@ type JsonScalar = str | int | float | bool | None
 type JsonValue = JsonScalar | tuple[JsonValue, ...] | Mapping[str, JsonValue]
 type JsonObject = Mapping[str, JsonValue]
 
-_MAX_JSON_DEPTH = 32
 
-
-def freeze_json_value(value: object, *, depth: int = 0) -> JsonValue:
+def freeze_json_value(value: object) -> JsonValue:
     """Copy a JSON-compatible value into an immutable form."""
 
-    if depth > _MAX_JSON_DEPTH:
-        raise ValueError("json payload exceeded max depth")
     if value is None or type(value) is str or type(value) is bool:
         return value
     if type(value) is int:
@@ -31,10 +27,10 @@ def freeze_json_value(value: object, *, depth: int = 0) -> JsonValue:
         for key, item in value.items():
             if type(key) is not str:
                 raise TypeError("json object keys must be str")
-            frozen[key] = freeze_json_value(item, depth=depth + 1)
+            frozen[key] = freeze_json_value(item)
         return MappingProxyType(frozen)
     if type(value) is list or type(value) is tuple:
-        return tuple(freeze_json_value(item, depth=depth + 1) for item in value)
+        return tuple(freeze_json_value(item) for item in value)
     raise TypeError(f"unsupported json type: {type(value).__name__}")
 
 

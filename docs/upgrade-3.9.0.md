@@ -1,8 +1,8 @@
 # Yuki 3.9.0 配置与升级草案（未发布）
 
-<!-- release-baseline: version=3.9.0 schema=0103 -->
+<!-- release-baseline: version=3.9.0 schema=0104 -->
 
-本指南对应 main `0ddd7eee`（2026-10-09）的开发源码。**3.9.0 尚未正式发布**，正式下载仍为 [3.8.4 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.4)。源码版本号不代表已有 `:3.9.0` 正式镜像；109 个已合并 PR 和最终行为见[发布说明](releases/v3.9.0.md)。
+本指南随当前开发源码更新；PR列表的历史截止基线为 main `0ddd7eee`（2026-10-09）。**3.9.0 尚未正式发布**，正式下载仍为 [3.8.4 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.4)。源码版本号不代表已有 `:3.9.0` 正式镜像；历史109个已合并PR、后续修改及各自交付状态见[发布说明](releases/v3.9.0.md)。
 
 默认构建与发行使用 direct：同一 Agent loop 提供固定完整工具声明，不包含 Monty binding、worker 或 launcher，`CODE_MODE_ENABLED=false`。Code Mode 已合入主线，是显式 `--target codemode` 构建与启用的可选能力。切换模式保留原 Work、composition、预算和回执，不能取得重派发资格。
 
@@ -12,7 +12,7 @@
 
 | 项目 | 3.8.4 正式包 | 当前 3.9.0 源码 |
 | --- | --- | --- |
-| 数据库 head | `0072` | 单一 head `0103` |
+| 数据库 head | `0072` | 单一 head `0104` |
 | Plugin API | 3.0 | 3.4，需适配并重新批准 |
 | 管理 WebUI | 不包含 | 默认关闭，共用控制面 |
 | MCP / Genie 输出 | 旧实现 / 可选组件 | 专属入口、配置和服务退役；共享回执、媒体与 ASR 保留 |
@@ -34,6 +34,7 @@
 | `0101` | 给旧效果回执补规范 outcome，不改原 result |
 | `0102` | 删除四个 active/key 唯一索引，保留全部事实和回执 |
 | `0103` | 退役旧好感/信任评分三表及索引、配置override，清理自动化专属字段并重算脚本hash |
+| `0104` | 删除检查点配额表/触发器、投递死字段和主动轮唯一占用，更新canonical Work查询及取消状态；保留原媒体、Work及Memory |
 
 历史主线的 `0096` 曾删除 MCP 派生表；当前同号保存调用索引，`0098` 按实际形状汇合。编号相同不能证明 schema 相同。其他旧实验数据库需先核生产者与完整形状，不能强行 stamp 或重建数据绕过冲突。
 
@@ -88,7 +89,7 @@ token、用户配置与插件，不能默认删除；Git/镜像 ignore 暂时保
 1. 固定目标提交和镜像，核随包 head、配置与插件版本；正式发行时再核 `v3.9.0` 资产。
 2. 在独立数据库和文件副本演练迁移及启动，核原身份、Work、预算、协议和发送回执；不启动第二个主动 Bot 写生产库或向 QQ 发消息。
 3. 停止旧 Bot 及需停写的相关 Manager，保存一致数据库、配置、插件、媒体、工具正文、协议对象和持久环境回执。QQ 网关可保持运行。
-4. 完成配置、授权和语音保全后，沿原 Compose 参数用目标镜像执行 `qq-ai-bot-cli init-db`，核 head `0103`。来自正式 3.8.3/3.8.4 的旧投递计划先在停写副本运行 `work import-legacy-deliveries --dry-run` 再导入；原计划、未知效果和预算保留。
+4. 完成配置、授权和语音保全后，沿原 Compose 参数用目标镜像执行 `qq-ai-bot-cli init-db`，核 head `0104`。来自正式 3.8.3/3.8.4 的旧投递计划先在停写副本运行 `work import-legacy-deliveries --dry-run` 再导入；原计划、未知效果和预算保留。
 5. 启动一个 Bot，核真实 revision、数据库、QQ 连接、工具合同、模型路由与 worker。启动健康、真实 API、自然聊天和长任务交付分别验收。
 
 ## 回退与已知问题
@@ -101,8 +102,12 @@ token、用户配置与插件，不能默认删除；Git/镜像 ignore 暂时保
 
 后台评分模型、关系工具/管理员指令、WebUI和SDK Facade全部退出，不再支持旧评分合同。停旧写者后，从实际模型TOML撤 `relationship_evaluation`，从实际环境及Compose frozen override撤关系配置，从operator声明撤 `control.relationship.read/mutate`；其余连接、密钥和授权保留，用目标parser验证。
 
-`0103`清退三张评分表、专属索引、七项评分override，并移除automations/automation_versions的 `context.include_relationship`、按已有算法重算hash。默认false也改变hash；尚未结束的原run须按原ID明确收尾，不能改cursor为新hash或清预算重跑。当前生产库0102正常升级，新安装不再创建旧评分表；不承诺任意旧评分中间版本兼容。
+`0103`清退三张评分表、专属索引、七项评分override，并移除automations/automation_versions的 `context.include_relationship`、按已有算法重算hash。默认false也改变hash；尚未结束的原run须按原ID明确收尾，不能改cursor为新hash或清预算重跑。0102→0103的实际升级记录见关系系统任务书；新安装不再创建旧评分表。
 
 本次运维另获授权清退全部旧Work及子任务，关联plugin Job、自动化run、外部执行和待投递记录必须一并处理；不删除原聊天、Memory或共享产物。具体范围及实际执行状态见 [R23与交付记录](architecture/Yuki-旧关系好感度系统彻底删除任务书-2026-10-09.md#123-全部旧work清退r23用户新增授权)。这是本次实例的明确授权，不是以后升级默认清Work的行为。
 
 迁移成功后旧0102镜像无法识别0103。故障恢复保留新数据库与上线后的消息/效果，采用支持新schema的代码版本或前向修复，不降stamp、不恢复旧数据库冒充代码回退。SnowLuma与QQ登录资料不在本次更新范围。
+
+## Work 与 Memory 多余约束删除
+
+本轮源码删除固定重试转挂起、完成汇报标签、任务及输入数量、子任务文案、JSON保存字节帽和Dream的唯一/固定数量/全集覆盖政策；状态见[审查与实施记录](architecture/Yuki-Work与Memory多余约束删除审查-2026-10-10.md)。0104删除检查点配额表及六个记账触发器、无人读取的投递target/not_before和窗口索引、主动轮单活动索引；保留原媒体、日志和真实回执，Work来源查询按canonical人关联。自动化run可如实取消，不把合法取消记作blocked错误。升级沿实际head执行，不清数据或恢复旧评分系统。

@@ -342,7 +342,6 @@ class ProfileCommandHandler:
                             "actionable",
                             "waiting_retry",
                             "isolated",
-                            "policy_ineligible",
                             "recent_not_due",
                             "processing",
                         )

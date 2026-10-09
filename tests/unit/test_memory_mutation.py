@@ -20,6 +20,7 @@ from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.identity.canonical_repository import active_space_id_for, ensure_person, ensure_space
 from qq_ai_bot.identity.db_models import CanonicalSpaceModel
+from qq_ai_bot.memory.audit import MemoryAuditService
 from qq_ai_bot.memory.claim_processor import MemoryClaimProcessor, MemoryProcessingContext
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
@@ -37,6 +38,7 @@ from qq_ai_bot.memory.extraction import MemoryClaim
 from qq_ai_bot.memory.models import (
     MemoryEvidenceCreate,
     MemoryFactCreate,
+    MemoryFactQuery,
 )
 from qq_ai_bot.memory.mutation.models import (
     MemoryDecisionActorType,
@@ -58,6 +60,7 @@ from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import ResolvedSubject
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
+    MemoryFactModel,
     MemoryMutationReceiptModel,
     MemoryToolReceiptModel,
 )
@@ -197,6 +200,25 @@ async def test_agent_can_correct_its_visible_self_memory(database: Database) -> 
     assert new is not None and new.status is MemoryStatus.ACTIVE
     assert new.content == "我更在意回答准确，而不是单纯追求速度"
     assert new.visibility_user_id == "1001"
+
+    # Historical lineage gaps and asynchronous expiry remain visible diagnostics.
+    async with database.immediate_session() as session:
+        await session.execute(
+            update(MemoryFactModel)
+            .where(MemoryFactModel.id == new.id)
+            .values(supersedes_id=None, valid_until=datetime.now(UTC) - timedelta(seconds=1))
+        )
+    health = await MemoryAuditService(facts.repository).health()
+    assert health.superseded_without_chain_count == 1
+    assert health.expired_active_count == 1
+    assert health.healthy
+    assert not await facts.repository.list_facts(
+        MemoryFactQuery(
+            scope_type=MemoryScopeType.SELF,
+            visibility_type=SelfMemoryVisibility.PRIVATE,
+            visibility_user_id="1001",
+        )
+    )
 
 
 async def _event(
@@ -582,6 +604,61 @@ async def test_self_create_is_atomic_receipted_and_deduplicated(database: Databa
         )
     assert receipt_count == 1
 
+    # Fact and evidence preserve their independent authority values.
+    reported = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="1001",
+            memory_key="location:reported",
+            category="location",
+            content="现在住在上海",
+            source_type=MemorySourceType.AUTOMATIC,
+            authority=MemoryAuthority.SELF_REPORT,
+        ),
+        evidence=MemoryEvidenceCreate(
+            event_id=event.id,
+            source_speaker_user_id="1001",
+            relation=MemoryEvidenceRelation.EXPLICIT_COMMAND,
+            authority=MemoryAuthority.EXPLICIT,
+            excerpt=event.content,
+        ),
+    )
+    assert reported.authority is MemoryAuthority.SELF_REPORT
+    assert (await facts.list_evidence(reported.id))[0].authority is MemoryAuthority.EXPLICIT
+    group_event = await _event(
+        ledger,
+        message_id="group-correction",
+        sender_user_id="1001",
+        group_id="3001",
+        content="本群现在周五晚讨论项目",
+    )
+    claim = MemoryClaim(
+        operation=MemoryClaimOperation.CORRECT,
+        subject_ref="group",
+        scope_type=MemoryScopeType.GROUP,
+        memory_key="schedule",
+        category="group_schedule",
+        content=group_event.content,
+        evidence_quote=group_event.content,
+    )
+    corrected = await _processor.process(
+        claim, MemoryProcessingContext(source=MemoryProcessingSource.LIVE, event=group_event)
+    )
+    group_fact = await facts.get_fact(corrected.fact_id)
+    group_evidence = (await facts.list_evidence(group_fact.id))[0]
+    assert group_fact.scope_type is MemoryScopeType.GROUP and group_fact.group_id == "3001"
+    assert group_evidence.relation is MemoryEvidenceRelation.CORRECTION
+    assert group_evidence.authority is MemoryAuthority.GROUP_REPORT
+    assert (
+        group_evidence.event_id == group_event.id and group_evidence.excerpt == group_event.content
+    )
+    unrelated_quote = claim.model_copy(update={"evidence_quote": "不存在的引用"})
+    assert (
+        _processor.validate_result(unrelated_quote, group_event).reason_code
+        == "evidence_quote_not_in_event"
+    )
+    assert (await MemoryProductionQualityAudit(database).run()).error_count == 0
+
 
 @pytest.mark.asyncio
 async def test_bot_event_cannot_become_user_memory_evidence(database: Database) -> None:
@@ -648,6 +725,9 @@ async def test_agent_tool_and_worker_share_one_claim_receipt(
         sender=SenderIdentity(user_id=event.sender_user_id),
         text=event.content,
         bot_user_id=event.bot_user_id,
+        person_id=event.author_person_id,
+        conversation_id=event.canonical_conversation_id,
+        presence_id=event.ingress_presence_id,
     )
     runtime = ToolRuntime(
         inbound=inbound,

@@ -1,16 +1,20 @@
 """Durable recovery must never spend another model request or resend acceptance."""
 
+import asyncio
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select, update
 from tests.support.social_identity_cases import social_env
-from tests.support.work_session import WorkSession
+from tests.support.work_session import WorkSession, invoke_tool
 
+from qq_ai_bot.capabilities.results import ToolExecutionResult, ToolResultBudgeter
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.domain.messages import ChatMessage
+from qq_ai_bot.domain.messages import ChatMessage, ToolCall, ToolFunction
 from qq_ai_bot.gateway.registry import RegistryClosed
 from qq_ai_bot.identity.routing import RouteSendError
+from qq_ai_bot.llm.base import LLMUnavailableError
 from qq_ai_bot.runtime.activation_outcome import ExitReason
 from qq_ai_bot.runtime.delivery_intents import record, reserve
 from qq_ai_bot.runtime.work_control import WorkControl
@@ -19,10 +23,12 @@ from qq_ai_bot.runtime.work_recovery_schema import deliveries, recovery
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import effects, scope
 from qq_ai_bot.runtime.work_supervisor import recover_failure
+from qq_ai_bot.services.concurrency import RequestCancelledError
 from qq_ai_bot.services.turn_transcript import TurnTranscript
+from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
 
 
-async def setup(database, tmp_path):
+async def setup(database, tmp_path, *, output_kind="state_change"):
     env = await social_env(database, tmp_path)
     repo = WorkRepository(database)
     lease = await repo.acquire(env.context.conversation_id, 1)
@@ -32,7 +38,7 @@ async def setup(database, tmp_path):
 
     control = WorkControl(repo, lease, "delivery-test", {"trigger_event_id": 1}, validate)
     control.current = await repo.accept(
-        lease, source_key="delivery-test", source={}, goal="deliver"
+        lease, source_key="delivery-test", source={}, goal="deliver", output_kind=output_kind
     )
     control.session = WorkSession(control, "contract")
     await control.session.restore(TurnTranscript((ChatMessage("user", "deliver"),)))
@@ -64,6 +70,112 @@ async def test_disconnected_presence_queues_original_work_without_error_notice(d
         )
     assert saved == ("retry", 1)
     assert notices is None
+
+
+@pytest.mark.parametrize(
+    "failure", [LLMUnavailableError, asyncio.CancelledError, RequestCancelledError]
+)
+async def test_repeated_transient_failure_preserves_original_work_and_can_complete(
+    database, tmp_path, failure
+):
+    control = await setup(database, tmp_path, output_kind="answer")
+    identity = control.current["id"]
+    await control.repository.checkpoint(control.lease, identity, None, models=1)
+    control.current = await control.repository.get(identity)
+    await control.session.save("dispatched")
+    for _ in range(5):
+        outcome = await recover_failure(control, failure("temporary interruption"))
+        assert outcome.reason is ExitReason.RETRY
+        assert control.current["id"] == identity
+        assert control.current["state"] == "queued"
+        assert control.current["model_requests"] == 1
+    async with database.sessions() as session:
+        assert (
+            await session.scalar(select(recovery.c.attempts).where(recovery.c.work_id == identity))
+            == 5
+        )
+        assert (
+            await session.scalar(select(deliveries.c.id).where(deliveries.c.work_id == identity))
+            is None
+        )
+    resumed = WorkSession(control, "contract")
+    await resumed.restore(TurnTranscript((ChatMessage("user", "current source"),)))
+    control.session = resumed
+    control.settled = False
+    await control.complete_final("finished", "recovered-final")
+    await control.settle(pending_inputs=False)
+    assert control.current["id"] == identity and control.current["state"] == "completed"
+    assert control.current["model_requests"] == 1
+
+
+@pytest.mark.parametrize("failure", ["capacity", "uncertain", "cancel"])
+async def test_artifact_publication_failure_preserves_typed_effect_without_replaying_business(
+    database, tmp_path, failure
+):
+    control = await setup(database, tmp_path)
+    identity = control.current["id"]
+    call = ToolCall("mutate-once", ToolFunction("fixture_mutation", "{}"))
+    session = control.session
+    session.transcript.append(ChatMessage("assistant", "", tool_calls=(call,)))
+    await session.save("response", (call,))
+    key = session.call_key(call.id)
+    artifacts = ToolArtifactRepository(
+        database, tmp_path / "artifacts", retention_seconds=60, max_artifact_bytes=1
+    )
+    budgeter = ToolResultBudgeter(max_characters=1, artifacts=artifacts)
+    executions = 0
+
+    async def business():
+        nonlocal executions
+        executions += 1
+        outcome = ToolExecutionResult(
+            ok=True,
+            mutation_committed=True,
+            uncertain=failure == "uncertain",
+            provider_id="fixture",
+            tool_name="fixture_mutation",
+            data={"actual_result": "already committed"},
+        )
+        if failure == "cancel":
+            from qq_ai_bot.runtime.effect_outcomes import current_result_capture
+
+            current_result_capture.get().outcome = outcome
+            raise asyncio.CancelledError("cancelled after confirmed effect")
+        return (await budgeter.render(outcome)).text
+
+    if failure == "capacity":
+        result = await invoke_tool(session, call, business)
+        assert json.loads(result)["result_unavailable"] is True
+        assert json.loads(result)["mutation_committed"] is True
+        session.transcript.append_result(call.id, result)
+        await session.save("paired")
+        await control.complete_final("business effect completed", "completed-after-artifact-error")
+        await control.settle(pending_inputs=False)
+        assert control.current["state"] == "completed"
+    else:
+        with pytest.raises(asyncio.CancelledError if failure == "cancel" else ValueError):
+            await invoke_tool(session, call, business)
+        assert await control.has_unresolved_effects() is (failure == "uncertain")
+    assert executions == 1
+    if failure != "capacity":
+        replayed = (
+            await session.journal.effect_result(key)
+            if failure == "uncertain"
+            else await invoke_tool(session, call, business)
+        )
+        assert json.loads(replayed)["replay_forbidden"] is True
+        assert executions == 1
+    async with database.sessions() as reader:
+        receipt = (
+            await reader.execute(
+                select(effects.c.state, effects.c.receipt_json).where(effects.c.effect_key == key)
+            )
+        ).one()
+    assert receipt[0] == "accepted"
+    original = json.loads(receipt[1])["outcome"]
+    assert original["mutation_committed"] is True
+    assert original["uncertain"] is (failure == "uncertain")
+    assert (await control.repository.get(identity))["tool_calls"] == 1
 
 
 async def change_prompt_source(database, conversation_id):
@@ -120,24 +232,27 @@ async def test_source_change_after_accepted_automation_preserves_receipt_without
     control = await setup(database, tmp_path)
     assert control.session is not None and control.current is not None
     original_id = control.current["id"]
-    assert await control.repository.prepare_effect(
-        control.lease, original_id, "create-once", "tool"
-    )
-    await control.repository.record_effect("create-once", "accepted", {"automation_id": 93})
-    control.known_effects.append(
-        {"tool": "automation_create", "side_effecting": True, "ok": True, "run_id": None}
-    )
-    await control.session.save("dispatched")
+    call = ToolCall("create-once", ToolFunction("automation_create", "{}"))
+    control.session.transcript.append(ChatMessage("assistant", "", tool_calls=(call,)))
+    await control.session.save("response", (call,))
+    invoke = AsyncMock(return_value='{"ok":true,"automation_id":93}')
+    original_key = control.session.call_key(call.id)
+    await invoke_tool(control.session, call, invoke)
     await change_prompt_source(database, control.lease.conversation_id)
 
     with pytest.raises(WorkConflict, match="work_journal_source_changed") as caught:
         await control.session.save("response")
     outcome = await recover_failure(control, caught.value)
-    assert outcome.reason is ExitReason.PAUSED
+    assert outcome.reason is ExitReason.RETRY
     assert outcome.failure and outcome.failure.code == "work_journal_source_changed"
-    assert outcome.failure.retryable is False
-    assert outcome.failure.diagnostics["effect_receipt_recorded"] is True
-    assert control.current["id"] == original_id and control.current["state"] == "suspended"
+    assert outcome.failure.retryable is True
+    assert control.current["id"] == original_id and control.current["state"] == "queued"
+    resumed = WorkSession(control, "contract")
+    await resumed.restore(TurnTranscript((ChatMessage("user", "current source"),)))
+    assert any(
+        item.get("ok") and item.get("effect_key") == original_key for item in control.known_effects
+    )
+    invoke.assert_awaited_once()
     async with database.sessions() as session:
         saved = (
             await session.execute(
@@ -152,12 +267,18 @@ async def test_source_change_after_accepted_automation_preserves_receipt_without
             )
         )
         effect = await session.scalar(
-            select(effects.c.state).where(effects.c.effect_key == "create-once")
+            select(effects.c.state).where(effects.c.effect_key == original_key)
         )
-    assert saved[1] == "paused"
+    assert saved[1] == "retry"
     assert json.loads(saved[0])["code"] == "work_journal_source_changed"
-    assert "已执行的操作和回执已保留" in json.loads(notice)["text"]
+    assert notice is None
     assert effect == "accepted"
+    control.session = resumed
+    control.settled = False
+    await control.complete_final("automation created", "recovered-final")
+    await control.settle(pending_inputs=False)
+    assert control.current["id"] == original_id and control.current["state"] == "completed"
+    invoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio

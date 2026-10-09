@@ -86,6 +86,8 @@ run completed 也不表示异步向量已经生成完毕。
 单项主体失效只将该 item 标记为来源变化，不阻塞其他 item，也不清空引用或改写来源哈希。
 
 已批准子集提交后，失败 proposal 进入 commit_paused，未决 proposal 回到 review；
+可重新准备的异常保留原 item/proposal 为 pending，按配置等待间隔继续，不按尝试次数封口。
+提交准备后的异常先核对原 proposal 的持久回执，已确认提交不重复写事实；历史失败记录保留。
 仍有待提取、失败或提取中的 item 时进入 extraction_paused。只有剩余提取、审核、提交和
 item 回执都已收尾，run 才能进入 completed。
 单轮返回值仍是处理的 proposal 数；只有回执扫尾的轮次可以返回 0 并继续保持 committing，
@@ -124,8 +126,7 @@ Tool Kernel 的 `admin_memory_rebuild_*` 工具共用同一服务和真实事件
 ## 配置
 
 所有配置见 `.env.example` 的 Memory rebuild 区。默认关闭，提取并发默认 2，提交始终串行。
-`MEMORY_REBUILD_MAX_EVENTS_PER_RUN` 留空表示不增加部署上限；配置了上限时 selection 必须显式
-提供不超过该值的 `maximum_events`，不会静默截断。
+selection 可用 `maximum_events` 指定本次范围的数量边界；留空时沿冻结的历史快照分批处理。
 
 ## 隐私、运维与排障
 

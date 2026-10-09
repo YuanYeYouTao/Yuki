@@ -147,12 +147,6 @@ class ConversationSettings(DomainSettings):
     conversation_history_around_after: int = Field(ge=0)
     conversation_history_around_limit: int = Field(ge=1)
 
-    @model_validator(mode="after")
-    def _delay_order(self) -> ConversationSettings:
-        if self.daily_chat_message_delay_min_seconds > self.daily_chat_message_delay_max_seconds:
-            raise ValueError("daily chat minimum delay must not exceed maximum delay")
-        return self
-
 
 class PluginSettings(DomainSettings):
     plugin_system_enabled: bool
@@ -256,7 +250,6 @@ class MemorySettings(DomainSettings):
     memory_embedding_worker_enabled: bool
     memory_embedding_worker_interval_seconds: float = Field(gt=0)
     memory_embedding_worker_claim_limit: int = Field(gt=0)
-    memory_embedding_retry_attempts: int = Field(gt=0)
     memory_embedding_retry_initial_seconds: float = Field(gt=0)
     memory_embedding_http_concurrency: int = Field(gt=0)
     memory_embedding_query_cache_ttl_seconds: float = Field(gt=0)
@@ -267,11 +260,9 @@ class MemorySettings(DomainSettings):
     memory_rebuild_extraction_concurrency: int = Field(gt=0)
     memory_rebuild_commit_batch_size: int = Field(gt=0)
     memory_rebuild_context_event_limit: int = Field(gt=0)
-    memory_rebuild_retry_attempts: int = Field(gt=0)
     memory_rebuild_retry_initial_seconds: float = Field(gt=0)
     memory_rebuild_review_page_size: int = Field(gt=0)
     memory_rebuild_source_excerpt_characters: int = Field(gt=0)
-    memory_rebuild_max_events_per_run: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def _memory_batch_shape(self) -> MemorySettings:

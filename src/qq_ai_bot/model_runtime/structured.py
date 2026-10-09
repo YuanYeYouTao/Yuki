@@ -14,7 +14,6 @@ from qq_ai_bot.domain.messages import (
     ChatRequest,
     ChatResponse,
     ChatTool,
-    ModelResponseStatus,
 )
 from qq_ai_bot.model_runtime.executor import ModelExecutor
 from qq_ai_bot.model_runtime.models import (
@@ -180,16 +179,6 @@ class StructuredTaskRunner:
                 priority=priority,
                 canonical_conversation_id=canonical_conversation_id,
             )
-            if response.status is ModelResponseStatus.INCOMPLETE:
-                raise StructuredTaskError(
-                    "structured output was not complete",
-                    reason_code=(
-                        "output_budget_exhausted"
-                        if response.incomplete_reason == "max_output_tokens"
-                        else "incomplete_response"
-                    ),
-                    response=response,
-                )
             try:
                 decoded = _decode_response(
                     response,

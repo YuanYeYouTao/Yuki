@@ -75,11 +75,6 @@ async def prepare_rebuild_core(
 ) -> PreparedRebuildPlan:
     if not settings.memory_rebuild_enabled:
         raise RuntimeError("MEMORY_REBUILD_ENABLED is false")
-    configured_max = settings.memory_rebuild_max_events_per_run
-    if configured_max is not None and (
-        selection.maximum_events is None or selection.maximum_events > configured_max
-    ):
-        raise ValueError(f"selection.maximum_events must be set and <= {configured_max}")
     snapshot = await ledger.maximum_event_id()
     statistics = await ledger.count_rebuild_candidates(
         selection,
@@ -306,11 +301,6 @@ class MemoryRebuildService:
         if authorize:
             self._authorize(actor_user_id)
         self._available()
-        configured_max = self.settings.memory_rebuild_max_events_per_run
-        if configured_max is not None and (
-            selection.maximum_events is None or selection.maximum_events > configured_max
-        ):
-            raise ValueError(f"selection.maximum_events must be set and <= {configured_max}")
         snapshot = await self.ledger.maximum_event_id()
         statistics = await self.ledger.count_rebuild_candidates(
             selection,
@@ -675,15 +665,12 @@ class MemoryRebuildService:
                     return "deferred"
                 raise
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                exhausted = await self.repository.fail_item(
+                await self.repository.fail_item(
                     item_id,
                     type(exc).__name__,
-                    max_attempts=self.settings.memory_rebuild_retry_attempts,
                     retry_initial_seconds=self.settings.memory_rebuild_retry_initial_seconds,
                 )
                 self.metrics.increment("rebuild_events_failed")
-                if exhausted:
-                    return "failed"
                 return "deferred"
             self.metrics.increment("rebuild_events_scanned")
             self.metrics.increment("rebuild_proposals_staged", len(staged))
@@ -789,7 +776,6 @@ class MemoryRebuildService:
                 )
                 processed += 1
                 continue
-            commit_prepared = False
             try:
                 resolution = await self.processor.resolve(
                     validated,
@@ -839,7 +825,6 @@ class MemoryRebuildService:
                     )
                     return result
 
-                commit_prepared = True
                 try:
                     result = await self.processor._facts.repository.apply_evidence_write(commit)
                 except Exception:
@@ -869,9 +854,6 @@ class MemoryRebuildService:
                 await self.repository.fail_proposal(
                     proposal.id,
                     type(exc).__name__,
-                    max_attempts=1
-                    if commit_prepared
-                    else self.settings.memory_rebuild_retry_attempts,
                     retry_initial_seconds=self.settings.memory_rebuild_retry_initial_seconds,
                 )
                 self.metrics.increment("rebuild_proposals_failed")

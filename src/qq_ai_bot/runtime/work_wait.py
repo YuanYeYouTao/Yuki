@@ -7,6 +7,7 @@ The publisher supplies an internal event ID; model-authored payloads never confe
 from __future__ import annotations
 
 import json
+import math
 import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime
@@ -23,7 +24,7 @@ from qq_ai_bot.plugin_host.db_models import (
     PluginBackgroundTargetGrantModel,
     PluginInstallationModel,
 )
-from qq_ai_bot.runtime.work_repository import WorkConflict, WorkLease, WorkRepository, bounded_json
+from qq_ai_bot.runtime.work_repository import WorkConflict, WorkLease, WorkRepository, encode_json
 from qq_ai_bot.runtime.work_schema_v1 import inputs, work
 from qq_ai_bot.runtime.work_wait_schema import waits
 
@@ -39,7 +40,7 @@ def _timestamp(raw: str) -> float:
 
 
 def normalize_conditions(raw: Any, now: float) -> list[dict[str, Any]]:
-    if not isinstance(raw, list) or not 1 <= len(raw) <= 8:
+    if not isinstance(raw, list) or not raw:
         raise ValueError("wait_conditions_required")
     result: list[dict[str, Any]] = []
     for item in raw:
@@ -58,7 +59,7 @@ def normalize_conditions(raw: Any, now: float) -> list[dict[str, Any]]:
                 if (
                     not isinstance(seconds, (int, float))
                     or isinstance(seconds, bool)
-                    or not 1 <= seconds <= 31_536_000
+                    or not math.isfinite(seconds)
                 ):
                     raise ValueError("invalid_wait_delay")
                 due = now + seconds
@@ -171,16 +172,14 @@ class WorkWaitRepository:
         deadline_at: str | None,
         accepted: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        if mode not in {"any", "all"} or not 1 <= len(call_key) <= 256:
+        if mode not in {"any", "all"} or not isinstance(call_key, str) or not call_key:
             raise ValueError("invalid_wait_registration")
         now = time.time()
         normalized = normalize_conditions(conditions, now)
-        request_json = bounded_json(
-            {"mode": mode, "conditions": conditions, "deadline_at": deadline_at}, 8192
+        request_json = encode_json(
+            {"mode": mode, "conditions": conditions, "deadline_at": deadline_at}
         )
         deadline = _timestamp(deadline_at) if deadline_at is not None else None
-        if deadline is not None and deadline <= now:
-            raise ValueError("wait_deadline_in_past")
         principal_kind = source.get("principal_kind", "person")
         principal_id = "self" if principal_kind == "self" else source.get("actor_person_id")
         if (
@@ -205,7 +204,14 @@ class WorkWaitRepository:
                 .mappings()
                 .first()
             )
-            if row is None or json.loads(row["source_json"]) != source:
+            if row is None:
+                raise WorkConflict("wait_work_source_changed")
+            original_source = json.loads(row["source_json"])
+            original_kind = original_source.get("principal_kind", "person")
+            original_principal = (
+                "self" if original_kind == "self" else original_source.get("actor_person_id")
+            )
+            if (principal_kind, principal_id) != (original_kind, original_principal):
                 raise WorkConflict("wait_work_source_changed")
             conversation = await session.get(CanonicalConversationModel, lease.conversation_id)
             if conversation is None:
@@ -275,7 +281,7 @@ class WorkWaitRepository:
                     call_key=call_key,
                     request_json=request_json,
                     mode=mode,
-                    conditions_json=bounded_json(normalized, 8192),
+                    conditions_json=encode_json(normalized),
                     status="active",
                     deadline=deadline,
                     created=now,
@@ -340,7 +346,7 @@ class WorkWaitRepository:
                 .where(waits.c.id == binding["id"], waits.c.status == "active")
                 .values(
                     status=status,
-                    conditions_json=bounded_json(conditions, 8192),
+                    conditions_json=encode_json(conditions),
                     updated=now,
                     delivered=now,
                 )
@@ -372,8 +378,8 @@ class WorkWaitRepository:
                     work_id=binding["work_id"],
                     event_id=max(event_ids) if event_ids else None,
                     ready=True,
-                    payload_json=bounded_json(
-                        {"text": json.dumps(payload, ensure_ascii=False), "signal": True}, 32768
+                    payload_json=encode_json(
+                        {"text": json.dumps(payload, ensure_ascii=False), "signal": True}
                     ),
                     created=now,
                 )
@@ -520,7 +526,7 @@ class WorkWaitRepository:
             await session.execute(
                 update(waits)
                 .where(waits.c.id == binding["id"], waits.c.status == "active")
-                .values(conditions_json=bounded_json(conditions, 8192), updated=now)
+                .values(conditions_json=encode_json(conditions), updated=now)
             )
         if delivered_input is not None and on_delivery is not None:
             await on_delivery(session, delivered_input)
@@ -687,18 +693,9 @@ class WorkWaitRepository:
             if binding["mode"] == "any"
             else all(c["matched"] is not None for c in conditions)
         )
-        member_failed = any(
-            isinstance(c.get("matched"), dict)
-            and c["matched"].get("status") in {"failed", "cancelled", "uncertain"}
-            for c in conditions
-        )
         expired = binding["deadline"] is not None and binding["deadline"] <= now
-        if done or expired or member_failed:
-            return conditions, (
-                "member_failed"
-                if member_failed
-                else ("deadline" if expired and not done else "signal")
-            )
+        if done or expired:
+            return conditions, "deadline" if expired and not done else "signal"
         return (conditions, "partial") if changed else None
 
     async def deliver_due(self, now: float | None = None) -> int:
@@ -753,7 +750,7 @@ class WorkWaitRepository:
                     if reason == "invalidated":
                         values["status"] = "invalidated"
                     else:
-                        values["conditions_json"] = bounded_json(conditions, 8192)
+                        values["conditions_json"] = encode_json(conditions)
                     await session.execute(
                         update(waits)
                         .where(waits.c.id == binding["id"], waits.c.status == "active")

@@ -10,7 +10,6 @@ from typing import Any, Protocol
 from qq_ai_bot.capabilities.media import MediaResultText, result_images
 from qq_ai_bot.capabilities.models import CapabilityDescriptor, CapabilityEffect
 from qq_ai_bot.domain.messages import ChatImage
-from qq_ai_bot.runtime.work_schema_v1 import MAX_WORK_RECORD_BYTES
 from qq_ai_bot.tool_results.access import ArtifactAccess
 
 
@@ -111,7 +110,6 @@ class ToolResultBudgeter:
         item_limit: int | None = None,
         artifacts: ToolArtifactWriter | None = None,
         artifact_retention_seconds: int | None = None,
-        max_receipt_bytes: int = MAX_WORK_RECORD_BYTES * 3 // 4,
         artifact_access: ArtifactAccess | None = None,
         artifact_access_resolver: Callable[[], ArtifactAccess] | None = None,
     ) -> None:
@@ -125,7 +123,6 @@ class ToolResultBudgeter:
         self._item_limit = item_limit
         self._artifacts = artifacts
         self._artifact_retention_seconds = artifact_retention_seconds
-        self._max_receipt_bytes = max_receipt_bytes
         self._artifact_access = artifact_access
         self._artifact_access_resolver = artifact_access_resolver
 
@@ -195,9 +192,6 @@ class ToolResultBudgeter:
             and _largest_collection(result.data) > self._item_limit
         )
         character_overflow = self._max_characters is not None and len(text) > self._max_characters
-        byte_overflow = len(json.dumps({"result": text}, ensure_ascii=False).encode()) > (
-            self._max_receipt_bytes
-        )
         # External research is an immutable source, not permanent prompt
         # residency. Readers themselves remain paged model input and must not
         # recursively archive each page into another result.
@@ -207,12 +201,7 @@ class ToolResultBudgeter:
             and result.tool_name in {"web_search", "read_webpage"}
             and result.data not in (None, {}, "")
         )
-        if (
-            not item_overflow
-            and not character_overflow
-            and not byte_overflow
-            and not external_research
-        ):
+        if not item_overflow and not character_overflow and not external_research:
             return BudgetedToolResult(
                 text=MediaResultText(text, result.images if result.ok else ()),
                 artifact_id=media_handle,
@@ -289,9 +278,7 @@ class ToolResultBudgeter:
                 "text": None,
             }
         rendered = json.dumps(summary, ensure_ascii=False, default=str)
-        if (self._max_characters is not None and len(rendered) > self._max_characters) or len(
-            json.dumps({"result": rendered}, ensure_ascii=False).encode()
-        ) > self._max_receipt_bytes:
+        if self._max_characters is not None and len(rendered) > self._max_characters:
             minimal = {
                 "ok": result.ok,
                 "truncated": True,
@@ -323,10 +310,8 @@ class ToolResultBudgeter:
         )
 
 
-def artifact_page_fits(
-    value: object, max_characters: int, *, max_receipt_bytes: int = MAX_WORK_RECORD_BYTES * 3 // 4
-) -> bool:
-    """Size the exact final read-only envelope, including escaped journal bytes."""
+def artifact_page_fits(value: object, max_characters: int) -> bool:
+    """Size the exact final read-only envelope against its configured character budget."""
     try:
         payload = ToolExecutionResult(
             ok=True,
@@ -336,11 +321,7 @@ def artifact_page_fits(
             tool_name="read_tool_artifact",
         ).model_payload()
         rendered = json.dumps(payload, ensure_ascii=False, default=str)
-        return (
-            len(rendered) <= max_characters
-            and len(json.dumps({"result": rendered}, ensure_ascii=False).encode())
-            <= max_receipt_bytes
-        )
+        return len(rendered) <= max_characters
     except (RecursionError, ValueError):
         return False
 

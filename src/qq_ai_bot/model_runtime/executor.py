@@ -612,7 +612,13 @@ class TaskModelExecutor:
                 normalized,
                 priority=priority,
             )
-        except Exception as exc:
+        except (Exception, asyncio.CancelledError) as exc:
+            if isinstance(exc, asyncio.CancelledError):
+                exc.diagnostics = {  # type: ignore[attr-defined]
+                    "physical_request_count": attempts.requests,
+                    "unknown_usage_request_count": attempts.unknown_usage_requests,
+                }
+                raise
             if isinstance(exc, LLMError):
                 # The actual transport counter survives the executor boundary;
                 # zero remains a predispatch failure, not an unknown paid effect.

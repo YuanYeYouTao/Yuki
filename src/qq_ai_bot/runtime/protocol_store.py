@@ -335,8 +335,6 @@ class ProtocolStore:
             raise ValueError("code_snapshot_format_mismatch")
         header_size = int.from_bytes(content[offset : offset + 4], "big")
         offset += 4
-        if header_size > 8192 or offset + header_size > len(content):
-            raise ValueError("code_snapshot_header_invalid")
         try:
             header = json.loads(content[offset : offset + header_size])
         except (ValueError, UnicodeDecodeError) as exc:
@@ -454,16 +452,11 @@ class ProtocolStore:
             if any(size > self.policy.object_max_bytes for size in added_sizes):
                 raise ValueError("work_protocol_object_capacity")
             added_objects = added_objects or bool(added_sizes)
-            live = set(
-                await session.scalars(
-                    select(objects.c.sha256).where(
-                        objects.c.sha256.in_(digests),
-                        objects.c.deleting.is_(False),
-                    )
-                )
+            await session.execute(
+                update(objects)
+                .where(objects.c.sha256.in_(digests))
+                .values(prepared_at=time.time(), deleting=False)
             )
-            if live != set(digests):
-                raise ValueError("work_protocol_reference_deleting")
             await session.execute(
                 insert(refs).on_conflict_do_nothing(),
                 [{"work_id": work_id, "sha256": digest} for digest in digests],
@@ -638,6 +631,26 @@ class ProtocolStore:
                 return 0
             # Never await SQLite's writer while holding the GC file fence.
             async with timed_lock(self._lock, "protocol"):
+                frozen_selected = or_(
+                    *(
+                        and_(
+                            objects.c.sha256 == row["sha256"],
+                            objects.c.prepared_at == row["prepared_at"],
+                            objects.c.byte_size == row["byte_size"],
+                        )
+                        for row in selected
+                    )
+                )
+                async with self.database.sessions() as reader:
+                    selected = list(
+                        (
+                            await reader.execute(
+                                select(objects).where(
+                                    frozen_selected, objects.c.deleting.is_(True), unowned
+                                )
+                            )
+                        ).mappings()
+                    )
                 removed = await _finish_thread(
                     self._unlink_objects, [dict(row) for row in selected]
                 )

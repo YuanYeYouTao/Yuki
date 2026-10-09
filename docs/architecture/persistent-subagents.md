@@ -46,6 +46,8 @@ LOCKED、只有锁错误文字和其他数据库故障不取得重排资格。
 外部 `web_search` 可通过 [Anthropic 搜索适配器](../deepseek-search-bridge.md) 调用搜索；
 这是工具执行中的独立请求，不切换主链协议或 continuation。
 
+工作者也可用 `task_control.wait(conditions)` 等待时间、当前会话、获准插件事件或自己的 run；信号仍投递到原 child Work，由现有调度器恢复，不另建任务。
+
 ## 生命周期
 
 `YukiRuntime` 与所有会话共用主 Runner，拥有 `SubagentScheduler` 的启停。
@@ -58,25 +60,27 @@ child 使用自己的 lease，在取得执行权后复用 root 的激活监督�
 父子通信复用持久输入日志：消息 ID、关联问题、消费状态一起保存，重复通知不重复消费。
 工作者提问后进入 `waiting_parent`（存储状态为 `waiting_user`），等待命令时进入
 `waiting_external`，均释放执行名额。父任务回答或命令回执到达后续接原历史。
-完成后休眠，同一 ID 可追加要求；恢复已经结束的旧目标直接使用 `resume`，不要先登记新根任务。
+暂停或等待父任务的子任务可直接 `resume` 原目标，无需新增 instruction 或伪造补充消息。
+完成后同一 ID 可追加真实新要求，此时 `resume` 携带 instruction。
+尚未实际归档的树沿原 root ID、来源和累计预算重开；其他暂停树不阻挡，执行沿租约串行。
 
 工作者租约不占聊天会话锁；取消和会话 generation 变化使旧租约失效，迟到结果不得交付。
 恢复时读取原执行回执，未知执行结果先查询原 run_id，不能重跑。
 根任务未结束时保留子任务；根任务结束七天后清理详细历史，保留最终结果、文件引用和预算。
 归档 ID 明确返回已归档，不自动创建替代 Agent。
 
-子任务以 `complete(result)` 同次提交真实内部结果；activation 结算后，父输入与完成回执只读取已提交 Work 行（completed 读 `sync_result`，failed 读原因），通知前崩溃由 maintain 按 notified_revision 收拢同一结果。完成回执保存结果摘要，不再次复制完整 Work checkpoint。仅单项 `result` 查询按原
+子任务完成不强制附加正文；原效果回执、目标及产物交付核验继续保留。activation 结算后，父输入与完成回执只读取已提交 Work 行（completed 读 `sync_result`，failed 读原因），通知前崩溃由 maintain 按 notified_revision 收拢同一结果。完成回执保存结果摘要，不再次复制完整 Work checkpoint。仅单项 `result` 查询按原
 child Work ID、父子归属和通知 revision 读取对应 checkpoint；恢复后的新版本不冒充
 旧结果。状态与列表查询不加载大笔记，旧已归档结果中已有的快照仍保留。
 
-默认全局两个工作者、最多八个排队子任务、每个根任务最多八个非终态子任务。
-容量限制针对活动和排队任务，已结束子任务不占新委派容量；目录按内部 ID 分页，
+默认全局两个工作者；子任务按现有调度器排队，不设固定入队或每根任务数量拒绝。
+目录按内部 ID 分页，
 完成判断读取精确未结束集合，不能用某页没有任务推断全部任务完成。
-开启接纳要求 `GLOBAL_LLM_CONCURRENCY >= 2`，保留前台模型名额。
+模型并发为一时沿现有模型调度串行接纳。
 每段最多 24 次模型请求、32 次业务工具；到限保存并重新排队。
 新根任务及其全部子任务共用累计计量，默认模型和业务工具累计限额为 null（无限），
 自动化同一 run 的跨步骤工作也沿同一累计计量规则，不每段重置计数。
-显式有限预算仍原子执行，子任务不能使用最后 8/8 的主任务收尾预留。
+显式有限预算仍原子执行，不额外扣除固定 8/8 的收尾预留。
 0087 保留旧工作及自动化 run 的原有限预算；未开始计量的旧工作仍登记旧 120/160 策略，
 不能把部署升级当作模型充值。无限预算和改变后的自动化限额不能静默降级到旧镜像。
 失败请求、总结和含媒体的模型请求计费；等待、重启和恢复不重置预算。
@@ -89,11 +93,11 @@ child Work ID、父子归属和通知 revision 读取对应 checkpoint；恢复�
 每条链保存实际协议 continuation；普通唤醒只追加，合同或 Provider 改变时建立新链。
 图片按内容哈希单独保存，恢复时还原原始协议内容，不能因内联图片丢掉整条链。
 
-恢复检查点是最多 1 MiB 的协议 manifest；原协议项、图片、模型观察和压缩前链分别
+恢复检查点保存协议 manifest；原协议项、图片、模型观察和压缩前链分别
 存放为不可变文件对象，按原 Work 持有引用，shared hash 在最后拥有者释放后才可清理。
 对象单件默认 64 MiB，总登记容量默认 2 GiB，写新文件保留 64 MiB 空闲磁盘。
 启动配置为 `WORK_PROTOCOL_OBJECT_MAX_BYTES`、`WORK_PROTOCOL_TOTAL_MAX_BYTES`、
-`WORK_PROTOCOL_DISK_RESERVE_BYTES`，均为正整数且单件上限不超过总容量；
+`WORK_PROTOCOL_DISK_RESERVE_BYTES`；
 对应 `storage.protocol_object_max_bytes`、`storage.protocol_total_max_bytes`、
 `storage.protocol_disk_reserve_bytes` 只允许全局热覆盖，在下一次检查点准备批次读取同一快照。
 降低限额保留已有对象、读取与引用复用，只拒绝超限的新对象发布；调整政策后可原位重试。

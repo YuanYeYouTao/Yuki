@@ -1,13 +1,18 @@
 """Explicit compaction task anchors and exact persisted provider request replay."""
 
+import asyncio
 import hashlib
 import json
+import sqlite3
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from sqlalchemy import select, update
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import delete, select, update
 from tests.conftest import build_harness, make_settings
 
 # P10: explicit Invocation fixture contract; existing assertions are retained.
@@ -15,6 +20,7 @@ from tests.support.agent_backend import StubAgentBackend
 from tests.support.social_identity_cases import social_env
 from tests.support.work_session import WorkSession, invoke_tool
 
+from qq_ai_bot.admin.models import WorkStorageRuntimeConfig
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.domain.messages import (
     ChatImage,
@@ -46,6 +52,8 @@ from qq_ai_bot.model_runtime.pool import ModelClientPool
 from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
 from qq_ai_bot.model_runtime.routes import ModelRouter
 from qq_ai_bot.runtime.origin import TurnOrigin
+from qq_ai_bot.runtime.protocol_schema import objects, refs, usage
+from qq_ai_bot.runtime.protocol_store import ProtocolStore
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_journal import JournalUnavailable, encode_transcript
 from qq_ai_bot.runtime.work_repository import WorkRepository
@@ -98,6 +106,126 @@ async def _control(database, tmp_path, *, worker=False):
         )
         control.current = current
     return control
+
+
+async def test_new_work_reuses_prepared_object_marked_for_deletion(database, tmp_path):
+    control = await _control(database, tmp_path)
+    identity = control.current["id"]
+    original = ProtocolStore(database)
+    value = {"items": [], "private": "same source"}
+    digest = await original.put(value)
+    async with original.publication(identity) as prepared:
+        async with database.immediate_session() as writer:
+            await original.publish_refs(writer, identity, prepared)
+    async with database.immediate_session() as writer:
+        await writer.execute(delete(refs).where(refs.c.work_id == identity))
+        await writer.execute(
+            update(objects).where(objects.c.sha256 == digest).values(deleting=True)
+        )
+    current = ProtocolStore(
+        database, policy=WorkStorageRuntimeConfig(total_max_bytes=1, object_max_bytes=1)
+    )
+    assert await current.put(value) == digest
+    async with current.publication(identity) as prepared:
+        async with database.immediate_session() as writer:
+            await current.publish_refs(writer, identity, prepared)
+    assert await current.get(digest) == value
+    async with database.sessions() as reader:
+        assert (
+            await reader.scalar(select(objects.c.deleting).where(objects.c.sha256 == digest))
+            is False
+        )
+        assert (
+            await reader.scalar(select(usage.c.byte_size)) == current._path(digest).stat().st_size
+        )
+    assert await original.cleanup(grace_seconds=0) == 0
+
+
+async def test_gc_rechecks_object_reused_before_file_fence(database, tmp_path, monkeypatch):
+    import qq_ai_bot.runtime.protocol_store as module
+
+    control = await _control(database, tmp_path)
+    identity = control.current["id"]
+    original = ProtocolStore(database)
+    value = {"original": "paid response"}
+    digest = await original.put(value)
+    async with original.publication(identity) as prepared:
+        async with database.immediate_session() as writer:
+            await original.publish_refs(writer, identity, prepared)
+    async with database.immediate_session() as writer:
+        await writer.execute(delete(refs).where(refs.c.work_id == identity))
+    marked = asyncio.Event()
+    continue_gc = asyncio.Event()
+    original_lock = module.timed_lock
+    gc_task = None
+
+    @asynccontextmanager
+    async def file_fence(lock, phase):
+        if asyncio.current_task() is gc_task:
+            marked.set()
+            await continue_gc.wait()
+        async with original_lock(lock, phase):
+            yield
+
+    monkeypatch.setattr(module, "timed_lock", file_fence)
+    gc_task = asyncio.create_task(original.cleanup(grace_seconds=0))
+    try:
+        await asyncio.wait_for(marked.wait(), timeout=5)
+        current = ProtocolStore(database)
+        assert await current.put(value) == digest
+        async with current.publication(identity) as prepared:
+            async with database.immediate_session() as writer:
+                await current.publish_refs(writer, identity, prepared)
+        continue_gc.set()
+        assert await gc_task == 0
+        assert await current.get(digest) == value
+        async with database.sessions() as reader:
+            assert (
+                await reader.scalar(select(refs.c.sha256).where(refs.c.work_id == identity))
+                == digest
+            )
+    finally:
+        continue_gc.set()
+        await asyncio.gather(gc_task, return_exceptions=True)
+
+
+async def test_checkpoint_upgrade_removes_fixed_ceiling_and_preserves_media(tmp_path, monkeypatch):
+    path = tmp_path / "deployed.sqlite3"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{path.as_posix()}")
+    config = Config("alembic.ini")
+    await asyncio.to_thread(command.upgrade, config, "0103")
+    with sqlite3.connect(path) as db:
+        db.execute("INSERT INTO runtime_work_media VALUES (?,?)", ("a" * 64, b"original"))
+        db.commit()
+        original = db.execute("SELECT * FROM runtime_work_media").fetchall()
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("UPDATE runtime_checkpoint_quota SET bytes=67108865")
+        db.rollback()
+    await asyncio.to_thread(command.upgrade, config, "head")
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT * FROM runtime_work_media").fetchall() == original
+        assert not db.execute(
+            "SELECT name FROM sqlite_master WHERE name LIKE 'quota_runtime_work_%' "
+            "OR name = 'runtime_checkpoint_quota'"
+        ).fetchall()
+        content = b"x" * 67108865
+        db.execute("UPDATE runtime_work_media SET content=?", (content,))
+        assert db.execute("SELECT length(content) FROM runtime_work_media").fetchone() == (
+            len(content),
+        )
+        assert {row[1] for row in db.execute("PRAGMA table_info(runtime_delivery_intents)")} == {
+            "id",
+            "work_id",
+            "kind",
+            "message_count",
+            "state",
+            "payload_json",
+            "receipt_json",
+            "created",
+            "updated",
+        }
+        assert db.execute("PRAGMA quick_check").fetchall() == [("ok",)]
+        assert not db.execute("PRAGMA foreign_key_check").fetchall()
 
 
 @pytest.mark.asyncio

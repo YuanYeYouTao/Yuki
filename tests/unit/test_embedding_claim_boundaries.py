@@ -9,10 +9,13 @@ import pytest
 from sqlalchemy import event, insert, select, update
 
 from qq_ai_bot.identity.canonical_repository import ensure_person
+from qq_ai_bot.memory.embedding.fake import FakeEmbeddingProvider
 from qq_ai_bot.memory.embedding.jobs import EmbeddingWrite, MemoryEmbeddingJobRepository
 from qq_ai_bot.memory.embedding.models import EmbeddingProviderProfile
+from qq_ai_bot.memory.embedding.provider import EmbeddingProviderError
 from qq_ai_bot.memory.embedding.repository import MemoryEmbeddingRepository
 from qq_ai_bot.memory.embedding.text import EmbeddingDocumentBuilder
+from qq_ai_bot.memory.embedding.worker import MemoryEmbeddingWorker
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     MemoryEmbeddingJobModel,
@@ -126,9 +129,7 @@ async def test_late_original_claim_never_overwrites_reclaimed_job(database, late
     elif late_action == "skip":
         await jobs.skip(old)
     else:
-        await jobs.fail(
-            old, error_category="late", retryable=False, max_attempts=3, initial_delay_seconds=0
-        )
+        await jobs.fail(old, error_category="late", retryable=False, initial_delay_seconds=0)
     async with database.sessions() as session:
         stored = await session.get(MemoryEmbeddingJobModel, current.id)
         assert stored.status == "processing" and stored.updated_at == current.updated_at
@@ -137,13 +138,11 @@ async def test_late_original_claim_never_overwrites_reclaimed_job(database, late
     assert await jobs.complete((_write(current),)) == 1
 
 
-async def test_ordinary_reconcile_preserves_failed_budget_and_content_change_requeues(database):
+async def test_ordinary_reconcile_preserves_failed_claim_and_content_change_requeues(database):
     jobs = await _jobs(database)
     await jobs.reconcile()
     (job,) = await jobs.claim(limit=1)
-    await jobs.fail(
-        job, error_category="permanent", retryable=False, max_attempts=1, initial_delay_seconds=0
-    )
+    await jobs.fail(job, error_category="permanent", retryable=False, initial_delay_seconds=0)
     assert await jobs.reconcile() == 0
     async with database.immediate_session() as session:
         await session.execute(
@@ -170,17 +169,45 @@ async def test_explicit_retry_cannot_reuse_claim_timestamp_when_clock_stalls(dat
 
     monkeypatch.setattr("qq_ai_bot.memory.embedding.jobs.datetime", FixedClock)
     (old,) = await jobs.claim(limit=1)
-    await jobs.fail(
-        old, error_category="permanent", retryable=False, max_attempts=1, initial_delay_seconds=0
-    )
+    await jobs.fail(old, error_category="permanent", retryable=False, initial_delay_seconds=0)
     assert await jobs.retry_failed() == 1
-    # An explicit retry resets its policy budget but must advance claim identity.
+    # An explicit retry resets its attempt count but must advance claim identity.
     assert await jobs.claim(limit=1) == ()
     clock += timedelta(seconds=1)
     (current,) = await jobs.claim(limit=1)
     assert current.attempts == 1 and current.updated_at > old.updated_at
     assert await jobs.complete((_write(old),)) == 0
     assert await jobs.complete((_write(current),)) == 1
+
+
+async def test_retryable_embedding_failure_recovers_original_job_past_old_attempt_limit(database):
+    jobs = await _jobs(database)
+    await jobs.reconcile()
+    provider = FakeEmbeddingProvider(
+        dimensions=2,
+        error=EmbeddingProviderError("unavailable", "temporary failure", retryable=True),
+    )
+    worker = MemoryEmbeddingWorker(
+        provider=provider,
+        jobs=jobs,
+        interval_seconds=1,
+        claim_limit=1,
+        retry_initial_seconds=0,
+    )
+    for attempts in range(1, 7):
+        assert await worker.process_once() == 0
+        async with database.sessions() as reader:
+            stored = await reader.get(MemoryEmbeddingJobModel, 1)
+            assert stored.status == "pending" and stored.attempts == attempts
+            assert stored.error_category == "unavailable"
+    provider._error = None
+    assert await worker.process_once() == 1
+    async with database.sessions() as reader:
+        stored = await reader.get(MemoryEmbeddingJobModel, 1)
+        assert stored.status == "done" and stored.attempts == 7
+        assert len(tuple(await reader.scalars(select(MemoryEmbeddingModel)))) == 1
+    assert provider.document_requests == 7
+    assert await worker.process_once() == 0
 
 
 async def test_input_mutation_after_prepare_requeues_original_claim_without_old_vector(

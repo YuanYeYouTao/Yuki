@@ -2,6 +2,8 @@
 
 注重可扩展性和可维护性，不把代码写死，为未来变化留出必要空间。能删或放宽现有条件解决的问题，不新增替代机制；遵守[开篇设计原则](docs/architecture/development-contract.md#0-设计原则)。
 
+去掉限制后仍能完成真实工作的，优先删除；连同下游执行、存储、提示和冻结该限制的测试一起核对。
+
 开始涉及架构、运行时、工具或持久化的修改前，阅读
 [共同架构约束](docs/architecture/development-contract.md) 和对应模块的现行文档。
 文档入口是 [docs/architecture/README.md](docs/architecture/README.md)。

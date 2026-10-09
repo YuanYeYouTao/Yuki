@@ -577,7 +577,6 @@ class ChatService:
                                                 {"type": "integer"},
                                             ]
                                         },
-                                        "maxItems": 32,
                                         "description": (
                                             "相对返回中 logical_root 的 JSON 路径，"
                                             "对象键用字符串、数组下标用整数"

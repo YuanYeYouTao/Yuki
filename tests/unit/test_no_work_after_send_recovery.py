@@ -20,10 +20,10 @@ from qq_ai_bot.runtime.work_schema_v1 import work
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("accepted", [False, True])
+@pytest.mark.parametrize("accepted,work_enabled", [(False, False), (False, True), (True, True)])
 @pytest.mark.parametrize("failure", ["empty", "malformed"])
 async def test_confirmed_send_empty_response_respects_actual_work_ownership(
-    database, tmp_path, accepted, failure
+    database, tmp_path, accepted, work_enabled, failure
 ):
     env = await social_env(database, tmp_path)
     async with database.sessions() as reader:
@@ -49,7 +49,7 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
                 "send_message",
                 {
                     "text": "已确认的原消息",
-                    **({"work_report": {"kind": "start"}} if accepted else {}),
+                    "work_report": {"kind": "start"},
                 },
             ),
             (failure, {}),
@@ -59,8 +59,8 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
 
     def respond(request):
         control = current_work_control.get()
-        assert control is not None
-        ownership.append(control.current is not None)
+        assert (control is not None) == work_enabled
+        ownership.append(control is not None and control.current is not None)
         name, arguments = next(steps)
         if name in {"empty", "malformed"}:
             receipts = [message.content for message in request.messages if message.role == "tool"]
@@ -78,7 +78,7 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
     provider = FakeLLMProvider(respond)
     harness = build_harness(
         database,
-        make_settings(database.url, runtime_work_enabled=True, enabled_groups_csv="20001"),
+        make_settings(database.url, runtime_work_enabled=work_enabled, enabled_groups_csv="20001"),
         provider,
     )
     bind_main_contract(harness, tmp_path)
@@ -120,9 +120,9 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
     assert sum(row.content == "已确认的原消息" for row in outgoing) == 1
     assert len(outgoing) == 1 + len(sender.messages)
     if accepted:
-        # The original confirmed send remains authoritative. An unusable
-        # response suspends the accepted Work without buying a repair request.
-        assert len(works) == 1 and works[0]["state"] == "suspended"
+        # The original confirmed send remains authoritative. Recovery is queued
+        # on the same Work, without resending or buying an immediate repair turn.
+        assert len(works) == 1 and works[0]["state"] == "queued"
         assert works[0]["model_requests"] == 3 and works[0]["sent_messages"] == 1
     else:
         assert not works

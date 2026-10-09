@@ -41,8 +41,8 @@ class MemoryRebuildSelection(_Model):
         if not isinstance(value, list | tuple | set | frozenset):
             raise ValueError("identity filters must be arrays")
         normalized = tuple(sorted({str(item).strip() for item in value if str(item).strip()}))
-        if len(normalized) != len(value):
-            raise ValueError("identity filters cannot contain blanks or duplicates")
+        if any(not str(item).strip() for item in value):
+            raise ValueError("identity filters cannot contain blanks")
         return normalized
 
     @field_validator("scope_types", mode="before")
@@ -53,8 +53,6 @@ class MemoryRebuildSelection(_Model):
         if not isinstance(value, list | tuple | set | frozenset):
             raise ValueError("scope_types must be an array")
         normalized = tuple(sorted({str(getattr(item, "value", item)) for item in value}))
-        if len(normalized) != len(value):
-            raise ValueError("scope_types cannot contain duplicates")
         return normalized
 
     @field_validator("after", "before", mode="after")

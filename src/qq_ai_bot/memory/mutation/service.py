@@ -236,12 +236,6 @@ class MemoryMutationService:
         if any(self._dream_partition(item) != partition for item in sources[1:]):
             raise ValueError("dream mutation cannot cross memory partitions")
         if operation_type is DreamOperationType.RECOMPOSE:
-            if sources[0].kind is not MemoryKind.EPISODE:
-                raise ValueError("dream recompose is only available for episodes")
-            if content is not None or importance is not None:
-                raise ValueError("dream recompose uses its bounded output list")
-            if not 1 <= len(recompose_outputs) <= 4:
-                raise ValueError("dream recompose requires one to four outputs")
             if any(not 1 <= output.importance <= 5 for output in recompose_outputs):
                 raise ValueError("dream recompose importance is out of range")
         elif recompose_outputs:
@@ -348,9 +342,7 @@ class MemoryMutationService:
                     source.id,
                     anchor.id,
                     actor_user_id=bot_user_id,
-                    source_evidence=await self._dream_evidence_bundle(
-                        (source,), session=session, maximum_total=2
-                    ),
+                    source_evidence=await self._dream_evidence_bundle((source,), session=session),
                     confirmed_at=max(item.last_confirmed_at for item in sources),
                     session=session,
                 )
@@ -444,8 +436,6 @@ class MemoryMutationService:
             referenced = {
                 source.id for output in recompose_outputs for source in output.source_facts
             }
-            if referenced != set(source_by_id):
-                raise ValueError("dream recompose outputs must cover all operation sources")
             if any(
                 not output.source_facts
                 or any(source.id not in source_by_id for source in output.source_facts)
@@ -457,9 +447,9 @@ class MemoryMutationService:
             )
             if any(not item for item in normalized_outputs):
                 raise ValueError("dream recompose content cannot be empty")
-            if len({item.casefold() for item in normalized_outputs}) != len(normalized_outputs):
-                raise ValueError("dream recompose content must be unique")
             for source in sources:
+                if source.id not in referenced:
+                    continue
                 await self._facts.repository.transition(
                     source.id,
                     status=MemoryStatus.SUPERSEDED,
@@ -472,20 +462,9 @@ class MemoryMutationService:
                     session=session,
                 )
             created_ids: list[int] = []
-            used_keys: set[str] = set()
-            for output_index, (output, normalized) in enumerate(
-                zip(recompose_outputs, normalized_outputs, strict=True), start=1
-            ):
+            for output, normalized in zip(recompose_outputs, normalized_outputs, strict=True):
                 output_sources = tuple(source_by_id[item.id] for item in output.source_facts)
                 output_anchor = self.select_dream_anchor(output_sources)
-                memory_key = self._dream_recompose_key(
-                    output_anchor.memory_key,
-                    dream_operation_id=dream_operation_id,
-                    output_index=output_index,
-                    content=normalized,
-                    used_keys=used_keys,
-                )
-                used_keys.add(memory_key)
                 replacement = MemoryFactCreate(
                     scope_type=output_anchor.scope_type,
                     subject_user_id=output_anchor.subject_user_id,
@@ -494,7 +473,7 @@ class MemoryMutationService:
                     visibility_user_id=output_anchor.visibility_user_id,
                     visibility_group_id=output_anchor.visibility_group_id,
                     kind=output_anchor.kind,
-                    memory_key=memory_key,
+                    memory_key=output_anchor.memory_key,
                     category=output_anchor.category,
                     content=normalized,
                     importance=output.importance,
@@ -829,6 +808,8 @@ class MemoryMutationService:
                 session=session,
             )
         for source in source_rows:
+            if source.before_signature == source.after_signature:
+                continue
             await self._facts.repository.transition(
                 source.fact_id,
                 status=MemoryStatus(source.before_status),
@@ -888,7 +869,7 @@ class MemoryMutationService:
             for source in facts:
                 if source.id != anchor.id:
                     await self._facts.prepare_evidence_copy((source.id,), anchor, session=session)
-                    await self._dream_evidence_bundle((source,), maximum_total=2, session=session)
+                    await self._dream_evidence_bundle((source,), session=session)
         await self._dream_evidence_bundle(facts, session=session)
         for output in recompose_outputs:
             await self._dream_evidence_bundle(output.source_facts, session=session)
@@ -898,11 +879,10 @@ class MemoryMutationService:
         facts: tuple[MemoryFact, ...],
         *,
         session: AsyncSession,
-        maximum_total: int = 12,
     ) -> tuple[MemoryEvidenceCreate, ...]:
-        key = (tuple(fact.id for fact in facts), maximum_total)
-        bundles: dict[tuple[tuple[int, ...], int], tuple[MemoryEvidenceCreate, ...]] = (
-            session.info.setdefault("memory_dream_evidence_bundles", {})
+        key = tuple(fact.id for fact in facts)
+        bundles: dict[tuple[int, ...], tuple[MemoryEvidenceCreate, ...]] = session.info.setdefault(
+            "memory_dream_evidence_bundles", {}
         )
         if key in bundles:
             return bundles[key]
@@ -913,15 +893,7 @@ class MemoryMutationService:
             evidence_rows = await self._facts.repository.list_evidence(
                 fact.id, limit=None, session=session
             )
-            ordered = tuple(sorted(evidence_rows, key=lambda item: (item.created_at, item.id)))
-            limit = self._settings.memory_dream_evidence_per_fact
-            if len(ordered) <= limit:
-                selected = ordered
-            elif limit == 1:
-                selected = (ordered[-1],)
-            else:
-                selected = (ordered[0], *ordered[-(limit - 1) :])
-            for evidence in selected:
+            for evidence in evidence_rows:
                 source = (
                     ("event", evidence.event_id)
                     if evidence.event_id is not None
@@ -937,28 +909,8 @@ class MemoryMutationService:
                     authority=evidence.authority,
                     excerpt=evidence.excerpt,
                 )
-                if len(rows) >= maximum_total:
-                    bundles[key] = tuple(rows.values())
-                    return bundles[key]
         bundles[key] = tuple(rows.values())
         return bundles[key]
-
-    @staticmethod
-    def _dream_recompose_key(
-        base_key: str,
-        *,
-        dream_operation_id: int,
-        output_index: int,
-        content: str,
-        used_keys: set[str],
-    ) -> str:
-        if base_key not in used_keys:
-            return base_key
-        suffix = hashlib.sha256(
-            f"{dream_operation_id}:{output_index}:{content.casefold()}".encode()
-        ).hexdigest()[:16]
-        prefix = base_key[: max(1, 128 - len(suffix) - 7)]
-        return f"{prefix}:dream:{suffix}"
 
     @staticmethod
     def _dream_partition(fact: MemoryFact) -> tuple[object, ...]:
@@ -1078,24 +1030,69 @@ class MemoryMutationService:
     ) -> _PreparedMutation:
         from qq_ai_bot.memory.self_origin import resolve_self_origin
 
-        if not self._trusted_self_reflection(context) or not context.initiative_run_id:
+        main_self = bool(
+            context.turn_origin == "self_initiative"
+            and context.delegation_mode == "main_agent"
+            and context.decision_actor_type is MemoryDecisionActorType.AGENT
+            and context.decision_actor_id
+        )
+        if (
+            not (self._trusted_self_reflection(context) or main_self)
+            or not context.initiative_run_id
+        ):
             raise MemoryMutationRejected("untrusted_actorless_memory_source")
-        if context.evidence_tool_receipt_id is None or target is None:
+        if not main_self and (context.evidence_tool_receipt_id is None or target is None):
             raise MemoryMutationRejected("initiative_tool_evidence_required")
-        if request.operation not in {
-            MemoryMutationOperation.CREATE,
-            MemoryMutationOperation.CORRECT,
-            MemoryMutationOperation.INVALIDATE,
-            MemoryMutationOperation.CONTEST,
-            MemoryMutationOperation.MERGE,
-        }:
-            raise MemoryMutationRejected("operation_not_allowed_for_self_memory")
+        fact = await self._load_fact(request.fact_id)
+        merge_fact = await self._load_fact(request.merge_fact_id)
         async with self._facts.repository.database.sessions() as session:
             source = await resolve_self_origin(
                 session,
                 initiative_run_id=context.initiative_run_id,
-                require_live=False,
+                require_live=main_self,
+                group_id=context.source_group_id,
             )
+            if main_self:
+                if context.executed_by_bot_user_id != source.bot_user_id:
+                    raise MemoryMutationRejected("initiative_evidence_source_mismatch")
+                if request.evidence_event_id is not None:
+                    raise MemoryMutationRejected("initiative_tool_evidence_required")
+                quote = (request.evidence_quote or "").strip()
+                if not quote:
+                    raise MemoryMutationRejected("evidence_quote_not_in_tool_receipt")
+                refs = tuple(dict.fromkeys(request.evidence_refs))
+                query = select(MemoryToolReceiptModel).where(
+                    MemoryToolReceiptModel.initiative_run_id == source.initiative_run_id,
+                    MemoryToolReceiptModel.execution_id == context.decision_actor_id,
+                    MemoryToolReceiptModel.result_excerpt.contains(quote, autoescape=True),
+                )
+                if refs and refs != ("current_event",):
+                    receipt_ids = tuple(
+                        int(ref[5:])
+                        for ref in refs
+                        if ref.startswith("tool_") and ref[5:].isdigit()
+                    )
+                    query = query.where(MemoryToolReceiptModel.id.in_(receipt_ids))
+                receipt = await session.scalar(
+                    query.order_by(MemoryToolReceiptModel.id.desc()).limit(1)
+                )
+                if receipt is None:
+                    raise MemoryMutationRejected("initiative_tool_evidence_required")
+                context = replace(context, evidence_tool_receipt_id=receipt.id)
+                target = self._resolve_visibility(
+                    request,
+                    ResolvedSubject(
+                        MemoryScopeType.SELF,
+                        None,
+                        None,
+                        SelfMemoryVisibility.GROUP,
+                        None,
+                        source.group_id,
+                    ),
+                    None,
+                    fact=fact,
+                )
+            assert target is not None
             receipt = await session.get(MemoryToolReceiptModel, context.evidence_tool_receipt_id)
             if (
                 receipt is None
@@ -1130,8 +1127,6 @@ class MemoryMutationService:
             conversation_key=source.partition,
             config_scope=MemoryConfigScope(space_id=source.space_id),
         )
-        fact = await self._load_fact(request.fact_id)
-        merge_fact = await self._load_fact(request.merge_fact_id)
         self._validate_self_request(request, target, None, fact=fact, merge_fact=merge_fact)
         self._validate_fact_requirements(
             request,
@@ -1171,6 +1166,9 @@ class MemoryMutationService:
             "namespace": context.delegation_mode,
             "memory_key": request.memory_key or (fact.memory_key if fact else ""),
             "content": normalize_memory_text(request.new_content or "").casefold(),
+            "operation": request.operation.value,
+            "fact_id": request.fact_id,
+            "merge_fact_id": request.merge_fact_id,
         }
         return _PreparedMutation(
             request,
@@ -1184,14 +1182,7 @@ class MemoryMutationService:
             merge_fact,
             evidence,
             claim,
-            _fingerprint(
-                {
-                    **common,
-                    "operation": request.operation.value,
-                    "fact_id": request.fact_id,
-                    "merge_fact_id": request.merge_fact_id,
-                }
-            ),
+            _fingerprint(common),
             _fingerprint(common),
             _fingerprint(target_payload),
         )
@@ -1341,7 +1332,9 @@ class MemoryMutationService:
                             source = self._required_fact(prepared)
                             assert prepared.claim is not None
                             await self._facts.prepare_evidence_copy(
-                                (source.id,), prepared.claim.fact, session=session,
+                                (source.id,),
+                                prepared.claim.fact,
+                                session=session,
                             )
                         elif replacement is not None:
                             source = self._required_fact(prepared)
@@ -1484,6 +1477,7 @@ class MemoryMutationService:
                         session,
                         initiative_run_id=receipt.initiative_run_id or "",
                         require_live=False,
+                        require_group_projection=False,
                     )
                 except MemoryPartitionResolutionError:
                     raise MemoryMutationRejected("memory_resolution_snapshot_changed") from None

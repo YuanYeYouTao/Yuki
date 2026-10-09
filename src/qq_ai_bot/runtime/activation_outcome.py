@@ -14,8 +14,10 @@ if TYPE_CHECKING:
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 
 from qq_ai_bot.llm.base import (
+    LLMEmptyResponseError,
     LLMError,
     LLMInvalidRequestError,
+    LLMMalformedFunctionCallError,
     LLMTimeoutError,
     LLMUnavailableError,
 )
@@ -39,7 +41,6 @@ class ContextBoundaryChanged(LLMInvalidRequestError):
 
 
 class ExitReason(StrEnum):
-    ANSWER = "answer"
     COMPLETED = "completed"
     SEGMENT = "segment_budget"
     EXTERNAL = "waiting_external"
@@ -124,8 +125,12 @@ def failure_status_text(failure: RuntimeFailure) -> str:
 
 
 def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFailure:
-    if isinstance(exc, asyncio.CancelledError):
-        return RuntimeFailure("activation_cancelled", "cleanup", True)
+    from qq_ai_bot.services.concurrency import RequestCancelledError
+
+    if isinstance(exc, (asyncio.CancelledError, RequestCancelledError)):
+        return RuntimeFailure(
+            "activation_cancelled", "cleanup", True, diagnostics=getattr(exc, "diagnostics", {})
+        )
     if isinstance(exc, BaseExceptionGroup):
         failures = [classify_failure(item, stage) for item in exc.exceptions]
         return next((item for item in failures if not item.retryable), failures[0])
@@ -165,7 +170,7 @@ def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFa
         return RuntimeFailure(
             exc.code,
             "context" if exc.code == "work_journal_source_changed" else stage,
-            exc.code == "work_journal_source_changed",
+            exc.code in {"work_journal_source_changed", "work_activation_interrupted"},
             diagnostics={"category": "work_conflict"},
         )
     # An exact Presence lookup can fail before any gateway call when its live
@@ -184,7 +189,15 @@ def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFa
         return RuntimeFailure(
             type(exc).__name__,
             "provider",
-            isinstance(exc, (LLMTimeoutError, LLMUnavailableError)),
+            isinstance(
+                exc,
+                (
+                    LLMTimeoutError,
+                    LLMUnavailableError,
+                    LLMEmptyResponseError,
+                    LLMMalformedFunctionCallError,
+                ),
+            ),
             diagnostics=exc.diagnostics,
         )
     return RuntimeFailure(type(exc).__name__, stage)

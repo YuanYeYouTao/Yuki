@@ -748,14 +748,6 @@ class RuntimeConfigService:
                         error_category="version_conflict",
                         detail="expected_version does not match the current override",
                     )
-                await self._validate_cross_key_change(
-                    key=spec.key,
-                    value=converted,
-                    scope_type=scope,
-                    scope_id=storage_scope_id,
-                    delete_override=False,
-                    session=session,
-                )
             except ValueError as exc:
                 category = self._error_category(exc)
                 await self._audit.record(
@@ -915,39 +907,6 @@ class RuntimeConfigService:
                     error_category="version_conflict",
                     detail="expected_version does not match the current override",
                 )
-            try:
-                await self._validate_cross_key_change(
-                    key=spec.key,
-                    value=None,
-                    scope_type=scope,
-                    scope_id=before.scope_id,
-                    delete_override=True,
-                    session=session,
-                )
-            except ValueError as exc:
-                category = self._error_category(exc)
-                await self._audit.record(
-                    actor=actor,
-                    capability="runtime_config",
-                    operation="delete_override",
-                    target_type=f"config.{scope.value}",
-                    target_id=spec.key,
-                    before=_override_state(before, public_scope_id=public_scope_id),
-                    success=False,
-                    error_category=category,
-                    duration_seconds=time.perf_counter() - started,
-                    session=session,
-                )
-                return ConfigChangeResult(
-                    False,
-                    spec.key,
-                    scope,
-                    public_scope_id,
-                    apply_mode=spec.apply_mode,
-                    error_category=category,
-                    detail=str(exc),
-                )
-
             audit = await self._repository.delete_with_audit(
                 spec=spec,
                 scope_type=scope,
@@ -1176,14 +1135,6 @@ class RuntimeConfigService:
                 restore_value = _state_value(before_state, "value")
                 try:
                     converted = self.registry.convert(spec, restore_value)
-                    await self._validate_cross_key_change(
-                        key=spec.key,
-                        value=converted,
-                        scope_type=scope,
-                        scope_id=storage_scope_id,
-                        delete_override=False,
-                        session=session,
-                    )
                 except ValueError as exc:
                     await self._audit.record(
                         actor=actor,
@@ -1284,38 +1235,6 @@ class RuntimeConfigService:
                     apply_mode=spec.apply_mode,
                     error_category="rollback_conflict",
                     detail="当前覆盖已经不存在",
-                )
-            try:
-                await self._validate_cross_key_change(
-                    key=spec.key,
-                    value=None,
-                    scope_type=scope,
-                    scope_id=storage_scope_id,
-                    delete_override=True,
-                    session=session,
-                )
-            except ValueError as exc:
-                await self._audit.record(
-                    actor=actor,
-                    capability="runtime_config",
-                    operation="rollback",
-                    target_type=f"config.{scope.value}",
-                    target_id=spec.key,
-                    before=_override_state(current, public_scope_id=public_scope_id),
-                    after={"change_id": change_id},
-                    success=False,
-                    error_category="validation_error",
-                    duration_seconds=time.perf_counter() - started,
-                    session=session,
-                )
-                return ConfigChangeResult(
-                    False,
-                    spec.key,
-                    scope,
-                    public_scope_id,
-                    apply_mode=spec.apply_mode,
-                    error_category="validation_error",
-                    detail=str(exc),
                 )
             audit = await self._repository.delete_with_audit(
                 spec=spec,
@@ -1819,145 +1738,6 @@ class RuntimeConfigService:
             trigger_message_id=trigger_message_id,
             conversation_key=conversation_key,
         )
-
-    async def _validate_cross_key_change(
-        self,
-        *,
-        key: str,
-        value: ConfigValue,
-        scope_type: ConfigScopeType,
-        scope_id: str,
-        delete_override: bool,
-        session: AsyncSession | None = None,
-    ) -> None:
-        if key in {"context.compaction_target_ratio", "context.compaction_trigger_ratio"}:
-            pair = ("context.compaction_target_ratio", "context.compaction_trigger_ratio")
-        elif key in {
-            "context.work_compaction_target_ratio",
-            "context.work_compaction_trigger_ratio",
-        }:
-            pair = ("context.work_compaction_target_ratio", "context.work_compaction_trigger_ratio")
-        elif key in {"reply.delay_min_seconds", "reply.delay_max_seconds"}:
-            pair = ("reply.delay_min_seconds", "reply.delay_max_seconds")
-        elif key in {"storage.protocol_object_max_bytes", "storage.protocol_total_max_bytes"}:
-            pair = ("storage.protocol_object_max_bytes", "storage.protocol_total_max_bytes")
-        else:
-            return
-        records = list(
-            await self._repository.list_all(
-                keys=pair,
-                session=session,
-            )
-        )
-        records = [
-            row
-            for row in records
-            if not (
-                row.config_key == key and row.scope_type is scope_type and row.scope_id == scope_id
-            )
-        ]
-        if not delete_override:
-            spec = self.registry.get(key)
-            records.append(
-                RuntimeConfigOverrideRecord(
-                    id=0,
-                    config_key=key,
-                    scope_type=scope_type,
-                    scope_id=scope_id,
-                    value=value,
-                    value_type=spec.value_type,
-                    apply_mode=spec.apply_mode,
-                    version=1,
-                    created_at=datetime.now(UTC),
-                    updated_at=datetime.now(UTC),
-                    updated_by="validation",
-                    canonical_person_id=scope_id if scope_type is ConfigScopeType.USER else None,
-                    canonical_space_id=scope_id if scope_type is ConfigScopeType.GROUP else None,
-                )
-            )
-        self._validate_ordered_pair_records(
-            tuple(records), *pair, strict=pair[0].startswith("context.")
-        )
-
-    def _validate_reply_delay_records(
-        self, records: tuple[RuntimeConfigOverrideRecord, ...]
-    ) -> None:
-        self._validate_ordered_pair_records(
-            records, "reply.delay_min_seconds", "reply.delay_max_seconds"
-        )
-
-    def _validate_ordered_pair_records(
-        self,
-        records: tuple[RuntimeConfigOverrideRecord, ...],
-        minimum_key: str,
-        maximum_key: str,
-        *,
-        strict: bool = False,
-    ) -> None:
-        """Check USER > GROUP > GLOBAL precedence in linear space and time.
-
-        A user override wins in every group. When only one endpoint is
-        overridden, the other endpoint's group extrema cover every pairing.
-        Keep this check in the caller's transaction with mutation and audit.
-        """
-        values: dict[tuple[str, ConfigScopeType, str], int | float] = {}
-        users: set[str] = set()
-        groups: set[str] = set()
-        for row in records:
-            if row.config_key not in {minimum_key, maximum_key} or not self._valid_stored_record(
-                row
-            ):
-                continue
-            if row.scope_type is ConfigScopeType.USER:
-                owner = row.canonical_person_id
-                if owner is None:
-                    continue
-                users.add(owner)
-            elif row.scope_type is ConfigScopeType.GROUP:
-                owner = row.canonical_space_id
-                if owner is None:
-                    continue
-                groups.add(owner)
-            else:
-                if row.canonical_person_id is not None or row.canonical_space_id is not None:
-                    continue
-                owner = ""
-            index = (row.config_key, row.scope_type, owner)
-            if index in values:
-                raise CanonicalIdentityError("canonical_owner_mismatch")
-            values[index] = cast(float | int, row.value)
-        global_min = values.get(
-            (minimum_key, ConfigScopeType.GLOBAL, ""),
-            cast(float | int, self.registry.get(minimum_key).default_getter(self._settings)),
-        )
-        global_max = values.get(
-            (maximum_key, ConfigScopeType.GLOBAL, ""),
-            cast(float | int, self.registry.get(maximum_key).default_getter(self._settings)),
-        )
-
-        def require_order(minimum: int | float, maximum: int | float) -> None:
-            if minimum > maximum or (strict and minimum == maximum):
-                raise ValueError(
-                    f"{minimum_key} 必须小于{'或等于' if not strict else ''} {maximum_key}"
-                )
-
-        require_order(global_min, global_max)
-        highest_group_min, lowest_group_max = global_min, global_max
-        for group in groups:
-            minimum = values.get((minimum_key, ConfigScopeType.GROUP, group), global_min)
-            maximum = values.get((maximum_key, ConfigScopeType.GROUP, group), global_max)
-            require_order(minimum, maximum)
-            highest_group_min = max(highest_group_min, minimum)
-            lowest_group_max = min(lowest_group_max, maximum)
-        for user in users:
-            user_minimum = values.get((minimum_key, ConfigScopeType.USER, user))
-            user_maximum = values.get((maximum_key, ConfigScopeType.USER, user))
-            if user_minimum is not None and user_maximum is not None:
-                require_order(user_minimum, user_maximum)
-            elif user_minimum is not None:
-                require_order(user_minimum, lowest_group_max)
-            elif user_maximum is not None:
-                require_order(highest_group_min, user_maximum)
 
     @staticmethod
     def _matches_state(

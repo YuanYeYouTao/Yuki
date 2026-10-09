@@ -1,5 +1,6 @@
 """Paid native results and ambiguous local IDs survive without automatic replay."""
 
+import asyncio
 import json
 import sqlite3
 from dataclasses import replace
@@ -16,13 +17,17 @@ from tests.support.automation_unified_delivery_helpers import setup_run
 from tests.support.fixed_contract_fixture import bind_main_contract
 from tests.support.social_identity_cases import social_env
 from tests.support.web_search_chat_helpers import install_native_response_wire, native_response
+from tests.support.work_compaction_capacity_helpers import _runtime
 from tests.support.work_session import WorkSession
+from tests.unit.test_runtime_recovery import setup
 
+from qq_ai_bot.agent_core import Continue
 from qq_ai_bot.automation.models import RunStatus
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import (
     ChatMessage,
     ChatRequest,
+    ChatResponse,
     ChatTool,
     InboundMessage,
     ModelResponseStatus,
@@ -35,7 +40,7 @@ from qq_ai_bot.domain.messages import (
     ToolFunction,
 )
 from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
-from qq_ai_bot.llm.base import LLMUnavailableError
+from qq_ai_bot.llm.base import LLMIncompleteResponseError, LLMUnavailableError
 from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.llm.gemini import GeminiProvider
@@ -57,12 +62,14 @@ from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
 from qq_ai_bot.model_runtime.repository import ModelInvocationRepository
 from qq_ai_bot.model_runtime.routes import ModelRouter
 from qq_ai_bot.runtime.origin import TurnOrigin
+from qq_ai_bot.runtime.work_activation import activate_work
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_journal import decode_transcript, encode_transcript
 from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import work
 from qq_ai_bot.runtime.work_session import WorkSession as RuntimeWorkSession
 from qq_ai_bot.services.agent_runner import AgentRuntime
+from qq_ai_bot.services.turn_execution import TurnExecution
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 from qq_ai_bot.web.models import WebMode
 
@@ -72,6 +79,97 @@ KINDS = [
     OpenAIResponsesProvider,
     DeepSeekResponsesProvider,
 ]
+
+
+@pytest.mark.parametrize("native", [False, True])
+async def test_ordinary_truncation_retains_native_declarations_before_settlement(
+    database, tmp_path, native
+):
+    provider = FakeLLMProvider()
+    initial = (ChatMessage("system", "fixed contract"), ChatMessage("user", "continue"))
+    runner, runtime = await _runtime(database, None, initial, provider)
+    execution = TurnExecution(runner, initial, runtime, None)
+    response = ChatResponse(
+        "partial response",
+        0,
+        status=ModelResponseStatus.INCOMPLETE,
+        incomplete_reason="max_output_tokens",
+    )
+    await execution.observe_response(
+        0,
+        response,
+        (NativeToolDefinition(NativeToolType.WEB_SEARCH),) if native else (),
+        compacting=False,
+    )
+    if native:
+        with pytest.raises(LLMIncompleteResponseError):
+            await execution.settle_truncated(0, response, ())
+    else:
+        assert isinstance(await execution.settle_truncated(0, response, ()), Continue)
+    assert provider.requests == []
+
+
+@pytest.mark.parametrize("segment_requests", [1, 2])
+async def test_local_truncation_pairs_unexecuted_call_and_continues_original_work(
+    database, tmp_path, segment_requests
+):
+    control = await setup(database, tmp_path, output_kind="answer")
+    identity = control.current["id"]
+    truncated = ToolCall("partial-call", ToolFunction("fixture_mutation", '{"unfinished":'))
+
+    def respond(request):
+        if len(provider.requests) == 1:
+            return ChatResponse(
+                "partial answer",
+                0,
+                tool_calls=(truncated,),
+                status=ModelResponseStatus.INCOMPLETE,
+                incomplete_reason="max_output_tokens",
+            )
+        assert any(
+            "provider_response_incomplete" in str(message.content) for message in request.messages
+        )
+        return ChatResponse("verified current answer", 0)
+
+    provider = FakeLLMProvider(respond)
+    initial = (ChatMessage("system", "fixed contract"), ChatMessage("user", "finish the work"))
+    runner, runtime = await _runtime(database, control, initial, provider)
+    runtime = replace(runtime, max_model_requests=segment_requests)
+    execute = AsyncMock(side_effect=AssertionError("truncated arguments must not execute"))
+    backend = StubAgentBackend(
+        definitions=lambda *_args, **_kwargs: (
+            ChatTool("fixture_mutation", "mutate", {"type": "object"}),
+        ),
+        execute_call=execute,
+        finalize=lambda content, _runtime: content,
+    )
+    result = await runner.run(initial, runtime, backend)
+    await control.settle(pending_inputs=False)
+    if segment_requests == 1:
+        assert control.current["state"] == "queued" and control.current["model_requests"] == 1
+        await control.repository.release(control.lease)
+        holder = []
+
+        async def validate():
+            assert await control.repository.valid(holder[0].lease)
+
+        async with activate_work(
+            control.repository,
+            control.lease.conversation_id,
+            control.lease.generation,
+            control.source_key,
+            control.source,
+            validate,
+            work_id=identity,
+        ) as resumed:
+            holder.append(resumed)
+            result = await runner.run(initial, replace(runtime, work_control=resumed), backend)
+        control = resumed
+    assert control.current["id"] == identity and control.current["state"] == "completed"
+    assert control.current["model_requests"] == 2 and control.current["tool_calls"] == 0
+    assert result.text == "verified current answer"
+    assert len(provider.requests) == 2
+    execute.assert_not_awaited()
 
 
 @pytest.mark.parametrize("work_mode", ["disabled", "unfinished"])
@@ -880,7 +978,15 @@ async def test_runner_suspends_paid_native_boundary_without_requeue_or_local_exe
 
 @pytest.mark.parametrize("kind,native_requested", [(GeminiProvider, True), (GeminiProvider, False)])
 @pytest.mark.parametrize(
-    "failure", ["timeout", "predispatch", "authentication", "unavailable_with_usage"]
+    "failure",
+    [
+        "timeout",
+        "cancel",
+        "predispatch",
+        "predispatch_cancel",
+        "authentication",
+        "unavailable_with_usage",
+    ],
 )
 async def test_native_transport_unknown_suspends_original_work_without_automatic_replay(
     database, tmp_path, kind, failure, native_requested
@@ -919,6 +1025,8 @@ async def test_native_transport_unknown_suspends_original_work_without_automatic
             return httpx.Response(503, json=body)
         if failure == "timeout":
             raise httpx.ReadTimeout("fixture timeout", request=request)
+        if failure == "cancel":
+            raise asyncio.CancelledError("fixture transport cancelled")
         raise httpx.ConnectError("fixture disconnected", request=request)
 
     async with httpx.AsyncClient(
@@ -983,8 +1091,12 @@ async def test_native_transport_unknown_suspends_original_work_without_automatic
         backend.definitions = lambda *_args, **_kwargs: fixed
         backend.execute_call = AsyncMock(side_effect=AssertionError("no tool execution"))
         before = (
-            AsyncMock(side_effect=LLMUnavailableError("admission unavailable"))
-            if failure == "predispatch"
+            AsyncMock(
+                side_effect=asyncio.CancelledError("admission cancelled")
+                if failure == "predispatch_cancel"
+                else LLMUnavailableError("admission unavailable")
+            )
+            if failure in {"predispatch", "predispatch_cancel"}
             else None
         )
         runtime = AgentRuntime(
@@ -1012,10 +1124,12 @@ async def test_native_transport_unknown_suspends_original_work_without_automatic
     backend.execute_call.assert_not_awaited()
     persisted = await repository.get(control.current["id"])
     assert persisted["tool_calls"] == 0
-    if failure == "predispatch":
+    if failure in {"predispatch", "predispatch_cancel"}:
         assert not wire and persisted["model_requests"] == 0
         assert result.work_state == "queued" and result.outcome.failure.retryable
-        assert result.outcome.failure.code == "LLMUnavailableError"
+        assert result.outcome.failure.code == (
+            "activation_cancelled" if failure == "predispatch_cancel" else "LLMUnavailableError"
+        )
         assert result.outcome.failure.diagnostics.get("physical_request_count", 0) == 0
     else:
         assert len(wire) == 1 and persisted["model_requests"] == 1
@@ -1023,7 +1137,11 @@ async def test_native_transport_unknown_suspends_original_work_without_automatic
             assert result.work_state == "queued" and persisted["state"] == "queued"
             assert result.outcome.failure.retryable
             assert result.outcome.failure.code == (
-                "LLMTimeoutError" if failure == "timeout" else "LLMUnavailableError"
+                "LLMTimeoutError"
+                if failure == "timeout"
+                else "activation_cancelled"
+                if failure == "cancel"
+                else "LLMUnavailableError"
             )
             assert result.outcome.failure.diagnostics["physical_request_count"] == 1
             await repository.release(lease)

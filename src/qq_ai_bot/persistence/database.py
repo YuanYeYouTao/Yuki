@@ -37,8 +37,6 @@ class Database:
             None
         )
         self.subagent_concurrency = 2
-        self.subagent_max_queued = 8
-        self.subagent_max_active_per_root = 8
         self._protocol_store_path: Path | None = None
         self._protocol_storage_lock: asyncio.Lock | None = None
         self._protocol_gc_iterator: Iterator[Path] | None = None
@@ -83,7 +81,7 @@ class Database:
         from sqlalchemy import Index
 
         from qq_ai_bot.conversation.rollup import signals as _signals  # noqa: F401
-        from qq_ai_bot.runtime import work_recovery_schema as _recovery
+        from qq_ai_bot.runtime import work_recovery_schema as _recovery  # noqa: F401
         from qq_ai_bot.runtime import work_schema_v1 as _work_schema
 
         if not any(
@@ -112,7 +110,10 @@ class Database:
             from qq_ai_bot.runtime.effect_schema import install_indexes
 
             await connection.run_sync(install_indexes)
-            await connection.run_sync(_recovery.install_quota)
+            await connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_runtime_media_refs_sha "
+                "ON runtime_work_media_refs(sha256)"
+            )
             from qq_ai_bot.runtime.protocol_schema import install_quota as install_protocol_quota
 
             await connection.run_sync(install_protocol_quota)

@@ -45,6 +45,7 @@ async def resolve_self_origin(
     *,
     initiative_run_id: str,
     canonical_conversation_id: str | None = None,
+    group_id: str | None = None,
     require_live: bool = True,
     require_group_projection: bool = True,
 ) -> SelfMemoryOrigin:
@@ -80,6 +81,7 @@ async def resolve_self_origin(
                     SpaceBindingModel.space_id == run.space_id,
                     SpaceBindingModel.platform == presence.platform,
                     SpaceBindingModel.status == "active",
+                    *([SpaceBindingModel.external_space_id == group_id] if group_id else []),
                 )
             )
         )

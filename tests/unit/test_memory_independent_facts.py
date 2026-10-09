@@ -121,17 +121,12 @@ async def test_upgrade_preserves_rows_and_allows_independent_same_key(tmp_path, 
         db.execute(sql, values)
         db.commit()
         before = db.execute("SELECT * FROM memory_facts").fetchall()
-        tables = set(db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall())
     await asyncio.to_thread(command.upgrade, config, "head")
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT version_num FROM alembic_version").fetchone() == (
             canonical_schema_revision(),
         )
         assert db.execute("SELECT * FROM memory_facts").fetchall() == before
-        assert (
-            set(db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall())
-            == tables
-        )
         indexes = {
             row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='index'")
         }

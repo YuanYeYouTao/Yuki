@@ -99,11 +99,15 @@ class WorkQueries:
         return query
 
     async def get(
-        self, lease: WorkLease, source: dict[str, Any], work_id: str
+        self, lease: WorkLease, source: dict[str, Any], work_id: str, *, local: bool = False
     ) -> dict[str, Any] | None:
         async with self.repository.database.sessions() as session:
             row = (
-                (await session.execute(self._query(lease, source).where(work.c.id == work_id)))
+                (
+                    await session.execute(
+                        self._query(lease, source, local=local).where(work.c.id == work_id)
+                    )
+                )
                 .mappings()
                 .first()
             )

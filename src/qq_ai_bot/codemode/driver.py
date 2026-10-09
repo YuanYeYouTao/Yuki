@@ -990,8 +990,6 @@ class CodeModeDriver:
                     body["operations"].pop()
                     break
         result = encode()
-        if len(result) > self.host.result_limit:
-            raise WorkConflict("code_result_capacity")
         return result
 
     async def _result_view(self, output: Any) -> dict[str, Any]:

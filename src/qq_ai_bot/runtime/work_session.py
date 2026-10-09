@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select, true
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.capabilities.invocation import (
@@ -526,10 +526,14 @@ class WorkSession:
         # Read all uncovered original requirements in indexed pages. A page is
         # not a limit on the number of requirements allowed in an active Work.
         task_inputs: list[dict[str, Any]] = []
+        retained_input_ids = {item["input_id"] for item in material.get("recent_inputs", [])}
         cursor = int(material.get("covered_input_id", 0))
         while page := await self.task_inputs(after_id=cursor):
             task_inputs.extend(
-                item for item in page if item.get("event_id") not in self.public_event_ids
+                item
+                for item in page
+                if item.get("event_id") not in self.public_event_ids
+                and item["input_id"] not in retained_input_ids
             )
             cursor = page[-1]["input_id"]
         note = await visible_context_note(self.control)
@@ -741,10 +745,14 @@ class WorkSession:
         evidence = await self.compaction_evidence()
         refs = {
             "goal",
-            *(f"record:{index}" for index in indices),
-            *(f"observation:{index}" for index in range(len(observations))),
+            *(f"record:{self.transcript.chain_id}:{index}" for index in indices),
+            *(
+                f"observation:{self.transcript.chain_id}:{index}"
+                for index in range(len(observations))
+            ),
             *(f"effect:{item['effect_key']}" for item in evidence),
             *(f"input:{item['input_id']}" for item in [*new_inputs, *recent_inputs]),
+            *(f"input:{item['input_id']}" for item in material.get("recent_inputs", [])),
         }
         original_ref = f"event:{original_request['event_id']}" if original_request else None
         if original_ref is not None:
@@ -752,6 +760,9 @@ class WorkSession:
         for item in [*material.get("directives", []), *material.get("corrections", [])]:
             refs.update(item.get("refs", []))
             refs.update(item.get("previous", {}).get("refs", []))
+        for section in ("completed", "pending", "failures", "artifacts", "next_steps"):
+            for fact in material.get("paid_observations", {}).get(section, []):
+                refs.update(fact["refs"])
         self._compaction_source = {
             "work_id": self.control.current["id"],
             "immutable_goal": self.control.current["goal"],
@@ -773,11 +784,20 @@ class WorkSession:
         }
         if fits is not None:
             units = [
-                {"kind": "records", "ref": f"record:{index}", "index": index, "value": value}
+                {
+                    "kind": "records",
+                    "ref": f"record:{self.transcript.chain_id}:{index}",
+                    "index": index,
+                    "value": value,
+                }
                 for index, value in zip(indices, records, strict=True)
             ]
             units.extend(
-                {"kind": "model_observations", "ref": f"observation:{index}", "value": value}
+                {
+                    "kind": "model_observations",
+                    "ref": f"observation:{self.transcript.chain_id}:{index}",
+                    "value": value,
+                }
                 for index, value in enumerate(observations)
             )
             units.extend(
@@ -819,7 +839,10 @@ class WorkSession:
         if page.get("original_request_ref"):
             refs.add(page["original_request_ref"])
         for section in ("completed", "pending", "failures", "artifacts", "next_steps"):
-            for fact in page.get("derived_observations", {}).get(section, []):
+            for fact in (
+                *page.get("derived_observations", {}).get(section, []),
+                *page["task_material"].get("paid_observations", {}).get(section, []),
+            ):
                 refs.update(fact["refs"])
         for fact in [
             *page["task_material"].get("directives", []),
@@ -828,6 +851,9 @@ class WorkSession:
             refs.update(fact.get("refs", []))
             refs.update(fact.get("previous", {}).get("refs", []))
         inherited_refs = set(refs)
+        inherited_refs.update(
+            f"input:{item['input_id']}" for item in page["task_material"].get("recent_inputs", [])
+        )
         if page["task_inputs"]:
             page["recent_task_inputs"] = page["task_inputs"][-2:]
 
@@ -1052,7 +1078,6 @@ class WorkSession:
                 next_source = {
                     **source,
                     "task_material": material,
-                    "task_inputs": [],
                     "derived_observations": structured,
                     "paging": {**paging, "cursor": cursor},
                 }
@@ -1062,18 +1087,32 @@ class WorkSession:
                 self._compaction_source = next_source
                 self._compaction_source = await self._source_page(next_source, fits)
                 return json.dumps(self._compaction_source, ensure_ascii=False)
-        if material["covered_input_id"] >= source["snapshot_input_id"]:
+        supplied_input_id = (
+            source["task_inputs"][-1]["input_id"]
+            if source["task_inputs"]
+            else source["task_material"].get("covered_input_id", 0)
+        )
+        if supplied_input_id >= source["snapshot_input_id"]:
             return None
         batch = await self.task_inputs(
-            after_id=material["covered_input_id"],
+            after_id=supplied_input_id,
             through_id=source["snapshot_input_id"],
         )
         if not batch:
             raise WorkConflict("work_compaction_source_changed")
         recent = await self.task_inputs(recent=True, through_id=batch[-1]["input_id"])
-        refs = {"goal", *(f"input:{item['input_id']}" for item in [*batch, *recent])}
+        refs = {
+            "goal",
+            *(
+                f"input:{item['input_id']}"
+                for item in [*batch, *recent, *material.get("recent_inputs", [])]
+            ),
+        }
         for section in ("completed", "pending", "failures", "artifacts", "next_steps"):
-            for item in structured[section]:
+            for item in (
+                *structured[section],
+                *source["task_material"].get("paid_observations", {}).get(section, []),
+            ):
                 refs.update(item["refs"])
         for item in [*material["directives"], *material["corrections"]]:
             refs.update(item.get("refs", []))
@@ -1196,13 +1235,7 @@ class WorkSession:
         ):
             raise WorkCapacityError("work_compaction_source_changed")
         structured, task_material = validate_summary(summary, source)
-        if (
-            source.get("paging")
-            and source["paging"]["next_cursor"][0] < source["paging"]["total_units"]
-        ):
-            raise WorkCapacityError("work_compaction_unprocessed_source")
-        if task_material["covered_input_id"] < source["snapshot_input_id"]:
-            raise WorkCapacityError("work_compaction_unprocessed_inputs")
+        task_material.pop("paid_observations", None)
         previous = self.transcript.chain_id
         # A paid or unresolved protocol keeps its saved anchor. A paired root
         # business resume selects current chat; new public deltas stay raw here.
@@ -1257,6 +1290,7 @@ class WorkSession:
         candidate, size = candidate_and_size()
         if ceiling_tokens is not None and size > ceiling_tokens:
             raise WorkCapacityError("work_compaction_capacity")
+        task_material["paid_observations"] = structured
         old_progress = deepcopy(self.progress)
         self.transcript = candidate
         self.progress.pop("compaction_staging", None)
@@ -1566,17 +1600,11 @@ class WorkSession:
                     # Retry this same journal, never the model or tool effects.
             if updated_work is not None:
                 self.control.current = updated_work
-        except IntegrityError as exc:
-            if "ck_runtime_checkpoint_bytes" in str(exc.orig):
-                raise WorkCapacityError("work_checkpoint_capacity") from exc
-            raise
         except ValueError as exc:
             if str(exc) in {
-                "work_record_too_large",
                 "work_journal_capacity",
                 "work_protocol_object_capacity",
                 "work_protocol_storage_capacity",
-                "work_protocol_reference_deleting",
             }:
                 raise WorkCapacityError(str(exc)) from exc
             raise

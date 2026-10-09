@@ -8,11 +8,11 @@ from typing import Any
 SCHEMA = "conversation_rollup_v1"
 
 SUMMARY_INSTRUCTION = (
-    'Return only a JSON object with exactly these keys: "schema":"conversation_rollup_v1", '
-    '"continuity": a concise narrative string, "source_event_ids": internal integer IDs, '
+    'Return a JSON object with "continuity": a concise narrative string and '
+    '"source_event_ids": internal integer IDs, '
     '"open_issues": [{"text": string, "source_event_ids": [integers]}], '
     '"corrections": [{"text": string, "source_event_ids": [integers], '
-    '"supersedes_event_ids": [integers]}]. '
+    '"supersedes_event_ids": [integers]}]. Empty open_issues and corrections may be omitted. '
     "Cite only supplied sources or "
     "references carried in the previous summary. Never use platform IDs as references. "
     "Update resolved open issues instead of accumulating them. New corrections supersede "
@@ -34,18 +34,18 @@ def summary_response_format() -> dict[str, Any]:
     issue = {
         "type": "object",
         "properties": properties,
-        "required": list(properties),
-        "additionalProperties": False,
+        "required": ["text"],
+        "additionalProperties": True,
     }
     correction_properties = {**properties, "supersedes_event_ids": ids}
     correction = {
         "type": "object",
         "properties": correction_properties,
-        "required": list(correction_properties),
-        "additionalProperties": False,
+        "required": ["text"],
+        "additionalProperties": True,
     }
     root_properties = {
-        "schema": {"type": "string", "enum": [SCHEMA]},
+        "schema": {"type": "string"},
         "continuity": {"type": "string"},
         "source_event_ids": ids,
         "open_issues": {"type": "array", "items": issue},
@@ -55,57 +55,60 @@ def summary_response_format() -> dict[str, Any]:
         "type": "json_schema",
         "json_schema": {
             "name": "conversation_rollup",
-            "strict": True,
+            "strict": False,
             "schema": {
                 "type": "object",
                 "properties": root_properties,
-                "required": list(root_properties),
-                "additionalProperties": False,
+                "required": ["continuity"],
+                "additionalProperties": True,
             },
         },
     }
 
 
-def _ids(value: Any, *, required: bool = False) -> set[int]:
-    if (
-        not isinstance(value, list)
-        or any(type(item) is not int or item < 1 for item in value)
-        or len(set(value)) != len(value)
-        or (required and not value)
-    ):
+def _ids(value: Any) -> set[int]:
+    if not isinstance(value, list) or any(type(item) is not int or item < 1 for item in value):
         raise ValueError("rollup_summary_invalid_references")
     return set(value)
 
 
 def parse_summary(text: str) -> dict[str, Any]:
-    """Strictly validate new summaries without guessing what their prose means."""
+    """Normalize consumed fields without guessing what their prose means."""
     try:
         value = json.loads(text)
     except (ValueError, TypeError) as exc:
         raise ValueError("rollup_summary_invalid_json") from exc
-    keys = {"schema", "continuity", "source_event_ids", "open_issues", "corrections"}
-    if not isinstance(value, dict) or set(value) != keys or value["schema"] != SCHEMA:
+    if not isinstance(value, dict):
         raise ValueError("rollup_summary_invalid_schema")
-    if not isinstance(value["continuity"], str) or not value["continuity"].strip():
+    if not isinstance(value.get("continuity"), str) or not value["continuity"].strip():
         raise ValueError("rollup_summary_empty_continuity")
-    references = _ids(value["source_event_ids"], required=True)
+    result: dict[str, Any] = {
+        "schema": SCHEMA,
+        "continuity": value["continuity"],
+        "source_event_ids": sorted(_ids(value.get("source_event_ids", []))),
+        "open_issues": [],
+        "corrections": [],
+    }
     for name in ("open_issues", "corrections"):
-        entries = value[name]
+        entries = value.get(name, [])
         if not isinstance(entries, list):
             raise ValueError("rollup_summary_invalid_items")
-        entry_keys = {"text", "source_event_ids"}
-        if name == "corrections":
-            entry_keys.add("supersedes_event_ids")
         for entry in entries:
-            if not isinstance(entry, dict) or set(entry) != entry_keys:
+            if not isinstance(entry, dict):
                 raise ValueError("rollup_summary_invalid_item")
-            body = entry["text"]
+            body = entry.get("text")
             if not isinstance(body, str) or not body.strip():
                 raise ValueError("rollup_summary_invalid_item_text")
-            references.update(_ids(entry["source_event_ids"], required=True))
+            normalized: dict[str, Any] = {
+                "text": body,
+                "source_event_ids": sorted(_ids(entry.get("source_event_ids", []))),
+            }
             if name == "corrections":
-                references.update(_ids(entry["supersedes_event_ids"]))
-    return value
+                normalized["supersedes_event_ids"] = sorted(
+                    _ids(entry.get("supersedes_event_ids", []))
+                )
+            result[name].append(normalized)
+    return result
 
 
 def summary_references(value: dict[str, Any]) -> set[int]:

@@ -260,7 +260,7 @@ async def resume_plugin_result(
     if row["state"] in {"queued", "running", "waiting_external", "waiting_user"}:
         return CapabilityResult(data={}, pending_work_id=work_id, tool_calls=0)
     if row["state"] != "completed":
-        raise AutomationExecutionError("agent_work_blocked")
+        raise AutomationExecutionError(f"agent_work_{row['state']}")
     return CapabilityResult(
         data={
             "text": json.loads(row["checkpoint_json"]).get("sync_result", ""),

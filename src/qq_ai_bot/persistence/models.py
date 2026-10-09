@@ -1765,7 +1765,7 @@ class AutomationRunModel(Base):
         UniqueConstraint("automation_id", "scheduled_for", name="uq_automation_runs_scheduled_for"),
         UniqueConstraint("idempotency_key", name="uq_automation_runs_idempotency_key"),
         CheckConstraint(
-            "status IN ('running', 'succeeded', 'failed', 'skipped', 'missed', "
+            "status IN ('running', 'succeeded', 'failed', 'cancelled', 'missed', "
             "'uncertain', 'blocked')",
             name="ck_automation_runs_status",
         ),

@@ -71,9 +71,6 @@ class WorkResumer:
     async def resume(self, item: dict[str, Any]) -> str | None:
         """Run one selected Work; return this run's error category, None on success."""
         source = json.loads(item["source_json"])
-        # True only while the original SELF source prepares its first scene/
-        # Presence boundary, before any activation can dispatch anything.
-        startup = [False]
         try:
             if item["state"] == "running":
                 # Scheduler selected an expired/absent owner. The lost process
@@ -86,7 +83,7 @@ class WorkResumer:
                 await self.services.resume_plugin(item, source)
             elif source.get("origin") == "self_initiative":
                 if item["state"] != "suspended":
-                    return await self._resume_self(item, source, startup)
+                    return await self._resume_self(item, source)
             elif source.get("origin") in {"user_message", "autonomous_group"}:
                 return await self._resume(item, source)
             return None
@@ -107,7 +104,7 @@ class WorkResumer:
             if isinstance(exc, WorkActivationHandled):
                 return category
             try:
-                await self._recover_preparation_failure(item, source, exc, startup=startup[0])
+                await self._recover_preparation_failure(item, source, exc)
             except BaseException as cleanup:
                 exc.add_note(f"work preparation recovery deferred: {type(cleanup).__name__}")
                 raise exc from exc.__cause__
@@ -120,7 +117,6 @@ class WorkResumer:
         exc: Exception,
         *,
         orphan: bool = False,
-        startup: bool = False,
     ) -> None:
         from qq_ai_bot.runtime.activation_outcome import WorkRecoveryDeferred
         from qq_ai_bot.runtime.work_activation import bind_work_activation
@@ -136,8 +132,6 @@ class WorkResumer:
                 raise WorkConflict("work_recovery_lease_lost")
 
         control = WorkControl(self.repository, lease, item["source_key"], source, validate)
-        # The supervisor still proves "never started" from durable facts.
-        control.startup_boundary = startup
         async with bind_work_activation(control):
             current = await self.repository.get(item["id"])
             if orphan:
@@ -161,6 +155,10 @@ class WorkResumer:
                 control.deferred_failure = WorkRecoveryDeferred(
                     "work_activation_interrupted", work=item
                 )
+                if await control.has_unresolved_effects(pending=False):
+                    # Lost dispatch results cannot authorize another execution.
+                    # Keep the original receipts for explicit reconciliation.
+                    exc = WorkConflict("work_effect_unknown")
             if deferred is not None:
                 failed = deferred.work
                 prior_lease = deferred.lease
@@ -292,16 +290,12 @@ class WorkResumer:
 
         return child
 
-    async def _resume_self(
-        self, item: dict[str, Any], source: dict[str, Any], startup: list[bool]
-    ) -> str | None:
+    async def _resume_self(self, item: dict[str, Any], source: dict[str, Any]) -> str | None:
         """Resume the original SELF Work through the same Main Agent entry point."""
         recovered = await recover_self_source(
             self.repository.database, item["conversation_id"], source, request_id=item["id"]
         )
-        startup[0] = True
         async with self._scene(item, source, recovered) as scene:
-            startup[0] = False
             if scene is None:
                 return None
             key, snapshot = scene.key, scene.snapshot

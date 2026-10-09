@@ -301,8 +301,6 @@ class MemoryConsistencyHealth(_MemoryModel):
                 self.cross_target_relation_count,
                 self.orphan_state_event_count,
                 self.invalidated_without_reason_count,
-                self.superseded_without_chain_count,
-                self.expired_active_count,
             )
         )
 

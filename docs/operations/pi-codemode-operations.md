@@ -197,7 +197,7 @@ No private production backup was supplied or inspected.
    upstream evidence remains unknown; never retry an entire program or send.
 3. Take the consistent restricted backup above. Run the normal Alembic upgrade
    using the new distribution's `qq-ai-bot-cli init-db`, with the approved
-   database configuration. Do not stamp past earlier revisions. Verify the target distribution's actual single Alembic head (current source: `0103`), original facts, references and finite budgets before resuming.
+   database configuration. Do not stamp past earlier revisions. Verify the target distribution's actual single Alembic head (current source: `0104`), original facts, references and finite budgets before resuming.
 4. Replace only the approved Bot distribution/configuration. Verify worker
    hashes and unprivileged isolation. Start one Bot; observe original Work
    continuation and existing health checks. Do not warm it by manufacturing

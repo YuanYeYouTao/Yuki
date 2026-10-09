@@ -105,7 +105,6 @@ class MemoryEmbeddingRuntime:
                 jobs=self.jobs,
                 interval_seconds=self._settings.memory_embedding_worker_interval_seconds,
                 claim_limit=self._settings.memory_embedding_worker_claim_limit,
-                max_attempts=self._settings.memory_embedding_retry_attempts,
                 retry_initial_seconds=self._settings.memory_embedding_retry_initial_seconds,
                 metrics=self.metrics,
             )

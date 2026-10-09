@@ -14,13 +14,15 @@ T = TypeVar("T")
 class RequestCancelledError(RuntimeError):
     """An in-flight LLM request was cancelled by `/ai stop`."""
 
+    def __init__(self, message: str, *, diagnostics: dict[str, object] | None = None) -> None:
+        super().__init__(message)
+        self.diagnostics = diagnostics or {}
+
 
 class ConcurrencyManager:
     """Serialize conversations; the model executor owns provider admission."""
 
     def __init__(self, global_limit: int) -> None:
-        if global_limit <= 0:
-            raise ValueError("global_limit must be positive")
         # Holders and waiters keep strong references; idle conversations need none.
         self._locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
         self._locks_guard = asyncio.Lock()
@@ -56,7 +58,9 @@ class ConcurrencyManager:
         except asyncio.CancelledError as exc:
             if not translate_cancellation:
                 raise
-            raise RequestCancelledError("request cancelled") from exc
+            raise RequestCancelledError(
+                "request cancelled", diagnostics=getattr(exc, "diagnostics", None)
+            ) from exc
         finally:
             async with self._active_guard:
                 if self._active.get(conversation_key) is task:

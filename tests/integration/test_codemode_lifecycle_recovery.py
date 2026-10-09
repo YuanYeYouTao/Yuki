@@ -135,7 +135,10 @@ async def test_control_receipt_crash_must_not_resume_after_need_input(
             )
         # A genuinely recorded new input is required for independent handoff.
         env.control.source.update(
-            origin="user_message", actor_user_id=event.sender_user_id, trigger_event_id=event.id
+            origin="user_message",
+            actor_user_id=event.sender_user_id,
+            actor_person_id=event.author_person_id,
+            trigger_event_id=event.id,
         )
         args.update(goal="independent next task", output_kind="answer")
     before_log = list(env.domain.log)

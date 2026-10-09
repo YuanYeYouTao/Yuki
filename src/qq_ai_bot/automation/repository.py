@@ -814,6 +814,9 @@ class AutomationRepository:
                 else:
                     row.status = AutomationStatus.ACTIVE.value
                     row.next_run_at = _aware_utc(next_run_at)
+            elif status is RunStatus.CANCELLED:
+                row.status = AutomationStatus.CANCELLED.value
+                row.next_run_at = None
             elif status is RunStatus.MISSED:
                 row.next_run_at = _aware_utc(next_run_at) if next_run_at else None
                 row.status = (

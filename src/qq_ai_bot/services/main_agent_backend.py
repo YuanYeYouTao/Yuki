@@ -116,8 +116,6 @@ class MainAgentBackend(AgentToolBackend):
         self._tools_closed = False
         self._web_was_used = False
         self._web_calls_used = 0
-        self._admin_retry_constraint: tuple[str, str] | None = None
-        self._admin_terminal_failure: dict[str, object] | None = None
         self._completed_admin_mutations: set[tuple[str, str]] = set()
         self._mutation_committed = False
         self._catalog: UnifiedToolCatalog | None = None
@@ -178,11 +176,7 @@ class MainAgentBackend(AgentToolBackend):
             return True
         if self._allowed_tools is not None and name not in self._allowed_tools:
             return False
-        return not (
-            self._prompt_tools_closed()
-            or self._runtime.read_only
-            or self._admin_retry_constraint is not None
-        )
+        return not (self._prompt_tools_closed() or self._runtime.read_only)
 
     def work_query_allowed(self, action: str) -> bool:
         """Use the automation directory's read authority, without executing it.
@@ -200,7 +194,7 @@ class MainAgentBackend(AgentToolBackend):
         name = "automation_get" if action == "get" else "automation_list"
         if self._allowed_tools is not None and name not in self._allowed_tools:
             return False
-        if self._prompt_tools_closed() or self._admin_retry_constraint is not None:
+        if self._prompt_tools_closed():
             return False
         request_runtime = self._request_runtime()
         if not request_runtime.allow_automation:
@@ -251,12 +245,6 @@ class MainAgentBackend(AgentToolBackend):
             )
         if self._tools_closed:
             definitions = tuple(tool for tool in definitions if tool.name == "send_message")
-        elif self._admin_retry_constraint is not None:
-            definitions = tuple(
-                tool
-                for tool in definitions
-                if tool.name in {self._admin_retry_constraint[0], "send_message"}
-            )
         definitions = tuple(sorted(definitions, key=lambda tool: tool.name))
         self._callable_tool_names = set(capability_runtime.callable_capability_ids())
         if not self._tool_turn_recorded and definitions:
@@ -395,13 +383,6 @@ class MainAgentBackend(AgentToolBackend):
             # A child's frozen tool contract is its execution ceiling. Refuse
             # before any source validation or binding, in the original shape.
             return _worker_tool_not_declared(name)
-        if name == "send_message" and runtime.work_control is None:
-            try:
-                arguments = json.loads(arguments_json)
-            except ValueError:
-                arguments = None
-            if isinstance(arguments, dict) and "work_report" in arguments:
-                return _refused_result(name, "work_report_requires_main_work")
         if name != "send_message" and self._runtime.before_model_request is not None:
             await self._runtime.before_model_request()
         if self._allowed_tools is not None and name not in self._allowed_tools:
@@ -484,18 +465,6 @@ class MainAgentBackend(AgentToolBackend):
                 detail=f"本轮最多执行 {config.web.max_calls_per_turn} 次联网工具，"
                 "请根据已有结果回答。",
             )
-        elif (
-            name != "send_message"
-            and self._admin_retry_constraint is not None
-            and not self._matches_retry(
-                call,
-                self._admin_retry_constraint,
-            )
-        ):
-            result = _refused_result(
-                name, "retry_scope_violation", detail="参数修正只能重试刚才失败的同一个工具和操作。"
-            )
-            self._tools_closed = True
         else:
             execution_runtime = self._request_runtime()
             if mutation_identity is not None and execution_runtime.turn_token is not None:
@@ -676,39 +645,18 @@ class MainAgentBackend(AgentToolBackend):
         decoded = self._service._decode_tool_result(result)
         if self._is_mutating_call(call):
             if descriptor.provider_id != "admin" and not decoded.get("ok"):
-                self._admin_retry_constraint = None
-                self._admin_terminal_failure = None
                 return result
             if bool(decoded.get("ok")):
-                self._admin_retry_constraint = None
-                self._admin_terminal_failure = None
                 if mutation_identity is not None and mutation_committed:
                     self._completed_admin_mutations.add(mutation_identity)
                     self._mutation_committed = True
-            elif (decoded.get("error") or decoded.get("error_code")) == "duplicate_mutation":
-                # A prior identical call already committed in this turn. Keep
-                # the successful result available so the model can summarize it.
-                self._admin_retry_constraint = None
-                self._admin_terminal_failure = None
-            elif (decoded.get("error") or decoded.get("error_code")) in {
+            elif not decoded.get("retryable") and (
+                decoded.get("error") or decoded.get("error_code")
+            ) not in _ADMIN_RETRYABLE_ERRORS | {
+                "duplicate_mutation",
                 "memory_candidate_ambiguous",
                 "memory_candidate_not_found",
             }:
-                self._admin_terminal_failure = None
-                self._admin_retry_constraint = None
-                pass
-            elif bool(decoded.get("retryable")):
-                self._admin_terminal_failure = None
-                self._admin_retry_constraint = self._retry_identity(call)
-                if self._admin_retry_constraint is None:
-                    self._tools_closed = True
-            elif (decoded.get("error") or decoded.get("error_code")) in _ADMIN_RETRYABLE_ERRORS:
-                self._admin_terminal_failure = decoded
-                self._admin_retry_constraint = self._retry_identity(call)
-                if self._admin_retry_constraint is None:
-                    self._tools_closed = True
-            else:
-                self._admin_terminal_failure = decoded
                 self._tools_closed = True
         return result
 
@@ -895,30 +843,6 @@ class MainAgentBackend(AgentToolBackend):
                 separators=(",", ":"),
             )
         return call.function.name, normalized
-
-    def _retry_identity(self, call: ToolCall) -> tuple[str, str] | None:
-        if not self._is_mutating_call(call):
-            return None
-        try:
-            arguments = json.loads(call.function.arguments)
-        except json.JSONDecodeError:
-            return None
-        if not isinstance(arguments, dict):
-            return None
-        operation = next(
-            (
-                arguments[key]
-                for key in ("action", "key", "change_id", "automation_id", "id", "name")
-                if key in arguments
-            ),
-            call.function.name,
-        )
-        if not isinstance(operation, (str, int)) or isinstance(operation, bool):
-            return None
-        return call.function.name, str(operation)
-
-    def _matches_retry(self, call: ToolCall, expected: tuple[str, str]) -> bool:
-        return self._retry_identity(call) == expected
 
     def _request_runtime(self) -> ToolRuntime:
         return self._runtime

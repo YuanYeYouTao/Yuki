@@ -2178,11 +2178,7 @@ class MemoryJobRepository:
                 .where(*memory_job_claim_conditions(job))
                 .values(
                     attempts=attempts,
-                    status=(
-                        MemoryJobStatus.FAILED.value
-                        if attempts >= 3
-                        else MemoryJobStatus.PENDING.value
-                    ),
+                    status=MemoryJobStatus.PENDING.value,
                     next_attempt_at=now + timedelta(seconds=30 * attempts),
                     updated_at=now,
                     error_category=error_category[:64],

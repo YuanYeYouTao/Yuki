@@ -12,16 +12,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.memory.enums import MemoryAuthority, MemoryConflictState, MemoryKind
+from qq_ai_bot.memory.mutation.models import MemoryMutationOperation
 from qq_ai_bot.persistence.repository_records import EventRecord
-
-
-class SelfReflectionOperation(StrEnum):
-    CREATE = "create"
-    CORRECT = "correct"
-    MERGE = "merge"
-    CONTEST = "contest"
-    INVALIDATE = "invalidate"
-    NOOP = "noop"
 
 
 class SelfReflectionVisibility(StrEnum):
@@ -98,7 +90,7 @@ class SelfReflectionInput(_Contract):
 
 
 class SelfReflectionProposal(_Contract):
-    operation: SelfReflectionOperation
+    operation: MemoryMutationOperation | Literal["noop"]
     fact_ref: str | None = Field(default=None, pattern=r"^fact_[1-9]\d*$")
     merge_fact_ref: str | None = Field(default=None, pattern=r"^fact_[1-9]\d*$")
     candidate_ref: str | None = Field(default=None, pattern=r"^candidate_[1-9]\d*$")
@@ -117,9 +109,7 @@ class SelfReflectionProposal(_Contract):
     def _shape(self) -> SelfReflectionProposal:
         if self.candidate_ref is None and self.candidate_decision is not None:
             raise ValueError("candidate decision requires candidate_ref")
-        if self.operation is SelfReflectionOperation.NOOP:
-            if self.fact_ref or self.merge_fact_ref or self.evidence_refs:
-                raise ValueError("noop cannot reference facts or evidence")
+        if self.operation == "noop":
             if self.candidate_decision is SelfCandidateDecision.ACCEPT:
                 raise ValueError("candidate acceptance requires a memory mutation")
             return self
@@ -130,14 +120,14 @@ class SelfReflectionProposal(_Contract):
             raise ValueError("candidate rejection or deferral requires noop")
         if not self.evidence_refs:
             raise ValueError("self-reflection mutations require trusted evidence aliases")
-        if self.operation is SelfReflectionOperation.CREATE:
+        if self.operation is MemoryMutationOperation.CREATE:
             if self.fact_ref or self.merge_fact_ref:
                 raise ValueError("create cannot reference an existing fact")
             if not all((self.category, self.kind, self.memory_key, self.content)):
                 raise ValueError("create requires category, kind, key, and content")
         elif self.fact_ref is None:
             raise ValueError("existing-fact operation requires fact_ref")
-        if self.operation is SelfReflectionOperation.MERGE and self.merge_fact_ref is None:
+        if self.operation is MemoryMutationOperation.MERGE and self.merge_fact_ref is None:
             raise ValueError("merge requires merge_fact_ref")
         return self
 
@@ -166,12 +156,6 @@ class SelfEpisodePassage(_Contract):
     def _trusted_evidence_aliases(self) -> SelfEpisodePassage:
         if not self.content.strip():
             raise ValueError("episode passage content must not be blank")
-        if len(set(self.evidence_refs)) != len(self.evidence_refs):
-            raise ValueError("episode evidence aliases must be unique")
-        if any(
-            not (ref.startswith("event_") or ref.startswith("tool_")) for ref in self.evidence_refs
-        ):
-            raise ValueError("episode evidence may only reference event or tool aliases")
         return self
 
 

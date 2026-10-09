@@ -28,13 +28,7 @@ from qq_ai_bot.persistence.models import (
 )
 from qq_ai_bot.tool_results.access import ArtifactAccess
 
-_MAX_STRUCTURED_ARTIFACT_BYTES = 4 * 1024 * 1024
 _PRIVATE_MEDIA_TYPE = "application/x-yuki-prepared-images"
-_MAX_JSON_PATH_PARTS = 32
-_MAX_JSON_QUERY_CHARACTERS = 256
-_MAX_JSON_SCAN_NODES = 50_000
-_MAX_JSON_SCAN_DEPTH = 64
-_MAX_JSON_PAGE_ITEMS = 100
 
 
 class ToolArtifactRepository:
@@ -369,10 +363,6 @@ class ToolArtifactRepository:
     ) -> dict[str, object] | None:
         if offset < 0 or limit <= 0 or max_characters <= 0:
             raise ValueError("artifact offset must be non-negative and limit must be positive")
-        if operation != "text" and len(path) > _MAX_JSON_PATH_PARTS:
-            return _artifact_error("artifact_path_too_deep", "Artifact 路径层级过深")
-        if operation == "search" and len(query) > _MAX_JSON_QUERY_CHARACTERS:
-            return _artifact_error("artifact_query_too_long", "Artifact 搜索词过长")
         if not handle_id.isalnum() or len(handle_id) > 64:
             return None
         async with self._database.sessions() as session:
@@ -399,17 +389,6 @@ class ToolArtifactRepository:
         root = self._root.resolve()
         if root not in file_path.parents:
             return None
-        allowed_bytes = (
-            self._max_media_bytes + 65536
-            if media_type == _PRIVATE_MEDIA_TYPE
-            else _MAX_STRUCTURED_ARTIFACT_BYTES
-        )
-        if operation != "text" and byte_size > allowed_bytes:
-            return _artifact_error(
-                "artifact_too_large",
-                "Artifact 超过结构化读取的安全大小上限",
-                byte_size=byte_size,
-            )
         try:
             raw = await asyncio.to_thread(self._read_bounded, file_path, byte_size)
             if len(raw) != byte_size or (digest and hashlib.sha256(raw).hexdigest() != digest):
@@ -501,7 +480,7 @@ class ToolArtifactRepository:
                 resolved,
                 path=path,
                 offset=offset,
-                limit=min(limit, _MAX_JSON_PAGE_ITEMS, item_limit or _MAX_JSON_PAGE_ITEMS),
+                limit=min(limit, item_limit) if item_limit is not None else limit,
                 base=base,
                 max_characters=max_characters,
             )
@@ -512,7 +491,9 @@ class ToolArtifactRepository:
                 offset=offset,
                 limit=limit
                 if isinstance(resolved, str)
-                else min(limit, _MAX_JSON_PAGE_ITEMS, item_limit or _MAX_JSON_PAGE_ITEMS),
+                else min(limit, item_limit)
+                if item_limit is not None
+                else limit,
                 base=base,
                 max_characters=max_characters,
             )
@@ -523,7 +504,7 @@ class ToolArtifactRepository:
             path=path,
             query=query,
             offset=offset,
-            limit=min(limit, _MAX_JSON_PAGE_ITEMS, item_limit or _MAX_JSON_PAGE_ITEMS),
+            limit=min(limit, item_limit) if item_limit is not None else limit,
             base=base,
             max_characters=max_characters,
         )
@@ -952,7 +933,6 @@ def _search_json(
     folded = query.casefold()
     matches: dict[tuple[str | int, ...], dict[str, object]] = {}
     scanned_nodes = 0
-    scan_truncated = False
 
     def add_match(
         record_path: tuple[str | int, ...],
@@ -968,17 +948,9 @@ def _search_json(
             },
         )
 
-    def walk(item: object, item_path: tuple[str | int, ...], depth: int = 0) -> None:
-        nonlocal scanned_nodes, scan_truncated
-        if scan_truncated:
-            return
-        if depth > _MAX_JSON_SCAN_DEPTH:
-            scan_truncated = True
-            return
+    def walk(item: object, item_path: tuple[str | int, ...]) -> None:
+        nonlocal scanned_nodes
         scanned_nodes += 1
-        if scanned_nodes > _MAX_JSON_SCAN_NODES:
-            scan_truncated = True
-            return
         if isinstance(item, dict):
             for key in sorted(item, key=lambda candidate: str(candidate).casefold()):
                 child = item[key]
@@ -992,7 +964,7 @@ def _search_json(
                     if folded in _scalar_text(child).casefold():
                         add_match(item_path, child_path, item)
                 else:
-                    walk(child, child_path, depth + 1)
+                    walk(child, child_path)
         elif isinstance(item, list):
             for index, child in enumerate(item):
                 child_path = (*item_path, index)
@@ -1000,7 +972,7 @@ def _search_json(
                     if folded in _scalar_text(child).casefold():
                         add_match(child_path, child_path, child)
                 else:
-                    walk(child, child_path, depth + 1)
+                    walk(child, child_path)
         elif folded in _scalar_text(item).casefold():
             add_match(item_path, item_path, item)
 
@@ -1024,8 +996,7 @@ def _search_json(
             "query": query,
             "matches": [*rendered, candidate],
             "next_offset": None,
-            "scan_truncated": scan_truncated,
-            "scanned_nodes": min(scanned_nodes, _MAX_JSON_SCAN_NODES),
+            "scanned_nodes": scanned_nodes,
         }
         if not _fits_json_budget(aggregate, max_characters):
             break
@@ -1045,8 +1016,7 @@ def _search_json(
         "query": query,
         "matches": rendered,
         "next_offset": offset + len(rendered) if has_more else None,
-        "scan_truncated": scan_truncated,
-        "scanned_nodes": min(scanned_nodes, _MAX_JSON_SCAN_NODES),
+        "scanned_nodes": scanned_nodes,
     }
 
 
