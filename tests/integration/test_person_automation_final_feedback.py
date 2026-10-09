@@ -199,8 +199,9 @@ async def test_suspended_agent_preserves_automation_run_until_original_work_resu
 
 
 @pytest.mark.parametrize("principal", ["person", "self"])
+@pytest.mark.parametrize("wait_kind", ["need_input", "time_due"])
 async def test_public_cancel_settles_owning_run_without_error_or_new_request(
-    database, tmp_path, principal
+    database, tmp_path, principal, wait_kind
 ):
     from datetime import timedelta
 
@@ -232,22 +233,49 @@ async def test_public_cancel_settles_owning_run_without_error_or_new_request(
         0,
         tool_calls=(
             ToolCall(
-                "wait-original-input", ToolFunction("task_control", '{"action":"need_input"}')
+                "wait-original-input",
+                ToolFunction(
+                    "task_control",
+                    json.dumps(
+                        {"action": "need_input"}
+                        if wait_kind == "need_input"
+                        else {
+                            "action": "wait",
+                            "conditions": [{"kind": "time_due", "after_seconds": 3600}],
+                        }
+                    ),
+                ),
             ),
         ),
     )
     await process()
     async with database.sessions() as reader:
         original = dict((await reader.execute(select(work))).mappings().one())
-    assert original["state"] == "waiting_user"
+    assert original["state"] == (
+        "waiting_user" if wait_kind == "need_input" else "waiting_external"
+    )
+    if wait_kind == "time_due":
+        # Owner polls retain the original wait without another model/tool.
+        await process()
+        await process()
+        assert len(case.provider.requests) == 1
     cancelled = await public_action(database, original, "cancel")
     assert cancelled.success
+    async with database.sessions() as reader:
+        released = await reader.get(AutomationModel, case.row.id)
+        assert released.claimed_by is None
+        if wait_kind == "time_due":
+            from qq_ai_bot.runtime.work_wait_schema import waits
+
+            assert await reader.scalar(select(waits.c.status)) == "cancelled"
     await process()
     async with database.sessions() as reader:
         terminal = (await reader.execute(select(work))).mappings().one()
         run = await reader.get(AutomationRunModel, case.run.id)
         automation = await reader.get(AutomationModel, case.row.id)
         assert terminal["id"] == original["id"] and terminal["state"] == "cancelled"
+        assert terminal["source_json"] == original["source_json"]
+        assert terminal["model_requests"] == original["model_requests"] == 1
         assert run.status == "cancelled" and run.finished_at is not None
         assert run.error_category is None and run.llm_calls == 1
         from qq_ai_bot.persistence.models import AutomationStepRunModel

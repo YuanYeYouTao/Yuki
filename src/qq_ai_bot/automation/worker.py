@@ -12,7 +12,6 @@ from qq_ai_bot.automation.executor import AutomationExecutor
 from qq_ai_bot.automation.models import RunStatus
 from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.config import Settings
-from qq_ai_bot.runtime.effect_queries import RuntimeEffectQueries
 from qq_ai_bot.runtime.lease_heartbeat import supervise_lease
 from qq_ai_bot.time.schedules import schedule_after_completion
 from qq_ai_bot.time.service import TimeContextService
@@ -35,7 +34,6 @@ class AutomationWorker:
         self._repository = repository
         self._executor = executor
         self._time = time_service
-        self._effect_queries = RuntimeEffectQueries(repository._database)
         self._worker_id = uuid.uuid4().hex
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -203,24 +201,12 @@ class AutomationWorker:
             return
         result = await self._executor.execute(automation, run)
         if result.status is RunStatus.RUNNING:
-            waiting_work = result.summary.get("pending_work_id")
-            signal_waiting = isinstance(
-                waiting_work, str
-            ) and await self._effect_queries.has_active_wait(waiting_work)
             await self._repository.release_claim(
                 automation.id,
                 worker_id=automation.claimed_by or self._worker_id,
                 next_run_at=scheduled_for,
-                not_before=self._time.clock.now() + timedelta(days=365)
-                if signal_waiting
-                else self._time.clock.now() + timedelta(seconds=5),
+                not_before=self._time.clock.now() + timedelta(seconds=5),
             )
-            if (
-                isinstance(waiting_work, str)
-                and signal_waiting
-                and not await self._effect_queries.has_active_wait(waiting_work)
-            ):
-                await self._repository.wake_claim(automation.id)
             return
         finished = self._time.clock.now()
         recorded = await self._repository.finish_run(

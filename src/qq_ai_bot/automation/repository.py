@@ -610,19 +610,6 @@ class AutomationRepository:
                 .values(**values)
             )
 
-    async def wake_claim(self, automation_id: int) -> None:
-        """Clear a sleeping claim after a bound Work signal races with release."""
-        async with self._database.sessions() as session, session.begin():
-            await session.execute(
-                update(AutomationModel)
-                .where(
-                    AutomationModel.id == automation_id,
-                    AutomationModel.claimed_by.is_(None),
-                    AutomationModel.status == AutomationStatus.ACTIVE.value,
-                )
-                .values(claimed_until=None)
-            )
-
     async def claim_expiry(self, automation_id: int, worker_id: str) -> float | None:
         async with self._database.sessions() as session:
             value = await session.scalar(

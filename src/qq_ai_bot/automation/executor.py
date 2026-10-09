@@ -53,7 +53,6 @@ from qq_ai_bot.identity.db_models import (
     SpaceBindingModel,
 )
 from qq_ai_bot.identity.routing import PresenceRouter, RouteSendError
-from qq_ai_bot.runtime.effect_queries import RuntimeEffectQueries
 from qq_ai_bot.runtime.principal import SELF, PrincipalRef
 from qq_ai_bot.time.service import TimeContextService
 
@@ -123,7 +122,6 @@ class AutomationExecutor:
         self._settings = settings
         self._registry = registry
         self._repository = repository
-        self._effect_queries = RuntimeEffectQueries(repository._database)
         self._time = time_service
         self._gateway_factory = gateway_factory
         self._router = router
