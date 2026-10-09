@@ -12,7 +12,7 @@
 
 最小充分改动使用现有唯一 `YukiRuntime`、Rollup signal/job/worker、覆盖点、冻结投影、来源版本、原 Work journal 和回执。不新增压缩运行时、第二套任务调度器、永久“摘要已通知”状态或强制进度发送器。分批是资源调度粒度，不是“必须压三批”的业务条件。
 
-实施前阅读 [共同开发约束](development-contract.md)、[Conversation Rollup](conversation-rollup.md)、[主执行合同](main-agent-runtime.md)、[Memory](memory-v2.md)、[Self Reflection](self-reflection.md)、[执行诊断](execution-trace.md)、[插件架构](../plugin-development/architecture.md)及具体模块文档。此前 [Work 上下文任务书](work-context-and-chat-continuation-taskbook.md)的历史/线索/原件分工继续使用；其中与本次软整理等待规则冲突的说明在实施时直接改写。
+实施前阅读 [共同开发约束](development-contract.md)、[Conversation Rollup](conversation-rollup.md)、[主执行合同](main-agent-runtime.md)、[Memory](memory-v2.md)、[Self Reflection](self-reflection.md)、[执行诊断](execution-trace.md)、[插件架构](../plugin-development/architecture.md)及具体模块文档。历史/线索/原件分工见[主 Agent 合同](main-agent-runtime.md)；该轮原 Work 上下文交付见[实施记录](../operations/work-context-delivery-2026-10-03.md)。
 
 ## 2. 已查明的事实及证据边界
 

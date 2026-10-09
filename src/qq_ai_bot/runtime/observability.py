@@ -1,13 +1,12 @@
 """Ambient turn correlation and the content-free observation contract.
 
 R1 introduces an opaque ``runtime_turn_id`` propagated to the persistence
-write points of model invocations, tool invocations and memory recall
-receipts.  Instead of changing every executor/repository signature,
+write points of model and tool invocations. Instead of changing every signature,
 the id travels as ambient context (a ``ContextVar``), following the same
 convention as OpenTelemetry context propagation.
 
 Assumption (declared, load-bearing): one turn == one asyncio task tree.
-Tasks spawned within a turn (media preparation, attribution enqueue) inherit
+Tasks spawned within a turn (such as media preparation) inherit
 the correlation, which is the desired attribution.  Entry points that start
 work *not* belonging to the current turn (autonomous scheduler loops, plugin
 background workers) must bind a fresh correlation for each unit of work; if

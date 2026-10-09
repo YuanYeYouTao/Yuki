@@ -1,6 +1,8 @@
 # Evidence worker and historical activation repair
 
-Current patch: Yuki 3.8.2, schema 0051. No migration, model calls, personality changes,
+Historical repair record for 2026-09-11, not a current repair procedure. Activation backfill, reinforcement and the shared compaction lock were retired by the 2026-10-09 Memory deletion. Current maintenance is documented in [Memory source audit and maintenance](memory-quality.md).
+
+Recorded patch: Yuki 3.8.2, schema 0051. No migration, model calls, personality changes,
 history reset, embedding rebuild or recall-policy changes.
 
 ## Evidence compaction

@@ -6,8 +6,8 @@
 默认示例仍是 DeepSeek，不会自动覆盖部署中的 `.env`、模型路由或人格提示词。
 部署文件统一为 `webui-config/model_profiles.toml`，API Key sidecar 与它同目录；旧部署
 `config/model_profiles.toml` 的迁移步骤见[运维说明](../operations/model-profile-path-migration.md)。
-指定的模型文件缺失会阻止启动；没有 TOML 的旧环境变量路由只允许显式临时开启
-`MODEL_PROFILES_LEGACY_COMPATIBILITY=true`，不能作为无声回退。
+指定的模型文件缺失会阻止启动；配置必须是完整 v3 TOML。环境变量仍可由
+`base_url_env/model_env/api_key_env` 显式引用，不再提供无 TOML 路由回退。
 WebUI 成功保存模型连接与任务路由后，新任务立即使用新配置；已经开始的模型请求固定原连接，
 持久 Work 的下次激活因 Profile revision 变化显式开启新链，保留原 Work ID、预算和执行证据，
 不重跑已完成的工具效果。
@@ -149,10 +149,9 @@ Gemini 3.8 Flash 的官方模型 ID 是 `gemini-3.8-flash`。WebUI 的 Google Ge
 按上游 `cachedContentTokenCount` 统计缓存。Google 搜索桥须在此连接明确选择；旧连接保留
 原搜索选择，未配置可用搜索后端时明确不可用。此连接不实现 Interactions API 或 Live/TTS；这些能力不能因为模型
 本身支持就标成已接入。
-无 TOML 的兼容配置也使用同一个客户端池；显式 `LLM_PROVIDER=anthropic/gemini`
-分别采用对应原生协议，其他兼容供应商保持 Chat。额外命名的 endpoint/model/key 变量需要
-存在于进程环境；Docker Compose 的 env_file 会加载 `.env`。本地 CLI 若只使用 Settings
-读取 `.env`，其默认 LLM/LLM_FLASH 字段可用，额外变量须先导出，不会偷偷扫描其他密钥文件。
+TOML 中的显式 protocol 选择协议。额外命名的 endpoint/model/key 环境变量需要
+存在于进程环境；Docker Compose 的 env_file 会加载 `.env`。本地 CLI 的标准
+LLM/LLM_FLASH 设置可作为 TOML 引用值，其他变量须先导出，不扫描额外密钥文件。
 
 ## 私有状态与恢复
 

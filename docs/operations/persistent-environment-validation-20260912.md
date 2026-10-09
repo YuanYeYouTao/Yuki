@@ -107,7 +107,7 @@ No broad Docker volume or image prune was used.
 
 ## Retained recovery point
 
-Only this consistent backup remains:
+At the end of that deployment, the following consistent backup was retained:
 
 `/opt/yuki-qqbot/backups/pre-environment-final-20260912T145430`
 

@@ -9,7 +9,7 @@ Yuki 产品版本、Plugin API、Feature 和各 Schema 版本相互独立。
 - SDK 合同变化时直接提升 Plugin API 版本，并要求插件同步升级。
 - 插件不得依赖 `_` 开头属性、Host 类或数据库表结构。
 
-从 3.1 升级见 [API 3.3 迁移](api-3.3-migration.md)。更早版本先核对 [API 3.1 历史迁移](api-3.1-migration.md)、[API 3.0 历史迁移](api-3.0-migration.md)及 [API 2.0 历史迁移](api-2.0-migration.md)，最终按 3.3 的精确合同适配。
+从 3.1 升级先完成 [API 3.2 语音退役](api-3.2-migration.md)，再完成 [API 3.3 迁移](api-3.3-migration.md)。更早版本先核对 [API 3.1 历史迁移](api-3.1-migration.md)、[API 3.0 历史迁移](api-3.0-migration.md)及 [API 2.0 历史迁移](api-2.0-migration.md)，最终按 3.3 的精确合同适配。
 
 Manifest 同时使用：
 

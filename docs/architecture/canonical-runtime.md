@@ -1,6 +1,6 @@
 # Yuki 3.8 canonical runtime
 
-本文描述 Yuki 3.8 的现行架构合同，不是迁移任务书。3.8 运行时只支持 canonical schema，
+本文描述永久主体与 canonical 运行时合同；运行时只支持 canonical schema，
 数据库版本以随包 Alembic head 为准，启动由 `persistence/schema_guard.py` 读取；
 当前应用与数据库基线统一见 [README](../../README.md)。
 跨模块开发遵循 [共同架构约束](development-contract.md)。
@@ -137,19 +137,19 @@ future HTTP/WebUI | current CLI | current QQ commands
           repositories + runtime registries
 ```
 
-未来 HTTP 层只能把已认证身份转换为 `ControlPrincipal`、`DecisionContext` 和 canonical target，
+HTTP 层把已认证身份转换为 `ControlPrincipal`、`DecisionContext` 和 canonical target，
 然后调用同一 Query/Command 服务。它不得直接查询 ORM、调用 OneBot 私有 API、读取 secret 或把
 QQ 消息证明伪造成 Web 请求。分页使用 opaque cursor；mutation 使用 request ID、expected revision、
 同步审计和幂等回执。
 
-3.8 不提供管理 HTTP API、登录或前端，也不开放新管理端口。新增 WebUI 时应实现 transport、
-认证、CSRF 和内容脱敏，而不是复制业务服务。
+正式 HTTP、登录与前端已接入同一控制面，认证、CSRF 和内容权限见
+[WebUI 合同](webui-console.md)。页面不复制领域服务。
 
 `ApplicationContainer.control_plane` 已装配共享 Query/Command 服务及运行中的配置、连接、
 自动化、插件和 Memory 依赖；access 从服务器配置认证 CLI/Web operator，
-公开 wire 合同仅转换已核验的 DTO，不直接开放 HTTP。现有 QQ/CLI 仍有直接调用共享领域服务的入口，图中边界是
+公开 wire 合同仅转换已核验的 DTO；HTTP transport 复用这套转换。现有 QQ/CLI 仍有直接调用共享领域服务的入口，图中边界是
 统一接入方向，不表示所有入口已经迁入 ControlPlaneBundle。
-配置、revision、分页、事务外执行、原操作查询和管理 HTTP 后续边界见
+配置、revision、分页、事务外执行、原操作查询和管理 HTTP 边界见
 [Control Plane 地基](control-plane-foundation.md)。
 
 ## 数据库与安全边界
@@ -185,7 +185,7 @@ JSON 候选检查解码后的键和值，脱敏先解析再序列化，数字账
 - secret 永不回读；日志与错误不输出 token、Cookie、完整外部 ID、消息正文或本地敏感路径。
 
 部署与数据升级分别见 [SnowLuma Provider 部署与切换](../deployment/snowluma.md) 和
-[Yuki 3.8.2 升级指南](../upgrade-3.8.2.md)。
+[当前升级指南](../upgrade-3.8.4.md)。
 
 ## 后台领取的事务边界
 

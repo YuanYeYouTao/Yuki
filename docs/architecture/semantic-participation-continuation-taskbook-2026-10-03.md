@@ -230,7 +230,7 @@ Bot DB 与 participation DB 没有共同原子事务。已发送以原 Social �
 | Host `docs/architecture/semantic-participation.md` | 分开普通续接与 SELF 机会；修改“只有 Jev 选择锚点才续聊”“自报只用于主 SELF”等现行限制；说明来源、纠正、快照与联合版本 |
 | Host `docs/architecture/autonomous-participation-model.md` | 自主来源率/Work 密度仅决定新自主行动，不作为已参与普通聊天的接话门槛；保留无来源模型的真实公式 |
 | Host `docs/architecture/main-agent-runtime.md` | 真实用户 continuation 来源、普通轮局部反馈、原 Work 输入匹配及缓存后部投影；不制造第二执行链 |
-| Host `docs/architecture/work-context-and-chat-continuation-taskbook.md` | 普通群输入可成为前台持续候选，仍保留“被动观察不直接唤醒等待 Work”的原规则 |
+| Host `docs/architecture/main-agent-runtime.md` | 普通群输入可成为前台持续候选，仍保留“被动观察不直接唤醒等待 Work”的原规则 |
 | Host `docs/architecture/development-contract.md`、`canonical-runtime.md` | 只在此次改变事实边界时改对应句，不把经验参数固化成共同约束 |
 | Host 架构入口、README、配置示例、管理参数 schema | 指向唯一现行合同，展示真实配置和禁用行为；区分源码默认、挂载值与生效状态 |
 | Host 旧 V6/自主反馈任务书与报告 | 与新入口冲突的当前指导删去或改成清楚的历史说明，移除过时实施入口；不删除仍被使用的回执/恢复事实 |

@@ -2,7 +2,7 @@
 
 状态：2026-10-03，Pi 源码静态核查，未独立运行 Pi demo。Yuki 对应实施已随 PR #228 合并部署，证据见[交付记录](../operations/work-context-delivery-2026-10-03.md)；本文不证明真实群聊能力或缓存收益。
 
-Pi 源码固定在 [`9fba660cf1caca0ade5bea72269352416e595a19`](https://github.com/earendil-works/pi/tree/9fba660cf1caca0ade5bea72269352416e595a19)，比较 [Work 上下文任务书](work-context-and-chat-continuation-taskbook.md) 与 Yuki 的实施。Pi 1.0 和实验性 Pi Durable 的状态见[官方发布说明](https://earendil.com/posts/pi-1-0/)。
+Pi 源码固定在 [`9fba660cf1caca0ade5bea72269352416e595a19`](https://github.com/earendil-works/pi/tree/9fba660cf1caca0ade5bea72269352416e595a19)，比较当时的 Work 上下文设计与 Yuki 的[实施记录](../operations/work-context-delivery-2026-10-03.md)。Pi 1.0 和实验性 Pi Durable 的状态见[官方发布说明](https://earendil.com/posts/pi-1-0/)。
 
 ## 结论与裁决
 

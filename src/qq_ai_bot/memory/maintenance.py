@@ -1,4 +1,4 @@
-"""Local-only Memory V2 expiration and stale-fact maintenance worker."""
+"""Local-only Memory expiration, evidence cleanup and consistency maintenance."""
 
 from __future__ import annotations
 

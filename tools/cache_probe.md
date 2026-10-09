@@ -37,7 +37,7 @@ uv run python -m tools.cache_probe --live --profiles private-model-profiles.toml
 | C05 | 第一段后关闭 SQLite pool，重建 repository/session；按原 effect ID 只读对账、预算保留 |
 | C06 | 原 compact_ordinary 的付费分页摘要、新模型链与后续请求；无新增 Work，辅助调用单列 |
 | C08 | 同一个 transcript 保留每次完整 assistant/opaque 输出并追加下一条 user；不混摘要或对照 |
-| C07 | Profile 声明的真实 inline 图片；未连接外部 MCP，MCP 部分如实标不适用 |
+| C07 | Profile 声明的真实 inline 图片；MCP 已退役；该场景只核查声明的原生图片输入 |
 
 C03 使用合成公共前缀直接驱动仓库和 session，不能代替完整 Main 编排、隐私或真实群聊
 验收。C05 是 SQLite/repository/session 重开，不冒称完整进程重启。C06 默认是普通

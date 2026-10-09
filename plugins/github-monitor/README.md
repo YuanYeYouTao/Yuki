@@ -20,8 +20,8 @@ GitHub Monitor 是 Yuki 的只读 GitHub 仓库管家。它定时读取一个或
 
 ## 运行要求
 
-- Yuki `>=3.8.1,<4.0`
-- Plugin API `3.1`
+- Yuki `>=3.9.0,<4.0`
+- Plugin API `3.3`
 - Bot 可以访问 `https://api.github.com`
 - 私有仓库必须提供可读取目标仓库的 GitHub Token
 
@@ -53,8 +53,10 @@ PLUGIN_DIRECT_COMMAND_BINDINGS={"/github":"github-monitor:github","*":"io.github
 
 只重建 Bot 可以保留 NapCat 容器与 QQ 登录状态：
 
+在线 CLI 需要通过环境提供已有操作员的 `YUKI_CONTROL_CREDENTIAL`，并令 `WEBUI_ORIGIN` 指向实际 Host；不要在命令行写凭据。批准前审阅下面列出的 Manifest 权限，CLI 不传 `--permission` 只批准空集合。
+
 ```bash
-docker compose up -d --build --no-deps bot
+docker compose up -d --no-deps --force-recreate bot
 ```
 
 ### 3. 批准并启用插件
@@ -71,7 +73,7 @@ docker compose up -d --build --no-deps bot
 
 ```bash
 docker compose exec -u 10001:10001 bot qq-ai-bot-cli plugin inspect github-monitor
-docker compose exec -u 10001:10001 bot qq-ai-bot-cli plugin approve github-monitor
+docker compose exec -u 10001:10001 bot qq-ai-bot-cli plugin approve github-monitor --permission background.worker --permission network.http.allowlisted --permission storage.private --permission plugin.config.read --permission plugin.config.write --permission command.register --permission notification.publish --permission notification.agent --permission media.artifact.create
 docker compose exec -u 10001:10001 bot qq-ai-bot-cli plugin enable github-monitor
 ```
 
@@ -122,7 +124,7 @@ docker compose exec -u 10001:10001 bot qq-ai-bot-cli plugin enable github-monito
 | `/github rate-limit` | 查看最近一次轮询记录的 GitHub Rate Limit 信息 |
 | `/github outbox` | 查看通知 Outbox 与后台点评任务状态 |
 
-`sync replay_recent` 会产生真实通知，排障时优先使用 `test`，不要用回放代替普通测试。
+`sync replay_recent` 会产生真实通知，`test` 也会真实发送合成通知，执行前核对已授权测试目标；日常排障先读取 `status`、`outbox` 和停写 doctor，不用回放代替诊断。
 `pause` 同时停止 ingest 与 drain；`sync` 在 pending/inflight 未排空、存在 gap 或 rebaseline 进行中时
 失败关闭，不会删除队列追赶最新事件。
 
@@ -161,8 +163,7 @@ Push 通知包含：
 
 Release 通知包含仓库、发布者、版本标签、正式版/预发布状态、目标分支、附件数量和最多三行发布
 说明。其他事件发送中文文本摘要。启用 `ask_agent` 后，Host 为该通知建立独立、有 generation 与
-授权 freshness 围栏的后台 turn；通知不会伪装成普通会话 system 消息。常规聊天只可能看到有界的
-`external_untrusted` recent-event digest。外部文本不能给 Agent 授权，也不能要求它修改记忆、
+授权 freshness 围栏的后台 turn；通知不会伪装成普通会话 system 消息。常规聊天不自动附加旧外部事件摘要。外部文本不能给 Agent 授权，也不能要求它修改记忆、
 自动化、配置或调用其他工具。
 
 合批只发生在 pending FIFO 的相邻前缀：Create/Delete 还要求 actor、`ref_type` 和目标策略快照
@@ -196,7 +197,7 @@ Release 通知包含仓库、发布者、版本标签、正式版/预发布状�
 目录上执行：
 
 ```bash
-YUKI_VERSION=3.8.1 docker compose run --rm --no-deps --entrypoint python bot \
+docker compose run --rm --no-deps --entrypoint python bot \
   /app/plugins/github-monitor/doctor.py
 ```
 
@@ -204,7 +205,7 @@ YUKI_VERSION=3.8.1 docker compose run --rm --no-deps --entrypoint python bot \
 可在同样的停写条件下显式导入：
 
 ```bash
-YUKI_VERSION=3.8.1 docker compose run --rm --no-deps --entrypoint python bot \
+docker compose run --rm --no-deps --entrypoint python bot \
   /app/plugins/github-monitor/doctor.py --apply-legacy-import
 ```
 

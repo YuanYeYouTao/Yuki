@@ -1,4 +1,4 @@
-# Third-party notices for the Code Mode experiment
+# Third-party notices for optional Code Mode
 
 Yuki's original [LICENSE](LICENSE) is retained. This record covers third-party
 components used by the Code Mode distribution. Design references are documented
@@ -47,12 +47,13 @@ The reproducible source/build procedure is
 were identical on the repeated local build; wheel packaging timestamps can
 change its archive hash, so each build records its own wheel hash.
 
-Both Dockerfiles retain the generated target audit and separate Yuki,
-Monty, and typeshed licenses. Compilation and audit use separate build layers;
+The Dockerfile's optional `codemode` target retains the generated target audit and
+separate Yuki, Monty, and typeshed licenses. The default `direct` target does not
+ship the Monty binding, worker, or launcher. Compilation and audit use separate build layers;
 transient public downloads retry a bounded number of times, and exhausted
 transport failures fail the audit rather than becoming missing-license records.
-Image build results are recorded in the delivery document; no image has been
-published or deployed.
+Build and distribution results belong to their dated delivery records; a local
+Code Mode build does not establish current publication or production capacity.
 
 ## Moby container security profiles
 

@@ -1,10 +1,8 @@
 # Code Mode 正确性修复记录（2026-10-07）
 
-> 本文为 Pi 阶段历史证据；当前模式、工具批次和合同以 [Tool Kernel](tool-kernel.md) 与 [主 Agent](main-agent-runtime.md) 为准。
-
 本轮依据用户提供的最小修复任务书及证据 ZIP，修复实验分支
 `0f24a3b590d103eb547483161fb5873d5a78d032`，整合 main
-`25cd6083015924bf80405ca7c346f84a995f6ebb`。当前固定合同为 revision 14；
+`25cd6083015924bf80405ca7c346f84a995f6ebb`。该轮固定合同为 revision 14；
 Pi 语义实现仍是本地代码，Monty 是实际 worker 依赖。没有部署或生产 QQ 验收。
 
 ## 复现与修复
@@ -50,7 +48,7 @@ Git archive，并核验 import 路径，main 没有导入实验源码。
 
 完整服务清单为 **68 项完整执行合同 / 39 项模型直调政策**。不启用 web 的隔离装配为37，
 旧 inventory fixture37 缺 memory_change/read_tool_artifact；历史 fixture33 不代表当前部署。
-见[当前完整清单及 wrapper 映射](pi-codemode-evidence/correctness-20261007/current-manifest.json)。
+见[该轮完整清单及 wrapper 映射](pi-codemode-evidence/correctness-20261007/current-manifest.json)。
 
 ## 测试代码与测量修正
 

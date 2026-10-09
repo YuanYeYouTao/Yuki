@@ -65,7 +65,7 @@ Yuki 3.0.0 对 MemoryFacade 做了正式 contract freeze：稳定方法为 `list
 `search`、`add`、`update`、`delete`。插件不能访问原始向量、历史 rebuild、质量 fixture、全局
 生产 audit、其他人物证据或 Provider API Key；上述能力不会因插件声明额外 permission 而开放。
 
-## LLM / Agent / AgentSession
+## Agent / AgentSession
 
 ```python
 agent.result(work_id) -> PluginResult
@@ -106,7 +106,7 @@ notifications.status() -> Mapping[str, int]
 后台发布不需要伪造当前用户调用，但只能投向 Host 已授权目标。外部事件以 canonical
 `external_event` 进入 EventLedger，不作为普通 user/assistant/system history；文字、媒体和可选
 Agent turn 由持久 Outbox 独立发送。当前通知只在其后台 turn 的不可信 current input 出现一次，
-常规会话最多看到有界的 recent-event digest。Grant 的增删仍要求真实 `SUPERUSERS` 调用上下文。
+常规会话不自动附加旧外部事件摘要；需要历史事实时由 Agent 显式检索。Grant 的增删仍要求真实 `SUPERUSERS` 调用上下文。
 
 `plugin_id + event_key + target` 只负责定位，Host 还会校验完整请求身份：`external_source`、
 `event_type`、时间、payload、summary、text、`ask_agent`、intent 与按顺序排列的媒体

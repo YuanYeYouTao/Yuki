@@ -2,7 +2,7 @@
 
 Yuki 通过独立的 `yuki_plugin_sdk` 声明扩展，由 Host 负责发现、批准、生命周期、权限裁剪和运行时 Facade。插件不能直接取得 `ApplicationContainer`、数据库 Session、NoneBot Bot、原始事件、完整设置或任何密钥集合。
 
-Plugin API `3.3` 移除语音合成/发送 SDK，保留 ASR、历史语音和工具结果媒体的显式选择；MCP 在 3.1 已退役。Host 只加载精确声明 3.3 的插件；升级见 [API 3.3 迁移](api-3.3-migration.md)。
+Plugin API `3.3` 移除直接模型 LLMFacade；3.2 已移除语音合成/发送 SDK，保留 ASR、历史语音和工具结果媒体的显式选择；MCP 在 3.1 已退役。Host 只加载精确声明 3.3 的插件；升级见 [API 3.3 迁移](api-3.3-migration.md)。
 
 插件 Prompt Fragment 会先由现有 `PromptRegistry` 校验，再作为一个 `context.plugins` 不可信贡献进入统一 Runtime Envelope；不会为每个插件重复一层系统包装。插件 Agent 会话通过 `ModelTask.PLUGIN_AGENT_SESSION` 使用显式模型路由。插件工具会被适配为带 namespace 的 `CapabilityDescriptor`；主 Agent 声明在部署内冻结；批准权限、调用来源和 effect/risk 在执行时核验，目录检索不改变已声明工具。改名不是安全策略。
 

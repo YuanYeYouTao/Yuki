@@ -20,7 +20,7 @@ wheel 和 Dockerfile 已取消这项打包配置。本次改动不改变模型�
 
 ## 参考行为与现行实现
 
-| 固定参考 | 参考行为 / 实际接口 | 目标 | 当前状态 |
+| 固定参考 | 参考行为 / 实际接口 | 目标 | 2026-10-05 实施证据 |
 | --- | --- | --- | --- |
 | Pi `packages/agent/src/agent-loop.ts` L102-L327 | 响应、工具结果和下一请求的轮次顺序；Yuki 用三个固定执行边界与请求预算实现 | `agent_core/loop.py` | 已实现；`test_agent_core_loop.py`、`test_agent_core_differential.py` |
 | 同上 L381-L470 | 完整 / 不完整响应的区分；Yuki `collect_response` 仅组装合成 frame，真实请求仍经 TaskModelExecutor | `agent_core/model_boundary.py` | 已实现（仅合成 frame）；`test_partial_frames_are_frozen_and_only_done_completes` |
@@ -44,43 +44,9 @@ Pi SDK、pi-ai Provider、durable/chord、CLI/TUI/RPC 均不进入本交付。
 - Provider 原私有签名/opaque 不经业务 JSON canonicalizer 重写。
 - 原领域回执是效果证据；Pi 事件、nested calls 和 VM return 不承担持久真源。
 
-各差异的 fixture（`tests/unit/test_agent_core_differences.py`，除注明外）：
-
-| 差异 | fixture |
-| --- | --- |
-| 固定声明，无 `declareToolChanges` | `test_declarations_are_fixed_not_dynamically_announced` |
-| 严格 JSON Schema，无 coercion | `test_strict_schema_never_coerces_like_typebox` |
-| 有界读取并发，非 `Promise.all` | `test_parallel_reads_are_bounded_not_promise_all` |
-| 发送屏障；控制必须单独成批 | `test_send_is_a_barrier_between_read_stretches`、`test_lifecycle_control_cannot_share_a_batch` |
-| 业务失败保持原 receipt；Host 异常交 owner | `test_business_failure_receipt_reaches_model_unflattened`、`test_host_exceptions_go_to_their_owner_not_into_a_tool_result` |
-| partial 不执行工具 | `test_agent_core_loop.py::test_incomplete_frames_through_loop_never_execute` |
-| 核心不依赖平台/数据库 | `test_agent_core_loop.py::test_core_has_no_platform_or_database_dependencies` |
-
-Pi 上游自带 TypeScript 测试未运行；本轮核验 Yuki Python 实现、原行为黄金样本与实际应用装配，
-不宣称上游测试通过。本地依赖安装/编译已获授权。
-
-## P10 后的生产调用与责任边界
-
-`AgentRunner._run`、生产 Callbacks bag/union、`begin_batch`、工具 legacy execute adapter、
-Runner/Turn/Coordinator 的 duck-typed fallback、Worker 动态 `__getattr__` 已删除。
-所有主入口仍经 MainAgentTurnService→Runner→TurnExecution→`run_agent_loop`。
-生产没有旧/新循环选择 flag，没有备用 model loop。
-
-- **唯一核心**：迭代、turn 顺序、完整响应工具顺序、截断不执行和 `agent_end`；不依赖 Work、
-  SQLite、QQ、长期记忆或发送器。模型/调用/结算由三个固定 typed protocol 表达，不是可注册 hooks。
-- **TurnExecution**：声明/来源/Work 与普通输入、恢复检查点、响应观察和业务结算；`TurnState`
-  38 项状态归一次激活。原请求的准备、派发和观察是独立方法。
-- **Admission**：主请求 `_PrimaryDispatch`、普通摘要 `_OrdinarySummaryDispatch`、Work 页
-  `_WorkSummaryDispatch` 各持有原候选/计量状态，HTTP 重试复用 paid reservation；辅助页不覆盖主 journal。
-- **调用**：Coordinator→InvocationService→明确 `execute_call(Invocation)`；Code Host 用同一
-  原身份、授权、T1/T2/T3、控制和回执路径。Worker 有固定 forwarders 与独立权限/声明子集。
-- **测试兼容**：Core Callbacks 只在 tests/support；Fake Provider 在 Runner 外显式规范化。
-  原异常/容量 fixture 迁到新边界，原断言保留。
-
-差分黄金样本 `tests/fixtures/agent_core/runner_golden.json` 取自核心拆分前 `b4fdef7d`，未重生成。
-P10 的四组比较临时读取同一固定历史 SHA，主迭代不改，两组共享 Invocation/Code kernel，
-不把旧 loop 放进生产或作为永久 CI 依赖。结构原始证据在
-`pi-codemode-evidence/p10-retirement.json`，四组实际计量在 `p10-comparison.json`。
+唯一模型循环与执行责任见[主 Agent 合同](main-agent-runtime.md)，工具模式、
+原调用与 Code VM 恢复见[Tool Kernel](tool-kernel.md)。历史差分样本和阶段导出保留在
+`pi-codemode-evidence/`；它们记录当时实现，不构成源码形状或测试数量门槛。
 
 ## P09 固定分发与许可证据（2026-10-05）
 

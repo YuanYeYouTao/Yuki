@@ -1,7 +1,7 @@
 # Yuki 养鲲游戏插件
 
 这是 [`UBC2008/astrbot_plugin_kun_game`](https://github.com/UBC2008/astrbot_plugin_kun_game)
-的 Yuki Plugin API 3.2 适配版，保留养成、PVP、BOSS、拍卖和群小游戏，并修复原实现中已确认的
+的 Yuki Plugin API 3.3 适配版，保留养成、PVP、BOSS、拍卖和群小游戏，并修复原实现中已确认的
 负数资源、保存顺序、拍卖覆盖、文本 QQ 目标、数星星答案和重复处罚等问题。
 
 插件只注册两个确定性命令：普通用户 `play` 与超级用户 `admin`。`*签到` 等短入口由 Yuki Host
@@ -18,12 +18,14 @@ PLUGIN_DIRECT_COMMAND_BINDINGS={"*":"io.github.yuanyeyoutao.kun-game:play"}
 
 校验、发现、审阅权限、批准并启用：
 
+在线 CLI 需要通过环境提供已有操作员的 `YUKI_CONTROL_CREDENTIAL`，并令 `WEBUI_ORIGIN` 指向实际 Host；不要在命令行写凭据。批准前审阅下面列出的 Manifest 权限，CLI 不传 `--permission` 只批准空集合。
+
 ```bash
 uv run qq-ai-bot-cli plugin validate plugins/io.github.yuanyeyoutao.kun-game
 uv run qq-ai-bot-cli plugin test plugins/io.github.yuanyeyoutao.kun-game
 uv run qq-ai-bot-cli plugin discover
 uv run qq-ai-bot-cli plugin inspect io.github.yuanyeyoutao.kun-game
-uv run qq-ai-bot-cli plugin approve io.github.yuanyeyoutao.kun-game
+uv run qq-ai-bot-cli plugin approve io.github.yuanyeyoutao.kun-game --permission command.register --permission message.current.read --permission person.current.read --permission storage.private --permission plugin.config.read --permission plugin.config.write
 uv run qq-ai-bot-cli plugin enable io.github.yuanyeyoutao.kun-game
 ```
 
@@ -40,7 +42,7 @@ docker compose exec bot qq-ai-bot-cli plugin doctor io.github.yuanyeyoutao.kun-g
 uv run qq-ai-bot-cli plugin doctor io.github.yuanyeyoutao.kun-game
 ```
 
-插件停用、未批准或启动失败时，已配置的 `*` 绑定会失败关闭，不会回退 Planner。删除
+插件停用、未批准或启动失败时，已配置的 `*` 绑定会失败关闭，不会回退 Main Agent。删除
 `PLUGIN_DIRECT_COMMAND_BINDINGS` 中的绑定并重启，即可恢复原有星号消息处理路径。
 
 ## 使用
@@ -70,7 +72,7 @@ uv run qq-ai-bot-cli plugin doctor io.github.yuanyeyoutao.kun-game
 - 拍卖：`出售`、`出价`、`成交`。
 - 其他：`免疫强袭`、`免疫吞噬`、`免疫攻击`、`查骰子`、`奥数比赛`、`数星星`、`抄作业`、`抽群主一个大嘴巴`、`单挑群主`、`=答案`。
 
-未知星号命令只返回养鲲帮助，不进入 Planner。“绑定群”首版暂不支持；私聊与群聊是两个明确独立的
+未知星号命令只返回养鲲帮助，不进入 Main Agent。“绑定群”首版暂不支持；私聊与群聊是两个明确独立的
 状态空间。私聊允许 `签到`、`孵化`、`砸蛋`、`磨炼`、`幻化`、`查阅属性`、`今日运势`、
 `命令菜单`、`喝鸡汤` 和 `当前游戏`，PVP、BOSS、拍卖和群小游戏仍只允许群聊。
 
@@ -126,7 +128,7 @@ SUPERUSER 可查看或修改当前群覆盖值：
 ## 回滚
 
 先执行 `qq-ai-bot-cli plugin disable io.github.yuanyeyoutao.kun-game`，再从 `.env` 删除对应
-`PLUGIN_DIRECT_COMMAND_BINDINGS` 并重启 Bot。插件私有状态保留且不会注入 Planner；本版未新增
+`PLUGIN_DIRECT_COMMAND_BINDINGS` 并重启 Bot。插件私有状态保留且不会注入 Main Agent；本版未新增
 数据库迁移，无需删除或逆向修改业务表。
 
 ## 权限与许可

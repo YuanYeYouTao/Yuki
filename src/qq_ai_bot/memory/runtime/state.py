@@ -1,4 +1,4 @@
-"""Turn-local read exposure and attribution handoff; mutations own their receipts."""
+"""Turn-local Memory contract, scope and session lifetime."""
 
 from __future__ import annotations
 

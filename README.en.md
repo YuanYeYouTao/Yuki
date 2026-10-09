@@ -30,13 +30,14 @@ Yuki is an open-source, self-hosted social AI agent exploring what a persistent 
 
 ## Main changes in 3.9.0
 
-- **Direct build by default:** The same main-agent loop exposes the full authorized tool set without a Monty binding, worker, or launcher in the image. Code Mode requires an explicitly selected image and opt-in; validate resource headroom on the target host before enabling it.
+- **Direct build by default:** The same main-agent loop exposes the fixed complete tool declaration without a Monty binding, worker, or launcher in the image. Code Mode requires an explicitly selected image and opt-in; validate resource headroom on the target host before enabling it.
 - **Management WebUI and a shared execution runtime:** The journal-style interface shows actual conversations, execution traces, tool receipts, model usage, and workspace files, and manages model connections and task routes. Chat, SELF, plugins, automation, and Work resumption share the main agent. WebUI is disabled by default.
 - **Recoverable long tasks:** Work retains its original goal, cumulative budget, protocol checkpoints, and delivery receipts. Context is condensed against actual request capacity, and research material is read on demand. Terminal waits, subtasks, and additional user requirements continue the original task; restarts do not repeat confirmed effects.
+- **Simpler memory policy:** Independent facts can share a key; changes and deletion use fact IDs. Attribution/reinforcement scoring, automatic promotion, and capacity-driven eviction are removed. Extraction, SELF, and Dream can use separate model profiles, with partial and unresolved results retained.
 - **Agent-directed retrieval:** The agent uses `search_memory` when past facts are needed instead of injecting them every turn. Current, quoted, historical, workspace, and authorized tool images enter the original main model's native multimodal input.
-- **Web access and model error feedback:** New installations enable model search by default while respecting explicit disablement and connection capabilities. An explicit Gemini tool-format rejection can be returned to the model for up to two corrections in the same execution chain when safe recovery conditions hold, without resetting budgets or blindly resending messages.
+- **Web access and protocol feedback:** New installations enable model search by default while respecting explicit disablement and connection capabilities. Adapters do not manufacture tool calls from text or silently add paid continuations. Real errors and known usage are retained; dispatched or unknown effects require reconciliation with their original receipts.
 - **Less database waiting before replies:** History reads, context preparation, and optional diagnostic writes are moved out of critical write transactions. Background maintenance uses indexes, bounded pages, and short transactions. Actual latency still depends on model responses, tool requests, and host resources.
-- **Legacy MCP removal:** Connections, tool discovery, management pages, SDK capabilities, and automation entry points are retired together. Shared tool results, media, and receipts remain. Plugin API is now **3.3**, the database head is **0099**, and old plugins require adaptation and renewed approval.
+- **Legacy MCP removal:** Connections, tool discovery, management pages, SDK capabilities, and automation entry points are retired together. Shared tool results, media, and receipts remain. Plugin API is now **3.3**, the database head is **0102**, and old plugins require adaptation and renewed approval.
 - **Speech output retirement:** Genie synthesis, voice profiles/preferences, tool parameters, SDK/management features, the Worker and release dependencies are removed. Incoming/quoted ASR, historical audio and original receipts remain. Reconcile old executions and verify a cold backup of speech facts and referenced files before migrating the dedicated tables; no automatic resend or conversion to text occurs.
 
 These describe the current source. Real provider API behavior, natural-chat latency, and long-task outcomes require their respective acceptance evidence. Optional Code Mode isolation checks do not establish production capacity or long-term memory behavior.
@@ -70,7 +71,7 @@ This is an **optional, separately deployed capability** requiring a Linux host, 
 
 ## Memory and continuity
 
-Long-term memory stores stable facts, preferences, and meaningful experiences. Routine extraction aggregates messages; explicit requests to remember, correct, or delete are handled immediately. The main agent decides when to call `search_memory` instead of automatically searching every turn or injecting all long-term facts. Retrieval respects the current actor's visible scope and work budget, and reports truncation or incomplete results. Rollup condenses long conversation history, while raw history remains independently searchable.
+Long-term memory stores stable facts, preferences, and meaningful experiences. Routine extraction aggregates messages; explicit requests to remember, correct, or delete are handled immediately. The main agent decides when to call `search_memory` instead of automatically searching every turn or injecting all long-term facts. Retrieval respects the current actor's visible scope and work budget, and reports truncation or incomplete results. Keys are labels rather than unique slots; facts retain their IDs and evidence. Extraction, SELF reflection, and Dream can each select a model connection. Rollup condenses long conversation history, while raw history remains independently searchable.
 
 `short_state` is a shared, bounded, expiring area for temporary cross-conversation notes. It is distinct from long-term memory and workspace files. Group and private chats are not automatically combined into one complete history.
 
@@ -114,7 +115,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 **The wizard configures only.** In an empty directory it downloads and verifies the deployment bundle; for an existing deployment it preserves Compose, plugins, and data, then backs up and writes configuration after confirmation. It does not stop services, migrate the database, start services, or switch gateways.
 
-Model connections are stored in `webui-config/model_profiles.toml`. If an older deployment only has `config/model_profiles.toml`, follow the [path migration guide](docs/operations/model-profile-path-migration.md) first. The wizard does not overwrite current WebUI connections; a missing selected file causes an explicit startup failure.
+Current 3.9.0 source stores model connections in `webui-config/model_profiles.toml`; the official 3.8.4 bundle uses its bundled paths. When upgrading an older deployment with only `config/model_profiles.toml`, follow the [path migration guide](docs/operations/model-profile-path-migration.md) first. The wizard does not overwrite current WebUI connections; a missing selected file causes an explicit startup failure.
 
 After configuring a fresh deployment, run from its deployment directory:
 
@@ -131,11 +132,11 @@ The Bot image is `ghcr.io/yuanyeyoutao/yuki-qqbot:3.8.4`; historical 3.8.4 TTS W
 
 ## Upgrading and maintenance
 
-The 3.9.0 source uses Plugin API **3.3** and database head **0099**; the official 3.8.4 package has head **0072**. Follow the migrations bundled with the actual target image. An application version does not replace a schema check, and `stamp` must not skip migrations. Plugins must remove MCP dependencies, adapt to API 3.3, and receive renewed approval. Legacy `llm.generate` / `agent.run` calls now use the unified main entry point.
+The 3.9.0 source uses Plugin API **3.3** and database head **0102**; the official 3.8.4 package has head **0072**. Follow the migrations bundled with the actual target image. An application version does not replace a schema check, and `stamp` must not skip migrations. Plugins must remove MCP dependencies, adapt to API 3.3, and receive renewed approval. Legacy `llm.generate` / `agent.run` calls now use the unified main entry point.
 
 Before deploying a 3.9.0 development commit, use the [draft upgrade guide](docs/upgrade-3.9.0.md) to check old MCP mounts, environment settings, and operator grants. Retired operator capabilities fail strict validation. After committing the new database head, an image-only rollback is insufficient; an old backup must not overwrite new messages or receipts.
 
-Before upgrading, make a consistent backup of the database, configuration, plugins, and files. For a persistent workspace, retain its home directory and execution receipts. Pause writes from Bot and related Manager components; you do not need to shut down all of Docker or the QQ gateway. Preserve any new messages, files, and receipts before rollback; see the [3.8.4 upgrade guide](docs/upgrade-3.8.4.md).
+Before upgrading, make a consistent backup of the database, configuration, plugins, and files. For a persistent workspace, retain its home directory and execution receipts. Pause writes from Bot and related Manager components; you do not need to shut down all of Docker or the QQ gateway. Preserve any new messages, files, and receipts before rollback; use the [3.9.0 draft upgrade guide](docs/upgrade-3.9.0.md) for current source.
 
 ```bash
 docker compose ps
@@ -161,11 +162,11 @@ Yuki provides QQ interaction, a CLI, and a shared Control Plane. This developmen
 uv sync --extra dev
 uv run ruff format --check
 uv run ruff check
-uv run mypy src
+uv run mypy --platform linux src
 uv run pytest
 ```
 
-Use targeted checks during development; the release pipeline also verifies migrations, images, and source-free deployment.
+Use checks matching the change. Quality runs source checks, frontend tests/build, and retained regressions. Release validates identity, one direct image, and its source-free deployment bundle; retired Memory quality gates and parallel release paths are removed.
 Routine regressions use fake providers and isolated databases. Paid Gemini and DeepSeek cache comparisons run separately, with cold rounds, warm rounds, and missing accounting reported explicitly; they are not ordinary tests or fixed cache-hit thresholds.
 
 | Document | Topic |

@@ -125,28 +125,8 @@ Root 总模型/工具预算为 `None`，每激活至多 60 个模型请求；业
 入口。恢复任务故意每五次业务调用分段，属于高频分段压力测试；不能把它的失败率当作
 普通生产任务的失败概率。每种配置每任务仅两次，没有置信区间或显著性结论。
 
-正式执行命令（复跑会付费，需要继续适用的明确授权，并使用新的输出文件名）：
-
-```sh
-PYTHONPATH=. YUKI_MONTY_BINARY="$PWD/.venv/bin/yuki-monty-worker" \
-  uv run --frozen python scripts/benchmark_long_tasks.py \
-  --credentials /Volumes/huawei/项目实战/deepseek.md \
-  --authorize-paid --unlimited-cost --max-output-tokens 32768 --repeats 2 \
-  --prior-report docs/architecture/pi-codemode-evidence/p11-deepseek-initial.json \
-  --prior-report docs/architecture/pi-codemode-evidence/p11-deepseek-retest.json \
-  --prior-report docs/architecture/pi-codemode-evidence/long-tasks-initial.json \
-  --prior-report docs/architecture/pi-codemode-evidence/long-tasks-comparison.json \
-  --output docs/architecture/pi-codemode-evidence/long-tasks-unlimited.json
-```
-
-汇总命令只读证据，不购买请求；下面的 Markdown 输出应使用新文件，避免覆盖本文解读：
-
-```sh
-uv run --frozen python scripts/summarize_long_tasks.py \
-  docs/architecture/pi-codemode-evidence/long-tasks-unlimited.json \
-  --json-output /tmp/yuki-long-task-summary.json \
-  --markdown-output /tmp/yuki-long-task-table.md
-```
+当时的任务参数、输入 hash、请求、用量与停止条件保留在以下原始 JSON。测量脚本
+已随专属测试退役，不提供失效的复跑入口。
 
 原始证据与验证：
 

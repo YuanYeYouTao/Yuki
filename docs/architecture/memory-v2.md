@@ -32,7 +32,11 @@ Worker、Main Agent、自省和 Dream 的新事实复用 [变更合同](memory-c
 同 owner/key 可以创建独立 active 事实；纠正和撤回按实际 fact ID 执行。0102 只删除四个单 active
 唯一索引，保留已部署 0101 的全部事实与历史回执。
 
-自省和 Dream 的生成结构与实际来源预算见各自现行模块文档。自省所有结果都可保存完整真实引用，
+提取、自省和 Dream 分别绑定 `memory_extraction`、`memory_self_reflection`、`memory_dream`
+任务，可各自选择 Profile，也可共享配置；Rebuild 复用提取，Embedding 独立配置。结构化
+输出沿 Profile 显式模式，不按 Provider 或 Memory 任务强制 JSON Schema。
+自省生成结构与实际来源预算见 [自省](self-reflection.md)，Dream 运行见 [运维](../operations/memory-quality.md)。
+自省所有结果都可保存完整真实引用，
 不强制把同一来源复制成 episode 和 proposal。SELF kind/category/key 不设固定标签白名单；
 私聊资料向 global 传播继续核验真实可见范围。
 
@@ -58,15 +62,15 @@ G(X) 为数据库记录的 X 的历史 canonical membership：
 依据剩余数据库记录重新判断，不缓存永久许可。当前在群 G，也可查历史共同群 H。
 Binding ID、群号、昵称、工具参数都只是选择器，不是模型自己声明的权限。
 
-内部预取、`search_memory` 和 fact detail 复用相同政策；旧的“只凭当前群 evidence
+`search_memory` 和 fact detail 复用相同政策；旧的“只凭当前群 evidence
 投影 Person”授权路径已经删除。evidence 仍走本人/显式管理授权边界。
 无真实用户主体的 Plugin、Automation、System 使用既有受控目标；不能伪造 actor 自行扩权。
 Control Plane 仍要求 capability。
 
 ## 检索与使用
 
-[检索合同](memory-v2-retrieval.md)定义 Query Plane、结构化 intent、检索与排序。
-当前开发分支的主 Agent 不再每轮自动注入长期事实；需要过去事实时由模型调用统一
+[检索合同](memory-v2-retrieval.md)定义 Query Plane、主动查询参数、检索与排序。
+主 Agent 不再每轮自动注入长期事实；需要过去事实时由模型调用统一
 `search_memory`。无显式目标时，后端以本次真实主体的 canonical 身份和历史成员关系，
 在数据库层筛选全部获准 Person、PersonGroup、Group 与当前可见 SELF；历史 owner 即使没有
 活跃 QQ Binding 仍可检索。词法和向量候选在授权范围内全局排序，不按 owner 截断。
@@ -92,9 +96,8 @@ Control Plane 仍要求 capability。
   在准备阶段比较原 fact signature 和 canonical target，拒绝已经改变的候选；请求目标与
   操作人的 canonical owner、原内部事件和 tool receipt／SELF 来源证明也必须与原计划一致。
   ORM flush属于该纯数据库单元；物理commit/rollback确认错误不作为可安全重备的517。
-  Dream三次操作级517经确认回滚后，按原cluster核对committed operation回执再登记
-  失败或保留实际提交计数。登记及未决提交错误结束当前worker，health显示任务异常，
-  后续自动tick不能把processing改回pending并再次调用模型；不重置原run预算。
+  Dream 操作失败先核对原 cluster 的 committed operation 回执，保留实际提交计数和累计预算。
+  未提交的派生模型判断可由既有恢复流程重新生成；未决提交不授予重放资格。
   来源隐藏、擦除、换绑或会话 generation 变化时拒绝旧计划，不能成功写入一个无证据事实。
   Dream 将实际模型输入、选中证据身份与内容及 canonical 分区纳入输入指纹，持久 preview
   复用同一指纹；每次新快照首写前核验，证据数量不变不能证明原模型来源仍然有效。
@@ -118,12 +121,11 @@ Control Plane 仍要求 capability。
     没有候选且没有原 running run 的空轮询只读返回，不创建空 run；既存 run 继续按原
     ID 恢复和结束，没有 processing item 时不执行空的恢复 UPDATE。
 - 不用 /ai new、清空事实或重建 embedding 掩盖队列/召回问题。
-- 0051 仅增加 recall 观测列；不改事实、证据、身份、正文或路由。
 - 未来 WebUI 复用 Control Plane，不直接查询 ORM；读取、content、mutation、destructive
   能力边界继续分离，secret 永不返回。
 - [第三方事实写入](memory-v2-third-party-facts.md)、
   [质量架构](memory-v2-quality.md)仍是对应领域合同。
-  phase/roadmap/旧任务书仅供历史参考，不覆盖本页。
+  历史验收记录不覆盖本页。
 
 ## 后台关系评估
 
@@ -147,4 +149,4 @@ Control Plane 仍要求 capability。
 模型失败次数；同批仍有效的任务延期后重新领取。检查不会改变提示词、工具声明或计费身份，
 也不能撤回失效前已经发送到 Provider 的请求；其迟到结果仍不得落分。
 
-主 Agent 工具声明保持固定。旧 phase/Adaptive/任务书只作历史背景，不覆盖当前合同。
+主 Agent 工具声明保持固定；目录查询不改变已提交声明。

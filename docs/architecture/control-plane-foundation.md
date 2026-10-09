@@ -47,7 +47,7 @@
   当作新建 Person 覆盖项的版本，新建使用 expected revision 0。无覆盖时 version 为 null。
 - 敏感配置只给 configured，不返回当前或保存值。待重启比较当前和期望值，启动已采用的覆盖
   不再显示待重启，删除覆盖仍能显示差异。
-- Memory fact、自动化、插件、表情和语音 revision 与修改合同一致。
+- Memory fact、自动化、插件和表情 revision 与修改合同一致。
   时间戳版本更新保持单调，插件 在 Manager 锁内复核版本后执行效果。
 - keyset cursor 绑定资源和查询范围；schema、有效配置、保存覆盖、fact/evidence 及各类 operation
   不能混用。Page.snapshot_at 是本次读取时刻，不是跨页锁定快照或 CAS revision。
@@ -136,7 +136,7 @@ HTTP handler 应调用这些转换和共享服务，不能把数据库方法直�
 | 自主参与/模型 | Jev/群决策时间线、参数读写、Profile/Route 配置与调用统计，不重算第二份数学模型 |
 | 插件 | 配置 schema、监控游标/队列/outbox 详情与有证据的处理动作 |
 | Memory/关系 | 主体筛选、内部事件证据、运行水位与自省统计、关系投影和实际领域动作 |
-| 内容/工作区 | 聊天 timeline、24 小时媒体权限及过期、长期共享工作区、文件/表情/语音操作 |
+| 内容/工作区 | 聊天 timeline、24 小时媒体权限及过期、长期共享工作区、文件与表情操作 |
 | HTTP | 登录会话、退出/撤销、CSRF/Origin、请求体限制、错误映射、文件授权、同源监听与反代 |
 | 前端 | 导航、schema 表单、revision 冲突、异步状态、内容渲染、跨域闭环与浏览器测试 |
 

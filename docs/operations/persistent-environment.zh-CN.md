@@ -96,7 +96,7 @@ execd 端口不公开，防火墙仅允许回应宿主已发起的控制连接�
 运行 migrate-only 并逐文件校验，再更新 Manager 与仅 Bot 的 Compose 服务。
 保留全部已有 Compose 覆盖配置，不重启 SnowLuma 或 Docker。
 上线检查 healthz、OneBot、完成/续跑 worker、工具声明及真实 gVisor 行为。
-现有 MCP 已退役；新 head `0096` 删除专属缓存表，不能用旧镜像直接回退，参见 [升级说明](../upgrade-3.9.0.md)。
+现有 MCP 已退役；迁移 `0098` 删除专属缓存表，不能用旧镜像直接回退，参见 [升级说明](../upgrade-3.9.0.md)。
 
 回退替换代码/镜像和 unit，保留新家目录、运行记录和消息数据库。
 只回退 Bot 时可让持久环境继续运行；旧 python-v1 清理不会选择 persistent-v1 容器。

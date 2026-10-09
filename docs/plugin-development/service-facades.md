@@ -111,18 +111,16 @@ await ctx.messages.send_text(turn.text)
 
 实际能力取批准权限、真实来源和显式能力参数的交集；省略 `allowed_capabilities` 使用 Host 批准的默认集合。普通用户仍只能读获准人物和会话；目录、查询和媒体输入不改变固定声明。宿主管理、QQ 发送、记忆写入和自动化仍需各自的委托，获得工作环境权限不自动获得这些能力。
 
-已知原生工具差异：主 Agent 的 function 工具清单固定，但支持原生搜索的非 DeepSeek
-Provider 当前会按真实批准能力决定是否提交 native 声明。原生工具由 Provider 执行，不能
-声称由本地执行围栏逐次拦截；不能为统一声明外观给插件补授搜索权限。因此目前不声称
-所有 Provider 的所有入口都具有相同 native 字节合同。这仍是共同架构约束中“原生工具
-部署级固定”尚待单独治理的差异，不是已经通过的验收。当前 DeepSeek 路由剔除 native
-search，不受此项差异影响；不依赖 `tool_choice` 实现权限控制。
+主 Agent 的 function 工具清单固定；原生工具按真实批准权限、显式配置和协议能力决定
+是否提交。原生工具由 Provider 执行，不能声称本地执行围栏逐次拦截，也不能为统一声明
+外观补授搜索权限。不同授权或协议不承诺相同 native 字节合同；DeepSeek 主连接不声明
+原生搜索，权限控制不依赖 `tool_choice`。
 
 ## 当前会话音乐卡片
 
 `ctx.onebot.send_music_card(provider=..., resource_id=...)` 使用 `onebot.send` 权限，将
 OneBot `music` 消息段发送到触发插件的当前真实私聊或群聊。插件不能为这个方法传入 QQ 号或
-群号，因此它不能跨会话改变目标；Host 会再次验证当前事件、provider、资源 ID、图片轮次隔离和
+群号，因此它不能跨会话改变目标；Host 会再次验证当前事件、provider、资源 ID 和
 发送权限，成功后再写事件账本与脱敏审计。
 
 当前 provider 支持 `qq`、`netease`（发送时规范化为 `163`）、`kugou`、`kuwo` 和 `migu`。

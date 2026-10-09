@@ -147,7 +147,7 @@ the Compose Bot service using all existing overrides plus the new image override
 Validate healthz, OneBot connection, completion/continuation workers, tool manifest
 and real gVisor resources/network/file operations. Retain the prior image and latest
 consistent backup. Preserve QQ, proxy, Docker and system maintenance without changing
-unrelated service switches. MCP is retired at schema head `0096`; the old image cannot
+unrelated service switches. MCP is retired by migration `0098`; the old image cannot
 run directly against that head. See the [upgrade guide](../upgrade-3.9.0.md).
 
 Rollback changes images/units, not the current database/home. Keep the persistent

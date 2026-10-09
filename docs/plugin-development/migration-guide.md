@@ -31,13 +31,6 @@ Yuki 不会把记忆、关系、权限、视觉、联网、自动化核心或 Ag
 
 插件安装/配置/KV/审计和独立 AI 会话表由 Host Alembic 管理。插件自己的 KV 迁移应使用版本键和 CAS，保持可回滚；不要从插件运行代码执行任意 DDL。
 
-升级前备份 `data/`：
-
-```bash
-docker compose down
-cp -R data data.backup-1.6.0
-docker compose pull
-docker compose up -d
-```
+升级前按[当前升级指南](../upgrade-3.9.0.md)暂停实际 Bot 写入，保存同一时点的数据库、配置、插件、工作区及原执行回执。沿用原项目名和全部 Compose 覆盖文件，只更新相关服务；Manager 有写入时按其独立流程暂停，不用整个 Compose down 代替一致性备份。
 
 首次升级可设置 `PLUGIN_SYSTEM_ENABLED=false`，先检查数据库和普通聊天，再逐项启用插件。主聊天由 Conversation Runtime 准入后进入单一 Main Agent，不再提供旧 Planner 流程回退开关。

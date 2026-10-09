@@ -1,6 +1,6 @@
 # Yuki 使用与运维帮助
 
-当前源码为未发布的 Yuki 3.9.0，Alembic head 为 `0099`，Plugin API 为 `3.3`，只支持 canonical runtime。永久 Yuki、
+当前源码为未发布的 Yuki 3.9.0，Alembic head 为 `0102`，Plugin API 为 `3.3`，只支持 canonical runtime。永久 Yuki、
 Person、Binding、Space、Presence 和 canonical Conversation 的关系见
 [当前架构](architecture/canonical-runtime.md)。
 
@@ -77,7 +77,7 @@ doctor 是只读检查，不发送消息、不调用私有 action，也不输出
 
 模型可在 WebUI 的「模型与用量」中配置，也可用 `qq-ai-bot-cli setup` 完成初始引导。
 WebUI 选择供应商和协议，直接填写 API Base URL、模型 ID 与 API Key，然后按用途选择模型连接。
-新输入的密钥保存在服务器私有文件，不会在页面回显；保存后重启 Bot 才会加载新连接。
+新输入的密钥保存在服务器私有文件，不会在页面回显；在线模型管理保存后热应用新连接与搜索后端，已开始的激活继续使用原固定 Profile。手工修改文件或启动环境时按页面提示与部署流程重新加载。
 支持 Chat Completions、Responses、Claude Messages 和原生 Gemini GenerateContent；
 具体思考、工具、图片、结构化输出与缓存能力取决于供应商和模型。
 
@@ -86,30 +86,29 @@ WebUI 选择供应商和协议，直接填写 API Base URL、模型 ID 与 API K
 1. 在「模型与用量」选择「添加模型连接」，供应商选「Google Gemini」。页面预填
    `gemini-3.8-flash`、`https://generativelanguage.googleapis.com/v1beta` 和原生 Gemini 协议。
 2. 在 API Key 输入框粘贴 Google 提供的密钥。先仅把「主对话」指向新连接，其他用途沿用现有模型。
-3. 点击「检查并保存」，确认页面提示磁盘配置有效，再重启 Bot；确认健康状态和已加载路由。
+3. 点击「检查并保存」，确认页面提示已应用，再确认健康状态和实际已加载路由。
 4. 用明确授权的测试会话发一条文字消息，按需再测图片及工具。到「轨迹与审计」查看该轮的请求、响应、
    工具与投递步骤；到「模型与用量」查看 Gemini 调用次数、输入/输出 Token 及缓存命中报告。
-5. 测试后若要恢复原路由，在 WebUI 将「主对话」选回原连接，保存并重启 Bot。
+5. 测试后若要恢复原路由，在 WebUI 将「主对话」选回原连接并保存，确认已应用。
 
 这套配置不会在保存时发出模型请求；真实模型效果、密钥有效性和上游可用性需第 4 步验证。
-Gemini 的 Google 内置搜索、Interactions、Live 和 TTS 尚未接入。用量是 Yuki 入账的调用，
+Gemini 的 Google 搜索通过 `search_mode="bridge"` 的独立请求接入，主对话保留本地 `web_search` 工具；该连接与上游仍须实际支持搜索。Interactions、Live 和 TTS 尚未接入。用量是 Yuki 入账的调用，
 不是供应商账单；没有可靠单价时页面不估算费用。
 
 通用原则：
 
 - 不在聊天、日志、Issue 或 Git 中粘贴 API key。
 - Responses 请求默认不发送 `temperature`。
-- 所有生成模型至少 low 思考，保留更高档位；后台任务不再关闭思考。
-  Profile 必须声明 reasoning 能力，不能靠禁用它绕过最低合同；不支持时显式失败。
-  视觉使用原生思考预算，详见 [最低思考合同](architecture/model-reasoning-policy.md)。
+- 思考与结构化模式沿显式 Profile/请求设置，不强制开启、设置最低档位或自动抬档。
+  各协议参数及真实能力见[模型供应商合同](architecture/model-providers.md)。
 - Web、Embedding 和 Vision 都是可选能力；不可用时应有界降级，不影响纯文本主路径。
 - secret 只能写入或查询“是否已配置”，不能通过控制面读回。
 
-修改配置后先检查：
+修改启动环境或需重启的配置后先检查，沿用原项目名及全部 Compose 覆盖文件：
 
 ```bash
 docker compose config --quiet
-docker compose up -d --force-recreate bot
+docker compose up -d --no-deps --force-recreate bot
 docker compose logs --tail 200 bot
 ```
 
@@ -181,7 +180,7 @@ Yuki 会根据转写内容回复，之后可以回忆或搜索这条语音。识
 
 ## 工具、权限与控制面
 
-主 Agent 使用启动时冻结的固定完整工具声明，执行处按当前 Principal 核验授权。
+主 Agent 在启动时冻结工具合同，执行处按当前 Principal 核验授权。默认 direct 模式直接声明部署内固定完整工具清单；显式启用 Code Mode 时，固定直调工具保留终端、联网搜索和网页读取，其余工具经 Code Mode 调用。
 Capability 决定 metadata、外部 ID、正文、mutation 与 destructive 操作的不同权限。
 
 Control Plane 提供 CLI、QQ command 和 WebUI 共用的 Query/Command 服务。WebUI
@@ -206,7 +205,7 @@ Control Plane、Capability 或 Gateway Registry。
 
 插件发布的主动事件继续以独立 `external_event` 落账，不伪装成真人聊天。插件若请求 Yuki
 点评，只会创建可靠 WakeupRequest；Worker 加载该 canonical Conversation 与普通聊天完全相同的
-Rollup、raw history、Memory、Prompt compiler、工具 schema 和模型 profile，再把当前事件摘要作为
+Rollup、raw history、当前人物与场景资料、Prompt compiler、工具合同和模型 profile，再把当前事件摘要作为
 唯一的临时 user 尾部。这个提醒不写入 history；成功发送的 Yuki 主动消息会用
 `caused_by_event_id` 指向来源事件。pending/processing 唤醒任务会阻止 Rollup 提前覆盖来源，任务
 终态后自动解除。没有真实用户事件证明时，管理员与 mutation 能力继续失败关闭，当前目标允许的
@@ -228,7 +227,7 @@ Web、Memory read 和 history read 仍可使用。
 
 ## 数据与升级
 
-当前完整迁移链至 `0097`。历史 `0048` bridge 的来源限制仍有效，不能用版本号或
+当前完整迁移链至 `0102`。`0098` 退役 MCP 状态，`0099` 冻结已提交摘要表示；`0100` 关联插件后台任务的原 Work，`0101` 将旧效果结果归一为明确 outcome 并保留原正文；`0102` 移除同 memory_key 单 active 的唯一索引，同 key 的独立事实可以共存。历史 `0048` bridge 的来源限制仍有效，不能用版本号或
 手工 stamp 跳过来源校验。`0097` 退役四张 Genie 表及固定配置键，执行前必须核原
 Work/发送回执及被引用 WAV，保全专属事实；不能把生成表当作纯缓存。
 
@@ -240,7 +239,7 @@ Work/发送回执及被引用 WAV，保全专属事实；不能把生成表当�
 - 配置、Compose 文件、镜像 digest 和 Provider 登录目录
 - 宿主插件、协议对象、工具 artifacts、持久 Work 证据及被引用音频
 
-`0097` 明确拒绝 downgrade，优先向前修补。换回旧镜像不会恢复已删事实；恢复历史
+`0097` 与 `0102` 明确拒绝丢失事实的 downgrade，优先向前修补。换回旧镜像不会恢复已删事实；恢复历史
 快照也不能覆盖升级后新消息、文件和回执。不要手工 stamp revision 或只恢复主 DB。
 当前权限清退、旧执行核对、冷备、插件 API 更新及切换步骤见
 [3.9.0 升级指南](upgrade-3.9.0.md)。
@@ -285,5 +284,4 @@ historical 0048 bridge。pre-3.8 数据库不能通过关闭检查强行启动�
 ## 发布与版本
 
 发布流程见 [版本化 Docker Release](operations/versioned-docker-release.md)，当前开发草案见
-[3.9.0 说明](releases/v3.9.0.md)，旧版本记录见 [3.8.1 说明](releases/v3.8.1.md)。正式镜像与 Release 只能由通过 Quality、迁移矩阵、release
-smoke 和匿名拉取验证的 tag 生成。
+[3.9.0 说明](releases/v3.9.0.md)，旧版本记录见 [3.8.1 说明](releases/v3.8.1.md)。正式镜像与 Release 由 tag 流水线核对版本身份及 main 祖先关系，构建后验证已发布镜像、部署包、release smoke 与匿名拉取；Quality 的源码、前端与测试结果另行核对。
