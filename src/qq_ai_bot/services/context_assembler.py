@@ -25,7 +25,6 @@ from qq_ai_bot.conversation.scope import (
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
-from qq_ai_bot.domain.relationships import RelationshipSnapshot
 from qq_ai_bot.event_prompt import (
     ChatEventPromptRenderer,
     external_event_digest_appended_growth,
@@ -39,7 +38,6 @@ from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     EventRecord,
     PeopleRepository,
-    RelationshipRepository,
 )
 from qq_ai_bot.prompting import ContextBudgeter, ContextContribution
 from qq_ai_bot.runtime.trigger import (
@@ -79,7 +77,6 @@ class AssembledContext:
     current_message: ChatMessage
     recent_delivery: tuple[dict[str, object], ...]
     current_time: TimeContext
-    current_relationship: RelationshipSnapshot | None
     metrics: ContextMetrics
     visible_event_ids: frozenset[int] = frozenset()
     external_events: tuple[dict[str, object], ...] = ()
@@ -151,7 +148,7 @@ class _UncoveredPromptView:
 
 
 class ContextAssembler:
-    """Load and bound all person, group, relationship, and history context."""
+    """Load and bound all person, group, and history context."""
 
     def __init__(
         self,
@@ -159,7 +156,6 @@ class ContextAssembler:
         settings: Settings,
         ledger: EventLedgerRepository,
         people: PeopleRepository,
-        relationships: RelationshipRepository,
         time_service: TimeContextService,
         rollup_repository: ConversationRollupRepository,
         rollup_service: ConversationRollupService,
@@ -169,7 +165,6 @@ class ContextAssembler:
         self._settings = settings
         self._ledger = ledger
         self._people = people
-        self._relationships = relationships
         self._time = time_service
         self._rollups = rollup_repository
         self._rollup_service = rollup_service
@@ -213,7 +208,6 @@ class ContextAssembler:
             current_message=ChatMessage(role="user", content=""),
             recent_delivery=(),
             current_time=self._time.current_default(),
-            current_relationship=None,
             metrics=ContextMetrics(0, 0, 0, 0, False),
             visible_event_ids=frozenset(original.visible_event_ids),
             read_version=original,
@@ -311,7 +305,6 @@ class ContextAssembler:
             current_message=current,
             recent_delivery=self._recent_delivery(recent, self._settings.default_timezone),
             current_time=self._time.current_default(),
-            current_relationship=None,
             metrics=ContextMetrics(
                 len(json.dumps(metadata, ensure_ascii=False)),
                 sum(len(item.content or "") for item in bounded.history_messages),
@@ -415,7 +408,6 @@ class ContextAssembler:
             current_message=ChatMessage(role="user", content=content),
             recent_delivery=(),
             current_time=current_time,
-            current_relationship=None,
             metrics=ContextMetrics(
                 metadata_size,
                 history_size,
@@ -445,7 +437,6 @@ class ContextAssembler:
         settings: Settings,
         ledger: EventLedgerRepository,
         memories: MemoryFactService,
-        relationships: RelationshipRepository,
         context: CapabilityExecutionContext,
         instruction: str,
         profile: str,
@@ -466,7 +457,6 @@ class ContextAssembler:
         if profile == "current_group" and not context.current_group_id:
             raise ConversationCoverageError("automation group context is unavailable")
         data: dict[str, Any] = {}
-        relationship = None
         rows: tuple[EventRecord, ...] = ()
         read_version = None
         if profile != "none":
@@ -494,8 +484,6 @@ class ContextAssembler:
                         {"content": row.content, "source_type": row.source_type}
                         for row in await memories.list_group(context.current_group_id, limit=30)
                     ]
-            if declared.include_relationship and context.creator_kind != "self":
-                relationship = await relationships.get_or_create(context.creator_user_id)
             if declared.history_limit:
                 # The send target's canonical id is not a read-scope grant. Resolve
                 # the declared transport scope through the canonical ledger instead.
@@ -545,7 +533,6 @@ class ContextAssembler:
             current_message=ChatMessage(role="user", content=content),
             recent_delivery=(),
             current_time=current_time,
-            current_relationship=relationship,
             metrics=ContextMetrics(
                 metadata_characters=metadata_size,
                 history_characters=history_size,
@@ -634,15 +621,6 @@ class ContextAssembler:
         )
         aliases = metadata.aliases
         current_time = self._time.current_in_timezone(metadata.timezone)
-        current_relationship = (
-            await self._relationships.get_or_create(
-                inbound.sender.user_id,
-                initial_affection=runtime.relationship.initial_affection,
-                initial_trust=runtime.relationship.initial_trust,
-            )
-            if self._settings.relationship_enabled
-            else None
-        )
 
         context: dict[str, Any] = {
             "current_person": {
@@ -760,7 +738,6 @@ class ContextAssembler:
             current_message=current_message,
             recent_delivery=self._recent_delivery(recent, self._settings.default_timezone),
             current_time=current_time,
-            current_relationship=current_relationship,
             metrics=metrics,
             visible_event_ids=bounded_messages.visible_event_ids,
             external_events=(),
@@ -827,17 +804,11 @@ class ContextAssembler:
                 "current_actor": None,
             }
         }
-        current_relationship = None
         if event.group_id is None:
             profile = await self._people.get(user_id=trigger.target_id)
             if profile is None:
                 raise ConversationCoverageError("external private target profile is unavailable")
             aliases = await self._people.aliases(trigger.target_id)
-            current_relationship = (
-                await self._relationships.get(trigger.target_id)
-                if self._settings.relationship_enabled
-                else None
-            )
             context["conversation_target_person"] = {
                 "user_id": trigger.target_id,
                 "nickname": profile.nickname,
@@ -907,7 +878,6 @@ class ContextAssembler:
             current_message=current_message,
             recent_delivery=self._recent_delivery(recent, self._settings.default_timezone),
             current_time=current_time,
-            current_relationship=current_relationship,
             metrics=ContextMetrics(
                 metadata_characters=len(metadata_json),
                 history_characters=sum(len(item.content or "") for item in history),

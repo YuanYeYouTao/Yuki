@@ -13,18 +13,12 @@ from qq_ai_bot.persistence.people_repository import (
     PeopleRepository,
     PrivateUserSettingsRepository,
 )
-from qq_ai_bot.persistence.relationship_repository import (
-    RelationshipJobRepository,
-    RelationshipRepository,
-)
 from qq_ai_bot.persistence.repository_records import (
     EmojiDescriptionRecord,
     EventRecord,
     GroupSetting,
     MediaAnalysisRecord,
     PrivateUserSetting,
-    RelationshipEventRecord,
-    RelationshipJobRecord,
 )
 from qq_ai_bot.persistence.web_repository import WebSearchSourceRepository
 
@@ -41,9 +35,5 @@ __all__ = [
     "PeopleRepository",
     "PrivateUserSetting",
     "PrivateUserSettingsRepository",
-    "RelationshipEventRecord",
-    "RelationshipJobRecord",
-    "RelationshipJobRepository",
-    "RelationshipRepository",
     "WebSearchSourceRepository",
 ]

@@ -12,6 +12,7 @@ from qq_ai_bot.memory.mutation.models import (
     MemoryMutationRequest,
     MemoryMutationTarget,
 )
+from qq_ai_bot.persistence.schema_guard import canonical_schema_revision
 
 
 async def test_same_key_create_preserves_originals_and_correct_changes_only_named_fact(database):
@@ -68,7 +69,7 @@ async def test_same_key_create_preserves_originals_and_correct_changes_only_name
     assert replay.deduplicated and replay.new_fact_id == a.new_fact_id
 
 
-async def test_0101_to_0102_preserves_rows_and_allows_independent_same_key(tmp_path, monkeypatch):
+async def test_upgrade_preserves_rows_and_allows_independent_same_key(tmp_path, monkeypatch):
     path = tmp_path / "deployed.sqlite3"
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{path.as_posix()}")
     config = Config("alembic.ini")
@@ -123,7 +124,9 @@ async def test_0101_to_0102_preserves_rows_and_allows_independent_same_key(tmp_p
         tables = set(db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall())
     await asyncio.to_thread(command.upgrade, config, "head")
     with sqlite3.connect(path) as db:
-        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0102",)
+        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            canonical_schema_revision(),
+        )
         assert db.execute("SELECT * FROM memory_facts").fetchall() == before
         assert (
             set(db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall())

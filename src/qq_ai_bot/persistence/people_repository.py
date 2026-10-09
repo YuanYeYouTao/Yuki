@@ -41,7 +41,6 @@ from qq_ai_bot.identity.person_state import (
     load_canonical_group_members_by_exact_name,
     load_canonical_members_in_group,
     load_canonical_membership_count,
-    load_canonical_people_by_exact_name,
     load_canonical_person_enabled,
     load_canonical_profile,
     observe_canonical_person,
@@ -66,10 +65,7 @@ from qq_ai_bot.persistence.models import (
     MemorySelfReflectionStateModel,
     MemoryToolReceiptModel,
     PersonAliasModel,
-    PersonRelationshipModel,
     PersonTimeSettingModel,
-    RelationshipEventModel,
-    RelationshipJobModel,
     RuntimeConfigOverrideModel,
     RuntimeTurnObservationModel,
     ToolInvocationModel,
@@ -259,13 +255,9 @@ class PeopleRepository:
         self,
         database: Database,
         *,
-        initial_affection: int = 50,
-        initial_trust: int = 50,
         memory_rebuilds: MemoryRebuildRepository | None = None,
     ) -> None:
         self._database = database
-        self._initial_affection = initial_affection
-        self._initial_trust = initial_trust
         self._memory_rebuilds = memory_rebuilds
 
     @property
@@ -326,8 +318,6 @@ class PeopleRepository:
         nickname_known: bool = True,
         group_card_known: bool = True,
         is_bot: bool = False,
-        initial_affection: int | None = None,
-        initial_trust: int | None = None,
         expected_person_id: str | None = None,
     ) -> None:
         """Update current values and retain historical aliases."""
@@ -348,10 +338,6 @@ class PeopleRepository:
                 nickname_known=nickname_known,
                 group_card_known=group_card_known,
                 role=await _observe_role(session, user_id, is_bot=is_bot),
-                initial_affection=(
-                    self._initial_affection if initial_affection is None else initial_affection
-                ),
-                initial_trust=(self._initial_trust if initial_trust is None else initial_trust),
                 now=now,
             )
 
@@ -504,22 +490,11 @@ class PeopleRepository:
                 minimum_score=minimum_score,
             )
 
-    async def find_people_by_exact_name(self, name: str) -> tuple[str, ...]:
-        """Resolve one exact nickname or historical alias across all conversations."""
-
-        normalized = name.strip()
-        if not normalized:
-            return ()
-        async with self._database.sessions() as session:
-            return await load_canonical_people_by_exact_name(session, normalized)
-
     async def set_enabled(
         self,
         user_id: str,
         enabled: bool,
         *,
-        initial_affection: int | None = None,
-        initial_trust: int | None = None,
         session: AsyncSession | None = None,
     ) -> PrivateUserSetting:
         if session is None:
@@ -527,8 +502,6 @@ class PeopleRepository:
                 return await self.set_enabled(
                     user_id,
                     enabled,
-                    initial_affection=initial_affection,
-                    initial_trust=initial_trust,
                     session=owned_session,
                 )
         now = datetime.now(UTC)
@@ -762,21 +735,6 @@ class PeopleRepository:
             .values(
                 canonical_first_seen_person_id=None,
                 first_seen_user_id=None,
-            )
-        )
-        await session.execute(
-            delete(RelationshipJobModel).where(
-                RelationshipJobModel.canonical_person_id == person_id,
-            )
-        )
-        await session.execute(
-            delete(RelationshipEventModel).where(
-                RelationshipEventModel.canonical_person_id == person_id,
-            )
-        )
-        await session.execute(
-            delete(PersonRelationshipModel).where(
-                PersonRelationshipModel.canonical_person_id == person_id,
             )
         )
         await session.execute(
@@ -1174,14 +1132,9 @@ class PrivateUserSettingsRepository:
     def __init__(
         self,
         database: Database,
-        *,
-        initial_affection: int = 50,
-        initial_trust: int = 50,
     ) -> None:
         self._people = PeopleRepository(
             database,
-            initial_affection=initial_affection,
-            initial_trust=initial_trust,
         )
 
     async def get(
@@ -1197,14 +1150,10 @@ class PrivateUserSettingsRepository:
         user_id: str,
         enabled: bool,
         *,
-        initial_affection: int | None = None,
-        initial_trust: int | None = None,
         session: AsyncSession | None = None,
     ) -> PrivateUserSetting:
         return await self._people.set_enabled(
             user_id,
             enabled,
-            initial_affection=initial_affection,
-            initial_trust=initial_trust,
             session=session,
         )

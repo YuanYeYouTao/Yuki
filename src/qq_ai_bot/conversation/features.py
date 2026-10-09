@@ -13,7 +13,7 @@ from itertools import pairwise
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.conversation.participation import AdmissionFeatures, AdmissionSignalHint
 from qq_ai_bot.domain.messages import InboundMessage
-from qq_ai_bot.persistence.repositories import EventLedgerRepository, RelationshipRepository
+from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.services.policies import replies_to_bot
 
@@ -37,10 +37,8 @@ class AdmissionFeatureBuilder:
         self,
         *,
         ledger: EventLedgerRepository,
-        relationships: RelationshipRepository,
     ) -> None:
         self._ledger = ledger
-        self._relationships = relationships
 
     async def admission_features(
         self,
@@ -65,14 +63,7 @@ class AdmissionFeatureBuilder:
                 inbound.scope(),
                 limit=_HISTORY_LIMIT + 1,
             )
-        relationship = await self._relationships.get(inbound.sender.user_id)
         metrics = self._metrics(recent, inbound.bot_user_id, current_time)
-        relationship_adjustment = 0.0
-        if relationship is not None:
-            relationship_adjustment = max(
-                -5.0,
-                min(5.0, (relationship.relationship_weight - 50) / 10),
-            )
         return AdmissionFeatures(
             scope_type=inbound.scope_type,
             text=content,
@@ -85,7 +76,6 @@ class AdmissionFeatureBuilder:
             average_human_interval_seconds=metrics.average_interval,
             idle_seconds=metrics.idle,
             seconds_since_last_bot_message=metrics.since_bot,
-            relationship_adjustment=relationship_adjustment,
             plugin_signals=plugin_signals,
             new_message_count=max(1, metrics.pending),
             media_only=not content.strip() and bool(inbound.attachments),

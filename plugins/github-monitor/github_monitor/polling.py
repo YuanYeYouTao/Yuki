@@ -62,7 +62,7 @@ from .state import (
     record_queue_diagnostic,
 )
 
-AGENT_INTENT = "根据当前主会话关系和仓库事件，自然说一句真实反应；不要复述完整卡片。"
+AGENT_INTENT = "根据当前主会话和真实仓库事件，自然说一句真实反应；不要复述完整卡片。"
 MAX_EVENT_PAGES = 10
 MEDIA_TTL_SECONDS = 7 * 24 * 60 * 60
 BACKLOG_DRAIN_INTERVAL_SECONDS = 1.0

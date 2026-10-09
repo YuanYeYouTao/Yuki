@@ -34,8 +34,6 @@ from qq_ai_bot.persistence.repositories import (
     MediaAnalysisRepository,
     PeopleRepository,
     PrivateUserSettingsRepository,
-    RelationshipJobRepository,
-    RelationshipRepository,
     WebSearchSourceRepository,
 )
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
@@ -49,8 +47,6 @@ from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
 from qq_ai_bot.services.media_resolver import MediaResolver
 from qq_ai_bot.services.processor import DirectPluginCommandResolver, MessageProcessor
 from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
-from qq_ai_bot.services.relationship_evaluator import FakeRelationshipEvaluator
-from qq_ai_bot.services.relationship_worker import RelationshipWorker
 from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
 from qq_ai_bot.services.user_profiles import UserProfileService
 from qq_ai_bot.services.vision_rate_limit import VisionRateLimiter
@@ -93,9 +89,6 @@ class Harness:
     groups: GroupSettingsRepository
     private_users: PrivateUserSettingsRepository
     profiles: PeopleRepository
-    relationships: RelationshipRepository
-    relationship_jobs: RelationshipJobRepository
-    relationship_worker: RelationshipWorker
     provider: LLMProvider
     concurrency: ConcurrencyManager
     processor: MessageProcessor
@@ -137,13 +130,9 @@ def build_harness(
     groups = GroupSettingsRepository(database)
     private_users = PrivateUserSettingsRepository(
         database,
-        initial_affection=settings.relationship_initial_affection,
-        initial_trust=settings.relationship_initial_trust,
     )
     profiles = PeopleRepository(
         database,
-        initial_affection=settings.relationship_initial_affection,
-        initial_trust=settings.relationship_initial_trust,
     )
     user_profiles = UserProfileService(profiles)
     rollup_config = RollupPolicyConfig(
@@ -162,18 +151,6 @@ def build_harness(
     conversation_scopes = ConversationScopeRepository(database)
     conversation_rollups = ConversationRollupRepository(database, rollup_config)
     memories = MemoryFactService(MemoryFactRepository(database))
-    relationships = RelationshipRepository(
-        database,
-        initial_affection=settings.relationship_initial_affection,
-        initial_trust=settings.relationship_initial_trust,
-        trust_cap_offset=settings.trust_affection_cap_offset,
-        max_affection_auto_delta=settings.affection_max_auto_delta,
-        max_trust_auto_delta=settings.trust_max_auto_delta,
-    )
-    relationship_jobs = RelationshipJobRepository(
-        database,
-        max_attempts=settings.relationship_max_attempts,
-    )
     web_sources = WebSearchSourceRepository(database)
     vision = (
         VisionService(
@@ -204,12 +181,6 @@ def build_harness(
     concurrency = ConcurrencyManager(settings.global_llm_concurrency)
     runtime_config = RuntimeConfigService(settings=settings, database=database)
     time_service = TimeContextService(database, default_timezone=settings.default_timezone)
-    relationship_worker = RelationshipWorker(
-        settings=settings,
-        jobs=relationship_jobs,
-        relationships=relationships,
-        evaluator=FakeRelationshipEvaluator(),
-    )
     rollup_service = ConversationRollupService(
         models=models,
         config=rollup_config,
@@ -226,7 +197,6 @@ def build_harness(
         ledger=ledger,
         memories=memories,
         actions=AgentActionRepository(database),
-        relationships=relationships,
         web_provider=web_provider,
         web_sources=web_sources,
         runtime_config=runtime_config,
@@ -238,7 +208,6 @@ def build_harness(
         ledger=ledger,
         people=profiles,
         memories=memories,
-        relationships=relationships,
         tools=agent_tools,
         web_sources=web_sources,
         runtime_config=runtime_config,
@@ -273,8 +242,6 @@ def build_harness(
         onebot_connected=lambda: True,
         people=profiles,
         memories=memories,
-        relationships=relationships,
-        relationship_worker=relationship_worker,
         runtime_config=runtime_config,
         vision_service=vision,
         command_service=command_service,
@@ -292,9 +259,6 @@ def build_harness(
         groups,
         private_users,
         profiles,
-        relationships,
-        relationship_jobs,
-        relationship_worker,
         llm,
         concurrency,
         processor,

@@ -1,6 +1,6 @@
 # Plugin API 3.0 历史迁移
 
-> 本文记录 3.0 的接口变化；当前 Host 只接受 3.3，完成下述步骤后继续 [API 3.1 历史迁移](api-3.1-migration.md) 和 [API 3.2 历史迁移](api-3.2-migration.md) 和 [API 3.3 迁移](api-3.3-migration.md)。
+> 本文记录 3.0 的接口变化；当前 Host 只接受 3.4，完成下述步骤后继续 [API 3.1 历史迁移](api-3.1-migration.md) 和 [API 3.2 历史迁移](api-3.2-migration.md) 和 [API 3.3 迁移](api-3.3-migration.md)。
 
 Plugin API 3.0 删除了把媒体效果排入“下一条自动回复”的隐式状态：
 

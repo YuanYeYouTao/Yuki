@@ -19,7 +19,6 @@ const labels = {
   weekdays: "星期（一=1，日=7）",
   context: "上下文",
   scene: "场景",
-  include_relationship: "包含关系",
   include_memories: "包含记忆",
   history_limit: "历史条数",
   limits: "执行额度",

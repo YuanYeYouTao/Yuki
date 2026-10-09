@@ -27,7 +27,6 @@ from qq_ai_bot.control_plane.commands import ControlCommand
 from qq_ai_bot.control_plane.operations import OperationRef
 from qq_ai_bot.control_plane.principal import ControlPrincipal
 from qq_ai_bot.control_plane.problems import ProblemCode
-from qq_ai_bot.domain.identity import PersonId
 from qq_ai_bot.emoji.db_models import EmojiAssetModel
 from qq_ai_bot.emoji.lifecycle import EmojiLifecycleService
 from qq_ai_bot.emoji.models import EmojiLifecycleStatus
@@ -52,13 +51,7 @@ from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.control_operations import dream_operation, rebuild_operation
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.persistence.models import (
-    AutomationModel,
-    MemoryFactModel,
-    MemoryRebuildRunModel,
-    PersonRelationshipModel,
-)
-from qq_ai_bot.persistence.relationship_repository import RelationshipRepository
+from qq_ai_bot.persistence.models import AutomationModel, MemoryFactModel, MemoryRebuildRunModel
 from qq_ai_bot.persistence.unit_of_work import next_updated_at
 from qq_ai_bot.persistence.unit_of_work import state_revision as _state_revision
 from qq_ai_bot.plugin_host.configuration_service import (
@@ -505,43 +498,6 @@ class ControlManagementGateway:
             raise ManagementFailure(_map_config_error(result))
         revision = result.version if result.version is not None and result.version >= 1 else 1
         return ManagementMutation(str(parsed.change_id), revision, "rolled_back")
-
-    async def mutate_relationship(
-        self,
-        session: AsyncSession,
-        principal: ControlPrincipal,
-        command: ControlCommand,
-        parsed: ManagementActionPayload,
-    ) -> ManagementMutation:
-        try:
-            person = PersonId.parse(parsed.resource_id)
-        except (ValueError, TypeError) as exc:
-            raise ManagementFailure(ProblemCode.VALIDATION_ERROR) from exc
-        if parsed.spec is None or set(parsed.spec) != {"value"}:
-            raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
-        value = parsed.spec["value"]
-        lower, upper = (-20, 20) if parsed.action == "adjust_affection" else (0, 100)
-        if (
-            parsed.action not in {"set_affection", "set_trust", "adjust_affection"}
-            or type(value) is not int
-            or not lower <= value <= upper
-        ):
-            raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
-        row = await session.get(PersonRelationshipModel, person.text)
-        if row is None:
-            raise ManagementFailure(ProblemCode.NOT_FOUND)
-        before = row.updated_at
-        _require_revision(state_revision(before), command.expected_revision)
-        await RelationshipRepository(self._database).set_for_person(
-            session,
-            person,
-            actor_id=principal.principal_id.text,
-            action=parsed.action,
-            value=value,
-        )
-        return ManagementMutation(
-            person.text, await _persist_revision(session, row, before), parsed.action
-        )
 
     async def mutate_memory(
         self,

@@ -199,48 +199,6 @@ class FakeMemoryFacade:
         return PluginResult(data={"deleted": True})
 
 
-class FakeRelationshipFacade:
-    def __init__(self) -> None:
-        self.current_user_id: str | None = None
-        self.relationships: dict[str, dict[str, JsonValue]] = {}
-        self.events: dict[str, list[dict[str, JsonValue]]] = {}
-
-    async def get_current(self) -> Mapping[str, JsonValue] | None:
-        return self.relationships.get(self.current_user_id or "")
-
-    async def get(self, user_id: str) -> Mapping[str, JsonValue] | None:
-        return self.relationships.get(user_id)
-
-    async def list_events(
-        self, user_id: str, limit: int = 20
-    ) -> tuple[Mapping[str, JsonValue], ...]:
-        return tuple(self.events.get(user_id, ())[-limit:])
-
-    async def adjust(
-        self,
-        user_id: str,
-        *,
-        affection_delta: int = 0,
-        trust_delta: int = 0,
-        reason: str,
-    ) -> PluginResult:
-        current = self.relationships.setdefault(user_id, {"affection": 0, "trust": 0})
-        affection = current.get("affection", 0)
-        trust = current.get("trust", 0)
-        current["affection"] = (
-            int(affection) if isinstance(affection, int | float) else 0
-        ) + affection_delta
-        current["trust"] = (int(trust) if isinstance(trust, int | float) else 0) + trust_delta
-        self.events.setdefault(user_id, []).append(
-            {
-                "affection_delta": affection_delta,
-                "trust_delta": trust_delta,
-                "reason": reason,
-            }
-        )
-        return PluginResult(data={"updated": True})
-
-
 class FakeAgentFacade:
     def __init__(self, response: str = "fake agent response") -> None:
         self.response = response

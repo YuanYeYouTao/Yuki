@@ -17,7 +17,6 @@ RESERVED_PLUGIN_NAMESPACE_PREFIXES: frozenset[str] = frozenset(
         "web",
         "qq",
         "reply",
-        "relationship",
         "automation",
         "admin",
         "core",

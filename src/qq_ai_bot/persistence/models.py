@@ -126,12 +126,6 @@ class ChatEventModel(Base):
         ),
         Index("ix_chat_events_canonical_event_id", "canonical_event_id"),
         Index(
-            "ix_chat_events_conversation_author_id",
-            "canonical_conversation_id",
-            "author_person_id",
-            "id",
-        ),
-        Index(
             "ix_chat_events_social_source_author",
             "author_person_id",
             "id",
@@ -1403,112 +1397,6 @@ class MemoryEmbeddingJobModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
-
-
-class PersonRelationshipModel(Base):
-    """Persistent affection and trust scores for one canonical Person."""
-
-    __tablename__ = "person_relationships"
-    __table_args__ = (
-        CheckConstraint(
-            "affection_score >= 0 AND affection_score <= 100",
-            name="ck_person_relationships_affection_range",
-        ),
-        CheckConstraint(
-            "trust_score >= 0 AND trust_score <= 100",
-            name="ck_person_relationships_trust_range",
-        ),
-    )
-
-    canonical_person_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
-        primary_key=True,
-    )
-    affection_score: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
-    trust_score: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    last_automatic_change_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-
-
-class RelationshipEventModel(Base):
-    """Auditable automatic or administrator-issued relationship change."""
-
-    __tablename__ = "relationship_events"
-    __table_args__ = (
-        CheckConstraint(
-            "change_type IN ('automatic', 'manual')",
-            name="ck_relationship_events_change_type",
-        ),
-        Index(
-            "ix_relationship_events_person_created",
-            "canonical_person_id",
-            "created_at",
-        ),
-        Index(
-            "uq_relationship_events_automatic_source",
-            "source_event_id",
-            unique=True,
-            sqlite_where=text("source_event_id IS NOT NULL AND change_type = 'automatic'"),
-        ),
-        Index("ix_relationship_events_canonical_person_id", "canonical_person_id"),
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    source_event_id: Mapped[int | None] = mapped_column(
-        ForeignKey("chat_events.id", ondelete="SET NULL"), nullable=True
-    )
-    actor_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    change_type: Mapped[str] = mapped_column(String(16), nullable=False)
-    affection_before: Mapped[int] = mapped_column(Integer, nullable=False)
-    affection_delta: Mapped[int] = mapped_column(Integer, nullable=False)
-    affection_after: Mapped[int] = mapped_column(Integer, nullable=False)
-    trust_before: Mapped[int] = mapped_column(Integer, nullable=False)
-    trust_delta: Mapped[int] = mapped_column(Integer, nullable=False)
-    trust_after: Mapped[int] = mapped_column(Integer, nullable=False)
-    reason_code: Mapped[str] = mapped_column(String(64), nullable=False)
-    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    canonical_person_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
-        nullable=False,
-    )
-
-
-class RelationshipJobModel(Base):
-    """Persistent restart-safe relationship evaluation job."""
-
-    __tablename__ = "relationship_jobs"
-    __table_args__ = (
-        UniqueConstraint("trigger_event_id", name="uq_relationship_jobs_trigger_event"),
-        CheckConstraint(
-            "status IN ('pending', 'processing', 'completed', 'failed')",
-            name="ck_relationship_jobs_status",
-        ),
-        Index("ix_relationship_jobs_status_next", "status", "next_attempt_at"),
-        Index("ix_relationship_jobs_canonical_person_id", "canonical_person_id"),
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    trigger_event_id: Mapped[int] = mapped_column(
-        ForeignKey("chat_events.id", ondelete="CASCADE"), nullable=False
-    )
-    conversation_key: Mapped[str] = mapped_column(String(255), nullable=False)
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
-    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    canonical_person_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
-        nullable=False,
-    )
 
 
 class AgentActionModel(Base):

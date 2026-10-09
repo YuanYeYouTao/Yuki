@@ -55,7 +55,6 @@ SDK `ctx.events.publish()` 仍等待 Hook；事件名中的 `before`、`collecti
 - `memory.created`
 - `memory.updated`
 - `memory.deleted`
-- `relationship.changed`
 
 ## 视觉与联网
 

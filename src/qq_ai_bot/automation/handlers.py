@@ -38,7 +38,6 @@ from qq_ai_bot.llm.base import (
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
-    RelationshipRepository,
 )
 from qq_ai_bot.runtime.activation_outcome import ContextBoundaryChanged
 from qq_ai_bot.runtime.context_preparation import prepare_context
@@ -78,7 +77,6 @@ class AutomationCapabilityHandlers:
         time_service: TimeContextService,
         ledger: EventLedgerRepository,
         memories: MemoryFactService,
-        relationships: RelationshipRepository,
         web_provider: WebSearchProvider | None,
         gateway_factory: GatewayFactory,
     ) -> None:
@@ -91,7 +89,6 @@ class AutomationCapabilityHandlers:
         self._time = time_service
         self._ledger = ledger
         self._memories = memories
-        self._relationships = relationships
         self._web = web_provider
         self._gateway_factory = gateway_factory
 
@@ -483,7 +480,6 @@ class AutomationCapabilityHandlers:
                 settings=self._settings,
                 ledger=self._ledger,
                 memories=self._memories,
-                relationships=self._relationships,
                 context=context,
                 instruction=str(arguments["instruction"]),
                 profile=str(arguments.get("context_profile") or "none"),

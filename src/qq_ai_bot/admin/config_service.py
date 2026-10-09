@@ -35,7 +35,6 @@ from qq_ai_bot.admin.models import (
     LLMRuntimeConfig,
     MemoryRetrievalRuntimeConfig,
     PluginRuntimeConfig,
-    RelationshipRuntimeConfig,
     ReplyRuntimeConfig,
     RuntimeConfigSnapshot,
     ToolingRuntimeConfig,
@@ -1548,19 +1547,6 @@ class RuntimeConfigService:
                 source_max_runs_per_conversation=int(
                     cast(int, value("web.source_max_runs_per_conversation"))
                 ),
-            ),
-            relationship=RelationshipRuntimeConfig(
-                confidence_threshold=float(
-                    cast(float | int, value("relationship.confidence_threshold"))
-                ),
-                max_auto_delta=int(cast(int, value("relationship.max_auto_delta"))),
-                daily_positive_cap=int(cast(int, value("relationship.daily_positive_cap"))),
-                daily_negative_cap=int(cast(int, value("relationship.daily_negative_cap"))),
-                conflict_preference_min_gap=int(
-                    cast(int, value("relationship.conflict_preference_min_gap"))
-                ),
-                initial_affection=int(cast(int, value("relationship.initial_affection"))),
-                initial_trust=int(cast(int, value("relationship.initial_trust"))),
             ),
             vision=VisionRuntimeConfig(
                 max_images_per_turn=int(cast(int, value("vision.max_images_per_turn"))),

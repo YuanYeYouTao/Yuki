@@ -35,7 +35,6 @@ export const taskNames: Record<string, string> = {
   memory_extraction: "记忆提取",
   memory_self_reflection: "自省",
   memory_dream: "记忆归纳",
-  relationship_evaluation: "关系评估",
   emoji_replacement: "表情替换",
   automation_agent: "自动化执行",
   plugin_agent_session: "插件会话",

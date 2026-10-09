@@ -7,12 +7,12 @@
 
 ## 永久主体与身份
 
-一个数据库对应一个永久 Yuki。Yuki 的人格、SELF、记忆、关系、设置、插件状态和自动化不属于
+一个数据库对应一个永久 Yuki。Yuki 的人格、SELF、记忆、设置、插件状态和自动化不属于
 某个 QQ 号、网关实现或某条 WebSocket 连接。
 
 核心身份对象如下：
 
-- `Person`：一个永久的人类主体。关系、人物记忆和长期偏好按 Person 保存。
+- `Person`：一个永久的人类主体。人物记忆和长期偏好按 Person 保存。
 - `IdentityBinding`：Person 在某个平台上的外部账号。一个 Person 可以有多个 Binding。
 - `Space`：永久共享空间；QQ 群只是它的一种外部表现。
 - `SpaceBinding`：Space 与外部群号的绑定。
@@ -20,7 +20,7 @@
 - `CanonicalConversation`：私聊按 Person 唯一，群聊按 Space 唯一。显式 `/ai new` 或隐私遗忘
   等上下文边界操作会推进 Conversation generation；更换账号本身不推进它。
 
-第三方机器人使用 `external_bot` 作者类型，不创建 Person、人物关系或人物记忆。事件作者只有
+第三方机器人使用 `external_bot` 作者类型，不创建 Person 或人物记忆。事件作者只有
 `person`、`yuki`、`external_bot`、`system` 四类；命令、插件和自动化属于 event origin，
 不是作者类型。
 
@@ -76,8 +76,7 @@ admission 再确认原连接与 pin。探测或 CAS 前取消不安装路由；�
 群内超管的精确 `/ai on` 使用独立的确定性控制入口，不是绕过 ingest 的聊天事件：QQ adapter
 验证真实事件连接与管理员 Binding，恢复服务保留健康接入 pin，否则仅接受唯一通过实时成员
 探针的候选。群启用、必要的两张群路由变更、审计和幂等回执在同一个 `BEGIN IMMEDIATE` 中提交；
-重验身份、路由 revision 与连接快照，冲突整笔退出。命令及回执不进聊天账本、模型、Memory 或
-Relationship，不修改 ConversationGeneration。普通消息、插件和其他管理命令仍受原围栏限制。
+重验身份、路由 revision 与连接快照，冲突整笔退出。命令及回执不进聊天账本、模型或Memory，不修改 ConversationGeneration。普通消息、插件和其他管理命令仍受原围栏限制。
 尚无 SpaceBinding 的新群也只可由上述超管控制入口首次登记：按 Registry 中当前 QQ 连接的内部
 Presence ID 有界读取并在写事务前完成实时成员核验，要求唯一候选就是事件所在账号。writer 重验
 原连接、Presence revision 和外部绑定仍不存在，再将新内部 Space/Binding、两条路由、审计和回执
@@ -110,17 +109,17 @@ SnowLuma noVNC 与 WebUI 的宿主监听分别由 `SNOWLUMA_NOVNC_BIND_ADDRESS` 
 `SNOWLUMA_WEBUI_BIND_ADDRESS` 控制，默认均为 `127.0.0.1`。设为 `0.0.0.0` 属于显式扩大攻击面，
 部署方必须同时提供强密码、防火墙和可信来源限制；OneBot HTTP/WS 与 VNC 原始端口不得公网暴露。
 
-## Memory、关系与扩展
+## Memory 与扩展
 
 Memory 使用 canonical owner 分区：SELF 属于永久 Yuki，PERSON 属于 Person，GROUP 属于 Space，
 PERSON_GROUP 表示某 Person 在某 Space 中的共同经历。证据保留真实事件来源，读取仍受作用域、
 权限和内容能力约束。Presence 或 Provider 变化不会复制或迁移记忆。
 
-关系、偏好、自动化目标、插件状态、Emoji、Speech 和配置投影均使用 canonical owner。
+偏好、自动化目标、插件状态、Emoji、Speech 和配置投影均使用 canonical owner。
 Person 自动化在实际发送时解析当前路由。SELF 自动化固定创建时的群和 Presence；
 该场景或代际变化后阻止执行，不借新的 Yuki QQ 账号或真人身份投递。
 
-Plugin API 当前为 `3.3`，Host 只加载精确匹配的插件。兼容键仍使用 primary
+Plugin API 当前为 `3.4`，Host 只加载精确匹配的插件。兼容键仍使用 primary
 `conversation_key`，SDK 还可读取可选的 person、space、conversation 和 presence ID。
 插件不能伪造管理员、绕过 Capability 或直接选择任意 GatewayConnection。
 
@@ -185,7 +184,7 @@ JSON 候选检查解码后的键和值，脱敏先解析再序列化，数字账
 - `/healthz` 保持公开瘦载荷；管理健康和连接详情只能通过授权后的控制面查询。
 - `0052` 增加无正文社交操作回执；发出后结果不确定时禁止自动重发，不提供丢弃回执的 downgrade。
 - `0053` 增加沙箱任务记录，`0054` 增加提示投影，`0055` 增加语音转写，
-  `0056` 增加持久工作运行时，`0057` 增加子 Agent。已发布迁移不能原地修改。
+  `0056` 增加持久工作运行时，`0057` 增加子 Agent。
 - secret 永不回读；日志与错误不输出 token、Cookie、完整外部 ID、消息正文或本地敏感路径。
 
 部署与数据升级分别见 [SnowLuma Provider 部署](../deployment/snowluma.md) 和
@@ -193,12 +192,6 @@ JSON 候选检查解码后的键和值，脱敏先解析再序列化，数字账
 
 ## 后台领取的事务边界
 
-关系评估和普通记忆批次先在只读会话中准备事件、身份投影与候选，再用短写事务按
+普通记忆批次先在只读会话中准备事件、身份投影与候选，再用短写事务按
 任务 id/status/updated_at 条件领取。竞争失败的候选不进入执行；live Memory 在提交时
 重新核验事件仍位于当前 generation 水位之后。历史扫描不发生在写事务内。
-关系上下文按 canonical Conversation 与 Person 取最近五条有效入站消息，不按当前
-QQ Binding 丢弃同一人的其他账号证据。0065 添加对应的有序复合索引。
-关系任务在同一查询读取 trigger 与会话 generation，并在领取 UPDATE 中复核；
-准备期间发生遗忘或重置时不返回旧正文，之后可重读当前历史再领取。此处 generation
-只保护准备快照，不把关系历史改成 Memory 的水位语义，也不是整个执行期间的租约。
-这不延长旧任务的五分钟 processing 恢复窗口，也不宣称已经定位所有历史长锁事件。

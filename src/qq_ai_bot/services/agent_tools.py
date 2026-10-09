@@ -60,7 +60,6 @@ from qq_ai_bot.persistence.people_repository import PeopleRepository
 from qq_ai_bot.persistence.repositories import (
     AgentActionRepository,
     EventLedgerRepository,
-    RelationshipRepository,
     WebSearchSourceRepository,
 )
 from qq_ai_bot.runtime.errors import InvalidTurnContextError
@@ -378,13 +377,6 @@ class _PersonMemorySelection:
 
 
 @dataclass(frozen=True, slots=True)
-class _RelationshipSelection:
-    user_id: str
-    resolved_by: str
-    subject_ref: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class _ToolFailure:
     code: str
     detail: str
@@ -416,7 +408,6 @@ class AgentToolService:
         memory_context: MemoryContextService | None = None,
         memory_mutations: MemoryMutationService | None = None,
         actions: AgentActionRepository,
-        relationships: RelationshipRepository | None = None,
         web_provider: WebSearchProvider | None = None,
         web_sources: WebSearchSourceRepository | None = None,
         runtime_config: RuntimeConfigService | None = None,
@@ -440,7 +431,6 @@ class AgentToolService:
         self._memory_context = memory_context
         self._memory_mutations = memory_mutations
         self._actions = actions
-        self._relationships = relationships or RelationshipRepository(ledger._database)
         self._web_provider = web_provider
         self._web_sources = web_sources
         self._runtime_config = runtime_config or RuntimeConfigService(
@@ -532,34 +522,6 @@ class AgentToolService:
                         "after": {"type": "integer", "minimum": 0},
                     },
                     required=("event_id",),
-                ),
-            ),
-            ChatTool(
-                name="get_relationship",
-                description=(
-                    f"全局读取 {bot_name} 对一个已认识人物的好感度、信任度和关系阶段。"
-                    "不受当前群或私聊会话限制，普通用户也可查询；这不会开放关系历史或修改权限。"
-                    "真实 @、回复目标或当前发送者优先使用 subject_ref；手输昵称或历史群名片"
-                    "使用 display_name，手输 QQ 号使用 user_id。三个目标字段必须且只能提供一个。"
-                ),
-                parameters=_object_schema(
-                    {
-                        "subject_ref": {
-                            "type": "string",
-                            "description": (
-                                "本轮事件人物引用：current_speaker、"
-                                "member_{user_id} 或 replied_message_author"
-                            ),
-                        },
-                        "display_name": {
-                            "type": "string",
-                            "description": "全局精确匹配的昵称、历史昵称或群名片",
-                        },
-                        "user_id": {
-                            "type": "string",
-                            "description": "已知人物的数字 QQ 号",
-                        },
-                    }
                 ),
             ),
             ChatTool(
@@ -1098,8 +1060,6 @@ class AgentToolService:
                     return await self._search(arguments, runtime)
                 if name == "get_chat_history_around":
                     return await self._history_around(arguments, runtime)
-                if name == "get_relationship":
-                    return await self._relationship(arguments, runtime)
                 if name == "search_memory":
                     result = await self._search_memory(arguments, runtime)
                     return await self._capture_memory_tool_result(result, runtime)
@@ -1577,102 +1537,6 @@ class AgentToolService:
                     for hit in result.hits
                 ],
             }
-        )
-
-    async def _relationship(
-        self,
-        arguments: dict[str, Any],
-        runtime: ToolRuntime,
-    ) -> ToolExecutionResult:
-        try:
-            runtime.require_actor()
-        except PermissionError:
-            return self._result(error="permission_denied", detail="关系查询需要可信执行主体")
-        selection = await self._resolve_relationship_selection(arguments, runtime)
-        if isinstance(selection, _ToolFailure):
-            return self._result(error=selection.code, detail=selection.detail)
-        snapshot = await self._relationships.get(selection.user_id)
-        if snapshot is None:
-            return self._result(
-                error="relationship_not_found",
-                detail="没有找到该人物的好感度记录",
-            )
-        profile = await self._people.get(
-            user_id=selection.user_id,
-            group_id=runtime.current_group_id,
-        )
-        return self._result(
-            data={
-                "user_id": selection.user_id,
-                "display_name": (
-                    profile.display_name if profile is not None else selection.user_id
-                ),
-                "resolved_by": selection.resolved_by,
-                **(
-                    {"subject_ref": selection.subject_ref}
-                    if selection.subject_ref is not None
-                    else {}
-                ),
-                "affection_score": snapshot.affection_score,
-                "trust_score": snapshot.trust_score,
-                "effective_trust": snapshot.effective_trust,
-                "relationship_weight": snapshot.relationship_weight,
-                "stage": snapshot.stage.value,
-            }
-        )
-
-    async def _resolve_relationship_selection(
-        self,
-        arguments: dict[str, Any],
-        runtime: ToolRuntime,
-    ) -> _RelationshipSelection | _ToolFailure:
-        selector_names = tuple(
-            name
-            for name in ("subject_ref", "display_name", "user_id")
-            if name in arguments and arguments[name] is not None
-        )
-        if len(selector_names) != 1:
-            return _ToolFailure(
-                "invalid_person_selector",
-                "subject_ref、display_name、user_id 必须且只能提供一个",
-            )
-        selector = selector_names[0]
-        subject_ref: str | None = None
-        if selector == "subject_ref":
-            subject_ref = arguments.get("subject_ref")
-            if not isinstance(subject_ref, str) or not subject_ref:
-                return _ToolFailure("invalid_subject_ref", "subject_ref 必须是非空字符串")
-            resolved = await self._user_id_for_subject_ref(subject_ref, runtime)
-            if isinstance(resolved, _ToolFailure):
-                return resolved
-            user_id = resolved
-        elif selector == "display_name":
-            display_name = arguments.get("display_name")
-            if not isinstance(display_name, str) or not display_name.strip():
-                return _ToolFailure("invalid_display_name", "display_name 必须是非空字符串")
-            matches = await self._people.find_people_by_exact_name(display_name)
-            if not matches:
-                return _ToolFailure("person_not_found", "没有找到全局精确匹配的已知人物")
-            if len(matches) > 1:
-                return _ToolFailure(
-                    "ambiguous_person",
-                    "全局存在多个同名人物，请提供 QQ 号或使用真实事件中的人物引用",
-                )
-            user_id = matches[0]
-        else:
-            candidate = arguments.get("user_id")
-            if not isinstance(candidate, str) or not candidate.strip().isdigit():
-                return _ToolFailure("invalid_user_id", "user_id 必须是数字 QQ 号字符串")
-            user_id = candidate.strip()
-        if not await self._is_person_tool_target(user_id, runtime):
-            return _ToolFailure(
-                "person_not_found",
-                f"{self._settings.bot_display_name} 自己不使用人物好感度记录",
-            )
-        return _RelationshipSelection(
-            user_id=user_id,
-            resolved_by=selector,
-            subject_ref=subject_ref,
         )
 
     async def _resolve_person_memory_selection(

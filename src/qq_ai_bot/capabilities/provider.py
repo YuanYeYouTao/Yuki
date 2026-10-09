@@ -132,11 +132,6 @@ _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
         CapabilityEffect.READ_STATE,
         CapabilityRisk.READ,
     ),
-    "get_relationship": (
-        "relationship.read",
-        CapabilityEffect.READ_STATE,
-        CapabilityRisk.READ,
-    ),
     "get_memory_fact": (
         "memory.fact.read",
         CapabilityEffect.READ_STATE,
@@ -168,7 +163,6 @@ _CORE_USE_WHEN: dict[str, tuple[str, ...]] = {
     "get_chat_history_around": ("这条前后", "附近消息", "对齐原话"),
     "search_memory": ("记得他", "人物记忆", "群记忆", "自我记忆", "你的经历"),
     "memory_change": ("记住", "忘记", "纠正记忆", "保存记忆"),
-    "get_relationship": ("好感度", "信任度", "关系阶段"),
     "web_search": ("搜索", "联网", "查资料", "最新新闻", "搜下", "上网"),
     "read_webpage": ("打开网页", "阅读链接", "看这个URL"),
     "call_onebot_api": ("禁言", "踢人", "QQ群操作"),
@@ -246,13 +240,6 @@ _CORE_SEARCH_TAGS: dict[str, tuple[str, ...]] = {
         "群记忆",
         "群整体",
         "群里的情况",
-    ),
-    "get_relationship": (
-        "好感度",
-        "信任度",
-        "关系阶段",
-        "亲密度",
-        "关系数据",
     ),
     "memory_change": (
         "记住",

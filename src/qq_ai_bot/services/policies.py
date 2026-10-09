@@ -26,7 +26,6 @@ class CommandName(StrEnum):
     GROUP = "group"
     MEMORY = "memory"
     PREFERENCE = "preference"
-    AFFECTION = "affection"
     CAPABILITIES = "capabilities"
     CONFIG = "config"
     AUTOMATION = "automation"

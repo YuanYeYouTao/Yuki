@@ -281,23 +281,6 @@ class MemorySettings(DomainSettings):
         return self
 
 
-class RelationshipSettings(DomainSettings):
-    relationship_enabled: bool
-    relationship_initial_affection: int = Field(ge=0, le=100)
-    relationship_initial_trust: int = Field(ge=0, le=100)
-    relationship_batch_seconds: float = Field(ge=0)
-    relationship_batch_trigger_count: int = Field(gt=0)
-    relationship_batch_max_turns: int = Field(gt=0)
-    relationship_max_attempts: int = Field(gt=0)
-    relationship_confidence_threshold: float = Field(ge=0, le=1)
-    affection_max_auto_delta: int = Field(gt=0)
-    trust_max_auto_delta: int = Field(gt=0)
-    relationship_daily_positive_cap: int = Field(ge=0)
-    relationship_daily_negative_cap: int = Field(ge=0)
-    trust_affection_cap_offset: int = Field(ge=0, le=100)
-    conflict_preference_min_gap: int = Field(ge=0, le=100)
-
-
 class WebSettings(DomainSettings):
     web_enabled: bool
     web_mode: WebMode | None = None

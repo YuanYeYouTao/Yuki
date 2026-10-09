@@ -66,8 +66,6 @@ from qq_ai_bot.persistence.repositories import (
     GroupSettingsRepository,
     PeopleRepository,
     PrivateUserSettingsRepository,
-    RelationshipJobRepository,
-    RelationshipRepository,
 )
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.plugin_host.direct_command_router import DirectCommandMatch
@@ -92,7 +90,6 @@ from qq_ai_bot.services.admin.group_admin import GroupAdminService
 from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
 from qq_ai_bot.services.admin.preference_admin import PreferenceAdminService
 from qq_ai_bot.services.admin.private_access_admin import PrivateAccessAdminService
-from qq_ai_bot.services.admin.relationship_admin import RelationshipAdminService
 from qq_ai_bot.services.attachment_inputs import AttachmentInputService
 from qq_ai_bot.services.autonomous_groups import AutonomousGroupService
 from qq_ai_bot.services.chat import ChatService, OutboundSender
@@ -118,8 +115,6 @@ from qq_ai_bot.services.policies import (
     evaluate_message,
 )
 from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
-from qq_ai_bot.services.relationship_evaluator import LLMRelationshipEvaluator
-from qq_ai_bot.services.relationship_worker import RelationshipWorker
 from qq_ai_bot.services.renderer import sanitize_input
 from qq_ai_bot.services.turn_coordinator import (
     ConversationTurnCoordinator,
@@ -318,7 +313,7 @@ def _vision_failure_message(error_code: str | None, *, reply_only: bool) -> str:
 
 
 class MessageProcessor:
-    """Admission → dedup → identity → ledger → memory → reply → relationship job."""
+    """Admission → dedup → identity → ledger → memory → reply."""
 
     def __init__(
         self,
@@ -338,11 +333,8 @@ class MessageProcessor:
         people: PeopleRepository | None = None,
         memories: MemoryFactService | None = None,
         memory_worker: MemoryWorker | None = None,
-        relationships: RelationshipRepository | None = None,
-        relationship_worker: RelationshipWorker | None = None,
         autonomous_groups: AutonomousGroupService | None = None,
         runtime_config: RuntimeConfigService | None = None,
-        relationship_admin: RelationshipAdminService | None = None,
         memory_admin: MemoryAdminService | None = None,
         preference_admin: PreferenceAdminService | None = None,
         group_admin: GroupAdminService | None = None,
@@ -398,27 +390,6 @@ class MessageProcessor:
             model_executor=chat._models,
             concurrency=concurrency,
         )
-        self._relationships = relationships or RelationshipRepository(
-            database,
-            initial_affection=settings.relationship_initial_affection,
-            initial_trust=settings.relationship_initial_trust,
-            trust_cap_offset=settings.trust_affection_cap_offset,
-            max_affection_auto_delta=settings.affection_max_auto_delta,
-            max_trust_auto_delta=settings.trust_max_auto_delta,
-        )
-        self._relationship_worker = relationship_worker or RelationshipWorker(
-            settings=settings,
-            jobs=RelationshipJobRepository(
-                database,
-                max_attempts=settings.relationship_max_attempts,
-            ),
-            relationships=self._relationships,
-            evaluator=LLMRelationshipEvaluator(
-                settings=settings,
-                model_executor=chat._models,
-                concurrency=concurrency,
-            ),
-        )
         self._autonomous = autonomous_groups
         self._runtime_config = runtime_config or RuntimeConfigService(
             settings=settings,
@@ -427,11 +398,6 @@ class MessageProcessor:
         self._turn_coordinator = turn_coordinator or chat._turn_coordinator
         self._admission_signals = admission_signals
         audit = AdminAuditService(database)
-        self._relationship_admin = relationship_admin or RelationshipAdminService(
-            relationships=self._relationships,
-            audit=audit,
-            runtime_config=self._runtime_config,
-        )
         self._memory_admin = memory_admin or MemoryAdminService(
             settings=settings,
             memories=self._memories,
@@ -449,7 +415,6 @@ class MessageProcessor:
         self._private_access_admin = private_access_admin or PrivateAccessAdminService(
             private_users=self._private_users,
             audit=audit,
-            runtime_config=self._runtime_config,
         )
         self._config_admin = config_admin or ConfigAdminService(self._runtime_config)
         self._permission_catalog = permission_catalog or PermissionCatalogService(
@@ -471,7 +436,6 @@ class MessageProcessor:
             concurrency=concurrency,
             onebot_connected=onebot_connected,
             runtime_config=self._runtime_config,
-            relationship_admin=self._relationship_admin,
             memory_admin=self._memory_admin,
             preference_admin=self._preference_admin,
             group_admin=self._group_admin,
@@ -841,9 +805,7 @@ class MessageProcessor:
                 group_policy,
                 profile_resolver,
             )
-            profile = await self._user_profiles.capture(
-                message, profile_resolver, runtime=runtime_snapshot
-            )
+            profile = await self._user_profiles.capture(message, profile_resolver)
         if is_authorized_new:
             await self._turn_coordinator.cancel_running_before_boundary(coordinator_key)
             try:
@@ -1429,19 +1391,6 @@ class MessageProcessor:
             )
             result = ProcessResult(True, int(sent), "internal_failure")
         else:
-            if created and sent_count > 0:
-                try:
-                    await self._relationship_worker.enqueue(
-                        trigger_event_id=record.id,
-                        user_id=message.sender.user_id,
-                        conversation_key=coordinator_key,
-                    )
-                except (SQLAlchemyError, OSError, RuntimeError, ValueError) as exc:
-                    logger.warning(
-                        "relationship_enqueue_failed exception_category=%s",
-                        type(exc).__name__,
-                    )
-
             self._log_result(
                 event_key,
                 identity,

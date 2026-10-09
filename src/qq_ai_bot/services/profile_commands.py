@@ -1,4 +1,4 @@
-"""Commands for a person's memories, preferences, identity, and relationship."""
+"""Commands for a person's memories, preferences, and identity."""
 
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.repositories import PeopleRepository
 from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
 from qq_ai_bot.services.admin.preference_admin import PreferenceAdminService
-from qq_ai_bot.services.admin.relationship_admin import RelationshipAdminService
 
 _NUMERIC_PLATFORM_ID = re.compile(r"[1-9][0-9]{4,19}")
 
@@ -32,7 +31,6 @@ class ProfileCommandHandler:
         memories: MemoryFactService,
         memory_admin: MemoryAdminService,
         preference_admin: PreferenceAdminService,
-        relationship_admin: RelationshipAdminService,
         control: ControlAccess,
         memory_rebuild: MemoryRebuildService | None = None,
         bot_display_name: str = "Yuki",
@@ -41,7 +39,6 @@ class ProfileCommandHandler:
         self._memories = memories
         self._memory_admin = memory_admin
         self._preference_admin = preference_admin
-        self._relationship_admin = relationship_admin
         self._control = control
         self._memory_rebuild = memory_rebuild
         self._bot_display_name = bot_display_name
@@ -585,92 +582,6 @@ class ProfileCommandHandler:
         except PermissionError as exc:
             return str(exc)
         return "可用操作：list、set、delete。"
-
-    async def affection(
-        self,
-        *,
-        actor: AdminActor,
-        argument: str,
-    ) -> str:
-        parts = argument.split()
-        if not parts:
-            return "格式：/ai affection show|history"
-        operation = parts.pop(0).casefold()
-        if operation in {"show", "history"}:
-            target = actor.user_id
-            if parts:
-                if len(parts) != 2 or parts[0].casefold() != "user":
-                    return f"格式：/ai affection {operation} [user <QQ号>]"
-                if operation == "history" and not actor.is_superuser:
-                    return "只有超级管理员可以查看其他 QQ 人物的关系变化历史。"
-                if _NUMERIC_PLATFORM_ID.fullmatch(parts[1]) is None:
-                    return "目标 QQ 号格式错误。"
-                target = parts[1]
-            try:
-                principal, audit = await self._authorized_call(actor)
-                context = self._control.context(
-                    principal, await self._control.person_target(target)
-                )
-                if operation == "show":
-                    snapshot = await self._relationship_admin.get_relationship(context, audit)
-                    return (
-                        f"好感度：{snapshot.affection_score}\n"
-                        f"信任度：{snapshot.trust_score}\n"
-                        f"有效信任度：{snapshot.effective_trust}\n"
-                        f"当前关系阶段：{snapshot.stage.name}"
-                    )
-                history = await self._relationship_admin.get_history(context, audit, limit=10)
-            except PermissionError as exc:
-                return str(exc)
-            if not history:
-                return "暂无关系变化记录。"
-            return "\n".join(
-                (
-                    f"{row.created_at:%Y-%m-%d %H:%M} "
-                    f"好感{row.affection_delta:+d} 信任{row.trust_delta:+d} "
-                    f"[{row.change_type}/{row.reason_code}]"
-                )
-                for row in history
-            )
-
-        if operation not in {"set", "adjust", "trust"}:
-            return "可用操作：show、history；超级管理员另可使用 set、adjust、trust。"
-        if not actor.is_superuser:
-            return "权限不足：只有超级管理员可以修改关系分数。"
-        if (
-            len(parts) != 3
-            or parts[0].casefold() != "user"
-            or _NUMERIC_PLATFORM_ID.fullmatch(parts[1]) is None
-        ):
-            return f"格式：/ai affection {operation} user <QQ号> <数值>"
-        try:
-            value = int(parts[2])
-        except ValueError:
-            return "分数必须是整数。"
-        target = parts[1]
-        try:
-            principal, audit = await self._authorized_call(actor)
-            context = self._control.context(principal, await self._control.person_target(target))
-            if operation == "set":
-                _, snapshot = await self._relationship_admin.set_affection(
-                    context, value, audit=audit
-                )
-            elif operation == "adjust":
-                _, snapshot = await self._relationship_admin.adjust_affection(
-                    context,
-                    value,
-                    audit=audit,
-                )
-            else:
-                _, snapshot = await self._relationship_admin.set_trust(context, value, audit=audit)
-        except PermissionError as exc:
-            return str(exc)
-        except ValueError:
-            return "好感度/信任度必须在 0～100；好感度单次调整必须在 -20～20。"
-        return (
-            f"已更新 QQ {target}：好感度 {snapshot.affection_score}，"
-            f"信任度 {snapshot.trust_score}，阶段 {snapshot.stage.name}。"
-        )
 
     @staticmethod
     def _parse_scoped_operation(

@@ -37,8 +37,6 @@ from qq_ai_bot.persistence.repositories import (
     MediaAnalysisRepository,
     PeopleRepository,
     PrivateUserSettingsRepository,
-    RelationshipJobRepository,
-    RelationshipRepository,
     WebSearchSourceRepository,
 )
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
@@ -69,8 +67,6 @@ class PersistenceBundle:
     media_analyses: MediaAnalysisRepository
     emoji_descriptions: EmojiDescriptionRepository
     emoji_repository: EmojiRepository
-    relationships: RelationshipRepository
-    relationship_jobs: RelationshipJobRepository
     turn_observations: RuntimeTurnObservationRepository
 
 
@@ -103,14 +99,9 @@ class PersistenceModule:
             return (await runtime_config.snapshot()).work_storage
 
         database.protocol_storage_policy = protocol_storage_policy
-        initial = {
-            "initial_affection": settings.relationship_initial_affection,
-            "initial_trust": settings.relationship_initial_trust,
-        }
         memory_rebuilds = MemoryRebuildRepository(database)
         people = PeopleRepository(
             database,
-            **initial,
             memory_rebuilds=memory_rebuilds,
         )
         memory_repository = MemoryFactRepository(database)
@@ -166,7 +157,7 @@ class PersistenceModule:
             database=database,
             runtime_config=runtime_config,
             groups=GroupSettingsRepository(database),
-            private_users=PrivateUserSettingsRepository(database, **initial),
+            private_users=PrivateUserSettingsRepository(database),
             people=people,
             ledger=ledger,
             scoped_events=scoped_events,
@@ -190,16 +181,5 @@ class PersistenceModule:
             media_analyses=MediaAnalysisRepository(database),
             emoji_descriptions=EmojiDescriptionRepository(database),
             emoji_repository=EmojiRepository(database),
-            relationships=RelationshipRepository(
-                database,
-                **initial,
-                trust_cap_offset=settings.trust_affection_cap_offset,
-                max_affection_auto_delta=settings.affection_max_auto_delta,
-                max_trust_auto_delta=settings.trust_max_auto_delta,
-            ),
-            relationship_jobs=RelationshipJobRepository(
-                database,
-                max_attempts=settings.relationship_max_attempts,
-            ),
             turn_observations=RuntimeTurnObservationRepository(database),
         )

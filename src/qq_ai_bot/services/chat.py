@@ -75,7 +75,6 @@ from qq_ai_bot.persistence.event_repository import ConversationReadVersion
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     PeopleRepository,
-    RelationshipRepository,
     WebSearchSourceRepository,
 )
 from qq_ai_bot.persistence.repository_records import EventRecord
@@ -262,7 +261,6 @@ class ChatService:
         people: PeopleRepository,
         memories: MemoryFactService,
         tools: AgentToolService,
-        relationships: RelationshipRepository,
         web_sources: WebSearchSourceRepository,
         runtime_config: RuntimeConfigService,
         time_service: TimeContextService,
@@ -294,7 +292,6 @@ class ChatService:
         self._effect_gate = effect_gate or ConversationEffectGate()
         self._people = people
         self._memories = memories
-        self._relationships = relationships
         self._tools = tools
         self._web_sources = web_sources
         self._runtime_config = runtime_config
@@ -326,7 +323,6 @@ class ChatService:
                 settings=settings,
                 ledger=self._ledger,
                 people=self._people,
-                relationships=self._relationships,
                 time_service=self._time,
                 rollup_repository=rollup_repository,
                 rollup_service=rollup_service,

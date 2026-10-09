@@ -13,7 +13,6 @@ from tests.support import control_reflection_query_helpers as reflection_fixture
 from tests.support import control_work_details_helpers as work_fixtures
 from tests.support.social_identity_cases import social_env
 from tests.support.workspace_snapshots import snapshot_bytes
-from tests.unit import test_control_relationships as relationship_fixtures
 from tests.unit.test_control_operator_access import operator_file
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
@@ -36,7 +35,6 @@ detailed_work = work_fixtures.detailed_work
 histories = automation_fixtures.histories
 memory_scene = memory_fixtures.memory_scene
 reflection_scene = reflection_fixtures.reflection_scene
-relationship_scene = relationship_fixtures.relationship_scene
 
 
 @pytest.fixture
@@ -56,7 +54,6 @@ async def web(database, tmp_path, monkeypatch):
             "control.work.mutate",
             "control.automation.read",
             "control.memory.metadata.read",
-            "control.relationship.read",
         ),
     )
     settings = make_settings(
@@ -196,8 +193,8 @@ async def test_live_execution_http_validates_scope_and_serializes_event_turns(
         assert response.status_code == 400
 
 
-async def test_reflection_and_relationship_http_are_metadata_queries(
-    web, reflection_scene, relationship_scene
+async def test_reflection_http_queries(
+    web, reflection_scene
 ):
     client, _, _ = web
     env, runs, _ = reflection_scene
@@ -233,21 +230,6 @@ async def test_reflection_and_relationship_http_are_metadata_queries(
             "/api/control/queries/list_self_reflection_history", headers=headers, json=payload
         )
         assert response.status_code == 400
-    response = await client.post(
-        "/api/control/queries/read_relationship",
-        headers=headers,
-        json={"person_id": relationship_scene[0].text},
-    )
-    assert (
-        response.status_code == 200 and response.json()["data"]["fields"]["affection_score"] == 50
-    )
-    response = await client.post(
-        "/api/control/queries/list_relationship_history",
-        headers=headers,
-        json={"person_id": relationship_scene[0].text, "section": "events", "page": {"limit": 30}},
-    )
-    assert response.status_code == 200 and len(response.json()["data"]["items"]) == 30
-    assert "actor_user_id" not in response.text
 
 
 async def test_memory_scope_http_metadata_and_detail(web, memory_scene):

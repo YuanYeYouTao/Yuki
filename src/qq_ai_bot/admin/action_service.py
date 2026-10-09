@@ -16,7 +16,6 @@ from qq_ai_bot.services.admin import (
     MemoryAdminService,
     PreferenceAdminService,
     PrivateAccessAdminService,
-    RelationshipAdminService,
 )
 from qq_ai_bot.services.admin.common import require_real_superuser
 
@@ -41,44 +40,6 @@ class ActionRegistry:
 
     def __init__(self) -> None:
         specs = (
-            ActionSpec(
-                "relationship.get",
-                "查看关系",
-                "读取人物好感度与信任度。",
-                "user",
-                False,
-                self_service=True,
-                self_service_scopes=("self", "global_person"),
-            ),
-            ActionSpec(
-                "relationship.set_affection",
-                "设置好感度",
-                "把人物好感度设置为 0～100。",
-                "user",
-                True,
-            ),
-            ActionSpec(
-                "relationship.adjust_affection",
-                "调整好感度",
-                "按 -20～20 的明确数值调整人物好感度。",
-                "user",
-                True,
-            ),
-            ActionSpec(
-                "relationship.set_trust",
-                "设置信任度",
-                "把人物信任度设置为 0～100。",
-                "user",
-                True,
-            ),
-            ActionSpec(
-                "relationship.history",
-                "查看关系历史",
-                "查看人物最近关系变化。",
-                "user",
-                False,
-                self_service=True,
-            ),
             ActionSpec(
                 "memory.list",
                 "查看人物记忆",
@@ -334,7 +295,6 @@ class AdminActionService:
         *,
         settings: Settings,
         database: Database,
-        relationships: RelationshipAdminService,
         memories: MemoryAdminService,
         preferences: PreferenceAdminService,
         groups: GroupAdminService,
@@ -344,7 +304,6 @@ class AdminActionService:
     ) -> None:
         self._settings = settings
         self._control = ControlAccess(database, superuser_ids=settings.superusers)
-        self._relationships = relationships
         self._memories = memories
         self._preferences = preferences
         self._groups = groups
@@ -374,7 +333,7 @@ class AdminActionService:
         person_context = None
         space_context = None
         audit = audit_ref_from_actor(actor)
-        if action.startswith(("relationship.", "preference.", "private_access.")):
+        if action.startswith(("preference.", "private_access.")):
             principal = await self._control.principal_for_qq(actor.user_id)
             person_context = self._control.context(
                 principal, await self._control.person_target(target)
@@ -384,63 +343,6 @@ class AdminActionService:
             space_context = self._control.context(
                 principal, await self._control.space_target(target)
             )
-        if action == "relationship.get":
-            assert person_context is not None
-            row = await self._relationships.get_relationship(person_context, audit)
-            return _relationship_json(row)
-        if action == "relationship.set_affection":
-            assert person_context is not None
-            before, after = await self._relationships.set_affection(
-                person_context,
-                _required_int(arguments, "value"),
-                audit=audit,
-            )
-            return {
-                "target_user_id": target,
-                "before": _relationship_json(before),
-                "after": _relationship_json(after),
-            }
-        if action == "relationship.adjust_affection":
-            assert person_context is not None
-            before, after = await self._relationships.adjust_affection(
-                person_context,
-                _required_int(arguments, "delta"),
-                audit=audit,
-            )
-            return {
-                "target_user_id": target,
-                "before": _relationship_json(before),
-                "after": _relationship_json(after),
-            }
-        if action == "relationship.set_trust":
-            assert person_context is not None
-            before, after = await self._relationships.set_trust(
-                person_context,
-                _required_int(arguments, "value"),
-                audit=audit,
-            )
-            return {
-                "target_user_id": target,
-                "before": _relationship_json(before),
-                "after": _relationship_json(after),
-            }
-        if action == "relationship.history":
-            assert person_context is not None
-            relationship_events = await self._relationships.get_history(person_context, audit)
-            return {
-                "target_user_id": target,
-                "events": [
-                    {
-                        "id": row.id,
-                        "affection_delta": row.affection_delta,
-                        "trust_delta": row.trust_delta,
-                        "change_type": row.change_type,
-                        "reason_code": row.reason_code,
-                        "created_at": row.created_at.isoformat(),
-                    }
-                    for row in relationship_events
-                ],
-            }
         if action == "memory.list":
             memory_rows = await self._memories.list_memories(actor, target)
             return {
@@ -555,13 +457,3 @@ class AdminActionService:
             private_row = await self._private_access.disable_user(person_context, audit=audit)
             return {"target_user_id": target, "enabled": private_row.enabled}
         raise KeyError(f"未实现管理员 action：{action}")
-
-
-def _relationship_json(row: Any) -> dict[str, Any]:
-    return {
-        "user_id": row.user_id,
-        "affection_score": row.affection_score,
-        "trust_score": row.trust_score,
-        "effective_trust": row.effective_trust,
-        "stage": row.stage.value,
-    }

@@ -89,7 +89,6 @@ _DEFAULT_REQUIREMENTS: dict[ModelTask, frozenset[ModelCapability]] = {
     ModelTask.MEMORY_EXTRACTION: frozenset(),
     ModelTask.MEMORY_SELF_REFLECTION: frozenset(),
     ModelTask.MEMORY_DREAM: frozenset(),
-    ModelTask.RELATIONSHIP_EVALUATION: frozenset(),
     ModelTask.EMOJI_REPLACEMENT: frozenset(),
     ModelTask.AUTOMATION_AGENT: frozenset({ModelCapability.TOOLS}),
     ModelTask.PLUGIN_AGENT_SESSION: frozenset({ModelCapability.TOOLS}),

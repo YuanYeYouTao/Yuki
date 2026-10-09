@@ -249,35 +249,6 @@ async def presence_id_for(session: AsyncSession, bot_user_id: str | None) -> str
     return None if presence is None else presence.id
 
 
-async def resolve_person_author_id_for_event(
-    session: AsyncSession,
-    event: ChatEventModel,
-) -> str | None:
-    """Resolve a canonical Person author, rejecting mismatched provenance."""
-
-    from qq_ai_bot.domain.identity import AuthorKind
-
-    if event.author_kind in {
-        AuthorKind.YUKI.value,
-        AuthorKind.EXTERNAL_BOT.value,
-        AuthorKind.SYSTEM.value,
-    }:
-        return None
-    if event.author_kind != AuthorKind.PERSON.value or not event.author_person_id:
-        raise CanonicalIdentityError("unclassified")
-    person = await session.get(CanonicalPersonModel, event.author_person_id)
-    if person is None:
-        raise CanonicalIdentityError("unclassified")
-    if event.sender_user_id:
-        sender = await find_identity_binding(session, external_id(event.sender_user_id))
-        if sender is not None:
-            if sender.status != "active":
-                raise CanonicalIdentityError("canonical_owner_disabled")
-            if sender.person_id != event.author_person_id:
-                raise CanonicalIdentityError("canonical_owner_mismatch")
-    return event.author_person_id
-
-
 async def create_person_binding(
     session: AsyncSession,
     *,
@@ -621,7 +592,6 @@ __all__ = [
     "representative_external_account_id",
     "require_person_binding",
     "require_space_binding",
-    "resolve_person_author_id_for_event",
     "set_identity_failpoint",
     "set_person_enabled_for_account",
     "set_space_flags_for_external",

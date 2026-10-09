@@ -192,13 +192,6 @@ class ControlCommandService:
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
-    async def mutate_relationship(self, context: object, command: object) -> ControlResult:
-        authorized = _require_context(context)
-        _require_capability(authorized, method_capability("mutate_relationship"))
-        return await self._port.mutate_relationship(
-            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
-        )
-
     async def mutate_memory(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
         _require_capability(authorized, method_capability("mutate_memory"))

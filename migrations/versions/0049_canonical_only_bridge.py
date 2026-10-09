@@ -82,7 +82,6 @@ _DRAIN_STATUS: Final[dict[str, tuple[str, ...]]] = {
     "memory_evidence_compaction_items": ("processing",),
     "memory_rebuild_runs": ("extracting", "committing"),
     "emoji_jobs": ("processing",),
-    "relationship_jobs": ("processing",),
     "memory_embedding_jobs": ("processing",),
     "memory_self_reflection_runs": ("processing",),
     "memory_evidence_compaction_runs": ("running",),
@@ -98,19 +97,11 @@ _LEASE_STATUS: Final[dict[str, tuple[str, ...]]] = {
     "plugin_background_turn_jobs": ("pending", "processing"),
 }
 
-_HISTORICAL_SCHEMA_DIGESTS: Final[frozenset[str]] = frozenset(
-    {
-        # Frozen, redacted 0048 migration fixture.
-        "235100f1310f0362bdcfecd13124da7f7c729bfbfd760c6b9233e0128a9f8168",
-        # Read-only digest of the deployed 0048 schema. Its only accepted DDL
-        # differences are frozen in the migration tests; arbitrary schemas are
-        # never accepted by column-set similarity.
-        "11e87cc3e57199863be5ee6bfe8fb72ab90a070bc1253cf5475825fb6cc978b2",
-    }
-)
+# Verified from the revised 0048 baseline on a fresh SQLite database.
 _FINAL_SCHEMA_DIGEST: Final[str] = (
-    "4ef4a733b476e7dfa8dab29839733d50e46da8b6b4a956a27ae6babc37723cba"
+    "0428a305b5515c0c5c51893969ca6e5f78a832ebf9cf6193976dd04c4863a6c0"
 )
+_HISTORICAL_SCHEMA_DIGESTS: Final[frozenset[str]] = frozenset({_FINAL_SCHEMA_DIGEST})
 
 
 class CanonicalBridgeError(RuntimeError):
@@ -299,18 +290,6 @@ def _require_canonical_ownership(connection: Connection) -> None:
             "canonical_owner_incomplete",
         ),
         (
-            "SELECT COUNT(*) FROM person_relationships WHERE canonical_person_id IS NULL",
-            "canonical_owner_incomplete",
-        ),
-        (
-            "SELECT COUNT(*) FROM relationship_events WHERE canonical_person_id IS NULL",
-            "canonical_owner_incomplete",
-        ),
-        (
-            "SELECT COUNT(*) FROM relationship_jobs WHERE canonical_person_id IS NULL",
-            "canonical_owner_incomplete",
-        ),
-        (
             "SELECT COUNT(*) FROM person_time_settings WHERE canonical_person_id IS NULL",
             "canonical_owner_incomplete",
         ),
@@ -495,8 +474,6 @@ def _require_canonical_ownership(connection: Connection) -> None:
         _require_zero(connection, statement, category=category)
 
     collision_checks = (
-        "SELECT COUNT(*) FROM (SELECT canonical_person_id FROM person_relationships "
-        "GROUP BY canonical_person_id HAVING COUNT(*) > 1)",
         "SELECT COUNT(*) FROM (SELECT canonical_person_id FROM person_time_settings "
         "GROUP BY canonical_person_id HAVING COUNT(*) > 1)",
         "SELECT COUNT(*) FROM (SELECT canonical_person_id FROM person_speech_preferences "
@@ -545,18 +522,6 @@ def _require_legacy_crosswalks(connection: Connection) -> None:
         "SELECT 1 FROM space_bindings b WHERE b.platform = 'qq' "
         "AND b.external_space_id = x.group_id "
         "AND b.space_id = x.canonical_space_id)",
-        "SELECT COUNT(*) FROM person_relationships x WHERE NOT EXISTS ("
-        "SELECT 1 FROM identity_bindings b WHERE b.platform = 'qq' "
-        "AND b.external_account_id = x.user_id "
-        "AND b.person_id = x.canonical_person_id)",
-        "SELECT COUNT(*) FROM relationship_events x WHERE NOT EXISTS ("
-        "SELECT 1 FROM identity_bindings b WHERE b.platform = 'qq' "
-        "AND b.external_account_id = x.user_id "
-        "AND b.person_id = x.canonical_person_id)",
-        "SELECT COUNT(*) FROM relationship_jobs x WHERE NOT EXISTS ("
-        "SELECT 1 FROM identity_bindings b WHERE b.platform = 'qq' "
-        "AND b.external_account_id = x.user_id "
-        "AND b.person_id = x.canonical_person_id)",
         "SELECT COUNT(*) FROM person_time_settings x WHERE NOT EXISTS ("
         "SELECT 1 FROM identity_bindings b WHERE b.platform = 'qq' "
         "AND b.external_account_id = x.user_id "
@@ -1104,9 +1069,6 @@ _REBUILD_TABLES: Final[tuple[str, ...]] = (
     "space_bindings",
     "person_aliases",
     "memberships",
-    "person_relationships",
-    "relationship_events",
-    "relationship_jobs",
     "person_time_settings",
     "person_speech_preferences",
     "runtime_config_overrides",
@@ -1224,65 +1186,6 @@ _TABLE_DDL: Final[dict[str, str]] = {
     "UPDATE RESTRICT, \n"
     "\tFOREIGN KEY(canonical_space_id) REFERENCES spaces (id) ON DELETE RESTRICT ON "
     "UPDATE RESTRICT\n"
-    ")",
-    "person_relationships": "CREATE TABLE person_relationships (\n"
-    "\tcanonical_person_id VARCHAR(36) NOT NULL, \n"
-    "\taffection_score INTEGER NOT NULL, \n"
-    "\ttrust_score INTEGER NOT NULL, \n"
-    "\tcreated_at DATETIME NOT NULL, \n"
-    "\tupdated_at DATETIME NOT NULL, \n"
-    "\tlast_automatic_change_at DATETIME, \n"
-    "\tPRIMARY KEY (canonical_person_id), \n"
-    "\tCONSTRAINT ck_person_relationships_affection_range CHECK "
-    "(affection_score >= 0 AND affection_score <= 100), \n"
-    "\tCONSTRAINT ck_person_relationships_trust_range CHECK (trust_score >= 0 "
-    "AND trust_score <= 100), \n"
-    "\tFOREIGN KEY(canonical_person_id) REFERENCES persons (id) ON DELETE "
-    "RESTRICT ON UPDATE RESTRICT\n"
-    ")",
-    "relationship_events": "CREATE TABLE relationship_events (\n"
-    "\tid INTEGER NOT NULL, \n"
-    "\tsource_event_id INTEGER, \n"
-    "\tactor_user_id VARCHAR(64), \n"
-    "\tchange_type VARCHAR(16) NOT NULL, \n"
-    "\taffection_before INTEGER NOT NULL, \n"
-    "\taffection_delta INTEGER NOT NULL, \n"
-    "\taffection_after INTEGER NOT NULL, \n"
-    "\ttrust_before INTEGER NOT NULL, \n"
-    "\ttrust_delta INTEGER NOT NULL, \n"
-    "\ttrust_after INTEGER NOT NULL, \n"
-    "\treason_code VARCHAR(64) NOT NULL, \n"
-    "\tconfidence FLOAT, \n"
-    "\tcreated_at DATETIME NOT NULL, \n"
-    "\tcanonical_person_id VARCHAR(36) NOT NULL, \n"
-    "\tPRIMARY KEY (id), \n"
-    "\tCONSTRAINT ck_relationship_events_change_type CHECK (change_type IN "
-    "('automatic', 'manual')), \n"
-    "\tFOREIGN KEY(source_event_id) REFERENCES chat_events (id) ON DELETE SET "
-    "NULL, \n"
-    "\tFOREIGN KEY(canonical_person_id) REFERENCES persons (id) ON DELETE "
-    "RESTRICT ON UPDATE RESTRICT\n"
-    ")",
-    "relationship_jobs": "CREATE TABLE relationship_jobs (\n"
-    "\tid INTEGER NOT NULL, \n"
-    "\ttrigger_event_id INTEGER NOT NULL, \n"
-    "\tconversation_key VARCHAR(255) NOT NULL, \n"
-    "\tstatus VARCHAR(16) NOT NULL, \n"
-    "\tattempts INTEGER NOT NULL, \n"
-    "\tnext_attempt_at DATETIME NOT NULL, \n"
-    "\terror_category VARCHAR(64), \n"
-    "\tcreated_at DATETIME NOT NULL, \n"
-    "\tupdated_at DATETIME NOT NULL, \n"
-    "\tcanonical_person_id VARCHAR(36) NOT NULL, \n"
-    "\tPRIMARY KEY (id), \n"
-    "\tCONSTRAINT uq_relationship_jobs_trigger_event UNIQUE "
-    "(trigger_event_id), \n"
-    "\tCONSTRAINT ck_relationship_jobs_status CHECK (status IN ('pending', "
-    "'processing', 'completed', 'failed')), \n"
-    "\tFOREIGN KEY(trigger_event_id) REFERENCES chat_events (id) ON DELETE "
-    "CASCADE, \n"
-    "\tFOREIGN KEY(canonical_person_id) REFERENCES persons (id) ON DELETE "
-    "RESTRICT ON UPDATE RESTRICT\n"
     ")",
     "person_time_settings": "CREATE TABLE person_time_settings (\n"
     "\tcanonical_person_id VARCHAR(36) NOT NULL, \n"
@@ -2023,22 +1926,6 @@ _TABLE_INDEX_DDL: Final[dict[str, tuple[str, ...]]] = {
         "CREATE INDEX ix_memberships_canonical_person_id ON memberships (canonical_person_id)",
         "CREATE INDEX ix_memberships_canonical_space_id ON memberships (canonical_space_id)",
     ),
-    "person_relationships": (),
-    "relationship_events": (
-        "CREATE INDEX ix_relationship_events_canonical_person_id ON "
-        "relationship_events (canonical_person_id)",
-        "CREATE INDEX ix_relationship_events_person_created ON "
-        "relationship_events (canonical_person_id, created_at)",
-        "CREATE UNIQUE INDEX uq_relationship_events_automatic_source ON "
-        "relationship_events (source_event_id) WHERE source_event_id IS NOT NULL "
-        "AND change_type = 'automatic'",
-    ),
-    "relationship_jobs": (
-        "CREATE INDEX ix_relationship_jobs_canonical_person_id ON relationship_jobs "
-        "(canonical_person_id)",
-        "CREATE INDEX ix_relationship_jobs_status_next ON relationship_jobs "
-        "(status, next_attempt_at)",
-    ),
     "person_time_settings": (),
     "person_speech_preferences": (
         "CREATE INDEX ix_person_speech_preferences_updated ON "
@@ -2338,42 +2225,6 @@ _COPY_COLUMNS: Final[dict[str, tuple[str, ...]]] = {
         "last_seen_at",
         "canonical_person_id",
         "canonical_space_id",
-    ),
-    "person_relationships": (
-        "canonical_person_id",
-        "affection_score",
-        "trust_score",
-        "created_at",
-        "updated_at",
-        "last_automatic_change_at",
-    ),
-    "relationship_events": (
-        "id",
-        "source_event_id",
-        "actor_user_id",
-        "change_type",
-        "affection_before",
-        "affection_delta",
-        "affection_after",
-        "trust_before",
-        "trust_delta",
-        "trust_after",
-        "reason_code",
-        "confidence",
-        "created_at",
-        "canonical_person_id",
-    ),
-    "relationship_jobs": (
-        "id",
-        "trigger_event_id",
-        "conversation_key",
-        "status",
-        "attempts",
-        "next_attempt_at",
-        "error_category",
-        "created_at",
-        "updated_at",
-        "canonical_person_id",
     ),
     "person_time_settings": ("canonical_person_id", "timezone", "created_at", "updated_at"),
     "person_speech_preferences": (
@@ -2763,8 +2614,6 @@ _HISTORICAL_TRIGGER_NAMES: Final[tuple[str, ...]] = (
     "trg_person_active_routes_consistency_update",
     "trg_person_aliases_ownership_shadow_insert",
     "trg_person_aliases_ownership_shadow_update",
-    "trg_person_relationships_ownership_shadow_insert",
-    "trg_person_relationships_ownership_shadow_update",
     "trg_person_speech_preferences_ownership_shadow_insert",
     "trg_person_speech_preferences_ownership_shadow_update",
     "trg_person_time_settings_ownership_shadow_insert",
@@ -2784,10 +2633,6 @@ _HISTORICAL_TRIGGER_NAMES: Final[tuple[str, ...]] = (
     "trg_plugin_state_extension_shadow_insert",
     "trg_plugin_state_extension_shadow_update",
     "trg_presences_route_consistency_update",
-    "trg_relationship_events_ownership_shadow_insert",
-    "trg_relationship_events_ownership_shadow_update",
-    "trg_relationship_jobs_ownership_shadow_insert",
-    "trg_relationship_jobs_ownership_shadow_update",
     "trg_reply_effect_events_extension_shadow_insert",
     "trg_reply_effect_events_extension_shadow_update",
     "trg_runtime_config_overrides_extension_shadow_insert",

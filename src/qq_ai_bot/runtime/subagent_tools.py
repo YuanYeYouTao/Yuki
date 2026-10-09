@@ -57,7 +57,6 @@ WORKER_NAMES = (
             "search_memory",
             "get_memory_fact",
             "get_memory_evidence",
-            "get_relationship",
         }
     )
 )

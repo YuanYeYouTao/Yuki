@@ -105,25 +105,6 @@ class MemoryFacade(Protocol):
     async def delete(self, memory_id: str) -> PluginResult: ...
 
 
-class RelationshipFacade(Protocol):
-    async def get_current(self) -> Mapping[str, JsonValue] | None: ...
-
-    async def get(self, user_id: str) -> Mapping[str, JsonValue] | None: ...
-
-    async def list_events(
-        self, user_id: str, limit: int = 20
-    ) -> tuple[Mapping[str, JsonValue], ...]: ...
-
-    async def adjust(
-        self,
-        user_id: str,
-        *,
-        affection_delta: int = 0,
-        trust_delta: int = 0,
-        reason: str,
-    ) -> PluginResult: ...
-
-
 class AgentFacade(Protocol):
     """Yuki Main Agent with the plugin's approved capability intersection.
 
@@ -352,9 +333,6 @@ class PluginContext(Protocol):
 
     @property
     def memory(self) -> MemoryFacade: ...
-
-    @property
-    def relationship(self) -> RelationshipFacade: ...
 
     @property
     def agent(self) -> AgentFacade: ...

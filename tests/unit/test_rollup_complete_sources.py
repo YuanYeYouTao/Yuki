@@ -291,7 +291,6 @@ async def test_plugin_capacity_reads_hot_snapshot_and_shared_fixed_contract_rese
         settings=make_settings("sqlite+aiosqlite:///:memory:"),
         ledger=ledger,
         people=MagicMock(),
-        relationships=MagicMock(),
         time_service=MagicMock(),
         rollup_repository=MagicMock(),
         rollup_service=MagicMock(),

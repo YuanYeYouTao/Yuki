@@ -171,14 +171,6 @@ CORE_NAMESPACES: tuple[CapabilityNamespace, ...] = (
         aliases=("记住", "忘记", "纠正记忆"),
         tags=("memory", "write"),
     ),
-    _ns("relationship", "关系", description="好感与关系阶段", tags=("relationship",)),
-    _ns(
-        "relationship.read",
-        "关系读取",
-        description="读取好感度、信任度和关系阶段",
-        aliases=("好感度", "亲密度"),
-        tags=("relationship",),
-    ),
     _ns("automation", "自动化", description="定时与周期任务", tags=("automation",)),
     _ns(
         "automation.read",
@@ -279,7 +271,6 @@ RESERVED_PLUGIN_NAMESPACE_PREFIXES: frozenset[str] = frozenset(
         "web",
         "qq",
         "reply",
-        "relationship",
         "automation",
         "admin",
         "core",

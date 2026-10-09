@@ -22,7 +22,7 @@
 
 </div>
 
-Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何在真实社交场景中持续存在。她当前运行在 QQ 私聊和群聊中，记住人与共同经历，维护长期关系，也能使用工具和持久工作环境完成跨消息的任务。身份、记忆和关系由自己的数据库保存，更换模型、QQ 账号或网关时可以继续沿用。
+Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何在真实社交场景中持续存在。她当前运行在 QQ 私聊和群聊中，记住人与共同经历，也能使用工具和持久工作环境完成跨消息的任务。身份和记忆由自己的数据库保存，更换模型、QQ 账号或网关时可以继续沿用。
 
 **当前正式版为 3.8.4。** 本版将可见发言统一为主 Agent 显式 `send_message`，并加入可选的群聊语义观察、SELF 自主参与和自主自动化。Yuki 可决定发言、分条发送或沉默；自主参与默认关闭，真实 QQ 群聊中的长期效果仍在验证。工作环境需要单独部署；3.8.4 正式包不包含管理 WebUI。
 
@@ -37,7 +37,7 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 - **Agent 按需取资料**：长期事实由 `search_memory` 按需检索，不再每轮自动注入。当前、引用、历史附件、工作区和获准工具图片统一交给原主模型的原生多模态输入。
 - **联网与真实协议反馈**：新安装默认开启模型搜索，保留显式禁用和连接能力边界。适配器不从正文制造工具调用，也不暗中追加付费续跑；真实错误和已知用量保留，已派发或未知效果先核原回执。
 - **减少回复前的数据库等待**：历史读取、上下文准备和可丢诊断写入移出关键写事务；后台维护采用索引、有界分页和短事务。实际延迟仍受模型响应、工具请求和宿主资源影响。
-- **移除现有 MCP**：连接、工具目录、管理页面、SDK 和自动化入口一并退役；通用工具结果、媒体和回执继续保留。Plugin API 升至 **3.3**，数据库 head 为 **0102**，旧插件需适配并重新批准。
+- **移除现有 MCP**：连接、工具目录、管理页面、SDK 和自动化入口一并退役；通用工具结果、媒体和回执继续保留。Plugin API 升至 **3.4**，数据库 head 为 **0103**，旧插件需适配并重新批准。
 - **退出语音输出**：Genie 合成、声线/偏好、工具参数、SDK/管理功能、Worker 与发布依赖一并移除；入站/引用 ASR、历史语音和原回执保留。升级前先核旧执行、冷备语音事实与被引用文件，再迁移专属表；不自动重发或改发文字。
 
 这些是当前源码变化。各 Provider 的真实 API、自然聊天延迟和长期任务效果仍按各自验收记录核对；可选 Code Mode 的隔离验证不代表生产容量或长期内存验收。
@@ -139,7 +139,7 @@ docker compose up -d
 
 ## 升级与日常维护
 
-3.9.0 源码使用 Plugin API **3.3**，数据库单一 head 为 **0102**；3.8.4 正式包的 head 为 **0072**。升级仍以实际镜像随包迁移为准，应用版本号不能替代数据库检查，不能通过 `stamp` 跳过迁移。插件需移除 MCP 依赖、适配 API 3.3 并重新批准；旧 `llm.generate` / `agent.run` 已统一到主入口。
+3.9.0 源码使用 Plugin API **3.4**，数据库单一 head 为 **0103**；3.8.4 正式包的 head 为 **0072**。升级仍以实际镜像随包迁移为准，应用版本号不能替代数据库检查，不能通过 `stamp` 跳过迁移。插件需移除 MCP 依赖、适配 API 3.4 并重新批准；旧 `llm.generate` / `agent.run` 已统一到主入口。
 
 准备使用 3.9.0 开发提交时，先按[升级草案](docs/upgrade-3.9.0.md)核对旧 MCP 挂载、环境配置和管理权限；退役的管理授权会阻止严格校验通过。数据库提交新 head 后不能仅切回旧镜像，也不能用旧备份覆盖升级后的消息和回执。
 
@@ -155,14 +155,14 @@ docker compose exec bot qq-ai-bot-cli gateway doctor --provider snowluma
 
 ## 相邻项目
 
-[Alice](https://github.com/LlmKira/Alice) 探索 AI 如何持续参与真实聊天；[Letta](https://docs.letta.com/) 关注有记忆、能保持状态的 Agent；[AstrBot](https://docs.astrbot.app/) 提供面向 QQ 等聊天平台的 Agent 与插件框架。Yuki 关注这些能力如何在同一个持续存在的群聊主体中协同工作：认识人、积累关系与记忆，并自主判断何时参与。
+[Alice](https://github.com/LlmKira/Alice) 探索 AI 如何持续参与真实聊天；[Letta](https://docs.letta.com/) 关注有记忆、能保持状态的 Agent；[AstrBot](https://docs.astrbot.app/) 提供面向 QQ 等聊天平台的 Agent 与插件框架。Yuki 关注这些能力如何在同一个持续存在的群聊主体中协同工作：认识人、积累共同经历与记忆，并自主判断何时参与。
 
 ## 架构与开发
 
 开发前阅读 [共同架构约束](docs/architecture/development-contract.md) 与
 [架构文档索引](docs/architecture/README.md)。历史任务书不替代现行合同。
 
-一个数据库对应一个长期存在的 Yuki。人物、群空间、QQ 账号和网关连接分别建模，聊天历史与关系不绑定在某一次登录连接上。工具由后端执行权限、预算、幂等和审计检查。
+一个数据库对应一个长期存在的 Yuki。人物、群空间、QQ 账号和网关连接分别建模，聊天历史与记忆不绑定在某一次登录连接上。工具由后端执行权限、预算、幂等和审计检查。
 
 目前提供 QQ 交互、CLI 和共享 Control Plane。当前源码的手帐管理 WebUI 与同源管理 HTTP 默认关闭，
 接入聊天、执行轨迹、配置和自动化等服务；3.8.4 正式发布不包含此管理界面。
@@ -187,7 +187,7 @@ uv run pytest
 | [开发约束](docs/architecture/development-contract.md) | 事件 ID、解耦边界、固定工具、续跑和事务原则 |
 | [Rollup](docs/architecture/conversation-rollup.md) | 长会话的历史压缩 |
 | [Memory](docs/architecture/memory-v2.md) | 记忆提取、检索和权限 |
-| [Plugin API 3.3](docs/plugin-development/index.md) | 插件开发与能力边界 |
+| [Plugin API 3.4](docs/plugin-development/index.md) | 插件开发与能力边界 |
 | [工具结果](docs/architecture/tool-results.md) | 结果预算、媒体与持久回执 |
 | [版本化发布](docs/operations/versioned-docker-release.md) | 镜像、下载包与发布流程 |
 | [CHANGELOG](CHANGELOG.md) | 历史变更 |

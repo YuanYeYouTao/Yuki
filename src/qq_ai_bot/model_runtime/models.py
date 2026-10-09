@@ -21,7 +21,6 @@ class ModelTask(StrEnum):
     MEMORY_EXTRACTION = "memory_extraction"
     MEMORY_SELF_REFLECTION = "memory_self_reflection"
     MEMORY_DREAM = "memory_dream"
-    RELATIONSHIP_EVALUATION = "relationship_evaluation"
     EMOJI_REPLACEMENT = "emoji_replacement"
     AUTOMATION_AGENT = "automation_agent"
     PLUGIN_AGENT_SESSION = "plugin_agent_session"

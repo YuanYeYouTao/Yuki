@@ -24,7 +24,6 @@ DIRECT_TOOL_NAMES = frozenset(
         "get_memory_fact",
         "get_memory_evidence",
         "memory_change",
-        "get_relationship",
         "find_contacts",
         "get_group_members",
         "get_my_capabilities",

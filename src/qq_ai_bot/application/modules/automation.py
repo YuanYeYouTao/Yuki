@@ -27,7 +27,6 @@ from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
-    RelationshipRepository,
 )
 from qq_ai_bot.services.main_agent_contract import MainAgentContract
 from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
@@ -58,7 +57,6 @@ class AutomationModule:
         time_service: TimeContextService,
         ledger: EventLedgerRepository,
         memories: MemoryFactService,
-        relationships: RelationshipRepository,
         admin_audit: AdminAuditService,
         web_provider: WebSearchProvider | None,
         emoji_repository: EmojiRepository,
@@ -73,7 +71,6 @@ class AutomationModule:
         self._time_service = time_service
         self._ledger = ledger
         self._memories = memories
-        self._relationships = relationships
         self._admin_audit = admin_audit
         self._web_provider = web_provider
         self._emoji_repository = emoji_repository
@@ -99,7 +96,6 @@ class AutomationModule:
             time_service=self._time_service,
             ledger=self._ledger,
             memories=self._memories,
-            relationships=self._relationships,
             web_provider=self._web_provider,
             gateway_factory=gateway_factory,
         )

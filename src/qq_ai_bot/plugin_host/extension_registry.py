@@ -38,7 +38,6 @@ DEFAULT_RESERVED_COMMAND_ALIASES: frozenset[str] = frozenset(
         "plugin",
         "preference",
         "private",
-        "relationship",
         "status",
         "stop",
         "whoami",

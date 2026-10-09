@@ -30,11 +30,7 @@ from qq_ai_bot.identity.db_models import (
     SpaceBindingModel,
 )
 from qq_ai_bot.identity.errors import CanonicalIdentityError
-from qq_ai_bot.persistence.models import (
-    MembershipModel,
-    PersonAliasModel,
-    PersonRelationshipModel,
-)
+from qq_ai_bot.persistence.models import MembershipModel, PersonAliasModel
 from qq_ai_bot.persistence.repository_records import GroupSetting, PrivateUserSetting
 
 
@@ -161,14 +157,11 @@ async def observe_canonical_person(
     nickname_known: bool,
     group_card_known: bool,
     role: AccountRole,
-    initial_affection: int,
-    initial_trust: int,
     now: datetime,
 ) -> None:
     if role != "human":
         return
     binding = await require_person_binding(session, user_id)
-    relationship = await session.get(PersonRelationshipModel, binding.person_id)
     nickname_alias = (
         await _find_alias(session, person_id=binding.person_id, space_id=None, alias=nickname)
         if nickname
@@ -192,24 +185,13 @@ async def observe_canonical_person(
                 alias=group_card,
             )
 
-    # All owner, relation, alias and membership reads precede staged writes.
+    # All owner, alias and membership reads precede staged writes.
     # The repository's short immediate transaction serializes first observation.
     binding.last_seen_at = now
     if nickname_known and nickname and binding.display_name != nickname[:128]:
         binding.display_name = nickname[:128]
         binding.updated_at = now
         binding.revision += 1
-    if relationship is None:
-        session.add(
-            PersonRelationshipModel(
-                canonical_person_id=binding.person_id,
-                affection_score=initial_affection,
-                trust_score=initial_trust,
-                created_at=now,
-                updated_at=now,
-                last_automatic_change_at=None,
-            )
-        )
     if nickname:
         _stage_alias(
             session,
@@ -358,42 +340,6 @@ async def _aliases_for_person(
         )
     ).all()
     return tuple(dict.fromkeys(str(value) for value in values))
-
-
-async def load_canonical_people_by_exact_name(
-    session: AsyncSession,
-    name: str,
-) -> tuple[str, ...]:
-    normalized = name.strip()
-    if not normalized:
-        return ()
-    person_ids = set(
-        await session.scalars(
-            select(IdentityBindingModel.person_id).where(
-                IdentityBindingModel.status == "active",
-                IdentityBindingModel.display_name == normalized,
-            )
-        )
-    )
-    person_ids.update(
-        await session.scalars(
-            select(PersonAliasModel.canonical_person_id).where(PersonAliasModel.alias == normalized)
-        )
-    )
-    enabled = set(
-        await session.scalars(
-            select(CanonicalPersonModel.id).where(
-                CanonicalPersonModel.id.in_(person_ids),
-                CanonicalPersonModel.enabled.is_(True),
-            )
-        )
-    )
-    projected: list[str] = []
-    for person_id in enabled:
-        bindings = await bindings_for_person(session, person_id)
-        if any(row.status == "active" for row in bindings):
-            projected.append(representative_external_account_id(bindings))
-    return tuple(sorted(projected))
 
 
 async def load_canonical_group_member_name_projections(

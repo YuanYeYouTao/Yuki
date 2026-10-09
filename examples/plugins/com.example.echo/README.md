@@ -1,6 +1,6 @@
 # com.example.echo
 
-这是 Yuki Plugin API 3.3 的最小完整示例。它演示：
+这是 Yuki Plugin API 3.4 的最小完整示例。它演示：
 
 - 普通用户可用工具 `echo_text`；
 - 确定性命令 `echo`；

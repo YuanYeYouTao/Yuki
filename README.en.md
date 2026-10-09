@@ -22,7 +22,7 @@
 
 </div>
 
-Yuki is an open-source, self-hosted social AI agent exploring what a persistent digital life can be in real conversations. She currently runs in QQ private chats and groups, remembers people and shared experiences, maintains long-term relationships, and uses tools and a persistent workspace to carry work across messages. Her identity, memory, and relationships live in Yuki's own database and can survive a change of model, QQ account, or gateway.
+Yuki is an open-source, self-hosted social AI agent exploring what a persistent digital life can be in real conversations. She currently runs in QQ private chats and groups, remembers people and shared experiences, uses tools and a persistent workspace to carry work across messages. Her identity and memory live in Yuki's own database and can survive a change of model, QQ account, or gateway.
 
 **The current release is 3.8.4.** In this release, the main agent sends visible messages explicitly through `send_message`, and optional group semantic observation, SELF initiative, and SELF automation are available. Yuki can choose to speak, split a reply, or remain silent. Autonomous participation is disabled by default, and long-term behavior in real QQ groups is still being evaluated. The workspace is deployed separately; the official 3.8.4 bundle does not include the management WebUI.
 
@@ -37,7 +37,7 @@ Yuki is an open-source, self-hosted social AI agent exploring what a persistent 
 - **Agent-directed retrieval:** The agent uses `search_memory` when past facts are needed instead of injecting them every turn. Current, quoted, historical, workspace, and authorized tool images enter the original main model's native multimodal input.
 - **Web access and protocol feedback:** New installations enable model search by default while respecting explicit disablement and connection capabilities. Adapters do not manufacture tool calls from text or silently add paid continuations. Real errors and known usage are retained; dispatched or unknown effects require reconciliation with their original receipts.
 - **Less database waiting before replies:** History reads, context preparation, and optional diagnostic writes are moved out of critical write transactions. Background maintenance uses indexes, bounded pages, and short transactions. Actual latency still depends on model responses, tool requests, and host resources.
-- **Legacy MCP removal:** Connections, tool discovery, management pages, SDK capabilities, and automation entry points are retired together. Shared tool results, media, and receipts remain. Plugin API is now **3.3**, the database head is **0102**, and old plugins require adaptation and renewed approval.
+- **Legacy MCP removal:** Connections, tool discovery, management pages, SDK capabilities, and automation entry points are retired together. Shared tool results, media, and receipts remain. Plugin API is now **3.4**, the database head is **0103**, and old plugins require adaptation and renewed approval.
 - **Speech output retirement:** Genie synthesis, voice profiles/preferences, tool parameters, SDK/management features, the Worker and release dependencies are removed. Incoming/quoted ASR, historical audio and original receipts remain. Reconcile old executions and verify a cold backup of speech facts and referenced files before migrating the dedicated tables; no automatic resend or conversion to text occurs.
 
 These describe the current source. Real provider API behavior, natural-chat latency, and long-task outcomes require their respective acceptance evidence. Optional Code Mode isolation checks do not establish production capacity or long-term memory behavior.
@@ -132,7 +132,7 @@ The Bot image is `ghcr.io/yuanyeyoutao/yuki-qqbot:3.8.4`; historical 3.8.4 TTS W
 
 ## Upgrading and maintenance
 
-The 3.9.0 source uses Plugin API **3.3** and database head **0102**; the official 3.8.4 package has head **0072**. Follow the migrations bundled with the actual target image. An application version does not replace a schema check, and `stamp` must not skip migrations. Plugins must remove MCP dependencies, adapt to API 3.3, and receive renewed approval. Legacy `llm.generate` / `agent.run` calls now use the unified main entry point.
+The 3.9.0 source uses Plugin API **3.4** and database head **0103**; the official 3.8.4 package has head **0072**. Follow the migrations bundled with the actual target image. An application version does not replace a schema check, and `stamp` must not skip migrations. Plugins must remove MCP dependencies, adapt to API 3.4, and receive renewed approval. Legacy `llm.generate` / `agent.run` calls now use the unified main entry point.
 
 Before deploying a 3.9.0 development commit, use the [draft upgrade guide](docs/upgrade-3.9.0.md) to check old MCP mounts, environment settings, and operator grants. Retired operator capabilities fail strict validation. After committing the new database head, an image-only rollback is insufficient; an old backup must not overwrite new messages or receipts.
 
@@ -148,13 +148,13 @@ Keep the same Compose arguments used for deployment. Only one active connection 
 
 ## Related projects
 
-[Alice](https://github.com/LlmKira/Alice) explores how an AI can participate continuously in real conversations; [Letta](https://docs.letta.com/) focuses on agents that retain memory and state; and [AstrBot](https://docs.astrbot.app/) provides an agent and plugin framework for QQ and other chat platforms. Yuki explores how these capabilities work together in one persistent group-chat subject: getting to know people, building relationships and memories, and deciding when to participate.
+[Alice](https://github.com/LlmKira/Alice) explores how an AI can participate continuously in real conversations; [Letta](https://docs.letta.com/) focuses on agents that retain memory and state; and [AstrBot](https://docs.astrbot.app/) provides an agent and plugin framework for QQ and other chat platforms. Yuki explores how these capabilities work together in one persistent group-chat subject: getting to know people, building shared experiences and memories, and deciding when to participate.
 
 ## Architecture and development
 
 Read the [shared development contract](docs/architecture/development-contract.md) and [architecture index](docs/architecture/README.md) before development. Historical task specifications do not replace the current contract.
 
-One database represents one long-lived Yuki. People, groups, QQ accounts, and gateway connections are modeled separately, so conversation history and relationships are not tied to a single login. The backend checks tool permissions, budgets, idempotency, and audit records.
+One database represents one long-lived Yuki. People, groups, QQ accounts, and gateway connections are modeled separately, so conversation history and memories are not tied to a single login. The backend checks tool permissions, budgets, idempotency, and audit records.
 
 Yuki provides QQ interaction, a CLI, and a shared Control Plane. This development branch adds a hand-journal WebUI and same-origin admin HTTP, disabled by default. The published 3.8.4 assets remain unchanged. Build instructions, authorization, and remaining scope are documented in [WebUI](docs/architecture/webui-console.md).
 
@@ -176,7 +176,7 @@ Routine regressions use fake providers and isolated databases. Paid Gemini and D
 | [Development contract](docs/architecture/development-contract.md) | Event IDs, boundaries, fixed tools, resumption, and transactions |
 | [Rollup](docs/architecture/conversation-rollup.md) | Long-conversation condensation |
 | [Memory](docs/architecture/memory-v2.md) | Extraction, retrieval, and permissions |
-| [Plugin API 3.3](docs/plugin-development/index.md) | Plugin development and capability boundaries |
+| [Plugin API 3.4](docs/plugin-development/index.md) | Plugin development and capability boundaries |
 | [Tool results](docs/architecture/tool-results.md) | Result budgets, media, and durable receipts |
 | [Versioned releases](docs/operations/versioned-docker-release.md) | Images, bundles, and the release process |
 | [CHANGELOG](CHANGELOG.md) | Historical changes |

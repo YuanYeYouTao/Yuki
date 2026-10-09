@@ -15,7 +15,6 @@ from qq_ai_bot.config import Settings
 _G = (ConfigScopeType.GLOBAL,)
 _GG = (ConfigScopeType.GLOBAL, ConfigScopeType.GROUP)
 _GGU = (ConfigScopeType.GLOBAL, ConfigScopeType.GROUP, ConfigScopeType.USER)
-_GU = (ConfigScopeType.GLOBAL, ConfigScopeType.USER)
 
 
 def _field(name: str) -> Any:
@@ -38,11 +37,6 @@ def _database_password_configured(settings: Settings) -> bool:
     url = settings.database_url
     authority = url.split("://", maxsplit=1)[-1].split("/", maxsplit=1)[0]
     return ":" in authority and "@" in authority
-
-
-def _max_auto_delta(settings: Settings) -> int:
-    # One runtime key safely governs both existing 1.2 dimensions.
-    return min(settings.affection_max_auto_delta, settings.trust_max_auto_delta)
 
 
 def _spec(

@@ -48,7 +48,7 @@ Git archive，并核验 import 路径，main 没有导入实验源码。
 
 完整服务清单为 **68 项完整执行合同 / 39 项模型直调政策**。不启用 web 的隔离装配为37，
 旧 inventory fixture37 缺 memory_change/read_tool_artifact；历史 fixture33 不代表当前部署。
-见[该轮完整清单及 wrapper 映射](pi-codemode-evidence/correctness-20261007/current-manifest.json)。
+见该轮完整清单及 wrapper 映射（历史库存已退出）。
 
 ## 测试代码与测量修正
 

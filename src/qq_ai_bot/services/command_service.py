@@ -36,7 +36,6 @@ from qq_ai_bot.services.admin.group_admin import GroupAdminService
 from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
 from qq_ai_bot.services.admin.preference_admin import PreferenceAdminService
 from qq_ai_bot.services.admin.private_access_admin import PrivateAccessAdminService
-from qq_ai_bot.services.admin.relationship_admin import RelationshipAdminService
 from qq_ai_bot.services.automation_commands import AutomationCommandHandler
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.config_commands import ConfigCommandHandler
@@ -71,7 +70,6 @@ class CommandService:
         concurrency: ConcurrencyManager,
         onebot_connected: Callable[[], bool],
         runtime_config: RuntimeConfigService,
-        relationship_admin: RelationshipAdminService,
         memory_admin: MemoryAdminService,
         preference_admin: PreferenceAdminService,
         group_admin: GroupAdminService,
@@ -110,7 +108,6 @@ class CommandService:
             memories=memories,
             memory_admin=memory_admin,
             preference_admin=preference_admin,
-            relationship_admin=relationship_admin,
             control=self._control,
             memory_rebuild=memory_rebuild,
             bot_display_name=settings.bot_display_name,
@@ -165,8 +162,6 @@ class CommandService:
             )
         if command is CommandName.PREFERENCE:
             return operation not in {"", "list"}
-        if command is CommandName.AFFECTION:
-            return operation not in {"", "show", "history"}
         if command is CommandName.CONFIG:
             return operation not in {"", "list", "get", "history"}
         if command is CommandName.AUTOMATION:
@@ -370,11 +365,6 @@ class CommandService:
                 actor=actor,
                 argument=argument,
             )
-        elif command is CommandName.AFFECTION:
-            text = await self._profile_commands.affection(
-                actor=actor,
-                argument=argument,
-            )
         elif command is CommandName.CAPABILITIES:
             text = self._config_commands.capabilities(message, argument)
         elif command is CommandName.CONFIG:
@@ -475,8 +465,6 @@ class CommandService:
             "/ai memory index status|rebuild（超级管理员）\n"
             "/ai memory embedding status|doctor|retry|rebuild|purge-old（超级管理员）\n"
             "/ai preference list|set|delete\n"
-            "/ai affection show [user <QQ号>] | history\n"
-            "/ai affection set|adjust|trust user <QQ号> <数值>（超级管理员）\n"
             "/ai capabilities [类别]（查看当前 QQ 的完整权限与可改范围）\n"
             "/ai config list|get|set|unset|history|rollback（超级管理员）\n"
             "/ai automation list|show|pause|resume|cancel|run|history <任务ID>\n"

@@ -41,7 +41,6 @@ class EventName(StrEnum):
     MEMORY_CREATED = "memory.created"
     MEMORY_UPDATED = "memory.updated"
     MEMORY_DELETED = "memory.deleted"
-    RELATIONSHIP_CHANGED = "relationship.changed"
     VISION_COMPLETED = "vision.completed"
     VISION_FAILED = "vision.failed"
     WEB_SEARCH_COMPLETED = "web.search_completed"

@@ -99,7 +99,6 @@ async def scene(database, count):
         current_message=ChatMessage("user", "current"),
         recent_delivery=(),
         current_time=TimeContext(now, now, "UTC"),
-        current_relationship=None,
         metrics=ContextMetrics(0, 0, 0, 0, False),
         read_version=version,
         history_fragments=parts,

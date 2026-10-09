@@ -485,18 +485,6 @@ CONTROL_CAPABILITY_DESCRIPTORS: Final[tuple[ControlCapabilityDescriptor, ...]] =
         mutating=True,
     ),
     _descriptor(
-        "control.relationship.read",
-        CapabilityFamily.CONTROL,
-        CapabilitySensitivity.METADATA_READ,
-        mutating=False,
-    ),
-    _descriptor(
-        "control.relationship.mutate",
-        CapabilityFamily.CONTROL,
-        CapabilitySensitivity.MUTATE,
-        mutating=True,
-    ),
-    _descriptor(
         "control.preference.read",
         CapabilityFamily.CONTROL,
         CapabilitySensitivity.METADATA_READ,

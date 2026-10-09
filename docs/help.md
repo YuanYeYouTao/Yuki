@@ -1,6 +1,6 @@
 # Yuki 使用与运维帮助
 
-当前源码为未发布的 Yuki 3.9.0，Alembic head 为 `0102`，Plugin API 为 `3.3`，只支持 canonical runtime。永久 Yuki、
+当前源码为未发布的 Yuki 3.9.0，Alembic head 为 `0103`，Plugin API 为 `3.4`，只支持 canonical runtime。永久 Yuki、
 Person、Binding、Space、Presence 和 canonical Conversation 的关系见
 [当前架构](architecture/canonical-runtime.md)。
 
@@ -128,7 +128,7 @@ docker compose logs --tail 200 bot
 Rollup 只压缩 Prompt 历史，原始 `chat_events` 不被摘要替代。摘要是不可信输入，不进入 Memory。
 详见 [Conversation Rollup](architecture/conversation-rollup.md)。
 
-## Memory 与关系
+## Memory
 
 Memory owner：
 
@@ -152,9 +152,8 @@ Provider 离线或 Presence 切换不会自动撤销这项历史关系。共同�
 `current_scope` 或 `global` hint，会忽略该 hint 后继续授权与 mutation；非法 visibility 仍会
 被拒绝。Memory 事实保留 Evidence、authority、confidence、状态、冲突和版本链。
 
-同一 Person 的多个 Binding 共享关系、偏好、人物记忆和历史。Yuki Presence 与第三方机器人不
-创建人物关系。`/ai forgetme` 按 Person 删除其拥有的数据，删除后旧 Binding 不再能读取关系或
-Memory。
+同一 Person 的多个 Binding 共享偏好、人物记忆和历史。Yuki Presence 与第三方机器人不
+创建人物资料。`/ai forgetme` 按 Person 删除其拥有的数据，删除后旧 Binding 不再能读取其Memory。
 
 更多资料：
 
@@ -191,9 +190,9 @@ Gateway；当前功能边界见 [WebUI 合同](architecture/webui-console.md)。
 在 QQ 中使用 `/ai help` 与 `/ai capabilities` 查看当前可用命令和能力；实际结果以当前
 Principal、会话和运行配置为准。
 
-## Plugin API 3.3
+## Plugin API 3.4
 
-当前 Host 只接受精确声明 Plugin API `3.3` 的插件，Genie 专属 facade、事件及权限，以及直接模型 LLMFacade 已移除；模型任务使用 `agent.run`。插件可以使用固定 primary `conversation_key`，也可读取可选的
+当前 Host 只接受精确声明 Plugin API `3.4` 的插件，Genie 专属 facade、事件及权限，以及直接模型 LLMFacade 已移除；模型任务使用 `agent.run`。插件可以使用固定 primary `conversation_key`，也可读取可选的
 person、space、conversation 和 presence ID。插件不能自报超级管理员，也不能绕过
 Control Plane、Capability 或 Gateway Registry。
 
@@ -210,7 +209,7 @@ Web、Memory read 和 history read 仍可使用。
 - [Plugin 开发索引](plugin-development/index.md)
 - [架构](plugin-development/architecture.md)
 - [权限与安全](plugin-development/security.md)
-- [从旧 Plugin API 迁移](plugin-development/api-3.3-migration.md)
+- [从旧 Plugin API 迁移](plugin-development/api-3.4-migration.md)
 
 ## Emoji 与 Vision
 

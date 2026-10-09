@@ -82,7 +82,6 @@ class AdmissionFeatures:
     average_human_interval_seconds: float = 60.0
     idle_seconds: float = 0.0
     seconds_since_last_bot_message: float | None = None
-    relationship_adjustment: float = 0.0
     plugin_signals: tuple[AdmissionSignalHint, ...] = ()
     new_message_count: int = 1
     media_only: bool = False
@@ -102,7 +101,6 @@ class AdmissionScoreSnapshot:
     pressure_score: int
     presence_penalty: int
     activity_penalty: int
-    relationship_adjustment: int
     plugin_adjustment: int
     reasons: tuple[str, ...] = ()
     pending_message_count: int = 0
@@ -169,7 +167,6 @@ class LocalAutonomousParticipationPolicy:
                 pressure_score=0,
                 presence_penalty=0,
                 activity_penalty=0,
-                relationship_adjustment=0,
                 plugin_adjustment=0,
                 reasons=("no_new_messages",),
                 pending_message_count=pending,
@@ -269,9 +266,6 @@ class LocalAutonomousParticipationPolicy:
         if activity_penalty:
             reasons.append("conversation_fast")
 
-        relationship = max(-5, min(5, round(features.relationship_adjustment)))
-        if relationship:
-            reasons.append("relationship_adjustment")
         plugin_adjustment = self._plugin_adjustment(features.plugin_signals, features.now)
         if plugin_adjustment:
             reasons.append("plugin_signal_adjustment")
@@ -282,7 +276,6 @@ class LocalAutonomousParticipationPolicy:
             + relevance
             + content
             + pressure
-            + relationship
             + plugin_adjustment
             - presence_penalty
             - activity_penalty
@@ -298,7 +291,6 @@ class LocalAutonomousParticipationPolicy:
             pressure_score=pressure,
             presence_penalty=presence_penalty,
             activity_penalty=activity_penalty,
-            relationship_adjustment=relationship,
             plugin_adjustment=plugin_adjustment,
             reasons=tuple(reasons),
             pending_message_count=pending,
