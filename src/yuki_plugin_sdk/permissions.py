@@ -25,9 +25,6 @@ class PluginPermission(StrEnum):
     MEMORY_SEARCH = "memory.search"
     MEMORY_WRITE = "memory.write"
     MEMORY_DELETE = "memory.delete"
-    RELATIONSHIP_CURRENT_READ = "relationship.current.read"
-    RELATIONSHIP_READ = "relationship.read"
-    RELATIONSHIP_WRITE = "relationship.write"
     AGENT_RUN = "agent.run"
     AGENT_SESSION = "agent.session"
     WEB_SEARCH = "web.search"
@@ -67,7 +64,6 @@ class PluginPermission(StrEnum):
 
 HIGH_RISK_PERMISSIONS: frozenset[PluginPermission] = frozenset(
     {
-        PluginPermission.RELATIONSHIP_WRITE,
         PluginPermission.MEMORY_DELETE,
         PluginPermission.RUNTIME_CONFIG_WRITE,
         PluginPermission.NETWORK_HTTP_UNRESTRICTED,

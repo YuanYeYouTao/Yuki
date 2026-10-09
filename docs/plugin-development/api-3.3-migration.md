@@ -1,6 +1,7 @@
 # Plugin API 3.3 迁移
 
-Host 仅加载精确声明 `plugin_api = "3.3"` 的插件。先完成 [3.2 语音退役](api-3.2-migration.md)，再移除 `ctx.llm`、`LLMFacade`、`llm.generate` 和 `llm.generate_with_context`。主 Agent 统一使用 `ctx.agent.run(instruction, context_profile="none", ...)`，返回 `PluginResult`；当前人物或群资料分别选择 `current_user`、`current_group` 并核对对应读取权限。
+> 本文记录3.3的接口变化；当前Host只接受3.4，完成本步骤后继续 [API 3.4 迁移](api-3.4-migration.md)。
+3.3版本使用 `plugin_api = "3.3"` 声明。先完成 [3.2 语音退役](api-3.2-migration.md)，再移除 `ctx.llm`、`LLMFacade`、`llm.generate` 和 `llm.generate_with_context`。主 Agent 统一使用 `ctx.agent.run(instruction, context_profile="none", ...)`，返回 `PluginResult`；当前人物或群资料分别选择 `current_user`、`current_group` 并核对对应读取权限。
 
 实际权限取当前批准与显式能力参数的交集。修改 manifest 后须按精确新版本重新批准；旧 `llm.generate` 权限不能自动换成范围更大的 `agent.run`。没有批准的插件保持禁用，不能借升级扩大权限。
 

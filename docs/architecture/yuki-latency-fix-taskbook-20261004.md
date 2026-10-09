@@ -161,9 +161,9 @@ T01 的局部集合/batch、T03A 计时与 T04 索引先建立最小结果；T01
 
 ### 实施步骤
 
-1. 设计单次准备的最小 immutable metadata DTO，仅放本次需要的 alias、timezone、relationship 及已有 canonical owner/read_version 等真实依赖；不含 ORM/session，不作为授权，不新增统一 metadata revision
+1. 设计单次准备的最小 immutable metadata DTO，仅放本次需要的 alias、timezone 及已有 canonical owner/read_version 等真实依赖；不含 ORM/session，不作为授权，不新增统一 metadata revision
 2. 将 expected turn 校验收敛到 `load_prompt_snapshot`，在显式一致读快照中读历史正文前核验 scope id、generation、transport/runtime key 全部绑定，不能只比较一个 generation 整数。普通 AsyncSession 本身不等于已建立 SQLite 一致快照
-3. 先合并 canonical person/alias/timezone 的重复读，再决定 relationship 是否同读；不要把原必要创建或变更伪装只读
+3. 先合并 canonical person/alias/timezone 的重复读，不要把原必要创建或变更伪装只读
 4. timezone 本次复用，当前时刻从 clock 重新获取；跨轮时区修改仍生效
 5. 可选多 @ 批读保留同 Person 多 Binding 折叠、SELF/external 排除、真实群成员和歧义拒绝
 6. 保留 prepare 后 source/read-version 复核与真正 dispatch CAS；不以 `asyncio.gather` 全部调用替代读模型设计
@@ -172,7 +172,7 @@ T01 的局部集合/batch、T03A 计时与 T04 索引先建立最小结果；T01
 
 现有：`test_chat_context_preparation_gate.py`、`test_context_observation_sources.py`、`test_external_event_runtime_fences.py`、`test_plugin_result_access.py` 和普通聊天组。
 
-新增：真正 source/privacy/generation/read grant 变化发生在 prepare 与 dispatch 之间时，既有围栏仍拒绝；alias/昵称/时区/关系等普通展示值变化按现有冻结规则处理，不统一触发重试或新增版本协议。另测完整 scope/transport/runtime key 错配、当前时刻跨日/时区变更、多 alias/多 Binding/无效 targets；actorless、SELF、插件窄 read grant 与普通人物不能混用 DTO。保留 relationship get_or_create 的合法首次写入。
+新增：真正 source/privacy/generation/read grant 变化发生在 prepare 与 dispatch 之间时，既有围栏仍拒绝；alias/昵称/时区等普通展示值变化按现有冻结规则处理，不统一触发重试或新增版本协议。另测完整 scope/transport/runtime key 错配、当前时刻跨日/时区变更、多 alias/多 Binding/无效 targets；actorless、SELF、插件窄 read grant 与普通人物不能混用 DTO。
 
 记录每个独立阶段的 SELECT 数，assembler/composition 总计与子项不相加；不能把 205/216 个全轮 SELECT 当成全部待删目标。要求实际减少已标明的重复读，最后安全围栏照常拒绝变化。回滚 DTO/查询路由，不恢复旧状态或放宽权限。
 

@@ -1975,19 +1975,6 @@ class ControlQueryAdapter:
             request, section=section, scope=scope
         )
 
-    async def list_relationships(self, request: PageRequest) -> Page[ActivityView]:
-        return await self._memory_details.list_relationships(request)
-
-    async def read_relationship(self, person_id: PersonId) -> ActivityView:
-        return await self._memory_details.read_relationship(person_id)
-
-    async def list_relationship_history(
-        self, request: PageRequest, *, person_id: PersonId, section: str
-    ) -> Page[ActivityView]:
-        return await self._memory_details.list_relationship_history(
-            request, person_id=person_id, section=section
-        )
-
     async def list_memory_facts(
         self,
         request: PageRequest,

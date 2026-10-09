@@ -14,7 +14,6 @@ import {
 } from "./components";
 import { stamp, text } from "./format";
 import { Traces } from "./traces";
-import { Relationships } from "./relationships";
 import { Reflection } from "./reflection";
 import { MemoryMaintenance } from "./memory-maintenance";
 
@@ -465,7 +464,7 @@ export function Memory(props: PageProps) {
   const [view, selectView] = useState("facts");
   return (
     <>
-      <Section title="记忆与关系">
+      <Section title="记忆">
         <div className="settings-actions">
           <button
             className="btn-secondary"
@@ -473,13 +472,6 @@ export function Memory(props: PageProps) {
             onClick={() => selectView("facts")}
           >
             记忆与证据
-          </button>
-          <button
-            className="btn-secondary"
-            aria-pressed={view === "relationships"}
-            onClick={() => selectView("relationships")}
-          >
-            人物关系
           </button>
           <button
             className="btn-secondary"
@@ -492,10 +484,8 @@ export function Memory(props: PageProps) {
       </Section>
       {view === "reflection" ? (
         <Reflection {...props} />
-      ) : view === "facts" ? (
-        <MemoryFacts {...props} />
       ) : (
-        <Relationships {...props} />
+        <MemoryFacts {...props} />
       )}
     </>
   );

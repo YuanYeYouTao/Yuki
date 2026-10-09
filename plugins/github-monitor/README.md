@@ -16,12 +16,12 @@ GitHub Monitor 是 Yuki 的只读 GitHub 仓库管家。它定时读取一个或
 - 原始 GitHub event ID 进入 CAS/WAL 队列；每个目标完成或明确跳过后才推进 committed cursor。
 - 相邻的 Create/Delete 与 Watch/Fork 可安全合批；Push、Release、PR、Issue、评论和 Review
   始终保持单例。
-- 可以让 Yuki 根据当前主会话关系自然点评，也可以只发送确定性文本和卡片。
+- 可以让 Yuki 根据仓库事件自然点评，也可以只发送确定性文本和卡片。
 
 ## 运行要求
 
 - Yuki `>=3.9.0,<4.0`
-- Plugin API `3.3`
+- Plugin API `3.4`
 - Bot 可以访问 `https://api.github.com`
 - 私有仓库必须提供可读取目标仓库的 GitHub Token
 

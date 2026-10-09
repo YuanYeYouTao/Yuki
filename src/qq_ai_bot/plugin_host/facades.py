@@ -60,7 +60,6 @@ from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     GroupSettingsRepository,
     PeopleRepository,
-    RelationshipRepository,
 )
 from qq_ai_bot.plugin_host.audit import PluginAuditService
 from qq_ai_bot.plugin_host.canonical_projection import (
@@ -83,7 +82,6 @@ from qq_ai_bot.plugin_host.secrets import BoundSecretsFacade
 from qq_ai_bot.plugin_host.session_facade import BoundAgentSessionFacade
 from qq_ai_bot.plugin_host.storage import BoundStorageFacade
 from qq_ai_bot.services.admin.memory_admin import MemoryAdminService, MemoryPreferenceTrigger
-from qq_ai_bot.services.admin.relationship_admin import RelationshipAdminService
 from qq_ai_bot.services.agent_runner import (
     AgentRunner,
     AgentRuntime,
@@ -113,7 +111,6 @@ from yuki_plugin_sdk.context import (
     PeopleFacade,
     PluginContext,
     PluginEventPublisher,
-    RelationshipFacade,
     SchedulerFacade,
     SecretsFacade,
     StorageFacade,
@@ -307,9 +304,7 @@ class PluginFacadeServices:
     groups: GroupSettingsRepository | None = None
     memories: MemoryFactService | None = None
     memory_context: MemoryContextService | None = None
-    relationships: RelationshipRepository | None = None
     memory_admin: MemoryAdminService | None = None
-    relationship_admin: RelationshipAdminService | None = None
     runtime_config: RuntimeConfigService | None = None
     agent_runner: AgentRunner | None = None
     web_provider: WebSearchProvider | None = None
@@ -415,7 +410,6 @@ class HostPluginContext:
         "_onebot",
         "_people",
         "_plugin_id",
-        "_relationship",
         "_scheduler",
         "_secrets",
         "_services",
@@ -450,7 +444,6 @@ class HostPluginContext:
         self._people = _PeopleFacade(self)
         self._groups = _GroupFacade(self)
         self._memory = _MemoryFacade(self)
-        self._relationship = _RelationshipFacade(self)
         self._agent = _AgentFacade(self)
         self._agent_sessions = _AgentSessionsFacade(self)
         self._web = _WebFacade(self)
@@ -501,10 +494,6 @@ class HostPluginContext:
     @property
     def memory(self) -> MemoryFacade:
         return self._memory
-
-    @property
-    def relationship(self) -> RelationshipFacade:
-        return self._relationship
 
     @property
     def agent(self) -> AgentFacade:
@@ -1465,109 +1454,6 @@ class _MemoryFacade:
             error_code=None if changed else "memory.not_found",
             detail="" if changed else "memory is not owned by the current user",
         )
-
-
-class _RelationshipFacade:
-    def __init__(self, host: HostPluginContext) -> None:
-        self._host = host
-
-    async def get_current(self) -> Mapping[str, JsonValue] | None:
-        invocation = self._host._require(PluginPermission.RELATIONSHIP_CURRENT_READ)
-        assert invocation is not None
-        return await self._get(invocation.actor_user_id)
-
-    async def get(self, user_id: str) -> Mapping[str, JsonValue] | None:
-        invocation = self._host._require(PluginPermission.RELATIONSHIP_READ)
-        assert invocation is not None
-        target = self._host._require_user_scope(invocation, user_id)
-        return await self._get(target)
-
-    async def list_events(
-        self,
-        user_id: str,
-        limit: int = 20,
-    ) -> tuple[Mapping[str, JsonValue], ...]:
-        invocation = self._host._require(PluginPermission.RELATIONSHIP_READ)
-        assert invocation is not None
-        target = self._host._require_user_scope(invocation, user_id)
-        relationships = _require_service(self._host._services.relationships, "relationship")
-        rows = await relationships.history(target, limit=_bounded_limit(limit, maximum=100))
-        return tuple(
-            {
-                "event_id": str(row.id),
-                "user_id": row.user_id,
-                "change_type": row.change_type,
-                "affection_delta": row.affection_delta,
-                "trust_delta": row.trust_delta,
-                "reason_code": row.reason_code,
-                "created_at": row.created_at.isoformat(),
-            }
-            for row in rows
-        )
-
-    async def adjust(
-        self,
-        user_id: str,
-        *,
-        affection_delta: int = 0,
-        trust_delta: int = 0,
-        reason: str,
-    ) -> PluginResult:
-        invocation = self._host._require(
-            PluginPermission.RELATIONSHIP_WRITE,
-            mutation=True,
-            privileged=True,
-        )
-        assert invocation is not None
-        target = self._host._require_user_scope(invocation, user_id)
-        _bounded_text(reason, maximum=500, field_name="reason")
-        if not -20 <= affection_delta <= 20 or not -20 <= trust_delta <= 20:
-            raise ValueError("relationship deltas must be between -20 and 20")
-        service = _require_service(
-            self._host._services.relationship_admin,
-            "relationship mutation",
-        )
-        principal, audit = await self._host._control_principal(invocation)
-        context = self._host._control_access().context(
-            principal,
-            await self._host._control_access().person_target(target),
-        )
-        if affection_delta:
-            await service.adjust_affection(context, affection_delta, audit=audit)
-        if trust_delta:
-            relationships = _require_service(
-                self._host._services.relationships,
-                "relationship",
-            )
-            before = await relationships.get_or_create(target)
-            await service.set_trust(
-                context,
-                max(0, min(100, before.trust_score + trust_delta)),
-                audit=audit,
-            )
-        current = await self._get(target)
-        await self._host._audit(
-            invocation,
-            operation="relationship.adjust",
-            permission=PluginPermission.RELATIONSHIP_WRITE,
-            success=True,
-        )
-        return PluginResult(data={"relationship": dict(current or {})})
-
-    async def _get(self, user_id: str) -> Mapping[str, JsonValue] | None:
-        relationships = _require_service(self._host._services.relationships, "relationship")
-        row = await relationships.get(user_id)
-        if row is None:
-            return None
-        return {
-            "user_id": row.user_id,
-            "affection": row.affection_score,
-            "trust": row.trust_score,
-            "effective_trust": row.effective_trust,
-            "relationship_weight": row.relationship_weight,
-            "stage": row.stage.value,
-            "updated_at": row.updated_at.isoformat(),
-        }
 
 
 class _AgentFacade:
@@ -3195,7 +3081,7 @@ def _safe_json(value: object, *, depth: int = 0) -> JsonValue:
 
 def _privileged_capability(name: str) -> bool:
     lowered = name.casefold()
-    return lowered.startswith(("admin.", "onebot.", "relationship.", "runtime."))
+    return lowered.startswith(("admin.", "onebot.", "runtime."))
 
 
 def _bounded_limit(value: int, *, maximum: int = 100) -> int:

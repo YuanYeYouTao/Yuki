@@ -98,7 +98,6 @@ async def setup_run(
         time_service=chat._time,
         ledger=harness.ledger,
         memories=chat._memories,
-        relationships=harness.relationships,
         web_provider=None,
         gateway_factory=gateway,
     )

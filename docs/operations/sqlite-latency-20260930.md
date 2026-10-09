@@ -9,7 +9,6 @@
 | F03 | 显式 BEGIN 只读快照读取固定内部事件和 rollup 后计算指纹；短 writer 内复核租约、generation、来源 revision 和 canonical owner；0082 闭合指纹来源变化的 revision 覆盖 |
 | F04 | 执行轨迹和物理模型调用诊断共用有界异步 consumer，不在模型结果返回前等待 SQLite writer；冻结原身份、时间、用量和隐私代次，满载或失败可缺样本 |
 | F05 | Provider 容量与前台预留统一由 Executor admission 控制；会话层只跟踪取消，不重复限流；排队后重新核验 dispatch 来源，普通后台 Work 不被抢占 |
-| F06 | 已存在 Relationship 只读返回；缺失才申请 writer 并重新解析 owner 与创建，不使用旧只读快照重建关系 |
 | F07 | 旧 prefix 的 JSON 解码和 wire 比较在 writer 前完成；写内复核同一 epoch/revision/source/contract，容量原子计算，淘汰只读 metadata |
 | F08 | 同连接显式只读 snapshot 批量准备证据、计数、完整聚合及复制；首 DML 升级遇 native517 整体回滚、最多三次纯数据库重备；原 target/actor/source、候选签名和 Dream 实际模型输入冻结，变化明确拒绝，不重跑 classifier/model。移除内部 100000 截断，公开分页仍有界；保留必要 PK/source/owner 最终守卫和短邻接查询 |
 | F09 | Dream owner/fact 准备在首次 writer 前完成，必要列批量读取并在写内按 PK、版本和归属复核；run/cluster 创建失败不留半条 run |
@@ -23,7 +22,7 @@
 | 附录项 | 当前范围 |
 | --- | --- |
 | A01 | 明确空 nickname/card 保持 known；成功空值仅缓存作用域 known 标记，256 项/60 秒，命中不续期；复用原 runtime snapshot，迟到资料按原 Person 核验；可选人物/群名查询各限 0.25 秒 |
-| A02 | Profile 在 stage 前读齐 owner、关系、别名、Space 和 Membership，短 immediate 事务序列化首次观察；未变昵称和群名不增加 revision，last_seen 仍保留 |
+| A02 | Profile 在 stage 前读齐 owner、别名、Space 和 Membership，短 immediate 事务序列化首次观察；未变昵称和群名不增加 revision，last_seen 仍保留 |
 | A03 | metadata-only 插件通知进入有界队列，冻结 payload 与订阅身份，退出/撤权停止投递；SDK 显式 publish 仍等待结果 |
 | A04 | Social 路由和 probe 在 writer 前完成，原回执 CAS 认领发送权，writer 复核 canonical/route/SELF，并在 claim 与真实调用前复核原 connection；scheduled SELF 按原冻结场景及 generation 核验，reset 后不发送 |
 | A05 | context/rollup 准备移出 effect gate，完成后短源复核；首入尚无原 Work 时释放空 activation 再按同 source 激活，已有原 Work 的 required 压缩用原 checkpoint 等待、释放 lease，由原 job 与有界 wake 恢复，预算/history/receipt 不重建 |

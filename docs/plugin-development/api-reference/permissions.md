@@ -35,9 +35,6 @@
 | `memory.search` | 在授权作用域搜索记忆 |
 | `memory.write` | 新增/更新记忆 |
 | `memory.delete` | 删除记忆；高风险 |
-| `relationship.current.read` | 当前人物关系投影 |
-| `relationship.read` | 指定授权人物关系/事件 |
-| `relationship.write` | 调整关系；高风险 |
 
 ## 模型、联网与视觉
 
@@ -84,5 +81,5 @@
 | `notification.agent` | 请求已授权外部事件进入主会话 Agent；高风险 |
 | `admission.signal.register` | 注册有界 AdmissionSignal |
 
-`HIGH_RISK_PERMISSIONS` 当前包含：`relationship.write`、`memory.delete`、`runtime.config.write`、`network.http.unrestricted`、`onebot.mutate`、`agent.run`、`agent.session`、`notification.agent` 等管理型能力。
+`HIGH_RISK_PERMISSIONS` 当前包含：`memory.delete`、`runtime.config.write`、`network.http.unrestricted`、`onebot.mutate`、`agent.run`、`agent.session`、`notification.agent` 等管理型能力。
 

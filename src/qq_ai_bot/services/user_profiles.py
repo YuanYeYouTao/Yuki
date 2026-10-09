@@ -12,8 +12,6 @@ from typing import Protocol
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
@@ -74,10 +72,8 @@ class UserProfileService:
     def __init__(
         self,
         repository: PeopleRepository,
-        runtime_config: RuntimeConfigService | None = None,
     ) -> None:
         self._repository = repository
-        self._runtime_config = runtime_config
         # Only successful empty values: no names, ownership or route authority.
         self._empty_profiles: OrderedDict[tuple[str, str, str | None], tuple[float, bool, bool]] = (
             OrderedDict()
@@ -87,8 +83,6 @@ class UserProfileService:
         self,
         message: InboundMessage,
         resolver: UserProfileResolver | None = None,
-        *,
-        runtime: RuntimeConfigSnapshot | None = None,
     ) -> UserProfileSnapshot:
         """Capture one triggered caller and return an identity safe for this scope."""
 
@@ -163,16 +157,6 @@ class UserProfileService:
             group_card=group_card,
         )
         try:
-            initial_affection: int | None = None
-            initial_trust: int | None = None
-            if runtime is None and self._runtime_config is not None:
-                runtime = await self._runtime_config.snapshot(
-                    user_id=profile.user_id,
-                    group_id=profile.group_id,
-                )
-            if runtime is not None:
-                initial_affection = runtime.relationship.initial_affection
-                initial_trust = runtime.relationship.initial_trust
             await self._repository.observe(
                 user_id=profile.user_id,
                 nickname=nickname,
@@ -180,8 +164,6 @@ class UserProfileService:
                 group_card=group_card,
                 nickname_known=resolved.nickname_known,
                 group_card_known=resolved.group_card_known,
-                initial_affection=initial_affection,
-                initial_trust=initial_trust,
                 is_bot=message.sender.is_bot,
                 expected_person_id=message.person_id,
             )

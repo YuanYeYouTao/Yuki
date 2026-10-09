@@ -626,21 +626,6 @@ class ControlCommandAdapter:
             ),
         )
 
-    async def mutate_relationship(
-        self,
-        principal: ControlPrincipal,
-        target: object,
-        command: ControlCommand,
-    ) -> ControlResult:
-        return await self._management_action(
-            principal,
-            target,
-            command,
-            operation=CommandOperation.RELATIONSHIP_MUTATE.value,
-            capability="control.relationship.mutate",
-            invoke=self._management.mutate_relationship,
-        )
-
     async def mutate_memory(
         self,
         principal: ControlPrincipal,

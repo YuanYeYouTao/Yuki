@@ -274,17 +274,6 @@ class WebRuntimeConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class RelationshipRuntimeConfig:
-    confidence_threshold: float
-    max_auto_delta: int
-    daily_positive_cap: int
-    daily_negative_cap: int
-    conflict_preference_min_gap: int
-    initial_affection: int
-    initial_trust: int
-
-
-@dataclass(frozen=True, slots=True)
 class VisionRuntimeConfig:
     max_images_per_turn: int
     max_frames_per_turn: int
@@ -342,7 +331,6 @@ class RuntimeConfigSnapshot:
     llm: LLMRuntimeConfig
     agent: AgentRuntimeConfig
     web: WebRuntimeConfig
-    relationship: RelationshipRuntimeConfig
     vision: VisionRuntimeConfig
     emoji: EmojiRuntimeConfig
     conversation: ConversationRuntimeConfig

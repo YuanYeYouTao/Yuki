@@ -45,7 +45,6 @@ _FLASH_TASKS = frozenset(
         ModelTask.MEMORY_EXTRACTION,
         ModelTask.MEMORY_SELF_REFLECTION,
         ModelTask.MEMORY_DREAM,
-        ModelTask.RELATIONSHIP_EVALUATION,
         ModelTask.EMOJI_REPLACEMENT,
         ModelTask.UTILITY_STRUCTURED,
         ModelTask.CONVERSATION_COMPACTION,

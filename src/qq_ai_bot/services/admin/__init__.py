@@ -5,7 +5,6 @@ from qq_ai_bot.services.admin.group_admin import GroupAdminService
 from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
 from qq_ai_bot.services.admin.preference_admin import PreferenceAdminService
 from qq_ai_bot.services.admin.private_access_admin import PrivateAccessAdminService
-from qq_ai_bot.services.admin.relationship_admin import RelationshipAdminService
 
 __all__ = [
     "ConfigAdminService",
@@ -13,5 +12,4 @@ __all__ = [
     "MemoryAdminService",
     "PreferenceAdminService",
     "PrivateAccessAdminService",
-    "RelationshipAdminService",
 ]

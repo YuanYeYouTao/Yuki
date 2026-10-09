@@ -5,9 +5,12 @@ from types import SimpleNamespace
 
 from tests.support.gateway import builtin_registry
 
+from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.identity.canonical_uow import CanonicalIngressUnitOfWork
 from qq_ai_bot.identity.ingress import CanonicalIngressResolver
 from qq_ai_bot.identity.routing import PresenceRouter
+from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.repositories import EventLedgerRepository
 
 
 async def _member(*args, **kwargs):
@@ -56,3 +59,22 @@ async def append_new_generation(writer, *, scope, inbound):
     resolver = fixture_ingress(writer._database)
     admitted = await resolver.pre_admit(None, inbound)
     return await resolver.uow.append_new_generation(admitted.message, admitted)
+
+
+async def append_user_event(
+    database: Database,
+    *,
+    message_id: str,
+    content: str = "正常聊天",
+    user_id: str = "1001",
+) -> int:
+    row, _ = await EventLedgerRepository(database).append(
+        bot_user_id="8000",
+        platform_message_id=message_id,
+        scope_type=ScopeType.PRIVATE,
+        sender_user_id=user_id,
+        direction="inbound",
+        content=content,
+        private_peer_user_id=user_id,
+    )
+    return row.id

@@ -1,6 +1,6 @@
 # 架构
 
-Plugin API 3.3 把“可声明的扩展”和“可使用的运行时服务”分开：
+Plugin API 3.4 把“可声明的扩展”和“可使用的运行时服务”分开：
 
 ```text
 plugin.toml
@@ -45,7 +45,7 @@ plugin.toml
 
 | 数据 | 所有者 | 插件访问方式 |
 |---|---|---|
-| 主聊天账本、人物、关系、记忆 | Yuki Core | 对应只读/写 Facade + 权限 |
+| 主聊天账本、人物、记忆 | Yuki Core | 对应只读/写 Facade + 权限 |
 | 插件配置 | Host，按插件/作用域隔离 | `ctx.config` |
 | 插件 Secret | Host/部署者 | `ctx.secrets`，只按名称读取 |
 | 插件 KV | 插件命名空间 | `ctx.storage` |

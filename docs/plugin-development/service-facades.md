@@ -7,7 +7,7 @@
 | `current` | 当前脱敏 `CurrentMessage` 投影 |
 | `messages` | 当前/回复/近期/搜索，以及受限发送 |
 | `people`, `groups` | 人物、别名、群和成员投影 |
-| `memory`, `relationship` | 结构记忆与关系服务 |
+| `memory` | 结构记忆服务 |
 | `agent` | 主 Agent 运行、原 Work 结果读取与续跑；`run` 显式选择 `context_profile` |
 | `agent_sessions` | 插件拥有的独立连续 AI 会话 |
 | `web`, `http` | Yuki 联网与白名单 HTTP |
@@ -44,7 +44,7 @@
 
 Memory V2 的写入仍统一经过 Host `MemoryFactService`。插件 update 创建修正版本，delete 只做显式
 失效；插件不能直接访问 Repository、指定事实状态/authority、物理删除审计记录或绕过当前真实
-调用作用域。冲突审计与管理员 merge/resolve 不属于 Plugin API 3.3。
+调用作用域。冲突审计与管理员 merge/resolve 不属于 Plugin API 3.4。
 
 ## 独立 AI 会话：跑团示例
 

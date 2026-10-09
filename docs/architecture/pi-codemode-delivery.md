@@ -419,7 +419,7 @@ fixture 合同更新：`StubAgentBackend` 是固定测试接口；原 execute �
 补丁覆盖新模块；异常所有权在 `TurnExecution.activate` 注入同一 ExceptionGroup，原来源/
 恢复断言不变；Core Callbacks 移至 tests/support。完整 JUnit 保存为 `p10-full-results.xml.gz`，
 验收矩阵附有实际通过节点及 JUnit hash：89 项离线通过，X11 许可项 partial。
-`p10-tool-coverage.json` 给出 76 个固定声明的 schema、binding、wrapper/拒绝路径映射；
+旧工具覆盖库存已退出，以下仅保留当时的测试记录；
 Linux 61 项证据在 `p10-linux.json`。P00 清单保留历史 not_run，不改历史快照。
 最终 ruff check/format 通过（1133 文件），mypy 722 源文件通过；git diff --check 通过。
 
@@ -448,13 +448,7 @@ Anthropic thinking/signature 在有后续请求时逐字段原样回传（保存
 
 实际命令：
 
-```sh
-PYTHONPATH=. YUKI_MONTY_BINARY=<actual-Darwin-worker> uv run --frozen python \
-  scripts/verify_deepseek_codemode.py --credentials <user-credential-file> \
-  --output docs/architecture/pi-codemode-evidence/p11-deepseek-initial.json --authorize-paid
-YUKI_MONTY_BINARY=<actual-Darwin-worker> uv run --frozen pytest -q -p no:warnings \
-  tests/unit/test_deepseek_acceptance_harness.py
-```
+
 
 首轮 conservative reservation 为 $0.5190585（按请求 byte 上界及最大输出预留，非账单）。
 实际返回 usage 合计 input 382827、cache hit 345856、output 1961；按官方 Flash peak 费率
@@ -480,16 +474,7 @@ ruff/format（1134 文件）和 mypy（722）通过；
 `p11-real-initial.log.gz`，精确 paid/failed/not-run/费用界限汇总在 `p11-deepseek-summary.json`。
 实际重验命令（其余已通过场景没有重跑）：
 
-```sh
-PYTHONPATH=. YUKI_MONTY_BINARY=.venv/bin/yuki-monty-worker uv run --frozen python \
-  scripts/verify_deepseek_codemode.py --credentials <user-credential-file> \
-  --resume-report docs/architecture/pi-codemode-evidence/p11-deepseek-initial.json \
-  --maximum-total-physical-calls 48 --authorize-paid \
-  --case chat_completions/direct --case responses/direct --case anthropic_messages/direct \
-  --case chat_completions/code --case anthropic_messages/code \
-  --case responses/disconnect --case anthropic_messages/disconnect \
-  --output docs/architecture/pi-codemode-evidence/p11-deepseek-retest.json
-```
+
 
 累计两轮 **39 次 HTTP**，保守 reservation **$0.8518629**；实际 wire usage 合计
 input 621782、cache hit 549632、output 3169，按两档公开费率估算约 **$0.01437–$0.02875**，
@@ -1098,7 +1083,7 @@ Work 和有效 native worker；不可用时明确报错，不能借降级走未�
 
 ### 清单与真实模型记录
 
-当前[装配测量](pi-codemode-evidence/tiered-tools-exposure.json)：无外部绑定的
+当时装配测量（历史库存已退出）：无外部绑定的
 core/admin/automation 测试装配，完整 77 项，模型直接 37 项。按统一紧凑 Chat Completions
 函数 name/description/parameters 包装计算，UTF-8 从 59270 字节降到 31280 字节，减少
 约 47.2%。这是工具声明字节，不是 Provider token、实际部署工具数量或费用下降比例。

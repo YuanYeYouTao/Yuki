@@ -5,7 +5,6 @@ from __future__ import annotations
 from qq_ai_bot.admin.config_spec_helpers import (
     _G,
     _GGU,
-    _GU,
     _field,
     _spec,
 )
@@ -14,36 +13,6 @@ from qq_ai_bot.admin.models import ConfigApplyMode, ConfigSpec
 
 def future_config_specs() -> tuple[ConfigSpec, ...]:
     return (
-        _spec(
-            "relationship.initial_affection",
-            "新人物初始好感度",
-            "只影响之后首次建立关系记录的人物。",
-            aliases=("初始好感度",),
-            value_type="integer",
-            minimum=0,
-            maximum=100,
-            scopes=_GU,
-            mode=ConfigApplyMode.FUTURE_ONLY,
-            env_alias="RELATIONSHIP_INITIAL_AFFECTION",
-            getter=_field("relationship_initial_affection"),
-            settings_fields=("relationship_initial_affection",),
-            category="relationship",
-        ),
-        _spec(
-            "relationship.initial_trust",
-            "新人物初始信任度",
-            "只影响之后首次建立关系记录的人物。",
-            aliases=("初始信任度",),
-            value_type="integer",
-            minimum=0,
-            maximum=100,
-            scopes=_GU,
-            mode=ConfigApplyMode.FUTURE_ONLY,
-            env_alias="RELATIONSHIP_INITIAL_TRUST",
-            getter=_field("relationship_initial_trust"),
-            settings_fields=("relationship_initial_trust",),
-            category="relationship",
-        ),
         _spec(
             "web.source_retention_days",
             "联网来源保留天数",

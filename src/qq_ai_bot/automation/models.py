@@ -64,7 +64,6 @@ Schedule = Annotated[
 
 class AutomationContext(StrictModel):
     scene: Literal["none", "creator_private", "current_group"] = "none"
-    include_relationship: bool = False
     include_memories: bool = False
     history_limit: int = Field(default=0, ge=0, le=30)
 

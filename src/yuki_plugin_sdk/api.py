@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-PLUGIN_API_VERSION = "3.3"
+PLUGIN_API_VERSION = "3.4"
 _API_VERSION = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 
 DEFAULT_FEATURES: frozenset[str] = frozenset(

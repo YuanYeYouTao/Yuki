@@ -8,7 +8,6 @@ from contextlib import AbstractAsyncContextManager
 from datetime import datetime
 
 from sqlalchemy import Select, func, select
-from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.control_plane.paging import Page, PageRequest
@@ -21,8 +20,7 @@ from qq_ai_bot.control_plane.query_types import (
     MemoryQueryFilter,
     QueryResourceKind,
 )
-from qq_ai_bot.domain.identity import PersonId, RequestId
-from qq_ai_bot.domain.relationships import stage_for_score
+from qq_ai_bot.domain.identity import RequestId
 from qq_ai_bot.memory.dream.db_models import MemoryDreamRunModel
 from qq_ai_bot.persistence.control_activity_query import _stamp
 from qq_ai_bot.persistence.control_execution_query import _key, _page
@@ -33,9 +31,6 @@ from qq_ai_bot.persistence.models import (
     MemoryRebuildProposalModel,
     MemoryRebuildRunModel,
     MemoryToolReceiptModel,
-    PersonRelationshipModel,
-    RelationshipEventModel,
-    RelationshipJobModel,
 )
 from qq_ai_bot.persistence.unit_of_work import state_revision
 
@@ -314,173 +309,6 @@ class ControlMemoryQueryAdapter:
 
     def __init__(self, reader: Callable[[], AbstractAsyncContextManager[AsyncSession]]) -> None:
         self._reader = reader
-
-    async def list_relationships(self, request: PageRequest) -> Page[ActivityView]:
-        kind = QueryResourceKind.RELATIONSHIP
-        key = _key(request, kind, "canonical_relationships")
-        model = PersonRelationshipModel
-        stmt = select(
-            model.canonical_person_id,
-            model.affection_score,
-            model.trust_score,
-            model.updated_at,
-            model.last_automatic_change_at,
-        )
-        if key is not None:
-            try:
-                after = PersonId.parse(key).text
-            except (ValueError, TypeError) as exc:
-                raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR)) from exc
-            stmt = stmt.where(model.canonical_person_id > after)
-        async with self._reader() as session:
-            rows = (
-                (
-                    await session.execute(
-                        (
-                            sql_window := await numbered_statement(
-                                session,
-                                stmt.order_by(model.canonical_person_id).limit(request.limit + 1),
-                                request,
-                                order=(
-                                    model.updated_at.desc(),
-                                    model.canonical_person_id.desc(),
-                                ),
-                            )
-                        ).statement
-                    )
-                )
-                .mappings()
-                .all()
-            )
-        items = [self._relationship(row) for row in rows[: request.limit]]
-        return _page(
-            items,
-            rows,
-            request,
-            kind,
-            "canonical_relationships",
-            rows[request.limit - 1]["canonical_person_id"] if len(rows) >= request.limit else None,
-            total=sql_window.total,
-            number=request.number,
-        )
-
-    @staticmethod
-    def _relationship(row: RowMapping) -> ActivityView:
-        # SQL RowMapping stays local to this adapter; never return the ORM row.
-        fields = dict(row)
-        fields["person_id"] = fields.pop("canonical_person_id")
-        fields["stage"] = stage_for_score(fields["affection_score"]).value
-        fields["revision"] = state_revision(fields["updated_at"])
-        for name in ("updated_at", "last_automatic_change_at"):
-            fields[name] = _stamp(fields[name])
-        return ActivityView(fields["person_id"], fields)
-
-    async def read_relationship(self, person_id: PersonId) -> ActivityView:
-        if type(person_id) is not PersonId:
-            raise TypeError("person_id must be PersonId")
-        model = PersonRelationshipModel
-        async with self._reader() as session:
-            row = (
-                (
-                    await session.execute(
-                        select(
-                            model.canonical_person_id,
-                            model.affection_score,
-                            model.trust_score,
-                            model.updated_at,
-                            model.last_automatic_change_at,
-                        ).where(model.canonical_person_id == person_id.text)
-                    )
-                )
-                .mappings()
-                .first()
-            )
-        if row is None:
-            raise ControlQueryError(Problem(ProblemCode.NOT_FOUND))
-        return self._relationship(row)
-
-    async def list_relationship_history(
-        self, request: PageRequest, *, person_id: PersonId, section: str
-    ) -> Page[ActivityView]:
-        if type(person_id) is not PersonId or section not in {"events", "jobs"}:
-            raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
-        kind = (
-            QueryResourceKind.RELATIONSHIP_EVENT
-            if section == "events"
-            else QueryResourceKind.RELATIONSHIP_JOB
-        )
-        scope = person_id.text
-        key = _key(request, kind, scope)
-        model = RelationshipEventModel if section == "events" else RelationshipJobModel
-        names = (
-            (
-                "id",
-                "source_event_id",
-                "change_type",
-                "affection_before",
-                "affection_delta",
-                "affection_after",
-                "trust_before",
-                "trust_delta",
-                "trust_after",
-                "reason_code",
-                "confidence",
-                "created_at",
-            )
-            if section == "events"
-            else (
-                "id",
-                "trigger_event_id",
-                "status",
-                "attempts",
-                "next_attempt_at",
-                "error_category",
-                "created_at",
-                "updated_at",
-            )
-        )
-        stmt = select(*(getattr(model, name) for name in names)).where(
-            model.canonical_person_id == person_id.text
-        )
-        if key is not None:
-            stmt = stmt.where(model.id < self._marker(key))
-        async with self._reader() as session:
-            rows = (
-                (
-                    await session.execute(
-                        (
-                            sql_window := await numbered_statement(
-                                session,
-                                stmt.order_by(model.id.desc()).limit(request.limit + 1),
-                                request,
-                                order=(model.created_at.desc(), model.id.desc()),
-                            )
-                        ).statement
-                    )
-                )
-                .mappings()
-                .all()
-            )
-        items = [
-            ActivityView(
-                str(row["id"]),
-                {
-                    name: _stamp(value) if isinstance(value, datetime) else value
-                    for name, value in row.items()
-                },
-            )
-            for row in rows[: request.limit]
-        ]
-        return _page(
-            items,
-            rows,
-            request,
-            kind,
-            scope,
-            str(rows[request.limit - 1]["id"]) if len(rows) >= request.limit else None,
-            total=sql_window.total,
-            number=request.number,
-        )
 
     async def list_memory_facts(
         self,

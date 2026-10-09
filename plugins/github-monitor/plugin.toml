@@ -4,7 +4,7 @@ version = "1.2.0"
 description = "Monitor GitHub repositories and publish events into Yuki conversations."
 entrypoint = "github_monitor:GitHubMonitorPlugin"
 
-plugin_api = "3.3"
+plugin_api = "3.4"
 yuki_requires = ">=3.9.0,<4.0"
 
 permissions = [

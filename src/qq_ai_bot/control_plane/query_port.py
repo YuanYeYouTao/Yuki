@@ -43,7 +43,7 @@ from qq_ai_bot.control_plane.query_types import (
     SystemSnapshot,
     YukiSummaryView,
 )
-from qq_ai_bot.domain.identity import ConversationId, PersonId, PrincipalId, RequestId
+from qq_ai_bot.domain.identity import ConversationId, PrincipalId, RequestId
 
 
 class ControlQueryPort(Protocol):
@@ -236,12 +236,6 @@ class ControlQueryPort(Protocol):
     async def read_self_reflection_health(self) -> ActivityView: ...
     async def list_self_reflection_history(
         self, request: PageRequest, *, section: str, scope: ReflectionQueryFilter | None = None
-    ) -> Page[ActivityView]: ...
-
-    async def list_relationships(self, request: PageRequest) -> Page[ActivityView]: ...
-    async def read_relationship(self, person_id: PersonId) -> ActivityView: ...
-    async def list_relationship_history(
-        self, request: PageRequest, *, person_id: PersonId, section: str
     ) -> Page[ActivityView]: ...
 
     async def list_memory_facts(

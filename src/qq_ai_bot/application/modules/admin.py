@@ -31,20 +31,17 @@ from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     GroupSettingsRepository,
     PrivateUserSettingsRepository,
-    RelationshipRepository,
 )
 from qq_ai_bot.services.admin.config_admin import ConfigAdminService
 from qq_ai_bot.services.admin.group_admin import GroupAdminService
 from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
 from qq_ai_bot.services.admin.preference_admin import PreferenceAdminService
 from qq_ai_bot.services.admin.private_access_admin import PrivateAccessAdminService
-from qq_ai_bot.services.admin.relationship_admin import RelationshipAdminService
 
 
 @dataclass(frozen=True, slots=True)
 class AdminBundle:
     audit: AdminAuditService
-    relationships: RelationshipAdminService
     memories: MemoryAdminService
     preferences: PreferenceAdminService
     groups: GroupAdminService
@@ -64,7 +61,6 @@ class AdminModule:
         runtime_config: RuntimeConfigService,
         action_registry: ActionRegistry,
         permission_catalog: PermissionCatalogService,
-        relationships: RelationshipRepository,
         memories: MemoryFactService,
         memory_context: MemoryContextService,
         memory_index: SQLiteMemoryFTSIndex,
@@ -89,7 +85,6 @@ class AdminModule:
         self._runtime_config = runtime_config
         self._action_registry = action_registry
         self._permission_catalog = permission_catalog
-        self._relationships = relationships
         self._memories = memories
         self._memory_context = memory_context
         self._memory_index = memory_index
@@ -111,11 +106,6 @@ class AdminModule:
 
     def build(self) -> AdminBundle:
         audit = AdminAuditService(self._database)
-        relationships = RelationshipAdminService(
-            relationships=self._relationships,
-            audit=audit,
-            runtime_config=self._runtime_config,
-        )
         memories = MemoryAdminService(
             settings=self._settings,
             memories=self._memories,
@@ -144,7 +134,6 @@ class AdminModule:
         private_access = PrivateAccessAdminService(
             private_users=self._private_users,
             audit=audit,
-            runtime_config=self._runtime_config,
         )
         config = ConfigAdminService(self._runtime_config)
         emoji = EmojiAdminService(
@@ -158,7 +147,6 @@ class AdminModule:
         actions = AdminActionService(
             settings=self._settings,
             database=self._database,
-            relationships=relationships,
             memories=memories,
             preferences=preferences,
             groups=groups,
@@ -175,7 +163,6 @@ class AdminModule:
         )
         return AdminBundle(
             audit,
-            relationships,
             memories,
             preferences,
             groups,

@@ -138,7 +138,6 @@ def _task_intent_schema() -> dict[str, object]:
                         "type": "string",
                         "enum": ["none", "creator_private", "current_group"],
                     },
-                    "include_relationship": {"type": "boolean"},
                     "include_memories": {"type": "boolean"},
                     "history_limit": {"type": "integer", "minimum": 0, "maximum": 30},
                 },

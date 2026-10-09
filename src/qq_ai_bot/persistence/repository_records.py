@@ -174,37 +174,3 @@ class EmojiDescriptionRecord:
     created_at: datetime
     updated_at: datetime
     last_used_at: datetime
-
-
-@dataclass(frozen=True, slots=True)
-class RelationshipEventRecord:
-    """One relationship change without duplicated chat content."""
-
-    id: int
-    user_id: str
-    change_type: str
-    affection_before: int
-    affection_delta: int
-    affection_after: int
-    trust_before: int
-    trust_delta: int
-    trust_after: int
-    reason_code: str
-    confidence: float | None
-    created_at: datetime
-    source_event_id: int | None = None
-    actor_user_id: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class RelationshipJobRecord:
-    """A claimed relationship job with bounded person-specific context."""
-
-    job_id: int
-    claimed_at: datetime
-    conversation_generation: int
-    attempts: int
-    user_id: str
-    conversation_key: str
-    trigger_event: EventRecord
-    recent_events: tuple[EventRecord, ...]

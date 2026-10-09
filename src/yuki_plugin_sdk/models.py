@@ -58,7 +58,6 @@ class PromptStage(StrEnum):
     CORE_BEHAVIOR = "core_behavior"
     TRUSTED_TIME = "trusted_time"
     TRUSTED_AUTHORITY = "trusted_authority"
-    RELATIONSHIP = "relationship"
     SCENE = "scene"
     MEMORY = "memory"
     VISUAL_CONTEXT = "visual_context"

@@ -1,6 +1,6 @@
 """Resolve ControlPrincipal and canonical admin targets at the adapter boundary.
 
-SUPERUSERS is read only here. Core relationship/group/preference/private-access
+SUPERUSERS is read only here. Core group/preference/private-access
 services never see AdminActor or Settings.superusers. Missing Bindings fail
 closed; this module never invents Person or Space identities.
 """
@@ -24,13 +24,11 @@ from qq_ai_bot.persistence.database import Database
 
 USER_CAPABILITIES: frozenset[str] = frozenset(
     {
-        "control.relationship.read",
         "control.preference.read",
     }
 )
 SUPERUSER_CAPABILITIES: frozenset[str] = USER_CAPABILITIES | frozenset(
     {
-        "control.relationship.mutate",
         "control.preference.mutate",
         "control.group.mutate",
         "control.private_access.mutate",

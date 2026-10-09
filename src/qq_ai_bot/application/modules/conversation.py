@@ -31,7 +31,6 @@ from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
 from qq_ai_bot.memory.self_reflection.service import SelfReflectionService
 from qq_ai_bot.memory.self_reflection.worker import SelfReflectionWorker
 from qq_ai_bot.memory.worker import MemoryWorker
-from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.services.agent_tools import AgentToolService
 from qq_ai_bot.services.chat import ChatService, ToolInvocationRecorder
 from qq_ai_bot.services.concurrency import ConcurrencyManager
@@ -39,12 +38,6 @@ from qq_ai_bot.services.effect_gate import ConversationEffectGate
 from qq_ai_bot.services.prompt_composer import PromptComposer
 from qq_ai_bot.services.prompt_registry import PromptRegistry
 from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
-from qq_ai_bot.services.relationship_evaluator import (
-    FakeRelationshipEvaluator,
-    LLMRelationshipEvaluator,
-    RelationshipEvaluator,
-)
-from qq_ai_bot.services.relationship_worker import RelationshipWorker
 from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
 from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.web.base import WebSearchProvider
@@ -54,7 +47,6 @@ from qq_ai_bot.web.base import WebSearchProvider
 class ConversationBundle:
     prompt_registry: PromptRegistry
     admission_features: AdmissionFeatureBuilder
-    relationship_evaluator: RelationshipEvaluator
     rate_limiter: SlidingWindowRateLimiter
     agent_tools: AgentToolService
     chat: ChatService
@@ -66,7 +58,6 @@ class ConversationBundle:
     memory_self_reflection_worker: SelfReflectionWorker
     memory_dream_worker: DreamWorker
     memory_evidence_compaction_worker: EvidenceCompactionWorker
-    relationship_worker: RelationshipWorker
     conversation_rollup_service: ConversationRollupService
     conversation_rollup_worker: ConversationRollupWorker
 
@@ -114,19 +105,7 @@ class ConversationModule:
         )
         admission_features = AdmissionFeatureBuilder(
             ledger=persistence.ledger,
-            relationships=persistence.relationships,
         )
-        _route, chat_profile = self._model_runtime.router.route(ModelTask.CHAT_AGENT)
-        relationship_evaluator: RelationshipEvaluator
-        if chat_profile.provider.casefold() == "fake":
-            relationship_evaluator = FakeRelationshipEvaluator()
-        else:
-            relationship_evaluator = LLMRelationshipEvaluator(
-                settings=settings,
-                model_executor=models,
-                concurrency=self._concurrency,
-                runtime_config=self._runtime_config,
-            )
         rate_limiter = SlidingWindowRateLimiter(
             per_user=settings.per_user_requests_per_minute,
             per_group=settings.per_group_requests_per_minute,
@@ -149,7 +128,6 @@ class ConversationModule:
             memory_context=persistence.memory_context,
             memory_mutations=memory_mutations,
             actions=persistence.agent_actions,
-            relationships=persistence.relationships,
             web_provider=self._web_provider,
             web_sources=persistence.web_sources,
             runtime_config=self._runtime_config,
@@ -184,7 +162,6 @@ class ConversationModule:
             memories=persistence.memories,
             memory_context=persistence.memory_context,
             memory_partition_lookup=DatabaseMemoryPartitionLookup(persistence.database),
-            relationships=persistence.relationships,
             tools=agent_tools,
             web_sources=persistence.web_sources,
             runtime_config=self._runtime_config,
@@ -251,17 +228,9 @@ class ConversationModule:
                 concurrency=self._concurrency,
             ),
         )
-        relationship_worker = RelationshipWorker(
-            settings=settings,
-            jobs=persistence.relationship_jobs,
-            relationships=persistence.relationships,
-            evaluator=relationship_evaluator,
-            runtime_config=self._runtime_config,
-        )
         return ConversationBundle(
             prompt_registry,
             admission_features,
-            relationship_evaluator,
             rate_limiter,
             agent_tools,
             chat,
@@ -273,7 +242,6 @@ class ConversationModule:
             memory_self_reflection_worker,
             memory_dream_worker,
             memory_evidence_compaction_worker,
-            relationship_worker,
             conversation_rollup_service,
             conversation_rollup_worker,
         )
@@ -310,11 +278,6 @@ class ConversationModule:
             "memory_evidence_compaction_worker",
             start=bundle.memory_evidence_compaction_worker.start,
             close=bundle.memory_evidence_compaction_worker.close,
-        )
-        lifecycle.register(
-            "relationship_worker",
-            start=bundle.relationship_worker.start,
-            close=bundle.relationship_worker.close,
         )
         lifecycle.register(
             "conversation_rollup_worker",

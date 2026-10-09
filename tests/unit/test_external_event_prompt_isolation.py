@@ -104,7 +104,6 @@ def _assembler(**overrides: object) -> ContextAssembler:
         settings=settings,
         ledger=MagicMock(),
         people=MagicMock(),
-        relationships=MagicMock(),
         time_service=MagicMock(),
         rollup_repository=MagicMock(),
         rollup_service=MagicMock(),
@@ -128,7 +127,6 @@ def _assembled(
         current_message=current,
         recent_delivery=(),
         current_time=_time(),
-        current_relationship=None,
         metrics=ContextMetrics(
             metadata_characters=0,
             history_characters=0,
@@ -279,7 +277,7 @@ async def _assemble_wakeup(
 ) -> tuple[ContextAssembler, AssembledContext]:
     """Run the real actorless ``assemble`` entry for one plugin wakeup."""
 
-    assembler = _assembler(relationship_enabled=False)
+    assembler = _assembler()
     assembler._ensure_turn_generation = AsyncMock()  # type: ignore[method-assign]
     assembler._load_history_snapshot = AsyncMock(  # type: ignore[method-assign]
         return_value=_HistoryPromptWindow(
@@ -474,7 +472,7 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
         _message(10, "ordinary current turn"),
         canonical_conversation_id="conv-stable",
     )
-    ordinary = _assembler(relationship_enabled=False)
+    ordinary = _assembler()
     ordinary._ensure_turn_generation = AsyncMock()  # type: ignore[method-assign]
     ordinary._load_history_snapshot = AsyncMock(  # type: ignore[method-assign]
         return_value=snapshot
@@ -518,7 +516,7 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
         _external(10, "external current turn"),
         canonical_conversation_id="conv-stable",
     )
-    wakeup = _assembler(relationship_enabled=False)
+    wakeup = _assembler()
     wakeup._ensure_turn_generation = AsyncMock()  # type: ignore[method-assign]
     wakeup._load_history_snapshot = AsyncMock(  # type: ignore[method-assign]
         return_value=snapshot
@@ -981,13 +979,7 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
             group_runtime,
         )
     ).model_payload()
-    relationship = (
-        await tools.execute(
-            "get_relationship",
-            '{"user_id":"1001"}',
-            group_runtime,
-        )
-    ).model_payload()
+
 
     assert recent["ok"] is True
     assert recent["data"]["source"] == "ledger"
@@ -1014,7 +1006,6 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     assert bounded_search["data"]["truncated"]
     assert 0 < bounded_search["data"]["returned_count"] < 20
     assert bounded_search["data"]["returned_count"] == len(bounded_search["data"]["events"])
-    assert relationship["error_code"] == "permission_denied"
     gateway.call_api.assert_not_awaited()
     assert tools._ledger.search.await_args.kwargs["group_id"] == "group-100"
     assert tools._ledger.search.await_args.kwargs["user_id"] is None

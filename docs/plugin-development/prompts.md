@@ -5,7 +5,7 @@
 - `plugin_context`：提供与插件功能有关的上下文；
 - `tool_guidance`：说明插件工具的正确用途。
 
-第三方插件不能写入 `core_identity`、`core_security`、权限、关系等 Host 阶段。
+第三方插件不能写入 `core_identity`、`core_security`、权限等 Host 阶段。
 
 ```python
 from yuki_plugin_sdk.models import (

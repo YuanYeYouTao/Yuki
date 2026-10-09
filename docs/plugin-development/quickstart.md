@@ -18,7 +18,7 @@ name = "Hello"
 version = "0.1.0"
 description = "最小 Hello 插件"
 entrypoint = "hello_plugin:HelloPlugin"
-plugin_api = "3.3"
+plugin_api = "3.4"
 yuki_requires = ">=3.9.0,<4.0"
 permissions = ["command.register"]
 
@@ -126,3 +126,5 @@ docker compose logs -f bot
 ## 下一步
 
 先阅读 [权限](permissions.md) 和 [安全模型](security.md)，然后从 [Echo 示例](../../examples/plugins/com.example.echo/README.md) 复制完整结构。
+
+当前合同与关系服务退役见 [API 3.4 迁移](api-3.4-migration.md)。

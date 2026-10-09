@@ -48,7 +48,7 @@ from qq_ai_bot.control_plane.query_types import (
 )
 from qq_ai_bot.control_plane.surface import ControlSurfaceView, describe_surface, method_capability
 from qq_ai_bot.domain.control import DecisionContext
-from qq_ai_bot.domain.identity import ConversationId, PersonId, RequestId
+from qq_ai_bot.domain.identity import ConversationId, RequestId
 
 
 def _require_context(context: object) -> DecisionContext[ControlPrincipal, object, object]:
@@ -576,25 +576,6 @@ class ControlQueryService:
         authorized = _require_context(context)
         _require_capability(authorized, method_capability("list_self_reflection_history"))
         return await self._port.list_self_reflection_history(request, section=section, scope=scope)
-
-    async def list_relationships(self, context: object, request: PageRequest) -> Page[ActivityView]:
-        authorized = _require_context(context)
-        _require_capability(authorized, method_capability("list_relationships"))
-        return await self._port.list_relationships(request)
-
-    async def read_relationship(self, context: object, person_id: PersonId) -> ActivityView:
-        authorized = _require_context(context)
-        _require_capability(authorized, method_capability("read_relationship"))
-        return await self._port.read_relationship(person_id)
-
-    async def list_relationship_history(
-        self, context: object, request: PageRequest, *, person_id: PersonId, section: str
-    ) -> Page[ActivityView]:
-        authorized = _require_context(context)
-        _require_capability(authorized, method_capability("list_relationship_history"))
-        return await self._port.list_relationship_history(
-            request, person_id=person_id, section=section
-        )
 
     async def list_memory_facts(
         self, context: object, request: PageRequest, *, scope: MemoryQueryFilter | None = None

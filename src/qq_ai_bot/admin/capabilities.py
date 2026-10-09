@@ -100,15 +100,10 @@ class CapabilityRegistry:
             ChatTool(
                 name="admin_execute_action",
                 description=(
-                    "执行 ActionRegistry 中的关系、记忆、偏好、群或私聊权限操作。"
+                    "执行 ActionRegistry 中的记忆、偏好、群或私聊权限操作。"
                     "arguments.target 必须使用枚举，绝不能直接把 QQ/群号填进 target。"
-                    "例如设置明确 QQ 的好感度：action=relationship.set_affection，"
-                    'arguments={"target":"explicit_user_id","user_id":"该QQ","value":88}。'
                     "当前消息真实 @ 的用户用 mentioned_user；本人用 self；当前群用 current_group。"
-                    "action 参数规则：relationship.get/history 只需 target；"
-                    "relationship.set_affection/set_trust 还需 value=0..100；"
-                    "relationship.adjust_affection 还需 d"
-                    "elta=-20..20；memory.add 需 content，"
+                    "action 参数规则：memory.add 需 content，"
                     "memory.update 需 memory_id+content，memory.delete 需 memory_id；"
                     "memory.prune 需 max_importance=1..5 和 older_than_days=1..3650；"
                     "preference.set 需 key+value，preference.delete 需 key；"
@@ -145,10 +140,7 @@ class CapabilityRegistry:
                                         "target=explicit_group_id 时必填；群号必须在当前正文"
                                     ),
                                 },
-                                "value": {
-                                    "description": "好感度/信任度整数，或 preference.set 的文本值"
-                                },
-                                "delta": {"type": "integer", "minimum": -20, "maximum": 20},
+                                "value": {"description": "preference.set 的文本值"},
                                 "memory_id": {"type": "integer", "minimum": 1},
                                 "max_importance": {
                                     "type": "integer",

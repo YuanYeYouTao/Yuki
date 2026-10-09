@@ -22,7 +22,6 @@ from qq_ai_bot.settings_domains import (
     ModelRuntimeSettings,
     OneBotSettings,
     PluginSettings,
-    RelationshipSettings,
     ToolingSettings,
     VisionSettings,
     WebSettings,
@@ -355,22 +354,6 @@ class Settings(BaseSettings):
     plugin_external_event_context_characters: int = 6000
     plugin_external_event_summary_characters: int = 800
 
-    relationship_enabled: bool = True
-    relationship_initial_affection: int = 50
-    relationship_initial_trust: int = 50
-    relationship_batch_seconds: float = 60.0
-    relationship_batch_trigger_count: int = 5
-    relationship_batch_max_turns: int = 10
-    relationship_max_attempts: int = 3
-    relationship_confidence_threshold: float = 0.75
-    affection_max_auto_delta: int = 2
-    trust_max_auto_delta: int = 2
-    # Zero deliberately means unlimited, preserving the 1.2 relationship behavior.
-    relationship_daily_positive_cap: int = 0
-    relationship_daily_negative_cap: int = 0
-    trust_affection_cap_offset: int = 10
-    conflict_preference_min_gap: int = 15
-
     web_enabled: bool = True
     web_mode: WebMode | None = None
     tavily_api_key: str = Field(default="", repr=False)
@@ -671,7 +654,6 @@ class Settings(BaseSettings):
             self.conversation,
             self.plugins,
             self.memory,
-            self.relationship,
             self.web,
             self.vision,
             self.emoji,
@@ -726,10 +708,6 @@ class Settings(BaseSettings):
     @cached_property
     def memory(self) -> MemorySettings:
         return MemorySettings.model_validate(self)
-
-    @cached_property
-    def relationship(self) -> RelationshipSettings:
-        return RelationshipSettings.model_validate(self)
 
     @cached_property
     def web(self) -> WebSettings:

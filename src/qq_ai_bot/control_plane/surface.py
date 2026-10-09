@@ -452,27 +452,6 @@ _METHODS = (
     ),
     ControlMethod(
         "query",
-        "list_relationships",
-        "control.relationship.read",
-        lambda service: service.list_relationships,
-        simple=True,
-    ),
-    ControlMethod(
-        "query",
-        "read_relationship",
-        "control.relationship.read",
-        lambda service: service.read_relationship,
-        simple=False,
-    ),
-    ControlMethod(
-        "query",
-        "list_relationship_history",
-        "control.relationship.read",
-        lambda service: service.list_relationship_history,
-        simple=False,
-    ),
-    ControlMethod(
-        "query",
         "list_memory_facts",
         "control.memory.metadata.read",
         lambda service: service.list_memory_facts,
@@ -678,13 +657,6 @@ _METHODS = (
         "rollback_config",
         "control.config.mutate",
         lambda service: service.rollback_config,
-        simple=False,
-    ),
-    ControlMethod(
-        "command",
-        "mutate_relationship",
-        "control.relationship.mutate",
-        lambda service: service.mutate_relationship,
         simple=False,
     ),
     ControlMethod(
@@ -917,18 +889,6 @@ async def execute_query(queries: Any, ctx: Any, method: str, data: dict[str, Any
                 scope[key] = cls.parse(scope[key])
         result = await queries.list_self_reflection_history(
             ctx, page, section=data["section"], scope=ReflectionQueryFilter(**scope)
-        )
-    elif method == "read_relationship":
-        if set(data) != {"person_id"}:
-            raise ValueError("invalid relationship lookup")
-        result = await queries.read_relationship(ctx, PersonId.parse(data["person_id"]))
-    elif method == "list_relationship_history":
-        if set(data) - {"page", "person_id", "section"} or not {"person_id", "section"} <= set(
-            data
-        ):
-            raise ValueError("invalid relationship history")
-        result = await queries.list_relationship_history(
-            ctx, page, person_id=PersonId.parse(data["person_id"]), section=data["section"]
         )
     elif method in {"list_memory_facts", "list_memory_evidence"}:
         if set(data) - {"page", "scope"}:

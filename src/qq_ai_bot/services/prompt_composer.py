@@ -14,7 +14,6 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.rollup.renderer import render_rollup_message
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage
-from qq_ai_bot.domain.relationships import style_policy
 from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE, entity_memory_rule
 from qq_ai_bot.persistence.event_repository import ConversationReadVersion
 from qq_ai_bot.prompting import (
@@ -164,28 +163,6 @@ class PromptComposer:
                         "source": "current_direct_event",
                     },
                     required=True,
-                )
-            )
-        if context.current_relationship is not None:
-            contributions.append(
-                PromptContribution(
-                    id="context.relationship",
-                    channel=PromptChannel.CONTEXT,
-                    trust=PromptTrust.TRUSTED,
-                    priority=80,
-                    payload={
-                        "stage": context.current_relationship.stage.value,
-                        "style": style_policy(
-                            context.current_relationship.stage,
-                            (
-                                inbound.scope_type
-                                if inbound is not None
-                                else scope_type or ScopeType.PRIVATE
-                            ),
-                            self._settings.bot_display_name,
-                        ),
-                        "unverified_claim_gap": (runtime.relationship.conflict_preference_min_gap),
-                    },
                 )
             )
         if context.recent_delivery:

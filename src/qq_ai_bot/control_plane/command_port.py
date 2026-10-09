@@ -139,13 +139,6 @@ class ControlCommandPort(Protocol):
         command: ControlCommand,
     ) -> ControlResult: ...
 
-    async def mutate_relationship(
-        self,
-        principal: ControlPrincipal,
-        target: object,
-        command: ControlCommand,
-    ) -> ControlResult: ...
-
     async def mutate_memory(
         self,
         principal: ControlPrincipal,

@@ -141,7 +141,6 @@ class ApplicationContainer:
         self.people = self.user_profile_repository
         self.user_profiles = UserProfileService(
             self.user_profile_repository,
-            self.runtime_config,
         )
         self.ledger = persistence.ledger
         self.memories = persistence.memories
@@ -165,8 +164,6 @@ class ApplicationContainer:
             self.database,
             default_timezone=settings.default_timezone,
         )
-        self.relationships = persistence.relationships
-        self.relationship_jobs = persistence.relationship_jobs
         self.turn_observations = persistence.turn_observations
         model_runtime = ModelRuntimeModule(
             settings.model_runtime,
@@ -253,7 +250,6 @@ class ApplicationContainer:
         self.conversation = conversation
         self.prompt_registry = conversation.prompt_registry
         self.admission_features = conversation.admission_features
-        self.relationship_evaluator = conversation.relationship_evaluator
         self.rate_limiter = conversation.rate_limiter
         self.agent_tools = conversation.agent_tools
         from qq_ai_bot.social.service import SocialService
@@ -402,7 +398,6 @@ class ApplicationContainer:
         self.memory_self_reflection_worker.social = self.social_service
         self.memory_dream_worker = conversation.memory_dream_worker
         self.memory_evidence_compaction_worker = conversation.memory_evidence_compaction_worker
-        self.relationship_worker = conversation.relationship_worker
         self.conversation_rollup_worker = conversation.conversation_rollup_worker
         self.conversation_rollup_service = conversation.conversation_rollup_service
         admin = AdminModule(
@@ -411,7 +406,6 @@ class ApplicationContainer:
             runtime_config=self.runtime_config,
             action_registry=self.admin_action_registry,
             permission_catalog=self.permission_catalog,
-            relationships=self.relationships,
             memories=self.memories,
             memory_context=self.memory_context,
             memory_index=self.memory_index,
@@ -433,7 +427,6 @@ class ApplicationContainer:
         ).build()
         self.admin = admin
         self.admin_audit = admin.audit
-        self.relationship_admin = admin.relationships
         self.memory_admin = admin.memories
         self.preference_admin = admin.preferences
         self.group_admin = admin.groups
@@ -452,7 +445,6 @@ class ApplicationContainer:
             time_service=self.time_context,
             ledger=self.ledger,
             memories=self.memories,
-            relationships=self.relationships,
             admin_audit=self.admin_audit,
             web_provider=self.web_provider,
             emoji_repository=self.emoji_repository,
@@ -597,7 +589,6 @@ class ApplicationContainer:
             concurrency=self.concurrency,
             onebot_connected=self.onebot_connected,
             runtime_config=self.runtime_config,
-            relationship_admin=self.relationship_admin,
             memory_admin=self.memory_admin,
             preference_admin=self.preference_admin,
             group_admin=self.group_admin,
@@ -661,11 +652,8 @@ class ApplicationContainer:
             people=self.people,
             memories=self.memories,
             memory_worker=self.memory_worker,
-            relationships=self.relationships,
-            relationship_worker=self.relationship_worker,
             autonomous_groups=self.autonomous_groups,
             runtime_config=self.runtime_config,
-            relationship_admin=self.relationship_admin,
             memory_admin=self.memory_admin,
             preference_admin=self.preference_admin,
             group_admin=self.group_admin,
@@ -773,9 +761,7 @@ class ApplicationContainer:
                 groups=self.groups,
                 memories=self.memories,
                 memory_context=self.memory_context,
-                relationships=self.relationships,
                 memory_admin=self.memory_admin,
-                relationship_admin=self.relationship_admin,
                 runtime_config=self.runtime_config,
                 agent_runner=self.runtime.runner,
                 agent_capabilities=frozenset(agent_capabilities),

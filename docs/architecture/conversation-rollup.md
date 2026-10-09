@@ -22,8 +22,7 @@ MemoryPartitionKey 使用 SELF、PERSON、GROUP 或 PERSON_GROUP owner，不得�
 
 普通 Person 的 alias 与 timezone 在本次准备中只解析一次 live canonical owner，返回
 不含 ORM/session 的 immutable 展示 DTO。Runner 复用本轮 timezone 并重新取 clock，
-下一轮重新读取偏好；SELF 与 actorless 不借用该 DTO。Relationship 仍使用既有
-get_or_create，保留首次合法写入，不新增展示资料的统一 revision 或变更重试协议。
+下一轮重新读取偏好；SELF 与 actorless 不借用该 DTO。不新增展示资料的统一 revision 或变更重试协议。
 
 ## 持久状态
 
@@ -172,11 +171,11 @@ renderer 的旧记录按当前获准来源进行 `rollup` 显式重建并记录�
 重启、fit/soft/hard 容量及隐私/来源复核仍走原合同。
 
 Rollup 永不进入 system instructions。冻结历史保留所选聊天与观察的原顺序，新事件在安全点追加。
-昵称、群名片和正文来自落账时事件；当前 Actor 的关系、
+昵称、群名片和正文来自落账时事件；当前 Actor 的
 权限和必要场景资料只进入当前 envelope。长期记忆由 Main Agent 按需调用记忆检索工具，
 不在每轮自动预取或注入。
 
-普通输入派发前冻结获准聊天和当时必要资料；旧昵称、关系及状态快照保留当时值，
+普通输入派发前冻结获准聊天和当时必要资料；旧昵称及状态快照保留当时值，
 后来的更正追加而不重写旧块。开启 Work runtime 但尚未 accept 的普通轮仍提交该投影，
 已采用的动态资料作为有来源的作用域观察冻结；运行状态属于临时执行材料，不追加到
 公共历史。当前 Work 的目标、工具/steer 尾部及不透明签名

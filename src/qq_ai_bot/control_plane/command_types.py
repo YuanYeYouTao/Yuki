@@ -95,7 +95,6 @@ _MANAGEMENT_RESULT_OPERATIONS: Final[frozenset[str]] = frozenset(
         "control.config.unset",
         "control.config.rollback",
         "control.memory.mutate",
-        "control.relationship.mutate",
         "control.memory.rebuild",
         "control.memory.dream",
         "control.memory.maintenance",
@@ -183,7 +182,6 @@ class CommandOperation(StrEnum):
     CONFIG_UNSET = "control.config.unset"
     CONFIG_ROLLBACK = "control.config.rollback"
     MEMORY_MUTATE = "control.memory.mutate"
-    RELATIONSHIP_MUTATE = "control.relationship.mutate"
     MEMORY_REBUILD = "control.memory.rebuild"
     MEMORY_DREAM = "control.memory.dream"
     MEMORY_MAINTENANCE = "control.memory.maintenance"
@@ -1184,13 +1182,6 @@ def _require_management_semantics(
             or resource_id != _material_resource(material)
         ):
             raise _mismatch()
-        return
-    if operation == CommandOperation.RELATIONSHIP_MUTATE.value:
-        if action not in {"set_affection", "set_trust", "adjust_affection"} or status != action:
-            raise _mismatch()
-        if resource_id != semantic_target_id or resource_id != _material_resource(material):
-            raise _mismatch()
-        _require_generated_id(resource_id)
         return
     if operation == CommandOperation.MEMORY_MUTATE.value:
         if action not in {"confirm", "quarantine"} or status != action:

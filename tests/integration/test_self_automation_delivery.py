@@ -95,7 +95,6 @@ async def test_self_daily_agent_runs_without_borrowing_a_person(database, tmp_pa
         time_service=chat._time,
         ledger=harness.ledger,
         memories=chat._memories,
-        relationships=harness.relationships,
         web_provider=None,
         gateway_factory=lambda context: None,
     )
