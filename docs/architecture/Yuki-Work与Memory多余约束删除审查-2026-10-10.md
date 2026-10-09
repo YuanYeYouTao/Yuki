@@ -30,7 +30,7 @@
 | C10 | Memory历史缺链/异步维护一票否决和旧质量报警 | 已完成：保留诊断事实，删除整体healthy否决及旧profile/待审核/一小时/终态staging/权威等级政策 |
 | C11 | Dream操作分类、唯一性、最多四条、全集覆盖、key改名、证据帽 | 已完成：按实际引用部分整理，同key/同正文/多输出及回滚通过；13条证据在输入采样为1时仍完整复制 |
 | C12 | 普通Memory提取三次即FAILED | 已完成：原job四次Provider失败后第五次无事实正常DONE，原claim/计数保留；19项相关场景通过 |
-| C13 | 当前合同、配置、提示与陈旧测试同步及最终整合验证 | 已完成：旧说明与冻结断言同步；全量1104通过/50跳过，最终补删支路另行验证，Ruff/格式/Mypy/版本校验通过 |
+| C13 | 当前合同、配置、提示与陈旧测试同步及最终整合验证 | 已完成：旧说明与冻结断言同步；最终冻结全量1239通过/50跳过，Linux CI1240通过/49跳过；终局W13定向回归另列，Ruff/格式/Mypy/版本校验通过 |
 | C14 | Memory Embedding与Rebuild重试次数封口 | 已完成：次数封口、提交准备后max1、死形参/返回值/配置及指数等待删除；23项场景验证超过原次数仍可沿原ID完成，提交确认丢失不重复写 |
 | C15 | 配置之间的固定大小/顺序/比例政策 | 已完成：删除RuntimeConfigService跨key校验与错误包装、Settings重复校验、摘要target/trigger运行时拒绝及相关死字段；原配置读快照场景通过 |
 | C16 | 辅助摘要与context_note格式/全集/重复政策 | 已完成：格式封口删除，23项摘要/恢复场景通过；省略旧要求不丢数据，19输入跨页不越缺口，原链引用不混用，缺省观察保留而显式空数组可更新 |
@@ -268,7 +268,7 @@
 
 ### C32 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/services/durable_invocations.py:29 (DurableInvocations.run)](../../src/qq_ai_bot/services/durable_invocations.py#L29) → [src/qq_ai_bot/automation/handlers.py:107 (AutomationCapabilityHandlers.agent)](../../src/qq_ai_bot/automation/handlers.py#L107) → [src/qq_ai_bot/automation/executor.py:163 (AutomationExecutor._execute)](../../src/qq_ai_bot/automation/executor.py#L163) → [src/qq_ai_bot/automation/work_cursor.py:31 (save)](../../src/qq_ai_bot/automation/work_cursor.py#L31) → [src/qq_ai_bot/automation/worker.py:148 (AutomationWorker._process)](../../src/qq_ai_bot/automation/worker.py#L148) → [src/qq_ai_bot/automation/repository.py:706 (AutomationRepository.resumable_run)](../../src/qq_ai_bot/automation/repository.py#L706) → [src/qq_ai_bot/automation/repository.py:786 (AutomationRepository.finish_automation_run)](../../src/qq_ai_bot/automation/repository.py#L786)。
+调用/持久化/恢复：[src/qq_ai_bot/services/durable_invocations.py:29 (DurableInvocations.run)](../../src/qq_ai_bot/services/durable_invocations.py#L29) → [src/qq_ai_bot/automation/handlers.py:107 (AutomationCapabilityHandlers.agent)](../../src/qq_ai_bot/automation/handlers.py#L107) → [src/qq_ai_bot/automation/executor.py:161 (AutomationExecutor._execute)](../../src/qq_ai_bot/automation/executor.py#L161) → [src/qq_ai_bot/automation/work_cursor.py:31 (save)](../../src/qq_ai_bot/automation/work_cursor.py#L31) → [src/qq_ai_bot/automation/worker.py:146 (AutomationWorker._process)](../../src/qq_ai_bot/automation/worker.py#L146) → [src/qq_ai_bot/automation/repository.py:693 (AutomationRepository.resumable_run)](../../src/qq_ai_bot/automation/repository.py#L693) → [src/qq_ai_bot/automation/repository.py:773 (AutomationRepository.finish_automation_run)](../../src/qq_ai_bot/automation/repository.py#L773)。
 
 验证入口：[tests/integration/test_person_automation_final_feedback.py:124 (test_suspended_agent_preserves_automation_run_until_original_work_resumes)](../../tests/integration/test_person_automation_final_feedback.py#L124)。
 
@@ -452,7 +452,7 @@ C36沿SELF工具receipt领取、模型实际呈现、原window和完成游标核
 
 第三轮旧冻结快照累计后端源码66份文件新增400行、删除1241行，净删841行；计入唯一新增的45行0104迁移后后端与迁移净删796行。该旧快照的C00–C36本地实施与各自验证已登记，P项当时未完成；本次后续执行状态以P/W结果和最后交付记录为准。
 
-本轮尚未提交、推送、创建PR、合并或部署。不操作SnowLuma或QQ登录状态。
+第三轮旧快照当时尚未提交、推送、创建PR、合并或部署；现行交付状态见文末。SnowLuma和QQ登录状态保持原状。
 
 
 ## 第三轮 Work 全生命周期专项
@@ -473,6 +473,7 @@ C36沿SELF工具receipt领取、模型实际呈现、原window和完成游标核
 | W10 | yuki.agent原Work预算又被外层DSL默认配额拒绝 | [x] 本地实施及对应回归完成；最终统一检查与新线上验收见交付记录 |
 | W11 | 外围强制send及无人调用的200余行二次发送重分类 | [x] 本地实施及对应回归完成；最终统一检查与新线上验收见交付记录 |
 | W12 | 未归档树七天/其他暂停树封口、paused child强制新指令、子取消stale control | [x] 本地实施及对应回归完成；最终统一检查与新线上验收见交付记录 |
+| W13 | active wait取消后外层365天claim休眠阻止原run收尾；死查询和wake分支 | [x] 本地完成：直接删除一年休眠及零消费者方法，原5秒查询不增模型/业务调用；线上复测另列 |
 
 ### 生产核验第一轮（旧镜像0046d394 / schema0103）
 
@@ -511,7 +512,7 @@ C36沿SELF工具receipt领取、模型实际呈现、原window和完成游标核
 
 #### W03
 
-源码：[src/qq_ai_bot/runtime/work_management.py:54 (resume_blocker)](../../src/qq_ai_bot/runtime/work_management.py#L54) → [src/qq_ai_bot/automation/worker.py:148 (AutomationWorker._process)](../../src/qq_ai_bot/automation/worker.py#L148)。
+源码：[src/qq_ai_bot/runtime/work_management.py:54 (resume_blocker)](../../src/qq_ai_bot/runtime/work_management.py#L54) → [src/qq_ai_bot/automation/worker.py:146 (AutomationWorker._process)](../../src/qq_ai_bot/automation/worker.py#L146)。
 
 验证：[tests/integration/test_person_automation_final_feedback.py:124 (test_suspended_agent_preserves_automation_run_until_original_work_resumes)](../../tests/integration/test_person_automation_final_feedback.py#L124)。
 
@@ -523,7 +524,7 @@ C36沿SELF工具receipt领取、模型实际呈现、原window和完成游标核
 
 #### W05
 
-源码：[src/qq_ai_bot/runtime/work_control.py:1046 (WorkControl._prepare_completion)](../../src/qq_ai_bot/runtime/work_control.py#L1046) → [src/qq_ai_bot/automation/handlers.py:107 (AutomationCapabilityHandlers.agent)](../../src/qq_ai_bot/automation/handlers.py#L107) → [src/qq_ai_bot/automation/executor.py:163 (AutomationExecutor._execute)](../../src/qq_ai_bot/automation/executor.py#L163)。
+源码：[src/qq_ai_bot/runtime/work_control.py:1046 (WorkControl._prepare_completion)](../../src/qq_ai_bot/runtime/work_control.py#L1046) → [src/qq_ai_bot/automation/handlers.py:107 (AutomationCapabilityHandlers.agent)](../../src/qq_ai_bot/automation/handlers.py#L107) → [src/qq_ai_bot/automation/executor.py:161 (AutomationExecutor._execute)](../../src/qq_ai_bot/automation/executor.py#L161)。
 
 验证：[tests/unit/test_work_settlement_writer.py:228 (test_empty_final_can_complete_answer_without_send_or_result_gate)](../../tests/unit/test_work_settlement_writer.py#L228)；[tests/integration/test_person_automation_final_feedback.py:75 (test_unsent_person_notification_final_stops_without_courtesy_correction)](../../tests/integration/test_person_automation_final_feedback.py#L75)。
 
@@ -547,19 +548,19 @@ C36沿SELF工具receipt领取、模型实际呈现、原window和完成游标核
 
 #### W09
 
-源码：[src/qq_ai_bot/automation/handlers.py:107 (AutomationCapabilityHandlers.agent)](../../src/qq_ai_bot/automation/handlers.py#L107) → [src/qq_ai_bot/automation/repository.py:786 (AutomationRepository.finish_automation_run)](../../src/qq_ai_bot/automation/repository.py#L786)。
+源码：[src/qq_ai_bot/automation/handlers.py:107 (AutomationCapabilityHandlers.agent)](../../src/qq_ai_bot/automation/handlers.py#L107) → [src/qq_ai_bot/automation/repository.py:773 (AutomationRepository.finish_automation_run)](../../src/qq_ai_bot/automation/repository.py#L773)。
 
-验证：[tests/integration/test_person_automation_final_feedback.py:202 (test_public_cancel_settles_owning_run_without_error_or_new_request)](../../tests/integration/test_person_automation_final_feedback.py#L202)。
+验证：[tests/integration/test_person_automation_final_feedback.py:203 (test_public_cancel_settles_owning_run_without_error_or_new_request)](../../tests/integration/test_person_automation_final_feedback.py#L203)。
 
 #### W10
 
-源码：[src/qq_ai_bot/automation/validator.py:74 (AutomationValidator.validate)](../../src/qq_ai_bot/automation/validator.py#L74) → [src/qq_ai_bot/automation/executor.py:951 (AutomationExecutor._enforce_runtime_limits)](../../src/qq_ai_bot/automation/executor.py#L951)。
+源码：[src/qq_ai_bot/automation/validator.py:74 (AutomationValidator.validate)](../../src/qq_ai_bot/automation/validator.py#L74) → [src/qq_ai_bot/automation/executor.py:949 (AutomationExecutor._enforce_runtime_limits)](../../src/qq_ai_bot/automation/executor.py#L949)。
 
 验证：[tests/integration/test_person_automation_final_feedback.py:84 (test_agent_script_uses_original_work_budget_without_outer_flag)](../../tests/integration/test_person_automation_final_feedback.py#L84)。
 
 #### W11
 
-源码：[src/qq_ai_bot/runtime/effect_queries.py:24 (RuntimeEffectQueries.inspect_social_operation)](../../src/qq_ai_bot/runtime/effect_queries.py#L24) → [src/qq_ai_bot/automation/executor.py:163 (AutomationExecutor._execute)](../../src/qq_ai_bot/automation/executor.py#L163)。
+源码：[src/qq_ai_bot/runtime/effect_queries.py:24 (RuntimeEffectQueries.inspect_social_operation)](../../src/qq_ai_bot/runtime/effect_queries.py#L24) → [src/qq_ai_bot/automation/executor.py:161 (AutomationExecutor._execute)](../../src/qq_ai_bot/automation/executor.py#L161)。
 
 验证：[tests/unit/test_work_effect_lifecycle_repository.py:1](../../tests/unit/test_work_effect_lifecycle_repository.py#L1)。
 
@@ -579,4 +580,39 @@ CI逐项回看quality/release：现行Python/前端全量入口已覆盖修正�
 
 0103→0104真实升级保留原媒体和事实，删除无消费者quota/trigger、投递死列/窗口索引及主动轮单活动索引，原索引更新到canonical Person；合法automation取消如实为cancelled且step/run均无error。所有269个源码/测试锚点检查文件/行号存在；删除前条件可按基线fa505a8c定位。交叉终审去掉多projection、mutable goal、重复quote、子任务误算busy及保留树时间/顺序门，实际来源、未知效果和原ID恢复反例均有回归。
 
-Yuki PR、合并、本地镜像部署和生产复测将在后续交付记录填写；旧线上测试失败不改写成成功。
+Yuki PR280已合并，本地镜像部署和生产复测见下方实际记录；旧线上测试失败保留。终局W13补删采用后续独立PR交付。
+
+## 终局回看补删与第一轮上线
+
+PR280（https://github.com/YuanYeYouTao/Yuki/pull/280）已合并为main04ec85cfbc786e7a151d5b7b184333897e8397b5。source-free本地Docker部署验证通过，包括direct镜像无Monty、本地健康和重建后持久化。该main Quality CI为1240 passed/49 skipped/1073 warnings，605.75秒；Python静态检查及前端检查均成功。
+
+2026-10-10 05:03:27（Asia/Taipei）生产Bot更新为ops-04ec85cf，原0103数据库真实迁移0104。停Bot后SQLite备份及quick_check/FK通过，配置和实际引用的数据文件保存在/opt/yuki-qqbot/backups/pre-work-memory-20261009T205923Z。Bot健康、OneBot连接正常，Memory consistency healthy=true、Embedding pending/failed均0。SnowLuma原容器cbdabcdf7c2fff6763d3688b10f606b26c6be06ffce98cfba8bccd2032850d89、启动时间2026-10-09T05:10:47.99332112Z、restart0均未变。
+
+### 修复后真实群核验
+
+群目标1049765710、Conversation5b234414-7537-4f1f-8f27-d03c2c0949c7、generation20不变；所有scheduled脚本均省略agent_budget_managed，沿原Work预算。时间为2026-10-10 Asia/Taipei。
+
+| 路径 | 原ID与事实 | 结果 |
+| --- | --- | --- |
+| 创建→开始→timer等待→自动续跑→完成 | automation119/run170/Work1354fe4f-1ad6-4032-9e3c-87187a1171c6；05:05:09创建、05:05:13wait、05:05:25信号、05:05:31完成；model2/send0，wait delivered、原input consumed | 原Work、原run完成，claim和租约释放 |
+| need_input→正式公开resume→完成 | automation120/run171/Work6b1bdb78-9446-4ea3-bea0-8d84f48e351d；05:05:37创建、05:05:40暂停、正式resume成功revision3、05:06:08完成；model2/send0 | 修复前HTTP503路径恢复，原run succeeded |
+| 子Work实际计算→父完成 | automation121/run172/parent2973b7b0-2de7-40fa-8b60-f37d472da1e9/child0003aa0e-c81c-4f63-a948-8a5fcb2ca47e；child model1、sync_result12，父model4；父子completed | 修复前model0/ValueError路径恢复 |
+| 子timer等待→续跑→父owned_run等待→信号→原父完成 | automation122/run173/parent4756abcb-5da1-46b1-b1f8-43830fd5fab8/child19648ad8-e762-49d9-b788-59dd42d29c32；child model2、父model4；child wait5e094301及parent wait03dbc2a7均delivered；父05:07:45完成 | 原父子回执和信号均验证，claim释放 |
+| 真实发送→回执→完成 | automation123/run174/Work52dbff1d-152c-4560-a69b-bdce1d7f4a0a；model2/tool1/send1；effect00bf75e0fbf543efb1151665d5efd7a5:1:call_703793 accepted | 固定“【Work修复后核验】自动轮发送与收尾测试完成。”仅一次，原Work completed |
+| 模拟主动提案→真实Host接纳→原Bot→真实模型→静默完成 | proposal simulated-intrinsic-20261010-04ec85cf-a/run0f92ee3e-f305-4fff-8340-ff81086108cd/Work38e9e1d7-8884-4fd1-8087-3ab7cb610767；05:07:52接纳、05:08:24Work完成、05:08:26run no_reply；model2/send0 | Work completed、原journal paired、feedback4、租约释放 |
+
+主动提案为用户授权的模拟自动触发；使用当前committed binding、scene/presence/generation、真实Host._admit_proposal和持久outbox，唯一运行Bot派发。没有伪造真人事件、第二Bot、source改写或QA API。它不是生产Controller.advance/Jev自然流量的证据；真实Controller本地六场景与线上Host后半链分别记录。CodeMode原生VM、OS硬杀/未知效果及插件worker模型全链仍按上方隔离矩阵边界，不因QQ群测改写成真实线上覆盖。
+
+旧Work229788eb-7765-4170-aed9-594e8aa6e508和ed0cabab-6fe4-40e3-859f-0ac1f1ae6fd1均无effect，按既有“旧Work可全部清”授权经正式cancel退役，revision4；保留真实原因/原ID/历史回执，没有把旧失败改成成功。
+
+### W13：最终收尾遗漏
+
+终审真实入口隔离复现Person/SELF两种active wait取消：原Work及wait已cancelled，原automation/run却active/running，claimed_until固定到一年后，10秒后claim_due为0。旧测试只测need_input，遗漏waiting_external。
+
+优先删除解决：Worker RUNNING沿已有5秒查询，直接删365天休眠、active-wait判断和竞态wake；零消费者AutomationRepository.wake_claim、RuntimeEffectQueries.has_active_wait及Executor/Worker死字段/导入一并删除。work_management不增加任何替代接线；不新增poller、状态或重试框架。原wait信号唤醒照常保留，查询暂停任务不发新模型/业务调用。4源码+1/-42，净删41；本轮生产代码与迁移累计净删995。
+
+源码：[src/qq_ai_bot/automation/worker.py:146 (AutomationWorker._process)](../../src/qq_ai_bot/automation/worker.py#L146) → [src/qq_ai_bot/automation/repository.py:541 (AutomationRepository.claim_due)](../../src/qq_ai_bot/automation/repository.py#L541)。验证：[tests/integration/test_person_automation_final_feedback.py:203 (test_public_cancel_settles_owning_run_without_error_or_new_request)](../../tests/integration/test_person_automation_final_feedback.py#L203)。
+
+加强既有Person/SELF×need_input/time_due回归，active wait取消前两次原owner查询Provider仍1，取消后原run/step为cancelled、error空、claim清空，原source/预算未改。专项组合69 passed/69 warnings/67.80秒；公开HTTP管理入口2 passed/33 deselected。补丁PR、CI、本地部署和线上长wait取消结果将追加。
+
+终局升级状态实查：2026-10-10 05:11:59生产仅automation64/93仍active，两者claimed_by/claimed_until均空、没有running run。没有旧365天睡眠值需要退役；不添加兼容恢复机制或改写旧Work/run。

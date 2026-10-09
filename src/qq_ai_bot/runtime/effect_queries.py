@@ -63,15 +63,3 @@ class RuntimeEffectQueries:
                 if intent is not None and intent["kind"] == "artifact"
                 else None,
             )
-
-    async def has_active_wait(self, work_id: str) -> bool:
-        """Observe the original wait binding; delivery belongs to runtime maintenance."""
-        from qq_ai_bot.runtime.work_wait_schema import waits
-
-        async with self._database.sessions() as session:
-            return (
-                await session.scalar(
-                    select(waits.c.id).where(waits.c.work_id == work_id, waits.c.status == "active")
-                )
-                is not None
-            )
