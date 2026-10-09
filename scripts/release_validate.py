@@ -11,7 +11,6 @@ from pathlib import Path
 
 _TAG_PATTERN = re.compile(r"^v(?P<version>0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 _APP_VERSION_PATTERN = re.compile(r'^__version__\s*=\s*"([^"]+)"$', re.MULTILINE)
-_PLUGIN_API_PATTERN = re.compile(r'^PLUGIN_API_VERSION\s*=\s*"([^"]+)"$', re.MULTILINE)
 
 
 class ReleaseValidationError(ValueError):
