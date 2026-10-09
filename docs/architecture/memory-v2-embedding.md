@@ -119,5 +119,5 @@ updated_at 和 attempts，仅成功 CAS 的结果批量 upsert 向量。late com
 docker compose up -d --build --no-deps bot
 ```
 
-NapCat 容器与 QQ 登录态无需重建。外部 API 故障不会令健康检查主动访问网络，也不会阻止 Bot
+只重建 Bot 时，QQ 网关容器与登录态无需重建。外部 API 故障不会令健康检查主动访问网络，也不会阻止 Bot
 启动；可通过 status/doctor 和不含正文的计数判断积压，再在恢复后执行 retry。

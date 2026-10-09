@@ -90,7 +90,7 @@ In historical samples, three requests within one natural Gemini group-chat reply
 
 ## Configuration and startup
 
-Basic deployment requires Linux amd64 or Windows Docker Desktop running Linux containers, Docker Engine with Compose v2, a configured model service using one of the supported Chat Completions or Responses integrations, and a logged-in NapCat or SnowLuma QQ gateway.
+Basic deployment requires Linux amd64 or Windows Docker Desktop running Linux containers, Docker Engine with Compose v2, a configured model service using one of the supported Chat Completions or Responses integrations, and a logged-in SnowLuma QQ gateway. Yuki no longer supports NapCat; its existing gateway abstraction remains available for other implementations.
 
 The development branch adds native Claude Messages, Gemini GenerateContent, and common Chat vendor dialects.
 Providers can be explicitly assigned to tasks; see the [protocol contract](docs/architecture/model-providers.md)
@@ -144,7 +144,7 @@ docker compose logs --tail 200 bot
 docker compose exec bot qq-ai-bot-cli gateway doctor --provider snowluma
 ```
 
-Use `napcat` instead of `snowluma` in the last command when appropriate, and keep the same Compose arguments used for deployment. Only one active connection should use a given QQ account; stop the old connection before switching gateways. See [SnowLuma deployment and switching](docs/deployment/snowluma.md).
+Keep the same Compose arguments used for deployment. Only one active connection can use a given QQ account; a duplicate connection does not displace the existing one. The installer does not replace an existing Compose file or `.env`; see [SnowLuma deployment](docs/deployment/snowluma.md) and the [draft upgrade instructions](docs/upgrade-3.9.0.md#旧-napcat-部署配置) for retiring old configuration.
 
 ## Related projects
 

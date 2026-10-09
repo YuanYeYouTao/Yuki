@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import select
 from tests.conftest import make_settings
-from tests.support.gateway import napcat_registry
+from tests.support.gateway import builtin_registry
 from tests.support.model_profiles import write_fake_profiles
 
 from qq_ai_bot.container import ApplicationContainer
@@ -99,7 +99,7 @@ async def _stack(
     configure_identity_write_settings(
         IdentityWriteSettings(superusers=frozenset({"9000"}), ignored_bot_users=frozenset({"7777"}))
     )
-    registry = napcat_registry(gateway_instance_id="gw-test")
+    registry = builtin_registry(gateway_instance_id="gw-test")
     router = PresenceRouter(
         database,
         registry,
@@ -244,24 +244,46 @@ async def test_external_bot_does_not_create_person(database: Database) -> None:
         assert list(await session.scalars(select(CanonicalPersonModel)))
 
 
-def test_private_reply_prefers_ingress_and_fails_over_same_presence_only() -> None:
-    from qq_ai_bot.adapters.onebot.sender import OneBotSender
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["local", "disconnected", "unknown_receipt"])
+async def test_private_reply_keeps_original_connection_without_resending(failure: str) -> None:
+    from unittest.mock import AsyncMock
+
+    from qq_ai_bot.adapters.onebot.sender import OneBotSender, OneBotSendError
+    from qq_ai_bot.domain.messages import OutboundMessage
     from qq_ai_bot.gateway.registry import configure_process_registry
 
-    registry = napcat_registry(gateway_instance_id="gw-affinity")
+    @dataclass
+    class SendingBot(_Bot):
+        send: AsyncMock
+
+    registry = builtin_registry(gateway_instance_id="gw-affinity")
     configure_process_registry(registry)
     try:
-        ingress = _Bot("8000")
-        replacement = _Bot("8000")
-        other = _Bot("8001")
+        ingress = SendingBot(
+            "8000",
+            AsyncMock(
+                side_effect=ConnectionError("socket closed") if failure == "disconnected" else None,
+                return_value={} if failure == "unknown_receipt" else {"message_id": "sent"},
+            ),
+        )
+        replacement = SendingBot("8000", AsyncMock(return_value={"message_id": "replacement"}))
+        other = SendingBot("8001", AsyncMock(return_value={"message_id": "other"}))
         registry.connect(ingress, presence_id="p-a")
         registry.connect(other, presence_id="p-b")
         sender = OneBotSender(ingress, event=object())  # type: ignore[arg-type]
-        assert sender.bot is ingress
         registry.disconnect(ingress)
         registry.connect(replacement, presence_id="p-a")
-        assert sender._same_presence_bot() is replacement
-        assert sender._same_presence_bot() is not other
+        message = OutboundMessage(text="" if failure == "local" else "hello")
+        with pytest.raises(OneBotSendError):
+            await sender.send(message)
+        assert sender.bot is ingress
+        if failure == "local":
+            ingress.send.assert_not_awaited()
+        else:
+            ingress.send.assert_awaited_once()
+        replacement.send.assert_not_awaited()
+        other.send.assert_not_awaited()
     finally:
         configure_process_registry(None)
 
@@ -316,6 +338,46 @@ async def test_ingress_uses_handle_provider_and_rejects_bot_mismatch(
         assert row is not None
         assert row.ingress_provider == "lagrange"
         assert row.bot_user_id == "8000"
+
+
+@pytest.mark.asyncio
+async def test_retired_provider_provenance_remains_readable_without_recreating_event(
+    database: Database,
+) -> None:
+    from qq_ai_bot.conversation.rollup.repository import ConversationRollupRepository
+    from qq_ai_bot.persistence.repositories import EventLedgerRepository
+
+    registry, resolver, uow = await _stack(database)
+    bot = _Bot("8000")
+    async with database.sessions() as session, session.begin():
+        presence = await ensure_v2_presence(session, "8000")
+    registry.connect(bot, presence_id=presence)
+    admitted = await resolver.pre_admit(bot, _message(message_id="historical-provider"))
+    assert admitted is not None and not admitted.dropped
+    appended = await uow.append_inbound(admitted.message, admitted)
+    # Seed a historical provenance fact using the unchanged persistence schema.
+    async with database.immediate_session() as session:
+        row = await session.get(ChatEventModel, appended.event.id)
+        assert row is not None
+        row.ingress_provider = "napcat"
+        row.ingress_gateway_instance_id = "historical-gateway"
+
+    read = await EventLedgerRepository(database).get_event(appended.event.id)
+    assert read is not None
+    assert read.canonical_conversation_id == admitted.conversation_id
+    assert read.ingress_presence_id == presence
+    snapshot = await ConversationRollupRepository(database, uow._config).load_prompt_snapshot(
+        read.scope
+    )
+    assert appended.event.id in {event.id for event in snapshot.raw_events}
+    duplicate = await uow.append_inbound(admitted.message, admitted)
+    assert not duplicate.created
+    assert duplicate.event.id == appended.event.id
+    async with database.sessions() as session:
+        row = await session.get(ChatEventModel, read.id)
+        assert row is not None
+        assert row.ingress_provider == "napcat"
+        assert row.ingress_gateway_instance_id == "historical-gateway"
 
 
 @pytest.mark.asyncio

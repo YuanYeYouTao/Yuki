@@ -9,11 +9,9 @@ from typing import ClassVar, Final, override
 
 from nonebot.adapters import Bot as BaseBot
 from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
-from nonebot.adapters.onebot.v11 import Bot
 from nonebot.drivers import ASGIMixin, WebSocket, WebSocketServerSetup
 from yarl import URL
 
-from qq_ai_bot.gateway.providers.napcat import NAPCAT_PROVIDER_ID
 from qq_ai_bot.gateway.providers.snowluma import SNOWLUMA_PROVIDER_ID
 from qq_ai_bot.gateway.registry import process_registry
 
@@ -116,17 +114,6 @@ class ProviderOneBotAdapter(OneBotV11Adapter):
             )
 
 
-class NapCatOneBotAdapter(ProviderOneBotAdapter):
-    """NapCat adapter retaining every legacy OneBot v11 endpoint."""
-
-    provider_id = NAPCAT_PROVIDER_ID
-
-    @classmethod
-    @override
-    def get_name(cls) -> str:
-        return "OneBot V11 / NapCat"
-
-
 class SnowLumaOneBotAdapter(ProviderOneBotAdapter):
     """SnowLuma adapter exposing a dedicated reverse WebSocket endpoint."""
 
@@ -156,21 +143,10 @@ class SnowLumaOneBotAdapter(ProviderOneBotAdapter):
         self.driver.on_shutdown(self._stop)
 
 
-def provider_id_for_bot(bot: Bot) -> str:
-    """Read trusted Provider provenance from the adapter that owns the Bot handle."""
-
-    provider_id = getattr(bot.adapter, "provider_id", None)
-    if not isinstance(provider_id, str) or not provider_id.strip():
-        raise RuntimeError("OneBot connection is missing Provider provenance")
-    return provider_id.strip().casefold()
-
-
 __all__ = [
     "PROVIDER_CONFLICT_CATEGORY",
     "SNOWLUMA_REVERSE_WS_PATH",
-    "NapCatOneBotAdapter",
     "ProviderConnectionGuard",
     "ProviderOneBotAdapter",
     "SnowLumaOneBotAdapter",
-    "provider_id_for_bot",
 ]

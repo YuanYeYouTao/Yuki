@@ -11,7 +11,7 @@
 - `global`、`user`、`group` 三种配置作用域；
 - 使用独立 Fake Facade 的无网络测试。
 
-插件代码只导入公开的 `yuki_plugin_sdk`（以及 handler 类型边界使用的 Pydantic `BaseModel`），不导入 Yuki Host 内部模块，不访问网络、文件、数据库、NoneBot 或 NapCat。
+插件代码只导入公开的 `yuki_plugin_sdk`（以及 handler 类型边界使用的 Pydantic `BaseModel`），不导入 Yuki Host 内部模块，不访问网络、文件、数据库、NoneBot 或 QQ 网关。
 
 在仓库根目录运行：
 

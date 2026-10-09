@@ -38,7 +38,7 @@ from yuki_plugin_sdk.api import PLUGIN_API_VERSION
 
 _ENV_LINE = re.compile(r"^(?P<prefix>\s*(?:export\s+)?)(?P<key>[A-Za-z_][A-Za-z0-9_]*)=")
 _SAFE_ENV_VALUE = re.compile(r"^[A-Za-z0-9_./:@+,-]*$")
-GATEWAY_PROVIDER_IDS = ("napcat", "snowluma")
+GATEWAY_PROVIDER_IDS = ("snowluma",)
 _GATEWAY_PROFILE_SET = frozenset(GATEWAY_PROVIDER_IDS)
 _FLASH_TASKS = frozenset(
     {
@@ -88,10 +88,6 @@ class SetupPaths:
     @property
     def restart_required(self) -> Path:
         return self.root / "data/setup/restart-required"
-
-    @property
-    def gateway_action(self) -> Path:
-        return self.root / "data/setup/gateway-action.json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -369,7 +365,6 @@ def commit_configuration(
     configuration: SetupConfiguration,
 ) -> Path | None:
     existing_deployment = paths.env.is_file()
-    old_environment = document.values()
     targets: dict[Path, bytes] = {
         paths.env: document.merge(configuration.environment).encode("utf-8"),
     }
@@ -392,23 +387,8 @@ def commit_configuration(
     configuration_changed = any(
         path in restart_sensitive and previous[path] != content for path, content in targets.items()
     )
-    old_gateways = selected_gateway_providers(old_environment) if existing_deployment else ()
-    new_gateways = selected_gateway_providers(configuration.environment)
     if existing_deployment and configuration_changed:
         targets[paths.restart_required] = b"configuration-changed\n"
-    if old_gateways != new_gateways:
-        targets[paths.gateway_action] = (
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "previous": list(old_gateways),
-                    "target": list(new_gateways),
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-            + "\n"
-        ).encode("utf-8")
     for path in targets:
         previous.setdefault(path, path.read_bytes() if path.is_file() else None)
     backup = _create_backup(
@@ -416,7 +396,7 @@ def commit_configuration(
         tuple(
             path
             for path, value in previous.items()
-            if value is not None and path not in {paths.restart_required, paths.gateway_action}
+            if value is not None and path != paths.restart_required
         ),
     )
     try:
@@ -442,11 +422,10 @@ def _truthy(value: str) -> bool:
 
 
 def selected_gateway_providers(environment: Mapping[str, str]) -> tuple[str, ...]:
-    """Return explicit gateway profiles, treating a profile-less old deployment as NapCat."""
+    """Return only explicitly selected bundled gateway profiles."""
 
     profiles = _compose_profile_tokens(environment.get("COMPOSE_PROFILES", ""))
-    selected = tuple(item for item in GATEWAY_PROVIDER_IDS if item in profiles)
-    return selected or ("napcat",)
+    return tuple(item for item in GATEWAY_PROVIDER_IDS if item in profiles)
 
 
 def compose_profiles_with_features(
@@ -457,8 +436,8 @@ def compose_profiles_with_features(
     """Replace managed profiles while retaining deployment-local extension profiles."""
 
     selected = frozenset(str(item).strip().casefold() for item in gateways)
-    if not selected or not selected <= _GATEWAY_PROFILE_SET:
-        raise SetupValidationError("至少选择一个有效的 QQ Gateway Provider")
+    if not selected <= _GATEWAY_PROFILE_SET:
+        raise SetupValidationError("QQ Gateway Provider 选择无效")
     existing = _compose_profile_tokens(environment.get("COMPOSE_PROFILES", ""))
     unmanaged = existing.difference(_GATEWAY_PROFILE_SET | {"speech"})
     ordered = [item for item in GATEWAY_PROVIDER_IDS if item in selected]
@@ -495,7 +474,7 @@ def _validate_gateway_configuration(environment: Mapping[str, str]) -> None:
             raise SetupValidationError(f"{name} 必须是 1 到 65535 之间的端口")
         ports[name] = int(value)
     occupied = set(ports.values())
-    if len(occupied) != len(ports) or ("napcat" in providers and 6099 in occupied):
+    if len(occupied) != len(ports):
         raise SetupValidationError("QQ Gateway Provider 的宿主端口不能重复")
     homes = tuple(
         item for item in re.split(r"[\s,]+", environment.get("SNOWLUMA_EXTRA_QQ_HOMES", "")) if item

@@ -6,7 +6,7 @@
 ## 所有权与记忆层次
 
 一个数据库是一个永久 Yuki。Person、Space 使用 canonical UUID；QQ 号仅通过 Binding
-解析，Presence/Provider 是传输身份，不划分记忆所有权。更换 NapCat、SnowLuma 或 Yuki 账号
+解析，Presence/Provider 是传输身份，不划分记忆所有权。更换网关实现或 Yuki 账号
 不重建记忆或 Conversation/Rollup 所有权，也不因账号切换重置聊天 generation；
 Route 有独立的 `route_generation`，有效发送路由迁移、暂停或恢复可推进它。
 

@@ -99,16 +99,6 @@ def protected_config_specs() -> tuple[ConfigSpec, ...]:
             sensitive=True,
         ),
         _spec(
-            "napcat.webui_token",
-            "NapCat WebUI Token",
-            "该凭证不进入应用 Settings，只能回答不可访问。",
-            value_type="string",
-            mode=ConfigApplyMode.SECRET,
-            getter=_constant(False),
-            category="secret",
-            sensitive=True,
-        ),
-        _spec(
             "database.password",
             "数据库密码",
             "只能确认数据库 URL 是否包含密码，不能读取或修改。",

@@ -8,7 +8,7 @@
 ## 永久主体与身份
 
 一个数据库对应一个永久 Yuki。Yuki 的人格、SELF、记忆、关系、设置、插件状态和自动化不属于
-某个 QQ 号，也不属于 NapCat、SnowLuma 或某条 WebSocket 连接。
+某个 QQ 号、网关实现或某条 WebSocket 连接。
 
 核心身份对象如下：
 
@@ -86,18 +86,22 @@ Presence ID 有界读取并在写事务前完成实时成员核验，要求唯�
 原 Context 的同一内部 request 重放先按 principal/request 索引核验原回执及其内部 Space owner、
 载荷 hash，再返回已处理；请求 ID 被不同载荷复用则拒绝，不依外部群号重建已登记的 owner。
 
-## Gateway Registry 与正式 Provider
+## Gateway Registry 与 Provider
 
 GatewayConnection 只存在于进程内 Registry。Registry 保存 Provider、Presence、连接句柄、能力、
 健康状态和 ConnectionGeneration；连接对象、token、Cookie 和 QQ 登录数据不进入数据库。
 
-NapCat 与 SnowLuma 是同层正式 QQ/OneBot v11 Provider：
+Yuki 不再支持 NapCat，当前仅装配 SnowLuma QQ/OneBot v11 Provider。既有 GatewayProvider、
+GatewayConnectionProfile、Catalog、Registry 和 ProviderOneBotAdapter 继续承载可替换网关，
+provider 标识仍是通用字符串，不把业务核心改成品牌专用逻辑：
 
-- 不同 QQ 可以分别通过两个 Provider 同时在线。
+- 不同 QQ 可以通过 SnowLuma 同时在线。
 - 同一 QQ 只能有一条活动连接；重复连接在 Adapter 和 Registry 两层拒绝，新连接不会挤掉旧连接。
-- 切换同一 QQ 必须先停止旧 Provider、确认连接注销，再启动新 Provider。
-- 切换只改变 GatewayConnection 和 ConnectionGeneration，不创建 Presence，不改变 Conversation、
-  Memory 或 RouteGeneration。
+- 同一 Provider 的重连、迟到断连和重复 socket 仍沿原连接合同处理。
+- 更换网关实现保留原 Presence 与业务 owner；连接变化不复制 Conversation、Memory 或历史。
+
+历史账本的 `ingress_provider` 保留当时真实来源，旧 `napcat` 字段不迁移成 `snowluma`。
+读取历史不会重新装配退役 Provider，也不能据此重发或重跑旧效果。
 
 Provider 只承诺 Yuki 使用的 OneBot 核心能力。Provider 私有 action 不进入跨 Provider 合同，
 不支持时必须显式失败。
@@ -116,7 +120,7 @@ PERSON_GROUP 表示某 Person 在某 Space 中的共同经历。证据保留真�
 Person 自动化在实际发送时解析当前路由。SELF 自动化固定创建时的群和 Presence；
 该场景或代际变化后阻止执行，不借新的 Yuki QQ 账号或真人身份投递。
 
-Plugin API 当前为 `3.0`，Host 只加载精确匹配的插件。兼容键仍使用 primary
+Plugin API 当前为 `3.3`，Host 只加载精确匹配的插件。兼容键仍使用 primary
 `conversation_key`，SDK 还可读取可选的 person、space、conversation 和 presence ID。
 插件不能伪造管理员、绕过 Capability 或直接选择任意 GatewayConnection。
 
@@ -184,8 +188,8 @@ JSON 候选检查解码后的键和值，脱敏先解析再序列化，数字账
   `0056` 增加持久工作运行时，`0057` 增加子 Agent。已发布迁移不能原地修改。
 - secret 永不回读；日志与错误不输出 token、Cookie、完整外部 ID、消息正文或本地敏感路径。
 
-部署与数据升级分别见 [SnowLuma Provider 部署与切换](../deployment/snowluma.md) 和
-[当前升级指南](../upgrade-3.8.4.md)。
+部署与数据升级分别见 [SnowLuma Provider 部署](../deployment/snowluma.md) 和
+[3.9.0 升级草案](../upgrade-3.9.0.md)。
 
 ## 后台领取的事务边界
 

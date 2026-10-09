@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-from typing import Any, cast
+from typing import Any
 
 from nonebot.adapters.onebot.v11 import Bot, Message, MessageEvent, MessageSegment
 
@@ -16,10 +16,6 @@ logger = logging.getLogger(__name__)
 
 class OneBotSendError(RuntimeError):
     """Sanitized outbound transport failure."""
-
-    def __init__(self, message: str, *, dispatched: bool = True) -> None:
-        super().__init__(message)
-        self.dispatched = dispatched
 
 
 class OneBotRouteSender:
@@ -73,42 +69,13 @@ class OneBotSender:
     def bot(self) -> Bot:
         return self._bot
 
-    @property
-    def provider_id(self) -> str:
-        """Return the Provider owning the exact ingress connection."""
-
-        from qq_ai_bot.gateway.registry import RegistryClosed, process_registry
-
-        registry = process_registry()
-        if registry is not None:
-            try:
-                return registry.resolve_by_handle(self._bot).snapshot.provider
-            except RegistryClosed:
-                pass
-        provider_id = getattr(self._bot.adapter, "provider_id", None)
-        return provider_id if isinstance(provider_id, str) and provider_id else "onebot"
-
     async def send(self, message: OutboundMessage) -> OutboundSendReceipt:
-        """Send via the ingress bot; failover only to the same Presence connection."""
+        """Send through the original ingress connection."""
 
-        try:
-            return await self._deliver(message)
-        except OneBotSendError as exc:
-            if exc.dispatched:
-                raise
-            replacement = self._same_presence_bot()
-            if replacement is None or replacement is self._bot:
-                raise
-            self._bot = replacement
-            return await self._deliver(message)
-
-    async def _deliver(self, message: OutboundMessage) -> OutboundSendReceipt:
-        dispatched = False
         try:
             if not message.media and message.reply_to_message_id is None:
                 if not message.text:
                     raise ValueError("outbound message is empty")
-                dispatched = True
                 result = await self._bot.send(
                     event=self._event,
                     message=MessageSegment.text(message.text),
@@ -133,7 +100,6 @@ class OneBotSender:
                     raise ValueError("unsupported outbound media kind")
             if not payload:
                 raise ValueError("outbound message is empty")
-            dispatched = True
             result = await self._bot.send(event=self._event, message=payload)
             return parse_onebot_send_receipt(result)
         except asyncio.CancelledError:
@@ -142,32 +108,7 @@ class OneBotSender:
             raise
         except Exception as exc:
             logger.error("onebot_send_failed exception_category=%s", type(exc).__name__)
-            raise OneBotSendError("OneBot send failed", dispatched=dispatched) from exc
-
-    def _same_presence_bot(self) -> Bot | None:
-        from qq_ai_bot.gateway.registry import RegistryClosed, process_registry
-
-        registry = process_registry()
-        if registry is None:
-            return None
-        try:
-            current = registry.resolve_by_handle(self._bot)
-        except RegistryClosed:
-            try:
-                current = registry.resolve_account("qq", str(self._bot.self_id))
-            except RegistryClosed:
-                return None
-        presence_id = current.snapshot.presence_id
-        if not presence_id:
-            return None
-        try:
-            resolved = registry.resolve_active(presence_id)
-        except RegistryClosed:
-            return None
-        candidate = resolved.bot
-        if candidate is self._bot or candidate is None:
-            return None
-        return cast(Bot, candidate)
+            raise OneBotSendError("OneBot send failed") from exc
 
     async def call_api(self, action: str, params: dict[str, Any]) -> Any:
         """Call one exact OneBot action through the existing reverse WebSocket."""

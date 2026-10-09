@@ -51,7 +51,7 @@ PLUGIN_DIRECT_COMMAND_BINDINGS={"/github":"github-monitor:github","*":"io.github
 
 ### 2. 重建 Bot
 
-只重建 Bot 可以保留 NapCat 容器与 QQ 登录状态：
+只重建 Bot 可以保留 QQ 网关容器与登录状态；沿用部署时的全部 Compose 参数：
 
 在线 CLI 需要通过环境提供已有操作员的 `YUKI_CONTROL_CREDENTIAL`，并令 `WEBUI_ORIGIN` 指向实际 Host；不要在命令行写凭据。批准前审阅下面列出的 Manifest 权限，CLI 不传 `--permission` 只批准空集合。
 

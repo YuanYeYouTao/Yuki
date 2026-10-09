@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
-from tests.support.gateway import napcat_registry
+from tests.support.gateway import builtin_registry
 
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
@@ -49,7 +49,7 @@ async def test_takeover_zero_one_many_and_route_pause(database: Database) -> Non
     from qq_ai_bot.identity.ingress import _ensure_person_id
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
-    registry = napcat_registry(gateway_instance_id="gw-route")
+    registry = builtin_registry(gateway_instance_id="gw-route")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot_a = _Bot("8000")
     bot_b = _Bot("8001")
@@ -103,7 +103,7 @@ async def test_transient_disconnect_preserves_routes_until_same_presence_reconne
     from qq_ai_bot.identity.ingress import _ensure_person_id
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
-    registry = napcat_registry(gateway_instance_id="gw-gen")
+    registry = builtin_registry(gateway_instance_id="gw-gen")
     router = PresenceRouter(database, registry, membership_probe=_true)
     monitor = RouteMonitor(router)
     bot = _Bot("8000")
@@ -237,7 +237,7 @@ async def test_space_takeover_zero_one_many_and_membership_probe(database: Datab
         calls.append(f"{getattr(bot, 'self_id', '')}:{group_id}:{user_id}")
         return getattr(bot, "self_id", "") == "8000"
 
-    registry = napcat_registry(gateway_instance_id="gw-space")
+    registry = builtin_registry(gateway_instance_id="gw-space")
     router = PresenceRouter(database, registry, membership_probe=_probe)
     bot_a = _Bot("8000")
     bot_b = _Bot("8001")
@@ -295,7 +295,7 @@ async def test_authoritative_ingest_survives_second_presence(database: Database)
     from qq_ai_bot.identity.db_models import SpaceBindingModel
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
-    registry = napcat_registry(gateway_instance_id="gw-ingest")
+    registry = builtin_registry(gateway_instance_id="gw-ingest")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot_a = _Bot("8000")
     bot_b = _Bot("8001")
@@ -348,7 +348,7 @@ async def test_reconcile_paused_is_idempotent_and_keeps_explicit_pause(
     from qq_ai_bot.identity.ingress import _ensure_person_id
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
-    registry = napcat_registry(gateway_instance_id="gw-pause")
+    registry = builtin_registry(gateway_instance_id="gw-pause")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot = _Bot("8000")
     extra = _Bot("8001")
@@ -412,7 +412,7 @@ async def test_ingest_eligible_does_not_block_person_or_space_send(
     from qq_ai_bot.identity.ingress import _ensure_person_id
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
-    registry = napcat_registry(gateway_instance_id="gw-elig")
+    registry = builtin_registry(gateway_instance_id="gw-elig")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot = _Bot("8000")
     async with database.sessions() as session, session.begin():
@@ -451,7 +451,7 @@ async def test_person_takeover_cas_does_not_overwrite_concurrent_write(
     from qq_ai_bot.identity.ingress import _ensure_person_id
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
-    registry = napcat_registry(gateway_instance_id="gw-cas-person")
+    registry = builtin_registry(gateway_instance_id="gw-cas-person")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot_a = _Bot("8000")
     bot_b = _Bot("8001")
@@ -509,7 +509,7 @@ async def test_space_takeover_cas_does_not_overwrite_concurrent_write(
     database: Database,
 ) -> None:
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
-    registry = napcat_registry(gateway_instance_id="gw-cas-space")
+    registry = builtin_registry(gateway_instance_id="gw-cas-space")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot_a = _Bot("8000")
     bot_b = _Bot("8001")
@@ -562,7 +562,7 @@ async def test_ingest_provision_cas_does_not_overwrite_concurrent_write(
     from qq_ai_bot.identity.db_models import SpaceBindingModel
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
-    registry = napcat_registry(gateway_instance_id="gw-cas-ingest")
+    registry = builtin_registry(gateway_instance_id="gw-cas-ingest")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot_a = _Bot("8000")
     bot_b = _Bot("8001")

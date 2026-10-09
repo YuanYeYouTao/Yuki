@@ -13,7 +13,6 @@ from nonebot.adapters.onebot.v11 import Bot
 from nonebot.drivers.fastapi import Driver as FastAPIDriver
 
 from qq_ai_bot.adapters.onebot.provider_adapter import (
-    NapCatOneBotAdapter,
     SnowLumaOneBotAdapter,
 )
 from qq_ai_bot.config import Settings
@@ -74,7 +73,6 @@ def bootstrap(settings: Settings | None = None) -> None:
         )
     configure_logging(app_settings.log_level)
     driver = nonebot.get_driver()
-    driver.register_adapter(NapCatOneBotAdapter)
     driver.register_adapter(SnowLumaOneBotAdapter)
     application_lock = SQLiteApplicationLock(app_settings.sqlite_path)
 
