@@ -1,10 +1,10 @@
-"""Recovery aggregates precede writer acquisition and retry only the original DB page."""
+"""Restart recovery waits for the writer and uses original durable operation receipts."""
 
+import asyncio
 import json
 from types import SimpleNamespace
 
 from sqlalchemy import event, func, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
 from tests.unit.test_dream_plan_transactions import create, sources, specs
 from tests.unit.test_memory_writer_boundaries import other_writer_and_read_only
 
@@ -28,7 +28,7 @@ async def test_dream_empty_recovery_is_read_only_with_other_writer(database):
         assert await dreams.reset_processing_after_restart() == 0
 
 
-async def test_dream_recovery_reprepares_full_operation_count_after_snapshot_race(
+async def test_dream_recovery_waits_for_writer_and_reads_committed_operation_receipt(
     database, monkeypatch
 ):
     dreams, rows = await sources(database)
@@ -49,44 +49,42 @@ async def test_dream_recovery_reprepares_full_operation_count_after_snapshot_rac
         )
         operation_id = operation.id
     aggregate_reads = 0
-    original_execute = AsyncSession.execute
-
-    async def interleaved_execute(session, statement, *args, **kwargs):
-        nonlocal aggregate_reads
-        result = await original_execute(session, statement, *args, **kwargs)
-        if "GROUP BY memory_dream_operations.cluster_id" in str(statement):
-            aggregate_reads += 1
-            if aggregate_reads == 1:
-                async with database.immediate_session() as writer:
-                    await writer.execute(
-                        update(MemoryDreamOperationModel)
-                        .where(MemoryDreamOperationModel.id == operation_id)
-                        .values(status="committed")
-                    )
-        return result
+    acquiring = asyncio.Event()
 
     def capture(connection, _cursor, statement, *_args):
+        nonlocal aggregate_reads
         sql = statement.lstrip().upper()
-        if "GROUP BY MEMORY_DREAM_OPERATIONS.CLUSTER_ID" in sql:
-            assert not connection.info.get("test_writer_held")
-        if sql.startswith(("INSERT", "UPDATE", "DELETE", "BEGIN IMMEDIATE")):
+        if sql.startswith("BEGIN IMMEDIATE"):
             connection.info["test_writer_held"] = True
+            acquiring.set()
+        if "GROUP BY MEMORY_DREAM_OPERATIONS.CLUSTER_ID" in sql:
+            aggregate_reads += 1
+            assert connection.info.get("test_writer_held")
 
     def released(connection):
         connection.info.pop("test_writer_held", None)
 
-    monkeypatch.setattr(AsyncSession, "execute", interleaved_execute)
     engine = database.engine.sync_engine
     event.listen(engine, "before_cursor_execute", capture)
     event.listen(engine, "commit", released)
     event.listen(engine, "rollback", released)
     try:
-        assert await dreams.reset_processing_after_restart() == 1
+        async with database.immediate_session() as writer:
+            acquiring.clear()
+            recovery = asyncio.create_task(dreams.reset_processing_after_restart())
+            await asyncio.wait_for(acquiring.wait(), timeout=2)
+            assert not recovery.done()
+            await writer.execute(
+                update(MemoryDreamOperationModel)
+                .where(MemoryDreamOperationModel.id == operation_id)
+                .values(status="committed")
+            )
+        assert await recovery == 1
     finally:
         event.remove(engine, "before_cursor_execute", capture)
         event.remove(engine, "commit", released)
         event.remove(engine, "rollback", released)
-    assert aggregate_reads == 2
+    assert aggregate_reads == 1
     current = await dreams.get_run(run.public_id)
     assert current.completed_clusters == 1 and current.model_calls == 7
     async with database.sessions() as reader:
