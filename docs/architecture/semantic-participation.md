@@ -1,6 +1,6 @@
 # 语义参与 V6：宿主接入与验证边界
 
-2026-10-03。独立仓库：
+2026-10-10。独立仓库：
 [Yuki-Semantic-Participation](https://github.com/YuanYeYouTao/Yuki-Semantic-Participation)。
 本文描述 SELF 接入与普通持续接话的合同。实现、验证和生产启用状态分别由交付记录证明；
 历史 T20 真实 QQ 集成验收不是本轮持续接话的验收结果。
@@ -25,9 +25,11 @@ revision。有效 owner 只有 off、legacy、semantic：总开关关闭始终 o
 不切换 proposer 或阻断无来源苏醒；缺凭据时没有新观测，仍可使用真实活动与已有反馈。
 暂时评分失败、合法 unknown 和群聊安静不是同一种状态。
 
+已停用的Space不再读取需要在线身份的群运行配置；Host沿原binding同步off。停用期间不调用观测或主模型，已接纳的Work和迟到效果仍按原ID及回执收尾。重新启用后读取原群配置，不为停用状态另建执行或关闭链。
+
 原 `AutonomousGroupService` 保留本地机会评分，经同一 selector 和 `accept_legacy`
 登记自主工作；不再把最新真人的 profile/权限交给 `ChatService.respond()` 冒充发起者。
-两种 proposer 共用来源去重与一个活跃自主 run 边界，不能同时为同一机会开工。
+两种 proposer 共用来源去重与同一接纳合同，不能重复接纳同一机会。主会话 queued/running Work占用新机会；暂停和等待的原run保留恢复权，同时释放新机会。
 
 尚未建立互动时，单纯名字提及仍是优先观察线索，不等同于 `@`。
 Jev 判断为邀请/续聊且回应楼层留给 Yuki 时，即使无法归入已有讨论，
@@ -61,7 +63,7 @@ controller_epoch 不是已接纳 Work 的执行授权版本。
 `intrinsic` 是无 event/memory 来源的独立提议类型，不伪造 Jev 观测或真人消息；
 已核验的本群互动、实际自主 Work 密度和回应共同决定机会率。极久沉寂时机会率
 随真人活动与沉默情境持续趋近零，无真人活动证据时为零；不等待累积门槛，也不将静默转成真人来源。
-宿主只在 semantic owner、有效群授权和无活动 Work 下接纳，并拒绝提议之后出现真人发言、
+宿主只在 semantic owner、有效群授权和主会话没有queued/running Work时接纳，并拒绝提议之后出现真人发言、
 Yuki 发言或未解除的全群停止边界的待接纳提议。已接纳 run 仍按原执行身份恢复。
 获准群记忆可在没有近期真人消息时形成 recall 候选；无来源机会由主 SELF 决定行动或沉默。
 

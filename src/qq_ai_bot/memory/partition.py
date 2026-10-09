@@ -1,7 +1,7 @@
 """Single transport-neutral canonical Memory partition helper.
 
-Partitions are only person:{UUID4} or space:{UUID4}, resolved from an active
-IdentityBinding / SpaceBinding.
+Partitions are only person:{UUID4} or space:{UUID4}, owned by permanent canonical
+identities. Initial external selectors resolve through active Bindings.
 Conversation UUID, ConversationScope bot:* keys, and Presence QQ are never
 partition values.
 """
@@ -282,19 +282,9 @@ async def resolve_fact_canonical_owners(
     canonical_space = getattr(fact, "canonical_subject_space_id", None)
     canonical_visibility_person = getattr(fact, "canonical_visibility_person_id", None)
     canonical_visibility_space = getattr(fact, "canonical_visibility_space_id", None)
-    from qq_ai_bot.memory.models import MemoryEntityTarget
-
-    if isinstance(fact, MemoryEntityTarget) and any(
-        owner is not None
-        for owner in (
-            canonical_person,
-            canonical_space,
-            canonical_visibility_person,
-            canonical_visibility_space,
-        )
-    ):
-        # Only backend-created canonical targets reach here. Their shape was
-        # checked by MemoryEntityTarget; do not re-resolve through QQ Bindings.
+    if canonical_fact_owner_complete(fact):
+        # Persisted facts and backend targets already have permanent owners.
+        # Transport projections and current availability do not replace them.
         return MemoryFactCanonicalOwners(
             canonical_person,
             canonical_space,
