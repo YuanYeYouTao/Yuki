@@ -20,7 +20,6 @@ jobs:
       - run: uv sync --frozen --all-extras
       - run: uv run ruff check .
       - run: uv run mypy src
-      - run: uv run pytest -q
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
@@ -28,3 +27,4 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - working-directory: frontend
         run: npm ci && npm test && npm run build
+      - run: uv run pytest -q
