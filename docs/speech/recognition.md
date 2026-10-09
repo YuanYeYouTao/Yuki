@@ -69,9 +69,9 @@ Use the gateway that delivered the incoming event, regardless of active send
 routing. `get_record(file, out_format="mp3")` handles QQ SILK conversion. Prefer
 returned Base64 over URLs, which may point to the original SILK resource.
 If the gateway supplies only a path local to its own container, the Bot does
-not open it. The gateway must supply Base64 or a reachable audio URL. SnowLuma
-documents Base64 with `out_format`; compatible NapCat versions may provide it
-too. Event URLs remain subject to the existing bounded downloader's SSRF,
+not open it. The original ingress gateway must supply Base64 or a reachable audio
+URL; SnowLuma documents Base64 with `out_format`. Event URLs remain subject to
+the existing bounded downloader's SSRF,
 redirect and DNS-pinning checks. No private-URL bypass is enabled for ASR.
 
 Defaults are 10 MiB per downloaded clip, 180 seconds per clip, 3 clips per turn,

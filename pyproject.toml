@@ -90,8 +90,3 @@ testpaths = ["tests"]
 markers = [
     "qwen_embedding_integration: opt-in test against the real DashScope embedding API",
 ]
-
-[tool.nonebot]
-plugins = []
-plugin_dirs = ["src/qq_ai_bot/plugins"]
-adapters = [{ name = "OneBot V11", module_name = "nonebot.adapters.onebot.v11" }]

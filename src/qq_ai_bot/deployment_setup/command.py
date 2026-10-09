@@ -59,9 +59,6 @@ _PERSISTENT_DIRECTORIES = (
     "config",
     "webui-config",
     "plugins",
-    "napcat-data",
-    "napcat-config",
-    "napcat-plugins",
     "snowluma-data",
     "snowluma-qq-config",
     "snowluma-qq-data",
@@ -180,9 +177,6 @@ def _configure(paths: SetupPaths, ui: TerminalUI) -> int:
     draft.environment["MODEL_PROFILES_FILE"] = "webui-config/model_profiles.toml"
     draft.environment["ONEBOT_ACCESS_TOKEN"] = _token_or_existing(
         draft.environment.get("ONEBOT_ACCESS_TOKEN", "")
-    )
-    draft.environment["NAPCAT_WEBUI_TOKEN"] = _token_or_existing(
-        draft.environment.get("NAPCAT_WEBUI_TOKEN", "")
     )
     draft.environment["SNOWLUMA_VNC_PASSWORD"] = _token_or_existing(
         draft.environment.get("SNOWLUMA_VNC_PASSWORD", "")
@@ -548,17 +542,11 @@ def _page_gateway(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None
     del paths
     environment = draft.environment
     current = selected_gateway_providers(environment)
-    default = "both" if len(current) == 2 else current[0]
-    selection = ui.choose(
-        "启用哪些 QQ Gateway Provider？",
-        (
-            ("napcat", "仅 NapCat"),
-            ("snowluma", "仅 SnowLuma"),
-            ("both", "NapCat 与 SnowLuma（必须登录不同 QQ）"),
-        ),
-        default=default,
+    enabled = ui.confirm(
+        "启用附带的 SnowLuma QQ Gateway？",
+        default="snowluma" in current,
     )
-    gateways = ("napcat", "snowluma") if selection == "both" else (selection,)
+    gateways = ("snowluma",) if enabled else ()
     environment["COMPOSE_PROFILES"] = compose_profiles_with_features(
         environment,
         gateways=gateways,
@@ -660,7 +648,9 @@ def _select_sections(ui: TerminalUI, draft: _SetupDraft) -> tuple[str, ...]:
         "automation": _feature_label(
             "Automation", _as_bool(draft.environment.get("AUTOMATION_ENABLED", "false"))
         ),
-        "gateway": "QQ Gateway（" + ", ".join(selected_gateway_providers(draft.environment)) + "）",
+        "gateway": "QQ Gateway（"
+        + (", ".join(selected_gateway_providers(draft.environment)) or "未选择附带网关")
+        + "）",
     }
     return ui.choose_many(
         "配置区块：",
@@ -811,7 +801,9 @@ def _render_summary(
         ui.line("Plugin 待应用：" + (", ".join(pending_plugins) if pending_plugins else "全部关闭"))
     if states["Automation"]:
         ui.line(f"默认时区：{environment.get('DEFAULT_TIMEZONE', '未配置')}")
-    ui.line("QQ Gateway：" + ", ".join(selected_gateway_providers(environment)))
+    ui.line(
+        "QQ Gateway：" + (", ".join(selected_gateway_providers(environment)) or "未选择附带网关")
+    )
 
 
 def _render_health(
@@ -837,9 +829,6 @@ def _render_health(
             enabled.append(label)
     ui.info("已启用功能：" + (", ".join(enabled) if enabled else "仅基础功能"))
     providers = selected_gateway_providers(environment)
-    if "napcat" in providers:
-        ui.info("NapCat WebUI：http://127.0.0.1:6099")
-        ui.info("登录 Token 保存在部署目录 .env 的 NAPCAT_WEBUI_TOKEN 中")
     if "snowluma" in providers:
         webui_port = environment.get("SNOWLUMA_WEBUI_HOST_PORT", "5099")
         novnc_port = environment.get("SNOWLUMA_NOVNC_PORT", "6081")

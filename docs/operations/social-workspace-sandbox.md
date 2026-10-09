@@ -42,7 +42,8 @@ and [persistent workers](../architecture/persistent-subagents.md).
 interaction qualify; a group member-list entry alone is insufficient. Proactive sending needs
 an existing enabled target and unpaused active route. Group sends also require
 `autonomous_enabled`. These tools do not change account, repair routes or add friends.
-NapCat and SnowLuma use the same explicit social-operation interface.
+SnowLuma uses the existing explicit social-operation interface; the gateway
+abstraction remains independent of business ownership.
 
 Replies to the current private sender (text, image or file) instead use the proven
 inbound Presence. The adapter supplies the event reference, never model arguments;

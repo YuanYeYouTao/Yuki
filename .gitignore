@@ -25,6 +25,7 @@ config/system_prompt.md
 config/model_profiles.toml
 config/model_profiles.secrets.json
 config/mcp.json
+# 遗留 NapCat 私密资料保护；不代表当前安装或运行支持。
 napcat-data/
 napcat-config/
 napcat-plugins/

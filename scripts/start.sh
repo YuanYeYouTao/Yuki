@@ -1,15 +1,11 @@
 #!/bin/sh
 set -eu
 
-mkdir -p /app/data /app/napcat-config /app/snowluma-data/config
+mkdir -p /app/data /app/snowluma-data/config
 mkdir -p /app/workspace /app/social-transfer
 chown bot:bot /app/workspace /app/social-transfer
 chmod 755 /app/social-transfer
 chown -R bot:bot /app/data
-
-if [ -n "${NAPCAT_CONFIG_OUTPUT:-}" ]; then
-    qq-ai-bot-cli render-napcat-config --output "$NAPCAT_CONFIG_OUTPUT"
-fi
 
 if [ -n "${SNOWLUMA_CONFIG_OUTPUT:-}" ]; then
     snowluma_uid=${SNOWLUMA_UID:-1000}

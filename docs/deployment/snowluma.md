@@ -1,14 +1,24 @@
-# SnowLuma Provider 部署与切换
+# SnowLuma Provider 部署
 
-SnowLuma 与 NapCat 都是 Yuki 的正式 QQ/OneBot v11 Provider。它们只负责连接 QQ；Yuki 的
-Presence、Conversation、Memory 和路由保存在 Bot 自己的身份与数据层，不属于任何 Provider。
-因此，同一个 QQ 按正确流程切换 Provider 时会继承原 Presence，也不会重置会话或记忆。
+Yuki 不再支持 NapCat，当前附带的 QQ/OneBot v11 Provider 为 SnowLuma。现有 GatewayProvider、
+Catalog、Registry 与 OneBot 合同继续保留，其他网关实现沿这些既有接口接入，无需新建抽象层。
+Yuki 的 Presence、Conversation、Memory 和路由保存在 Bot 自己的身份与数据层，不属于任何 Provider。
+更换网关实现不复制业务 owner、重置会话或迁移记忆。
 
 ## 选择与首次登录
 
-重新运行 `install.sh` 或 `install.ps1`，在 QQ Gateway 页面选择 NapCat、SnowLuma 或二者。
-旧部署没有 `COMPOSE_PROFILES` 时按 NapCat 处理。选择二者只适用于不同 QQ：同一个 QQ 只能有
-一条活动连接。
+运行 `install.sh` 或 `install.ps1`，在 QQ Gateway 页面选择 SnowLuma；也可以不选择附带网关。
+未选择时不隐式启用其他 Provider。向导只负责配置，不停止、启动服务或自动切换连接。
+同一个 QQ 只能有一条活动连接，Adapter 与 Registry 会拒绝重复连接，新连接不会挤掉旧连接。
+
+首次部署确认配置后，沿实际 Compose 参数检查并启动服务，再完成登录：
+
+```bash
+docker compose config --quiet
+docker compose up -d
+```
+
+已有部署先核对下一节的旧配置处理；安装器保留现有 Compose、`.env`、插件与数据。
 
 SnowLuma 启动后：
 
@@ -45,28 +55,24 @@ SNOWLUMA_WEBUI_BIND_ADDRESS=127.0.0.1
 修改 bind address 后重新创建 SnowLuma 容器，并从非可信网络验证端口确实不可达。Yuki 安装器
 不会替你配置云防火墙、TLS 或 SnowLuma 的账户认证。
 
-## 安全切换同一个 QQ
+## 旧部署配置处理
 
-正式切换必须重新运行安装器并修改 Gateway 选择。安装器生成
-`data/setup/gateway-action.json`，严格按以下顺序执行：
+安装器不会替换已有的 managed Compose 文件，环境合并也会保留未知字段。仅删除源码模板、
+重新运行安装器，不会从旧部署的 Compose 或 `.env` 中清除 NapCat 支持。
 
-1. 停止并移除被取消选择的旧 Provider。
-2. 确认旧容器和旧连接已经消失。
-3. 启动目标 Provider 与 Bot。
-4. 验证容器和 Bot 健康后删除 action 文件。
+按[3.9.0 升级草案](../upgrade-3.9.0.md#旧-napcat-部署配置)，先确认实际项目与全部 Compose
+覆盖文件，再用既有配置编辑方式去掉旧 `napcat` service、专属挂载、`NAPCAT_*` 环境项及
+`COMPOSE_PROFILES` 中的 `napcat`。其他扩展 profile、共享 social transfer 和 SnowLuma 配置须保留。
+旧 `data/setup/gateway-action.json` 没有执行消费者，核对目录后可以清理该遗留标记；它不是待执行
+的切换或恢复任务。
 
-停止或验证失败时，安装器不会启动新 Provider，action 文件会保留供下次重试。不要在旧
-Provider 仍在线时手工启动同 QQ 的新 Provider；Adapter 和 Registry 都会以
-`provider_conflict` 拒绝新连接，旧连接不受影响。
+若实际部署仍运行旧网关，停用前单独核对容器、QQ 账号和授权范围，确认旧连接已从 Registry 注销
+后再连接同一 QQ。配置编辑不等于容器已停止，也不自动取得删除 QQ HOME、备份或插件的授权。
+保留历史 `ingress_provider` 和内部身份；重新连接只改变连接事实，不复制记忆或重建业务 owner。
 
-Provider 切换只产生新的 GatewayConnection 和 ConnectionGeneration，不应改变
-ConversationGeneration、RouteGeneration、Memory 或 Presence。Yuki 不承诺切换 Provider 能降低
-腾讯账号风控风险。
+## SnowLuma 多账号
 
-## 不同 QQ 与 SnowLuma 多账号
-
-NapCat 的 QQ A 与 SnowLuma 的 QQ B 可以同时在线。一个 SnowLuma 容器也可以运行多个 QQ；为
-每个额外账号配置独立 HOME，例如：
+一个 SnowLuma 容器可以运行多个不同 QQ；为每个额外账号配置独立 HOME，例如：
 
 ```dotenv
 SNOWLUMA_EXTRA_QQ_HOMES=/app/qq-accounts/qq-b,/app/qq-accounts/qq-c
@@ -83,11 +89,9 @@ SNOWLUMA_SHM_SIZE=2gb
   两账号共同群交集删除或关闭旧群；账号不在该群时保持不可达即可。历史暂停可由超管在目标群
   单独发送 `/ai on` 恢复，不能用普通聊天自动解除管理员暂停。恢复会检查当前账号确实在群内，
   有多个候选且无法确定接入账号时拒绝抢占。不会清空 Conversation、Rollup 或 Memory。
-- 查看状态：`docker compose ps --all bot napcat snowluma`
+- 查看状态：`docker compose ps --all bot snowluma`，沿用部署时的全部 Compose 参数。
 - 查看 SnowLuma 日志：`docker compose logs --tail 200 snowluma`
 - 查看 Bot 日志：`docker compose logs --tail 200 bot`
-- 若 `data/setup/gateway-action.json` 仍存在，修复停止失败、端口或登录问题后重新运行安装器；
-  不要手工删除文件并强行同时启动两个 Provider。
 - noVNC 与 WebUI 默认只绑定 `127.0.0.1`。若使用可配置 bind address 暴露远程访问，必须遵守
   上述强密码、防火墙和可信来源边界；VNC 与 OneBot HTTP/WS 始终不得暴露。
 - `/app/data`、`/app/.config`、`/app/.local/share` 与额外账号 HOME 都是持久登录数据，不要提交

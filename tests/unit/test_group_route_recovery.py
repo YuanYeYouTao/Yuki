@@ -99,7 +99,7 @@ async def stack(database: Database) -> tuple[ApplicationContainer, Bot, str, str
             space_id=space,
         )
     bot = Bot("8000")
-    app.gateway_registry.connect(bot, provider_id="napcat", presence_id=presence)
+    app.gateway_registry.connect(bot, provider_id="snowluma", presence_id=presence)
     await app.route_monitor.on_connection_change()
     return app, bot, presence, space, binding_id
 
@@ -172,7 +172,7 @@ async def test_account_round_trip_preserves_exclusive_group_and_manual_pause(
         other_presence,
     )
     app.gateway_registry.disconnect(other)
-    app.gateway_registry.connect(bot, provider_id="napcat", presence_id=presence)
+    app.gateway_registry.connect(bot, provider_id="snowluma", presence_id=presence)
     await app.route_monitor.on_connection_change()
     assert await state(database, space, binding) == before
     shared_after = await state(database, shared_space, shared_binding_id)
@@ -252,7 +252,7 @@ async def test_recovery_rejects_untrusted_or_unreachable_requests(
         async with database.immediate_session() as session:
             other_presence = await ensure_presence(session, "8001")
         app.gateway_registry.disconnect(bot)
-        app.gateway_registry.connect(bot, provider_id="napcat", presence_id=other_presence)
+        app.gateway_registry.connect(bot, provider_id="snowluma", presence_id=other_presence)
     elif case == "missing_member":
         bot.groups = frozenset()
     elif case in {"disabled_presence", "ineligible_presence"}:
@@ -372,7 +372,7 @@ async def test_recovery_race_fails_closed(
         candidate = await original(binding_id)
         if change == "connection":
             app.gateway_registry.disconnect(bot)
-            app.gateway_registry.connect(Bot("8000"), provider_id="napcat", presence_id=presence)
+            app.gateway_registry.connect(Bot("8000"), provider_id="snowluma", presence_id=presence)
         else:
             async with database.immediate_session() as session:
                 row = await session.get(SpaceBindingIngestRouteModel, binding_id)
@@ -397,7 +397,7 @@ async def test_recovery_rejects_multiple_replacements(database: Database) -> Non
         presence_c = await ensure_presence(session, "8002")
     other = Bot("8001")
     app.gateway_registry.connect(other, provider_id="snowluma", presence_id=presence_b)
-    app.gateway_registry.connect(Bot("8002"), provider_id="napcat", presence_id=presence_c)
+    app.gateway_registry.connect(Bot("8002"), provider_id="snowluma", presence_id=presence_c)
     before = await state(database, space, binding)
     sender = Sender(other)
     await app.processor.handle(replace(message(), bot_user_id="8001"), sender)
@@ -571,7 +571,7 @@ async def test_new_group_registration_rejects_untrusted_or_unproven_requests(
         async with database.immediate_session() as session:
             other_presence = await ensure_presence(session, "8001")
         app.gateway_registry.disconnect(bot)
-        app.gateway_registry.connect(bot, provider_id="napcat", presence_id=other_presence)
+        app.gateway_registry.connect(bot, provider_id="snowluma", presence_id=other_presence)
     elif case in {"disabled_presence", "ineligible_presence"}:
         async with database.immediate_session() as session:
             row = await session.get(PresenceModel, presence)
@@ -614,7 +614,7 @@ async def test_new_group_registration_race_never_creates_or_replaces_owner(
         if change == "connection":
             app.gateway_registry.disconnect(bot)
             app.gateway_registry.connect(
-                Bot("8000", frozenset({NEW_GROUP})), provider_id="napcat", presence_id=presence
+                Bot("8000", frozenset({NEW_GROUP})), provider_id="snowluma", presence_id=presence
             )
         else:
             async with database.immediate_session() as session:

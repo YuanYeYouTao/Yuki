@@ -20,17 +20,6 @@ import httpx
 from qq_ai_bot.vision.models import DownloadedMedia, MediaReference
 
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
-_BLOCKED_HOSTS = frozenset(
-    {
-        "localhost",
-        "docker",
-        "bot",
-        "napcat",
-        "snowluma",
-        "host.docker.internal",
-        "gateway.docker.internal",
-    }
-)
 _BLOCKED_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home", ".docker")
 HostResolver = Callable[[str, int], Awaitable[Sequence[str]] | Sequence[str]]
 
@@ -125,7 +114,7 @@ class MediaResolver:
         """Convert QQ SILK through the ingress gateway, preferring returned bytes.
 
         get_record paths belong to the gateway container and are never opened by
-        the Bot. SnowLuma/NapCat extensions return base64 or a downloadable URL.
+        the Bot. The ingress gateway may return base64 or a downloadable URL.
         """
         file_value = (reference.file or "").strip()
         if file_value.startswith(("base64://", "data:audio/")):
@@ -367,9 +356,7 @@ def _normalize_http_url(
     except UnicodeError as exc:
         raise MediaResolutionError("invalid_url", "图片 URL 主机名无效") from exc
     if not allow_private_urls and (
-        ascii_host in _BLOCKED_HOSTS
-        or ascii_host.endswith(_BLOCKED_SUFFIXES)
-        or ("." not in ascii_host and ":" not in ascii_host)
+        ascii_host.endswith(_BLOCKED_SUFFIXES) or ("." not in ascii_host and ":" not in ascii_host)
     ):
         raise MediaResolutionError("private_url", "不允许访问本地或内部主机")
     try:

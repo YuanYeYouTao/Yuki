@@ -8,17 +8,6 @@ from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from qq_ai_bot.web.models import WebSearchRequest, WebSearchResponse, WebSearchSource
 
-_BLOCKED_HOSTS = frozenset(
-    {
-        "localhost",
-        "docker",
-        "bot",
-        "napcat",
-        "snowluma",
-        "host.docker.internal",
-        "gateway.docker.internal",
-    }
-)
 _BLOCKED_HOST_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home", ".docker")
 
 
@@ -69,10 +58,8 @@ def normalize_public_url(url: str) -> str:
         ascii_host = host.encode("idna").decode("ascii")
     except UnicodeError as exc:
         raise WebSearchValidationError("invalid_url", "URL 主机名无效") from exc
-    if (
-        ascii_host in _BLOCKED_HOSTS
-        or ascii_host.endswith(_BLOCKED_HOST_SUFFIXES)
-        or ("." not in ascii_host and ":" not in ascii_host)
+    if ascii_host.endswith(_BLOCKED_HOST_SUFFIXES) or (
+        "." not in ascii_host and ":" not in ascii_host
     ):
         raise WebSearchValidationError("private_url", "不允许访问本地或内部主机")
     try:

@@ -58,7 +58,7 @@ COPY --chown=bot:bot migrations ./migrations
 COPY --chown=bot:bot scripts ./scripts
 COPY --chown=bot:bot config/persona.md ./config/persona.md
 RUN chmod +x /app/scripts/start.sh \
-    && mkdir -p /app/data /app/napcat-config /app/snowluma-data/config
+    && mkdir -p /app/data /app/snowluma-data/config
 ARG YUKI_VERSION=dev
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.title="Yuki QQ Bot" \

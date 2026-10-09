@@ -25,8 +25,7 @@ from qq_ai_bot.conversation.canonical_db_models import (
     SpaceActiveRouteModel,
 )
 from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.gateway.providers.napcat import NapCatProvider
-from qq_ai_bot.gateway.providers.snowluma import SnowLumaProvider
+from qq_ai_bot.gateway.providers.social import OneBotSocialOperations
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
@@ -235,13 +234,10 @@ class SocialService:
 
     @staticmethod
     async def _call(route: ResolvedSend, action: str, params: dict[str, Any]) -> Any:
-        provider = {"napcat": NapCatProvider(), "snowluma": SnowLumaProvider()}.get(
-            route.connection.snapshot.provider
-        )
-        if provider is None:
-            raise SocialError("capability_unavailable")
         async with asyncio.timeout(30):
-            return await provider.social_action(route.connection.bot, action, params)
+            return await OneBotSocialOperations().social_action(
+                route.connection.bot, action, params
+            )
 
     async def refresh_space_names(self) -> None:
         """Refresh known bindings through live gateways, without changing grants/routes."""

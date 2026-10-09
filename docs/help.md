@@ -36,17 +36,12 @@ docker compose logs --tail 200 bot
 
 ## QQ Provider
 
-NapCat 与 SnowLuma 是同层正式 Provider。不同 QQ 可以同时在线；同一 QQ 只能有一条活动连接。
+Yuki 不再支持 NapCat，当前附带的 QQ/OneBot v11 Provider 为 SnowLuma。现有 Gateway 抽象保留，
+业务 owner 不随网关实现改变。SnowLuma 可以连接不同 QQ；同一 QQ 只能有一条活动连接，
 重复连接拒绝新的，不会自动挤掉旧连接。
 
-切换同一 QQ 必须重新运行安装器，让 `gateway-action.json` 完成：
-
-1. 停止并移除旧 Provider。
-2. 确认旧连接已从 Registry 注销。
-3. 启动目标 Provider。
-4. 验证新连接沿用原 Presence。
-
-停止失败时不会启动新 Provider。切换不改变 Conversation、Memory 或 RouteGeneration。
+安装向导只写配置，不执行停止、启动或自动切换。旧部署的 Compose 与 `.env` 不会自动替换，
+需要按[旧 NapCat 配置清退](upgrade-3.9.0.md#旧-napcat-部署配置)逐项处理。
 
 SnowLuma 默认地址：
 
@@ -62,12 +57,11 @@ SNOWLUMA_WEBUI_BIND_ADDRESS=127.0.0.1
 
 只有明确需要远程访问时才设为 `0.0.0.0`，并同时启用强 VNC 密码、WebUI 认证、主机防火墙和
 可信源限制。优先使用 VPN 或 TLS 反向代理；不要公网暴露 VNC、OneBot HTTP/WS、token 或 Cookie。
-详见 [SnowLuma 部署与切换](deployment/snowluma.md)。
+详见 [SnowLuma 部署](deployment/snowluma.md)。
 
 Provider 合同检查：
 
 ```bash
-docker compose exec bot qq-ai-bot-cli gateway doctor --provider napcat
 docker compose exec bot qq-ai-bot-cli gateway doctor --provider snowluma
 ```
 
@@ -261,8 +255,7 @@ Work/发送回执及被引用 WAV，保全专属事实；不能把生成表当�
 ### Provider 已登录但没有连接
 
 ```bash
-docker compose --profile napcat --profile snowluma ps --all
-docker compose logs --tail 200 napcat
+docker compose --profile snowluma ps --all
 docker compose logs --tail 200 snowluma
 docker compose logs --tail 200 bot
 ```

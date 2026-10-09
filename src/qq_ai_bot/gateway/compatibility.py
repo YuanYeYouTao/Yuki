@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Final, Literal, final
 
-from qq_ai_bot.gateway.providers.napcat import NAPCAT_PROVIDER_ID
 from qq_ai_bot.gateway.providers.snowluma import SNOWLUMA_PROVIDER_ID
 
 
@@ -47,7 +46,6 @@ CORE_ONEBOT_ACTIONS: Final[tuple[OneBotActionContract, ...]] = (
 )
 
 _REVERSE_WS_PATHS: Final[dict[str, tuple[str, ...]]] = {
-    NAPCAT_PROVIDER_ID: ("/onebot/v11/", "/onebot/v11/ws"),
     SNOWLUMA_PROVIDER_ID: ("/onebot/v11/snowluma/ws",),
 }
 

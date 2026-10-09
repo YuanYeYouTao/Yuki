@@ -21,8 +21,6 @@ services:
       SOCIAL_TRANSFER_DIRECTORY: /app/social-transfer
       SOCIAL_GATEWAY_TRANSFER_DIRECTORY: /yuki-transfer
       SANDBOX_SOCKET: /run/yuki-sandbox/manager.sock
-      NAPCAT_CONFIG_OUTPUT: /app/napcat-config/onebot11.json
-      NAPCAT_REVERSE_WS_URL: ws://bot:8080/onebot/v11/ws
       SNOWLUMA_CONFIG_OUTPUT: /app/snowluma-data/config/onebot.json
       SNOWLUMA_REVERSE_WS_URL: ws://bot:8080/onebot/v11/snowluma/ws
       SNOWLUMA_UID: ${SNOWLUMA_UID:-1000}
@@ -35,7 +33,6 @@ services:
       - ./workspace:/app/workspace
       - ./social-transfer:/app/social-transfer
       - /run/yuki-sandbox:/run/yuki-sandbox:ro
-      - ./napcat-config:/app/napcat-config
       - ./snowluma-data:/app/snowluma-data
       - ./config:/app/config:ro
       - ./webui-config:/app/webui-config:ro
@@ -53,31 +50,6 @@ services:
       retries: 5
       start_period: 15s
     stop_grace_period: 20s
-
-  napcat:
-    profiles: ["napcat"]
-    image: ${NAPCAT_IMAGE:-mlikiowa/napcat-docker:latest}
-    restart: unless-stopped
-    init: true
-    depends_on:
-      bot:
-        condition: service_healthy
-    environment:
-      NAPCAT_UID: ${NAPCAT_UID:-0}
-      NAPCAT_GID: ${NAPCAT_GID:-0}
-      ACCOUNT: ${NAPCAT_ACCOUNT:-}
-      WEBUI_TOKEN: ${NAPCAT_WEBUI_TOKEN:-replace-with-a-long-random-webui-token}
-      WEBUI_PREFIX: ""
-    ports:
-      - "127.0.0.1:6099:6099"
-    volumes:
-      - ./napcat-data:/app/.config/QQ
-      - ./napcat-config:/app/napcat/config
-      - ./napcat-plugins:/app/napcat/plugins
-      - ./social-transfer:/yuki-transfer:ro
-    networks:
-      - qq-ai-bot-network
-    stop_grace_period: 30s
 
   snowluma:
     profiles: ["snowluma"]

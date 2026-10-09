@@ -95,7 +95,7 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 - Linux amd64，或运行 Linux 容器的 Windows Docker Desktop；
 - Docker Engine 和 Docker Compose v2；
 - 可用的模型服务配置，支持项目接入的 Chat Completions 或 Responses 协议；
-- 至少一个 NapCat 或 SnowLuma QQ 网关及登录账号。
+- SnowLuma QQ 网关及登录账号。Yuki 不再支持 NapCat；现有网关抽象仍可用于其他实现。
 
 从 [3.8.4 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.4) 下载部署包，解压后可以手动填写 `.env` 和模型配置，也可以使用配置向导。
 
@@ -151,7 +151,7 @@ docker compose logs --tail 200 bot
 docker compose exec bot qq-ai-bot-cli gateway doctor --provider snowluma
 ```
 
-使用 NapCat 时将最后一个参数改为 `napcat`；所有命令沿用部署时的 Compose 参数。同一 QQ 只允许一条活动连接，切换网关前需先停止旧连接。见 [SnowLuma 部署与切换](docs/deployment/snowluma.md)。
+所有命令沿用部署时的 Compose 参数。同一 QQ 只允许一条活动连接，重复连接不会挤掉旧连接。旧部署的 Compose 与 `.env` 不会由安装器自动替换，退役配置处理见 [SnowLuma 部署](docs/deployment/snowluma.md)与[升级草案](docs/upgrade-3.9.0.md#旧-napcat-部署配置)。
 
 ## 相邻项目
 

@@ -3,7 +3,7 @@
 from dataclasses import replace
 from types import SimpleNamespace
 
-from tests.support.gateway import napcat_registry
+from tests.support.gateway import builtin_registry
 
 from qq_ai_bot.identity.canonical_uow import CanonicalIngressUnitOfWork
 from qq_ai_bot.identity.ingress import CanonicalIngressResolver
@@ -16,7 +16,7 @@ async def _member(*args, **kwargs):
 
 class FixtureIngress(CanonicalIngressResolver):
     def __init__(self, database):
-        registry = napcat_registry()
+        registry = builtin_registry()
         router = PresenceRouter(database, registry, membership_probe=_member)
         super().__init__(database, registry, router)
         self.uow = CanonicalIngressUnitOfWork(database, router)

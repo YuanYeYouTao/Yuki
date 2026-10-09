@@ -6,6 +6,8 @@
 
 默认构建与发行使用 direct：同一 Agent loop 提供固定完整工具声明，不包含 Monty binding、worker 或 launcher，`CODE_MODE_ENABLED=false`。Code Mode 已合入主线，是显式 `--target codemode` 构建与启用的可选能力。切换模式保留原 Work、composition、预算和回执，不能取得重派发资格。
 
+本地 NapCat 退役修改正在实施，另见[任务书与交付状态](architecture/Yuki-NapCat删除与既有网关抽象保留任务书-2026-10-09.md)。下述旧部署处理用于准备该目标源码，不表示修改已合并、发布或部署。
+
 ## 版本与迁移范围
 
 | 项目 | 3.8.4 正式包 | 当前 3.9.0 源码 |
@@ -45,6 +47,26 @@
 - **Memory 策略**：删除仅服务自动注入、归因/强化/意图评分、治理、容量腾位与经验过时的旧设置，对照当前 `.env.example`。`valid_until`、用户显式变更和真实权限仍有效。同 key 不是唯一槽位，管理修改和删除沿 fact ID；不要把多条旧事实压成一个值。
 - **联网**：新安装未设联网开关时默认 native，显式 disabled 与既有搜索连接保持有效。原生搜索、Gemini 搜索桥及外部后端按[Provider 合同](architecture/model-providers.md)配置；默认开启不能补出模型缺少的能力。
 - **持久环境 / WebUI**：保留原 Manager、共享 volume 和执行回执；普通包不会安装新 Manager 或 gVisor。WebUI 默认关闭，认证与管理授权见[WebUI 合同](architecture/webui-console.md)。
+
+### 旧 NapCat 部署配置
+
+Yuki 不再支持 NapCat，当前附带网关为 SnowLuma。原 Gateway 抽象、Catalog、Registry 与 OneBot
+能力保留；这项退役不需要品牌数据迁移，不把历史 `ingress_provider=napcat` 改成 `snowluma`，
+也不删除 Person、Presence、Conversation、Memory、路由、Work 或原回执。
+
+安装器不替换已有的 managed Compose 文件，`.env` 合并也保留未知字段。因此仅更新模板或
+重跑安装器不会清除旧部署的执行配置；向导不停止、启动服务，也不执行自动切换。
+
+在实际部署目录中，保留项目名与完整 Compose 覆盖链，备份配置后用既有编辑方式逐项处理：
+
+1. 从实际 Compose 链撤去 `napcat` service、专属镜像/构建及其端口、Bot 的 NapCat 专属环境项和挂载；共享 social transfer、SnowLuma 挂载和其他服务继续保留。
+2. 从实际 `.env` 撤去 `NAPCAT_*`，只从 `COMPOSE_PROFILES` 删除 `napcat`。例如 `napcat,external` 保留为 `external`，不能清空其他扩展 profile；未选择附带网关时不隐式启用 NapCat。
+3. 核对目录后清理旧 `data/setup/gateway-action.json` 无消费者标记，保留其他 setup 状态与凭据。该文件不是可执行的切换任务，重新运行向导不会按它停服或恢复。
+4. 沿全部 Compose 参数运行 `docker compose config --quiet` 并检查实际解析结果；确认没有旧 service、profile、专属环境项或挂载，再按获准部署步骤应用。配置清退不等于旧容器已停止；仍运行的旧实例须单独核对账号、连接与停用范围。
+
+新包不创建或包含旧 `napcat-data`、`napcat-config`、`napcat-plugins`。这些存量目录可能含 QQ HOME、
+token、用户配置与插件，不能默认删除；Git/镜像 ignore 暂时保留仅为保护遗留私密资料，不表示运行支持。
+不清空 QQ 登录目录、备份或用户插件，不重启 SnowLuma 来清理旧配置。若需要删除实际存量资料，另行核对目标、引用与授权。
 
 ### MCP 与 Genie 输出清退
 
