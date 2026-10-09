@@ -1,0 +1,1632 @@
+{
+  "baseline": "0ddd7eeebf0427ef500c8212fe8486f383a45d48",
+  "date": "2026-10-09",
+  "scope": "270 tracked Markdown documents at audit baseline; generated/private/local files excluded",
+  "counts": {
+    "deleted": 38,
+    "updated": 105,
+    "retained": 127
+  },
+  "documents": [
+    {
+      "path": ".github/release-notes/v1.3.0.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": ".github/release-notes/v1.5.1.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "AGENTS.md",
+      "review": "现行核对",
+      "reason": "同步删除优先与关联文档/测试/CI清理，保留真实身份、授权、恢复和事务约束。",
+      "result": "updated"
+    },
+    {
+      "path": "CHANGELOG.md",
+      "review": "现行核对",
+      "reason": "更新3.9未发布段，撤旧实验/思考/Memory/CI表述，历史版本记录保留。",
+      "result": "updated"
+    },
+    {
+      "path": "README.en.md",
+      "review": "现行核对",
+      "reason": "与中文能力、版本、构建、配置路径和验证口径一致。",
+      "result": "updated"
+    },
+    {
+      "path": "README.md",
+      "review": "现行核对",
+      "reason": "同步0102/API3.3/direct主线、独立Memory Profile、显式协议与实际验证范围，区分正式3.8.4。",
+      "result": "updated"
+    },
+    {
+      "path": "THIRD_PARTY_NOTICES.md",
+      "review": "现行核对",
+      "reason": "可选Code已合主线，单Dockerfile/direct不带Monty，删除不存在的未发布全局承诺；许可证原文和真实构建证据保留。",
+      "result": "updated"
+    },
+    {
+      "path": "artifacts/history-rollup-quality/README.md",
+      "review": "历史保留",
+      "reason": "固定版本历史质量原件与来源说明，不能冒充当前质量门或线上验收。",
+      "result": "retained"
+    },
+    {
+      "path": "artifacts/memory-quality/report.md",
+      "review": "修改",
+      "reason": "原Memory质量19/19与旧指标作为固定提交历史样本保留；标题明确历史，不能成为已退役策略的质量门。",
+      "result": "updated"
+    },
+    {
+      "path": "config/persona.md",
+      "review": "现行核对",
+      "reason": "当前产品人格资料，无退役技术门槛；未将开发约束写入人格。",
+      "result": "retained"
+    },
+    {
+      "path": "config/system_prompt.example.md",
+      "review": "现行核对",
+      "reason": "当前人格/对话示例，无本轮撤销的技术门槛；不以文档清理改变角色设定。",
+      "result": "retained"
+    },
+    {
+      "path": "deploy/sandbox/UPSTREAM.md",
+      "review": "current-retained",
+      "reason": "current security/build/network scripts; dated real isolation evidence",
+      "result": "retained"
+    },
+    {
+      "path": "deploy/security/README.md",
+      "review": "updated",
+      "reason": "Include worker, worker_entrypoint, memory_authorit",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/README.md",
+      "review": "现行核对",
+      "reason": "入口只列现行模块；旧计划退出导航，日期证据单列。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/Yuki-3.8.1-外部事件隔离与GitHub监控聚合任务书.md",
+      "review": "删除",
+      "reason": "独立后台 read-only Agent turn 与旧版本优先规则已被当前插件主入口、canonical 外部事件合同及插件实现替代。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/Yuki-Harness统一回执与收尾任务书.md",
+      "review": "删除",
+      "reason": "真实工具结果回原循环由现行主合同覆盖；旧记忆专属回执/answer 出口已退出，事故记录另见 operations。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/Yuki-Main-Agent全链路前缀一致性任务书.md",
+      "review": "删除",
+      "reason": "固定声明、动态快照、Work 私有协议与真实 wire 观测由现行合同覆盖；旧单工具声明/分层前条件不再是当前实现方案。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/Yuki-Main-Agent请求对照报告.md",
+      "review": "修改",
+      "reason": "保留2026-09-11真实入口/HTTP回放证据；删除机械免责声明，标题标明实际日期。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/Yuki-Memory-P1治理任务书.md",
+      "review": "历史保留",
+      "reason": "删除退役策略施工及冻结数量门禁，保留唯一合成模型实测与本地release smoke证据。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/Yuki-Memory-Provider分工与后台收尾审查任务书-2026-10-09.md",
+      "review": "现行核对",
+      "reason": "更新完成索引和后续残留；剔除已经完成阶段仍待实施的叙述，明确临时SELF清障不等于永久修复。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/Yuki-Rollup预算与调度修正策略-2026-09-14.md",
+      "review": "历史保留",
+      "reason": "保留固定基线事故/并发复现、实施及验收证据；现行导航应移出，旧测试数量/阶段待办不再是当前要求。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/architecture/Yuki-Runtime异常恢复与连续执行任务书.md",
+      "review": "删除",
+      "reason": "已实施恢复责任及 operations/runtime-recovery-2026-09-13 可追溯；旧异常纠正、budget 与暂停设计被当前主合同替代。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/Yuki-Runtime持续任务与中途改向升级任务书.md",
+      "review": "删除",
+      "reason": "Work/activation/输入与恢复已实现；旧 task_control.answer、旧总预算和沙箱续跑入口不再适用，现行 main-agent-runtime/persistent-subagents 提供唯一合同。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/Yuki-SELF主体自动化与Work信号等待任务书-2026-09-24.md",
+      "review": "删除",
+      "reason": "SELF 主体、普通自动化与等待已进入现行主合同/语义接入；不保留旧首次 Memory 预取与创建时工具白名单方案。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/Yuki-Self-Reflection积压治理与Responses结构化输出任务书.md",
+      "review": "删除",
+      "reason": "强制Responses JSON Schema、零工具、三次隔离和额外drain等旧施工规范已退役；9-15真实交付记录独立保留。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/Yuki-search-memory-taskbook-2026-09-29.md",
+      "review": "历史保留",
+      "reason": "删除旧施工重复说明、冻结样本门禁和未实施重排计划，保留真实探针与明确未验收结论。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/Yuki-send-message出口与自动化任务可见性收口任务书-2026-09-21.md",
+      "review": "删除",
+      "reason": "send_message 已是唯一模型交付工具；每轮自动化目录预载已删除，目录改按需读取；现行主/工具合同覆盖。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/Yuki-删除导向重构-编码任务书.md",
+      "review": "修改",
+      "reason": "保留70项原ID实施索引、默认 direct/内存真实交付与最终证据；删除1686行已完成旧编码指令及重复前置/完成规则，旧源码细节可从Git历史查阅。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/Yuki-固定工具合同说明与遗留入口治理任务书-2026-09-20.md",
+      "review": "删除",
+      "reason": "已退役 MCP/TTS 与 automation 白名单要求；固定工具合同由 tool-kernel 及实际 MainAgentContract 持有，旧连接治理无现行消费者。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/Yuki-意图召回修正任务书.md",
+      "review": "删除",
+      "reason": "旧自动召回/归因回执和三工具修正施工要求已退役；实际查询参数由现行检索合同说明，历史复测保留在usage audit。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/Yuki-插件唤醒Main-Agent与主动回复因果修复任务书.md",
+      "review": "删除",
+      "reason": "已实施插件主入口和外部事件因果由 canonical-runtime/conversation-rollup/main-agent-runtime 覆盖；旧实施任务不再维护第二份规则。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/Yuki-社交工具与临时工作区沙箱任务书.md",
+      "review": "删除",
+      "reason": "临时沙箱/run_python、Automation capability 委托白名单和限频策略已退出；现行持久环境、Social 与工具合同覆盖。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/Yuki-记忆与查证可靠性收口任务书.md",
+      "review": "历史保留",
+      "reason": "删除退役C1–C5施工策略与旧强制上线门禁，保留原镜像/日志缺样和当时未通过记录。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/Yuki-记忆可靠性与强相关召回任务书.md",
+      "review": "历史保留",
+      "reason": "删除旧自动召回/预算/部署施工要求，保留canonical配置主体修正的真实本地实施记录。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/Yuki_Adaptive_Memory_Lifecycle_Design_Draft.md",
+      "review": "删除",
+      "reason": "自动召回、Activation、IntentRanker、MMR、归因强化和衰减方案整链退役。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/Yuki_Adaptive_Memory_Lifecycle_Implementation_Plan.md",
+      "review": "删除",
+      "reason": "自动召回、归因强化、动态工具选择和生命周期门槛的施工说明已退役。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/Yuki_Autonomy_System/Yuki_Autonomy_System_Taskbook_V4.md",
+      "review": "修改",
+      "reason": "保留混合动力研究公式、历史实验和论文计划；撤掉当前唯一工程规范的定位，当前算法指向独立库/现行连续模型。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/autonomous-participation-model.md",
+      "review": "现行保留",
+      "reason": "现行合同仍有实际源码消费者；核查未发现本轮Memory删除相关的矛盾政策。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/architecture/autonomous-participation-social-feedback-taskbook.md",
+      "review": "删除",
+      "reason": "旧底率及 SELF 自动化方案已被 autonomous-participation-model/semantic-participation/main-agent-runtime 替代；独立库保留完整数学与回放。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/canonical-runtime.md",
+      "review": "修改",
+      "reason": "移除尚无 HTTP/WebUI 的旧宣称；canonical 主体、内部事件与迁移边界仍与现行源码一致，升级导航改为当前指南。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/chat-media-workspace-bridge-taskbook.md",
+      "review": "删除",
+      "reason": "已实现缓存/事件附件/工作区提升由 chat-media-workspace 覆盖；旧独立视觉实现被原主模型媒体输入替代。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/chat-media-workspace.md",
+      "review": "修改",
+      "reason": "删除已过的一次性全会话切换实施指令和本地未合并状态；保留临时缓存、原生媒体、当前 Manager 和发送合同。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/codex-yuki-memory-v2-phase/codex-yuki-memory-v2-phase1.md",
+      "review": "删除",
+      "reason": "退役分阶段施工规范，含旧身份、策略、测试数量和发布门禁；当前模块合同已覆盖仍存在的能力，没有独立运行证据。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/codex-yuki-memory-v2-phase/codex-yuki-memory-v2-phase2.md",
+      "review": "删除",
+      "reason": "退役分阶段施工规范，含旧身份、策略、测试数量和发布门禁；当前模块合同已覆盖仍存在的能力，没有独立运行证据。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/codex-yuki-memory-v2-phase/codex-yuki-memory-v2-phase3.md",
+      "review": "删除",
+      "reason": "退役分阶段施工规范，含旧身份、策略、测试数量和发布门禁；当前模块合同已覆盖仍存在的能力，没有独立运行证据。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/codex-yuki-memory-v2-phase/codex-yuki-memory-v2-phase4.md",
+      "review": "删除",
+      "reason": "退役分阶段施工规范，含旧身份、策略、测试数量和发布门禁；当前模块合同已覆盖仍存在的能力，没有独立运行证据。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/codex-yuki-memory-v2-phase/codex-yuki-memory-v2-phase5.md",
+      "review": "删除",
+      "reason": "退役分阶段施工规范，含旧身份、策略、测试数量和发布门禁；当前模块合同已覆盖仍存在的能力，没有独立运行证据。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/codex-yuki-memory-v2-phase/codex-yuki-memory-v2-phase6.md",
+      "review": "删除",
+      "reason": "退役分阶段施工规范，含旧身份、策略、测试数量和发布门禁；当前模块合同已覆盖仍存在的能力，没有独立运行证据。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/control-plane-foundation.md",
+      "review": "修改",
+      "reason": "删除退役语音资源宣称；可信 operator、原回执、版本与公开 DTO 合同保留。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/conversation-rollup.md",
+      "review": "修改",
+      "reason": "移除旧产品版本与语音副作用宣称；实际容量、连续来源、后台整理、短事务与当前 Profile Schema 分工保留。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/database-reply-latency-taskbook-2026-10-04.md",
+      "review": "历史保留",
+      "reason": "保留固定基线事故/并发复现、实施及验收证据；现行导航应移出，旧测试数量/阶段待办不再是当前要求。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/architecture/development-contract.md",
+      "review": "现行核对",
+      "reason": "精简共同规则，删除优先在开头；不冻结经验阈值、全集闭合或最低思考，保留授权/事实/回执。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/evidence-seeking-validation.md",
+      "review": "历史保留",
+      "reason": "独立9-09只读窗口、11条查证机会和本地验证证据保留；去当前收口任务书入口，明确归因/意图/质量门禁退役。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/execution-trace.md",
+      "review": "现行保留",
+      "reason": "现行合同仍有实际源码消费者；核查未发现本轮Memory删除相关的矛盾政策。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/architecture/foreground-rollup-and-sqlite-contention-taskbook-2026-10-03.md",
+      "review": "修改",
+      "reason": "保留固定基线事故/并发复现、实施及验收证据；现行导航应移出，旧测试数量/阶段待办不再是当前要求。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/genie-speech-output-removal-taskbook-2026-10-07.md",
+      "review": "修改",
+      "reason": "保留退役事实保全、旧音频回执、冻结迁移与当日分段验证证据；标题改实施记录，不作为当前上线待办。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/github-monitor-plugin/github-monitor-plugin-discussion.md",
+      "review": "删除",
+      "reason": "早期讨论的 ask_agent、平台 target_id 和独立后台能力缺口已被 SDK/Host 当前实现与插件文档覆盖；无独立测量或未决设计需要保留。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/github-monitor-plugin/yuki-github-monitor-plugin-taskbook.md",
+      "review": "删除",
+      "reason": "API v1/Planner/语音、旧 external Prompt 预算和后台 Agent 方案已退出；现行插件开发文档、canonical/主 Agent 合同及 plugins/github-monitor 保留实现。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/harness-feedback-and-codemode-compatibility-taskbook-2026-10-06.md",
+      "review": "修改",
+      "reason": "保留原误报样本、反馈修复与当日验证局限；标题改为当日修复记录，Code延期只属历史。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/history-snapshot-and-work-reporting-taskbook.md",
+      "review": "删除",
+      "reason": "强制开始报告许可和漏发纠正已经删除；冻结历史与 steer 现行规则在 main-agent-runtime/conversation-rollup，原测量由 operations/history-interaction-harness-2026-10-02 保留。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/long-task-harness-compaction-taskbook.md",
+      "review": "删除",
+      "reason": "当前 main-agent-runtime/conversation-rollup/persistent-subagents 及 operations/long-task-harness-2026-10-01 覆盖；固定无进展、旧完整覆盖与测试清单不再是实施要求。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/main-agent-entrypoint-unification-taskbook.md",
+      "review": "删除",
+      "reason": "已实现的统一入口由 main-agent-runtime 与 operations/main-agent-entrypoints-2026-09-14 承担；旧 yuki.generate/独立入口实施要求已退出。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/main-agent-runtime.md",
+      "review": "修改",
+      "reason": "修正已撤销 Memory 预取、旧 0081 downgrade、语音发送和旧 answer；引用现行 Rollup 与交付记录，保留唯一 Runtime/原 Work 恢复。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/memory-change.md",
+      "review": "现行保留",
+      "reason": "逐份核对：符合当前独立fact ID、按需检索、SQL来源审计及真实权限合同，无退役策略现役描述。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/architecture/memory-evidence-acceptance-progress.md",
+      "review": "历史保留",
+      "reason": "历史保留：只校正入口和历史性质，原分阶段运行结果、失败和预算证据不改写。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/memory-intent-usage-audit.md",
+      "review": "历史保留",
+      "reason": "历史保留：只校正入口和历史性质，原分阶段运行结果、失败和预算证据不改写。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/memory-quality-self-reflection-taskbook.md",
+      "review": "删除",
+      "reason": "旧讨论稿的价值门槛、SELF分类和模型审计设计已退役；当前变更、自省和SQL审计合同已覆盖保留职责。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/memory-v2-conflicts.md",
+      "review": "删除",
+      "reason": "整份RelationClassifier、ResolutionPolicy、权威排序和置信度聚合说明已退役；事实ID显式纠正由memory-change.md说明。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/memory-v2-embedding.md",
+      "review": "修改",
+      "reason": "删除自动预取、每目标召回策略和失效相似度配置；保留实际Embedding投影预算、profile、持久job/CAS及运维入口。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/memory-v2-lifecycle.md",
+      "review": "修改",
+      "reason": "删除stale、authority豁免、固定权重、单槽doctor与失效配置，按maintenance.py实际valid_until行为重写。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/memory-v2-quality.md",
+      "review": "现行保留",
+      "reason": "逐份核对：符合当前独立fact ID、按需检索、SQL来源审计及真实权限合同，无退役策略现役描述。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/architecture/memory-v2-rebuild.md",
+      "review": "修改",
+      "reason": "删除退役分类链、历史单槽合并/容量与fingerprint封口；保留source hash、审核、串行提交和原回执收尾。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/memory-v2-retrieval.md",
+      "review": "现行保留",
+      "reason": "逐份核对：符合当前独立fact ID、按需检索、SQL来源审计及真实权限合同，无退役策略现役描述。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/architecture/memory-v2-roadmap.md",
+      "review": "删除",
+      "reason": "旧2.1.2至3.0.0施工路线，单槽、分类、质量门禁和容量等设计已退出。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/memory-v2-third-party-facts.md",
+      "review": "现行保留",
+      "reason": "逐份核对：符合当前独立fact ID、按需检索、SQL来源审计及真实权限合同，无退役策略现役描述。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/architecture/memory-v2.md",
+      "review": "修改",
+      "reason": "清理已退役导航和旧Dream失败封口，明确三任务独立Profile及当前主Agent按需读取；保留完整来源/WAL和关系评估合同。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/model-providers.md",
+      "review": "修改",
+      "reason": "删除不存在的 MODEL_PROFILES_LEGACY_COMPATIBILITY 和无 TOML 路由；实际 v3 TOML、Profile 思考配置、responseJsonSchema 与实际 HTTP 计量合同保留。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/model-reasoning-policy.md",
+      "review": "删除",
+      "reason": "整份强制开启/至少low及已删除任务的预算政策已撤销；请求与Profile现在显式选择思考参数，model-providers提供唯一合同。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/native-multimodal-media-taskbook-2026-10-05.md",
+      "review": "修改",
+      "reason": "保留24秒历史媒体现场样本、原能力缺口与当日实施证据；标题标注日期和实施记录，现行规则在媒体/Provider合同。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/persistent-runtime-refactor-taskbook.md",
+      "review": "删除",
+      "reason": "共享 Runtime 实施已交付，现行主合同及 operations/persistent-runtime-20261001 保留实际责任和证据；旧容器/Callbacks/领域 session 编码指令已过时。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/persistent-subagents-validation.md",
+      "review": "历史保留",
+      "reason": "保留固定日期/基线的隔离请求与费用/缓存测量；当前入口与恢复由现行合同提供。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/architecture/persistent-subagents.md",
+      "review": "修改",
+      "reason": "默认 direct 与显式 Code 区分；workspace_inspect 交原模型而不另调视觉；删除旧无进展指纹要求，保留 WORKER_NAMES 的真实作用域装配。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/pi-codemode-correctness-repair.md",
+      "review": "修改",
+      "reason": "保留F1-F12、旧迁移谱系和真实wire测量原件；清掉泛化免责声明，将当前合同/清单措辞改为该轮。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/pi-codemode-delivery.md",
+      "review": "修改",
+      "reason": "保留分阶段实际验证、原始失败及费用；明确2026-10-04至07历史范围，撤掉失效实验设计/交接链接。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/pi-codemode-design.md",
+      "review": "删除",
+      "reason": "正在实施目标、旧主version11、MCP和单次写授权已过时；当前Tool Kernel/Main合同及历史交付保留实现和证据。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/pi-codemode-evidence/issue-256-final-summary.md",
+      "review": "历史保留",
+      "reason": "单组真实API原始摘要，包含失败/成本/输入范围；保留测量原件，不作为当前工具清单、策略或CI门槛。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/architecture/pi-codemode-evidence/issue-256-second-pass-summary.md",
+      "review": "历史保留",
+      "reason": "单组真实API原始摘要，包含失败/成本/输入范围；保留测量原件，不作为当前工具清单、策略或CI门槛。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/architecture/pi-codemode-evidence/issue-256-third-pass-summary.md",
+      "review": "历史保留",
+      "reason": "单组真实API原始摘要，包含失败/成本/输入范围；保留测量原件，不作为当前工具清单、策略或CI门槛。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/architecture/pi-codemode-evidence/tiered-tools-final-model-summary.md",
+      "review": "历史保留",
+      "reason": "单组真实API原始摘要，包含失败/成本/输入范围；保留测量原件，不作为当前工具清单、策略或CI门槛。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/architecture/pi-codemode-evidence/tiered-tools-initial-model-summary.md",
+      "review": "历史保留",
+      "reason": "单组真实API原始摘要，包含失败/成本/输入范围；保留测量原件，不作为当前工具清单、策略或CI门槛。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/architecture/pi-codemode-handoff-final-benchmark.md",
+      "review": "历史保留",
+      "reason": "保留固定日期/基线的隔离请求与费用/缓存测量；当前入口与恢复由现行合同提供。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/architecture/pi-codemode-handoff-repair.md",
+      "review": "历史保留",
+      "reason": "保留固定基线事故/并发复现、实施及验收证据；现行导航应移出，旧测试数量/阶段待办不再是当前要求。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/architecture/pi-codemode-handoff.md",
+      "review": "删除",
+      "reason": "实验分支接手入口已失去用途，混用旧head/多个合同版本及未合main状态；现行Tool/Main、升级指南及历史交付替代。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/pi-codemode-long-task-benchmark.md",
+      "review": "修改",
+      "reason": "保留原24次测量、缺陷和费用；删掉已退役脚本的可复跑命令，实际参数及历史费用继续由原JSON证明。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/pi-codemode-main-compatibility.md",
+      "review": "修改",
+      "reason": "保留两树整合与旧数据库实际兼容证据；标题明确历史日期，不作当前0097/0098升级入口。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/pi-codemode-recovery-retest.md",
+      "review": "修改",
+      "reason": "保留8次最终历史测量及诊断成本；删除不存在的复跑脚本命令。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/pi-codemode-verification-final-benchmark.md",
+      "review": "历史保留",
+      "reason": "保留固定日期/基线的隔离请求与费用/缓存测量；当前入口与恢复由现行合同提供。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/architecture/pi-durable-work-context-comparison-2026-10-03.md",
+      "review": "修改",
+      "reason": "保留固定基线事故/并发复现、实施及验收证据；现行导航应移出，旧测试数量/阶段待办不再是当前要求。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/pi-port-provenance.md",
+      "review": "修改",
+      "reason": "保留 Pi 参考与 Monty 依赖/许可来源及历史构建哈希；删除已失去消费者的 fixture 表、固定 forwarder/38 字段生产结构要求与重复 P10 实施说明。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/provider-output-boundary.md",
+      "review": "修改",
+      "reason": "删除已退役 DSML 工具转换、漏发纠正和最低 low；按当前源码重述显式发送、内部 final 与共同完成核验。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/responses-api/deepseek-responses-api-discussion.md",
+      "review": "删除",
+      "reason": "早期协议接入与域名/日期分流设计已撤销，现行 model-providers、搜索桥和真实协议回执替代；兼容性历史记录保留。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/responses-api/deepseek-responses-compatibility.md",
+      "review": "修改",
+      "reason": "保留脱敏早期协议/图片接入证据，删除最低low、一次恢复与图片专属写限制的已撤销政策，现行协议指向model-providers。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/self-reflection-delivery-2026-09-15.md",
+      "review": "历史保留",
+      "reason": "历史保留：只校正入口和历史性质，原分阶段运行结果、失败和预算证据不改写。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/self-reflection.md",
+      "review": "修改",
+      "reason": "校正截断判定及SELF按需读取，替换过期未部署结尾，准确区分10-09临时排空与未修源码根因。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/semantic-participation-continuation-taskbook-2026-10-03.md",
+      "review": "修改",
+      "reason": "保留固定基线事故/并发复现、实施及验收证据；现行导航应移出，旧测试数量/阶段待办不再是当前要求。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/semantic-participation.md",
+      "review": "修改",
+      "reason": "现行合同仍有实际源码消费者；核查未发现本轮Memory删除相关的矛盾政策。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/tool-kernel.md",
+      "review": "修改",
+      "reason": "按实际 direct/Code 声明、lookup 混批、只读 task_control 同批与控制屏障修正；取消单次记忆写权、MCP 和旧固定合同版本。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/tool-results.md",
+      "review": "现行保留",
+      "reason": "现行合同仍有实际源码消费者；核查未发现本轮Memory删除相关的矛盾政策。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/architecture/webui-chat-live-session-taskbook.md",
+      "review": "历史保留",
+      "reason": "保留固定基线事故/并发复现、实施及验收证据；现行导航应移出，旧测试数量/阶段待办不再是当前要求。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/architecture/webui-console.md",
+      "review": "修改",
+      "reason": "删除退役语音目录和已撤销专项测试命令；保留实际 HTTP/文件/Work/诊断页面合同。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/webui-diana-interaction-2026-09-29.md",
+      "review": "修改",
+      "reason": "保留固定Diana源码比较与许可限制；移除现阶段仍在旧分支的错误宣称，当前配置生效方式指向WebUI。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/webui-usability-acceptance.md",
+      "review": "历史保留",
+      "reason": "保留固定基线事故/并发复现、实施及验收证据；现行导航应移出，旧测试数量/阶段待办不再是当前要求。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/architecture/work-context-and-chat-continuation-taskbook.md",
+      "review": "删除",
+      "reason": "当前 Work 恢复与原结果观察已进入主合同，operations/work-context-delivery-2026-10-03 保留交付；旧必须摘要更小/旧材料接续要求不再重发。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/architecture/work-lifecycle-audit-20261008.md",
+      "review": "修改",
+      "reason": "保留真实生产只读和隔离反例证据；表头明确审查基线的未修复状态，不把历史W01-W09作为当前运行状态。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/yuki-latency-fix-taskbook-20261004.md",
+      "review": "历史保留",
+      "reason": "保留固定基线事故/并发复现、实施及验收证据；现行导航应移出，旧测试数量/阶段待办不再是当前要求。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/architecture/yuki-memory-dream-real-test-report-2026-08-13.md",
+      "review": "历史保留",
+      "reason": "历史保留：删除误导到退役P1的导语，保留8-13原真实写入与回滚证据。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/architecture/yuki-self-memory-taskbook.md",
+      "review": "删除",
+      "reason": "旧SELF施工规范，Planner门控、单active槽与名称保护已退役；现行SELF权限和来源见Memory与自省。",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/deepseek-search-bridge.md",
+      "review": "updated",
+      "reason": "Provider 的密钥发送到 DeepSeek。默认仍为原 Tavily 后端；改变部署环境中的",
+      "result": "updated"
+    },
+    {
+      "path": "docs/deployment/main-agent-20260911.md",
+      "review": "updated",
+      "reason": "## 备份与回退",
+      "result": "updated"
+    },
+    {
+      "path": "docs/deployment/rollup-workspace-20260911.md",
+      "review": "updated",
+      "reason": "最终部署备份路径",
+      "result": "updated"
+    },
+    {
+      "path": "docs/deployment/snowluma.md",
+      "review": "updated",
+      "reason": "本文对应 Yuki 3.8.1。SnowLuma 与 NapCat 是同层正式 QQ/OneBot ",
+      "result": "updated"
+    },
+    {
+      "path": "docs/emoji-system/administration.md",
+      "review": "current-retained",
+      "reason": "src/qq_ai_bot/emoji selector/lifecycle/store; SocialService explicit-request delivery",
+      "result": "updated"
+    },
+    {
+      "path": "docs/emoji-system/architecture.md",
+      "review": "current-retained",
+      "reason": "src/qq_ai_bot/emoji selector/lifecycle/store; SocialService explicit-request delivery",
+      "result": "retained"
+    },
+    {
+      "path": "docs/emoji-system/automation.md",
+      "review": "current-retained",
+      "reason": "src/qq_ai_bot/emoji selector/lifecycle/store; SocialService explicit-request delivery",
+      "result": "retained"
+    },
+    {
+      "path": "docs/emoji-system/collection.md",
+      "review": "current-retained",
+      "reason": "src/qq_ai_bot/emoji selector/lifecycle/store; SocialService explicit-request delivery",
+      "result": "retained"
+    },
+    {
+      "path": "docs/emoji-system/configuration.md",
+      "review": "updated",
+      "reason": "只有明确索要表情且前两名分差不超过 `selector_score_gap` 时才调用视觉精选; 确定性表情意图识别、真实回执校验和失败文字属于固定正确性契约，不能通过放宽工具范围关闭。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/emoji-system/lifecycle.md",
+      "review": "current-retained",
+      "reason": "src/qq_ai_bot/emoji selector/lifecycle/store; SocialService explicit-request delivery",
+      "result": "retained"
+    },
+    {
+      "path": "docs/emoji-system/planner-integration.md",
+      "review": "current-retained",
+      "reason": "src/qq_ai_bot/emoji selector/lifecycle/store; SocialService explicit-request delivery",
+      "result": "retained"
+    },
+    {
+      "path": "docs/emoji-system/plugin-api.md",
+      "review": "current-retained",
+      "reason": "src/qq_ai_bot/emoji selector/lifecycle/store; SocialService explicit-request delivery",
+      "result": "retained"
+    },
+    {
+      "path": "docs/emoji-system/selection.md",
+      "review": "updated",
+      "reason": "候选多于一张且 `selector_enabled=true` 时",
+      "result": "updated"
+    },
+    {
+      "path": "docs/emoji-system/storage-and-cleanup.md",
+      "review": "current-retained",
+      "reason": "src/qq_ai_bot/emoji selector/lifecycle/store; SocialService explicit-request delivery",
+      "result": "retained"
+    },
+    {
+      "path": "docs/emoji-system/vision-analysis.md",
+      "review": "current-retained",
+      "reason": "src/qq_ai_bot/emoji selector/lifecycle/store; SocialService explicit-request delivery",
+      "result": "retained"
+    },
+    {
+      "path": "docs/help.md",
+      "review": "updated",
+      "reason": "Alembic head 为 `0099`; 主 Agent 使用启动时冻结的固定完整工具声明，执行处按当前 Principal 核验授权。; Rollup、raw history、Memory、Prompt compiler、工具 schem; 当前完整迁移链至 `0097`。; 正式镜像与 Release 只能由通过 Quality、迁移矩阵、release\nsmoke 和匿名; 新输入的密钥保存在服务器私有文件，不会在页面回显；保存后重启 Bot 才会加载新连接。; 点击「检查并保存」，确认页面提示磁盘配置有效，再重启 Bot；确认健康状态和已加载路由。; 测试后若要恢复原路由，在 WebUI 将「主对话」选回原连接，保存并重启 Bot。; 修改配置后先检查：; docker compose up -d --force-recreate bot; `0098`–`0101` 保留插件调用、原 Work 与效果结果的恢复身份；; `0097` 明确拒绝 downgrade，优先向前修补。; Gemini 的 Google 内置搜索、Interactions、Live 和 TTS 尚未接入。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/kun-game-guide.md",
+      "review": "updated",
+      "reason": "## 当前测试版注意事项\n\n- 磨炼失败时，引擎实际增加的是“原体重减磨炼数值”，当前回复文本却显示",
+      "result": "updated"
+    },
+    {
+      "path": "docs/operations/2026-09-13-delivery-ownership.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/compact-capacity-accounting-2026-10-02.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/context-cost-simulation-2026-10-01.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/database-provider-latency-2026-10-04.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/database-reply-latency-2026-10-04.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/database-reply-latency-followup-2026-10-04.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/deletion-api-tools-20261008.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/deletion-data-context-20261008.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/deletion-final-review-20261008.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/deletion-integration-20261008.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/deletion-memory-20261008.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/deletion-production-20261008.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/deletion-runtime-20261008.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/evidence/semantic-continuation-acceptance-20261004.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/foreground-rollup-sqlite-contention-2026-10-03.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/harness-feedback-2026-10-06.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/history-interaction-harness-2026-10-02.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/operations/long-task-harness-2026-10-01.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/main-agent-entrypoints-2026-09-14.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/memory-quality.md",
+      "review": "current-retained",
+      "reason": "对照当前源码、配置消费者及实际CLI；未发现需变更的当前行为描述。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/memory-state-repair-2026-09-11.md",
+      "review": "updated",
+      "reason": "Clarify retired historical operations; Current patch:",
+      "result": "updated"
+    },
+    {
+      "path": "docs/operations/memory-v2-quality.md",
+      "review": "deleted",
+      "reason": "Delete exact duplicate with no Markdown consumers; memory-quality.md remains authoritative",
+      "result": "deleted"
+    },
+    {
+      "path": "docs/operations/memory-worker-recovery-2026-09.md",
+      "review": "updated",
+      "reason": "Clarify retired historical operations; Version stays 3.8.1; schema stays 0051.",
+      "result": "updated"
+    },
+    {
+      "path": "docs/operations/model-profile-path-migration.md",
+      "review": "updated",
+      "reason": "Remove retired sentinel/fallback procedure",
+      "result": "updated"
+    },
+    {
+      "path": "docs/operations/persistent-environment-validation-20260912.md",
+      "review": "updated",
+      "reason": "Only this consistent backup remains:",
+      "result": "updated"
+    },
+    {
+      "path": "docs/operations/persistent-environment-validation-20260912.zh-CN.md",
+      "review": "updated",
+      "reason": "## 最新恢复点; 仅保留 `/opt/yuki-qqbot/backups/pre-environment-final",
+      "result": "updated"
+    },
+    {
+      "path": "docs/operations/persistent-environment.md",
+      "review": "updated",
+      "reason": "MCP is retired at schema head `0096`;",
+      "result": "updated"
+    },
+    {
+      "path": "docs/operations/persistent-environment.zh-CN.md",
+      "review": "updated",
+      "reason": "现有 MCP 已退役；新 head `0096` 删除专属缓存表",
+      "result": "updated"
+    },
+    {
+      "path": "docs/operations/persistent-runtime-20261001.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/operations/pi-codemode-operations.md",
+      "review": "updated",
+      "reason": "Historical test inventory retired; Verify head\n   `0096`, original facts, references ; No production switch, rollback, true delivery or p; The invocation migration now follows unchanged mai",
+      "result": "updated"
+    },
+    {
+      "path": "docs/operations/plugin-result-2026-10-04.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/provider-compaction-audit-2026-10-01.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/provider-cutover-worklist-2026-09-29.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/reply-preparation-io-2026-10-05.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/rollup-scheduling-2026-09-14.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/runtime-memory-20260912.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/runtime-recovery-2026-09-13.md",
+      "review": "updated",
+      "reason": "## 运行合同; ## 迁移与回退",
+      "result": "updated"
+    },
+    {
+      "path": "docs/operations/runtime-validation-simplification-20261006.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/runtime-work-2026-09-12.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/search-compaction-limits-2026-10-02.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/search-memory-lexical-eval-2026-09-29.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/search-memory-mixed-eval-2026-09-29.md",
+      "review": "updated",
+      "reason": "本记录比较**未修改的当前检索代码**",
+      "result": "updated"
+    },
+    {
+      "path": "docs/operations/semantic-continuation-2026-10-03.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/social-sandbox-validation.md",
+      "review": "updated",
+      "reason": "Historical superseded operation scope",
+      "result": "updated"
+    },
+    {
+      "path": "docs/operations/social-workspace-sandbox.md",
+      "review": "updated",
+      "reason": "The model receives the complete frozen manifest; e; without downgrading the send receipt. Main Agent m; Voice and emoji preparation; The whole rendered state envelope is limited to 51; Emoji preparation receive",
+      "result": "updated"
+    },
+    {
+      "path": "docs/operations/sqlite-latency-20260930.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/versioned-docker-release.md",
+      "review": "updated",
+      "reason": "数据库与部署步骤见[升级指南](../upgrade-3.8.4.md)。历史 Release 保留; `scripts/release_validate.py` 核对项目版本、运行时版本、锁文件、安装器; 首次配置 GHCR 可使用 workflow 的 bootstrap 模式；该模式只准备镜像访问，不; 当前 bootstrap、release 和 finalize 仅构建、拉取和校验 Bot 镜像；; 被新默认覆盖；`basic` / `flash` 重建遇到无法保留的独立搜索配置时拒绝写入。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/operations/work-compaction-capacity-2026-10-02.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/work-context-cache-experiment-2026-10-03.md",
+      "review": "updated",
+      "reason": "Historical superseded operation scope",
+      "result": "updated"
+    },
+    {
+      "path": "docs/operations/work-context-delivery-2026-10-03.md",
+      "review": "updated",
+      "reason": "Historical superseded operation scope",
+      "result": "updated"
+    },
+    {
+      "path": "docs/operations/work-evidence-backup.md",
+      "review": "current-retained",
+      "reason": "对照当前源码、配置消费者及实际CLI；未发现需变更的当前行为描述。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/operations/work-pause-recovery-2026-10-02.md",
+      "review": "updated",
+      "reason": "共同架构约束 §7.4–7.5",
+      "result": "updated"
+    },
+    {
+      "path": "docs/operations/work-start-delivery-investigation-2026-10-07.md",
+      "review": "updated",
+      "reason": "Point investigation source links at recorded historical revision",
+      "result": "updated"
+    },
+    {
+      "path": "docs/plugin-development/admission-signals.md",
+      "review": "current-retained",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
+      "result": "retained"
+    },
+    {
+      "path": "docs/plugin-development/api-2.0-migration.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/plugin-development/api-3.0-migration.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/plugin-development/api-3.1-migration.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/plugin-development/api-3.2-migration.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/plugin-development/api-3.3-migration.md",
+      "review": "current-retained",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
+      "result": "retained"
+    },
+    {
+      "path": "docs/plugin-development/api-reference/emoji.md",
+      "review": "current-retained",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
+      "result": "retained"
+    },
+    {
+      "path": "docs/plugin-development/api-reference/events.md",
+      "review": "current-retained",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
+      "result": "retained"
+    },
+    {
+      "path": "docs/plugin-development/api-reference/facades.md",
+      "review": "updated",
+      "reason": "## LLM / Agent / AgentSession; 常规会话最多看到有界的 recent-event digest。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/plugin-development/api-reference/permissions.md",
+      "review": "current-retained",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
+      "result": "retained"
+    },
+    {
+      "path": "docs/plugin-development/api-reference/registrar.md",
+      "review": "current-retained",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
+      "result": "retained"
+    },
+    {
+      "path": "docs/plugin-development/api-reference/results.md",
+      "review": "current-retained",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
+      "result": "retained"
+    },
+    {
+      "path": "docs/plugin-development/architecture.md",
+      "review": "current-retained",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
+      "result": "retained"
+    },
+    {
+      "path": "docs/plugin-development/automation.md",
+      "review": "current-retained",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
+      "result": "retained"
+    },
+    {
+      "path": "docs/plugin-development/background-services.md",
+      "review": "current-retained",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
+      "result": "retained"
+    },
+    {
+      "path": "docs/plugin-development/commands.md",
+      "review": "current-retained",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
+      "result": "retained"
+    },
+    {
+      "path": "docs/plugin-development/compatibility.md",
+      "review": "updated",
+      "reason": "从 3.1 升级见 [API 3.3 迁移](api-3.3-migration.md)。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/plugin-development/config-and-secrets.md",
+      "review": "current-retained",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
+      "result": "retained"
+    },
+    {
+      "path": "docs/plugin-development/debugging.md",
+      "review": "updated",
+      "reason": "插件代码变化目前需要重启 Bot；1.6.0 不提供热更新。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/plugin-development/events.md",
+      "review": "current-retained",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
+      "result": "retained"
+    },
+    {
+      "path": "docs/plugin-development/index.md",
+      "review": "updated",
+      "reason": "Plugin API `3.3` 移除语音合成/发送 SDK",
+      "result": "updated"
+    },
+    {
+      "path": "docs/plugin-development/lifecycle.md",
+      "review": "current-retained",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
+      "result": "retained"
+    },
+    {
+      "path": "docs/plugin-development/manifest.md",
+      "review": "current-retained",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
+      "result": "retained"
+    },
+    {
+      "path": "docs/plugin-development/media-and-vision.md",
+      "review": "updated",
+      "reason": "- 图片或回复图片轮次会撤销管理员写工具、插件写工具、OneBot 修改、配置/关系/记忆写入。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/plugin-development/migration-guide.md",
+      "review": "updated",
+      "reason": "升级前备份 `data/`：\n\n```bash\ndocker compose down\ncp -R ",
+      "result": "updated"
+    },
+    {
+      "path": "docs/plugin-development/networking.md",
+      "review": "current-retained",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
+      "result": "retained"
+    },
+    {
+      "path": "docs/plugin-development/permissions.md",
+      "review": "current-retained",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
+      "result": "retained"
+    },
+    {
+      "path": "docs/plugin-development/prompts.md",
+      "review": "current-retained",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
+      "result": "retained"
+    },
+    {
+      "path": "docs/plugin-development/publishing.md",
+      "review": "current-retained",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
+      "result": "retained"
+    },
+    {
+      "path": "docs/plugin-development/quickstart.md",
+      "review": "current-retained",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
+      "result": "retained"
+    },
+    {
+      "path": "docs/plugin-development/security.md",
+      "review": "updated",
+      "reason": "4. 图片轮次关闭插件写工具、管理员写、OneBot 修改、关系/记忆/配置写入。\n5. 使用网页工",
+      "result": "updated"
+    },
+    {
+      "path": "docs/plugin-development/service-facades.md",
+      "review": "updated",
+      "reason": "Host 会再次验证当前事件、provider、资源 ID、图片轮次隔离和",
+      "result": "updated"
+    },
+    {
+      "path": "docs/plugin-development/storage.md",
+      "review": "current-retained",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
+      "result": "retained"
+    },
+    {
+      "path": "docs/plugin-development/testing.md",
+      "review": "updated",
+      "reason": "Memory、Relationship、LLM、Agent、AgentSession、Web、HTT",
+      "result": "updated"
+    },
+    {
+      "path": "docs/plugin-development/tools.md",
+      "review": "updated",
+      "reason": "- 适用的图片、联网限制与自动化委托允许本次操作。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/refactor/1.9.0-baseline.md",
+      "review": "历史保留",
+      "reason": "1.9.0固定合成场景基线与结果配对仍有历史测量价值；已撤销功能不因此恢复。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/refactor/1.9.0-result.md",
+      "review": "修改",
+      "reason": "保留真实1.9.0变化与测量，删除指向已撤销最低思考政策的错误更新提示，当前参数指向Provider合同。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/releases/v1.8.0.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v1.8.1.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v1.8.2.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v2.0.0.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v2.1.0.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/releases/v3.0.0.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v3.0.0rc1.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v3.0.1.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v3.0.2.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v3.0.3.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v3.1.0.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v3.2.0.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v3.3.0.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v3.3.1.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v3.4.0.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v3.4.1.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v3.4.2.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v3.4.3.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v3.4.4.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v3.4.5.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v3.5.1.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v3.5.2.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v3.5.3.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v3.6.0.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v3.6.1.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v3.7.0.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v3.7.1.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v3.8.0.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v3.8.1.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/releases/v3.8.2.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v3.8.3.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/releases/v3.8.4.md",
+      "review": "历史发行保留",
+      "reason": "按对应历史版本读取并保留发行/实施证据，不用0102改写旧版本；过时跨文档链接改为现行导航或固定tag。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/releases/v3.9.0.md",
+      "review": "开发发行草案",
+      "reason": "重写最终行为、版本和known gaps；GitHub合并信息及Git祖先核对109PR，保留历史缓存计量。",
+      "result": "updated"
+    },
+    {
+      "path": "docs/speech/recognition.md",
+      "review": "current-retained",
+      "reason": "src/qq_ai_bot/speech ASR; migration0055; active incoming-only scope",
+      "result": "retained"
+    },
+    {
+      "path": "docs/upgrade-3.8.0.md",
+      "review": "updated",
+      "reason": "Historical release scope",
+      "result": "updated"
+    },
+    {
+      "path": "docs/upgrade-3.8.1.md",
+      "review": "updated",
+      "reason": "> 本文只对应已发布的 3.8.1/`0049`，保留为历史部署事实。当前源码的后续未发布修复将 s",
+      "result": "updated"
+    },
+    {
+      "path": "docs/upgrade-3.8.2.md",
+      "review": "updated",
+      "reason": "Historical release scope",
+      "result": "updated"
+    },
+    {
+      "path": "docs/upgrade-3.8.3.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "docs/upgrade-3.8.4.md",
+      "review": "updated",
+      "reason": "Restore actual v3.8.4 tag upgrade contract",
+      "result": "updated"
+    },
+    {
+      "path": "docs/upgrade-3.9.0.md",
+      "review": "现行核对",
+      "reason": "更新当前0102单谱、退役routes/wire选项、备份/旧效果补账及未修问题；删除实验分支和旧编号指引。",
+      "result": "updated"
+    },
+    {
+      "path": "examples/plugins/com.example.echo/README.md",
+      "review": "current-retained",
+      "reason": "SDK API3.3 echo manifest and test paths",
+      "result": "retained"
+    },
+    {
+      "path": "plugins/github-monitor/README.md",
+      "review": "updated",
+      "reason": "Yuki `>=3.8.1,<4.0`; Plugin API `3.1`; docker compose up -d --build --no-deps bot; 常规聊天只可能看到有界的\n`external_untrusted` recent-event dig; YUKI_VERSION=3.8.1 docker compose run; 排障时优先使用 `test`，不要用回放代替普通测试。; qq-ai-bot-cli plugin approve github-monitor; Authenticated explicit CLI approval",
+      "result": "updated"
+    },
+    {
+      "path": "plugins/io.github.yuanyeyoutao.kun-game/CHANGELOG.md",
+      "review": "historical-retained",
+      "reason": "保留原日期/提交/真实验证与未完成边界；旧配置、已删测试和CI数字仅属于该次记录，不迁写成现行合同。",
+      "result": "retained"
+    },
+    {
+      "path": "plugins/io.github.yuanyeyoutao.kun-game/README.md",
+      "review": "updated",
+      "reason": "Plugin API 3.2; Planner; qq-ai-bot-cli plugin approve io.github.yuanyeyouta; Authenticated explicit CLI approval",
+      "result": "updated"
+    },
+    {
+      "path": "plugins/subscription-monitor/README.md",
+      "review": "updated",
+      "reason": "Plugin API 3.2",
+      "result": "updated"
+    },
+    {
+      "path": "tools/cache_probe.md",
+      "review": "updated",
+      "reason": "未连接外部 MCP，MCP 部分如实标不适用",
+      "result": "updated"
+    }
+  ]
+}

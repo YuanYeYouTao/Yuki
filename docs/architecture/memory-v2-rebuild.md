@@ -8,7 +8,7 @@ Yuki 可以从永久事件账本 `chat_events` 重新提取历史事实。重建
 ## 数据与状态
 
 - `memory_rebuild_runs` 固定 selection、事件 ID 快照、提取契约指纹、扫描/提交 checkpoint 和
-  run 状态，并累计持久化 extraction/consolidation 请求数、供应商返回的 token 数和延迟。
+  run 状态，并累计持久化 extraction 请求数、供应商返回的 token 数和延迟。
 - `memory_rebuild_items` 保存每个真实事件的 source hash、提取状态、尝试次数和错误类别。
 - `memory_rebuild_proposals` 只保存已通过后端主体与 Claim 校验的 canonical claim，不保存模型
   原始输出或完整上下文。
@@ -41,14 +41,13 @@ MemoryEventExtractor
   → SubjectResolver
   → MemoryClaimValidator / MemoryTemporalResolver
   → MemoryClaimProcessor
-  → CandidateResolver / RelationClassifier / ResolutionPolicy
   → MemoryFactService
 ```
 
 extract 每个事件独立调用 `ModelTask.MEMORY_EXTRACTION`，只暂存 proposal。当前事件是唯一证据；
 `evidence_quote` 必须逐字存在于当前事件且与 claim 语义锚定。同会话较早事件只按
 `current_speaker / other_member / bot` 提供消歧，不得独立产生事实。回复方式、称呼、格式、
-语音和表情等交互要求强制归为 preference。
+语音和表情等交互要求由提取结果表达，不按固定风格分类硬拒绝。
 
 `third_party_mode=trusted_metadata` 只接受持久 `yuki_context`、OneBot 数字 at 段，以及同一 Bot、
 同一精确群的回复事件作者；不按正文姓名、昵称、FTS 或向量猜人。disabled 模式只提供 speaker
@@ -57,23 +56,20 @@ extract 每个事件独立调用 `ModelTask.MEMORY_EXTRACTION`，只暂存 propo
 ## 审阅与提交
 
 提取结束进入 review。proposal 默认 pending，可按 ID、scope、operation、kind、authority、
-group、subject 和 confidence 范围批准或拒绝。批准的是 claim，不是预先计算的数据库 action；
-仍有 pending 时 commit 会失败。
+group、subject 和 confidence 范围批准或拒绝。批准的是 claim，不是预先计算的数据库 action。
+已批准子集可以先 commit；未决 proposal 保留，子集提交收尾后回到 review，不要求本轮全部闭合。
 
 commit 按 `source occurred_at → event_id → claim_index` 串行执行，并重新：
 
 1. 加载真实 source event 并验证 SHA-256 指纹；
 2. 验证事件资格、Bot 身份和 live/rebuild receipt；
 3. 运行 SubjectResolver、Claim Validator 与 Temporal Resolver；
-4. 读取当前事实候选，必要时执行 consolidation；
-5. 应用 HistoricalResolutionGuard 和当前 ResolutionPolicy；
-6. 通过共享 MemoryFactService 写事实、证据、关系、状态事件与派生索引任务。
+4. 按当前有效主体、来源与批准记录构造事实；
+5. 通过共享 MemoryFactService 原子写事实、证据、状态事件和 proposal 提交回执。
 
-历史相同事实只合并证据，`last_confirmed_at` 取现值与历史事件时间的最大值。比当前 active 事实
-更早的冲突或修正只能保存为 superseded 历史版本或 noop，不能反向 supersede、contest、
-invalidate 或降低当前事实。过期 claim 默认 skipped；`stage_invalidated` 只创建带 expired 原因的
-invalidated 历史事实。Rebuild 不调用 active 容量驱逐路径；容量已满时仅拒绝新 active 事实，
-相同证据和非活跃历史版本仍可保存。
+CREATE 创建独立事实，不按同 key 搜索旧值、调用 consolidation 或强制合并历史；
+纠正和失效沿真实 fact ID。过期 claim 默认 skipped；`stage_invalidated` 可以保存
+带 expired 原因的历史事实。来源和回执复核防止越权或重复提交，不增加 active 容量淘汰。
 
 FTS 由现有触发器同步；active 新事实只排队现有 Embedding job。Embedding 故障不会回滚事实，
 run completed 也不表示异步向量已经生成完毕。
@@ -89,7 +85,9 @@ run completed 也不表示异步向量已经生成完毕。
 包括被过滤的原始引用；准备后引用状态改变时延后该 item，下一轮重新准备。
 单项主体失效只将该 item 标记为来源变化，不阻塞其他 item，也不清空引用或改写来源哈希。
 
-只有待提交和失败 proposal、以及尚未收尾的 staged/no_claims item 均为空，run 才能进入 completed。
+已批准子集提交后，失败 proposal 进入 commit_paused，未决 proposal 回到 review；
+仍有待提取、失败或提取中的 item 时进入 extraction_paused。只有剩余提取、审核、提交和
+item 回执都已收尾，run 才能进入 completed。
 单轮返回值仍是处理的 proposal 数；只有回执扫尾的轮次可以返回 0 并继续保持 committing，
 后续轮询继续处理剩余页。中途暂停或重启按已有 run、item 与 receipt 恢复，不重新执行已提交事实。
 
@@ -121,7 +119,7 @@ run completed 也不表示异步向量已经生成完毕。
 receipt 保留。cancel 只停止后续处理，不回滚已提交事实。
 
 Tool Kernel 的 `admin_memory_rebuild_*` 工具共用同一服务和真实事件权限绑定，不能
-跳过 review。Plugin API 3.1 未暴露 rebuild。
+跳过 review。插件是否可见仍由当前 SDK 和 capability 清单决定，不能借管理工作流绕过真实授权。
 
 ## 配置
 
@@ -142,16 +140,15 @@ updated_at，再按原行 token 删除 proposal 和更新 selection。目录或�
 
 
 `status` 的 token 数仅累计供应商实际返回的 usage；供应商不返回时保持 0，不做字符数伪估算。
+原 extraction 指纹保留为历史说明；换模型、Prompt 或 Schema 不封死原 run 的恢复，
+提交仍核验已存 proposal 的 source hash、当前 owner、来源、批准状态与实际回执。
 延迟以累计毫秒记录，Embedding 任务数按本 run 提交后实际关联的新任务统计。
 
 常见状态：
 
-- `extraction_fingerprint_changed`：模型路由、Prompt、Schema、主体解析或校验契约已变化；不要在
-  同一 run 混用，创建新 plan。
 - `process_restart`：这是预期的安全暂停，检查状态后显式 resume。
 - `source_event_changed`：事件在审阅后被修改或兼容主体元数据变化，proposal 会跳过。
 - `live_job_active` / `already_processed`：实时 Worker 正在处理或已经完成，Rebuild 不抢占。
-- `rebuild_capacity_preserved`：当前 active 容量已满；调整容量、清理事实或拒绝 proposal 后重试。
 - `historical_claim_expired`：selection 使用默认 skip，过期历史不会成为 active。
 
 升级按生产手册停止写入并保存一致性数据库与配置备份，schema 以当前包的 Alembic head 为准。

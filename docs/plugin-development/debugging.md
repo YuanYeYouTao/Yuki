@@ -35,4 +35,4 @@ docker compose up -d --no-deps --force-recreate bot
 docker compose logs -f bot
 ```
 
-确认 `./plugins:/app/plugins:ro` 已挂载，`.env` 中 `PLUGIN_DIRECTORY=plugins`。插件代码变化目前需要重启 Bot；1.6.0 不提供热更新。
+确认 `./plugins:/app/plugins:ro` 已挂载，`.env` 中 `PLUGIN_DIRECTORY=plugins`。插件代码或工具定义变化需要重启 Bot，重新装配当前部署的工具合同。

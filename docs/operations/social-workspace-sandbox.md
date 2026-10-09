@@ -3,11 +3,11 @@
 All Yuki Main Agent entrypoints share a sorted function-tool manifest, frozen after
 plugin startup and before background turns for the running deployment. Normal/private/group turns, plugin wakeups,
 plugin generation, scheduled generation and scheduled Agent runs use the same
-schemas, including retry/finalization requests. Core and installed plugin definitions are collected without an event identity;
+schemas for their model requests. Core and installed plugin definitions are collected without an event identity;
 work control and short-state definitions are added by the same Main Agent contract. Execution still
 checks the real origin, target, current permission and delegated grant. Scheduled Main Agent calls use the ordinary social/workspace/sandbox tool names;
 explicit DSL capability names are not appended to that manifest.
-The model receives the complete frozen manifest; execution checks current availability.
+Direct mode declares the complete frozen deployment manifest; authority is checked at execution. Optional Code Mode exposes its fixed direct tools and invokes the remaining tools through Code Mode; execution checks current authority and availability.
 Restart Bot after changing installed tool definitions to start a new manifest.
 
 ## Global short-term state
@@ -20,8 +20,7 @@ Reads do not extend expiry. Empty text deletes a record. Optimistic versions pre
 concurrent turns from silently overwriting one another; conflicts return current
 records. Expired/deleted slots retain versions, so reuse may first return a conflict.
 
-The whole rendered state envelope is limited to 512 UTF-8 bytes (a conservative
-sub-512-token bound), including labels. Oversized writes are rejected atomically.
+Each record is limited to 300 characters; there is no additional 512-byte envelope gate. Oversized record writes are rejected atomically.
 A turn loads one snapshot after history, in the current input envelope immediately
 before `runtime.time` where present. Empty state adds nothing. Tool results carry
 subsequent writes; the turn's initial snapshot never changes inside its tool loop.
@@ -30,11 +29,11 @@ a temporary decision, such as a number to recall in another conversation, before
 claiming it has been remembered. A successful write is necessary; a statement alone
 is not persistence.
 
-Responses recovery/finalization messages follow prior function outputs at the true
-input tail. They no longer get inserted ahead of existing continuation items.
-Ordinary durable-work wakeups continue the stored request chain. Explicit chain
-boundaries, compression and provider cache eviction remain distinct from normal
-continuation; see the [development contract](../architecture/development-contract.md)
+Responses recovery inputs follow the original paired function outputs at the request
+tail when protocol continuation remains valid. Work business resumption uses current
+authorized chat and original receipts; it does not restore the whole old group history.
+Private provider state stays on its original valid chain until an explicit boundary,
+compression or cache eviction; see the [development contract](../architecture/development-contract.md)
 and [persistent workers](../architecture/persistent-subagents.md).
 
 ## Social operations
@@ -126,11 +125,11 @@ The content-free operation receipt remains separate from the immutable event led
 Tool results may project the confirmed ledger's internal event ID and actually delivered
 text, matched to the receipt's Presence, canonical target, platform reference, source,
 and dispatch interval. Missing, conflicting, or unreadable ledger data omits this text
-without downgrading the send receipt. Main Agent memory attribution uses this projection,
-including confirmed split parts, file captions and spoken text; it never re-splits raw
-tool arguments or treats a file/image ledger placeholder as delivered prose.
+without downgrading the send receipt. The projection preserves confirmed delivered text,
+including split parts and file captions; it never re-splits raw tool arguments or treats
+a file/image ledger placeholder as delivered prose. Memory attribution is retired.
 
-Voice and emoji preparation receive the validated delivery `ConversationScope`, not an
+Emoji preparation receives the validated delivery `ConversationScope`, not an
 invented human actor. Plugin-background sends retain their proven external event and
 frozen current target, and may use the same media parameters when enabled. Explicit
 target overrides remain forbidden for that origin. Private emoji lookup uses the real

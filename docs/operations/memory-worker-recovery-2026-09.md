@@ -1,6 +1,8 @@
 # Memory worker recovery — September 2026
 
-Version stays 3.8.1; schema stays 0051. No history reset, fact deletion, embedding rebuild,
+Historical September 2026 repair and probe record. Consolidation, attribution, reinforcement and the synthetic quality CLI have since been retired; the failures and measurements below retain their original scope. Current operations are in [Memory source audit and maintenance](memory-quality.md).
+
+The recorded patch kept version 3.8.1 and schema 0051. No history reset, fact deletion, embedding rebuild,
 persona change, or recall-selection policy change is part of this patch.
 
 ## Findings and scope

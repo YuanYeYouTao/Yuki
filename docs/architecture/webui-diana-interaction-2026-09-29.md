@@ -1,6 +1,6 @@
 # WebUI 状态、收发消息、Provider 选择与 Token 展示
 
-本页记录 2026-09-29 对 Diana 固定提交 `682d652` 的设计比较，以及 Yuki 的实施边界。参考的是 Diana 的交互和统计口径，未复制其源码；Diana 的 Limited Redistribution License 限制修改后代码的公开发布。当前实现位于 `codex/webui-diana-interaction`，合并、部署和真实页面验收需另行核对。
+本页记录 2026-09-29 对 Diana 固定提交 `682d652` 的设计比较，以及 Yuki 的实施边界。参考的是 Diana 的交互和统计口径，未复制其源码；Diana 的 Limited Redistribution License 限制修改后代码的公开发布。当时实现在 `codex/webui-diana-interaction` 开发；当前页面及配置生效方式见[WebUI 合同](webui-console.md)。
 
 ## 对照和决定
 

@@ -23,7 +23,7 @@ GitHub 插件唤醒任务 69、70 分别于 19:32、20:53 创建，一直 pendin
 
 最终镜像 `ghcr.io/yuanyeyoutao/yuki-qqbot:workspace-final`，在本地完整构建的 `workspace-26b9fee` 上加入声明修复层，再压缩流式传输。镜像 ID：`sha256:9567239f2fd1b973ac6c28712328ddde5138f7245079a603b8a120ca6837b9e2`；运行提交 `95d30e2`。
 
-最终部署备份路径 `/opt/yuki-qqbot/backups/pre-workspace-95d30e2`；包含当时的数据库、工作区、Manager 源码和配置。回退时恢复备份中的 `manager.py`，使用追加 `docker-compose.workspace-final.yml` 之前的 Compose 文件列表启动 Bot；数据库 schema 不变，无需恢复旧业务库。
+当时部署备份路径 `/opt/yuki-qqbot/backups/pre-workspace-95d30e2`；包含当时的数据库、工作区、Manager 源码和配置。回退时恢复备份中的 `manager.py`，使用追加 `docker-compose.workspace-final.yml` 之前的 Compose 文件列表启动 Bot；数据库 schema 不变，无需恢复旧业务库。
 
 真实 gVisor 沙箱验证已通过：未传 `input_artifact_ids`，列出 33 个工作区文件，成功读取并解析棋局 JSON；未创建输出文件或发送聊天消息。回执记录在备份目录的 `sandbox-check.json`。
 

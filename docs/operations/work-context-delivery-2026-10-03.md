@@ -1,8 +1,10 @@
 # Work 上下文与普通聊天续接实施记录
 
+本文中的 responseSchema 实验属于该次历史交付；此分支已于 2026-10-09 退役，不作为当前摘要配置步骤。
+
 交付快照：2026-10-03，[PR #228](https://github.com/YuanYeYouTao/Yuki/pull/228) 已合并并完成 Bot-only 部署，合并提交 `3d9e273`、数据库 `0089`。本文保留该轮证据，不代替真实 QQ 能力验收；后续 `0090` 与前台整理行为见[PR #229 交付记录](foreground-rollup-sqlite-contention-2026-10-03.md)。
 
-设计与范围见[任务书](../architecture/work-context-and-chat-continuation-taskbook.md)；Pi Durable 的职责、检查点和持久回执对照见[源码对照](../architecture/pi-durable-work-context-comparison-2026-10-03.md)。本轮借用设计和验证思路，不引入 Pi 依赖、TaskEngine 或第二套执行台账。
+原施工任务书已退役，现行上下文规则见[主 Agent 合同](../architecture/main-agent-runtime.md)；Pi Durable 的职责、检查点和持久回执对照见[源码对照](../architecture/pi-durable-work-context-comparison-2026-10-03.md)。本轮借用设计和验证思路，不引入 Pi 依赖、TaskEngine 或第二套执行台账。
 
 ## 实现与定向证据
 

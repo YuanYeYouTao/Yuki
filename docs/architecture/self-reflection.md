@@ -2,10 +2,8 @@
 
 Self Reflection 使用 canonical owner、内部事件范围与持久 run ID；不使用平台消息 ID
 登记工作。schema 0061 增加 cycle、实际请求账本、源批次重试和恢复检查点。
-SELF 自主证据扩展已有定向验证；T20 真实 QQ 社交效果仍须单独验收。
-迁移顺序为 `0065`（关系历史索引）→ `0066`（autonomy 接纳）→
-`0067`（SELF 工具来源与自省水位）→ `0068`（内部引用事件）→
-`0069`（Social 回执内部事件关联）→ `0070`（无来源机会与讨论线程）。
+schema 0067 扩展可信 SELF 工具来源；完整迁移按当前 Alembic 链执行。
+真实 QQ 社交效果单独验收，不由请求成功或队列排空推定。
 实际线上版本以当前容器镜像与数据库迁移记录为准。
 
 ## 结构化生成
@@ -16,8 +14,9 @@ SELF 自主证据扩展已有定向验证；T20 真实 QQ 社交效果仍须单�
 
 返回值通过 Pydantic、引用、范围、所有权与 mutation 校验。源证据必须来自输入中提供的
 真实事件或工具回执；同一 proposal 选择的多个来源都会保存，不只使用第一条。原事件正文
-仍是聊天引用的校验依据，人物名片和 ID 展示不会改写原凭据。截断或输出达到预算时报
-`output_budget_exhausted`，不自动加预算。类别名称、importance、confidence 与解释文案
+仍是聊天引用的校验依据，人物名片和 ID 展示不会改写原凭据。Provider 明确报告输出截断时返回
+`output_budget_exhausted`，不凭 token 数达到配置值推断失败，不自动加预算。
+类别名称、importance、confidence 与解释文案
 不再构成后台价值准入门槛，不要求 subject_basis、retention 或 source_style 分类。
 
 稳定且不含具体人物隐私的 SELF fact、preference、reflection 和 principle 可使用 global；
@@ -31,7 +30,8 @@ SELF 自主证据扩展已有定向验证；T20 真实 QQ 社交效果仍须单�
 200 事件/16000 字符的输入预算。撤去每 owner 次数封口、低/高水位排空和自然间隔重复
 调度。批次按实际渲染的输入计数，不能生成前丢弃尾部事件后再把整批标为完成。
 
-每日 96 次限额在 Provider 准备 payload 并通过调度检查后、真正发送 HTTP 前原子登记；
+每日请求限额沿 `MEMORY_SELF_REFLECTION_MAX_DAILY_CALLS`（默认 96），在 Provider
+准备 payload 并通过调度检查后、真正发送 HTTP 前原子登记；
 包含格式修复和传输重试，成功或失败都收尾实际请求记录。schema 准备或调度前失败不
 扣调用次数。进程重启保留原请求账本，不能重置原 run 的额度。旧版本未登记的 HTTP
 重试无法追溯，不以 model invocation 次数冒充物理请求次数。
@@ -67,7 +67,8 @@ cycle、每日请求预算、检查点和原 run 恢复机制；管理输出以 
 选择后新增引用、窗口或延长保留期都会阻止该条删除。回执引用查询使用 0083 的
 tool_receipt_id 非空索引；原 receipt、run 和证据仍是唯一事实来源。
 
-主 SELF 入口使用 actorless TurnMemorySession，自动读取当前群与该群可见的 SELF 资料，
+主 SELF 入口使用 actorless TurnMemorySession，按真实来源准备当前群与可见 SELF 范围，
+需要长期事实时通过 `search_memory` 读取，
 不借最近发言者或目标人的身份准备上下文。纯工具自省经同一 MutationService 验证、
 冲突处理和原子回执写入；只能影响有相应证据的 SELF global/当前群范围，不能写私人事实。
 历史 run 证据可保留，不能因此恢复已失效 generation 的执行权限。
@@ -77,7 +78,7 @@ tool_receipt_id 非空索引；原 receipt、run 和证据仍是唯一事实来�
 子 Agent 保留原 SELF principal 与 execution ID，回执由原 run 归属，不冒充新的真人事件。
 聊天事件水位、自主回执水位和参与控制器反馈序列各有用途，不能相互替代。
 
-可选 `<yuki-state>` 是主 SELF 的内部状态自报，在可见发送及语音正文前剥离；不会生成
+可选 `<yuki-state>` 是主 SELF 的内部状态自报，在可见正文发送前剥离；不会生成
 聊天记录或充当其他人意图的证据。自省仍依实际事件、工具尝试和回执做判断，不能把
 自报、proposal 或模型说“做过了”当作操作成功证明。
 
@@ -97,8 +98,14 @@ tool_receipt_id 非空索引；原 receipt、run 和证据仍是唯一事实来�
 实际流入/排出速率，观察不足 60 秒时为未知；历史失败不否决当前健康。
 配置见 `.env.example`。
 
-## 部署
+## 部署与历史运行证据
 
-本轮为源码与合同裁剪，不代表已部署或通过真实 QQ 验收。后续部署仍沿当前迁移链
-与 Bot 发布流程，保留预算、mutation 和发送回执；回滚不得用旧数据库覆盖新记忆。
-本地 SQLite 与来源回执测试验证恢复正确性，不能替代自然社交效果或人工语义准确率。
+升级沿当前迁移链与 Bot 发布流程，保留预算、mutation 和发送回执；回滚不能用旧数据库
+覆盖新记忆。本地来源和回执验证不能代替自然社交效果或人工语义准确率。
+
+2026-10-09 的生产临时排空处理 236 批、2905 events，33 项写入，没有新增失败，
+有效积压为 0。227 个旧 generation 的 failed/waiting 批次曾阻挡 current generation 20
+（boundary 91576），旧窗口均无 live source；本次仅临时隔离这 227 条，保留原结果、
+检查点、attempt 和请求账本，包括原 run 484 已提交的 1 项变更。领取逻辑的代码根因
+尚未修改，不能把排空结果写成永久源码修复。
+详细操作与部署状态见 [当日任务记录](Yuki-Memory-Provider分工与后台收尾审查任务书-2026-10-09.md)。

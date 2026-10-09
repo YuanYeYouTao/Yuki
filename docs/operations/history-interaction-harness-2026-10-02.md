@@ -5,7 +5,7 @@
 实现基线为 `513a263519f1c4d237840ffe5f27ea0697797db5`，分支
 `codex/history-interaction-harness`。用户授权最后全面核查、任务书小修、实施、验证、
 PR 合并及上线；具体能力验收由用户完成。本记录随进度更新，不把设计或测试冒充部署。
-任务定义见[修复任务书](../architecture/history-snapshot-and-work-reporting-taskbook.md)。
+原施工任务书已退役；现行历史与交互规则见[主 Agent 合同](../architecture/main-agent-runtime.md)。
 
 三个子 Agent 分别核查历史与实际协议、工作与发送回执、执行循环与验收。
 直接复用 PreparedHistory/FrozenFragments、原 effect/Social 回执、steer、CAS 和统一 Runner；

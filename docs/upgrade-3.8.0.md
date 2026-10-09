@@ -1,5 +1,7 @@
 # 升级到 Yuki 3.8.0
 
+本文保留该正式版本的历史升级合同；后续源码升级见[3.9.0 指南](upgrade-3.9.0.md)。
+
 Yuki 3.8.0 是 canonical-only 版本，Alembic head 为 `0049`。它不包含 v1、dual-write、
 identity backfill 或 cutover 运行路径。
 

@@ -65,7 +65,7 @@ Ruff 检查和格式检查通过，Linux 目标的 mypy 检查 683 个源文件�
 校验引用哈希，并按原 Work ID 比较预算、journal、输入与已接受效果。回退保留上线后新事实，
 不能恢复旧数据库来撤销回执。
 
-错误收口依据现行 [共同架构约束 §7.4–7.5](../architecture/development-contract.md)、
+错误收口依据现行 [共同架构约束](../architecture/development-contract.md)、
 [主 Agent 执行与恢复](../architecture/main-agent-runtime.md)、
 [Provider 输出边界](../architecture/provider-output-boundary.md) 与
 [完整证据备份合同](work-evidence-backup.md)。历史任务书中的已替换策略不作为当前恢复授权。

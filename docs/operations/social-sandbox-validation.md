@@ -1,5 +1,7 @@
 # Social/workspace/sandbox acceptance record
 
+Historical acceptance for the 2026-09-11 social and ephemeral sandbox implementation. Current persistent terminal/workspace procedures are in [Persistent Yuki environment](persistent-environment.md).
+
 ## Local deterministic checks
 
 - Full suite: **800 passed**, 195 existing SQLite datetime deprecation warnings.

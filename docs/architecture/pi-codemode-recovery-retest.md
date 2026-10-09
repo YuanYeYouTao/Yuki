@@ -90,29 +90,4 @@ hash、每个输入 hash、每次完整冻结声明 hash。四组输入与声明
 本次本地开发、真实 API、测试分支提交/推送已授权；生产访问、真实发送、PR、合并、
 发布与部署均未执行。付费工作区/SQLite 自动清理，worker/binding 留作继续验证。
 
-最终命令（原文件已经存在，后续重跑必须改 output 文件名）：
-
-```sh
-PYTHONPATH=. YUKI_MONTY_BINARY="$PWD/.venv/bin/yuki-monty-worker" \
-  uv run --frozen python scripts/benchmark_long_tasks.py \
-  --credentials /Volumes/huawei/项目实战/deepseek.md \
-  --authorize-paid --unlimited-cost --max-output-tokens 32768 --repeats 2 \
-  --prior-report docs/architecture/pi-codemode-evidence/p11-deepseek-initial.json \
-  --prior-report docs/architecture/pi-codemode-evidence/p11-deepseek-retest.json \
-  --prior-report docs/architecture/pi-codemode-evidence/long-tasks-initial.json \
-  --prior-report docs/architecture/pi-codemode-evidence/long-tasks-comparison.json \
-  --prior-report docs/architecture/pi-codemode-evidence/long-tasks-unlimited.json \
-  --prior-report docs/architecture/pi-codemode-evidence/long-tasks-recovery-retest.json \
-  --prior-report docs/architecture/pi-codemode-evidence/long-tasks-recovery-retest-v2.json \
-  --case old/direct/resumed_work/0 \
-  --case old/direct/resumed_work/1 \
-  --case old/code/resumed_work/0 \
-  --case old/code/resumed_work/1 \
-  --case new/direct/resumed_work/0 \
-  --case new/direct/resumed_work/1 \
-  --case new/code/resumed_work/0 \
-  --case new/code/resumed_work/1 \
-  --output docs/architecture/pi-codemode-evidence/long-tasks-recovery-final.json
-```
-
 证据：[最终逐次记录](pi-codemode-evidence/long-tasks-recovery-final.json)、[结构化汇总](pi-codemode-evidence/long-tasks-recovery-final-summary.json)、[验证范围](pi-codemode-evidence/long-tasks-recovery-regression.json)。

@@ -1,6 +1,7 @@
-# Pi 与 Code Mode 开发交付记录
+# Pi 与 Code Mode 历史开发交付记录（2026-10-04—07）
 
-始于 2026-10-04，最后更新 2026-10-05；目标与不变量见 [设计合同](pi-codemode-design.md)，接手说明见 [交接](pi-codemode-handoff.md)。
+本页保存 2026-10-04—07 实验分支的阶段实现、验证、反例与实际费用。现行执行和工具模式见
+[主 Agent](main-agent-runtime.md)与[Tool Kernel](tool-kernel.md)；许可来源见[来源记录](pi-port-provenance.md)。
 
 当前来源定位：Pi 仅为设计参考，Yuki Python 核心按自有合同实现；Monty 是实际依赖。
 此前“Pi 移植”称谓和 Pi 许可随包检查属于历史记录，当前标注及包装已修正，详见文末
@@ -29,7 +30,7 @@
 
 新增隔离声明导出器和 X02 回归：实际 manifest 每行映射 descriptor/binding，缺少映射失败，
 没有输出 schema 的项明确为 null。部署相关插件/MCP 与生产清单不冒充已采集。
-入口映射见设计合同 E01–E14。macOS 上 SQLAlchemy async 缺 greenlet，已改用现有
+入口责任见当时各阶段记录。macOS 上 SQLAlchemy async 缺 greenlet，已改用现有
 SQLAlchemy 的 `asyncio` extra（`pyproject.toml`/`uv.lock`）。
 
 ## P01：显式调用身份，已完成

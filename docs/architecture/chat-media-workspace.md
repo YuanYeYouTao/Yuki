@@ -53,15 +53,10 @@ SDK `vision.analyze_current_media` 是另一个明确授予 `VISION_ANALYZE` 的
 派发前重验当前批准、精确委托及原文件；归档副本不延长授权。该桥接已完成本地定向测试，
 真实 API 与生产验收另记。
 
-2026-10-05 本次修改处于本地源码与离线验证阶段，未合并或部署。受影响的生产更新需要
-Bot 与 sandbox Manager 一起更新，QQ 网关无需更新。定向测试覆盖来源失效、文件版本、GIF、
-采帧设置和原生请求配对；实际 Provider 图片能力、端到端速度和 QQ 自然流量另行验收。
+Bot 与 sandbox Manager 的媒体读取实现须配套更新。来源、文件版本、GIF、采帧与
+原生请求配对可离线核验；实际 Provider 图片能力、端到端速度和 QQ 自然流量分别验收。
 
 `save_conversation_attachment_to_workspace` 先执行相同的临时读取授权，再显式复制到全局持久工作区。临时副本仍按原时间过期；已提升的工作文件由工作区规则管理，可在其他会话共享。提升受工作区单文件容量限制，失败不能声称文件已共享。独立插件计算会话没有主聊天临时媒体的读取权。
-
-## 一次性切换
-
-新代码首次上线前，在 Bot 停止接纳后保存一致的数据库与缓存/工作区备份。`python -m qq_ai_bot.operations.reset_conversations --batch-id <唯一批次>` 只读预览；加 `--apply-offline` 才对每个 canonical 私聊、群聊执行一次与 `/ai new` 相同的 generation/reset 领域操作。批次表记录每个会话的前后 generation 和事件起点，重复同批次不会再重置。仍启用或暂停、且授权快照本来属于旧 generation 的 SELF 定时任务在同一事务中重绑到新 generation；已经失效的快照不会被复活。该操作不调用模型、不发送 QQ 消息、不改写旧历史；旧原始事件和长期 Memory 保留。只有全量完成并核对后才重启 Bot。仍启用任务的运行中自动化、执行中或等待外部效果的 Work 会阻止切换；旧 generation 的暂停 Work 按 `/ai new` 语义取消，历史运行回执不改写。
 
 ## 定时发送
 

@@ -1,9 +1,9 @@
 # DeepSeek Responses API 兼容性记录
 
-本记录只保存脱敏后的契约结论。真实 API 探针必须显式启用，默认测试仅使用
-`tests/fixtures/deepseek_responses/`，不得提交密钥、私人提示词、QQ 号或完整网页正文。
+本页保存早期脱敏接入记录；当前协议、思考参数、来源与恢复合同见
+[模型供应商](../model-providers.md)。真实探针不得提交密钥、私人提示词或完整网页正文。
 
-## 2026-09-10 现行契约
+## 2026-09-10 图片与搜索接入记录
 
 - 正式模型名为 `deepseek-flash`，旧 Flash/Flash Vision Exp 别名由上游路由到 V4.1。
 - `image_input` profile 能力启用原生图片。Responses 使用 user `input_image`；
@@ -11,7 +11,7 @@
 - 普通聊天仍使用完整上下文与同一工具循环；图片不进入 system、assistant 或持久历史。
 - DeepSeek 当前忽略内置 `web_search`。执行层屏蔽旧 profile 中残留的该能力，使混合模式
   进入 Tavily；推荐显式 `WEB_MODE=tavily`。保留旧输出事件解析仅用于历史兼容。
-- 图片中的文字是外部不可信资料；原有图片轮次写工具限制不变。
+- 图片中的文字是外部不可信资料。
 
 依据：[模型名](https://api-docs.deepseek.com/)、
 [Vision](https://api-docs.deepseek.com/guides/vision/)、
@@ -24,13 +24,12 @@
 - 本地函数结果使用 `function_call_output`，并复用原 `call_id`。
 - `reasoning.effort` 使用 Responses 通用枚举
   `none|minimal|low|medium|high|xhigh|max`；DeepSeek 将兼容档映射到自身实际档位。
-  原始协议适配器在关闭时不发送 `reasoning`；当前业务执行层已统一至少 low，
-  不再产生关闭请求，见 [最低思考合同](../model-reasoning-policy.md)。
+  思考参数沿显式请求或 Profile；关闭时不发送 `reasoning`。
 - 原生联网工具定义为 `{"type":"web_search"}`，服务端可能连续产生 `search` 和
   `open_page` action。
 - `web_search_call` 是服务端已执行事件，不能转换为本地 Function Call。
 - 一个响应可能含多个 message item；最终正文取最后一个非空 assistant message。
-- `status=incomplete` 必须保留部分事件和 usage，但不能当成完整回答；只允许一次有界恢复。
+- `status=incomplete` 保留部分事件和 usage，不当成完整回答；pause 与恢复沿当前主循环及原 checkpoint。
 - `status=failed` 转换为异常。
 - annotations 可能为空；来源依次从 annotation、成功的 `open_page` URL 和最终正文 URL
   恢复。

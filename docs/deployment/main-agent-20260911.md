@@ -21,7 +21,7 @@
 - 已安装插件源码没有遗留 `llm.generate / generate_with_context / agent.run` 调用。安装中的 SnowLuma action registry 包含好友和群历史读取接口，参数与本次工具使用的 `user_id/group_id + count` 相符。
 - 没有向 QQ 用户发测试消息，没有发起付费模型验收请求。检查期间没有新的提示词投影/沙箱续跑样本，实际缓存命中与新任务在线效果仍待自然流量；不能从健康状态推断命中率。
 
-## 备份与回退
+## 当时备份与回退
 
 备份目录：`/opt/yuki-qqbot/backups/pre-main-agent-04da263`。包含停止 Bot、排空任务、停止 Manager 后的一致性 Bot DB、Manager DB、工作区/索引，以及原配置、Manager 源码、旧镜像 ID 和副本演练报告。
 

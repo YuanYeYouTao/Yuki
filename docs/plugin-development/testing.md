@@ -35,7 +35,7 @@ await ctx.config.set("mode", "short", scope_type="user", scope_id="10001")
 await ctx.storage.set("state", "count", 1)
 ```
 
-可用 Fake 覆盖 Message、People、Group、Memory、Relationship、LLM、Agent、AgentSession、Web、HTTP、Vision、Media、Automation、OneBot、Config、Secrets、Storage、Scheduler、Clock 和 EventBus。
+可用 Fake 覆盖 Message、People、Group、Memory、Relationship、Agent、AgentSession、Web、HTTP、Vision、Media、Emoji、Notification、Automation、OneBot、Config、Secrets、Storage、Scheduler 和 EventBus。
 
 ## 推荐测试矩阵
 

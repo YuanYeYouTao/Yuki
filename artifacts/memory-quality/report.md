@@ -1,4 +1,4 @@
-# Memory V2 Quality Report
+# Memory V2 Quality Historical Report
 
 - Suite: `memory-v2-quality-v2` / `full`
 - Commit: `2d5f02798ed86dc60b3e5280ced9070a1fd53fd6`

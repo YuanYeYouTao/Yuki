@@ -77,9 +77,9 @@ multipathd 及 socket、ModemManager、fwupd 及刷新 timer/service、udisks2 �
 清理了五份旧备份、镜像传输包、重复暂存目录、已卸载的验收文件系统和十一个未使用的
 旧 Bot／回退／测试镜像标签。保留当前镜像、兼容回退镜像及所有用户数据，没有全局 prune。
 
-## 最新恢复点
+## 当时保留的恢复点
 
-仅保留 `/opt/yuki-qqbot/backups/pre-environment-final-20260912T145430`，路径同时记录在
+本次交付当时仅保留 `/opt/yuki-qqbot/backups/pre-environment-final-20260912T145430`，路径同时记录在
 `/opt/yuki-sandbox/latest-restore-point`。
 
 包含数据库、配置、artifact、持久家目录、运行文件、Manager 源码与回执、unit、Compose

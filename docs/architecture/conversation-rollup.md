@@ -1,4 +1,4 @@
-# Yuki 3.8 canonical Conversation Rollup
+# Canonical Conversation Rollup
 
 Rollup 是 canonical Conversation 的可重建 Prompt 投影。`chat_events` 始终是唯一原始证据源；
 摘要不写入 Memory，也不拥有 Conversation。
@@ -231,7 +231,7 @@ instructions、tools/native tools、input-without-current-tail 与完整 cache-s
 
 ## generation 与效果围栏
 
-每轮捕获不可变 Conversation snapshot。每次模型请求、工具、回复、语音、图片和插件副作用前都
+每轮捕获不可变 Conversation snapshot。每次模型请求、工具、回复、图片和插件副作用前都
 重验 generation；外部效果通过进程内 EffectGate 获得一次性 permit。
 
 后台通知 turn 在 claim 后、模型调用前和 finish/side effect 前至少三次复核 generation、授权目标、

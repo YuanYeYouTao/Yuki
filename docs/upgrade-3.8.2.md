@@ -1,5 +1,7 @@
 # Yuki 3.8.2 配置、启动与升级
 
+本文保留该正式版本的历史升级合同；后续源码升级见[3.9.0 指南](upgrade-3.9.0.md)。
+
 目标数据库版本为 **0055**。从 0051 升级会执行 0052–0055 迁移；禁止直接 stamp 跳过迁移。
 更旧数据库先核对 [3.8.1 升级要求](https://github.com/YuanYeYouTao/Yuki-QQbot/blob/v3.8.2/docs/upgrade-3.8.1.md)。
 

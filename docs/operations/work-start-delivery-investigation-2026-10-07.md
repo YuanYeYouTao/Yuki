@@ -42,10 +42,10 @@ Work/预算或盲重发，也不应把本次调查混入 Genie 功能删除。�
 
 源码定位（本次提交中的相对路径）：
 
-- [固定提示](../../src/qq_ai_bot/runtime/activation_outcome.py#L92)
-- [开始记录拒绝](../../src/qq_ai_bot/runtime/work_control.py#L334)
-- [业务执行门禁及一次纠正](../../src/qq_ai_bot/services/work_reporting.py#L101)
-- [引用消息校验](../../src/qq_ai_bot/social/service.py#L641)
+- [固定提示](https://github.com/YuanYeYouTao/Yuki/blob/964dadef1e72e862bf543b7caba800420be2e040/src/qq_ai_bot/runtime/activation_outcome.py#L92)
+- [开始记录拒绝](https://github.com/YuanYeYouTao/Yuki/blob/964dadef1e72e862bf543b7caba800420be2e040/src/qq_ai_bot/runtime/work_control.py#L334)
+- [业务执行门禁及一次纠正](https://github.com/YuanYeYouTao/Yuki/blob/964dadef1e72e862bf543b7caba800420be2e040/src/qq_ai_bot/services/work_reporting.py#L101)
+- [引用消息校验](https://github.com/YuanYeYouTao/Yuki/blob/964dadef1e72e862bf543b7caba800420be2e040/src/qq_ai_bot/social/service.py#L641)
 
 ## dot 后续工作的输入
 

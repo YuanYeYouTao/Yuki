@@ -1,6 +1,8 @@
 # Work 上下文与聊天续接缓存核查记录
 
-对应任务书：[聊天续接与工作区](../architecture/work-context-and-chat-continuation-taskbook.md)。
+本文是 2026-10-03 的实验记录；当时的 Gemini 辅助 JSON_SCHEMA 特判和 responseSchema projector 已退役，成功/失败样本仍按原配置保留。当前 Provider 路径见[模型合同](../architecture/model-providers.md)。
+
+原任务书已退役；现行[主 Agent 合同](../architecture/main-agent-runtime.md)不改变以下历史实验结果。
 手动入口与范围：[cache_probe](../../tools/cache_probe.md)。
 
 ## 状态

@@ -1,11 +1,6 @@
 # Pi / Code Mode compatibility and operations
 
-This is the experiment branch's procedure, not a record of a production switch.
-Production access, a second Bot, image publication, and deployment remain
-unauthorized. The dedicated temporary Linux validation VM was explicitly
-authorized on 2026-10-05; its VM and temporary caches must be deleted after the
-authorized acceptance work. Current evidence is in
-[the delivery record](../architecture/pi-codemode-delivery.md).
+Code Mode is merged into main and remains explicitly optional; the default distribution disables it. This page contains current build, isolation, backup and switch procedures. The compatibility matrix and validation measurements record the 2026-10-05–08 experiment and its exact artifacts. Current deployment decisions require authorization for the actual instance; historical experiment authorization does not authorize a new switch. See [the delivery record](../architecture/pi-codemode-delivery.md) and [the integration deployment record](deletion-production-20261008.md).
 
 ## Compatibility matrix
 
@@ -24,22 +19,16 @@ authorized acceptance work. Current evidence is in
 | New reader, privacy deletion / interrupted GC | Old bytes without a live authorized reference | Refuse snapshot/artifact reads and finish GC; copying the bytes back grants no ownership |
 
 The historical experiment and main used different additive migrations named `0092`.
-The invocation migration now follows unchanged main revisions `0092`–`0095` as
+The experiment invocation migration followed unchanged main revisions `0092`–`0095` as
 `0096`. Both actual historical producers are tested; see the
 [main compatibility record](../architecture/pi-codemode-main-compatibility.md).
 Earlier packaging and P09 reports below retain the revision they actually tested.
 
-Executable evidence: `tests/integration/test_pi_migration_chains.py`,
-`test_codemode_resource_policy.py`, `test_codemode_backup_recovery.py`,
-`test_codemode_manager_backup.py`,
-`test_code_composition_restore.py`, and `test_invocation_crash_windows.py`.
-Historical producers run in subprocesses with their exact archived sources;
-they do not share a live Bot database. Downgrade does not replace the live
-database with an older backup.
+The matrix above records its historical sources and validation scope. For a new build, run the remaining checks relevant to the changed recovery and isolation paths; retired test names and historical case counts are not current gates. Historical producers must use isolated copies with their archived sources. Downgrade does not replace a live database with an older backup.
 
 ## Default direct distribution and optional Code
 
-The normal Dockerfile build (`runtime`), release image, installer and base Compose use `direct`. They contain no Monty binding, worker or launcher and explicitly disable Code. Direct exposes all supported tools in the current scope through the same Agent loop and the same execution authorization. It needs none of the Code-specific seccomp/AppArmor setup below.
+The normal Dockerfile build (`runtime`), release image, installer and base Compose use `direct`. They contain no Monty binding, worker or launcher and explicitly disable Code. Direct declares the complete frozen deployment manifest through the same Agent loop; execution checks the current origin and authorization. It needs none of the Code-specific seccomp/AppArmor setup below.
 
 Code remains an explicit optional distribution:
 
@@ -208,8 +197,7 @@ No private production backup was supplied or inspected.
    upstream evidence remains unknown; never retry an entire program or send.
 3. Take the consistent restricted backup above. Run the normal Alembic upgrade
    using the new distribution's `qq-ai-bot-cli init-db`, with the approved
-   database configuration. Do not stamp past earlier revisions. Verify head
-   `0096`, original facts, references and finite budgets before resuming.
+   database configuration. Do not stamp past earlier revisions. Verify the target distribution's actual single Alembic head (current source: `0102`), original facts, references and finite budgets before resuming.
 4. Replace only the approved Bot distribution/configuration. Verify worker
    hashes and unprivileged isolation. Start one Bot; observe original Work
    continuation and existing health checks. Do not warm it by manufacturing
@@ -225,6 +213,4 @@ No private production backup was supplied or inspected.
    do not overwrite new messages with an old DB. A paired partial returns to
    the original model for new planning rather than reopening the VM.
 
-No production switch, rollback, true delivery or private backup recovery has
-been run. Every future execution records its actual commands and evidence
-separately from these instructions.
+The historical experiment did not establish a production Code switch or natural delivery. The later direct deployment and its private-backup checks are recorded separately in the integration deployment record. Every new execution records its actual commands and evidence.

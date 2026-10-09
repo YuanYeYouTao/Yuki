@@ -10,8 +10,8 @@
 | 去重/维护 | `near_duplicate_enabled`、`near_duplicate_distance`、`cache_retention_days`、`analysis_version` |
 | Worker | `worker_batch_size`、`worker_poll_seconds`、`worker_lease_seconds`、`worker_max_attempts`、`worker_retry_delay_seconds` |
 
-`selector_candidate_count` 默认是 3。日常 `optional` 表情直接采用本地描述和标签评分第一名；只有明确索要表情且前两名分差不超过 `selector_score_gap` 时才调用视觉精选，并受 `selector_timeout_seconds` 短超时约束。视觉调用超时或失败会立即回退本地第一名。
+`selector_candidate_count` 默认是 3。日常 `optional` 表情直接采用本地描述和标签评分第一名；显式发送请求且前两名分差不超过 `selector_score_gap` 时才调用视觉精选；Main Agent 的 `send_message.emoji` 始终属于显式发送请求，包括 Agent 自主选择发送，并受 `selector_timeout_seconds` 短超时约束。视觉调用超时或失败会立即回退本地第一名。
 
 `pool_capacity` 未设置表示无限；两个 cooldown 都允许 `0` 表示关闭。`storage_root` 和预览尺寸是启动配置。不存在 `emoji.review_enabled`。
 
-确定性表情意图识别、真实回执校验和失败文字属于固定正确性契约，不能通过放宽工具范围关闭。
+真实作用域、资产状态与投递回执约束实际发送；准备失败作为工具结果返回，后端不自动追加失败文字或重发。

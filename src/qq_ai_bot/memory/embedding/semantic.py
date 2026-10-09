@@ -1,4 +1,4 @@
-"""Exact-target semantic search over normalized SQLite float32 BLOBs."""
+"""Authorized semantic search over normalized SQLite float32 BLOBs."""
 
 from __future__ import annotations
 

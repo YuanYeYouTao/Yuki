@@ -3,8 +3,7 @@
 实施基线为 `b1382cf80429d82e5071275d5bc97f594209ed0b`，实施分支为
 `codex/persistent-runtime-core`。本记录说明代码归属与验证范围；合并、镜像与生产状态
 分别以 PR、镜像 revision 和部署时的只读检查为证，不能从本文推断当前已上线。
-任务定义见 [任务书](../architecture/persistent-runtime-refactor-taskbook.md)，
-现行规则见 [主执行合同](../architecture/main-agent-runtime.md)。
+原施工任务书已退役，现行规则见 [主执行合同](../architecture/main-agent-runtime.md)。
 
 ## 生产入口与所有者
 

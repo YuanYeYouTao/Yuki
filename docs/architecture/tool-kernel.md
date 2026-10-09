@@ -8,14 +8,14 @@ Tool Kernel 分开管理工具目录、固定声明与执行授权。主 Agent �
 
 `ToolProvider` 提供 `CapabilityDescriptor`，其中的 `ToolBinding` 连接实际实现。
 `UnifiedToolCatalog` 负责目录，`MainAgentContract.definitions()` 在部署初始化时收集
-主工具注册表与已批准插件，加入工作控制、子任务、short_state 与只读目录后，
+主工具注册表与已批准插件，加入工作控制、子任务和 short_state；启用 Code 时再加入编排与只读目录工具，
 按名称排序并冻结完整名称、说明和参数 schema。重名声明直接报错。
 
-`definitions()` 保留完整执行清单；`model_definitions()` 返回固定基础直调视图，包含聊天、
-任务及原执行查询/取消、记忆读写与历史、基础工作区、时间读取、联网搜索/网页读取、`execute_code` 和
-`lookup_tools`。终端、环境管理、自动化、管理及外部集成保留在完整执行 API 中，
-不直接声明给模型。基础工具也可在脚本内组合。主 Agent 的普通聊天、主动触发、自动化、
-插件主调用和持久续跑复用同一固定直调视图。
+`definitions()` 保留完整执行清单。默认 direct 模式的 `model_definitions()` 返回
+部署内冻结的完整工具清单，不加载 Code 引擎。显式启用 Code 时才使用固定直调集合：聊天、
+生命周期、记忆与历史、基础工作区、时间、终端与环境状态、联网、`execute_code` 和
+`lookup_tools`；包管理、服务管理、自动化和管理等其余能力经脚本调用。两个模式分别
+冻结声明，普通聊天、主动触发、自动化、插件主调用和持久续跑复用本部署的合同。
 它不是按每条消息或每个用户生成的白名单。工具合同变更需重启并开启明确的新链。
 `get_chat_history_around` 只以必填的内部 `event_id` 定位当前会话账本；缺少编号或传入
 平台消息号会收到错误回执。声明变更随部署生成新的合同 revision，不沿用旧请求链。
@@ -27,8 +27,8 @@ Provider 原生工具还有独立的协议和配置合同，不能只检查函�
 `lookup_tools(query=...)` 搜索名称/说明或分页列出简短目录；`name` 精确读取单项原参数
 schema、脚本调用名及本轮直调可见性。搜索不返回全部 schema，详情不会注册新工具。
 查询只读启动时冻结的 API，不加载或升级插件，不接触业务资源或取得执行授权；工作者
-只能查询自己的完整执行子集。纯 `lookup_tools` 批次允许 1–10 项，不能与写入或其他工具混批。查询结果按原 call_id 顺序配对保存，但不计业务效果或业务调用
-额度；查询自身仍受模型请求、输入容量及原 Work journal 合同约束。
+只能查询自己的完整执行子集。`lookup_tools` 可与业务调用同批，仍按原调用顺序、
+执行权限及效果屏障处理。查询结果按原 call_id 配对保存，但不计业务效果或业务调用额度；查询自身仍受模型请求、输入容量及原 Work journal 合同约束。
 Capability Runtime 的执行集合不是模型声明的真源，也不能在请求链中添加 schema 或扩大权限。
 
 ## 调用与效果
@@ -46,9 +46,11 @@ Capability Runtime 的执行集合不是模型声明的真源，也不能在请�
 flowchart LR
   P[Core / Plugin Provider] --> D[UnifiedToolCatalog]
   D --> F[MainAgentContract 完整执行清单]
-  F --> V[固定基础直调声明]
-  F --> S[完整 ScriptApi / 按需目录]
+  F --> V[默认 direct 完整声明]
+  F --> C[可选 Code 直调声明]
+  F --> S[仅 Code 的 ScriptApi / 按需目录]
   V --> A[AgentRunner]
+  C --> A
   S --> A
   A --> E[MainAgentBackend 执行授权]
   E --> I[ToolInvocationCoordinator]
@@ -67,11 +69,11 @@ flowchart LR
 
 ## 可选代码组合 `execute_code`
 
-默认部署为 direct：不包含 Monty binding、worker 或 launcher，主 Agent 直接使用当前作用域完整获准工具。启用 Code 必须显式选择 codemode 镜像及配置；以下组合政策只用于已启用 Code 的固定合同。
+默认部署为 direct：不包含 Monty binding、worker 或 launcher，主 Agent 直接使用部署内固定完整工具清单。启用 Code 必须显式选择 codemode 镜像及配置；以下组合政策只用于已启用 Code 的固定合同。
 
-Code 模式冻结清单包含固定的 `execute_code` 和 `lookup_tools`（主合同 version 16，`yuki.codemode.api.v1`）。
+Code 模式冻结清单包含固定的 `execute_code` 和 `lookup_tools`（`yuki.codemode.api.v1`）。
 `terminal_exec`、`terminal_read`、`terminal_write`、`terminal_control`、`environment_status` 常驻固定直调视图；
-包管理和服务管理仍经 Code Mode。direct 模式声明当前作用域全部获准工具，不生成 ScriptApi 或加载 worker；模式变更只在合法新链应用。直调复用同一 Manager、来源权限、
+包管理和服务管理仍经 Code Mode。direct 模式声明部署内固定完整工具清单，不生成 ScriptApi 或加载 worker；模式变更只在合法新链应用。直调复用同一 Manager、来源权限、
 原 request/run ID 和未知结果恢复，不建立宿主执行通道，也不自动重提 pending 命令。
 脚本里的 `await yuki_<工具名>({参数})` 是同一 canonical 工具的调用语法，由
 `codemode/api_projection.py` 从冻结声明确定性投影：参数 schema 为原件，名称编码可逆，
@@ -121,8 +123,8 @@ Social 在父操作首次持久准备时，把 `social:<operation_id>` 与原 ef
 unknown 的片不能被另一成功片覆盖。查询本身不派发，也不清除 Work 的未决效果围栏。
 
 Work 中的 Agent 记忆写把 `memory:<mutation_id>` 与原 effect 在领域提交交易中关联，
-按可信原 event/initiative 的持久回执核对已消费的一次写权；恢复后的新 session 不补发授权。
-MCP/插件在连接或 scope 等待后再次检查当前定义与批准状态；已派发的未知写入不重放。
+按可信原 event/initiative 的来源、当前授权和持久回执执行；不另设单次写配额。
+插件在异步 scope 等待后再次检查当前定义与批准状态；已派发的未知写入不重放。
 
 宿主而非脚本决定并发：只读子调用受 `max_parallel_calls` 约束，发送、修改、记忆写和控制为
 屏障；同一响应多个 `execute_code` 按顺序执行，且不能与直接调用混在同一批。生命周期控制
@@ -144,8 +146,8 @@ Monty 内置模块（例如 asyncio、math）可用，宿主 Python 包、文件
 
 等待队列超限以 `code_limit_wait_queue` 配对代码结果，丢弃该 VM；模型可根据回执改为
 较小的分批程序。已执行子调用仍按原身份保留回执，未派发子调用结算为未执行，不能把
-资源拒绝变成整个 Work 的裸异常暂停。直接 `task_control` 的所有 action（含 get/list）
-必须独占一个工具批次，固定说明与执行检查保持一致。
+资源拒绝变成整个 Work 的裸异常暂停。`task_control` 只读查询可与业务工具同批；
+会改变生命周期的控制按原执行顺序和控制屏障处理。
 
 工具图片通过 Host 私有 `ToolExecutionResult.images` 交给 Runner，文字 `model_payload()`
 不复制像素。预算后的 `MediaResultText` 携带图片而仍以字符串保存公开回执。历史/工作区

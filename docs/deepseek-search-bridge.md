@@ -35,7 +35,7 @@ Tavily 与网页读取的 `WEB_TIMEOUT_SECONDS` 默认 180 秒；现有 `.env` �
 保存必须选择搜索连接，避免切换主对话后搜索密钥被隐式改写。模型连接和密钥热保存
 时一并切换搜索后端；已开始的搜索继续使用旧连接，最后一个在途调用结束后关闭旧
 连接。不会将其他
-Provider 的密钥发送到 DeepSeek。默认仍为原 Tavily 后端；改变部署环境中的
+Provider 的密钥发送到 DeepSeek。后端代码默认值为 Tavily，当前部署示例显式选择 `deepseek_anthropic`；实际行为以保存的档案与环境配置为准。改变部署环境中的
 `WEB_SEARCH_BACKEND` 需要重启 Bot。
 
 待官方 Flash Responses 的原生搜索经过真实调用验证后，可切换原生联网配置，

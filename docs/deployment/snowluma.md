@@ -1,7 +1,5 @@
 # SnowLuma Provider 部署与切换
 
-本文对应 Yuki 3.8.1。SnowLuma 与 NapCat 是同层正式 QQ/OneBot v11 Provider。
-
 SnowLuma 与 NapCat 都是 Yuki 的正式 QQ/OneBot v11 Provider。它们只负责连接 QQ；Yuki 的
 Presence、Conversation、Memory 和路由保存在 Bot 自己的身份与数据层，不属于任何 Provider。
 因此，同一个 QQ 按正确流程切换 Provider 时会继承原 Presence，也不会重置会话或记忆。

@@ -1,34 +1,23 @@
-# Memory V2 生命周期与运维
+# Memory 到期维护
 
-## 生命周期规则
+`MemoryMaintenanceWorker` 只根据事实明确的 `valid_until` 处理到期失效，使用
+`expired` 原因。来源类型、年龄、importance、confidence 与读取频率不构成自动淘汰依据；
+没有期限的事实不会因为陈旧自动失效。事实、证据、版本和状态事件保留。
 
-`MemoryMaintenanceWorker` 是本地有界任务，不调用聊天模型、关系分类模型、Embedding 或网络，
-也不扫描 `chat_events`。它只读取当前 facts，并在一个批次事务内进行状态转换：
+维护是有界的纯数据库工作，不调用模型、Embedding 或网络，不扫描聊天历史。
+候选发现和完整证据准备在首写前完成；短事务复核事实与到期时间，并原子保存失效及审计。
+SQLite WAL 快照竞争仅重备原纯数据库批次，不更换操作身份或重做外部效果。
+关闭沿当前 Worker 生命周期处理；批次由自身锁串行，不与 Dream 共持跨模型长锁。
 
-- 非 explicit 的 active/contested fact 到达 `valid_until` 后进入 invalidated，reason 为 expired。
-- source 为 automatic、authority 非 explicit、importance/confidence 不高于配置阈值，且
-  `last_confirmed_at` 超过保留窗口时进入 invalidated，reason 为 stale。
-- self_report、third_party 和 contested 使用各自保留窗口；默认 self_report 更长。
-- explicit、高重要度或高 confidence 事实不会因陈旧规则自动失效。
-- 事实、证据、关系和状态事件都不物理删除；`last_used_at` 不延长真实性寿命。
-
-## 配置
+## 配置与管理
 
 ```dotenv
 MEMORY_MAINTENANCE_ENABLED=true
 MEMORY_MAINTENANCE_INTERVAL_SECONDS=300
 MEMORY_MAINTENANCE_BATCH_LIMIT=100
-MEMORY_AUTOMATIC_STALE_DAYS=180
-MEMORY_THIRD_PARTY_STALE_DAYS=30
-MEMORY_CONTESTED_STALE_DAYS=14
-MEMORY_STALE_MAX_IMPORTANCE=2
-MEMORY_STALE_MAX_CONFIDENCE=0.7
 ```
 
-这些值已注册到 RuntimeConfig，可热更新；非法范围会明确失败，不静默裁剪。单批大小有界，
-关闭 Worker 会传播取消并等待当前事务结束。
-
-## 检查与故障排查
+这三项通过 RuntimeConfig 更新；批次大小和周期是运行预算，不是内容价值标准。
 
 ```text
 /ai memory maintenance status
@@ -36,10 +25,6 @@ MEMORY_STALE_MAX_CONFIDENCE=0.7
 /ai memory doctor
 ```
 
-`doctor` 检查 active 唯一槽位、争议数量、跨 target relation、孤儿 relation/state event、失效原因、
-替代链、证据 authority、已过期 active fact、维护积压和近期分类错误。健康检查只输出数量、状态和
-时间，不输出事实正文、evidence excerpt、QQ/群号或 API Key。
-
-若维护积压持续增加，先检查 bot 日志的稳定错误类别与 `/ai memory doctor`，再确认数据库可写和
-维护开关；不要删除 `memory_fact_state_events` 或手工改 status。需要回退 `0023` 时，必须先确保
-没有 contested fact，否则 Alembic 会拒绝降级。
+状态和 doctor 显示数量、到期积压及来源审计问题，不输出正文或凭据。同 key 多条独立
+active 事实是合法状态。发现来源或队列问题时按原内部 ID 和回执核查，不清库或重写历史。
+统一变更及恢复边界见 [Memory](memory-v2.md) 和 [变更合同](memory-change.md)。
