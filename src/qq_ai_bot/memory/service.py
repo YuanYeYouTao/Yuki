@@ -966,36 +966,6 @@ class MemoryFactService:
             self.metrics.increment("conflicts_open")
         return changed
 
-    async def clear_conflict(
-        self,
-        fact_id: int,
-        *,
-        reason_code: str,
-        actor_user_id: str | None = None,
-    ) -> bool:
-        async with self._repository.transaction(read_snapshot=True) as session:
-            current = await self._repository.get_fact(fact_id, session=session)
-            if (
-                current is None
-                or current.status is MemoryStatus.CONTESTED
-                or current.conflict_state is MemoryConflictState.CLEAR
-            ):
-                return False
-            changed = await self._repository.transition(
-                fact_id,
-                status=current.status,
-                conflict_state=MemoryConflictState.CLEAR,
-                invalidated_reason=current.invalidated_reason,
-                action=MemoryStateAction.CONFLICT_CLEARED,
-                reason_code=reason_code,
-                source_event_id=None,
-                actor_user_id=actor_user_id,
-                session=session,
-            )
-            if changed:
-                self.metrics.increment("conflicts_cleared")
-            return changed
-
     async def _clear_conflict_in_session(
         self,
         fact_id: int,

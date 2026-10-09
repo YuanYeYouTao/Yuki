@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import sqlite3
 import time
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -10,7 +11,8 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select, update
+from sqlalchemy import event, func, select, update
+from sqlalchemy.exc import OperationalError
 from tests.support.autonomy_repository_helpers import _accept, _enable, _scene
 from yuki_participation.controller import Controller
 from yuki_participation.models import CandidateKind, Proposal, Scope, SourceRef, Support
@@ -26,6 +28,7 @@ from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import journal, work
 from qq_ai_bot.services import participation_feedback
 from qq_ai_bot.services.participation_feedback import reconcile_page, sync_scope_effects
+from qq_ai_bot.services.semantic_participation import SemanticParticipationService
 from qq_ai_bot.social.db_models import SocialOperationModel
 
 
@@ -123,6 +126,117 @@ async def social(database, run, call, *, turn=None, action="send_message", secon
     async with database.sessions() as session, session.begin():
         session.add(row)
     return row
+
+
+@pytest.mark.parametrize("code", [5, 517])
+async def test_feedback_busy_exits_tick_and_next_host_reconciliation_preserves_original_facts(
+    database, monkeypatch, code
+):
+    service, item, run, task = await setup(database)
+    await set_work(database, task, state="completed", model_requests=3)
+    receipt = await social(database, run, "original-send")
+    original_task = await service.work.get(task["id"])
+    service._terminal_cursor, service._terminal_ceiling, service._failures = "", None, 0
+    original = service.repository.record_feedback
+    calls, errors = [], []
+
+    async def race(identity, **kwargs):
+        calls.append((identity, kwargs["sequence"]))
+        if len(calls) == 1:
+            async with database.immediate_session() as writer:
+                # A no-op value update still takes the real WAL writer. Work's
+                # identity, state, budget and effect receipts remain unchanged.
+                await writer.execute(
+                    update(work).where(work.c.id == task["id"]).values(updated=work.c.updated)
+                )
+                if code == 5:
+                    result = await original(identity, **kwargs)
+                    await kwargs["session"].flush()
+                    return result
+            # A committed writer invalidates the feedback's original read snapshot.
+        return await original(identity, **kwargs)
+
+    def capture(context):
+        errors.append(getattr(context.original_exception, "sqlite_errorcode", None))
+
+    monkeypatch.setattr(service.repository, "record_feedback", race)
+    event.listen(database.engine.sync_engine, "handle_error", capture)
+    try:
+        await SemanticParticipationService._reconcile_outbox(service)
+    finally:
+        event.remove(database.engine.sync_engine, "handle_error", capture)
+    assert calls == [(run.run_id, 1)] and errors == [code]
+    assert service._failures == 1
+    assert (await service.repository.get_run(run.run_id)) == run
+    assert await service.repository.latest_feedback(run.run_id) is None
+    assert await service.work.get(task["id"]) == original_task
+    assert run.run_id not in item.controller.state.feedback
+    service._save.assert_not_awaited()
+    service._dispatch.assert_not_awaited()
+    # The failed feedback transaction retained no lease or writer ownership.
+    lease = await service.work.acquire(run.conversation_id, run.generation)
+    assert lease is not None
+    await service.work.release(lease)
+    async with database.immediate_session() as writer:
+        assert (await writer.get(SocialOperationModel, receipt.id)).status == "succeeded"
+
+    await SemanticParticipationService._reconcile_outbox(service)
+    assert calls == [(run.run_id, 1), (run.run_id, 1)]
+    settled = await service.repository.get_run(run.run_id)
+    assert settled.state == "completed" and settled.feedback_sequence == 1
+    assert await service.work.get(task["id"]) == original_task
+    assert item.controller.state.feedback[run.run_id].outcome == "completed"
+    assert len(item.controller.state.effects) == 4
+    await SemanticParticipationService._reconcile_outbox(service)
+    assert len(calls) == 2 and len(item.controller.state.effects) == 4
+    service._dispatch.assert_not_awaited()
+    async with database.sessions() as session:
+        assert await session.scalar(select(func.count()).select_from(InitiativeFeedbackModel)) == 1
+        assert (await session.get(SocialOperationModel, receipt.id)).status == "succeeded"
+
+
+async def test_feedback_unknown_commit_ack_exits_tick_and_replays_original_durable_sequence(
+    database, monkeypatch
+):
+    service, item, run, task = await setup(database)
+    await set_work(database, task, state="completed", model_requests=3)
+    await social(database, run, "original-send")
+    original_task = await service.work.get(task["id"])
+    service._terminal_cursor, service._terminal_ceiling, service._failures = "", None, 0
+    original = service.repository.record_feedback
+    calls = []
+    native = sqlite3.OperationalError("commit acknowledgement lost")
+    native.sqlite_errorcode = 517
+    uncertainty = OperationalError("commit acknowledgement", {}, native)
+
+    async def unknown_ack(identity, **kwargs):
+        calls.append((identity, kwargs["sequence"]))
+        session = kwargs["session"]
+        commit = session.commit
+
+        async def commit_then_lose_ack():
+            await commit()
+            raise uncertainty
+
+        monkeypatch.setattr(session, "commit", commit_then_lose_ack)
+        return await original(identity, **kwargs)
+
+    monkeypatch.setattr(service.repository, "record_feedback", unknown_ack)
+    await SemanticParticipationService._reconcile_outbox(service)
+    assert service._failures == 1 and calls == [(run.run_id, 1)]
+    assert run.run_id not in item.controller.state.feedback
+    service._save.assert_not_awaited()
+    settled = await service.repository.get_run(run.run_id)
+    assert settled.state == "completed" and settled.feedback_sequence == 1
+    await SemanticParticipationService._reconcile_outbox(service)
+    await SemanticParticipationService._reconcile_outbox(service)
+    assert calls == [(run.run_id, 1)] and service._failures == 1
+    assert item.controller.state.feedback[run.run_id].outcome == "completed"
+    assert len(item.controller.state.effects) == 4
+    assert await service.work.get(task["id"]) == original_task
+    service._dispatch.assert_not_awaited()
+    async with database.sessions() as session:
+        assert await session.scalar(select(func.count()).select_from(InitiativeFeedbackModel)) == 1
 
 
 @pytest.mark.asyncio

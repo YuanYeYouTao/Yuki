@@ -8,7 +8,7 @@
 
 ## 基线与生产证据
 
-- 本地实施基线 main `fa505a8c`；生产源码 `0046d394`、数据库0103。修改位于 `codex/remove-work-memory-policy-gates`，本报告的本地完成不代表已经推送或上线。
+- 初次实施基线 main `fa505a8c`；当时生产源码 `0046d394`、数据库0103，实施分支 `codex/remove-work-memory-policy-gates`。后续合并与线上结果见文末，初次本地完成不代表当时已上线。
 - 2026-10-10 01:14–01:15（Asia/Taipei）只读生产核查：Memory unhealthy唯一触发项为162条superseded缺后继链，全部8月更新，任何方向关系及原状态回执均为零；其余完整性触发项为零。25条active contested不参与healthy。Dream71个failed cluster是历史累计，本次部署后新增失败零。
 - 清退旧812条Work后，新Work `229788eb-7765-4170-aed9-594e8aa6e508` 在00:47:35创建，00:47:52日志确认挂起。原recovery记为 `checkpoint_capacity` / `work_protocol_reference_deleting`，attempts=1、retryable=false；01:15采样仍有96条协议对象deleting标记。不是只根据旧挂起数量猜重构失败。
 - 初次只读核查由三名新的gpt-6.1-sol/high子智能体分工，主会话核协议回收、配置及schema；该次核查未修改生产或调用模型。后续正式控制API群测与部署另列证据。
@@ -142,13 +142,13 @@
 
 ### C11 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/memory/dream/models.py:124 (DreamAction._shape)](../../src/qq_ai_bot/memory/dream/models.py#L124) → [src/qq_ai_bot/memory/dream/service.py:791 (DreamService._select_evidence)](../../src/qq_ai_bot/memory/dream/service.py#L791) → [src/qq_ai_bot/memory/mutation/service.py:203 (MemoryMutationService.mutate_dream)](../../src/qq_ai_bot/memory/mutation/service.py#L203) → [src/qq_ai_bot/memory/mutation/service.py:867 (MemoryMutationService._dream_evidence_bundle)](../../src/qq_ai_bot/memory/mutation/service.py#L867)。
+调用/持久化/恢复：[src/qq_ai_bot/memory/dream/models.py:124 (DreamAction._shape)](../../src/qq_ai_bot/memory/dream/models.py#L124) → [src/qq_ai_bot/memory/dream/service.py:791 (DreamService._select_evidence)](../../src/qq_ai_bot/memory/dream/service.py#L791) → [src/qq_ai_bot/memory/mutation/service.py:202 (MemoryMutationService.mutate_dream)](../../src/qq_ai_bot/memory/mutation/service.py#L202) → [src/qq_ai_bot/memory/mutation/service.py:866 (MemoryMutationService._dream_evidence_bundle)](../../src/qq_ai_bot/memory/mutation/service.py#L866)。
 
 验证入口：[tests/unit/test_memory_dream.py:625 (test_recompose_is_atomic_partial_one_to_many_and_reversible)](../../tests/unit/test_memory_dream.py#L625)。
 
 ### C12 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/memory/repository.py:2172 (MemoryJobRepository.fail)](../../src/qq_ai_bot/memory/repository.py#L2172) → [src/qq_ai_bot/memory/worker.py:175 (MemoryWorker._process_jobs)](../../src/qq_ai_bot/memory/worker.py#L175)。
+调用/持久化/恢复：[src/qq_ai_bot/memory/repository.py:2163 (MemoryJobRepository.fail)](../../src/qq_ai_bot/memory/repository.py#L2163) → [src/qq_ai_bot/memory/worker.py:176 (MemoryWorker._process_jobs)](../../src/qq_ai_bot/memory/worker.py#L176)。
 
 验证入口：[tests/unit/test_job_claim_transactions.py:1](../../tests/unit/test_job_claim_transactions.py#L1)。
 
@@ -226,7 +226,7 @@
 
 ### C25 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/memory/dream/models.py:124 (DreamAction._shape)](../../src/qq_ai_bot/memory/dream/models.py#L124) → [src/qq_ai_bot/memory/mutation/service.py:203 (MemoryMutationService.mutate_dream)](../../src/qq_ai_bot/memory/mutation/service.py#L203)。
+调用/持久化/恢复：[src/qq_ai_bot/memory/dream/models.py:124 (DreamAction._shape)](../../src/qq_ai_bot/memory/dream/models.py#L124) → [src/qq_ai_bot/memory/mutation/service.py:202 (MemoryMutationService.mutate_dream)](../../src/qq_ai_bot/memory/mutation/service.py#L202)。
 
 验证入口：[tests/unit/test_memory_dream.py:303 (test_single_source_dream_uses_saved_model_output_and_original_receipt)](../../tests/unit/test_memory_dream.py#L303)。
 
@@ -250,13 +250,13 @@
 
 ### C29 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/memory/dream/models.py:124 (DreamAction._shape)](../../src/qq_ai_bot/memory/dream/models.py#L124) → [src/qq_ai_bot/memory/dream/service.py:879 (DreamService._run_model)](../../src/qq_ai_bot/memory/dream/service.py#L879) → [src/qq_ai_bot/memory/dream/service.py:908 (DreamService._anchor)](../../src/qq_ai_bot/memory/dream/service.py#L908) → [src/qq_ai_bot/memory/mutation/service.py:203 (MemoryMutationService.mutate_dream)](../../src/qq_ai_bot/memory/mutation/service.py#L203)。
+调用/持久化/恢复：[src/qq_ai_bot/memory/dream/models.py:124 (DreamAction._shape)](../../src/qq_ai_bot/memory/dream/models.py#L124) → [src/qq_ai_bot/memory/dream/service.py:879 (DreamService._run_model)](../../src/qq_ai_bot/memory/dream/service.py#L879) → [src/qq_ai_bot/memory/dream/service.py:908 (DreamService._anchor)](../../src/qq_ai_bot/memory/dream/service.py#L908) → [src/qq_ai_bot/memory/mutation/service.py:202 (MemoryMutationService.mutate_dream)](../../src/qq_ai_bot/memory/mutation/service.py#L202)。
 
 验证入口：[tests/unit/test_memory_dream.py:1](../../tests/unit/test_memory_dream.py#L1)。
 
 ### C30 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/memory/mutation/service.py:955 (MemoryMutationService.mutate_resolved)](../../src/qq_ai_bot/memory/mutation/service.py#L955) → [src/qq_ai_bot/memory/mutation/service.py:1015 (MemoryMutationService._prepare_self_origin)](../../src/qq_ai_bot/memory/mutation/service.py#L1015) → [src/qq_ai_bot/memory/mutation/service.py:1180 (MemoryMutationService._commit_prepared)](../../src/qq_ai_bot/memory/mutation/service.py#L1180) → [src/qq_ai_bot/memory/mutation/service.py:1972 (MemoryMutationService._apply)](../../src/qq_ai_bot/memory/mutation/service.py#L1972)。
+调用/持久化/恢复：[src/qq_ai_bot/memory/mutation/service.py:954 (MemoryMutationService.mutate_resolved)](../../src/qq_ai_bot/memory/mutation/service.py#L954) → [src/qq_ai_bot/memory/mutation/service.py:1014 (MemoryMutationService._prepare_self_origin)](../../src/qq_ai_bot/memory/mutation/service.py#L1014) → [src/qq_ai_bot/memory/mutation/service.py:1179 (MemoryMutationService._commit_prepared)](../../src/qq_ai_bot/memory/mutation/service.py#L1179) → [src/qq_ai_bot/memory/mutation/service.py:1941 (MemoryMutationService._apply)](../../src/qq_ai_bot/memory/mutation/service.py#L1941)。
 
 验证入口：[tests/unit/test_self_initiative_memory.py:293 (test_actorless_reflection_uses_unified_mutation_and_readable_evidence)](../../tests/unit/test_self_initiative_memory.py#L293)。
 
@@ -366,7 +366,7 @@ C36沿SELF工具receipt领取、模型实际呈现、原window和完成游标核
 
 状态：本地实施完成；统一验证、PR与上线按最终交付记录核定。
 
-代码索引：[src/qq_ai_bot/services/chat.py:1543 (ChatService.open_self_memory_session)](../../src/qq_ai_bot/services/chat.py#L1543) → [src/qq_ai_bot/memory/runtime/turn_session.py:67 (TurnMemorySession.open_self_origin)](../../src/qq_ai_bot/memory/runtime/turn_session.py#L67) → [src/qq_ai_bot/memory/runtime/capability_view.py:31 (build_capability_view)](../../src/qq_ai_bot/memory/runtime/capability_view.py#L31) → [src/qq_ai_bot/services/agent_tools.py:2024 (AgentToolService._memory_change)](../../src/qq_ai_bot/services/agent_tools.py#L2024) → [src/qq_ai_bot/memory/mutation/service.py:1015 (MemoryMutationService._prepare_self_origin)](../../src/qq_ai_bot/memory/mutation/service.py#L1015)。
+代码索引：[src/qq_ai_bot/services/chat.py:1543 (ChatService.open_self_memory_session)](../../src/qq_ai_bot/services/chat.py#L1543) → [src/qq_ai_bot/memory/runtime/turn_session.py:67 (TurnMemorySession.open_self_origin)](../../src/qq_ai_bot/memory/runtime/turn_session.py#L67) → [src/qq_ai_bot/memory/runtime/capability_view.py:31 (build_capability_view)](../../src/qq_ai_bot/memory/runtime/capability_view.py#L31) → [src/qq_ai_bot/services/agent_tools.py:2024 (AgentToolService._memory_change)](../../src/qq_ai_bot/services/agent_tools.py#L2024) → [src/qq_ai_bot/memory/mutation/service.py:1014 (MemoryMutationService._prepare_self_origin)](../../src/qq_ai_bot/memory/mutation/service.py#L1014)。
 
 本地完成：主SELF声明及执行接到原initiative/原execution真实工具回执，复用已有SELF领域事务；重复quote按实际回执顺序查来源，未消费额外ref不阻断。真ChatService主循环两次成员工具→memory_change→NO_REPLY，一条mutation receipt、实际工具证据、无真人event/发送、Work及租约收尾；第二合法群projection不阻断。
 
@@ -406,7 +406,7 @@ C36沿SELF工具receipt领取、模型实际呈现、原window和完成游标核
 
 状态：本地实施完成；统一验证、PR与上线按最终交付记录核定。
 
-代码索引：[src/qq_ai_bot/memory/dream/models.py:151 (DreamOutput._disjoint)](../../src/qq_ai_bot/memory/dream/models.py#L151) → [src/qq_ai_bot/memory/dream/service.py:375 (DreamService._commit_cluster_decision)](../../src/qq_ai_bot/memory/dream/service.py#L375) → [src/qq_ai_bot/memory/mutation/service.py:203 (MemoryMutationService.mutate_dream)](../../src/qq_ai_bot/memory/mutation/service.py#L203)。
+代码索引：[src/qq_ai_bot/memory/dream/models.py:151 (DreamOutput._disjoint)](../../src/qq_ai_bot/memory/dream/models.py#L151) → [src/qq_ai_bot/memory/dream/service.py:375 (DreamService._commit_cluster_decision)](../../src/qq_ai_bot/memory/dream/service.py#L375) → [src/qq_ai_bot/memory/mutation/service.py:202 (MemoryMutationService.mutate_dream)](../../src/qq_ai_bot/memory/mutation/service.py#L202)。
 
 本地完成：Dream DTO与事务used集合沿outputs实际消费的来源计算。A声明1/2但只使用1，B可继续处理2；真实双动作事务、原operation receipt及重新打开仓库回放通过。
 
@@ -476,6 +476,14 @@ C36沿SELF工具receipt领取、模型实际呈现、原window和完成游标核
 | W13 | active wait取消后外层365天claim休眠阻止原run收尾；死查询和wake分支 | [x] 本地完成：直接删除一年休眠及零消费者方法，原5秒查询不增模型/业务调用；线上复测另列 |
 | W14 | 停用Space仍强读在线群配置，旧selector和缓存场景不能沿原Host关停 | [x] 本地完成：仅两处参数接线，热/冷停用、legacy、outbox、原完成反馈24项通过；上线另列 |
 | W15 | 完整永久Memory owner被类型门挡回外部绑定重解，Dream整体退出；合成DTO丢owner | [x] 本地完成：原canonical owner和anchor继承，事务/Worker恢复89项通过；上线及原决定恢复另列 |
+| W16 | Memory共用SQL写入三次封口、仅517以及Dream专项FAILED分支 | [x] 本地完成：删除封口及专属异常/消费者，真实BUSY5/517四次后原簇完成；97项通过，线上另列 |
+| W17 | mutation与validated claim独立三次封口和重复SQL重试 | [x] 原解析/ID/预算保留，复用原事务入口；取消真实时序修复，相关111项通过 |
+| W18 | maintenance独立三次封口与回滚重复统计 | [x] 原批次/cutoff复用现有事务入口，成功统计移到确认提交后；12项通过 |
+| W19 | evidence compaction独立三次封口与重复包装 | [x] 原run/item/operation复用现有事务入口；真实竞争/确认不明等33项通过 |
+| W20 | 零消费者public clear_conflict重复事务入口 | [x] 删除30行死方法；保留invalidate/撤回内部清冲突与管理resolve_conflicts |
+| W21 | Memory/维护/Rebuild关闭只等待，不能退出持续SQL竞争 | [x] 原Task取消接线；提取/Rebuild相关32项、维护13项通过，原任务可恢复 |
+| W22 | compaction确认丢失后run伪完成而item永远pending | [x] 原item结算与原DELETE/provenance同事务；确认丢失后下一poll正确闭合，30项通过 |
+| W23 | SELF反馈原tick叠三次即时重试 | [x] 删除重复内层循环，沿原事实表及下tick对账；真实BUSY/确认丢失等16项通过 |
 
 ### 生产核验第一轮（旧镜像0046d394 / schema0103）
 
@@ -534,13 +542,13 @@ C36沿SELF工具receipt领取、模型实际呈现、原window和完成游标核
 
 源码：[src/qq_ai_bot/runtime/work_repository.py:463 (WorkRepository.active)](../../src/qq_ai_bot/runtime/work_repository.py#L463) → [src/qq_ai_bot/conversation/autonomy_repository.py:456 (AutonomyRepository.list_active)](../../src/qq_ai_bot/conversation/autonomy_repository.py#L456)。
 
-验证：[tests/unit/test_work_owner_recovery.py:216 (test_exact_33rd_input_is_selected_after_32_paused_works)](../../tests/unit/test_work_owner_recovery.py#L216)；[tests/unit/test_participation_feedback.py:291 (test_active_outbox_lists_all_retained_runs_past_former_128_limit)](../../tests/unit/test_participation_feedback.py#L291)。
+验证：[tests/unit/test_work_owner_recovery.py:216 (test_exact_33rd_input_is_selected_after_32_paused_works)](../../tests/unit/test_work_owner_recovery.py#L216)；[tests/unit/test_participation_feedback.py:405 (test_active_outbox_lists_all_retained_runs_past_former_128_limit)](../../tests/unit/test_participation_feedback.py#L405)。
 
 #### W07
 
 源码：[src/qq_ai_bot/conversation/autonomy_repository.py:198 (AutonomyRepository.accept_host_proposal)](../../src/qq_ai_bot/conversation/autonomy_repository.py#L198) → [src/qq_ai_bot/services/participation_feedback.py:1](../../src/qq_ai_bot/services/participation_feedback.py#L1) → [src/qq_ai_bot/conversation/self_initiative.py:13 (validate_self_initiative)](../../src/qq_ai_bot/conversation/self_initiative.py#L13)。
 
-验证：[tests/unit/test_participation_feedback.py:182 (test_retained_wait_releases_new_opportunity_without_revoking_original_self)](../../tests/unit/test_participation_feedback.py#L182)。
+验证：[tests/unit/test_participation_feedback.py:296 (test_retained_wait_releases_new_opportunity_without_revoking_original_self)](../../tests/unit/test_participation_feedback.py#L296)。
 
 #### W08
 
@@ -646,10 +654,56 @@ Dream原run69/6e0471af-7810-4005-9dd7-cf9215e4a185、cluster478停在processing�
 
 删除该类型门，复用canonical_fact_owner_complete返回原永久owner；新外部事件/选择器仍沿其原解析和实际权限。继续删除SYNTHESIZE/RECOMPOSE重建MemoryFactCreate、丢失canonical owner的旧转换：由原current_map的anchor继承实际Fact，原create_fact明确构造新row、新ID/时间，审计时间清空。没有新resolver、owner enum、兼容参数、异常兜底或Worker恢复框架。来源、同partition、签名、readable input fingerprint及首次写前证据冻结保留。
 
-源码：[src/qq_ai_bot/memory/partition.py:273 (resolve_fact_canonical_owners)](../../src/qq_ai_bot/memory/partition.py#L273) → [src/qq_ai_bot/memory/mutation/service.py:203 (MemoryMutationService.mutate_dream)](../../src/qq_ai_bot/memory/mutation/service.py#L203) → [src/qq_ai_bot/memory/repository.py:831 (MemoryFactRepository.create_fact)](../../src/qq_ai_bot/memory/repository.py#L831)。验证：[tests/unit/test_memory_dream.py:169 (test_dream_worker_recovers_disabled_owner_same_run_and_preserves_actual_calls)](../../tests/unit/test_memory_dream.py#L169)及[test_single_source_dream_uses_saved_model_output_and_original_receipt](../../tests/unit/test_memory_dream.py#L303)、[tests/unit/test_memory_partition.py:113 (test_space_partition_requires_enabled_active_binding)](../../tests/unit/test_memory_partition.py#L113)。
+源码：[src/qq_ai_bot/memory/partition.py:273 (resolve_fact_canonical_owners)](../../src/qq_ai_bot/memory/partition.py#L273) → [src/qq_ai_bot/memory/mutation/service.py:202 (MemoryMutationService.mutate_dream)](../../src/qq_ai_bot/memory/mutation/service.py#L202) → [src/qq_ai_bot/memory/repository.py:822 (MemoryFactRepository.create_fact)](../../src/qq_ai_bot/memory/repository.py#L822)。验证：[tests/unit/test_memory_dream.py:169 (test_dream_worker_recovers_disabled_owner_same_run_and_preserves_actual_calls)](../../tests/unit/test_memory_dream.py#L169)及[test_single_source_dream_uses_saved_model_output_and_original_receipt](../../tests/unit/test_memory_dream.py#L303)、[tests/unit/test_memory_partition.py:113 (test_space_partition_requires_enabled_active_binding)](../../tests/unit/test_memory_partition.py#L113)。
 
 原事务六套49项、最终Dream+partition39项以及canonical持久模型专项1项，合计89项通过，无skip。覆盖disabled Person/Space/Binding、PersonGroup/SELFgroup的KEEP/CONTEST/合成和重组、证据复制与原回滚、新事实ID/时间/audit。Worker恢复测试使用实际TaskModelExecutor→json_http协议MockTransport，复现旧resolver在真实响应后失败，原run/cluster恢复、attempt/model_calls1→2且不重置，原operation0→实际新事实成功，后台loop继续活着；它不是生产模型调用证据。三份Memory源码Mypy与格式/Ruff通过，交叉审计未见下游再次重解已有owner。
 
 线上cluster478的model invocation62038成功（physical_requests1、completion_tokens36），但Operation/preview均0。领域失败在首DML前，没有提交Memory效果。找到原trace161819→161825，operation bdae656da1514153a2604a973f26566e；完整input和原cluster来源签名均相同，真实决定为KEEP(memory_1,memory_2)。经既有save_preview保存为73b7d321-1d23-41db-ba54-c2b5d97358c1，source_fingerprint3f72ea16281feb56c57ec77606df2b45a95208fb319b781e310ad3a6fe182bb9；原run model_calls7、cluster model_calls1/attempt1保持，恢复准备新增Provider0/事实写入0。上线后消费和原cluster收尾另记。
 
-最终相对fa505a8c核数：src94文件+991/-2048，净删1057；migrations2文件+46/-1，净增45；生产源码及迁移共96文件，净删1012。此前计数漏算0056删除1行，PR280实际净删955、W13后996，以本次git numstat复核为准。测试/文档不计入生产代码净删。
+PR282阶段相对fa505a8c核数：src94文件+991/-2048，净删1057；migrations2文件+46/-1，净增45；生产源码及迁移共96文件，净删1012。此前计数漏算0056删除1行，PR280实际净删955、W13后996，以git numstat复核为准。后续W16–W21另列最终数量；测试/文档不计入生产代码净删。
+
+### W14/W15上线复验
+
+PR282合并07815fb2，direct镜像本地无源码部署通过，05:48生产Bot-only部署。05:49:14原cluster478完成，attempts2、model_calls仍1；原KEEP operation495/71e6a8e1-5641-4405-bdc9-7f8b66cd6710 committed，preview applied。没有重跑原模型或改写原事实来冒充恢复。
+
+两个停用Conversation的binding沿原Host转OFF，controller_epoch2、master_enabled=false。新模拟intrinsic提案simulated-intrinsic-20261010-07815fb2-final，原run8f4ac9b4-c302-4d0a-919d-f17de982017e、Workd511b379-a2c6-4c31-bc07-1a3f838e3a17，05:50:13准入、05:50:48完成、05:50:49反馈no_reply，model2/send0、journal paired、scope owner空；未冒充自然Controller流量。该版主分支CI37995227287全绿：1269 passed、49 skipped、1102 warnings、625.81秒，前端3文件18项、构建及类型检查通过。
+
+### W16–W19：终局回看发现的SQL次数封口
+
+原Dream run69继续处理后于05:49:31因SQLITE_BUSY主码5退出；前面517曾沿原三次循环重备，普通5直接逃出。cluster482已有真实模型invocation62044，KEEP决定位于trace161865→161871、operation f2d950b35718400caa630bfe069c8a53。核对完整输入与来源签名及指纹ab626f16eaa7e082ea83ce8a68f899e2704327a5f8dd6239120b7e8f66a6b5a1一致后，沿原save_preview保存adbe1780-bfa4-4e46-8842-9873ff14002f，新增模型调用0；当时原run model_calls11，cluster482 calls1/attempt1。未把consistency healthy写成Dream worker正常。
+
+W16直接删除apply_evidence_write三次封口、EvidenceSnapshotRetryExhausted类及DreamWorker专项失败分支。原callback只在自身OperationalError且整体回滚确认后重备；SQLite原生低8位主码5覆盖普通BUSY及517，新session沿原操作ID准备与提交。ORM flush仍在纯数据库单元；physical commit、rollback或cleanup确认异常原样退出，不授予重放资格。W17实际取消测试又复现下游清理吞掉取消、原BUSY返回时Task仍cancelling导致无限重备，故在已确认回滚的原重备边界传播该取消；未用缩小测试时序掩盖问题。没有sleep/backoff、重试框架、兼容开关或新状态。
+
+原冻结exhaustion测试改为busy恢复测试并重命名，17项专项覆盖真实5/517各四次竞争后两个原簇完成、原operation ID与模型累计预算、deferred ORM flush、持续竞争取消、commit/rollback确认不明、非BUSY不重备。八套相关事务共97 passed、0 skipped、55.41秒；261/773仅合成原生错误码分类验证，未冒充实际BUSY_RECOVERY/TIMEOUT场景。源码Ruff/格式/Mypy通过。
+
+同次反查又发现mutation两个、maintenance一个及compaction一个独立三次循环，列W17–W19实施：直接复用既有apply_evidence_write，删除重复错误分支、compaction包装和异常import。mutation源码净删31行，原resolve、来源快照和mutation UUID在callback外；8套相关事务111 passed、0 skipped、61.13秒，工具/Worker真实5/517连续四次后提交、取消退出、未知确认核原receipt或原error且不重放，owner/来源变化仍拒绝。maintenance原rows/cutoff固定，maintenance_expired仅在确认commit后累计，维护专项及空候选共12 passed。compaction源码净删13行，原run/item/Dream operation/publicID及mutation receipt保持，SELF/Dream真实竞争、取消原claim恢复及commit/cleanup未知确认等33 passed。各次专项独立记录，不相加冒充一次全量。现行开发合同、memory-v2、memory-change同步移除三次/仅517文字；历史任务书的当时验收保留，不覆盖现行合同。
+
+源码与验证索引：
+
+- W16：[src/qq_ai_bot/memory/repository.py:381 (MemoryFactRepository.apply_evidence_write)](../../src/qq_ai_bot/memory/repository.py#L381)；[tests/unit/test_dream_busy_recovery.py:117 (test_four_real_busy_rollbacks_complete_original_cluster_and_continue_next)](../../tests/unit/test_dream_busy_recovery.py#L117)、[test_phase_busy_is_not_classified_as_rolled_back_operation](../../tests/unit/test_dream_busy_recovery.py#L214)。
+- W17：[src/qq_ai_bot/memory/mutation/service.py:1179 (MemoryMutationService._commit_prepared)](../../src/qq_ai_bot/memory/mutation/service.py#L1179) → [src/qq_ai_bot/memory/mutation/service.py:1548 (MemoryMutationService.mutate_validated_claim)](../../src/qq_ai_bot/memory/mutation/service.py#L1548)；[tests/unit/test_mutation_snapshot_upgrade.py:126 (test_four_busy_rollbacks_reprepare_without_repeating_resolution)](../../tests/unit/test_mutation_snapshot_upgrade.py#L126)、[test_mutation_unknown_transaction_ack_uses_original_receipt_without_replay](../../tests/unit/test_mutation_snapshot_upgrade.py#L33)。
+- W18：[src/qq_ai_bot/memory/maintenance.py:96 (MemoryMaintenanceWorker._process_once_unlocked)](../../src/qq_ai_bot/memory/maintenance.py#L96)；[tests/unit/test_memory_maintenance_evidence_snapshot.py:133 (test_maintenance_reprepares_four_native_busy_rollbacks_with_original_batch_cutoff)](../../tests/unit/test_memory_maintenance_evidence_snapshot.py#L133)、[test_maintenance_unknown_acknowledgement_never_retries_or_reports_success](../../tests/unit/test_memory_maintenance_evidence_snapshot.py#L282)。
+- W19：[src/qq_ai_bot/memory/evidence_compaction.py:283 (EvidenceCompactionService._compact_fact)](../../src/qq_ai_bot/memory/evidence_compaction.py#L283)；[tests/unit/test_evidence_compaction_busy_recovery.py:124 (test_four_real_busy_rollbacks_finish_original_compaction_and_keep_provenance)](../../tests/unit/test_evidence_compaction_busy_recovery.py#L124)、[test_uncertain_acknowledgement_does_not_repeat_compaction](../../tests/unit/test_evidence_compaction_busy_recovery.py#L216)。
+
+W20零消费者查证：clear_conflict仅定义，没有src/tests调用；直接删除30行。invalidate/本人撤回仍通过_clear_resolved_related_conflicts调用_clear_conflict_in_session；/ai memory resolve→MemoryAdmin→resolve_conflicts仍存在，不把它误当死代码。后两条原领域操作没有固定失败次数门，本次不因“没用共用helper”再添包装。源码格式、Ruff、Mypy通过。
+
+终审还反查无限重备的关闭消费者：Dream、自省、compaction原close已取消Task，维护、Memory提取及Rebuild却只stop后等待当前任务，持续writer竞争会挡住关闭。W21沿现有Task.cancel/gather接线，不另造stop guard、等待上限或关停框架。跨进程边界另记：没有持久preview且未提交的Dream决定重启后仍可能由既有调度重新生成，累计model_calls不重置；SQL纯数据库重备不重跑模型，不等同承诺所有崩溃后免付费。478/482本次复用的是已查实的原决定。
+
+W21关闭回归：真实MemoryWorker/RebuildWorker.start进入原模型提取与commit，独立writer制造实际BUSY5，close取消原Task、写锁释放；原job processing/attempt7、原Rebuild run committing/proposal pending保留，事实和mutation receipt为0。释放锁后沿同job/已取得claim与原run/proposal提交，各模型调用仍1。两项与既有Memory/jobclaim/Rebuild共32 passed、15.10秒。维护真实_run连续四次BUSY5后close取消，无expired事件、原batch/cutoff不变；正常idle关闭和原start生命周期同样通过，维护文件13 passed、6.52秒。Ruff/格式/Mypy/diffcheck通过。
+
+W22交叉审查定位：unknown commit ack实际DELETE已提交使证据13→2，下一poll按证据阈值不再选原fact，_ensure_run把processing item退为pending后，_finish_run却将run置completed，原item失去恢复入口。只检查异常当时processing不足以验证收尾；本项让既有item结算和DELETE/rebase一起原子提交，沿原run/item ID，不新建状态或恢复回执。
+
+W22最终26项busy/ack与4项preparation共30 passed、20.68秒。SELF/Dream的commit确认丢失（原生BUSY5/517、OSError、CancelledError）后，下一poll原run/item真正completed，completed_items1、before13/after2，原receipt/op/publicID和Dream签名保留，DELETE仅一次；cleanup确认不明不重试，原真实四次竞争与取消恢复保留。后置失败只更新原processing item，不覆盖已提交终态；日志记录error而不误称已提交业务failed。现有preparation测试两个私有调用改为真实run_batch，首次DELETE前准备与后续零历史读取仍核对具体memory_evidence查询。交叉审查无必修项。生产只读核查212个item均completed，没有终态run的pending/processing遗留；72723个completed run是历史记录，不清空来伪造健康。
+
+W23纯删内层三次即时517重试及异常import，源码净删7行；原64ref分页与下一tick对账保持。真实BUSY5/517本tick只尝试一次原事务，失败不_replay、不_save、不_dispatch，原Work、模型预算、social receipt及释放租约不变；下tick同run/sequence写一次反馈。真实commit后丢517确认时，本tick记录错误，下tick按持久反馈回放，第三tick无重复，新增模型/发送均0。既有feedback文件16 passed、0 skipped、8.92秒，格式/Ruff/Mypy通过。
+
+最终补充索引：
+
+- W20：[src/qq_ai_bot/memory/service.py:969 (MemoryFactService._clear_conflict_in_session)](../../src/qq_ai_bot/memory/service.py#L969) → [src/qq_ai_bot/memory/service.py:1177 (MemoryFactService.resolve_conflicts)](../../src/qq_ai_bot/memory/service.py#L1177)。
+- W21：[src/qq_ai_bot/memory/maintenance.py:60 (MemoryMaintenanceWorker.close)](../../src/qq_ai_bot/memory/maintenance.py#L60)、[src/qq_ai_bot/memory/worker.py:119 (MemoryWorker.close)](../../src/qq_ai_bot/memory/worker.py#L119)、[src/qq_ai_bot/memory/rebuild/worker.py:29 (MemoryRebuildWorker.close)](../../src/qq_ai_bot/memory/rebuild/worker.py#L29)；[tests/unit/test_memory_worker_shutdown.py:49 (test_close_during_real_busy_preserves_original_owner_and_committed_truth)](../../tests/unit/test_memory_worker_shutdown.py#L49)、[test_close_cancels_running_maintenance_under_continuous_real_writer_busy](../../tests/unit/test_memory_maintenance_evidence_snapshot.py#L221)。
+- W22：[src/qq_ai_bot/memory/evidence_compaction.py:574 (EvidenceCompactionService._finish_item)](../../src/qq_ai_bot/memory/evidence_compaction.py#L574)；[test_uncertain_acknowledgement_does_not_repeat_compaction](../../tests/unit/test_evidence_compaction_busy_recovery.py#L216)。
+- W23：[src/qq_ai_bot/services/participation_feedback.py:505 (_commit_pending)](../../src/qq_ai_bot/services/participation_feedback.py#L505) → [src/qq_ai_bot/services/participation_feedback.py:545 (reconcile_page)](../../src/qq_ai_bot/services/participation_feedback.py#L545)；[tests/unit/test_participation_feedback.py:132 (test_feedback_busy_exits_tick_and_next_host_reconciliation_preserves_original_facts)](../../tests/unit/test_participation_feedback.py#L132)、[test_feedback_unknown_commit_ack_exits_tick_and_replays_original_durable_sequence](../../tests/unit/test_participation_feedback.py#L198)。
+
+本次回看执行及终局审查完成：C00–C36、P01–P10、W01–W23均已逐行标注，相关源码与消费者已复核。Memory范围旧三次/专属exhausted类和无消费者clear_conflict均零残余；测试和现行合同同步，Quality自动收集重命名和新增测试，不需添加或改动CI机制。冻结Ruff、16份改动Python格式、Linux-target Mypy644源文件、3.9.0 release identity及diffcheck通过。最新全量CI与生产结果在实际执行后补录，不把本地绿灯写成已上线。
+
+最终相对fa505a8c：src101文件+1399/-2554，净删1155；migrations2文件+46/-1，净增45；生产源码及迁移共103文件净删1110行。测试和文档不计入该净删数；缩进移动计入Git原始增删，净值由实际numstat复核。

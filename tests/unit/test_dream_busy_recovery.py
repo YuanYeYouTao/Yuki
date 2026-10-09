@@ -1,4 +1,4 @@
-"""Real WAL exhaustion fails one Dream cluster without replaying model work."""
+"""Real WAL contention reprepares the original database plan without model replay."""
 
 import asyncio
 import sqlite3
@@ -25,7 +25,6 @@ from qq_ai_bot.memory.dream.models import (
 )
 from qq_ai_bot.memory.dream.service import DreamService
 from qq_ai_bot.memory.dream.worker import DreamWorker
-from qq_ai_bot.memory.repository import EvidenceSnapshotRetryExhausted
 
 
 async def _case(database, monkeypatch, *, clusters=1):
@@ -35,8 +34,8 @@ async def _case(database, monkeypatch, *, clusters=1):
             await _fact_with_evidence(
                 facts,
                 ledger,
-                message_id=f"exhaust-{index}",
-                memory_key=f"exhaust:{index}",
+                message_id=f"busy-{index}",
+                memory_key=f"busy:{index}",
                 content=f"source {index}",
             )
             for index in range(clusters * 2)
@@ -86,7 +85,7 @@ async def _case(database, monkeypatch, *, clusters=1):
     return facts, dreams, service, run, worker, calls
 
 
-def _race(database, dreams, monkeypatch):
+def _race(database, dreams, monkeypatch, *, code=517, fail_attempts=4):
     create = dreams.create_operation
     attempts = []
     errors = []
@@ -94,12 +93,16 @@ def _race(database, dreams, monkeypatch):
     async def interleaved_create(**kwargs):
         # Every attempt's evidence preparation has already read its snapshot.
         # The unrelated committed timestamp leaves model inputs unchanged.
-        if not attempts or kwargs["cluster_id"] == attempts[0][0]:
-            attempts.append((kwargs["cluster_id"], kwargs["public_id"]))
+        attempts.append((kwargs["cluster_id"], kwargs["public_id"]))
+        if fail_attempts is None or len(attempts) <= fail_attempts:
             async with database.immediate_session() as writer:
                 await writer.execute(
                     update(MemoryDreamRunModel).values(updated_at=datetime.now(UTC))
                 )
+                if code == 5:
+                    # The unrelated writer still holds its WAL lock when the
+                    # prepared reader first attempts to upgrade: real BUSY 5.
+                    return await create(**kwargs)
         return await create(**kwargs)
 
     def record(context):
@@ -110,17 +113,18 @@ def _race(database, dreams, monkeypatch):
     return attempts, errors, record
 
 
-async def test_three_real_517_rollbacks_fail_original_cluster_and_continue_next(
-    database, monkeypatch
+@pytest.mark.parametrize("code", [5, 517])
+async def test_four_real_busy_rollbacks_complete_original_cluster_and_continue_next(
+    database, monkeypatch, code
 ):
     _, dreams, _, run, worker, calls = await _case(database, monkeypatch, clusters=2)
-    attempts, errors, record = _race(database, dreams, monkeypatch)
+    attempts, errors, record = _race(database, dreams, monkeypatch, code=code)
     try:
         await worker._drain_active()
     finally:
         event.remove(database.engine.sync_engine, "handle_error", record)
-    assert errors == [517, 517, 517]
-    assert len(attempts) == 3 and len(set(attempts)) == 1
+    assert errors == [code] * 4
+    assert len(attempts) == 8 and len(set(attempts[:5])) == 1
     async with database.sessions() as reader:
         clusters = list(
             await reader.scalars(
@@ -130,14 +134,14 @@ async def test_three_real_517_rollbacks_fail_original_cluster_and_continue_next(
         assert calls == [row.id for row in clusters]
         assert [
             (row.status, row.model_calls, row.attempts, row.operation_count) for row in clusters
-        ] == [("failed", 1, 1, 0), ("completed", 1, 1, 2)]
-        assert clusters[0].error_category == "evidence_snapshot_retry_exhausted"
-        assert await reader.scalar(select(func.count()).select_from(MemoryDreamOperationModel)) == 2
+        ] == [("completed", 1, 1, 2), ("completed", 1, 1, 2)]
+        assert clusters[0].error_category is None
+        assert await reader.scalar(select(func.count()).select_from(MemoryDreamOperationModel)) == 4
     current = await dreams.get_run(run.public_id)
     assert (current.status.value, current.model_calls, current.failed_clusters) == (
-        "partial_failed",
+        "completed",
         2,
-        1,
+        0,
     )
     await worker._drain_active()
     assert len(calls) == 2
@@ -205,12 +209,15 @@ async def test_process_commit_acknowledgement_loss_preserves_actual_operations(
     assert not (await worker.health()).running
 
 
+@pytest.mark.parametrize("code", [5, 517])
 @pytest.mark.parametrize("phase", ["commit", "cleanup"])
-async def test_phase_517_is_not_classified_as_rolled_back_operation(database, monkeypatch, phase):
+async def test_phase_busy_is_not_classified_as_rolled_back_operation(
+    database, monkeypatch, phase, code
+):
     facts, _, _, _, _, _ = await _case(database, monkeypatch)
     original = facts.repository.transaction
     native = sqlite3.OperationalError("phase failure")
-    native.sqlite_errorcode = 517
+    native.sqlite_errorcode = code
     phase_error = OperationalError("phase", {}, native)
     calls = 0
 
@@ -232,7 +239,7 @@ async def test_phase_517_is_not_classified_as_rolled_back_operation(database, mo
         calls += 1
         if phase == "cleanup":
             failure = sqlite3.OperationalError("operation snapshot")
-            failure.sqlite_errorcode = 517
+            failure.sqlite_errorcode = code
             raise OperationalError("operation", {}, failure)
         await session.execute(update(MemoryDreamRunModel).values(model_calls=7))
 
@@ -240,14 +247,13 @@ async def test_phase_517_is_not_classified_as_rolled_back_operation(database, mo
     with pytest.raises(OperationalError) as caught:
         await facts.repository.apply_evidence_write(operation)
     assert caught.value is phase_error
-    assert not isinstance(caught.value, EvidenceSnapshotRetryExhausted)
     assert calls == 1
     async with database.sessions() as reader:
         count = await reader.scalar(select(MemoryDreamRunModel.model_calls))
         assert count == (7 if phase == "commit" else 0)
 
 
-@pytest.mark.parametrize("code", [5, 6])
+@pytest.mark.parametrize("code", [6, 262])
 async def test_other_native_busy_codes_keep_original_error_without_retry(
     database, monkeypatch, code
 ):
@@ -265,11 +271,11 @@ async def test_other_native_busy_codes_keep_original_error_without_retry(
     with pytest.raises(OperationalError) as caught:
         await facts.repository.apply_evidence_write(operation)
     assert caught.value is failure and calls == 1
-    assert not isinstance(caught.value, EvidenceSnapshotRetryExhausted)
 
 
-async def test_deferred_orm_first_write_exhaustion_is_confirmed_before_physical_commit(
-    database, monkeypatch
+@pytest.mark.parametrize("code", [5, 517])
+async def test_deferred_orm_first_write_reprepares_four_rollbacks_before_physical_commit(
+    database, monkeypatch, code
 ):
     facts, _, _, _, _, _ = await _case(database, monkeypatch)
     calls = 0
@@ -280,19 +286,76 @@ async def test_deferred_orm_first_write_exhaustion_is_confirmed_before_physical_
         calls += 1
         row = await session.scalar(select(MemoryDreamRunModel))
         row.model_calls = 7  # Defer this ORM DML to the helper's flush.
-        async with database.immediate_session() as writer:
-            await writer.execute(update(MemoryDreamRunModel).values(updated_at=datetime.now(UTC)))
+        if calls <= 4:
+            async with database.immediate_session() as writer:
+                await writer.execute(
+                    update(MemoryDreamRunModel).values(updated_at=datetime.now(UTC))
+                )
+                if code == 5:
+                    await session.flush()
 
     def record(context):
         errors.append(getattr(context.original_exception, "sqlite_errorcode", None))
 
     event.listen(database.engine.sync_engine, "handle_error", record)
     try:
-        with pytest.raises(EvidenceSnapshotRetryExhausted) as caught:
-            await facts.repository.apply_evidence_write(operation)
+        await facts.repository.apply_evidence_write(operation)
     finally:
         event.remove(database.engine.sync_engine, "handle_error", record)
-    assert errors == [517, 517, 517] and calls == 3
-    assert caught.value.orig.sqlite_errorcode == 517
+    assert errors == [code] * 4 and calls == 5
     async with database.sessions() as reader:
-        assert await reader.scalar(select(MemoryDreamRunModel.model_calls)) == 0
+        assert await reader.scalar(select(MemoryDreamRunModel.model_calls)) == 7
+
+
+@pytest.mark.parametrize("code", [5, 517])
+async def test_cancel_exits_real_busy_repreparation_without_replaying_model(
+    database, monkeypatch, code
+):
+    _, dreams, _, run, worker, calls = await _case(database, monkeypatch)
+    attempts, errors, record = _race(database, dreams, monkeypatch, code=code, fail_attempts=None)
+    fourth = asyncio.Event()
+
+    def signal(_context):
+        if len(errors) >= 4:
+            fourth.set()
+
+    engine = database.engine.sync_engine
+    event.listen(engine, "handle_error", signal)
+    task = asyncio.create_task(worker._drain_active())
+    try:
+        await asyncio.wait_for(fourth.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        event.remove(engine, "handle_error", signal)
+        event.remove(engine, "handle_error", record)
+    assert errors[:4] == [code] * 4 and len(set(attempts)) == 1
+    assert len(calls) == 1
+    async with database.immediate_session() as writer:
+        cluster = await writer.scalar(select(MemoryDreamClusterModel))
+        assert cluster.status == "processing" and cluster.model_calls == 1
+        assert await writer.scalar(select(func.count()).select_from(MemoryDreamOperationModel)) == 0
+    assert (await dreams.get_run(run.public_id)).model_calls == 1
+
+
+@pytest.mark.parametrize("code", [sqlite3.SQLITE_BUSY_RECOVERY, sqlite3.SQLITE_BUSY_TIMEOUT])
+async def test_native_busy_extended_codes_reprepare_original_callback(database, monkeypatch, code):
+    facts, _, _, _, _, _ = await _case(database, monkeypatch)
+    calls = 0
+
+    async def operation(session):
+        nonlocal calls
+        calls += 1
+        if calls <= 4:
+            failure = sqlite3.OperationalError("native extended busy")
+            failure.sqlite_errorcode = code
+            raise OperationalError("operation", {}, failure)
+        await session.execute(update(MemoryDreamRunModel).values(model_calls=7))
+
+    await facts.repository.apply_evidence_write(operation)
+    assert calls == 5
+    async with database.sessions() as reader:
+        assert await reader.scalar(select(MemoryDreamRunModel.model_calls)) == 7

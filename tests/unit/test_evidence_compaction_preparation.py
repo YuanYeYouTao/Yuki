@@ -1,5 +1,6 @@
 """Bounded backfill and atomic preparation of real SQLite evidence compaction."""
 
+import re
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -147,20 +148,18 @@ async def test_compaction_reprepares_stale_snapshot_and_stops_history_reads_afte
 
     event.listen(database.engine.sync_engine, "before_cursor_execute", observe)
     try:
-        remaining_count = await service._compact_fact(
-            fact_id=fact.id, provenance="self_reflection", operation_id=None
-        )
+        assert await service.run_batch() == 1
     finally:
         event.remove(database.engine.sync_engine, "before_cursor_execute", observe)
     assert attempts == 2
-    assert remaining_count <= 3
+    assert len(await facts.list_evidence(fact.id)) <= 3
     last_delete = max(
         i
         for i, statement in enumerate(statements)
         if statement.startswith("DELETE FROM memory_evidence")
     )
     assert not any(
-        statement.startswith("SELECT") and "memory_evidence" in statement
+        statement.startswith("SELECT") and re.search(r"\bmemory_evidence\b", statement)
         for statement in statements[last_delete + 1 :]
     )
     current = await facts.get_fact(fact.id)
@@ -182,11 +181,8 @@ async def test_compaction_aggregates_all_retained_evidence_beyond_a_read_page(
         )
 
     monkeypatch.setattr(facts.repository, "list_evidence", bounded_public_page)
-    kept = await service._compact_fact(
-        fact_id=fact.id, provenance="self_reflection", operation_id=None
-    )
+    assert await service.run_batch() == 1
     current = await facts.get_fact(fact.id)
     remaining = await read_evidence(fact.id, limit=None)
-    assert kept == len(remaining)
     assert current.evidence_count == len(remaining)
     assert current.confidence == fact.confidence

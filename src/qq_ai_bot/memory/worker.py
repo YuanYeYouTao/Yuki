@@ -120,7 +120,8 @@ class MemoryWorker:
         self._stop.set()
         self._wake.set()
         if self._task is not None:
-            await self._task
+            self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
 
     async def enqueue(
         self,

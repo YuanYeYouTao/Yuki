@@ -21,7 +21,6 @@ from qq_ai_bot.memory.dream.models import (
 )
 from qq_ai_bot.memory.dream.repository import DreamRepository
 from qq_ai_bot.memory.dream.service import DreamBudgetExhausted, DreamQualityError, DreamService
-from qq_ai_bot.memory.repository import EvidenceSnapshotRetryExhausted
 from qq_ai_bot.model_runtime.structured import StructuredTaskError
 
 logger = logging.getLogger(__name__)
@@ -188,21 +187,6 @@ class DreamWorker:
                 )
             except asyncio.CancelledError:
                 raise
-            except EvidenceSnapshotRetryExhausted:
-                # Only a confirmed database rollback is a known failed action.
-                # Finish errors escape: the next tick must not replay the model.
-                await self._finish_cluster_failure(
-                    cluster.id,
-                    status=DreamClusterStatus.FAILED,
-                    error_category="evidence_snapshot_retry_exhausted",
-                )
-                logger.warning(
-                    "memory_dream_snapshot_retry_exhausted run_id=%s cluster_id=%d "
-                    "error_category=evidence_snapshot_retry_exhausted",
-                    run.public_id,
-                    cluster.id,
-                )
-                continue
             except (OSError, RuntimeError, ValueError, StructuredTaskError) as exc:
                 await self._finish_cluster_failure(
                     cluster.id,

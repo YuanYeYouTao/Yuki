@@ -11,7 +11,7 @@ from typing import Any
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.config import Settings
 from qq_ai_bot.memory.dream.db_models import (
@@ -70,32 +70,27 @@ class EvidenceCompactionService:
             if item_id is None:
                 continue
             try:
-                after = await self._compact_fact(
+                await self._compact_fact(
                     fact_id=fact_id,
                     provenance=provenance,
                     operation_id=operation_id,
+                    item_id=item_id,
+                    before=evidence_count,
                 )
             except (OSError, RuntimeError, ValueError) as exc:
-                await self._finish_item(
-                    item_id,
-                    status="failed",
-                    before=evidence_count,
-                    after=evidence_count,
-                    error_category=type(exc).__name__,
-                )
+                async with self._database.sessions() as session, session.begin():
+                    await self._finish_item(
+                        item_id,
+                        status="failed",
+                        before=evidence_count,
+                        after=evidence_count,
+                        error_category=type(exc).__name__,
+                        session=session,
+                    )
                 logger.warning(
-                    "memory_evidence_compaction_failed fact_id=%d error_category=%s",
+                    "memory_evidence_compaction_error fact_id=%d error_category=%s",
                     fact_id,
                     type(exc).__name__,
-                )
-            else:
-                status = "completed" if after < evidence_count else "skipped"
-                await self._finish_item(
-                    item_id,
-                    status=status,
-                    before=evidence_count,
-                    after=after,
-                    error_category=None if status == "completed" else "no_safe_reduction",
                 )
             processed += 1
         await self._refresh_run(run_id)
@@ -286,24 +281,21 @@ class EvidenceCompactionService:
             return int(item_id) if item_id is not None else None
 
     async def _compact_fact(
-        self, *, fact_id: int, provenance: str, operation_id: int | None
+        self, *, fact_id: int, provenance: str, operation_id: int | None, item_id: int, before: int
     ) -> int:
-        # Only the pure database preparation is repeated. The already claimed
-        # compaction item and its original operation identity remain unchanged.
-        for attempt in range(3):
-            try:
-                return await self._compact_fact_snapshot(
-                    fact_id=fact_id, provenance=provenance, operation_id=operation_id
+        async def compact(session: AsyncSession) -> int:
+            async def finish(after: int) -> int:
+                status = "completed" if after < before else "skipped"
+                await self._finish_item(
+                    item_id,
+                    status=status,
+                    before=before,
+                    after=after,
+                    error_category=None if status == "completed" else "no_safe_reduction",
+                    session=session,
                 )
-            except OperationalError as exc:
-                if getattr(exc.orig, "sqlite_errorcode", None) != 517 or attempt == 2:
-                    raise
-        raise AssertionError("unreachable compaction retry")
+                return after
 
-    async def _compact_fact_snapshot(
-        self, *, fact_id: int, provenance: str, operation_id: int | None
-    ) -> int:
-        async with self._facts.repository.transaction(read_snapshot=True) as session:
             fact = await self._facts.repository.get_fact(fact_id, session=session)
             if fact is None:
                 raise ValueError("compaction fact disappeared")
@@ -322,7 +314,7 @@ class EvidenceCompactionService:
                 )
             else:
                 if operation_id is None:
-                    return len(evidence)
+                    return await finish(len(evidence))
                 keep_ids = await self._dream_keep_ids(
                     fact_id=fact_id,
                     operation_id=operation_id,
@@ -332,7 +324,7 @@ class EvidenceCompactionService:
                 )
             delete_ids = tuple(row.id for row in evidence if row.id not in keep_ids)
             if not delete_ids:
-                return len(evidence)
+                return await finish(len(evidence))
             readable = await self._facts.repository.list_evidence(
                 fact_id, limit=None, session=session
             )
@@ -370,7 +362,9 @@ class EvidenceCompactionService:
                     rebase=rebase,
                     signature=fact_signature(refreshed),
                 )
-            return len(evidence) - len(delete_ids)
+            return await finish(len(evidence) - len(delete_ids))
+
+        return await self._facts.repository.apply_evidence_write(compact)
 
     async def _self_reflection_keep_ids(
         self, *, fact_id: int, evidence: tuple[Any, ...], session: Any
@@ -585,21 +579,24 @@ class EvidenceCompactionService:
         before: int,
         after: int,
         error_category: str | None,
+        session: AsyncSession,
     ) -> None:
         now = datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
-            await session.execute(
-                update(MemoryEvidenceCompactionItemModel)
-                .where(MemoryEvidenceCompactionItemModel.id == item_id)
-                .values(
-                    status=status,
-                    evidence_after=after,
-                    deleted_count=max(0, before - after),
-                    error_category=error_category,
-                    updated_at=now,
-                    completed_at=now,
-                )
+        await session.execute(
+            update(MemoryEvidenceCompactionItemModel)
+            .where(
+                MemoryEvidenceCompactionItemModel.id == item_id,
+                MemoryEvidenceCompactionItemModel.status == "processing",
             )
+            .values(
+                status=status,
+                evidence_after=after,
+                deleted_count=max(0, before - after),
+                error_category=error_category,
+                updated_at=now,
+                completed_at=now,
+            )
+        )
 
     async def _refresh_run(self, run_id: int) -> None:
         now = datetime.now(UTC)
