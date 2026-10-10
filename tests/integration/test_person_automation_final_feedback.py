@@ -132,6 +132,7 @@ async def test_none_person_automation_nonempty_internal_final_is_silent(
     assert len(case.provider.requests) == 1 and not sent(case.env)
     async with database.sessions() as reader:
         original = dict((await reader.execute(select(work))).mappings().one())
+    monkeypatch.setattr(case.chat._settings, "runtime_work_enabled", False)
     monkeypatch.setattr(case.chat, "_history_input_budget", lambda *_args, **_kwargs: 0)
     replay = await handlers.agent(*caller[0])
     assert replay.data["text"] == json.loads(original["checkpoint_json"])["sync_result"]

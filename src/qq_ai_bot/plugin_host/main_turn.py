@@ -88,14 +88,7 @@ async def run_plugin_main_turn(
         permission=permission,
         context_profile=context_profile,
     )
-    runner = host._services.agent_runner
-    contract = runner.main_contract if runner is not None else None
-    if (
-        previous is not None
-        and previous["state"] == "completed"
-        and contract is not None
-        and contract.chat._settings.runtime_work_enabled
-    ):
+    if previous is not None and previous["state"] == "completed":
         return await execute(completed_work=previous)
     task = _RUNNING.get(key)
     if task is not None and task.done():

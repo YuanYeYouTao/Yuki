@@ -737,6 +737,7 @@ async def test_derived_sdk_plugin_work_resumes_original_id_and_permissions(
             await assemble_plugin(**{**prepared_context, "capacity_budget": 0})
         with monkeypatch.context() as constrained:
             constrained.setattr(chat, "_history_input_budget", lambda *args, **kwargs: 0)
+            constrained.setattr(chat._settings, "runtime_work_enabled", False)
             for saved_result in ("text", "missing", "null"):
                 checkpoint = json.loads(parent["checkpoint_json"])
                 if saved_result == "missing":
