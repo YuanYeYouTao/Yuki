@@ -135,7 +135,6 @@ class SubagentExecution:
                         SandboxTaskRunModel.status == "waiting",
                         SandboxTaskRunModel.run_id.is_not(None),
                     )
-                    .limit(8)
                 )
             )
         for run_id in ids:

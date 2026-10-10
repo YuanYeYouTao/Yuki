@@ -1,6 +1,6 @@
 # Yuki Work 内核删减与 Pi durable 对照重构任务书
 
-日期：2026-10-10。实施记录更新至2026-10-11。状态：三名gpt-6.1-sol/max已按授权并行实施、逐行复核，R/T/D01–D42已完成本地实现和匹配验证。PR286/287/290/291已合并，当前main54c097ab Bot已上线、OneBot已连接，原Manager为PR290补正版本。真实QQ已有追加、等待、子目标、受控SELF释放、新根与文件、实际进程停止/父子释放及并发私聊记录。用户追加测试后，D39目录重复门槛、D40说明缺kind、D41假VM与D42恢复丢授予已补正；本地补测完成，新补丁尚待提交/部署及同链线上复验。主任务300秒等待未登记，停止时延和失败事实单独保留，详见末尾记录。
+日期：2026-10-10。实施记录更新至2026-10-11。状态：三名gpt-6.1-sol/max按授权并行实施、逐行复核。PR286/287/290/291/292已合并，当前main6fcbba06 Bot已上线、OneBot已连接，原Manager为PR290补正版本。真实QQ已有追加、等待、子目标、受控SELF释放、新根与文件、实际进程停止/父子释放及并发私聊记录。D39–D42已补正上线；末轮D43–D47均本地RED→GREEN，234个不同匹配节点通过，尚待最终PR/合并/部署。用户已授权以账号2186567848做受控入站模拟，补测新版等待续跑与权限读取；该模拟须明确记录来源，不能称为真人QQ输入。终局交付尚未关闭，主任务300秒等待未登记，停止时延和失败事实单独保留，详见末尾记录。
 
 ## 0. 最高开发约束与本轮范围
 
@@ -29,7 +29,7 @@
 | Pi main | `c5f5b3282d5e4203c085e59837ba17aeaf2829b5`，前轮与远端一致，本轮按该固定提交终审 |
 | Pi 核心比对 | durable tree `6f57be387b68c3068b97e8facec24c8149a940f6`；durable/chord/ai 与先前 `42a3497d` 一致，补充发现不是上游新增 |
 | 核验范围 | 实现、类型、原测试和示例；三名 gpt-6.1-sol/high 分别复核生命周期、Pi/树/存储、工具/提示/消费者。前轮 Yuki 定向测试 38 例通过，本轮源码终审，Pi 测试未运行；详见全景盘点 §§16–18 |
-| 生产证据 | 前轮 21:00:21 快照：Work/subagents 开启，Code 关闭，保留 3 个 child；详见全景盘点 §2。本轮不重复在线验收 |
+| 生产证据 | 研究阶段前轮21:00:21快照：Work/subagents开启，Code关闭，保留3个child；详见全景盘点§2。实施后的真实QQ和上线记录见§10 |
 
 后文 Yuki runtime/services 等索引相对 `src/qq_ai_bot`；Pi 索引相对 `packages/durable`。研究章节行号固定于以上提交，实施索引已更新为当前函数名。Pi README 明示 Experimental；不把“架构看起来稳”当作本项目验收。
 
@@ -165,7 +165,7 @@ Pi 默认收齐工具轮，所有 slot 都要求 terminate 才结束。上述顺
 | D08 | [x] | 删除 runtime 固定暂停 notice 生成/调度/发送/激活链；核对其他固定错误播报及 issue #285 | WorkResumer::resume；WorkScheduler::dispatch_once；runtime/work_supervisor.py::recover_failure；services/processor.py::MessageProcessor._prepare_foreground（旧failure_status_text整helper删除）；migrations/versions/0105_work_tree_and_retired_completion_policy.py::upgrade | Work notice生成/调度/发送整链删除；普通processor六个异常固定发送出口及failure_status_text整helper删除，原日志/失败/真实send保留；相关既有15例通过（本地；线上另见V02） |
 | D09 | [x] | send_message 分开传输与目标完成，文件/caption 原回执独立保真 | SocialService::_effect/_file_result；effect_outcomes.py::execution_evidence；InvocationService::invoke | Social原文件成功/附言未知分别保留；文件不重传、随后说明成功且完成案例通过（本地；线上另见V02） |
 | D10 | [x] | 删除辅助通知无条件拒绝新工具、退役结束决定和唤醒暂停根的行为；真人 steer 沿原安全边界接入 | WorkControl::has_pending_business_inputs/take_inputs；MainAgentBackend::execute_call；WorkRepository::_business_input_clause/commit_state；SubagentRepository::finish；work_management.py::manage_work | pending/take_inputs/writer/producer/settle_final按原输入来源区分；晚到业务与辅助通知对照通过（本地；线上另见V02） |
-| D11 | [x] | 主动 fail/cancel 复用指定树管理撤权及原执行器取消能力，补模型入口；删除先清空子任务/远端全部确认停止才结束的要求 | work_management.py::stop_owned_execution/manage_work；SubagentExecution::cancel_commands | 原stop_owned_execution撤权子树，cancel_commands沿原Sandbox run停止；迟到真实成功不改写（本地；线上另见V02） |
+| D11 | [x] | 主动 fail/cancel 复用指定树管理撤权及原执行器取消能力，补模型入口；删除先清空子任务/远端全部确认停止才结束的要求 | work_management.py::stop_owned_execution/manage_work；SubagentExecution::cancel_commands | 原stop_owned_execution撤权子树，原run实际SIGTERM及迟到回执已有验证；末轮D43删固定8条，11个持久run两轮取消查询RED→GREEN、真实Manager取消匹配通过；上线另见V02 |
 | D12 | [x] | 统一管理/模型恢复，删除整树 unknown/旧 notice/active wait 的恢复否决；显式继续替代旧等待时在原 writer 撤销绑定，无需先单独 cancel_wait | work_management.py::resume_blocker/manage_work；SubagentRepository::resume；WorkRepository::enqueue | 管理与模型resume删旧unknown否决；wait原绑定同次撤销、原ID恢复验证通过（本地；线上另见V02） |
 | D13 | [x] | 沿 TurnTranscript→response→原 effect/result→paired→journal publication 核查并删除重复分支；保留已付费响应与原协议恢复，Pi 仅作局部算法参考 | TurnTranscript::request/append_result；WorkSession::restore/save；WorkJournal::load/save/effect_result；AgentRunner::_run_with_receipts | 原journal/ProtocolStore/call/effect/预算身份保留；协议恢复与原调用不重放通过（本地；线上另见V02） |
 | D14 | [x] | 核对自动化、SELF、插件与子 Agent 的已有结果消费；当前开关不否决原来源，待处理只读不要求新上下文；删除无消费者的额外接纳上限 | DurableInvocations::read_result/run；MainAgentTurnService::read_result/run；plugin_host/main_turn.py::run_plugin_main_turn/_execute_plugin_main_turn；automation/handlers.py::AutomationCapabilityHandlers.agent；automation/executor.py::AutomationExecutor.execute；WorkResumer及原SELF/plugin_background/worker恢复入口 | 将原Durable只读分支机械搬到一个reader供三个入口复用，无新cache/状态；SDK、Person/SELF自动化真实waiting→关闭Work+capacity0→同ID只读，原Work/Wait不变且0新请求；真实queued续跑仍走完整准备。删除Executor外层当前开关封口和SDK固定8任务上限，原调用复用保留；最终SDK等26例、native/Person/SELF/scheduled69例分别通过、无skip，不累加重叠（本地；线上另见V02） |
@@ -197,9 +197,14 @@ Pi 默认收齐工具轮，所有 slot 都要求 terminate 才结束。上述顺
 | D39 | [x] | 删除权限目录读取对旧actor_is_superuser标记的重复比较；沿原可信actor和当前permission_catalog返回真实角色，不给恢复来源抬role | services/agent_tools.py::_capability_report/_my_capabilities；admin/permission_catalog.py::report_for_actor；WorkResumer::_resume；ToolRuntime::require_actor | 真实95117等待前目录成功、同ID恢复后permission_context_mismatch复现；本地原WorkResumer超管/普通人两参数RED1F1P→GREEN2P，source只删3行。匹配权限/取消/Deferred/原付费发布59例0skip；原声明、来源flag和执行授权不改，目录角色不授予管理写权限。上线后同链另见V02 |
 | D40 | [x] | 补清已有wait工具说明中conditions每项使用kind字段；不新增兼容别名、校验器或收紧开放对象schema | runtime/work_control.py::work_control_tools | 真实95117前两次用type键被unknown_wait_condition返回，模型自行纠正kind后成功；原description仅缺key名。单行说明改字，无执行逻辑新增；原wait节点及真实Code场景、对应LinuxMypy/Ruff/format通过 |
 | D41 | [x] | 删除原四协议交错测试的假VM类与worker digest/engine覆盖，沿原build_host的真实PinnedWorker/MontyEngine执行原三次await；纠正旧真实worker验收表述 | tests/integration/test_codemode_interleaved_recovery.py::test_pending_code_interleave；tests/support/codemode_cases.py::requires_worker；原build_host | 两假类及digest/factory覆盖删除，测试+12/-77；沿原host真实三await，chat/responses/anthropic/gemini×pending/settled8例通过、0skip、23.07秒。旧8为Fake的记录纠正；原89的该子集替换，不累加。缺worker的普通CI将skip这8例，不能代替本地实跑 |
-| D42 | [x] | 删除消息Work恢复时硬写actor_is_superuser/allow_admin_actions=False，读取原已持久授予；保留执行处当前撤权、原声明与各来源分工 | WorkResumer::_resume；ChatService::_run_agent消息source写入；recover_source；AdminCapabilityService::_actor | 仅两行读取原source bool，真实完整binding四种原grant/当前role组合RED2F2P→GREEN4P；原超管授权写配置32→17、撤权仍permission_denied且32、原USER后来升超管不抬旧grant。权限文件及来源/恢复小包27P0skip，包含工具累计1→3、模型1不变、同ID/source/声明；三源码Mypy、Ruff/format通过 |
-| V02 | [ ] | 数字生命研究所真实 QQ 全链路：用户任务、自主触发、等待续跑与最终释放 | 本文 §7、§§10.3、10.7–10.8 | 原七类场景及33bca真实活动进程停止/父释放已有组合证据。追加95117真实45秒主等待与同ID结束、95121私聊另canonical回复通过；等待后权限目录失败已复现，D39补正上线后的同链复验仍待。B unknown保留，父300秒未登记不冒充实证 |
-| V03 | [ ] | 逐行回看任务索引，终局反向审计及交付记录 | 本文 §9、§10 | D37/38已补正并PR291上线、真实原run停止完成；追加D39–D42本地补测和交叉终审完成。新补丁提交/上线及同链实测记录待补，全部本地实现不冒充已部署 |
+| D42 | [x] | 删除消息Work恢复时硬写actor_is_superuser/allow_admin_actions=False，读取原已持久授予；保留执行处当前撤权、原声明与各来源分工 | WorkResumer::_resume；ChatService::_respond消息source写入；recover_source；AdminCapabilityService::_actor | 仅两行读取原source bool，真实完整binding四种原grant/当前role组合RED2F2P→GREEN4P；原超管授权写配置32→17、撤权仍permission_denied且32、原USER后来升超管不抬旧grant。权限文件及来源/恢复小包27P0skip，包含工具累计1→3、模型1不变、同ID/source/声明；三源码Mypy、Ruff/format通过 |
+| D43 | [x] | 删除物理取消查询固定8条无游标截断，避免旧unknown常驻前段时尾部真实run永远收不到原取消 | SubagentExecution::cancel_commands；test_subagent_result_checkpoint.py::test_original_sandbox_runs_cancel_for_stopped_work_and_preserve_late_receipts | 只删limit(8)，源-1；原DB案例前8未知加3尾run，两轮均全部沿原键调用且持久表不变，旧RED1F→匹配GREEN7P0skip（8.50秒），含原Manager实际SIGTERM/晚到双回执。Linux单源Mypy/Ruff/format/diff通过；7为原218子集，不累加；上线待补 |
+| D44 | [x] | 删除record_effect在纯DB字节CAS竞争四次后强制抛失败；沿原已执行结果重新读取和提交，不重做模型/工具 | WorkRepository::record_effect；WorkJournal::record_effect；InvocationService::execute；test_invocation_crash_windows.py::test_t3_preserves_host_metadata_and_rejects_conflicting_results | range(4)→while True、删除耗尽raise；实际原Processor/Runner模型1、Social发送1，4次独立SQLite原domain绑定竞争后第5次落盘；RED1F→匹配10P0skip（7.02秒）。同ID/元数据/根models1/tools1、原accepted幂等/unknown不可回退/真实冲突通过；LinuxMypy/Ruff/format/diff通过 |
+| D45 | [x] | 删除旧Job引用Work归档必须带delivery_contract的门槛；沿实际FK关系进入现有tombstone，消除选中后不退出候选造成的回收漏尾 | WorkRepository::reclaim_terminal；0100旧plugin_background来源；test_subagent_result_checkpoint.py::test_paused_descendant_retains_terminal_ancestors_and_resumes_without_instruction | 原tombstone OR仅加实际Job引用一行；真实通知批准/publish创建256旧终态引用，RED1F→匹配6P0skip（17.41秒）。原Job/Work ID及Job字段不变、Work归档后尾部普通终态删除，原暂停后代/预算恢复保留；合流Mypy/Ruff/format/diff通过 |
+| D46 | [x] | 删除终态通知修复固定8条，旧代次未通知child不能遮住合法尾项；终态通知不复用实际执行容量拒绝 | SubagentRepository::maintain/acquire(reconcile=True)/finish | 沿原not-reconcile路径核执行容量，删通知截断；原Control/settlement完成child后真实代次重置8个前项，合法尾通知通过；无关活跃Worker满额仍通知已完成结果，真实执行容量保持。旧RED2F→匹配包7P0skip（20.29秒，含D47），LinuxMypy/Ruff/format/diff通过 |
+| D47 | [x] | 删除WorkScheduler先按Work行截8再按scope容量的重复截断，避免同一busy会话占满行段并遮住其他空闲会话 | WorkScheduler::dispatch_once/_run_scope；WorkResumer::_scene | 只删SQL行级limit及旧注释，保scope实际并发/来源/租约。8个旧Work实际授权resume、原group协调器占用，另一个真实private入站经原Scheduler/Resumer完成；旧RED queued→GREEN completed，同ID/source/预算及旧8行保持。匹配包7P0skip，不宣称8个不同busy scope的公平性已证明 |
+| V02 | [ ] | 数字生命研究所真实 QQ 全链路：用户任务、自主触发、等待续跑与最终释放；按新授权补受控入站模拟 | 本文 §7、§§10.3、10.7–10.8及后续 | 原七类场景及33bca真实活动进程停止/父释放已有组合证据。95117真实45秒主等待与同ID结束、95121私聊另canonical回复通过；等待后权限失败已复现并补正。用户授权新版同链受控模拟，待部署后执行，单独标来源。B unknown保留，父300秒未登记不冒充实证 |
+| V03 | [ ] | 逐行回看任务索引，终局反向审计及交付记录 | 本文 §9、§10 | D37/38及D39–D42分别PR291/292合并上线；D43–D47均本地RED→GREEN，234个不同匹配节点通过，源码冻结交叉复核通过。最终PR/合并/部署、授权模拟及清理记录待补 |
 
 ### 5.1 实施前基线中容易漏掉的实际分支
 
@@ -344,7 +349,7 @@ Control/API 中有实际模型、SDK或管理消费者的能力继续随内核�
 - 单层假设、旧审批是否移到了 Code、SQL、测试、提示、管理入口？是否为 Pi 概念新增无消费者框架？
 - 多 Work 的公共冻结前缀是否仍按原实际选取边界追加、私有协议是否仍按原 Work 隔离？有没有因为学习 Pi 新造上下文层？可选笔记/汇报是否又成了执行前置门槛？
 - 接纳是否还强制产出分类/普通写操作先 accept？wait 是否仍有 pending 资格双轨？继续 child 是否无故重开祖先？是否声称能恢复仅在内存且已丢失的响应？
-- T01–T04、D01–D42、V01–V03 是否逐行完成？没有实际跑的场景保持未验收；WebUI 不是新建设验收项。
+- T01–T04、D01–D47、V01–V03 是否逐行完成？没有实际跑的场景保持未验收；WebUI 不是新建设验收项。
 
 实施结束分别记录净删增行数、定向回归与 skip、CI、本地构建、PR、合并 SHA、部署镜像、迁移版本和真实群结果。净删行数不是唯一正确性证明。
 
@@ -518,4 +523,34 @@ STOP observed→child cancelled约72.48秒，→父completed约140.03秒。本�
 
 D42实际补正仅两行False改读原source bool。四种真实恢复参数由原Processor创建并持久授予，角色变化使用实际Settings；未手造grant/checkpoint。旧代码RED2F2P；改后原超管授予且当前仍超管通过真实admin binding执行32→17，当前撤权沿同binding得到permission_denied且32不变，原USER后来升超管仅读目录当前SUPER、原False授予仍拒绝，普通用户不变。原模型1不增加，工具累计原1→3，原source/ID/声明保持。最终权限/原来源/恢复27例通过、0skip（15.27秒），其中新admin/revoked两参数纳入；去重后共218个通过节点，不把整27再加到旧216。三源码LinuxMypy、源码/原测试Ruff/format、release_validate v3.9.0和diff通过。
 
-当前相对4c528898的最终本地差异：src +1785/-2437，净删652行；migrations +217/-4，净增213，合计净删439。tests +4244/-733，净增3511，单列不隐藏；脚本另删1行。本次相对54c补丁业务源码+3/-6，净删3行：删3行目录比较、两处固定False读回原授权、原工具说明改字，没有新增函数/状态/缓存/分类器/计时器。先前各轮行数均属对应历史SHA。
+PR292提交时相对4c528898的本地差异：src +1785/-2437，净删652行；migrations +217/-4，净增213，合计净删439。tests +4244/-733，净增3511，单列不隐藏；脚本另删1行。本次相对54c补丁业务源码+3/-6，净删3行：删3行目录比较、两处固定False读回原授权、原工具说明改字，没有新增函数/状态/缓存/分类器/计时器。先前各轮行数均属对应历史SHA。
+
+### 10.9 PR292上线与末轮取消截断
+
+PR292：https://github.com/YuanYeYouTao/Yuki/pull/292 ，UTC2026-10-10 20:51:39合并，main `6fcbba06d193c57d72f3b46cdf196a2b8530cc4b`。218个不同匹配节点通过，release_validate v3.9.0复核通过；按用户要求不等CI。合并后本机构建direct，Code默认false且binding/worker/launcher均无；上传归档267801600 bytes、SHA256 `617bbb1672c37076fde0174bca810e4926a1a84fba3466b61c28e60f08a0f6fa`。
+
+Bot-only更新为 `ghcr.io/yuanyeyoutao/yuki-qqbot:ops-6fcbba06`，imageID `sha256:7a679de2e8250faa5d6e8143f2788cc621d8eefdd2de57bf3c8ab2fbc5a50a45`，容器 `ad866af4d561662913c5bdc542fb4da95d1ccf7cf0bac0d9f22a3dced115bedd` 于UTC20:54:39.766793217启动。schema保持0105，无迁移/备份/数据恢复，SL的ID/StartedAt、Manager及environment未改；回执 `/opt/yuki-qqbot/ops/work-preparation-recovery-6fcbba06-20261010T205431Z/rollout.json`。应用20:55:58启动完成、20:56:09 OneBot连接后健康HTTP200/DBok/WStrue/restarts0，启动早期端口拒绝不记作持续故障。
+
+末轮逐项反查D11发现SubagentExecution.cancel_commands只取waiting取消run前8条，没有游标；原SandboxClient仅把真实terminal收进原TaskRun，unknown不会移出查询。因此前8个旧unknown可持续遮住第9个真实活动run，树已撤权仍漏掉物理停止。D43只删除该截断，沿原取消ID及真实回执处理，保留未知事实；既有测试补前段未知与尾节点，验证及随后交付继续记录，不在生产故意制造9个进程。
+
+D43完成：旧代码既有案例插入8个未知取消run与3个尾部run，连续两轮取消仍漏三个尾项，RED1F（5.50秒）；删唯一limit后同案例及原取消/Manager恢复7P0skip（8.50秒）。真实SQLite、原Work撤权/调用键、持久表不变与原晚到Tasks.receive均经过原实现；Sandbox取消传输是测试替身，未宣称11个实际进程。Manager四参数中原terminal/not-started分支仍真实启动sleep300、标记取消、SIGTERM和重复原回执。7节点属于原218，不重复计数。源只删1行；既有测试+21/-11，Linux单源Mypy、Ruff/format及diff通过，未增加状态/分类器/重试限额或新测试文件。
+
+含D43的本地合流相对4c528898实际git差异：src +1785/-2438，净删653；migrations +217/-4，净增213，合计净删440；tests +4254/-733，净增3521，脚本另删1行。D43相对6f的测试+21/-11不能直接加在基线gross上；旧新增段的改动会重新计算。D43尚待PR/合并后构建/上线；新版真实权限/等待复验与最终清理单独记录。
+
+同类限额追查发现D44：record_effect的四轮都是读旧原effect→合并→独立writer按原字节CAS；四次合法竞争后却固定WorkConflict。实际工具已执行，InvocationService保存accepted在执行异常捕获外，WorkJournal/Code原调用也直接传播，故成功效果可被 bookkeeping 转成失败。仅改循环无次数封口并删耗尽raise，不重做模型/工具或prepare协议对象；真实缺失/metadata/accepted内容/媒体generation冲突保持原事实处理。原T3真实Invocation案例补四次独立SQLite竞争与第五次提交，未手写模型预算或伪造CAS返回值。
+
+D45是历史回收缺口：0100回填接受无delivery_contract的plugin_background，终态Job仍以FK引用原Work；该Work可进入terminal候选，但现归档只收return_to_caller/祖先、删除又保护所有Job引用，选中后不推进。保留128之后再有256这样的旧行可长期遮住更旧尾项。沿实际Job引用放宽已有tombstone归档，不新增回收器/兼容状态、不删合法分页、不解除FK。此项是回收漏尾，不冒称其直接导致已观察Work完成失败。
+
+D46/D47同类查漏：SubagentRepository.maintain的前8个旧generation终态child在acquire(reconcile=True)直接None且notified_revision不推进，可遮住合法尾项；该通知修复又误用执行max_concurrency，无关Worker满额会挡已有结果通知。WorkScheduler先按Work行截8，再分scope capacity，同一busy scope的8个不变化queued占满行段，会漏掉第二空闲scope。仅删两个查询截断并让原reconcile不消耗执行容量，不扩成另一套调度器或公平策略；真实原协调/租约/数据库及正常容量对照补测后再勾选。
+
+D44实跑完成：同一既有T3案例经真实Processor/Runner模型接纳1次，恢复原journal、InvocationService/Social向fixture网关实际发送1次；四次独立SQLite bind_domain_receipt合法原绑定提交使原字节CAS失配。旧实现精确在耗尽raise处RED1F（1.50秒）；两处最小删改后原结果第五次提交成功，重入无新模型/发送、原ID/source/metadata及根models1/tools1不变。原真实内容/Host metadata冲突、accepted幂等/unknown不回退仍验证；最终原integration7+receipt race1+terminal-child late2共10P0skip（7.02秒），单例重跑不累加。Linux单源Mypy（GC合流后）、匹配Ruff/format/diff通过，本地应用/SQLite+fixture网关不冒称QQ或线上Provider验收。
+
+D45实跑完成：已有GC案例经原approve_background_plugin与notifications.publish创建256合法终态Job引用旧source，原保留130最新Work之后旧代码两轮仍挡尾项，RED1F（15.78秒）。只给既有归档OR加 `work.c.id.in_(select(_OWNER_JOBS.c.work_id))` 一行后6P0skip（17.41秒）：原Job字段/Work ID不变，旧Work小tombstone、原plugin/event/conversation/generation保留，9天普通无引用终态删除，原暂停后代checkpoint/source/累计预算仍恢复。没有新兼容层/回收状态/分页器，不解除RESTRICT或改变128/256批次。
+
+追加节点按原日志精确去重：旧216+D42新增2+D43新增0+D44新增8+D45新增2=228；D43七例、D44旧迟到2例、D45旧GC与三背景恢复参数均为已有节点，不把包或RED/GREEN孤例重复累加。这是D45阶段统计，后续D46/D47如下；当时部署仍是PR292的6fcbba06。
+
+D46/D47实跑完成：D46沿原Control与settlement完成child再真实重置代次，8个过代前项不能遮住合法尾通知；另一参数实际占满无关Worker容量，普通新执行仍拒绝，已有结果正常通知且重复维护不重复父input。D47保留原第33输入案例，再给8个旧Work实际授权resume、持有原group协调器，由真实private输入创建另一canonical并沿原Processor/Scheduler/Resumer/backend完成。旧8行、原ID/source/generation不变；私聊模型累计1→2、工具0。传输是既有FakeLLMProvider，非线上Provider，未手写terminal或替身Resumer。
+
+D46修正fixture后旧实现RED2F（6.73秒）；最初D46的budget缺行是fixture错误，不列作缺陷实证。D47原实现RED queued而非completed。删改后受影响3节点GREEN（16.85秒）、最终匹配7P0skip（20.29秒），Linux两源码Mypy、匹配Ruff/format/diff通过；保原generation/fence/lease和真实8-scope容量，不新建公平调度。两源码+6/-8，净删2行。根合流四源码、三测试的Ruff/format、release_validate v3.9.0及diff复核通过。
+
+最终不同通过节点为234：上述228加D46/D47包7中新增6（原消息来源恢复1重叠）；旧单参数mutation节点本就未在原计数中，不错误减1。精确节点与原日志映射见本地`.cache/work-control-d42-d47-node-dedup.json`。相对基线4c528898实际git差异：src +1793/-2448，净删655；migrations +217/-4，净增213，业务源码加迁移合计净删442；tests +4597/-752，净增3845，脚本另删1行。这是全部合流实际gross，不能逐轮相加。最终交付和受控模拟另记。

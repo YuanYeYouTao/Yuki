@@ -2069,6 +2069,7 @@ class WorkRepository:
                         work.c.id.in_(
                             select(work.c.parent_work_id).where(work.c.parent_work_id.is_not(None))
                         ),
+                        work.c.id.in_(select(_OWNER_JOBS.c.work_id)),
                     ),
                 )
                 .values(
@@ -2831,7 +2832,7 @@ class WorkRepository:
         # effect, never authorizes another one, so no current lease is required.
         if state not in {"accepted", "failed", "unknown"}:
             raise ValueError("invalid_work_effect_state")
-        for _attempt in range(4):
+        while True:
             async with self.database.sessions() as reader:
                 existing = (
                     (await reader.execute(select(effects).where(effects.c.effect_key == key)))
@@ -2945,4 +2946,3 @@ class WorkRepository:
                     )
             if changed is not None:
                 return
-        raise WorkConflict("work_effect_receipt_conflict")

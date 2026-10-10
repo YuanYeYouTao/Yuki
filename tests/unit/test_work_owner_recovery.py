@@ -16,6 +16,7 @@ from qq_ai_bot.control_plane.command_service import ControlCommandService
 from qq_ai_bot.control_plane.commands import ControlCommand
 from qq_ai_bot.control_plane.principal import ControlPrincipal, PrincipalSource
 from qq_ai_bot.domain.control import DecisionContext
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.identity import PrincipalId, RequestId
 from qq_ai_bot.domain.messages import ChatMessage, ToolCall, ToolFunction
 from qq_ai_bot.llm.base import LLMUnavailableError
@@ -352,7 +353,7 @@ async def test_exact_33rd_input_is_selected_after_32_paused_works(database, tmp_
 
     def respond(request):
         count = len(provider.requests)
-        if count <= 33:
+        if count <= 33 or count == 36:
             return _tool(
                 "task_control",
                 {"action": "accept", "goal": f"work {count}"},
@@ -370,6 +371,7 @@ async def test_exact_33rd_input_is_selected_after_32_paused_works(database, tmp_
     env, harness, chat, _, message = await _scene(database, tmp_path, provider, request_limit=1)
     harness.processor._rate_limiter = SlidingWindowRateLimiter(per_user=1000, per_group=1000)
     repository = WorkRepository(database)
+    paused = []
     for number in range(33):
         incoming = replace(
             message, message_id=f"capacity-input-{number}", text=f"distinct input {number}"
@@ -392,6 +394,7 @@ async def test_exact_33rd_input_is_selected_after_32_paused_works(database, tmp_
                 reason="model_request_capacity",
             )
             await repository.release(lease)
+            paused.append(current["id"])
     scheduler = original_scheduler(repository, env, harness, chat)
     await scheduler.drain_once()
     await scheduler.drain_once()
@@ -400,6 +403,44 @@ async def test_exact_33rd_input_is_selected_after_32_paused_works(database, tmp_
     assert (
         len(provider.requests) == 35 and final["model_requests"] == 3 and final["tool_calls"] == 1
     )
+    busy = []
+    for identity in paused[:8]:
+        assert (await public_action(database, await repository.get(identity), "resume")).success
+        busy.append(await repository.get(identity))
+    assert await env.router.cas_takeover_person(env.person) == "taken"
+    private = replace(
+        message,
+        message_id="idle-private-work",
+        scope_type=ScopeType.PRIVATE,
+        group_id=None,
+        space_id=None,
+        conversation_id=None,
+        text="independent private work",
+    )
+    await harness.processor.handle(private, MemorySender())
+    async with database.sessions() as reader:
+        idle = dict(
+            (
+                await reader.execute(
+                    select(work).where(work.c.conversation_id != current["conversation_id"])
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert idle["state"] == "queued" and idle["model_requests"] == 1
+    group = await chat._conversation_scopes.get(
+        ConversationScope.group(message.bot_user_id, message.group_id)
+    )
+    async with chat._turn_coordinator.hold(group.runtime_scope_key):
+        await scheduler.drain_once()
+    completed = await repository.get(idle["id"])
+    assert completed["state"] == "completed"
+    assert completed["model_requests"] == 2 and completed["tool_calls"] == 0
+    assert completed["generation"] == idle["generation"]
+    assert completed["source_json"] == idle["source_json"]
+    assert len(provider.requests) == 37
+    assert [await repository.get(row["id"]) for row in busy] == busy
 
 
 @pytest.mark.parametrize("entry", ["public", "hard_boundary"])

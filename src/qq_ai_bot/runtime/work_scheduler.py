@@ -25,7 +25,6 @@ logger = logging.getLogger(__name__)
 # Resume one selected Work; returns that run's error category (None on success).
 ResumeWork = Callable[[dict[str, Any]], Awaitable[str | None]]
 
-# Selection limit doubles as the cap on concurrently dispatched root scopes.
 _MAX_IN_FLIGHT = 8
 
 
@@ -265,7 +264,6 @@ class WorkScheduler:
                                 ),
                             )
                             .order_by(work.c.updated)
-                            .limit(_MAX_IN_FLIGHT)
                         )
                     )
                     .mappings()
