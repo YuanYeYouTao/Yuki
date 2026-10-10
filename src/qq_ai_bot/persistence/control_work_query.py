@@ -29,12 +29,9 @@ def _stamp(value: float | None) -> str | None:
 
 
 def _conditions(text: str) -> list[dict[str, Any]]:
-    # The subscription has its own 8 KiB bound; reflect reviewed fields only.
-    if len(text.encode("utf-8")) > 8192:
-        raise ControlQueryError(Problem(ProblemCode.STATE_MISMATCH))
     try:
         value = json.loads(text)
-        if not isinstance(value, list) or len(value) > 8:
+        if not isinstance(value, list):
             raise ValueError("invalid conditions")
         result = []
         for item in value:

@@ -187,9 +187,10 @@ Pi 默认收齐工具轮，所有 slot 都要求 terminate 才结束。上述顺
 | D30 | [x] | 删除终态/协议垃圾回收作为每轮业务调度前置条件的耦合；原循环内分离维护失败与新 Work 选择 | WorkScheduler::dispatch_once；SubagentScheduler::loop；WorkRepository::reclaim_terminal；ProtocolStore::cleanup | 根scheduler及worker scheduler均删除维护/取消查询错误阻断业务选择的耦合；真实连续错误仍派发正常原Work/worker，原31例通过（本地；线上另见V02） |
 | D31 | [x] | 生命周期与通知正文解耦：删 worker need_input 的 reason 隐性必填/None.strip 异常，以及 child 明确 resume 对额外 instruction 的强制要求 | SubagentRepository::resume；subagent_tools.py::execute_subagent；WorkControl::_control | worker need_input可省略reason，child原目标resume不必补instruction；树恢复通过（本地；线上另见V02） |
 | D32 | [x] | 逐条复核发现的漏删：删除一次 admin 失败关闭整个 Backend 后续能力及参数哈希单次写锁；原调用恢复复用真实ID和回执 | MainAgentBackend::execute_call/_is_mutating_call；旧_tools_closed/_mutation_identity/_completed_admin_mutations/_ADMIN_RETRYABLE_ERRORS删除；原领域operation回执 | 整链删除（Backend净删69行）；真实Admin失败→读取/修正→17→18→17新调用成功；原operation重入保持原change_id且不重做。原文件19例与最新pinned Code30例通过（本地；线上另见V02） |
-| V01 | [ ] | 隔离回归：完成、发送未知、重启、取消、子任务、晚到输入与各 Provider 协议 | 本文 §7 | 本地末轮pinned Code89例与native/Person58例全部通过、无skip；Linux全量两条旧断言已修正且原文件9例通过。冻结提交的全量CI待完成，详见§10.2 |
+| D33 | [x] | 删除Control历史读取对合法wait的重复8192字节/8条条件拒绝；不让展示reader阻断已登记事实读取 | persistence/control_work_query.py::_conditions；test_work_settlement_writer.py::test_existing_timer_can_resolve_all_conditions_without_delay_policy | 两条旧大小门槛及过期注释删除；复用原9/300等实际time_due登记场景读取Control wait history，不新增状态、参数或校验器；定向结果见§10.2 |
+| V01 | [x] | 隔离回归：完成、发送未知、重启、取消、子任务、晚到输入与各 Provider 协议 | 本文 §7 | 本地末轮pinned Code89例与native/Person58例全部通过、无skip；Linux全量两条旧断言已修正且原文件9例通过。远端CI状态另记，不冒充全绿；用户明确要求不等待CI便合并部署，详见§10.2 |
 | V02 | [ ] | 数字生命研究所真实 QQ 全链路：用户任务、自主触发、等待续跑与最终释放 | 本文 §7 | 待上线后实际验收；用户已确认配合2186567848账号追问、改向及终止。SELF沿原Host→outbox→原Bot调度，受控触发与自然唤醒分别记录 |
-| V03 | [ ] | 逐行回看任务索引，终局反向审计及交付记录 | 本文 §9 | T01–T04、D01–D32逐行复核完成，末轮遗漏与实际索引已补正；PR、CI、合并、构建、上传及Bot-only部署记录仍待取得 |
+| V03 | [ ] | 逐行回看任务索引，终局反向审计及交付记录 | 本文 §9 | T01–T04、D01–D33逐行复核完成，末轮遗漏与实际索引已补正；PR286已创建，合并、上传及Bot-only部署记录仍待取得 |
 
 ### 5.1 实施前基线中容易漏掉的实际分支
 
@@ -334,7 +335,7 @@ Control/API 中有实际模型、SDK或管理消费者的能力继续随内核�
 - 单层假设、旧审批是否移到了 Code、SQL、测试、提示、管理入口？是否为 Pi 概念新增无消费者框架？
 - 多 Work 的公共冻结前缀是否仍按原实际选取边界追加、私有协议是否仍按原 Work 隔离？有没有因为学习 Pi 新造上下文层？可选笔记/汇报是否又成了执行前置门槛？
 - 接纳是否还强制产出分类/普通写操作先 accept？wait 是否仍有 pending 资格双轨？继续 child 是否无故重开祖先？是否声称能恢复仅在内存且已丢失的响应？
-- T01–T04、D01–D32、V01–V03 是否逐行完成？没有实际跑的场景保持未验收；WebUI 不是新建设验收项。
+- T01–T04、D01–D33、V01–V03 是否逐行完成？没有实际跑的场景保持未验收；WebUI 不是新建设验收项。
 
 实施结束分别记录净删增行数、定向回归与 skip、CI、本地构建、PR、合并 SHA、部署镜像、迁移版本和真实群结果。净删行数不是唯一正确性证明。
 
@@ -342,7 +343,7 @@ Control/API 中有实际模型、SDK或管理消费者的能力继续随内核�
 
 ## 10. 实施、逐条复核与交付记录
 
-本地实现与逐项源码复核完成，正在办理提交与交付。此记录写入时尚未提交、推送、创建 PR、合并或部署；线上仍为原镜像，不能用原容器 healthy 证明本轮修改。
+本地实现与逐项源码复核完成，已提交、推送并创建PR286，正在办理合并与交付；线上仍为原镜像，不能用原容器healthy证明本轮修改。用户已明确要求不等待远端全量CI，完成定向验证后直接合并部署。
 
 ### 10.1 逐条复核额外发现并补正的遗漏
 
@@ -365,15 +366,18 @@ Control/API 中有实际模型、SDK或管理消费者的能力继续随内核�
 | Work notice删掉后，普通异常仍固定发送QQ失败文案 | issue285普通processor六异常固定发送与死文案整helper删除；SELF/自动化无其他此类广播消费者，原15例及Runner58消费者通过，不建立新分类/替代播报 |
 | 文档仍承诺暂停 notice、通用产物验收或旧固定暂停原因 | 删除冲突说明，按实际结束决定、独立效果查询和原来源消费者更新；本轮current函数索引纠正了类名缩写与旧consumer措辞 |
 | 构建packaging检查仍固定要求迁移0099 | 删除这条已过期编号断言，保留原init-db实际执行、数据库完整性/FK检查及实际head报告；0105空库/旧库升级由原迁移场景验证。重新提交并以新head复核CI |
+| 已登记多条件wait正常运行，Control读历史却因大于8条或8192字节报STATE_MISMATCH | D33删除reader两条重复门槛及过期注释，原JSON读取与安全字段继续复用；原多条件timer场景同时验证真实Control读回 |
 
 ### 10.2 验证与行数
 
-本地完整Linux运行1381 passed、55 pinned-worker缺失skip、2 failed（两条旧LOCKED挂起断言）；按真实失败状态修正原断言后该文件9例通过。末轮源码修改由冻结提交CI跑全量，不把前次有失败的运行记作全绿。最终pinned Code89例全部通过、0 failed、0 skip，覆盖全量缺worker的55例及其余Code消费者；原有30例是其中子集。最终native44+Person自动化14共58例通过、0 skip；SDK3例与插件外围47例分别通过，不把重叠结果累加成全量总数。
+本地完整Linux运行1381 passed、55 pinned-worker缺失skip、2 failed（两条旧LOCKED挂起断言）；按真实失败状态修正原断言后该文件9例通过。最终pinned Code89例全部通过、0 failed、0 skip，覆盖全量缺worker的55例及其余Code消费者；原有30例是其中子集。最终native44+Person自动化14共58例通过、0 skip；SDK3例与插件外围47例分别通过，不把重叠结果累加成全量总数。PR的Quality按原工作流继续执行；用户明确要求不等待CI便合并部署，不把前次有失败或当前未结束的运行记作全绿。
 
 末轮ruff、Linux平台mypy（644个源码文件）、release_validate v3.9.0、diff检查通过。前端代码未改；原18例及构建已验证，全量Quality仍按原工作流复核。未创建版本标签或GitHub Release。实际运行记录保留在本地.cache日志，不提交临时测试镜像、凭据或完整生产数据。
 
-2026-10-11 提交前冻结差异，相对4c528898、启用Git重命名识别：生产src新增1690行、删除2322行，净删632行；迁移新增217行、删除4行；二者合计新增1907行、删除2326行，净删419行。测试新增3403行、删除613行；实际迁移、进程中断和原消费者链路样本与生产代码分别统计，不把测试增加隐藏在净删数中。文档和README另计，后续交付证据更新不改变上述源码口径。
+D33复用原timer登记/Control读取场景10个参数全部通过、0skip（7.85秒）；该源码Linux mypy、两文件Ruff/format及diff检查通过，未新增case或fixture。
+
+2026-10-11 提交前冻结差异，相对4c528898、启用Git重命名识别：生产src新增1691行、删除2326行，净删635行；迁移新增217行、删除4行；二者合计新增1908行、删除2330行，净删422行。构建脚本另删1行。测试新增3414行、删除613行；实际迁移、进程中断和原消费者链路样本与生产代码分别统计，不把测试增加隐藏在净删数中。文档和README另计，后续交付证据更新不改变上述源码口径。
 
 ### 10.3 生产与真实 QQ
 
-PR、合并 SHA、构建镜像、上传校验、备份、0105迁移和线上健康尚未实施。用户已确认上线后可配合账号2186567848在数字生命研究所的真人追问、改向和终止验收；在真实证据取得前，V02及未触发场景保持未验收。
+PR286：https://github.com/YuanYeYouTao/Yuki/pull/286 。已进行direct预构建，离线证明未包含Monty且Code默认关闭；同一预构建容器空库迁移0105、integrity/FK通过，没有启动Bot或调用模型。正式镜像以合并SHA重新构建并记录。合并SHA、上传校验、备份、生产0105迁移和线上健康尚待实施。用户已确认上线后可配合账号2186567848在数字生命研究所的真人追问、改向和终止验收；在真实证据取得前，V02及未触发场景保持未验收。

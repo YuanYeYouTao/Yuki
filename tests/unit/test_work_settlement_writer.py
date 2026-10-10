@@ -571,6 +571,9 @@ async def test_model_stop_accepts_live_descendants_and_preserves_unknown_receipt
 async def test_existing_timer_can_resolve_all_conditions_without_delay_policy(
     database, tmp_path, seconds, expired, child
 ):
+    from qq_ai_bot.control_plane.paging import PageRequest
+    from qq_ai_bot.persistence.control_work_query import ControlWorkQueryAdapter
+
     repository, lease, control = await _running_work(database, tmp_path)
     if child:
         from qq_ai_bot.runtime.subagent_repository import SubagentRepository
@@ -625,6 +628,14 @@ async def test_existing_timer_can_resolve_all_conditions_without_delay_policy(
             )
         )
         assert result["ok"]
+    history = await ControlWorkQueryAdapter(database.sessions).list_work_history(
+        PageRequest(),
+        work_id=control.current["id"],
+        section="waits",
+        include_content=True,
+    )
+    assert len(history.items) == 1
+    assert len(history.items[0].fields["conditions"]) == len(conditions)
     await control.settle(pending_inputs=False)
     wait_repository = WorkWaitRepository(repository)
     wait = await wait_repository.describe(control.current["id"])
