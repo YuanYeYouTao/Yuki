@@ -68,7 +68,13 @@ async def launch(session, store, *, tool_name="terminal_exec"):
             SandboxTaskRunModel(
                 request_id=session.call_key("launch-owned"),
                 source_conversation_id=session.control.lease.conversation_id,
-                source_json=json.dumps({"work_id": session.control.current["id"]}),
+                source_json=json.dumps(
+                    {
+                        "work_id": session.control.current["id"],
+                        "conversation_id": session.control.lease.conversation_id,
+                        "generation": session.control.lease.generation,
+                    }
+                ),
                 payload_hash="0" * 64,
                 run_id=OWNED,
                 status="waiting",
@@ -142,6 +148,46 @@ async def test_reading_own_running_execution_does_not_remove_original_dependency
     assert control.current["state"] == "waiting_external"
     assert control.accepted["action"] == "complete"
 
+    from qq_ai_bot.runtime.work_activation import activate_work
+    from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
+
+    original = await control.repository.get(control.current["id"])
+    request_id = session.call_key("launch-owned")
+    await SandboxTaskRepository(database).receive(
+        {
+            "request_id": request_id,
+            "run_id": OWNED,
+            "result": {"run_id": OWNED, "status": "succeeded", "pending": False, "exit_code": 0},
+        }
+    )
+    await control.repository.route_child_completion(request_id)
+    await control.repository.release(control.lease)
+
+    async def validate_resume():
+        assert await control.repository.valid(resumed.lease)
+
+    async with activate_work(
+        control.repository,
+        original["conversation_id"],
+        original["generation"],
+        original["source_key"],
+        control.source,
+        validate_resume,
+        work_id=original["id"],
+    ) as resumed:
+        assert resumed.accepted["action"] == "complete"
+        await resumed.reconcile_completed_children()
+        await resumed.settle(pending_inputs=bool(await resumed.pending()))
+        assert resumed.current["id"] == original["id"]
+        assert resumed.current["state"] == "completed"
+        assert resumed.current["source_json"] == original["source_json"]
+        assert (resumed.current["model_requests"], resumed.current["tool_calls"]) == (
+            original["model_requests"],
+            original["tool_calls"],
+        )
+        receipt = await original_launch(database, session)
+        assert receipt["run_id"] == OWNED and not receipt["pending"]
+
 
 async def test_reconnecting_control_cannot_settle_a_still_running_execution(database, tmp_path):
     control, session, store = await ready(database, tmp_path)
@@ -182,12 +228,17 @@ async def test_reconnecting_control_cannot_settle_a_still_running_execution(data
 async def test_manager_restores_dispatched_run_without_replaying_request(
     database, tmp_path, monkeypatch, kind, already_started
 ):
+    import signal
+
+    from qq_ai_bot.runtime.subagent_repository import SubagentRepository
     from qq_ai_bot.sandbox import persistent
+    from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
+    from qq_ai_bot.services.subagent_execution import SubagentExecution
 
     control, session, store = await ready(database, tmp_path)
     request_id = session.call_key("launch-owned")
     args = (
-        {"command": "printf once >> executions", "cwd": str(tmp_path)}
+        {"command": "printf once >> executions; sleep 300", "cwd": str(tmp_path)}
         if kind == "terminal_exec"
         else {"action": "repair"}
     )
@@ -214,6 +265,7 @@ async def test_manager_restores_dispatched_run_without_replaying_request(
         return manager.get(identity)
 
     monkeypatch.setattr(manager, "wait_result", observe)
+    process = None
     try:
         assert (await manager.submit(kind, args, request_id))["run_id"] == OWNED
         await launch(session, store, tool_name=kind)
@@ -276,7 +328,8 @@ async def test_manager_restores_dispatched_run_without_replaying_request(
             "s.Path = lambda value: root if value == '/var/lib/yuki-runtime' else Path(value); "
             "sys.argv = ['supervisor', job]; raise SystemExit(s.main())"
         )
-        for expected in [125, 125] if already_started else [0, 125]:
+        executions = tmp_path / "executions"
+        for replay in (False, True):
             process = await asyncio.create_subprocess_exec(
                 sys.executable,
                 "-c",
@@ -285,11 +338,71 @@ async def test_manager_restores_dispatched_run_without_replaying_request(
                 OWNED,
                 stdin=asyncio.subprocess.DEVNULL,
             )
+            if not already_started and not replay:
+                async with asyncio.timeout(10):
+                    while True:
+                        started = manager.status_record(OWNED)
+                        if started.get("status") == "running" and executions.exists():
+                            break
+                        await asyncio.sleep(0.01)
+                assert started["supervisor_pid"] == process.pid
+                os.kill(started["pid"], 0)
+                assert executions.read_text() == "once"
+                cancelled = json.loads(
+                    await control.execute("task_control", {"action": "cancel"}, "cancel-owned")
+                )
+                assert cancelled["ok"]
+                await control.settle(pending_inputs=False)
+                assert control.current["state"] == "cancelled"
+
+                async def cancel(method, arguments, *, request_id):
+                    assert method == "cancel_code_run" and arguments["run_id"] == OWNED
+                    assert request_id == f"worker-cancel:{OWNED}"
+                    return await manager.control(OWNED, "cancel")
+
+                execution = SubagentExecution(
+                    control.repository,
+                    SubagentRepository(control.repository),
+                    SimpleNamespace(sandbox_client=SimpleNamespace(execute=cancel)),
+                )
+                await execution.cancel_commands()
+                assert (state / "cancel").is_file()
+                async with asyncio.timeout(10):
+                    await process.wait()
+                final = manager.status_record(OWNED)
+                assert final["status"] == "cancelled" and final["exit_code"] == -signal.SIGTERM
+                assert final["finished_at"] - final["started_at"] < 300
+                await manager.reconcile(manager.active()[0])
+                receipt = manager.completions.pending()["events"][0]
+                assert (
+                    receipt["run_id"] == OWNED and receipt["request_id"] == original["request_id"]
+                )
+                tasks = SandboxTaskRepository(database)
+                await tasks.receive(receipt)
+                await tasks.receive(receipt)
+                await control.repository.route_child_completion(receipt["request_id"])
+                await control.reconcile_completed_children()
+                retained = await control.repository.get(control.current["id"])
+                assert (
+                    retained["state"] == "cancelled"
+                    and retained["source_json"] == budget["source_json"]
+                )
+                assert (retained["model_requests"], retained["tool_calls"]) == (
+                    budget["model_requests"],
+                    budget["tool_calls"],
+                )
+                after = await original_launch(database, session)
+                assert after["run_id"] == OWNED and after["status"] == "cancelled"
+                assert not after["pending"] and after["mutation_committed"]
+                continue
             async with asyncio.timeout(10):
-                assert await process.wait() == expected
-        executions = tmp_path / "executions"
+                assert await process.wait() == 125
         assert not executions.exists() if already_started else executions.read_text() == "once"
     finally:
+        if process is not None and process.returncode is None:
+            (manager.state_path(OWNED) / "cancel").touch()
+            async with asyncio.timeout(10):
+                await process.wait()
         await manager.close()
 
 

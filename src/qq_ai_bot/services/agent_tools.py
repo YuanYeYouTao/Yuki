@@ -1163,9 +1163,6 @@ class AgentToolService:
         """Resolve the current sender after validating all event-bound fields."""
 
         actor = runtime.require_actor()
-        actual_superuser = actor.user_id in self._settings.superusers
-        if runtime.actor_is_superuser != actual_superuser:
-            raise PermissionError("actor_permission_changed")
         return self._permission_catalog.report_for_actor(actor, category=category, query=query)
 
     async def _recent_history(self, runtime: ToolRuntime) -> ToolExecutionResult:

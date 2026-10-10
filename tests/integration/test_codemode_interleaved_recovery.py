@@ -1,4 +1,4 @@
-"""Real Processor/Runner/SQLite/WorkResumer/adapters; inert domain and explicit VM substitute."""
+"""Real Processor/Runner/SQLite/WorkResumer/adapters and pinned worker; inert domain."""
 
 import json
 from dataclasses import replace
@@ -7,12 +7,11 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 from tests.conftest import MemorySender
-from tests.support.codemode_cases import FakeDomain, build_host
+from tests.support.codemode_cases import FakeDomain, build_host, requires_worker
 from tests.support.correctness_wire import wire
 from tests.support.runtime_execution import make_work_resumer
 from tests.unit.test_history_dispatch_ownership import _scene, _tool
 
-from qq_ai_bot.codemode.driver_types import EngineCall, EngineOutcome, HostCounters
 from qq_ai_bot.conversation.observation_models import ContextObservationModel, ContextSelectionModel
 from qq_ai_bot.conversation.projection_models import PromptProjectionModel
 from qq_ai_bot.domain.messages import ChatResponse
@@ -24,77 +23,7 @@ MARK = "CHILD_NOTE_BEFORE_PARENT_SETTLEMENT"
 ORD = "ORDINARY_INTERLEAVED_PUBLIC_MARKER"
 OTHER = "OTHER_WORK_OBSERVED_MARKER"
 
-
-class Run:
-    def __init__(self):
-        self.index = 0
-        self.waiting = False
-        self.counters = HostCounters()
-
-    def event(self):
-        if self.index == 3:
-            return EngineOutcome("completed", output="PROGRAM_RESULT_EXACTLY_ONCE")
-        name, args = [
-            (
-                "yuki_task_control",
-                dict(
-                    action="update",
-                    context_note=dict(
-                        version=1,
-                        facts=[dict(text=MARK, refs=["goal"])],
-                        unresolved=[],
-                        next_steps=[],
-                    ),
-                ),
-            ),
-            ("yuki_search_chat_history", {"query": "inert-first"}),
-            ("yuki_search_chat_history", {"query": "inert-second"}),
-        ][self.index]
-        return EngineOutcome(
-            "suspended",
-            call=EngineCall(
-                "future" if self.waiting else "function",
-                0,
-                None if self.waiting else self.index,
-                None if self.waiting else name,
-                args=() if self.waiting else (args,),
-                pending_call_ids=(self.index,) if self.waiting else (),
-            ),
-        )
-
-    async def start(self, code, inputs):
-        return self.event()
-
-    async def answer(self, call_id, answer):
-        self.waiting = True
-        return self.event()
-
-    async def settle(self, results):
-        self.index += 1
-        self.waiting = False
-        return self.event()
-
-    def dump(self):
-        return b"MONTY\0" + json.dumps([self.index, self.waiting]).encode()
-
-    async def restore(self, dump, saved, counters):
-        self.index, self.waiting = json.loads(dump[6:])
-        self.counters = counters
-        return self.event()
-
-    async def terminate(self):
-        pass
-
-
-class Engine:
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *args):
-        pass
-
-    def run(self, names):
-        return Run()
+pytestmark = requires_worker
 
 
 @pytest.mark.parametrize("pause", ["pending", "settled"])
@@ -118,7 +47,15 @@ async def test_pending_code_interleave(database, tmp_path, monkeypatch, kind, pa
         if n == 2:
             return _tool(
                 "execute_code",
-                {"code": "# Explicit audit VM: update note; await two inert reads", "inputs": {}},
+                {
+                    "code": "await yuki_task_control({'action': 'update', 'context_note': "
+                    "{'version': 1, 'facts': [{'text': '" + MARK + "', 'refs': ['goal']}], "
+                    "'unresolved': [], 'next_steps': []}})\n"
+                    "await yuki_search_chat_history({'query': 'inert-first'})\n"
+                    "await yuki_search_chat_history({'query': 'inert-second'})\n"
+                    "'PROGRAM_RESULT_' + 'EXACTLY_ONCE'",
+                    "inputs": {},
+                },
                 "compose-1",
             )
         if n == 3:
@@ -163,8 +100,6 @@ async def test_pending_code_interleave(database, tmp_path, monkeypatch, kind, pa
             tool_limit=1 if pause == "pending" and not hosts else 32,
         )
         e.host.api = runtime.script_api or runner.main_contract.script_api
-        e.host.worker = SimpleNamespace(execution_digest=lambda: "round3-explicit-inert-vm")
-        e.host.engine_factory = lambda *args: Engine()
         hosts.append(e.host)
         return e.host
 
