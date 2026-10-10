@@ -122,11 +122,12 @@ class SubagentRepository:
                     )
                 )
                 return None
-            active = await session.scalar(
-                select(func.count()).select_from(children).where(children.c.lease_until > now)
-            )
-            if int(active or 0) >= self.max_concurrency:
-                return None
+            if not reconcile:
+                active = await session.scalar(
+                    select(func.count()).select_from(children).where(children.c.lease_until > now)
+                )
+                if int(active or 0) >= self.max_concurrency:
+                    return None
             claimed = (
                 (
                     await session.execute(
@@ -172,7 +173,6 @@ class SubagentRepository:
                         children.c.notified_revision < work.c.revision,
                         children.c.archived_at.is_(None),
                     )
-                    .limit(8)
                 )
             )
         for identity in missed:

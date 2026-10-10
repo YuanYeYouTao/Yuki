@@ -188,9 +188,56 @@ async def test_children_queue_without_admission_quota_and_keep_execution_concurr
     await repo.release(lease)
 
 
-async def test_verified_mutation_child_completes_without_extra_result_prose(database, tmp_path):
+@pytest.mark.parametrize("repair_barrier", ["obsolete_generation", "execution_capacity"])
+async def test_verified_mutation_child_completes_without_extra_result_prose(
+    database, tmp_path, repair_barrier
+):
+    database.subagent_concurrency = 1
     repo, workers, parent_lease, parent, initial = await stack(database, tmp_path)
-    await workers.cancel(parent_lease, parent["id"], initial)
+    obsolete = []
+    if repair_barrier == "obsolete_generation":
+        from qq_ai_bot.conversation.hydrate import bump_canonical_generation
+        from qq_ai_bot.persistence.models import ChatEventModel
+
+        obsolete = [initial]
+        for index in range(7):
+            obsolete.append(
+                await workers.start(
+                    parent_lease, parent["id"], f"old-{index}", {"goal": "original goal"}
+                )
+            )
+        for identity in obsolete:
+            old_lease = await workers.acquire(identity)
+            row = await repo.get(identity)
+
+            async def validate_old(lease=old_lease):
+                assert await repo.valid(lease)
+
+            old_control = WorkControl(
+                repo,
+                old_lease,
+                row["source_key"],
+                json.loads(row["source_json"]),
+                validate_old,
+                current=row,
+            )
+            await old_control.complete_final("original result", "original-final")
+            await old_control.settle(pending_inputs=False)
+            await repo.release(old_lease)
+        await repo.release(parent_lease)
+        async with database.sessions() as reader:
+            event_id = await reader.scalar(select(ChatEventModel.id))
+        async with database.immediate_session() as writer:
+            generation = await bump_canonical_generation(
+                writer, parent["conversation_id"], event_id=event_id
+            )
+        parent_lease = await repo.acquire(parent["conversation_id"], generation)
+        parent = await repo.accept(
+            parent_lease, source_key="current-parent", source={}, goal="apply verified edit"
+        )
+        assert await workers.acquire(obsolete[0], reconcile=True) is None
+    else:
+        await workers.cancel(parent_lease, parent["id"], initial)
     identity = await workers.start(
         parent_lease,
         parent["id"],
@@ -212,15 +259,44 @@ async def test_verified_mutation_child_completes_without_extra_result_prose(data
         "workspace_edit",
         json.dumps({"ok": True, "mutation_committed": True, "data": {"status": "succeeded"}}),
     )
+    await repo.checkpoint(lease, identity, None, tools=1)
     result = json.loads(await control.execute("task_control", {"action": "complete"}, "done"))
     assert result["ok"]
     await control.settle(pending_inputs=False)
-    await workers.finish(lease)
+    assert any(fact["mutation_committed"] is True for fact in await control.effect_evidence())
+    original = await repo.get(identity)
+    await repo.release(lease)
+    active_lease = None
+    if repair_barrier == "execution_capacity":
+        unrelated = await repo.accept(
+            parent_lease, source_key="unrelated-parent", source={}, goal="unrelated work"
+        )
+        active = await workers.start(
+            parent_lease, unrelated["id"], "active-worker", {"goal": "unrelated active work"}
+        )
+        active_lease = await workers.acquire(active)
+        assert active_lease is not None
+        queued = await workers.start(
+            parent_lease, unrelated["id"], "queued-worker", {"goal": "unrelated queued work"}
+        )
+        assert await workers.acquire(queued) is None
+    async with database.sessions() as reader:
+        original_budget = dict(
+            (await reader.execute(select(budgets).where(budgets.c.root_id == parent["id"])))
+            .mappings()
+            .one()
+        )
+        old_rows = [
+            dict(row)
+            for row in (
+                await reader.execute(select(work).where(work.c.id.in_(obsolete)))
+            ).mappings()
+        ]
+    await workers.maintain()
     delivered = await workers.related(parent["id"], identity, include_checkpoint=True)
     receipt = json.loads(delivered["result_json"])
-    assert delivered["state"] == receipt["state"] == "completed"
+    assert delivered["state"] == receipt.get("state") == "completed"
     assert receipt["text"] == receipt["checkpoint"]["sync_result"] == ""
-    assert any(fact["mutation_committed"] is True for fact in await control.effect_evidence())
     pending = await repo.pending(parent_lease, work_id=parent["id"])
     signal = next(
         value
@@ -229,6 +305,35 @@ async def test_verified_mutation_child_completes_without_extra_result_prose(data
     )
     assert signal["child_id"] == identity and signal["state"] == "completed"
     assert "subagent_control.result" in signal["detail"]
+    assert await repo.get(identity) == original
+    async with database.sessions() as reader:
+        assert (
+            dict(
+                (await reader.execute(select(budgets).where(budgets.c.root_id == parent["id"])))
+                .mappings()
+                .one()
+            )
+            == original_budget
+        )
+        assert [
+            dict(row)
+            for row in (
+                await reader.execute(select(work).where(work.c.id.in_(obsolete)))
+            ).mappings()
+        ] == old_rows
+    await workers.maintain()
+    assert (
+        sum(
+            json.loads(json.loads(item["payload_json"])["text"])["child_id"] == identity
+            for item in await repo.pending(parent_lease, work_id=parent["id"])
+        )
+        == 1
+    )
+    if active_lease is not None:
+        assert await repo.valid(active_lease)
+        assert await workers.acquire(queued) is None
+        await repo.release(active_lease)
+    await repo.release(parent_lease)
 
 
 async def test_retained_child_resumes_without_reopening_ancestors_or_resetting_budget(
@@ -653,6 +758,13 @@ async def test_original_sandbox_completion_keeps_remaining_all_wait_conditions(d
 async def test_paused_descendant_retains_terminal_ancestors_and_resumes_without_instruction(
     database, tmp_path
 ):
+    from datetime import UTC, datetime
+
+    from tests.support.background_authority import approve_background_plugin
+
+    from qq_ai_bot.plugin_host.db_models import PluginBackgroundTurnJobModel
+    from yuki_plugin_sdk.models import NotificationTarget, PublishNotificationRequest
+
     repo, workers, parent_lease, root, sibling = await stack(database, tmp_path)
     await workers.cancel(parent_lease, root["id"], sibling)
     branch = await repo.derive(parent_lease, root["id"], "branch", "continue a real subgoal")
@@ -713,6 +825,68 @@ async def test_paused_descendant_retains_terminal_ancestors_and_resumes_without_
     before = await repo.get(leaf_id)
     await workers.maintain()
     assert (await workers.related(archived_root["id"], archived_child))["archived_at"] is not None
+    plugin_id = "test.legacy-background-gc"
+    notifications = await approve_background_plugin(
+        database,
+        plugin_id=plugin_id,
+        bot_user_id="80001",
+        group_id="20001",
+        creator_user_id="10001",
+    )
+    legacy = {}
+    for index in range(256):
+        receipt = await notifications.publish(
+            plugin_id=plugin_id,
+            request=PublishNotificationRequest(
+                event_key=f"legacy:{index}",
+                event_type="fixture",
+                external_source="fixture",
+                target=NotificationTarget(target_type="group", target_id="20001"),
+                occurred_at=datetime.now(UTC),
+                summary="original background event",
+                ask_agent=True,
+            ),
+        )
+        accepted = await repo.accept(
+            parent_lease,
+            source_key=f"legacy-background:{receipt.source_event_id}",
+            source={
+                "owner": "plugin_background",
+                "plugin_id": plugin_id,
+                "trigger_event_id": receipt.source_event_id,
+                "conversation_id": root["conversation_id"],
+                "generation": root["generation"],
+                "instruction": "original instruction",
+                "context_data": {"original": "background context"},
+            },
+            goal="finished background goal",
+        )
+        legacy[receipt.source_event_id] = accepted["id"]
+    async with database.immediate_session() as writer:
+        for job in await writer.scalars(select(PluginBackgroundTurnJobModel)):
+            job.work_id = legacy[job.source_event_id]
+            job.status = "completed"
+        await writer.execute(
+            update(work)
+            .where(work.c.id.in_(legacy.values()))
+            .values(
+                state="completed",
+                checkpoint_json=json.dumps({"detail": "original background checkpoint"}),
+                updated=time.time() - 7 * 86400,
+            )
+        )
+    async with database.sessions() as reader:
+        jobs_before = list(
+            (await reader.execute(select(PluginBackgroundTurnJobModel.__table__))).mappings()
+        )
+    plain = await repo.accept(
+        parent_lease, source_key="expired-plain", source={}, goal="finished unreferenced goal"
+    )
+    await repo.transition(parent_lease, plain["id"], plain["revision"], "completed")
+    async with database.immediate_session() as writer:
+        await writer.execute(
+            update(work).where(work.c.id == plain["id"]).values(updated=time.time() - 9 * 86400)
+        )
     for index in range(130):
         newer = await repo.accept(
             parent_lease, source_key=f"newer-terminal:{index}", source={}, goal="finished receipt"
@@ -722,6 +896,25 @@ async def test_paused_descendant_retains_terminal_ancestors_and_resumes_without_
         )
         await repo.transition(parent_lease, newer["id"], newer["revision"], "completed")
     await repo.reclaim_terminal()
+    await repo.reclaim_terminal()
+    assert await repo.get(plain["id"]) is None
+    async with database.sessions() as reader:
+        assert (
+            list((await reader.execute(select(PluginBackgroundTurnJobModel.__table__))).mappings())
+            == jobs_before
+        )
+        archived_legacy = (
+            (await reader.execute(select(work).where(work.c.id.in_(legacy.values()))))
+            .mappings()
+            .all()
+        )
+    assert {item["id"] for item in archived_legacy} == set(legacy.values())
+    for item in archived_legacy:
+        assert json.loads(item["checkpoint_json"]) == {"archived": True}
+        source = json.loads(item["source_json"])
+        assert source["owner"] == "plugin_background" and source["plugin_id"] == plugin_id
+        assert legacy[source["trigger_event_id"]] == item["id"]
+        assert "instruction" not in source and "context_data" not in source
     retained = await workers.related(branch["id"], leaf_id)
     assert retained["archived_at"] is None
     assert (await repo.get(leaf_id))["checkpoint_json"] == before["checkpoint_json"]
@@ -881,19 +1074,25 @@ async def test_original_sandbox_runs_cancel_for_stopped_work_and_preserve_late_r
     now = datetime.now(UTC)
     runs = {identity: str(uuid4()) for identity in (failed_worker, branch["id"], other_root["id"])}
     requests = {identity: f"original:{identity}" for identity in runs}
+    unknown_runs = {f"unknown:{index}": str(uuid4()) for index in range(8)}
     async with database.immediate_session() as session:
-        for identity, run_id, status in (
-            *((identity, run_id, "waiting") for identity, run_id in runs.items()),
-            (root["id"], str(uuid4()), "waiting"),
-            (live_worker, str(uuid4()), "waiting"),
-            (failed_worker, str(uuid4()), "completed"),
-            (branch["id"], None, "waiting"),
+        for identity, request_id, run_id, status in (
+            *(
+                (branch["id"], request, run_id, "waiting")
+                for request, run_id in unknown_runs.items()
+            ),
+            *(
+                (identity, requests[identity], run_id, "waiting")
+                for identity, run_id in runs.items()
+            ),
+            (root["id"], f"separate:{uuid4()}", str(uuid4()), "waiting"),
+            (live_worker, f"separate:{uuid4()}", str(uuid4()), "waiting"),
+            (failed_worker, f"separate:{uuid4()}", str(uuid4()), "completed"),
+            (branch["id"], f"separate:{uuid4()}", None, "waiting"),
         ):
             session.add(
                 SandboxTaskRunModel(
-                    request_id=requests[identity]
-                    if identity in runs and run_id == runs[identity]
-                    else f"separate:{uuid4()}",
+                    request_id=request_id,
                     source_conversation_id=root["conversation_id"],
                     source_json=json.dumps({"work_id": identity}),
                     payload_hash="original-payload",
@@ -925,6 +1124,7 @@ async def test_original_sandbox_runs_cancel_for_stopped_work_and_preserve_late_r
     harness = build_harness(database, make_settings(database.url, runtime_work_enabled=True))
     chat = harness.processor._chat
     client = AsyncMock()
+    client.execute.return_value = {"error": "sandbox_unavailable", "retryable": False}
     executor = make_child_executor(
         repo,
         chat=chat,
@@ -936,11 +1136,14 @@ async def test_original_sandbox_runs_cancel_for_stopped_work_and_preserve_late_r
     async with database.sessions() as session:
         before = list((await session.execute(select(SandboxTaskRunModel.__table__))).mappings())
     await executor.cancel_commands()
+    await executor.cancel_commands()
     assert {
         (call.args[0], call.args[1]["run_id"], call.kwargs["request_id"])
         for call in client.execute.await_args_list
-    } == {("cancel_code_run", run_id, f"worker-cancel:{run_id}") for run_id in runs.values()}
-    assert client.execute.await_count == 3
+    } == {
+        ("cancel_code_run", run_id, f"worker-cancel:{run_id}")
+        for run_id in (*unknown_runs.values(), *runs.values())
+    }
     async with database.sessions() as session:
         after = list((await session.execute(select(SandboxTaskRunModel.__table__))).mappings())
     assert after == before

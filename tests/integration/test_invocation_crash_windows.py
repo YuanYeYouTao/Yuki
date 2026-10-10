@@ -2,20 +2,27 @@
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert
-from tests.support.work_session import invoke_tool
+from tests.conftest import MemorySender
+from tests.support.work_session import WorkSession, invoke_tool
+from tests.unit.test_history_dispatch_ownership import _scene, _tool
 from tests.unit.test_tool_effect_audit import active_work
 
 from qq_ai_bot.capabilities.invocation import direct_invocations
-from qq_ai_bot.domain.messages import ToolCall, ToolFunction
+from qq_ai_bot.domain.messages import ChatMessage, ToolCall, ToolFunction
+from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.runtime.work_budget import WorkBudgetExceeded
 from qq_ai_bot.runtime.work_budget_schema import budgets
-from qq_ai_bot.runtime.work_repository import WorkConflict
-from qq_ai_bot.runtime.work_schema_v1 import effects, work
+from qq_ai_bot.runtime.work_control import WorkControl
+from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
+from qq_ai_bot.runtime.work_schema_v1 import effects, journal, work
+from qq_ai_bot.services.turn_transcript import TurnTranscript
 
 
 async def prepared(database, tmp_path):
@@ -101,19 +108,102 @@ async def test_lost_dispatch_confirmation_queries_marker_without_recharging(data
     assert json.loads(await owner.journal.effect_result(key))["uncertain"]
 
 
-async def test_t3_preserves_host_metadata_and_rejects_conflicting_results(database, tmp_path):
-    owner, invocation = await prepared(database, tmp_path)
-    repository = owner.control.repository
+async def test_t3_preserves_host_metadata_and_rejects_conflicting_results(
+    database, tmp_path, monkeypatch
+):
+    provider = FakeLLMProvider(
+        lambda _: _tool("task_control", {"action": "accept", "goal": "send once"}, "accept")
+    )
+    env, harness, _chat, _state, message = await _scene(
+        database, tmp_path, provider, request_limit=1
+    )
+    await harness.processor.handle(message, MemorySender())
+    repository = WorkRepository(database)
+    async with database.sessions() as reader:
+        original = dict((await reader.execute(select(work))).mappings().one())
+        contract = await reader.scalar(select(journal.c.contract))
+    lease = await repository.acquire(original["conversation_id"], original["generation"])
+    assert lease is not None
+
+    async def validate():
+        assert await repository.valid(lease)
+
+    control = WorkControl(
+        repository, lease, original["source_key"], json.loads(original["source_json"]), validate
+    )
+    control.current = original
+    owner = WorkSession(control, contract)
+    control.session = owner
+    await owner.restore(TurnTranscript((ChatMessage("user", "retained send"),)))
+    call = ToolCall("original", ToolFunction("send_message", '{"text":"hello"}'))
+    invocation = direct_invocations(
+        (call,), SimpleNamespace(work_control=control), manifest_revision=contract
+    )[0]
     key = invocation.identity.operation_id
-    assert await repository.admit_dispatch(owner.control.lease, owner.control.current["id"], key)
-    result = {"result": '{"ok":true}', "outcome": {"ok": True, "side_effecting": True}}
-    await repository.record_effect(key, "accepted", result)
+    original_writer = database.immediate_session
+    metadata = []
+    armed = False
+    dispatched = []
+
+    @asynccontextmanager
+    async def interleaved():
+        if armed and len(metadata) < 5:
+            # Idempotent original-domain binding still commits a new receipt revision.
+            async with original_writer() as race:
+                await repository.bind_domain_receipt(
+                    race, original["id"], key, metadata[0]["original_domain_ref"]
+                )
+                saved = await race.scalar(
+                    select(effects.c.receipt_json).where(effects.c.effect_key == key)
+                )
+                metadata.append(json.loads(saved)["invocation"])
+        async with original_writer() as writer:
+            yield writer
+
+    monkeypatch.setattr(database, "immediate_session", interleaved)
+
+    async def external():
+        nonlocal armed
+        dispatched.append(key)
+        sent = await env.service.execute(
+            "send_message",
+            {"target": {"kind": "space", "target_id": env.space}, "text": "hello"},
+            replace(env.context, call_id=key),
+        )
+        assert sent["status"] == "succeeded"
+        stored, total, root = await facts(database, key)
+        assert total == root == 1
+        metadata.append(stored["invocation"])
+        armed = True
+        return json.dumps({"ok": True, "data": sent})
+
+    payload = await invoke_tool(owner, call, external, invocation=invocation)
+    receipt, total, root = await facts(database, key)
+    result = dict(receipt)
     await repository.record_effect(key, "accepted", result)
     await repository.record_effect(key, "unknown", {"error": "secondary_failure"})
-    receipt, total, root = await facts(database, key)
+    retained, _, _ = await facts(database, key)
+    assert retained == receipt
+    assert await invoke_tool(owner, call, external, invocation=invocation) == payload
+    assert len(provider.requests) == 1 and dispatched == [key]
+    assert len([entry for entry in env.bot.calls if entry[0] == "send_group_msg"]) == 1
+    current = await repository.get(original["id"])
+    assert current["model_requests"] == original["model_requests"] == 1
+    assert current["source_json"] == original["source_json"]
+    assert current["state"] == original["state"] == "queued"
+    assert len(metadata) == 5
     assert receipt["invocation"]["operation_id"] == key
-    assert receipt["invocation"]["revision"] == 2
-    assert receipt["result"] == result["result"] and total == root == 1
+    assert {k: v for k, v in receipt["invocation"].items() if k != "revision"} == {
+        k: v for k, v in metadata[0].items() if k != "revision"
+    }
+    assert receipt["result"] == payload and total == root == current["tool_calls"] == 1
+    async with database.sessions() as reader:
+        budget = (
+            (await reader.execute(select(budgets).where(budgets.c.root_id == original["id"])))
+            .mappings()
+            .one()
+        )
+    assert budget["models"] == budget["tools"] == 1
     with pytest.raises(WorkConflict, match="work_effect_receipt_conflict"):
         await repository.record_effect(key, "accepted", {**result, "result": '{"ok":false}'})
     with pytest.raises(WorkConflict, match="work_effect_metadata_conflict"):
