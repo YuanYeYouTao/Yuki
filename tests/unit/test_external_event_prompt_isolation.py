@@ -980,7 +980,6 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
         )
     ).model_payload()
 
-
     assert recent["ok"] is True
     assert recent["data"]["source"] == "ledger"
     assert recent["data"]["events"] == []

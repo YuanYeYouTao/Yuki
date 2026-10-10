@@ -55,8 +55,9 @@ run IDs, historical results, and completion acknowledgements remain readable.
 
 The in-container supervisor stores bounded output and exit records independently
 of the Manager connection. The host persists launch intent/session identity before
-dispatch. It never reconnects a stopped execd session to rerun a command. A durable
-start marker adds another duplicate-execution guard. Container start time is part
+dispatch. Without a terminal receipt it reconnects the original session; the durable
+start marker prevents executing the command twice. A stopped PTY, a handshake timeout
+or a missing APT heartbeat does not prove failure from the job's age. Container start time is part
 of the generation identity: interrupted ordinary jobs fail with explicit receipts;
 registered services recover according to their policy. Uncertain submissions are
 queried by request ID, never blindly retried. Rejected admission creates no continuation.

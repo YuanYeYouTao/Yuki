@@ -501,24 +501,12 @@ class PersistentManager:
             self.finish(identity, "failed", {"error": "environment_recreated", "interrupted": True})
             return
         if not row["session_id"]:
-            # apt is launched by docker exec; its durable heartbeat is the only receipt.
-            if (
-                row["kind"] == "environment_packages"
-                and time.time() - float(record.get("heartbeat", row["created"])) < 15
-            ):
-                return
-            self.finish(identity, "failed", {"error": "execution_interrupted", "interrupted": True})
             return
         if identity in self.connections:
             return
-        assert self.execd is not None
-        state = await self.execd.request("GET", f"/pty/{row['session_id']}")
-        if state.get("running"):
-            await self.attach(
-                identity, row["session_id"], tty=bool(json.loads(row["payload"]).get("tty"))
-            )
-        elif time.time() - row["created"] > 10:
-            self.finish(identity, "failed", {"error": "execution_interrupted", "interrupted": True})
+        await self.attach(
+            identity, row["session_id"], tty=bool(json.loads(row["payload"]).get("tty"))
+        )
 
     def prepare_spec(self, identity: str, args: dict[str, Any], kind: str) -> dict[str, Any]:
         root = self.runtime_root / identifier(identity)

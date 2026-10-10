@@ -193,9 +193,7 @@ async def test_live_execution_http_validates_scope_and_serializes_event_turns(
         assert response.status_code == 400
 
 
-async def test_reflection_http_queries(
-    web, reflection_scene
-):
+async def test_reflection_http_queries(web, reflection_scene):
     client, _, _ = web
     env, runs, _ = reflection_scene
     headers = await signed_in(client)

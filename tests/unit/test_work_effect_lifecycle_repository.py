@@ -63,9 +63,7 @@ def finished(**changes):
 async def test_terminal_child_late_execution_receipt_settles_without_reviving_child(owned, state):
     repo, lease, identity = owned
     workers = SubagentRepository(repo)
-    child = await workers.start(
-        lease, identity, "late-child", {"goal": "inspect"}
-    )
+    child = await workers.start(lease, identity, "late-child", {"goal": "inspect"})
     child_lease = await workers.acquire(child)
     run_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
     await receipt(
@@ -109,9 +107,10 @@ async def test_terminal_child_late_execution_receipt_settles_without_reviving_ch
     control = WorkControl(repo, lease, "lifecycle", {}, validate)
     control.current = await repo.get(identity)
     await control.reconcile_completed_children()
-    assert json.loads((await read_receipt(repo, "child-launch"))["receipt_json"])["outcome"][
-        "pending"
-    ] is False
+    assert (
+        json.loads((await read_receipt(repo, "child-launch"))["receipt_json"])["outcome"]["pending"]
+        is False
+    )
     assert await repo.get(child) == before
     assert (
         json.loads((await read_receipt(repo, "child-launch"))["receipt_json"])["outcome"][
@@ -510,9 +509,7 @@ async def test_foreign_conversation_effect_cannot_be_settled_by_valid_scope_leas
 async def test_legitimate_root_child_and_child_own_lease_resolution(owned):
     repo, lease, identity = owned
     workers = SubagentRepository(repo)
-    child = await workers.start(
-        lease, identity, "original-child", {"goal": "inspect"}
-    )
+    child = await workers.start(lease, identity, "original-child", {"goal": "inspect"})
     child_lease = await workers.acquire(child)
     assert child_lease
     child_owned = repo, child_lease, child
@@ -528,9 +525,10 @@ async def test_legitimate_root_child_and_child_own_lease_resolution(owned):
     )
     # Parent's trusted reconciliation enumerates its registered child's effects.
     await repo.resolve_run_effects(lease, child, "original-run", finished())
-    assert json.loads((await read_receipt(repo, "child-launch"))["receipt_json"])["outcome"][
-        "status"
-    ] == "succeeded"
+    assert (
+        json.loads((await read_receipt(repo, "child-launch"))["receipt_json"])["outcome"]["status"]
+        == "succeeded"
+    )
     await receipt(
         child_owned,
         "child-own-launch",
@@ -544,9 +542,12 @@ async def test_legitimate_root_child_and_child_own_lease_resolution(owned):
     await repo.resolve_run_effects(
         child_lease, child, "child-own-run", finished(run_id="child-own-run")
     )
-    assert json.loads((await read_receipt(repo, "child-own-launch"))["receipt_json"])["outcome"][
-        "status"
-    ] == "succeeded"
+    assert (
+        json.loads((await read_receipt(repo, "child-own-launch"))["receipt_json"])["outcome"][
+            "status"
+        ]
+        == "succeeded"
+    )
     with pytest.raises(WorkConflict, match="work_effect_obsolete"):
         await repo.resolve_run_effects(child_lease, identity, "original-run", finished())
 
@@ -658,9 +659,7 @@ async def test_interrupted_second_page_retains_exact_unsettled_originals(
         ),
     ],
 )
-async def test_historical_unknown_reader_preserves_facts_without_rewriting(
-    owned, stored, unknown
-):
+async def test_historical_unknown_reader_preserves_facts_without_rewriting(owned, stored, unknown):
     repo, lease, identity = owned
     await repo.prepare_effect(lease, identity, "history", "tool")
     raw = json.dumps(stored)

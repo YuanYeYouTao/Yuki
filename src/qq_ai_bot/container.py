@@ -352,7 +352,6 @@ class ApplicationContainer:
                 active_bindings=self.runtime.bindings,
                 generate_wakeup=self.chat.generate_main_agent_wakeup,
                 generate_self=self.chat.generate_self_initiative,
-                validate_snapshot=self.chat.validate_turn_snapshot,
                 resume_plugin=resume_plugin,
                 resume_automation=resume_automation,
             ),

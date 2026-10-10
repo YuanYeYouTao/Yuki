@@ -143,9 +143,9 @@ Work 或假 initiative。`join/stay/quiet` 不必逐轮填写，没报不清空�
 静态字面量提醒由 DSL 调用 `social.send_message`，与主 Agent 使用相同的 Social
 路由、净化和持久发送回执，不进入模型循环。SELF 与用户创建的提醒走同一合同；
 SELF 只可投递到原群。`delivery=none` 只执行内部工作，不会产生可见提醒。
-模型自动化要求开启 `runtime_work_enabled`；关闭时在执行前返回
-`automation_runtime_required`，不会先发送再因缺少持久工作而报未知。明确交付任务缺少
-canonical Conversation 时同样在模型调用前阻断。
+`runtime_work_enabled` 控制新持久 Work 接纳；关闭时普通模型自动化复用主 Agent 已有的非 Work 路径。
+原 cursor 和已完成 Work 的读取、记账与收尾不因当前开关重新执行模型。
+明确交付任务缺少 canonical Conversation 时仍按原投递来源报告无法执行。
 
 内部 DSL 的 `delivery_target` 记录已经解析的交付要求，不改变运行上下文的归属。
 `self_private` 核验创建者 Person，`current_group` 核验当前 Space，`none` 允许安静完成。
@@ -213,6 +213,9 @@ Host 同步主调用的持久接纳由 `DurableInvocations` 管理，沿原 invo
 释放边界；来源核验和所属执行的结算仍使用各自原有合同。
 `ActiveWorkBindings` 仅登记当前活跃的进程内控制器，供跨任务输入定位原 Work；
 退出时按同一控制器身份移除。它不是授权来源，持久租约、generation 与原来源仍是执行围栏。
+已经接纳的持久Work不再由临时聊天coordinator版本拒绝；普通群观察不使合法恢复失效。
+来源、generation、原租约与取消事实继续沿原执行核验，同一ConversationEffectGate仍处理效果与重置。
+尚未接纳Work的普通前台保留原聊天版本取消。
 
 SDK 回调等待约 5 秒可返回 `work_id/state/pending`；等待不是模型正文。
 `agent.result(work_id)` 不依赖已经退出的 ContextVar，但核对插件所有权、批准版本、权限和 generation。
@@ -413,10 +416,9 @@ Host 对原 run 独立对账真实效果；终态迟到回执保留，但不复�
 资料尚存的 failed 可明确沿原 ID 继续；子目标不为读取来源和预算重开已结束的祖先或原 run。
 只有真实终态根 Work 才终结原 run，参与控制器不自行启动新任务。首次连接准备失败继续沿
 原 Work 重排，不因三次重试或未开始执行另判终结失败。
-WorkScheduler 始终启动；普通聊天及无现有 WorkControl 的 Host 调用接纳、模型自动化执行
-仍各自核验 `RUNTIME_WORK_ENABLED`，
-关闭开关不停止 WorkScheduler 所管理的已有 Work；由 AutomationWorker 恢复的模型自动化
-仍受其执行开关约束。SELF 接纳也继续使用这套持久恢复机制，不能产生无人调度的执行记录。
+WorkScheduler 始终启动；`RUNTIME_WORK_ENABLED` 控制普通聊天及 Host 调用的新 Work 接纳。
+关闭开关不停止 WorkScheduler 所管理的已有 Work，也不阻断 AutomationWorker 对原 cursor、
+已完成步骤与 Work 的消费。SELF 接纳继续使用这套持久恢复机制，不能产生无人调度的执行记录。
 SubagentScheduler 同样启动以恢复原子任务；新子任务接纳关闭不等于停止已有子任务的恢复。
 
 ## 预算、等待与异常

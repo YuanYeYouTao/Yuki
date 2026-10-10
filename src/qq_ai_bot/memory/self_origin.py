@@ -68,9 +68,7 @@ async def resolve_self_origin(
     ):
         raise MemoryPartitionResolutionError("initiative_source_mismatch")
     if require_live and (
-        conversation.generation != run.generation
-        or not presence.enabled
-        or not space.enabled
+        conversation.generation != run.generation or not presence.enabled or not space.enabled
     ):
         raise MemoryPartitionResolutionError("initiative_source_inactive")
     bindings = (

@@ -236,10 +236,7 @@ class SocialService:
 
     @staticmethod
     async def _call(route: ResolvedSend, action: str, params: dict[str, Any]) -> Any:
-        async with asyncio.timeout(30):
-            return await OneBotSocialOperations().social_action(
-                route.connection.bot, action, params
-            )
+        return await OneBotSocialOperations().social_action(route.connection.bot, action, params)
 
     async def refresh_space_names(self) -> None:
         """Refresh known bindings through live gateways, without changing grants/routes."""

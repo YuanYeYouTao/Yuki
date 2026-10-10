@@ -1,8 +1,13 @@
 """Observed terminal state is separate from this Work's execution dependencies."""
 
+import asyncio
 import json
+import os
+import sys
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from uuid import UUID
 
 import pytest
 from sqlalchemy import select
@@ -15,6 +20,7 @@ from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_schema_v1 import effects
 from qq_ai_bot.sandbox.db_models import SandboxTaskRunModel
 from qq_ai_bot.sandbox.persistent import PersistentManager
+from qq_ai_bot.workspace.store import WorkspaceStore
 
 OWNED = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 EXTERNAL = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
@@ -42,7 +48,7 @@ async def complete(control):
     return json.loads(await control.execute("task_control", {"action": "complete"}, "complete"))
 
 
-async def launch(session, store):
+async def launch(session, store, *, tool_name="terminal_exec"):
     await execute(
         session,
         store,
@@ -52,7 +58,7 @@ async def launch(session, store):
             data={"run_id": OWNED, "pending": True, "status": "running"},
             mutation_committed=True,
             provider_id="core",
-            tool_name="terminal_exec",
+            tool_name=tool_name,
         ),
         side_effecting=True,
     )
@@ -168,6 +174,123 @@ async def test_reconnecting_control_cannot_settle_a_still_running_execution(data
     await control.settle(pending_inputs=False)
     assert control.current["state"] == "waiting_external"
     assert control.accepted["action"] == "complete"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Manager/Supervisor runtime requires POSIX")
+@pytest.mark.parametrize("kind", ["terminal_exec", "environment_packages"])
+@pytest.mark.parametrize("already_started", [False, True])
+async def test_manager_restores_dispatched_run_without_replaying_request(
+    database, tmp_path, monkeypatch, kind, already_started
+):
+    from qq_ai_bot.sandbox import persistent
+
+    control, session, store = await ready(database, tmp_path)
+    request_id = session.call_key("launch-owned")
+    args = (
+        {"command": "printf once >> executions", "cwd": str(tmp_path)}
+        if kind == "terminal_exec"
+        else {"action": "repair"}
+    )
+    manager_args = (
+        tmp_path / "manager",
+        WorkspaceStore(tmp_path / "artifacts"),
+        "test-image",
+        "test-network",
+        "",
+        tmp_path / "home",
+    )
+    manager = PersistentManager(*manager_args, testing=True)
+    manager.ready, manager.container_id = True, "original-container"
+    transport = SimpleNamespace(
+        request=AsyncMock(return_value={"session_id": EXTERNAL, "running": False}),
+        connect=AsyncMock(side_effect=[TimeoutError("handshake lost"), AsyncMock()]),
+    )
+    command = AsyncMock(return_value=(0, b""))
+    manager.execd = transport
+    monkeypatch.setattr(manager, "command", command)
+    monkeypatch.setattr(persistent, "uuid4", lambda: UUID(OWNED))
+
+    async def observe(identity):
+        return manager.get(identity)
+
+    monkeypatch.setattr(manager, "wait_result", observe)
+    try:
+        assert (await manager.submit(kind, args, request_id))["run_id"] == OWNED
+        await launch(session, store, tool_name=kind)
+        budget = await control.repository.get(control.current["id"])
+        if kind == "terminal_exec":
+            with pytest.raises(TimeoutError, match="handshake lost"):
+                await manager.launch(OWNED)
+        else:
+            await manager.launch(OWNED)
+        state = manager.state_path(OWNED)
+        if already_started:
+            (state / "started").touch()
+            (state / "status.json").write_text(json.dumps({"status": "running", "heartbeat": 0}))
+        with manager.db:
+            manager.db.execute("UPDATE jobs SET created=created-3600 WHERE id=?", (OWNED,))
+        original = dict(manager.active()[0])
+        await manager.close()
+        manager = PersistentManager(*manager_args, testing=True)
+        manager.container_id, manager.execd = "original-container", transport
+        monkeypatch.setattr(manager, "command", command)
+        response = await manager.control(OWNED, "interrupt")
+        assert response["error"] == "terminal_reconnecting"
+        await manager.reconcile(manager.active()[0])
+        assert manager.get(OWNED)["status"] == "running"
+        assert dict(manager.active()[0]) == original
+        assert (await manager.submit(kind, args, request_id))["run_id"] == OWNED
+        if kind == "terminal_exec":
+            assert transport.request.await_count == 1
+            assert transport.request.await_args.args[:2] == ("POST", "/pty")
+            assert [call.args for call in transport.connect.await_args_list] == [
+                (EXTERNAL,),
+                (EXTERNAL,),
+            ]
+        else:
+            assert command.await_count == 1
+            assert command.await_args.args[:3] == ("docker", "exec", "-d")
+            transport.request.assert_not_awaited()
+            transport.connect.assert_not_awaited()
+        assert not manager.completions.pending()["events"]
+        assert await control.repository.get(control.current["id"]) == budget
+        assert (await original_launch(database, session))["pending"] is True
+
+        if kind == "environment_packages":
+            # The next native receipt, rather than age/heartbeat, ends this same run.
+            (state / "status.json").write_text(json.dumps({"status": "failed", "exit_code": 7}))
+            await manager.reconcile(manager.active()[0])
+            receipt = manager.completions.pending()["events"][0]
+            assert receipt["request_id"] == request_id and receipt["run_id"] == OWNED
+            assert receipt["result"]["status"] == "failed"
+            assert receipt["result"]["exit_code"] == 7 and receipt["result"]["pending"] is False
+            assert command.await_count == 1
+            return
+
+        # Execute the real Supervisor in an isolated runtime directory. An attach
+        # can invoke the wrapper again; its existing started file prevents a second command.
+        wrapper = (
+            "import sys; from pathlib import Path; "
+            "from qq_ai_bot.sandbox import environment_supervisor as s; "
+            "root, job = Path(sys.argv[1]), sys.argv[2]; "
+            "s.Path = lambda value: root if value == '/var/lib/yuki-runtime' else Path(value); "
+            "sys.argv = ['supervisor', job]; raise SystemExit(s.main())"
+        )
+        for expected in [125, 125] if already_started else [0, 125]:
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                wrapper,
+                str(manager.runtime_root),
+                OWNED,
+                stdin=asyncio.subprocess.DEVNULL,
+            )
+            async with asyncio.timeout(10):
+                assert await process.wait() == expected
+        executions = tmp_path / "executions"
+        assert not executions.exists() if already_started else executions.read_text() == "once"
+    finally:
+        await manager.close()
 
 
 async def test_interrupted_read_is_visible_but_not_an_unknown_mutation(database, tmp_path):

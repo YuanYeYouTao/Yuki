@@ -1382,7 +1382,6 @@ async def test_optional_note_publication_conflict_keeps_normal_resume_compositio
         config=chat._runtime_config,
         generate_self=chat.generate_self_initiative,
         generate_wakeup=chat.generate_main_agent_wakeup,
-        validate_snapshot=chat.validate_turn_snapshot,
         bindings=chat.runtime.bindings,
     )
     assert await resumer.resume(queued) is None
