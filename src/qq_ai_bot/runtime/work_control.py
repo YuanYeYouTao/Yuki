@@ -59,7 +59,7 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                 "artifact:handle、child:ID）；线索不改变执行状态，研究原文按 artifact 回读。"
                 "按需要保存累积发现、必要中间值与下一步；业务续跑使用当前聊天和 note，"
                 "不会自动恢复此前整段工具往返。"
-                "wait 登记 conditions：time_due(after_seconds 或含时区 at)、conversation、"
+                "wait conditions 每项用 kind：time_due(after_seconds 或含时区 at)、conversation、"
                 "plugin_event(plugin_id,event_type)、owned_run(run_id)，"
                 "wait_mode=any/all，deadline_at 可选；信号到达续原 work_id。"
                 "wait_status 查询，cancel_wait 撤销。need_input 说明缺失信息；"

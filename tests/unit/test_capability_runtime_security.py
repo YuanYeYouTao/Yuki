@@ -201,7 +201,12 @@ async def test_compilable_schemas_execute_once_through_real_catalog_and_original
     await work.control.repository.release(work.control.lease)
 
 
-async def test_admin_failure_can_continue_correct_and_reuse_original_effect(database, tmp_path):
+@pytest.mark.parametrize(
+    "entry", ["admin", "resume-superuser", "resume-user", "resume-admin", "resume-revoked"]
+)
+async def test_admin_failure_can_continue_correct_and_reuse_original_effect(
+    database, tmp_path, entry
+):
     from types import SimpleNamespace
 
     from tests.conftest import build_harness, make_settings
@@ -223,6 +228,163 @@ async def test_admin_failure_can_continue_correct_and_reuse_original_effect(data
     from qq_ai_bot.services.agent_runner import AgentRuntime
     from qq_ai_bot.services.agent_tools import ToolRuntime
     from qq_ai_bot.services.main_agent_backend import MainAgentBackend
+
+    if entry != "admin":
+        from sqlalchemy import select
+        from tests.conftest import MemorySender
+        from tests.support.runtime_execution import make_work_resumer
+        from tests.support.work_session import WorkSession
+        from tests.unit.test_history_dispatch_ownership import _scene, _tool
+
+        from qq_ai_bot.admin.permission_catalog import PermissionCatalogService
+        from qq_ai_bot.runtime.work_activation import current_work_control
+        from qq_ai_bot.runtime.work_repository import WorkRepository
+        from qq_ai_bot.runtime.work_schema_v1 import journal
+        from qq_ai_bot.runtime.work_schema_v1 import work as work_rows
+        from qq_ai_bot.services.agent_runner import AgentRunResult
+        from qq_ai_bot.services.turn_transcript import TurnTranscript
+
+        first_response = _tool(
+            "task_control", {"action": "accept", "goal": "read authority"}, "accept"
+        )
+        provider = FakeLLMProvider(
+            lambda _: replace(
+                first_response,
+                tool_calls=(
+                    *first_response.tool_calls,
+                    ToolCall("original-directory", ToolFunction("get_my_capabilities", "{}")),
+                ),
+            )
+        )
+        env, harness, chat, _, message = await _scene(database, tmp_path, provider, request_limit=1)
+        granted = entry in {"resume-admin", "resume-revoked"}
+        superuser = entry in {"resume-superuser", "resume-admin"}
+        harness.settings.superusers_csv = message.sender.user_id if granted else ""
+        harness.settings.__dict__.pop("superusers", None)
+        chat._tools._permission_catalog = PermissionCatalogService(
+            settings=harness.settings, config_registry=chat._runtime_config.registry
+        )
+        admin = AdminCapabilityService(
+            settings=harness.settings,
+            runtime_config=chat._runtime_config,
+            actions=SimpleNamespace(registry=ActionRegistry()),
+        )
+        chat.set_admin_tools(admin)
+        await harness.processor.handle(message, MemorySender())
+        repository = WorkRepository(database)
+        async with database.sessions() as reader:
+            original = dict((await reader.execute(select(work_rows))).mappings().one())
+            contract = await reader.scalar(
+                select(journal.c.contract).where(journal.c.work_id == original["id"])
+            )
+        assert original["state"] == "queued"
+        assert original["tool_calls"] == 1
+        source = json.loads(original["source_json"])
+        assert source["actor_is_superuser"] is granted
+        assert source["allow_admin_actions"] is granted
+        harness.settings.superusers_csv = message.sender.user_id if superuser else ""
+        harness.settings.__dict__.pop("superusers", None)
+        chat._tools._permission_catalog = PermissionCatalogService(
+            settings=harness.settings, config_registry=chat._runtime_config.registry
+        )
+        captured = []
+        reports = []
+        writes = []
+        bindings = []
+
+        async def resumed(**kwargs):
+            control = current_work_control.get()
+            tools = replace(
+                kwargs["source_runtime"],
+                runtime_config=kwargs["runtime"],
+                before_model_request=kwargs["before_model_request"],
+            )
+            captured.append(tools)
+            assert (
+                tools.inbound.source_event_id
+                == json.loads(original["source_json"])["trigger_event_id"]
+            )
+            assert tools.require_actor().person_id == env.person
+            assert tools.actor_user_id == message.sender.user_id
+            assert (tools.actor_user_id in harness.settings.superusers) is superuser
+            backend = MainAgentBackend(chat, tools)
+            await backend.prepare()
+            admin_entry = backend._catalog.by_model_name("admin_set_config")
+            bindings.append(admin_entry is not None and admin_entry.descriptor.binding is not None)
+            context = SimpleNamespace(work_control=control)
+            owner = WorkSession(control, contract)
+            control.session = owner
+            await owner.restore(TurnTranscript((ChatMessage("user", "retained work"),)))
+            declared = backend.definitions(context, web_was_used=False)
+            for name, arguments in (
+                ("get_my_capabilities", {}),
+                (
+                    "admin_set_config",
+                    {
+                        "key": "agent.max_tool_calls",
+                        "value": 17,
+                        "scope_type": "global",
+                        "scope_id": "",
+                    },
+                ),
+            ):
+                call = ToolCall(name, ToolFunction(name, json.dumps(arguments)))
+                invocation = direct_invocations((call,), context, manifest_revision=contract)[0]
+
+                async def invoke(invocation=invocation):
+                    return await backend.execute_call(invocation)
+
+                result = json.loads(
+                    await invoke_tool(
+                        owner,
+                        call,
+                        invoke,
+                        invocation=invocation,
+                        side_effecting=name == "admin_set_config",
+                    )
+                )
+                if name == "get_my_capabilities":
+                    reports.append(result)
+                else:
+                    writes.append(result)
+            assert backend.definitions(context, web_was_used=False) == declared
+            await control.complete_final("directory read", "directory-final")
+            return AgentRunResult("", 0, 0, False, suppress_delivery=True)
+
+        resumer = make_work_resumer(
+            repository,
+            ledger=harness.ledger,
+            scopes=chat._conversation_scopes,
+            turns=chat._turn_coordinator,
+            router=env.router,
+            config=chat._runtime_config,
+            generate_self=chat.generate_self_initiative,
+            generate_wakeup=resumed,
+        )
+        await resumer.resume(original)
+        final = await repository.get(original["id"])
+        assert len(captured) == 1 and final["state"] == "completed"
+        assert reports[0]["ok"], reports[0]
+        assert reports[0]["data"]["permission_level"] == ("superuser" if superuser else "user")
+        assert reports[0]["data"]["permission_source"] == (
+            "SUPERUSERS" if superuser else "default_user"
+        )
+        if granted and superuser:
+            assert writes[0]["ok"], writes[0]
+        else:
+            assert writes[0]["error_code"] == (
+                "permission_denied" if granted else "capability_not_allowed"
+            ), writes[0]
+        assert bindings == [granted]
+        assert captured[0].actor_is_superuser is source["actor_is_superuser"]
+        assert captured[0].allow_admin_actions is source["allow_admin_actions"]
+        assert (await chat._runtime_config.get_effective("agent.max_tool_calls")).value == (
+            17 if granted and superuser else 32
+        )
+        assert final["id"] == original["id"] and final["source_json"] == original["source_json"]
+        assert len(provider.requests) == final["model_requests"] == original["model_requests"] == 1
+        assert final["tool_calls"] == original["tool_calls"] + 2
+        return
 
     env, work, original_tools = await active_work(database, tmp_path)
     actor = original_tools.actor_context

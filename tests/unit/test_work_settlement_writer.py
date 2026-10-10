@@ -434,7 +434,7 @@ async def test_explicit_resume_keeps_identity_and_retires_replaced_wait(
         assert json.loads(
             await control.execute(
                 "task_control",
-                {"action": "wait", "conditions": [{"kind": "time_due", "after_seconds": 3600}]},
+                {"action": "wait", "conditions": [{"kind": "time_due", "after_seconds": 300}]},
                 "original-timer",
             )
         )["ok"]
@@ -525,7 +525,7 @@ async def test_model_stop_accepts_live_descendants_and_preserves_unknown_receipt
         source=control.source,
         call_key="original-child-timer",
         mode="any",
-        conditions=[{"kind": "time_due", "after_seconds": 3600}],
+        conditions=[{"kind": "time_due", "after_seconds": 300}],
         deadline_at=None,
     )
     key = "original-unknown-external-write"
@@ -546,10 +546,14 @@ async def test_model_stop_accepts_live_descendants_and_preserves_unknown_receipt
     assert (await repository.get(identity))["state"] == (
         "failed" if action == "fail" else "cancelled"
     )
-    assert (await repository.get(child["id"]))["state"] == "cancelled"
+    stopped_child = await repository.get(child["id"])
+    assert stopped_child["state"] == "cancelled"
     assert (await repository.get(worker))["state"] == "cancelled"
     assert not await repository.valid(worker_lease)
-    assert (await waits.describe(child["id"]))["status"] == "cancelled"
+    binding = await waits.describe(child["id"])
+    assert binding["status"] == "cancelled"
+    assert await waits.deliver_due(now=binding["conditions"][0]["due"] + 1) == 0
+    assert await repository.get(child["id"]) == stopped_child
     async with database.sessions() as reader:
         assert (
             await reader.scalar(select(inputs.c.state).where(inputs.c.work_id == child["id"]))
