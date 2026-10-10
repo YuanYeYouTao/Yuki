@@ -724,11 +724,21 @@ class MainAgentTurnService:
             control = runtime.work_control or current_work_control.get()
             if (
                 control is None
-                and self._composer._settings.runtime_work_enabled
                 and self._invocations is not None
                 and runtime.canonical_conversation_id
             ):
-                return await self._invocations.run(messages, runtime, backend)
+                previous = None
+                if not self._composer._settings.runtime_work_enabled:
+                    from qq_ai_bot.runtime.work_repository import WorkRepository
+                    from qq_ai_bot.services.durable_invocations import invocation_boundary
+
+                    previous = await WorkRepository(self._invocations.database).by_source(
+                        f"invocation:{invocation_boundary(runtime)}"
+                    )
+                if self._composer._settings.runtime_work_enabled or (
+                    previous is not None and previous["state"] == "completed"
+                ):
+                    return await self._invocations.run(messages, runtime, backend)
             return await self._run_prepared(
                 messages, replace(runtime, work_control=control), backend
             )

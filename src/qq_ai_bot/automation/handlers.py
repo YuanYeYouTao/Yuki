@@ -254,11 +254,7 @@ class AutomationCapabilityHandlers:
         )
         previous = None
         messages_sent = 0
-        if (
-            current_work_control.get() is None
-            and self._settings.runtime_work_enabled
-            and runtime.canonical_conversation_id
-        ):
+        if current_work_control.get() is None and runtime.canonical_conversation_id:
             from qq_ai_bot.runtime.work_repository import WorkRepository
             from qq_ai_bot.services.durable_invocations import invocation_boundary
 
