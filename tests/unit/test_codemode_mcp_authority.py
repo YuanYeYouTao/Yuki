@@ -50,9 +50,12 @@ async def test_original_unknown_effect_is_never_replayed_and_reads_do_not_own_mu
     await invoke_tool(owner, call, invoke, side_effecting=not read_only)
     await invoke_tool(owner, call, invoke, side_effecting=not read_only)
     assert len(external.read_text().splitlines()) == 1
+    original = (await owner.control.effect_evidence())[0]
+    assert original["side_effecting"] is (not read_only)
+    assert original["uncertain"] is (not read_only)
     if not read_only:
-        rejected = await invoke_tool(
+        independent = await invoke_tool(
             owner, ToolCall("new-write", call.function), invoke, side_effecting=True
         )
-        assert json.loads(rejected)["error_code"] == "unresolved_prior_effect"
-        assert len(external.read_text().splitlines()) == 1
+        assert json.loads(independent)["error_code"] == "response_lost"
+        assert len(external.read_text().splitlines()) == 2

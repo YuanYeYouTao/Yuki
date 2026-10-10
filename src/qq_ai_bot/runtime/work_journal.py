@@ -12,7 +12,7 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.sqlite import insert
 
 from qq_ai_bot.capabilities.media import MediaResultText, result_images
@@ -181,6 +181,10 @@ class WorkJournal:
                 if used:
                     raise JournalUnavailable("work_journal_missing")
                 return JournalSnapshot("fresh")
+            if row["phase"] == "dispatched":
+                if not await self.repository.has_pending_business_inputs(lease, work_id):
+                    raise JournalUnavailable("work_response_not_persisted")
+                return JournalSnapshot("lost_response", previous_chain=row["chain_id"])
             source_changed = bool(
                 not lease.work_id and row["source_revision"] != source.prompt_source_revision
             )
@@ -236,7 +240,6 @@ class WorkJournal:
                     "phase": row["phase"],
                     "origin": deepcopy(origin),
                     "plan": deepcopy(progress["delivery_plan"]),
-                    "ending": metadata.get("ending"),
                     "event_ids": metadata.get("event_ids", []),
                     "source_keys": metadata.get("source_keys", []),
                     "input_ids": metadata.get("input_ids", []),
@@ -382,15 +385,8 @@ class WorkJournal:
         source_revision: int,
         metadata: dict[str, Any],
         compaction_versions: tuple[int, int] | None = None,
-        communication_updates: dict[str, Any] | None = None,
         publication: Publication | None = None,
-    ) -> dict[str, Any] | None:
-        communication_patch = (
-            self.repository.encode_communication_updates(communication_updates)
-            if communication_updates
-            else None
-        )
-        updated_work = None
+    ) -> None:
         await self.objects.refresh_policy()
         self.objects.begin_record_chain(work_id, transcript.chain_id)
         request = transcript.request()
@@ -515,34 +511,6 @@ class WorkJournal:
                         set_=values,
                     )
                 )
-                if communication_patch is not None:
-                    from qq_ai_bot.runtime.work_repository import TERMINAL
-
-                    updated_work = (
-                        (
-                            await session.execute(
-                                update(work)
-                                .where(
-                                    work.c.id == work_id,
-                                    work.c.conversation_id == lease.conversation_id,
-                                    work.c.generation == lease.generation,
-                                    work.c.state.not_in(TERMINAL),
-                                )
-                                .values(
-                                    checkpoint_json=func.json_patch(
-                                        work.c.checkpoint_json, communication_patch
-                                    ),
-                                    updated=time.time(),
-                                )
-                                .returning(work)
-                            )
-                        )
-                        .mappings()
-                        .first()
-                    )
-                    if updated_work is None:
-                        raise WorkConflict("work_checkpoint_obsolete")
-        return dict(updated_work) if updated_work is not None else None
 
     async def invalidate(self, lease: WorkLease, work_id: str) -> None:
         async with self.repository.database.sessions() as session, session.begin():

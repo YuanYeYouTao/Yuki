@@ -19,6 +19,7 @@ from qq_ai_bot.runtime.work_query_schema import (
 )
 from qq_ai_bot.runtime.work_repository import WorkLease, WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import work
+from qq_ai_bot.runtime.work_tree import ancestor_work_ids, budget_root_id, descendants
 from qq_ai_bot.runtime.work_wait_schema import waits
 
 PROMPT_GOAL_CHARACTERS = 160
@@ -31,7 +32,13 @@ class WorkQueries:
         self.repository = repository
 
     @staticmethod
-    def _query(lease: WorkLease, source: dict[str, Any], *, local: bool = False) -> Select[Any]:
+    def _query(
+        lease: WorkLease,
+        source: dict[str, Any],
+        *,
+        local: bool = False,
+        include_workers: bool = False,
+    ) -> Select[Any]:
         creator = source_scope_column("actor_user_id")
         person = func.json_extract(work.c.source_json, literal_column("'$.actor_person_id'"))
         principal = source_scope_column("principal_kind")
@@ -41,7 +48,7 @@ class WorkQueries:
                 work.c.goal,
                 work.c.state,
                 work.c.revision,
-                work.c.output_kind,
+                work.c.parent_work_id,
                 func.substr(work.c.reason, 1, 128).label("reason"),
                 work.c.created.label("created_at"),
                 work.c.updated.label("updated_at"),
@@ -86,13 +93,8 @@ class WorkQueries:
                 *(source_scope_column(key).is_(source.get(key)) for key in SOURCE_SCOPE_FIELDS),
             )
         if lease.work_id:
-            query = query.where(
-                work.c.id == lease.work_id,
-                select(children.c.work_id)
-                .where(children.c.work_id == work.c.id, children.c.archived_at.is_(None))
-                .exists(),
-            )
-        else:
+            query = query.where(work.c.id.in_(descendants(lease.work_id, include_self=True)))
+        elif not include_workers:
             query = query.where(
                 ~select(children.c.work_id).where(children.c.work_id == work.c.id).exists()
             )
@@ -105,13 +107,18 @@ class WorkQueries:
             row = (
                 (
                     await session.execute(
-                        self._query(lease, source, local=local).where(work.c.id == work_id)
+                        self._query(lease, source, local=local, include_workers=True).where(
+                            work.c.id == work_id
+                        )
                     )
                 )
                 .mappings()
                 .first()
             )
             result = dict(row) if row else None
+            if result is not None:
+                result["ancestor_work_ids"] = await ancestor_work_ids(session, work_id)
+                result["budget_root_id"] = await budget_root_id(session, work_id)
         if result is not None:
             from qq_ai_bot.runtime.work_wait import WorkWaitRepository
 
@@ -192,12 +199,15 @@ class WorkQueries:
         limit: int = 8,
         status: str = "active",
         cursor: str | None = None,
+        parent_work_id: str | None = None,
     ) -> dict[str, Any]:
         if type(limit) is not int or not 1 <= limit <= 50:
             raise ValueError("invalid_work_query_limit")
         if status not in {"active", "terminal", "all"}:
             raise ValueError("invalid_work_query_status")
-        query = self._query(lease, source)
+        query = self._query(lease, source, include_workers=parent_work_id is not None)
+        if parent_work_id is not None:
+            query = query.where(work.c.parent_work_id == parent_work_id)
         if cursor is not None:
             updated, identity = self._cursor(cursor)
             query = query.where(tuple_(work.c.updated, work.c.id) < (updated, identity))

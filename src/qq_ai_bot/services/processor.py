@@ -72,8 +72,6 @@ from qq_ai_bot.plugin_host.direct_command_router import DirectCommandMatch
 from qq_ai_bot.runtime.activation_outcome import (
     WorkActivationHandled,
     WorkRecoveryDeferred,
-    classify_failure,
-    failure_status_text,
 )
 from qq_ai_bot.runtime.keys import ResolvedMemoryScope
 from qq_ai_bot.runtime.observability import (
@@ -1328,52 +1326,22 @@ class MessageProcessor:
         except RequestCancelledError:
             result = ProcessResult(True, reason="cancelled")
         except LLMConfigurationError:
-            sent = await self._send_text(
-                message,
-                sender,
-                "AI 服务尚未配置，请联系管理员。",
-                turn_snapshot=turn_snapshot,
-            )
-            result = ProcessResult(True, int(sent), "llm_not_configured")
+            result = ProcessResult(True, reason="llm_not_configured")
         except LLMEmptyResponseError:
-            sent = await self._send_text(
-                message,
-                sender,
-                "AI 返回了空内容，请稍后重试。",
-                turn_snapshot=turn_snapshot,
-            )
-            result = ProcessResult(True, int(sent), "empty_llm_response")
+            result = ProcessResult(True, reason="empty_llm_response")
         except LLMError as exc:
             logger.warning("llm_failure exception_category=%s", type(exc).__name__)
-            sent = await self._send_text(
-                message,
-                sender,
-                failure_status_text(classify_failure(exc)),
-                turn_snapshot=turn_snapshot,
-            )
-            result = ProcessResult(True, int(sent), "llm_failure")
+            result = ProcessResult(True, reason="llm_failure")
         except WorkCapacityError as exc:
             logger.warning("turn_capacity_failure exception_category=%s", type(exc).__name__)
-            sent = await self._send_text(
-                message,
-                sender,
-                failure_status_text(classify_failure(exc)),
-                turn_snapshot=turn_snapshot,
-            )
-            result = ProcessResult(True, int(sent), "capacity_failure")
+            result = ProcessResult(True, reason="capacity_failure")
         except ValidationError as exc:
             logger.error(
                 "turn_validation_failure exception_category=%s",
                 type(exc).__name__,
                 exc_info=exc,
             )
-            sent = await self._send_text(
-                message,
-                sender,
-                failure_status_text(classify_failure(exc)),
-                turn_snapshot=turn_snapshot,
-            )
-            result = ProcessResult(True, int(sent), "validation_failure")
+            result = ProcessResult(True, reason="validation_failure")
         except (OSError, RuntimeError, TypeError) as exc:
             logger.error("message_send_or_storage_failure", exc_info=exc)
             result = ProcessResult(True, reason="send_or_storage_failure")
@@ -1383,13 +1351,7 @@ class MessageProcessor:
                 type(exc).__name__,
                 exc_info=exc,
             )
-            sent = await self._send_text(
-                message,
-                sender,
-                failure_status_text(classify_failure(exc)),
-                turn_snapshot=turn_snapshot,
-            )
-            result = ProcessResult(True, int(sent), "internal_failure")
+            result = ProcessResult(True, reason="internal_failure")
         else:
             self._log_result(
                 event_key,

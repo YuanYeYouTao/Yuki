@@ -41,7 +41,7 @@ async def _session(database, tmp_path, *, worker=False):
             lease,
             control.current["id"],
             "capacity-child",
-            {"goal": "prepare an artifact", "output_kind": "artifact"},
+            {"goal": "prepare an artifact"},
         )
         await repository.release(lease)
         child_lease = await children.acquire(identity)

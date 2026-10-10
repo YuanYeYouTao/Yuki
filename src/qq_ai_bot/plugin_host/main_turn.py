@@ -67,6 +67,7 @@ async def run_plugin_main_turn(
     runtime = replace(runtime, execution_id=execution_id)
     key = invocation_boundary(runtime)
     ledger = host._services.ledger
+    previous = None
     if ledger is not None:
         previous = await WorkRepository(ledger._database).by_source(f"invocation:{key}")
         if previous is not None:
@@ -76,6 +77,26 @@ async def run_plugin_main_turn(
                 or prior_source.get("plugin_id") != host.plugin_id
             ):
                 raise WorkConflict("plugin_work_authority_changed")
+    execute = partial(
+        _execute_plugin_main_turn,
+        host,
+        invocation,
+        instruction=instruction,
+        context_data=context_data,
+        runtime=runtime,
+        tools=tools,
+        permission=permission,
+        context_profile=context_profile,
+    )
+    runner = host._services.agent_runner
+    contract = runner.main_contract if runner is not None else None
+    if (
+        previous is not None
+        and previous["state"] == "completed"
+        and contract is not None
+        and contract.chat._settings.runtime_work_enabled
+    ):
+        return await execute(completed_work=previous)
     task = _RUNNING.get(key)
     if task is not None and task.done():
         # A completed task may still be present before its done callback runs.
@@ -86,16 +107,7 @@ async def run_plugin_main_turn(
         if len(_RUNNING) >= 8:
             raise PluginPermissionError("plugin main Agent admission is busy; no work accepted")
         task = asyncio.create_task(
-            _execute_plugin_main_turn(
-                host,
-                invocation,
-                instruction=instruction,
-                context_data=context_data,
-                runtime=runtime,
-                tools=tools,
-                permission=permission,
-                context_profile=context_profile,
-            ),
+            execute(),
             name=f"plugin-main-{host.plugin_id}",
         )
         _RUNNING[key] = task
@@ -166,16 +178,11 @@ async def _execute_plugin_main_turn(
     tools: AgentToolBackend | None,
     permission: PluginPermission,
     context_profile: str = "none",
+    completed_work: dict[str, Any] | None = None,
 ) -> AgentRunResult:
     """Keep SDK reads/effects narrow; never synthesize a user or transport target."""
-    if _ACTIVE.get():
-        raise PluginPermissionError("recursive plugin Main Agent generation is not allowed")
     from qq_ai_bot.runtime.work_activation import current_work_control
 
-    if current_work_control.get() is not None:
-        raise PluginPermissionError(
-            "recursive Yuki Main Agent generation is not allowed; use delegation"
-        )
     runner = host._services.agent_runner
     contract = runner.main_contract if runner is not None else None
     ledger = host._services.ledger
@@ -233,6 +240,21 @@ async def _execute_plugin_main_turn(
             if runtime.before_model_request is not None:
                 await runtime.before_model_request()
 
+        control = current_work_control.get()
+        if control is not None:
+            control.validate = validate
+        main = cast(MainAgentTurnService, contract.chat.runtime.main_turns)
+        if completed_work is not None:
+            return await main.run(
+                (),
+                replace(
+                    runtime,
+                    invocation_source=json.loads(completed_work["source_json"]),
+                    before_model_request=validate,
+                ),
+                None,
+            )
+
         payload = {"plugin": {"id": host.plugin_id, "source_event_id": event.id}}
         if context_data:
             payload["plugin"]["requested_context"] = context_data
@@ -244,7 +266,6 @@ async def _execute_plugin_main_turn(
             },
             ensure_ascii=False,
         )
-        main = cast(MainAgentTurnService, contract.chat.runtime.main_turns)
         context = await prepare_context(
             partial(
                 contract.chat._context_assembler.assemble_plugin,
@@ -276,7 +297,7 @@ async def _execute_plugin_main_turn(
         )
         if context.read_version != version:
             raise ContextBoundaryChanged("plugin source changed during context preparation")
-        execution_id = (
+        execution_id = runtime.execution_id or (
             f"plugin:{host.plugin_id}:{invocation.source_event_id}:"
             + hashlib.sha256((permission.value + instruction + context_data).encode()).hexdigest()
         )
@@ -403,6 +424,8 @@ async def resume_plugin_work(
     from qq_ai_bot.automation.models import TurnOrigin
     from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
     from qq_ai_bot.plugin_host.facades import PluginInvocation, _agent_dependencies
+    from qq_ai_bot.runtime.work_activation import activate_work
+    from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
 
     host = lookup_host(str(source.get("plugin_id", "")))
     if host is None:
@@ -447,21 +470,44 @@ async def resume_plugin_work(
         conversation_id=inbound.conversation_id,
     )
     async with host.bind(invocation):
-        _, runtime = await _agent_dependencies(host, invocation)
-        if runtime.actor_is_superuser != source.get("actor_is_superuser", False):
-            raise PluginPermissionError("plugin work actor authority changed")
-        await run_plugin_main_turn(
-            host,
-            invocation,
-            instruction=source["instruction"],
-            context_data=source["context_data"],
-            context_profile=source["context_profile"],
-            permission=permission,
-            runtime=replace(
-                runtime,
-                allowed_capabilities=allowed,
-                max_model_requests=min(runtime.max_model_requests, source["max_model_requests"]),
-                max_tool_calls=min(runtime.max_tool_calls, source["max_tool_calls"]),
-            ),
-            tools=None,
-        )
+        runner, runtime = await _agent_dependencies(host, invocation)
+
+        async def validate() -> None:
+            host._require(permission)
+
+        contract = runner.main_contract
+        if contract is None:
+            raise PluginPermissionError("Yuki Main Agent services are unavailable")
+        async with activate_work(
+            WorkRepository(ledger._database),
+            work["conversation_id"],
+            work["generation"],
+            work["source_key"],
+            source,
+            validate,
+            work_id=work["id"],
+            bindings=contract.chat.runtime.bindings,
+            scope_key=invocation.conversation_key,
+        ) as control:
+            if control.current is None or control.current["id"] != work["id"]:
+                raise WorkConflict("work_schedule_target_changed")
+            await _execute_plugin_main_turn(
+                host,
+                invocation,
+                instruction=work["goal"],
+                context_data=source["context_data"],
+                context_profile=source["context_profile"],
+                permission=permission,
+                runtime=replace(
+                    runtime,
+                    execution_id=source["parent_execution_id"],
+                    allowed_capabilities=allowed,
+                    actor_is_superuser=runtime.actor_is_superuser
+                    and source.get("actor_is_superuser", False),
+                    max_model_requests=min(
+                        runtime.max_model_requests, source["max_model_requests"]
+                    ),
+                    max_tool_calls=min(runtime.max_tool_calls, source["max_tool_calls"]),
+                ),
+                tools=None,
+            )

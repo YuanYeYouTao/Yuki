@@ -111,7 +111,6 @@ async def test_pending_code_interleave(database, tmp_path, monkeypatch, kind, pa
                 dict(
                     action="accept",
                     goal="W1" if n == 1 else "W2",
-                    output_kind="answer",
                     reporting="quiet",
                 ),
                 "accept-" + str(n),
@@ -222,7 +221,6 @@ async def test_pending_code_interleave(database, tmp_path, monkeypatch, kind, pa
             generate_self=chat.generate_self_initiative,
             generate_wakeup=chat.generate_main_agent_wakeup,
             validate_snapshot=chat.validate_turn_snapshot,
-            run_effect=chat.run_effect,
             bindings=chat.runtime.bindings,
         )
         await database.close()

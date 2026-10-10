@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import OperationalError
 from tests.conftest import MemorySender, build_harness, make_settings
 from tests.support.agent_backend import StubAgentBackend
@@ -64,9 +64,9 @@ from qq_ai_bot.model_runtime.routes import ModelRouter
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.work_activation import activate_work
 from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_journal import decode_transcript, encode_transcript
+from qq_ai_bot.runtime.work_journal import JournalUnavailable, decode_transcript, encode_transcript
 from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import work
+from qq_ai_bot.runtime.work_schema_v1 import journal, work
 from qq_ai_bot.runtime.work_session import WorkSession as RuntimeWorkSession
 from qq_ai_bot.services.agent_runner import AgentRuntime
 from qq_ai_bot.services.turn_execution import TurnExecution
@@ -113,7 +113,7 @@ async def test_ordinary_truncation_retains_native_declarations_before_settlement
 async def test_local_truncation_pairs_unexecuted_call_and_continues_original_work(
     database, tmp_path, segment_requests
 ):
-    control = await setup(database, tmp_path, output_kind="answer")
+    control = await setup(database, tmp_path)
     identity = control.current["id"]
     truncated = ToolCall("partial-call", ToolFunction("fixture_mutation", '{"unfinished":'))
 
@@ -207,7 +207,6 @@ async def test_confirmed_send_native_empty_tail_stops_without_failure_or_paid_re
                         {
                             "action": "accept",
                             "goal": "finish later",
-                            "output_kind": "answer",
                             "reporting": "quiet",
                         }
                     ),
@@ -217,8 +216,6 @@ async def test_confirmed_send_native_empty_tail_stops_without_failure_or_paid_re
     send_args = {"text": "已确认送达的消息" if not native_event else "开始查询，稍后给结果。"}
     if work_mode == "failed":
         send_args["text"] = ""
-    if work_mode == "unfinished":
-        send_args["work_report"] = {"kind": "progress"}
     outputs.append(
         native_response(
             {
@@ -310,14 +307,13 @@ async def test_confirmed_send_native_empty_tail_stops_without_failure_or_paid_re
         ]
         assert json.loads(write_receipts[-1]["output"])["ok"] is True, write_receipts[-1]
     if work_mode in {"unfinished", "write"}:
-        assert rows == [("suspended", 3)]
+        assert rows == [("failed" if native_event else "completed", 3)]
         assert not sender.messages
         if work_mode == "write":
             assert chat.runtime.runner.main_contract.state.snapshot()[0]["text"] == "write survived"
     elif native_event or work_mode in {"failed", "unknown", "write", "incomplete"}:
-        assert result.reason == "llm_failure" and result.sent_messages == 1
-        assert len(sender.messages) == 1
-        assert "模型未能完成" in sender.messages[0].text
+        assert result.reason == "llm_failure" and result.sent_messages == 0
+        assert not sender.messages
         assert not rows
     else:
         assert result.reason == "chat" and result.sent_messages == 1
@@ -359,13 +355,20 @@ CONFIRMED_SEND = native_response(
 
 @pytest.mark.parametrize("native_event", [False, True])
 @pytest.mark.parametrize("checkpoint_failure", [False, True])
-async def test_caller_native_empty_before_completion_suspends_and_keeps_paid_private_state(
+async def test_caller_native_declaration_allows_empty_final_and_keeps_actual_native_boundaries(
     database, tmp_path, monkeypatch, native_event, checkpoint_failure
 ):
-    """send -> implicit native empty: no completion candidate exists, so the paid
-    native tail is a no-final native boundary, never an implicit success."""
+    """An unused declaration permits empty final; a live native call remains real."""
     case = await setup_run(database, tmp_path, delivery="current_group")
     chat = _native_caller(case, monkeypatch)
+    original_run = chat.runtime.main_turns.run
+    caller = []
+
+    async def capture_caller(messages, runtime, backend):
+        caller.append((messages, runtime, backend))
+        return await original_run(messages, runtime, backend)
+
+    monkeypatch.setattr(chat.runtime.main_turns, "run", capture_caller)
     outputs = [
         CONFIRMED_SEND,
         native_response(
@@ -425,9 +428,11 @@ async def test_caller_native_empty_before_completion_suspends_and_keeps_paid_pri
     assert saved.model_requests == 2
     assert len(invocations) == 2 and sum(row.total_tokens for row in invocations) == 26
     assert sum(row.physical_request_count for row in invocations) == 2
-    assert saved.state == "suspended" and result.status is not RunStatus.SUCCEEDED
+    assert saved.state == ("failed" if native_event else "completed")
+    assert (result.status is RunStatus.SUCCEEDED) is (not native_event)
     checkpoint = json.loads(saved.checkpoint_json)
-    assert "sync_result" not in checkpoint and "accepted_control" not in checkpoint
+    assert "accepted_control" not in checkpoint
+    assert ("sync_result" not in checkpoint) is native_event
     if not checkpoint_failure:
         # The suspended Work keeps the actual private tail and the provider's
         # unresolved native status for the next owner.
@@ -443,6 +448,25 @@ async def test_caller_native_empty_before_completion_suspends_and_keeps_paid_pri
         assert "retained-paid-tail" in str(private)
         if native_event:
             assert "in_progress" in str(private)
+    if not native_event:
+        repository = WorkRepository(database)
+        for retained in (
+            checkpoint,
+            {key: value for key, value in checkpoint.items() if key != "sync_result"},
+            {**checkpoint, "sync_result": None},
+        ):
+            async with database.immediate_session() as writer:
+                await writer.execute(
+                    update(work)
+                    .where(work.c.id == saved.id)
+                    .values(checkpoint_json=json.dumps(retained))
+                )
+            before = await repository.get(saved.id)
+            replay = await original_run(*caller[0])
+            assert replay.work_id == saved.id and replay.work_state == "completed"
+            assert replay.text == "" and replay.model_requests == replay.tool_calls_used == 0
+            assert await repository.get(saved.id) == before
+        assert len(wire) == 2
 
 
 async def test_caller_send_then_complete_result_ends_without_third_request(
@@ -803,7 +827,7 @@ async def test_native_duplicate_claude_gemini_preserves_paid_raw_state(
     ],
 )
 @pytest.mark.parametrize("checkpoint_failure", [False, True])
-async def test_runner_suspends_paid_native_boundary_without_requeue_or_local_execution(
+async def test_runner_preserves_paid_native_boundary_without_requeue_or_local_execution(
     database, tmp_path, monkeypatch, kind, duplicate, checkpoint_failure, missing_event
 ):
     if checkpoint_failure:
@@ -938,28 +962,41 @@ async def test_runner_suspends_paid_native_boundary_without_requeue_or_local_exe
         )
     assert len(wire) == 1
     backend.execute_call.assert_not_awaited()
-    assert result.work_state == "suspended"
-    assert not result.outcome.failure.retryable
-    assert result.outcome.failure.code == (
-        "LLMInvalidResponseError" if duplicate else "LLMNativeToolError"
-    )
+    if missing_event:
+        await control.settle(pending_inputs=False)
+        assert control.current["state"] == "completed"
+    else:
+        assert result.work_state == "failed"
+        assert not result.outcome.failure.retryable
+        assert result.outcome.failure.code == (
+            "LLMInvalidResponseError" if duplicate else "LLMNativeToolError"
+        )
     persisted = await repository.get(control.current["id"])
     assert (
-        persisted["state"] == "suspended"
+        persisted["state"] == ("completed" if missing_event else "failed")
         and persisted["model_requests"] == 1
         and persisted["tool_calls"] == 0
     )
+    if checkpoint_failure:
+        if not missing_event:
+            assert result.outcome.failure.diagnostics["checkpoint_saved"] is False
+        async with database.sessions() as reader:
+            assert (
+                await reader.scalar(
+                    select(journal.c.phase).where(journal.c.work_id == persisted["id"])
+                )
+                == "dispatched"
+            )
+        with pytest.raises(JournalUnavailable, match="work_response_not_persisted"):
+            await control.session.journal.load(lease, persisted["id"], control.session.contract)
+        # Only the charged dispatch is durable when publishing its result fails.
+        # The original paid response is never treated as a replayable HTTP plan.
+        await repository.release(lease)
+        return
     checkpoint = await control.session.journal.load(
         lease, persisted["id"], control.session.contract
     )
     assert checkpoint.pending_calls == ()
-    if checkpoint_failure:
-        assert result.outcome.failure.diagnostics["checkpoint_saved"] is False
-        assert checkpoint.record["phase"] == "dispatched"
-        # Only the charged dispatch is durable when publishing its result fails.
-        # Recovery suspends instead of treating this as a replayable database plan.
-        await repository.release(lease)
-        return
     assert checkpoint.record["phase"] == "paired"
     saved = decode_transcript(json.loads(checkpoint.record["payload_json"])["transcript"])
     assert saved.continuation is not None
@@ -988,7 +1025,7 @@ async def test_runner_suspends_paid_native_boundary_without_requeue_or_local_exe
         "unavailable_with_usage",
     ],
 )
-async def test_native_transport_unknown_suspends_original_work_without_automatic_replay(
+async def test_native_transport_unknown_fails_original_activation_without_automatic_replay(
     database, tmp_path, kind, failure, native_requested
 ):
     env = await social_env(database, tmp_path)
@@ -1146,7 +1183,7 @@ async def test_native_transport_unknown_suspends_original_work_without_automatic
             assert result.outcome.failure.diagnostics["physical_request_count"] == 1
             await repository.release(lease)
             return
-        assert result.work_state == "suspended" and persisted["state"] == "suspended"
+        assert result.work_state == "failed" and persisted["state"] == "failed"
         assert not result.outcome.failure.retryable
         assert result.outcome.failure.code == (
             "LLMAuthenticationError" if failure == "authentication" else "LLMNativeToolError"
@@ -1159,11 +1196,13 @@ async def test_native_transport_unknown_suspends_original_work_without_automatic
             assert result.outcome.failure.diagnostics["usage"]["total_tokens"] == 13
             assert result.outcome.failure.diagnostics["http_status"] == 503
             assert len(result.outcome.failure.diagnostics["body_sha256"]) == 64
-        checkpoint = await control.session.journal.load(
-            lease, persisted["id"], control.session.contract
-        )
-        assert checkpoint.record["phase"] == "dispatched"
-        assert checkpoint.pending_calls == ()
+        async with database.sessions() as reader:
+            assert await reader.scalar(
+                select(journal.c.phase).where(journal.c.work_id == persisted["id"])
+            ) == ("paired" if failure == "authentication" else "dispatched")
+        if failure != "authentication":
+            with pytest.raises(JournalUnavailable, match="work_response_not_persisted"):
+                await control.session.journal.load(lease, persisted["id"], control.session.contract)
     await repository.release(lease)
 
 

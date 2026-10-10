@@ -4,9 +4,9 @@ from sqlalchemy import func, or_, select, true, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from qq_ai_bot.runtime.subagent_schema import children
 from qq_ai_bot.runtime.work_budget_schema import automation_budgets, budgets
 from qq_ai_bot.runtime.work_schema_v1 import work
+from qq_ai_bot.runtime.work_tree import budget_root_id
 
 
 class WorkBudgetExceeded(ValueError):
@@ -18,8 +18,7 @@ async def charge(session: AsyncSession, identity: str, *, models: int, tools: in
         raise ValueError("invalid_work_budget_charge")
     if not models and not tools:
         return
-    root = await session.scalar(select(children.c.root_id).where(children.c.work_id == identity))
-    root = root or identity
+    root = await budget_root_id(session, identity)
     current = (
         await session.execute(
             select(

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select
 from tests.conftest import build_harness, make_settings
 from tests.support.agent_backend import StubAgentBackend
 from tests.support.semantic_participation_host_helpers import _event_and_route
@@ -44,7 +44,7 @@ from qq_ai_bot.runtime.work_activation import current_work_control
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_journal import decode_transcript
 from qq_ai_bot.runtime.work_repository import WorkConflict
-from qq_ai_bot.runtime.work_schema_v1 import effects, work
+from qq_ai_bot.runtime.work_schema_v1 import effects
 from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
 from qq_ai_bot.services.context_assembler import ContextAssembler
 from qq_ai_bot.services.main_agent_contract import MainAgentContract
@@ -60,7 +60,7 @@ async def as_child(control, original):
         control.lease,
         control.current["id"],
         "child-case",
-        {"goal": "original child", "output_kind": "answer"},
+        {"goal": "original child"},
     )
     lease = await children.acquire(identity)
     record = await control.repository.get(identity)
@@ -74,7 +74,7 @@ async def as_child(control, original):
     return child, child.session
 
 
-@pytest.mark.parametrize("kind", ["dispatched", "pause", "staging", "child", "delivery"])
+@pytest.mark.parametrize("kind", ["pause", "staging", "child", "delivery"])
 async def test_actual_journal_selects_exact_before_assembler_reads_history(database, kind):
     control, session, selected, _ = await _session(database)
     if kind == "child":
@@ -97,9 +97,7 @@ async def test_actual_journal_selects_exact_before_assembler_reads_history(datab
         session.progress["provider_pause_replay"] = True
     if kind == "staging":
         session.progress["compaction_staging"] = {"cursor": 1}
-    await session.save(
-        "dispatched" if kind == "dispatched" else "delivery" if kind == "delivery" else "paired"
-    )
+    await session.save("delivery" if kind == "delivery" else "paired")
     assembler = ContextAssembler.__new__(ContextAssembler)
     assembler._ledger = EventLedgerRepository(database)
     now = datetime.now(UTC)
@@ -139,7 +137,7 @@ async def test_normal_business_or_changed_contract_builds_fresh(database, kind):
     control, session, selected, _ = await _session(database)
     if kind == "legacy_guard":
         session.source_guard = None
-    await session.save("paired" if kind == "paired" else "dispatched")
+    await session.save("paired")
     if kind == "source":
         await _change(database, selected)
     builder = AsyncMock(return_value="fresh-context")
@@ -158,7 +156,7 @@ async def test_normal_business_or_changed_contract_builds_fresh(database, kind):
 async def test_child_real_deleted_source_cannot_be_certified_by_fresh_history(database):
     control, session, selected, _ = await _session(database)
     control, session = await as_child(control, session)
-    await session.save("dispatched")
+    await session.save("paired")
     await _change(database, selected)
     builder = AsyncMock(return_value="must not be read")
     with pytest.raises(WorkConflict, match="work_source_changed"):
@@ -166,12 +164,6 @@ async def test_child_real_deleted_source_cannot_be_certified_by_fresh_history(da
     builder.assert_not_awaited()
     assert protocol_recovery_preparation.get() is None
     assert context_preparation_mode.get() is ContextPreparationMode.FOREGROUND
-
-
-async def test_missing_contract_does_not_claim_exact_recovery(database):
-    control, session, _, _ = await _session(database)
-    await session.save("dispatched")
-    assert await select_protocol_recovery(control, None) is None
 
 
 async def test_unobserved_edit_preserves_actual_private_pause_across_reopen(database):
@@ -269,8 +261,6 @@ async def test_changed_legacy_delivery_uses_current_context_without_replaying_pl
         old_key, receipt_state, {"transport_accepted": True} if receipt_state == "accepted" else {}
     )
     await control.repository.checkpoint(control.lease, identity, None, models=1, messages=2)
-    async with database.sessions() as writer, writer.begin():
-        await writer.execute(update(work).where(work.c.id == identity).values(output_kind="answer"))
     control.current = await control.repository.get(identity)
     await session.save("delivery")
     await _change(database, selected)
@@ -308,7 +298,7 @@ async def test_changed_legacy_delivery_uses_current_context_without_replaying_pl
     assert control.session.recovered_delivery is None
     assert control.current["id"] == identity
     assert control.current["model_requests"] == 2 and control.current["sent_messages"] == 2
-    assert control.current["state"] == ("completed" if receipt_state == "accepted" else "suspended")
+    assert control.current["state"] == "completed"
     assert result.model_requests == 1
     async with database.sessions() as reader:
         original = (

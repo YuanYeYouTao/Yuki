@@ -9,7 +9,6 @@ from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
-from sqlalchemy.dialects.sqlite import insert
 
 from qq_ai_bot.runtime.activation_outcome import (
     ActivationOutcome,
@@ -18,7 +17,7 @@ from qq_ai_bot.runtime.activation_outcome import (
     classify_failure,
 )
 from qq_ai_bot.runtime.work_budget import WorkBudgetExceeded
-from qq_ai_bot.runtime.work_recovery_schema import deliveries, recovery
+from qq_ai_bot.runtime.work_recovery_schema import recovery
 from qq_ai_bot.runtime.work_repository import WorkCapacityError, WorkConflict, encode_json
 from qq_ai_bot.runtime.work_schema_v1 import work
 
@@ -31,26 +30,11 @@ logger = logging.getLogger(__name__)
 
 ACCEPTED_REASONS = {
     "completed": ExitReason.COMPLETED,
-    "failed": ExitReason.PAUSED,
+    "failed": ExitReason.FAILED,
+    "cancelled": ExitReason.CANCELLED,
     "waiting_user": ExitReason.INPUT,
     "waiting_external": ExitReason.EXTERNAL,
 }
-
-
-def _capacity_pause_text(code: str) -> str:
-    if code == "work_compaction_source_capacity":
-        detail = "用于压缩的资料超过单次模型输入窗口"
-    elif code in {"model_request_capacity", "work_task_input_source_capacity"}:
-        detail = "本轮上下文超过可用模型输入窗口"
-    elif code == "work_protocol_storage_capacity":
-        detail = "工作资料存储空间不足"
-    elif code in {
-        "work_protocol_object_capacity",
-    }:
-        detail = "工作记录超出存储容量限制"
-    else:
-        detail = "上下文整理未能完成"
-    return f"{detail}，已暂停并保留已有结果。"
 
 
 def activation_details(control: WorkControl) -> dict[str, Any]:
@@ -72,7 +56,7 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
     if observed is not None and observed["state"] == "cancelled":
         return _cancelled(control, observed)
     failure = classify_failure(exc)
-    reason = ExitReason.PAUSED
+    reason = ExitReason.FAILED
     if isinstance(exc, WorkBudgetExceeded):
         reason = ExitReason.BUDGET
     elif isinstance(exc, SegmentBudgetReached):
@@ -111,7 +95,11 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
                 or current["tool_calls"] != failed["tool_calls"]
                 or await session.scalar(
                     select(inputs.c.id)
-                    .where(inputs.c.work_id == identity, inputs.c.state == "pending")
+                    .where(
+                        inputs.c.work_id == identity,
+                        inputs.c.state == "pending",
+                        control.repository._business_input_clause(),
+                    )
                     .limit(1)
                 )
                 is not None
@@ -137,10 +125,15 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
             if isinstance(supplied_delay, (int, float)):
                 delay = max(delay, supplied_delay)
             not_before = time.time() + delay
-        state = "queued" if reason in {ExitReason.RETRY, ExitReason.SEGMENT} else "suspended"
-        # A lifecycle decision accepted before the failure is still the decision.
-        # The shared writer rechecks inputs, effects and children; an exception
-        # never mints a new success candidate.
+        state = (
+            "queued"
+            if reason in {ExitReason.RETRY, ExitReason.SEGMENT}
+            else "suspended"
+            if reason in {ExitReason.BUDGET, ExitReason.CAPACITY}
+            else "failed"
+        )
+        # Accepted lifecycle decisions survive auxiliary failures. The writer
+        # settles input ownership and gathers the original owned execution.
         accepted = (
             json.loads(current["checkpoint_json"]).get("accepted_control")
             if current is not None
@@ -150,11 +143,7 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
         if proposed is not None:
             state, reason, not_before = proposed, ACCEPTED_REASONS[proposed], 0
         values = dict(
-            # Re-observing a suspended episode is not a new pause. Its original
-            # delivery key and receipts remain authoritative across activations.
-            activation_id=prior["activation_id"]
-            if current is not None and current["state"] == "suspended" and prior
-            else control.lease.owner,
+            activation_id=control.lease.owner,
             exit_reason=reason.value,
             stage=failure.stage,
             failure_json=encode_json(asdict(failure)),
@@ -178,36 +167,6 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
         if committed is None:
             raise WorkConflict("work_recovery_obsolete")
         state = committed["state"]
-        if (
-            state == "suspended"
-            and failure.code != "work_activation_interrupted"
-            and not control.lease.work_id
-            and control.source.get("delivery_contract") != "return_to_caller"
-        ):
-            descriptions = {
-                ExitReason.BUDGET: "这项工作的总执行额度已用完，已暂停并保留结果。",
-                ExitReason.CAPACITY: _capacity_pause_text(failure.code),
-            }
-            if failure.diagnostics.get("category") == "work_conflict":
-                if failure.code == "work_journal_source_changed":
-                    text = "会话资料在处理期间变化，这项工作已暂停并保留已有结果。"
-                else:
-                    text = "工作状态发生冲突，已暂停并保留已有结果；请先核对任务状态。"
-            else:
-                text = descriptions.get(reason, "这项工作遇到执行错误，已暂停并保留已有结果。")
-            await session.execute(
-                insert(deliveries)
-                .values(
-                    id=f"notice:{identity}:{values['activation_id']}",
-                    work_id=identity,
-                    kind="notice",
-                    state="planned",
-                    payload_json=encode_json({"text": text}),
-                    created=time.time(),
-                    updated=time.time(),
-                )
-                .on_conflict_do_nothing()
-            )
     control.current = committed
     control.ending = state
     control.settled = True
@@ -239,22 +198,13 @@ async def settle(control: WorkControl, *, pending_inputs: bool) -> None:
         return
     await control.refresh_effects()
     proposed = control.accepted_ending()
-    rejected = None
     if control.handoff_work_id is not None:
         state = "queued" if pending_inputs else await control.background_state()
         if state is None:
-            state = (
-                "waiting_external"
-                if await control.has_unresolved_effects(uncertain=False)
-                else "suspended"
-            )
+            state = "waiting_external" if await control.has_owned_execution() else "suspended"
         reason = ExitReason.INPUT
     elif proposed is not None:
         state, reason = proposed, ACCEPTED_REASONS[proposed]
-        if proposed in {"completed", "failed"}:
-            background = await control.background_state()
-            if background:
-                state, reason = background, ExitReason.EXTERNAL
     elif control.yield_segment:
         state, reason = "queued", ExitReason.SEGMENT
     elif pending_inputs:
@@ -268,11 +218,10 @@ async def settle(control: WorkControl, *, pending_inputs: bool) -> None:
         reason = ExitReason.EXTERNAL if state == "waiting_external" else ExitReason.INPUT
     else:
         state = await control.background_state()
-        if state is None and await control.has_unresolved_effects(uncertain=False):
+        if state is None and await control.has_owned_execution():
             state = "waiting_external"
         if state is None:
             state, reason = "suspended", ExitReason.PAUSED
-            rejected = control.completion_rejected
         else:
             reason = ExitReason.EXTERNAL
     control.current = await control.repository.transition(
@@ -280,7 +229,7 @@ async def settle(control: WorkControl, *, pending_inputs: bool) -> None:
         control.current["id"],
         control.current["revision"],
         state,
-        reason=rejected or reason.value,
+        reason=reason.value,
         exit_reason=reason.value,
     )
     if control.current["state"] == "queued" and state != "queued":

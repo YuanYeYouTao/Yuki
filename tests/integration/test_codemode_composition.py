@@ -4,7 +4,13 @@ import json
 
 import pytest
 from sqlalchemy.dialects.sqlite import insert
-from tests.support.codemode_cases import effect_rows, environment, requires_worker, run_code
+from tests.support.codemode_cases import (
+    build_host,
+    effect_rows,
+    environment,
+    requires_worker,
+    run_code,
+)
 
 from qq_ai_bot.codemode.driver import CodeModeDriver
 from qq_ai_bot.runtime.work_budget_schema import budgets
@@ -90,7 +96,9 @@ async def test_reentry_of_the_same_outer_call_returns_original_receipt(database,
     assert tools == 1  # B02: reading the original receipt is not a new admission.
 
 
-async def test_unknown_child_stops_the_script_and_is_never_resent(database, tmp_path):
+async def test_returned_unknown_child_allows_independent_call_without_replaying_original(
+    database, tmp_path
+):
     env = await environment(database, tmp_path)
     env.domain.replies["send_message"] = {"ok": False, "uncertain": True, "error": "timeout"}
     body, outer = await run_code(
@@ -98,11 +106,21 @@ async def test_unknown_child_stops_the_script_and_is_never_resent(database, tmp_
         "s = await yuki_send_message({'text': 'x'})\n"
         "await yuki_send_message({'text': 'after-unknown'})\n",
     )
-    assert body["status"] == "partial" and body["stop_reason"] == "unknown_effect"
-    assert env.domain.log == [("send_message", {"text": "x"})]
+    assert body["status"] == "completed"
+    assert [item["status"] for item in body["operations"]] == ["unknown", "unknown"]
+    assert env.domain.log == [
+        ("send_message", {"text": "x"}),
+        ("send_message", {"text": "after-unknown"}),
+    ]
+    rows, _, _ = await effect_rows(database, env.control.current["id"])
+    assert all(
+        json.loads(row["receipt_json"])["outcome"]["uncertain"]
+        for key, row in rows.items()
+        if key != outer.identity.operation_id
+    )
     again = json.loads(await CodeModeDriver(env.host, outer).run())
-    assert again == body  # Settled partial: never resumes the VM.
-    assert len(env.domain.log) == 1
+    assert again == body
+    assert len(env.domain.log) == 2
 
 
 async def test_catching_a_closing_denial_cannot_continue_side_effects(database, tmp_path):
@@ -140,7 +158,7 @@ async def test_permission_revoked_mid_script_closes_admission(database, tmp_path
             env.domain.denied.add("send_message")
         return await original(name, arguments)
 
-    env.host.execute_business = _wrap(env, revoke_after_first)
+    env.host.execute_business = build_host(env.owner, revoke_after_first).host.execute_business
     body, _ = await run_code(
         env,
         "await yuki_send_message({'text': 'one'})\n"
@@ -149,20 +167,6 @@ async def test_permission_revoked_mid_script_closes_admission(database, tmp_path
     )
     assert body["stop_reason"] == "admission_closed"
     assert env.domain.log == [("send_message", {"text": "one"})]
-
-
-def _wrap(env, domain):
-    from qq_ai_bot.services.invocation_service import InvocationService
-
-    service = InvocationService()
-
-    async def execute_business(invocation, side_effecting):
-        async def invoke():
-            return await domain(invocation.call.function.name, invocation.call.function.arguments)
-
-        return await service.invoke(invocation, invoke, side_effecting=side_effecting)
-
-    return execute_business
 
 
 async def test_root_budget_rejection_stops_without_dispatch(database, tmp_path):

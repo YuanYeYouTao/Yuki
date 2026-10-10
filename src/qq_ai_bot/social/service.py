@@ -202,7 +202,9 @@ class SocialService:
 
     @staticmethod
     def _message_arguments(args: dict[str, Any]) -> dict[str, Any]:
-        """Reject retired and unknown keys before narrowing to message fields."""
+        """Read original message fields; ignore retired optional Work metadata."""
+        # A submitted call may still contain work_report. Keep its original
+        # payload for receipt identity while ignoring it as execution policy.
         outer_fields = {"target", "reply_to_event_id", "work_report"}
         if set(args) - (SocialMessage.model_fields.keys() | outer_fields):
             raise SocialError("invalid_message_arguments")

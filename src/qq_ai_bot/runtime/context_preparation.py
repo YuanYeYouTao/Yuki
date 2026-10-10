@@ -59,7 +59,7 @@ async def select_protocol_recovery(
     progress = metadata.get("progress", {})
     exact = (
         bool(control.lease.work_id)
-        or snapshot.record["phase"] in {"dispatched", "delivery", "delivered"}
+        or snapshot.record["phase"] in {"delivery", "delivered"}
         or bool(progress.get("provider_pause_replay"))
         or (bool(progress.get("compaction_staging")) and snapshot.record["phase"] != "response")
     )

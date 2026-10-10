@@ -2,6 +2,7 @@
 
 from unittest.mock import AsyncMock
 
+from qq_ai_bot.config import Settings
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.runtime.activation_bindings import ActiveWorkBindings
 from qq_ai_bot.runtime.subagent_repository import SubagentRepository
@@ -22,13 +23,16 @@ def make_work_resumer(
     generate_self,
     generate_wakeup,
     validate_snapshot,
-    run_effect,
     bindings=None,
     sandbox_tasks=None,
 ):
     return WorkResumer(
         repository,
         WorkResumeDependencies(
+            settings=Settings(_env_file=None),
+            resume_automation=AsyncMock(
+                side_effect=AssertionError("unexpected automation recovery")
+            ),
             ledger=ledger,
             conversation_scopes=scopes,
             turn_coordinator=turns,
@@ -39,7 +43,6 @@ def make_work_resumer(
             generate_self=generate_self,
             generate_wakeup=generate_wakeup,
             validate_snapshot=validate_snapshot,
-            run_effect=run_effect,
             resume_plugin=AsyncMock(side_effect=AssertionError("unexpected plugin recovery")),
         ),
     )

@@ -28,7 +28,6 @@ async def test_restart_recovers_only_committed_direct_work(database, tmp_path):
             "origin": "user_message",
         },
         goal="处理已接纳的消息",
-        output_kind="answer",
     )
     await host.work.release(lease)
     async with database.immediate_session() as session:

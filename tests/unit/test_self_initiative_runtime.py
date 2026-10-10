@@ -201,7 +201,7 @@ async def test_memory_origin_recovers_without_any_chat_event_and_survives_master
         )
 
 
-async def test_self_recovery_revalidates_presence_and_terminal_state(database):
+async def test_self_recovery_revalidates_presence_after_initiative_settles(database):
     source, admissions, _ = await self_source(database)
     async with database.immediate_session() as db:
         await db.execute(
@@ -212,8 +212,17 @@ async def test_self_recovery_revalidates_presence_and_terminal_state(database):
     with pytest.raises(ValueError, match="task_presence_disabled"):
         await recover_self_source(database, source["conversation_id"], source, request_id="w")
     await admissions.record_feedback(source["initiative_run_id"], sequence=1, outcome="no_reply")
-    with pytest.raises(ValueError, match="self_task_terminal"):
-        await recover_self_source(database, source["conversation_id"], source, request_id="w")
+    async with database.immediate_session() as db:
+        await db.execute(
+            update(PresenceModel)
+            .where(PresenceModel.id == source["presence_id"])
+            .values(enabled=True)
+        )
+    recovered = await recover_self_source(
+        database, source["conversation_id"], source, request_id="w"
+    )
+    assert recovered.run_id == source["initiative_run_id"]
+    assert recovered.actor_user_id == "" and recovered.event_id is None
 
 
 @pytest.mark.parametrize("protocol", ["responses", "chat_completions"])
@@ -327,8 +336,6 @@ async def test_self_child_preserves_run_without_adopting_person(database):
         source_key=f"initiative:{source['initiative_run_id']}",
         source=source,
         goal="inspect",
-        output_kind="answer",
-        deliver_artifacts=False,
     )
     children = SubagentRepository(repo)
     child_id = await children.start(
@@ -337,7 +344,6 @@ async def test_self_child_preserves_run_without_adopting_person(database):
         "spawn-once",
         {
             "goal": "inspect independently",
-            "output_kind": "answer",
         },
     )
     child = await repo.get(child_id)
@@ -391,8 +397,6 @@ async def test_scheduler_resumes_self_without_reading_a_person_event_or_sending_
         source_key=f"initiative:{source['initiative_run_id']}",
         source=source,
         goal="inspect",
-        output_kind="answer",
-        deliver_artifacts=False,
     )
     await repo.release(lease)
 
@@ -456,7 +460,6 @@ async def test_scheduler_resumes_self_without_reading_a_person_event_or_sending_
         generate_self=chat.generate_self_initiative,
         generate_wakeup=AsyncMock(side_effect=AssertionError("no message actor")),
         validate_snapshot=chat.validate_turn_snapshot,
-        run_effect=AsyncMock(side_effect=AssertionError("no automatic delivery")),
     )
     await resumer.resume(item)
     chat.generate_self_initiative.assert_awaited_once()
@@ -495,7 +498,6 @@ async def test_self_worker_runs_with_one_model_slot_without_synthetic_inbound(da
         "spawn-once",
         {
             "goal": "inspect independently",
-            "output_kind": "answer",
         },
     )
     await repo.release(lease)

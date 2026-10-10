@@ -8,7 +8,7 @@ import time
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.exc import SQLAlchemyError
@@ -331,11 +331,18 @@ class ApplicationContainer:
         async def resume_plugin(work: dict[str, object], source: dict[str, object]) -> None:
             from qq_ai_bot.plugin_host.main_turn import resume_plugin_work
 
-            await resume_plugin_work(self._plugin_contexts.get, self.ledger, work, source)
+            if source.get("owner") == "plugin_background":
+                await self.plugin_background_turns.resume_work(work, source)
+            else:
+                await resume_plugin_work(self._plugin_contexts.get, self.ledger, work, source)
+
+        async def resume_automation(work: dict[str, Any], source: dict[str, Any]) -> None:
+            await self._automation_handlers.resume_work(self.database, work, source)
 
         self.work_resumer = WorkResumer(
             works,
             WorkResumeDependencies(
+                settings=self.settings,
                 ledger=self.ledger,
                 conversation_scopes=self.conversation_scopes,
                 turn_coordinator=self.turn_coordinator,
@@ -346,8 +353,8 @@ class ApplicationContainer:
                 generate_wakeup=self.chat.generate_main_agent_wakeup,
                 generate_self=self.chat.generate_self_initiative,
                 validate_snapshot=self.chat.validate_turn_snapshot,
-                run_effect=self.chat.run_effect,
                 resume_plugin=resume_plugin,
+                resume_automation=resume_automation,
             ),
         )
         self.work_scheduler = WorkScheduler(

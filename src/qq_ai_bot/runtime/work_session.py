@@ -209,7 +209,7 @@ class WorkSession:
                 ChatMessage(
                     role="user",
                     content=(
-                        "[持续工作恢复：来源或模型合同发生变化，建立新上下文。"
+                        "[持续工作恢复：使用当前获准上下文接续原工作。"
                         "以下为已记录执行证据；先查询原 run_id，不能盲目重跑或重复发送。]\n"
                         + json.dumps(evidence, ensure_ascii=False)
                     ),
@@ -221,8 +221,8 @@ class WorkSession:
             and loaded.pending_calls
         ):
             # The old provider's response cannot be replayed on this chain. Audit
-            # each original effect key instead; unresolved effects fence new side
-            # effects until their original receipt has been investigated.
+            # each original effect key instead; the original unknown call never
+            # acquires permission to dispatch again.
             pending_audit: list[dict[str, Any]] = []
             for call in loaded.pending_calls:
                 key = await self._pending_result_key(
@@ -242,7 +242,7 @@ class WorkSession:
                 outcome["effect_key"] = key
                 control.observe_evidence(outcome)
                 run_id = outcome.get("run_id")
-                if not isinstance(run_id, str) or not 1 <= len(run_id) <= 64:
+                if not isinstance(run_id, str) or not run_id:
                     run_id = None
                 if outcome.get("uncertain"):
                     status = "unknown"
@@ -441,7 +441,6 @@ class WorkSession:
         # Protocol objects remain the evidence owner. Historical full
         # outputs are no longer a second copy of current working data.
         self.progress.pop("model_observations", None)
-        self.progress.pop("retained_tool_rounds", None)
         self.progress.pop("compaction_request_tokens", None)
         if append_material and control.current is not None:
             await self._append_business_material()
@@ -560,10 +559,8 @@ class WorkSession:
                         "instruction": (
                             "继续原目标，按回执接续；原文按需回读。业务续跑只保留当前聊天、"
                             "这份工作材料和上一段尚未观察的回执，不恢复此前整段工具往返。"
-                            "分段任务应在继续业务调用前用 task_control(update, context_note) "
-                            "保存累积发现、必要中间值、已完成步骤和下一步；合并此前 note 与"
-                            "新回执，不能只记最后一步。使用声明中的 version/facts/unresolved/"
-                            "next_steps 和原来源 refs。若目标已核验完成，直接提出 complete。"
+                            "按需用 task_control(update, context_note) 保存必要发现和下一步，"
+                            "沿原来源 refs 留下资料。根据目标和真实结果决定是否 complete。"
                         ),
                     },
                     ensure_ascii=False,
@@ -1307,7 +1304,6 @@ class WorkSession:
             },
         ][-64:]
         self.progress.pop("model_observations", None)
-        self.progress.pop("retained_tool_rounds", None)
         try:
             guard = source["frozen_guard"]
             await self.save(
@@ -1323,11 +1319,9 @@ class WorkSession:
 
     def require_compaction_anchor(self) -> None:
         if self.compaction_anchor is None:
-            raise JournalUnavailable("work_compaction_anchor_unavailable")
+            raise WorkCapacityError("work_compaction_anchor_unavailable")
 
-    async def retire_paid_compaction(
-        self, *, communication_updates: dict[str, Any] | None = None
-    ) -> None:
+    async def retire_paid_compaction(self) -> None:
         """Retain validated paid material after a complete new paired response.
 
         A soft candidate failure permits the unchanged full request to run. Its
@@ -1375,7 +1369,6 @@ class WorkSession:
                     current_guard["source_revision"],
                     current_guard["privacy_generation"],
                 ),
-                communication_updates=communication_updates,
             )
         except BaseException:
             self.progress = original
@@ -1472,7 +1465,6 @@ class WorkSession:
         calls: tuple[ToolCall, ...] = (),
         *,
         compaction_versions: tuple[int, int] | None = None,
-        communication_updates: dict[str, Any] | None = None,
         publication: Publication | None = None,
     ) -> None:
         candidate = self.dispatch_boundary if phase == "dispatched" else None
@@ -1490,7 +1482,6 @@ class WorkSession:
                 phase,
                 calls,
                 compaction_versions=compaction_versions,
-                communication_updates=communication_updates,
                 publication=publish if candidate is not None else publication,
             )
         except BaseException:
@@ -1508,7 +1499,6 @@ class WorkSession:
         calls: tuple[ToolCall, ...] = (),
         *,
         compaction_versions: tuple[int, int] | None = None,
-        communication_updates: dict[str, Any] | None = None,
         publication: Publication | None = None,
     ) -> None:
         if self.control.current is None:
@@ -1529,9 +1519,10 @@ class WorkSession:
             for call in calls
         ]
         try:
-            for attempt in range(2):
+            source_rechecked = False
+            while await self.control.repository.valid(self.control.lease):
                 try:
-                    updated_work = await self.journal.save(
+                    await self.journal.save(
                         self.control.lease,
                         self.control.current["id"],
                         self.contract,
@@ -1540,7 +1531,6 @@ class WorkSession:
                         pending=self.pending,
                         source_revision=self.source_revision,
                         compaction_versions=compaction_versions,
-                        communication_updates=communication_updates,
                         publication=publication,
                         metadata={
                             "sequence": self.sequence,
@@ -1551,7 +1541,6 @@ class WorkSession:
                                 dict.fromkeys(self.source_keys[:1] + self.source_keys[-255:])
                             ),
                             "input_ids": self.input_ids[-256:],
-                            "ending": self.control.ending,
                             "progress": self.progress,
                             "handoff_work_id": self.handoff_work_id,
                             "compaction_anchor": encode_transcript(self.compaction_anchor)
@@ -1571,22 +1560,20 @@ class WorkSession:
                         for error in (exc, exc.orig)
                         for note in getattr(error, "__notes__", ())
                     )
-                    if not attempt and not cleanup_failed:
-                        # The failed writer has rolled back and closed. Rebuild
-                        # this same publication once; the new journal transaction
-                        # rechecks lease, owner and source before publishing.
-                        await asyncio.sleep(0.05)
-                        continue
-                    if phase in {"response", "paired"} or cleanup_failed:
+                    if cleanup_failed:
                         # A paid response cannot be repurchased merely because
                         # publishing it failed. The prior checkpoint and budgets
                         # remain authoritative; the new response is not durable.
                         raise JournalUnavailable("work_journal_unavailable") from exc
-                    raise
+                    # The failed writer has rolled back and closed. Rebuild
+                    # this same in-memory publication; the new transaction
+                    # rechecks lease, owner and source before publishing.
+                    await asyncio.sleep(0.05)
+                    continue
                 except WorkConflict as exc:
                     if (
                         exc.code != "work_journal_source_changed"
-                        or attempt
+                        or source_rechecked
                         or compaction_versions is not None
                         or self.source_guard is None
                     ):
@@ -1597,9 +1584,10 @@ class WorkSession:
                     await self.control.validate()
                     if not await self.source_guard.check(self.control):
                         raise
+                    source_rechecked = True
                     # Retry this same journal, never the model or tool effects.
-            if updated_work is not None:
-                self.control.current = updated_work
+            else:
+                raise WorkConflict("work_activation_obsolete")
         except ValueError as exc:
             if str(exc) in {
                 "work_journal_capacity",

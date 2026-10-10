@@ -22,12 +22,12 @@ async def validate_self_initiative(
     """Recheck committed ownership and the current scene before an execution/effect.
 
     Switching the proposal owner does not revoke accepted work. Generation reset,
-    disabled space/presence and a settled run do revoke new effects.
+    disabled space/presence revoke new effects. Original Work execution retains
+    its own lease and authority after the initiative owner settles.
     """
     run = await AutonomyRepository(database).get_run(run_id, session=session)
     if (
         run is None
-        or run.state not in {"accepted", "running"}
         or run.conversation_id != conversation_id
         or run.space_id != space_id
         or run.presence_id != presence_id

@@ -123,7 +123,6 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
     "runtime_subagents": frozenset(
         {
             "work_id",
-            "root_id",
             "brief_json",
             "result_json",
             "owner",
@@ -138,6 +137,7 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
     "runtime_work": frozenset(
         {
             "id",
+            "parent_work_id",
             "conversation_id",
             "generation",
             "state",
@@ -146,8 +146,6 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "tool_calls",
             "sent_messages",
             "active_seconds",
-            "output_kind",
-            "deliver_artifacts",
             "checkpoint_json",
         }
     ),

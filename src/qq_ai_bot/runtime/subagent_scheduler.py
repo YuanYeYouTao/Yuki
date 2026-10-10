@@ -89,8 +89,19 @@ class SubagentScheduler:
     async def loop(self) -> None:
         while True:
             try:
-                await self.children.maintain()
-                await self.executor.cancel_commands()
+                for phase, maintain in (
+                    ("maintain", self.children.maintain),
+                    ("cancel_commands", self.executor.cancel_commands),
+                ):
+                    try:
+                        await maintain()
+                    except Exception as exc:
+                        self.last_error = type(exc).__name__
+                        logger.warning(
+                            "subagent_scheduler_failed phase=%s category=%s",
+                            phase,
+                            self.last_error,
+                        )
                 capacity = self.max_concurrency - len(self.running)
                 if capacity <= 0:
                     await asyncio.sleep(1)

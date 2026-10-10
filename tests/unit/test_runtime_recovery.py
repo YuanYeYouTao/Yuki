@@ -28,7 +28,7 @@ from qq_ai_bot.services.turn_transcript import TurnTranscript
 from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
 
 
-async def setup(database, tmp_path, *, output_kind="state_change"):
+async def setup(database, tmp_path):
     env = await social_env(database, tmp_path)
     repo = WorkRepository(database)
     lease = await repo.acquire(env.context.conversation_id, 1)
@@ -38,7 +38,7 @@ async def setup(database, tmp_path, *, output_kind="state_change"):
 
     control = WorkControl(repo, lease, "delivery-test", {"trigger_event_id": 1}, validate)
     control.current = await repo.accept(
-        lease, source_key="delivery-test", source={}, goal="deliver", output_kind=output_kind
+        lease, source_key="delivery-test", source={}, goal="deliver"
     )
     control.session = WorkSession(control, "contract")
     await control.session.restore(TurnTranscript((ChatMessage("user", "deliver"),)))
@@ -75,14 +75,14 @@ async def test_disconnected_presence_queues_original_work_without_error_notice(d
 @pytest.mark.parametrize(
     "failure", [LLMUnavailableError, asyncio.CancelledError, RequestCancelledError]
 )
-async def test_repeated_transient_failure_preserves_original_work_and_can_complete(
+async def test_repeated_transient_failure_preserves_retained_boundary_and_can_complete(
     database, tmp_path, failure
 ):
-    control = await setup(database, tmp_path, output_kind="answer")
+    control = await setup(database, tmp_path)
     identity = control.current["id"]
     await control.repository.checkpoint(control.lease, identity, None, models=1)
     control.current = await control.repository.get(identity)
-    await control.session.save("dispatched")
+    await control.session.save("paired")
     for _ in range(5):
         outcome = await recover_failure(control, failure("temporary interruption"))
         assert outcome.reason is ExitReason.RETRY
@@ -155,7 +155,6 @@ async def test_artifact_publication_failure_preserves_typed_effect_without_repla
     else:
         with pytest.raises(asyncio.CancelledError if failure == "cancel" else ValueError):
             await invoke_tool(session, call, business)
-        assert await control.has_unresolved_effects() is (failure == "uncertain")
     assert executions == 1
     if failure != "capacity":
         replayed = (
@@ -188,12 +187,12 @@ async def change_prompt_source(database, conversation_id):
 
 
 @pytest.mark.asyncio
-async def test_source_change_retries_original_work_before_any_effect(database, tmp_path):
+async def test_source_change_rebases_retained_work_before_any_effect(database, tmp_path):
     control = await setup(database, tmp_path)
     assert control.session is not None and control.current is not None
     original_id = control.current["id"]
     original_chain = control.session.transcript.chain_id
-    await control.session.save("dispatched")
+    await control.session.save("paired")
     await control.repository.checkpoint(control.lease, original_id, None, models=1)
     control.current = await control.repository.get(original_id)
     await change_prompt_source(database, control.lease.conversation_id)

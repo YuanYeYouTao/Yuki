@@ -5,6 +5,7 @@ import hashlib
 import json
 import sqlite3
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -26,6 +27,7 @@ from qq_ai_bot.domain.messages import (
     ChatImage,
     ChatMessage,
     ChatRequest,
+    ChatResponse,
     ChatTool,
     ProviderContinuation,
     ReasoningEffort,
@@ -56,7 +58,7 @@ from qq_ai_bot.runtime.protocol_schema import objects, refs, usage
 from qq_ai_bot.runtime.protocol_store import ProtocolStore
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_journal import JournalUnavailable, encode_transcript
-from qq_ai_bot.runtime.work_repository import WorkRepository
+from qq_ai_bot.runtime.work_repository import WorkCapacityError, WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import journal
 from qq_ai_bot.services.agent_runner import AgentRuntime
 from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
@@ -87,7 +89,7 @@ async def _control(database, tmp_path, *, worker=False):
             lease,
             control.current["id"],
             "private-protocol-child",
-            {"goal": "retain the actual task", "output_kind": "answer"},
+            {"goal": "retain the actual task"},
         )
         await repo.release(lease)
         child_lease = await children.acquire(identity)
@@ -660,9 +662,6 @@ async def test_runner_resumes_gemini_work_on_deepseek_without_old_send_or_native
             def definitions(self, runtime, **kwargs):
                 return common_tools
 
-            def begin_batch(self, *args):
-                pass
-
             def parallel_safe(self, *args):
                 return False
 
@@ -715,7 +714,7 @@ async def test_runner_resumes_gemini_work_on_deepseek_without_old_send_or_native
 @pytest.mark.asyncio
 @pytest.mark.parametrize("last_part", ["succeeded", "missing", "uncertain"])
 @pytest.mark.parametrize("boundary", ["contract_changed", "source_changed"])
-async def test_provider_change_keeps_prepared_sequence_unknown_despite_delivered_parts(
+async def test_provider_change_keeps_original_sequence_unknown_and_allows_new_owned_calls(
     database, tmp_path, last_part, boundary
 ):
     control = await _control(database, tmp_path)
@@ -798,7 +797,7 @@ async def test_provider_change_keeps_prepared_sequence_unknown_despite_delivered
 
     invoked = 0
 
-    async def forbidden_send():
+    async def new_operation():
         nonlocal invoked
         invoked += 1
         return '{"ok":true}'
@@ -812,20 +811,22 @@ async def test_provider_change_keeps_prepared_sequence_unknown_despite_delivered
             for message in transcript.request().messages
         )
         assert any(effect.get("uncertain") for effect in restarted_control.known_effects)
-        blocked = await invoke_tool(
+        original_receipt = json.loads(await resumed.journal.effect_result(effect_key))
+        assert original_receipt.get("uncertain") is True
+        assert await resumed.journal.effect_state(effect_key) == "prepared"
+        allowed = await invoke_tool(
             resumed,
-            ToolCall("new-send", ToolFunction("send_message", "{}")),
-            forbidden_send,
+            ToolCall("new-operation", ToolFunction("workspace_write", "{}")),
+            new_operation,
             side_effecting=True,
-            # A direct send bypasses the fence; a composed send never does.
             child_ordinal=0,
         )
-        assert json.loads(blocked)["error_code"] == "unresolved_prior_effect"
-    assert invoked == 0
+        assert json.loads(allowed)["ok"] is True
+    assert invoked == 2
     current = await control.repository.get(control.current["id"])
     assert (current["model_requests"], current["tool_calls"]) == (
         original["model_requests"],
-        original["tool_calls"],
+        original["tool_calls"] + 2,
     )
     await control.repository.release(control.lease)
 
@@ -984,7 +985,9 @@ async def test_corrupt_compaction_anchor_is_unavailable(
 
 
 @pytest.mark.asyncio
-async def test_journal_without_task_anchor_resumes_but_does_not_guess_one(database, tmp_path):
+async def test_journal_without_task_anchor_resumes_and_soft_compaction_does_not_block(
+    database, tmp_path, monkeypatch
+):
     control = await _control(database, tmp_path, worker=True)
     first = WorkSession(control, "same")
     transcript = await first.restore(TurnTranscript((ChatMessage("user", "historical input"),)))
@@ -995,7 +998,7 @@ async def test_journal_without_task_anchor_resumes_but_does_not_guess_one(databa
         compaction_brief=ChatMessage("user", "fresh wakeup"),
     )
     assert restored.request() == transcript.request()
-    with pytest.raises(JournalUnavailable, match="compaction_anchor_unavailable"):
+    with pytest.raises(WorkCapacityError, match="compaction_anchor_unavailable"):
         await resumed.compact("Summary cannot invent the original task")
     assert resumed.transcript is restored
     # A real new static contract takes the caller's explicit child brief, not
@@ -1008,6 +1011,30 @@ async def test_journal_without_task_anchor_resumes_but_does_not_guess_one(databa
     assert original.request() == transcript.request()
     row = await control.repository.get(control.current["id"])
     assert row["model_requests"] == 0 and row["tool_calls"] == 0
+    from tests.support.work_compaction_capacity_helpers import _runtime
+
+    provider = FakeLLMProvider(lambda _request: ChatResponse("valid internal final", 0))
+    initial = (ChatMessage("system", "fixed"), ChatMessage("user", "current task"))
+    runner, runtime = await _runtime(database, control, initial, provider)
+    monkeypatch.setattr(runner, "work_contract", lambda *_args, **_kwargs: "same")
+    runtime = replace(
+        runtime,
+        runtime_config=replace(
+            runtime.runtime_config,
+            context=replace(runtime.runtime_config.context, work_compaction_trigger_ratio=0.00001),
+        ),
+    )
+    result = await runner.run(
+        initial,
+        runtime,
+        StubAgentBackend(
+            definitions=lambda *_args, **_kwargs: (),
+            finalize=lambda content, _runtime: content,
+        ),
+    )
+    assert result.text == "valid internal final" and len(provider.requests) == 1
+    assert control.accepted_ending() == "completed"
+    assert control.session.compaction_anchor is None
     await control.repository.release(control.lease)
 
 
@@ -1221,12 +1248,15 @@ async def test_pending_recovery_uses_original_evidence_not_display(
     key = first.call_key(call.id)
     await control.repository.prepare_effect(control.lease, control.current["id"], key, "tool")
     stored = {"result": "{}"}
+    run_id = "original-run:" + "opaque-provider-identity" * 8
     if kind == "legacy_success":
-        stored = {"result": '{"ok":true,"data":{"status":"succeeded","run_id":"original-run"}}'}
+        stored = {
+            "result": json.dumps({"ok": True, "data": {"status": "succeeded", "run_id": run_id}})
+        }
     elif kind != "legacy_empty":
         outcome = ToolExecutionResult(
             ok=False,
-            data={"executed": kind != "typed_refused", "run_id": "original-run"},
+            data={"executed": kind != "typed_refused", "run_id": run_id},
             uncertain=kind == "typed_unknown",
             mutation_committed=False if kind == "typed_refused" else None,
         )
@@ -1258,6 +1288,7 @@ async def test_pending_recovery_uses_original_evidence_not_display(
     await resumed.restore(TurnTranscript(initial), compaction_brief=initial[-1])
     assert observed
     original = observed[0]
+    assert original["run_id"] == run_id
     assert original["tool"] == (
         "typed_original" if kind == "typed_original_name" else "terminal_exec"
     )
@@ -1284,7 +1315,81 @@ async def test_pending_recovery_uses_original_evidence_not_display(
             else "unknown"
         )
         assert f'"status": "{status}"' in audit
+        assert run_id in audit
     after = await control.repository.get(control.current["id"])
     assert after["tool_calls"] == before["tool_calls"]
     assert after["model_requests"] == before["model_requests"]
     assert await resumed.journal.effect_state(key) == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_optional_note_publication_conflict_keeps_normal_resume_composition(
+    database, tmp_path, monkeypatch
+):
+    from tests.conftest import MemorySender
+    from tests.support.runtime_execution import make_work_resumer
+    from tests.unit.test_history_dispatch_ownership import _scene, _tool
+
+    from qq_ai_bot.conversation.observation_models import ContextObservationModel
+    from qq_ai_bot.conversation.observations import ContextObservationRepository
+    from qq_ai_bot.conversation.projections import ProjectionConflict
+    from qq_ai_bot.runtime.work_schema_v1 import work
+
+    provider = FakeLLMProvider()
+
+    def respond(_request):
+        count = len(provider.requests)
+        if count == 1:
+            return _tool(
+                "task_control", {"action": "accept", "goal": "continue actual work"}, "accept"
+            )
+        if count == 2:
+            return _tool(
+                "task_control",
+                {
+                    "action": "update",
+                    "context_note": {
+                        "version": 1,
+                        "facts": [{"text": "optional sourced note", "refs": ["goal"]}],
+                        "unresolved": [],
+                        "next_steps": [],
+                    },
+                },
+                "optional-note",
+            )
+        assert count == 3, "paid request was replayed"
+        return ChatResponse("actual internal result", 0)
+
+    provider._responder = respond
+    publication = AsyncMock(side_effect=ProjectionConflict("fixture conflict"))
+    monkeypatch.setattr(ContextObservationRepository, "publish_note", publication)
+    env, harness, chat, _state, inbound = await _scene(
+        database, tmp_path, provider, request_limit=2
+    )
+    await harness.processor.handle(inbound, MemorySender())
+    repository = WorkRepository(database)
+    async with database.sessions() as reader:
+        identity = await reader.scalar(select(work.c.id))
+    queued = await repository.get(identity)
+    assert queued["state"] == "queued" and queued["model_requests"] == 2
+    saved = json.loads(queued["checkpoint_json"])["context_note"]
+    resumer = make_work_resumer(
+        repository,
+        ledger=harness.ledger,
+        scopes=chat._conversation_scopes,
+        turns=chat._turn_coordinator,
+        router=env.router,
+        config=chat._runtime_config,
+        generate_self=chat.generate_self_initiative,
+        generate_wakeup=chat.generate_main_agent_wakeup,
+        validate_snapshot=chat.validate_turn_snapshot,
+        bindings=chat.runtime.bindings,
+    )
+    assert await resumer.resume(queued) is None
+    completed = await repository.get(identity)
+    assert completed["state"] == "completed" and len(provider.requests) == 3
+    assert json.loads(completed["checkpoint_json"])["context_note"] == saved
+    assert publication.await_count >= 2
+    async with database.sessions() as reader:
+        observations = (await reader.scalars(select(ContextObservationModel))).all()
+    assert not any(observation.source_key.startswith("work-note:") for observation in observations)

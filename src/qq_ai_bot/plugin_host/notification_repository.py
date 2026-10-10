@@ -66,10 +66,9 @@ from qq_ai_bot.plugin_host.ownership import (
     resolve_human_person_id,
     stamp_grant_owners,
 )
-from qq_ai_bot.runtime.subagent_schema import children
 from qq_ai_bot.runtime.work_recovery_schema import recovery
 from qq_ai_bot.runtime.work_repository import TERMINAL, WorkConflict, WorkLease, WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import inputs, scope, work
+from qq_ai_bot.runtime.work_schema_v1 import scope, work
 from qq_ai_bot.runtime.work_wait import WorkWaitRepository
 from qq_ai_bot.runtime.work_wait_schema import waits
 from yuki_plugin_sdk.errors import PluginPermissionError
@@ -1099,8 +1098,10 @@ class PluginNotificationRepository:
                 return None
             return grant.canonical_created_by_person_id
 
-    async def load_background_context(self, job: BackgroundTurnJobRecord) -> QueuedCanonicalContext:
-        """Load live queued Conversation + grant creator. Never re-resolve from raw keys."""
+    async def load_background_context(
+        self, job: BackgroundTurnJobRecord, *, work_id: str | None = None
+    ) -> QueuedCanonicalContext:
+        """Read the original scene under its Job attempt or retained Work ownership."""
 
         from qq_ai_bot.conversation.hydrate import (
             require_primary_alias_for_conversation,
@@ -1111,9 +1112,28 @@ class PluginNotificationRepository:
         async with self._database.sessions() as session:
             await session.execute(text("BEGIN"))
             stored = await session.get(PluginBackgroundTurnJobModel, job.id)
-            if not _owns_processing_attempt(stored, attempt=job.attempts):
+            if work_id is not None:
+                from qq_ai_bot.runtime.work_tree import descendants
+
+                if stored is None or stored.work_id is None:
+                    raise WorkConflict("plugin_turn_work_source_mismatch")
+                retained = await session.scalar(
+                    select(work.c.id).where(
+                        work.c.id == work_id,
+                        work.c.id.in_(descendants(stored.work_id, include_self=True)),
+                        work.c.conversation_id == stored.canonical_conversation_id,
+                        work.c.generation == job.generation,
+                        func.json_extract(work.c.source_json, "$.owner") == "plugin_background",
+                        func.json_extract(work.c.source_json, "$.plugin_id") == stored.plugin_id,
+                        func.json_extract(work.c.source_json, "$.trigger_event_id")
+                        == stored.source_event_id,
+                    )
+                )
+                if retained is None:
+                    raise WorkConflict("plugin_turn_work_source_mismatch")
+            elif not _owns_processing_attempt(stored, attempt=job.attempts):
                 category = TURN_ERROR_ATTEMPT_RECLAIMED
-            else:
+            if category is None:
                 assert stored is not None
                 category = await _turn_fence_category(
                     session,
@@ -1156,7 +1176,7 @@ class PluginNotificationRepository:
                     primary_alias=primary,
                     generation=int(conversation.generation),
                 )
-        if category is not None and category != TURN_ERROR_ATTEMPT_RECLAIMED:
+        if work_id is None and category is not None and category != TURN_ERROR_ATTEMPT_RECLAIMED:
             # Discovery did not authorize a cancellation. Recheck the live
             # attempt and its original source fence in a separate short writer.
             async with self._database.immediate_session() as writer:
@@ -1355,30 +1375,13 @@ async def _close_linked_work(
 ) -> None:
     """Close the original Work tree with the Job; confirmed effects stay intact."""
 
-    now = time.time()
-    tree = [
-        identity,
-        *await session.scalars(select(children.c.work_id).where(children.c.root_id == identity)),
-    ]
+    from qq_ai_bot.runtime.work_management import stop_owned_execution
+
+    await stop_owned_execution(session, identity, reason)
     await session.execute(
         update(work)
-        .where(work.c.id.in_(tree), work.c.state.not_in(tuple(TERMINAL)))
-        .values(state=state, reason=reason[:128], revision=work.c.revision + 1, updated=now)
-    )
-    await session.execute(
-        update(children)
-        .where(children.c.work_id.in_(tree))
-        .values(owner=None, lease_until=0, cancel_epoch=children.c.cancel_epoch + 1)
-    )
-    await session.execute(
-        update(inputs)
-        .where(inputs.c.work_id.in_(tree), inputs.c.state.in_(("pending", "staged")))
-        .values(state="cancelled")
-    )
-    await session.execute(
-        update(waits)
-        .where(waits.c.work_id.in_(tree), waits.c.status == "active")
-        .values(status="cancelled", updated=now)
+        .where(work.c.id == identity, work.c.state.not_in(tuple(TERMINAL)))
+        .values(state=state, reason=reason, revision=work.c.revision + 1, updated=time.time())
     )
 
 
@@ -1451,8 +1454,6 @@ async def admit_background_turn_work(
                     source_key=source_key,
                     source=source,
                     goal=goal,
-                    output_kind="answer",
-                    deliver_artifacts=False,
                 )
                 if job.work_id is not None and job.work_id != admitted["id"]:
                     raise WorkConflict("plugin_turn_work_link_conflict")

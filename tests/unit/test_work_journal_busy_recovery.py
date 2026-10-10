@@ -1,5 +1,6 @@
 """Retry only a rolled-back journal publication, never its paid model response."""
 
+import asyncio
 import json
 import sqlite3
 from dataclasses import replace
@@ -7,16 +8,21 @@ from dataclasses import replace
 import pytest
 from sqlalchemy import event, text, update
 from sqlalchemy.exc import OperationalError
-from tests.support.work_reporting_runner_helpers import case, run, tool
+from tests.support.work_runner_helpers import case, run, tool
 from tests.unit.test_work_journal_source_retry import _change, _saved, _session
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.domain.messages import ChatMessage, ChatResponse
-from qq_ai_bot.runtime.work_journal import WorkJournal
+from qq_ai_bot.llm.base import LLMUnavailableError
+from qq_ai_bot.runtime.activation_outcome import WorkRecoveryDeferred
+from qq_ai_bot.runtime.work_control import WorkControl
+from qq_ai_bot.runtime.work_journal import JournalUnavailable, WorkJournal
 from qq_ai_bot.runtime.work_repository import WorkConflict
 
 
-def fail_publications(monkeypatch, *, phase, failures, code=sqlite3.SQLITE_BUSY, cleanup=None):
+def fail_publications(
+    monkeypatch, *, phase, failures, code=sqlite3.SQLITE_BUSY, cleanup=None, after_failure=None
+):
     original_save = WorkJournal.save
     writers = []
 
@@ -39,7 +45,12 @@ def fail_publications(monkeypatch, *, phase, failures, code=sqlite3.SQLITE_BUSY,
                     raise error
 
             kwargs["publication"] = publication
-        return await original_save(self, *args, **kwargs)
+        try:
+            return await original_save(self, *args, **kwargs)
+        except OperationalError:
+            if kwargs["phase"] == phase and after_failure is not None:
+                await after_failure(len(writers))
+            raise
 
     monkeypatch.setattr(WorkJournal, "save", save)
     return writers
@@ -65,15 +76,15 @@ async def snapshot(test_case):
 
 @pytest.mark.parametrize("phase", ["response", "paired"])
 @pytest.mark.parametrize("code", [sqlite3.SQLITE_BUSY, sqlite3.SQLITE_BUSY_SNAPSHOT])
-async def test_transient_busy_republishes_original_response_in_a_new_transaction_once(
+async def test_busy_republishes_original_response_in_new_transactions_without_a_count_limit(
     database, tmp_path, monkeypatch, phase, code
 ):
-    writers = fail_publications(monkeypatch, phase=phase, failures=1, code=code)
+    failures = 5
+    writers = fail_publications(monkeypatch, phase=phase, failures=failures, code=code)
     test_case = await paid_case(database, tmp_path)
     result = await run(test_case)
-    # Paired additionally saves its normal segment boundary after the batch.
-    assert len(writers) == (2 if phase == "response" else 3)
-    assert writers[0] is not writers[1]
+    assert len(writers) >= failures + 1
+    assert len({id(writer) for writer in writers}) == len(writers)
     assert all(not writer.in_transaction() for writer in writers)
     assert len(test_case.provider.requests) == 1
     assert test_case.observed == ["read_fixture"]
@@ -87,30 +98,93 @@ async def test_transient_busy_republishes_original_response_in_a_new_transaction
 
 
 @pytest.mark.parametrize("phase", ["response", "paired"])
-async def test_exhausted_paid_checkpoint_busy_suspends_without_model_or_tool_replay(
-    database, tmp_path, monkeypatch, phase
+@pytest.mark.parametrize("stop", ["cancel", "lease"])
+async def test_paid_checkpoint_busy_exits_on_original_cancellation_or_lost_lease(
+    database, tmp_path, monkeypatch, phase, stop
 ):
-    writers = fail_publications(monkeypatch, phase=phase, failures=10)
+    async def after_failure(count):
+        if count == 3:
+            if stop == "cancel":
+                raise asyncio.CancelledError
+            await test_case.repository.release(test_case.control.lease)
+
+    writers = fail_publications(monkeypatch, phase=phase, failures=10, after_failure=after_failure)
     test_case = await paid_case(database, tmp_path)
-    result = await run(test_case)
-    assert len(writers) == 2 and all(not writer.in_transaction() for writer in writers)
+    with pytest.raises(
+        asyncio.CancelledError if stop == "cancel" else WorkRecoveryDeferred
+    ) as raised:
+        await run(test_case)
+    if stop == "lease":
+        assert isinstance(raised.value.__cause__, WorkConflict)
+    assert len(writers) == 3 and all(not writer.in_transaction() for writer in writers)
     assert len(test_case.provider.requests) == 1
     assert test_case.observed == ([] if phase == "response" else ["read_fixture"])
-    assert result.work_state == "suspended"
-    assert result.outcome.failure.code == "work_journal_unavailable"
-    assert not result.outcome.failure.retryable
     persisted = await test_case.repository.get(test_case.control.current["id"])
     assert persisted["model_requests"] == 1
     assert persisted["tool_calls"] == (0 if phase == "response" else 1)
-    journal = await snapshot(test_case)
+    from qq_ai_bot.runtime.work_schema_v1 import journal
+
+    async with test_case.repository.database.sessions() as reader:
+        record = (
+            (await reader.execute(journal.select().where(journal.c.work_id == persisted["id"])))
+            .mappings()
+            .one()
+        )
+    payload = await test_case.control.session.journal.objects.hydrate(
+        json.loads(record["payload_json"])
+    )
     if phase == "response":
-        assert journal.record["phase"] == "dispatched"
-        assert "original-paid-response" not in journal.record["payload_json"]
-        assert "original-paid-call" not in journal.record["payload_json"]
+        assert record["phase"] == "dispatched"
+        assert "original-paid-response" not in json.dumps(payload)
+        assert payload["pending"] == []
+        if stop == "cancel":
+            with pytest.raises(JournalUnavailable, match="work_response_not_persisted"):
+                await snapshot(test_case)
     else:
-        assert journal.record["phase"] == "response"
-        assert "original-paid-call" in journal.record["payload_json"]
-        assert len(await test_case.control.effect_evidence()) == 1
+        assert record["phase"] == "response"
+        assert payload["pending"][0]["id"] == "original-paid-call"
+        assert "original-paid-response" in json.dumps(payload)
+
+
+async def test_known_provider_failure_retries_original_work_with_new_input_and_budget(
+    database, tmp_path
+):
+    test_case = await paid_case(database, tmp_path)
+
+    def respond(_request):
+        if len(test_case.provider.requests) == 1:
+            raise LLMUnavailableError("explicit provider failure")
+        return ChatResponse("completed after known failure", 0)
+
+    test_case.provider._responder = respond
+    first = await run(test_case)
+    assert first.work_state == "queued" and first.outcome.failure.code == "LLMUnavailableError"
+    assert (await snapshot(test_case)).record["phase"] == "paired"
+    old = test_case.control
+    identity = old.current["id"]
+    input_id = await test_case.repository.enqueue(
+        old.lease.conversation_id,
+        old.lease.generation,
+        "latest-business-input",
+        kind="message",
+        work_id=identity,
+        ready=False,
+    )
+    assert await test_case.repository.prepare_input(input_id, {"text": "latest instruction"})
+    control = WorkControl(old.repository, old.lease, old.source_key, old.source, old.validate)
+    control.current = await old.repository.get(identity)
+    test_case.control = control
+    test_case.runtime = replace(test_case.runtime, work_control=control)
+    second = await run(test_case)
+    await control.settle(pending_inputs=False)
+    assert second.text == "completed after known failure"
+    assert control.current["state"] == "completed"
+    assert len(test_case.provider.requests) == 2 and test_case.observed == []
+    assert any(
+        "latest instruction" in (message.content or "")
+        for message in test_case.provider.requests[-1].messages
+    )
+    assert (await old.repository.get(identity))["model_requests"] == 2
 
 
 @pytest.mark.parametrize(
@@ -123,7 +197,7 @@ async def test_locked_or_text_without_driver_code_never_retries_paid_publication
     test_case = await paid_case(database, tmp_path)
     result = await run(test_case)
     assert len(writers) == 1 and not writers[0].in_transaction()
-    assert result.work_state == "suspended" and result.outcome.failure.code == expected
+    assert result.work_state == "failed" and result.outcome.failure.code == expected
     assert not result.outcome.failure.retryable
     assert len(test_case.provider.requests) == 1 and test_case.observed == []
 
@@ -138,24 +212,22 @@ async def test_cleanup_failure_cannot_authorize_checkpoint_retry(
     test_case = await paid_case(database, tmp_path)
     result = await run(test_case)
     assert len(writers) == 1
-    assert result.work_state == "suspended"
+    assert result.work_state == "failed"
     assert result.outcome.failure.code == "work_journal_unavailable"
     assert not result.outcome.failure.retryable
     assert len(test_case.provider.requests) == 1 and test_case.observed == []
 
 
-async def test_exhausted_predispatch_busy_keeps_safe_activation_recovery(
+async def test_predispatch_busy_republishes_without_buying_an_extra_request(
     database, tmp_path, monkeypatch
 ):
     fail_publications(monkeypatch, phase="dispatched", failures=10)
     test_case = await paid_case(database, tmp_path)
     result = await run(test_case)
-    assert result.work_state == "queued" and result.outcome.failure.code == "sqlite_busy"
-    assert result.outcome.failure.retryable
-    assert len(test_case.provider.requests) == 0 and test_case.observed == []
+    assert result.work_state == "queued" and result.outcome is None
+    assert len(test_case.provider.requests) == 1 and test_case.observed == ["read_fixture"]
     persisted = await test_case.repository.get(test_case.control.current["id"])
-    assert persisted["tool_calls"] == 0
-    assert "original-paid-response" not in json.dumps(test_case.control.session.progress)
+    assert persisted["model_requests"] == persisted["tool_calls"] == 1
 
 
 async def test_real_competing_sqlite_writer_retries_only_the_received_publication(
@@ -250,7 +322,7 @@ async def test_busy_retry_rechecks_source_and_lease_without_overwriting_old_chec
     monkeypatch.setattr(WorkJournal, "save", save)
     with pytest.raises(WorkConflict):
         await session.save("response")
-    assert attempts == 2
+    assert attempts == (1 if change == "lease" else 2)
     assert await _saved(database, control) == before
     persisted = await control.repository.get(control.current["id"])
     assert persisted["model_requests"] == 1 and persisted["tool_calls"] == 0

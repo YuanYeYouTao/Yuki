@@ -123,7 +123,6 @@ class WorkRepository:
                     CanonicalConversationModel.generation == lease.generation,
                 )
                 .exists(),
-                children.c.root_id.in_(select(work.c.id).where(work.c.state.not_in(TERMINAL))),
             )
         return and_(
             scope.c.conversation_id == lease.conversation_id,
@@ -285,8 +284,8 @@ class WorkRepository:
         source_key: str,
         source: dict[str, Any],
         goal: str,
-        output_kind: str = "state_change",
-        deliver_artifacts: bool = True,
+        parent_work_id: str | None = None,
+        identity: str | None = None,
         handoff_from: str | None = None,
         reporting: str | None = None,
         initial_state: str = "running",
@@ -298,8 +297,8 @@ class WorkRepository:
                 source_key=source_key,
                 source=source,
                 goal=goal,
-                output_kind=output_kind,
-                deliver_artifacts=deliver_artifacts,
+                parent_work_id=parent_work_id,
+                identity=identity,
                 handoff_from=handoff_from,
                 reporting=reporting,
                 initial_state=initial_state,
@@ -313,8 +312,8 @@ class WorkRepository:
         source_key: str,
         source: dict[str, Any],
         goal: str,
-        output_kind: str = "state_change",
-        deliver_artifacts: bool = True,
+        parent_work_id: str | None = None,
+        identity: str | None = None,
         handoff_from: str | None = None,
         reporting: str | None = None,
         initial_state: str = "running",
@@ -324,25 +323,35 @@ class WorkRepository:
         Only an owner that must commit its own durable link together with the
         first admission uses this directly; the lease is asserted here.
         """
-        if not goal.strip() or not 1 <= len(source_key) <= 256:
+        if not goal.strip() or not source_key:
             raise ValueError("invalid_work_goal")
-        if output_kind not in {"answer", "artifact", "state_change"}:
-            raise ValueError("invalid_work_output_kind")
         if reporting is not None and reporting not in {"interactive", "quiet"}:
             raise ValueError("work_reporting_invalid")
         if initial_state not in {"running", "queued"}:
             raise ValueError("invalid_work_initial_state")
         source_json, now = encode_json(source), time.time()
         initial_checkpoint = encode_json(
-            {
-                "communication": {
-                    "input_feedback_through_id": 0,
-                    **({"reporting": reporting} if reporting is not None else {}),
-                }
-            }
+            {"communication": {"reporting": reporting}} if reporting is not None else {}
         )
         await self._assert_lease(session, lease)
-        if source.get("origin") == "self_initiative" or source.get("principal_kind") == "self":
+        if parent_work_id is not None:
+            parent = (
+                (
+                    await session.execute(
+                        select(work).where(
+                            work.c.id == parent_work_id,
+                            work.c.conversation_id == lease.conversation_id,
+                            work.c.generation == lease.generation,
+                            work.c.state.not_in(TERMINAL),
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if parent is None or (lease.work_id is not None and lease.work_id != parent_work_id):
+                raise WorkConflict("work_parent_source_invalid")
+        elif source.get("origin") == "self_initiative" or source.get("principal_kind") == "self":
             if (
                 source.get("origin") == "scheduled_automation"
                 and source.get("principal_kind") == "self"
@@ -391,14 +400,13 @@ class WorkRepository:
         await session.execute(
             insert(work)
             .values(
-                id=str(uuid4()),
+                id=identity or str(uuid4()),
                 conversation_id=lease.conversation_id,
                 generation=lease.generation,
                 source_key=source_key,
                 source_json=source_json,
                 goal=goal,
-                output_kind=output_kind,
-                deliver_artifacts=deliver_artifacts,
+                parent_work_id=parent_work_id,
                 checkpoint_json=initial_checkpoint,
                 state="queued" if handoff_from else initial_state,
                 created=now,
@@ -415,9 +423,10 @@ class WorkRepository:
             row["conversation_id"] != lease.conversation_id
             or row["generation"] != lease.generation
             or row["source_json"] != source_json
+            or row["parent_work_id"] != parent_work_id
         ):
             raise WorkConflict("work_source_conflict")
-        if row["state"] in TERMINAL:
+        if row["state"] in TERMINAL and parent_work_id is None:
             raise WorkConflict("work_already_terminal")
         if handoff_from is not None:
             previous = (
@@ -441,6 +450,49 @@ class WorkRepository:
                 .values(checkpoint_json=encode_json(checkpoint), updated=now)
             )
         return dict(row)
+
+    async def derive(
+        self, lease: WorkLease, parent_work_id: str, key: str, goal: str
+    ) -> dict[str, Any]:
+        """Create a business child with the original source and call identity."""
+        async with self.database.sessions() as reader:
+            brief = await reader.scalar(
+                select(children.c.brief_json).where(children.c.work_id == parent_work_id)
+            )
+        if brief is not None:
+            from qq_ai_bot.runtime.subagent_repository import SubagentRepository
+
+            child = await SubagentRepository(self).start(
+                lease, parent_work_id, key, {**json.loads(brief), "goal": goal}
+            )
+            created = await self.get(child)
+            assert created is not None
+            return created
+        async with self.database.immediate_session() as session:
+            await self._assert_lease(session, lease)
+            parent = (
+                (
+                    await session.execute(
+                        select(work).where(
+                            work.c.id == parent_work_id,
+                            work.c.conversation_id == lease.conversation_id,
+                            work.c.generation == lease.generation,
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            source = json.loads(parent["source_json"])
+            return await self.accept_in_session(
+                session,
+                lease,
+                source_key=key,
+                source=source,
+                goal=goal,
+                parent_work_id=parent_work_id,
+                initial_state="queued",
+            )
 
     async def by_source(self, source_key: str) -> dict[str, Any] | None:
         async with self.database.sessions() as session:
@@ -508,6 +560,68 @@ class WorkRepository:
                 exit_reason=exit_reason,
             )
 
+    @staticmethod
+    def _business_input_clause() -> Any:
+        # Input ownership is already typed by its producer. Worker instructions
+        # target that child; child results/notifications target their parent.
+        return and_(
+            or_(
+                inputs.c.kind == "message",
+                and_(
+                    inputs.c.kind == "subagent",
+                    func.json_extract(inputs.c.payload_json, "$.child_id") == inputs.c.work_id,
+                ),
+            ),
+            func.coalesce(func.json_extract(inputs.c.payload_json, "$.signal"), 0) == 0,
+        )
+
+    async def has_pending_business_inputs(
+        self, lease: WorkLease, work_id: str, *, input_ids: tuple[int, ...] | None = None
+    ) -> bool:
+        async with self.database.sessions() as session:
+            await self._assert_lease_readonly(session, lease)
+            query = select(inputs.c.id).where(
+                inputs.c.work_id == work_id,
+                inputs.c.conversation_id == lease.conversation_id,
+                inputs.c.generation == lease.generation,
+                inputs.c.state.in_(("pending", "staged")),
+                self._business_input_clause(),
+            )
+            if input_ids is not None:
+                query = query.where(inputs.c.id.in_(input_ids))
+            return await session.scalar(query.limit(1)) is not None
+
+    @staticmethod
+    def _owned_execution_clause(identity: str) -> Any:
+        from qq_ai_bot.runtime.work_tree import descendants
+        from qq_ai_bot.sandbox.db_models import SandboxTaskRunModel
+
+        owned = descendants(identity, include_self=True)
+        return or_(
+            select(SandboxTaskRunModel.request_id)
+            .where(
+                func.json_extract(SandboxTaskRunModel.source_json, "$.work_id").in_(owned),
+                SandboxTaskRunModel.status == "waiting",
+                SandboxTaskRunModel.run_id.is_not(None),
+            )
+            .exists(),
+            select(children.c.work_id)
+            .join(work, work.c.id == children.c.work_id)
+            .where(
+                children.c.work_id.in_(owned),
+                children.c.work_id != identity,
+                children.c.owner.is_not(None),
+                children.c.lease_until > (func.julianday("now") - 2440587.5) * 86400,
+                work.c.state.not_in(TERMINAL),
+            )
+            .exists(),
+        )
+
+    async def has_owned_execution(self, lease: WorkLease, identity: str) -> bool:
+        async with self.database.sessions() as session:
+            await self._assert_lease_readonly(session, lease)
+            return bool(await session.scalar(select(self._owned_execution_clause(identity))))
+
     async def commit_state(
         self,
         session: AsyncSession,
@@ -523,10 +637,8 @@ class WorkRepository:
     ) -> dict[str, Any]:
         """The single state writer shared by normal settlement and failure recovery.
 
-        Callers own the transaction and lease assertion. Current competing facts
-        (mailbox, unresolved effects, live children) are rechecked here, and the
-        accepted control is consumed in the same statement that commits the
-        actual state: a completed result is published only with completion.
+        Callers own the transaction and lease assertion. Only newly authorized
+        input and genuinely active owned execution can defer completion.
         """
         values: dict[str, Any] = {
             "state": state,
@@ -536,6 +648,8 @@ class WorkRepository:
         }
         if goal is not None:
             values["goal"] = goal
+        business_arrived = False
+        draining = False
         if state in {"completed", "failed", "waiting_user", "waiting_external"}:
             mailbox = (
                 await session.execute(
@@ -543,12 +657,14 @@ class WorkRepository:
                     .where(
                         inputs.c.work_id == identity,
                         inputs.c.state.in_(("pending", "staged")),
+                        self._business_input_clause(),
                     )
                     .order_by(inputs.c.id)
                     .limit(1)
                 )
             ).first()
             if mailbox is not None:
+                business_arrived = True
                 # Admitted input keeps a live owner. A failure is retained in
                 # recovery facts but cannot strand input on a terminal Work.
                 ready = bool(mailbox[0])
@@ -559,32 +675,15 @@ class WorkRepository:
                 if exit_reason is not None:
                     exit_reason = "waiting_input" if ready else "waiting_external"
         if values["state"] == "completed":
-            # Complete's domain preparation is outside the writer. Only
-            # current SQL facts that can change across awaits are rechecked.
-            unresolved = await session.scalar(
-                select(effects.c.effect_key)
-                .where(effects.c.work_id == identity, self._unresolved_clause())
-                .limit(1)
-            )
-            child = await session.scalar(
-                select(children.c.work_id)
-                .join(work, work.c.id == children.c.work_id)
-                .where(children.c.root_id == identity, work.c.state.not_in(TERMINAL))
-                .limit(1)
-            )
-            if unresolved is not None or child is not None:
-                unknown = await session.scalar(
-                    select(effects.c.effect_key)
-                    .where(effects.c.work_id == identity, self._unresolved_clause(pending=False))
-                    .limit(1)
-                )
+            if await session.scalar(select(self._owned_execution_clause(identity))):
+                draining = True
                 values.update(
-                    state="suspended" if unknown is not None else "waiting_external",
-                    reason="work_completion_facts_changed",
+                    state="waiting_external",
+                    reason="work_owned_execution_pending",
                 )
                 if exit_reason is not None:
-                    exit_reason = "paused" if unknown is not None else "waiting_external"
-        if values["state"] != "running":
+                    exit_reason = "waiting_external"
+        if values["state"] != "running" and not draining:
             # Settlement consumes the accepted control; its durable payload moves
             # to the existing result/reason slots only when the state it proposed
             # is the state actually committed.
@@ -634,6 +733,10 @@ class WorkRepository:
         )
         if row is None:
             raise WorkConflict("work_revision_conflict")
+        if row["state"] in {"failed", "cancelled"} and not business_arrived:
+            from qq_ai_bot.runtime.work_management import stop_owned_execution
+
+            await stop_owned_execution(session, identity, reason)
         if recovery_detail is not None:
             detail = {**recovery_detail, "work_id": identity}
             if exit_reason is not None:
@@ -662,12 +765,57 @@ class WorkRepository:
                 .values(**detail)
                 .on_conflict_do_update(index_elements=[recovery.c.work_id], set_=detail)
             )
-        if row["state"] in TERMINAL:
+        if row["state"] in TERMINAL or goal is not None:
             await session.execute(
                 update(waits)
                 .where(waits.c.work_id == identity, waits.c.status == "active")
                 .values(status="cancelled", updated=time.time())
             )
+        if row["state"] in TERMINAL and row["parent_work_id"] is not None:
+            # Worker notifications already belong to their original scheduler.
+            # Plain business children use the same persistent parent inbox.
+            worker = await session.scalar(
+                select(children.c.work_id).where(children.c.work_id == identity)
+            )
+            if worker is None:
+                await session.execute(
+                    insert(inputs)
+                    .values(
+                        conversation_id=row["conversation_id"],
+                        generation=row["generation"],
+                        source_key=f"work-result:{identity}:{row['revision']}",
+                        work_id=row["parent_work_id"],
+                        kind="completion",
+                        ready=True,
+                        payload_json=encode_json(
+                            {
+                                "text": encode_json(
+                                    {
+                                        "work_id": identity,
+                                        "state": row["state"],
+                                        "reason": row["reason"],
+                                        "result": json.loads(row["checkpoint_json"]).get(
+                                            "sync_result"
+                                        ),
+                                    }
+                                )
+                            }
+                        ),
+                        created=time.time(),
+                    )
+                    .on_conflict_do_nothing(index_elements=[inputs.c.source_key])
+                )
+                await session.execute(
+                    update(work)
+                    .where(
+                        work.c.id == row["parent_work_id"],
+                        work.c.state == "waiting_external",
+                        ~select(waits.c.id)
+                        .where(waits.c.work_id == work.c.id, waits.c.status == "active")
+                        .exists(),
+                    )
+                    .values(state="queued", revision=work.c.revision + 1, updated=time.time())
+                )
         return dict(row)
 
     async def accept_control(
@@ -770,28 +918,12 @@ class WorkRepository:
 
     @staticmethod
     def encode_communication_updates(updates: dict[str, Any]) -> str:
-        """Prepare a small host patch before any writer admission."""
-        allowed = {
-            "reporting",
-            "input_feedback_through_id",
-            "stage_feedback_batch",
-        }
-        if not updates or set(updates) - allowed:
-            raise ValueError("work_communication_field_invalid")
-        for key, value in updates.items():
-            if value is None:
-                continue
-            if key == "reporting":
-                if not isinstance(value, str) or value not in {"interactive", "quiet"}:
-                    raise ValueError("work_reporting_invalid")
-            elif key.endswith("_given"):
-                if not isinstance(value, bool):
-                    raise ValueError("work_communication_marker_invalid")
-            elif key == "input_feedback_through_id":
-                if type(value) is not int or value < 0:
-                    raise ValueError("work_communication_marker_invalid")
-            elif not isinstance(value, str) or len(value) > 64:
-                raise ValueError("work_communication_marker_invalid")
+        if set(updates) != {"reporting"} or updates["reporting"] not in (
+            None,
+            "interactive",
+            "quiet",
+        ):
+            raise ValueError("work_reporting_invalid")
         return encode_json({"communication": updates})
 
     async def patch_context_note(
@@ -897,240 +1029,6 @@ class WorkRepository:
                 raise WorkConflict("work_checkpoint_obsolete")
             return dict(row)
 
-    async def communication_inputs(
-        self, lease: WorkLease, identity: str, *, after_id: int = 0, limit: int = 8
-    ) -> list[dict[str, int]]:
-        """Original displayed human inputs, independent of the recent journal window."""
-        from qq_ai_bot.persistence.models import ChatEventModel
-
-        if type(after_id) is not int or after_id < 0 or not 1 <= limit <= 128:
-            raise ValueError("work_communication_page_invalid")
-        async with self.database.sessions() as session:
-            if not await session.scalar(
-                select(self._lease_table(lease).c.fence).where(self._fence(lease))
-            ):
-                raise WorkConflict("work_activation_obsolete")
-            rows = (
-                (
-                    await session.execute(
-                        select(inputs.c.id, inputs.c.event_id)
-                        .join(ChatEventModel, ChatEventModel.id == inputs.c.event_id)
-                        .where(
-                            inputs.c.work_id == identity,
-                            inputs.c.conversation_id == lease.conversation_id,
-                            inputs.c.generation == lease.generation,
-                            inputs.c.id > after_id,
-                            inputs.c.state.in_(("staged", "consumed")),
-                            inputs.c.kind == "message",
-                            func.coalesce(func.json_extract(inputs.c.payload_json, "$.signal"), 0)
-                            == 0,
-                            ChatEventModel.direction == "inbound",
-                            ChatEventModel.canonical_conversation_id == lease.conversation_id,
-                        )
-                        .order_by(inputs.c.id)
-                        .limit(limit)
-                    )
-                )
-                .mappings()
-                .all()
-            )
-            return [{"id": row["id"], "event_id": row["event_id"]} for row in rows]
-
-    async def communication_reports(
-        self,
-        lease: WorkLease,
-        identity: str,
-        target: dict[str, Any],
-        *,
-        kind: str | None = None,
-        event_ids: tuple[int, ...] = (),
-        effect_keys: tuple[str, ...] = (),
-        delivered_only: bool = False,
-    ) -> list[dict[str, Any]]:
-        """Query original sends; child effects and unrelated targets never qualify."""
-
-        def matches_target(value: Any) -> bool:
-            if isinstance(value, str):
-                value = json.loads(value)
-            return isinstance(value, dict) and all(
-                value.get(field) == expected for field, expected in target.items()
-            )
-
-        async with self.database.sessions() as session:
-            if not await session.scalar(
-                select(self._lease_table(lease).c.fence).where(self._fence(lease))
-            ):
-                raise WorkConflict("work_activation_obsolete")
-            clauses = [
-                effects.c.work_id == identity,
-                work.c.conversation_id == lease.conversation_id,
-                work.c.generation == lease.generation,
-                func.json_extract(effects.c.receipt_json, "$.outcome.tool") == "send_message",
-                func.json_type(effects.c.receipt_json, "$.outcome.work_report") == "object",
-            ]
-            if kind is not None:
-                clauses.append(
-                    func.json_extract(effects.c.receipt_json, "$.outcome.work_report.kind") == kind
-                )
-            if effect_keys:
-                clauses.append(effects.c.effect_key.in_(effect_keys))
-            if event_ids:
-                links = func.json_each(
-                    effects.c.receipt_json, "$.outcome.work_report.reply_to_event_ids"
-                ).table_valued("value")
-            for field, value in target.items():
-                clauses.append(
-                    func.coalesce(
-                        func.json_extract(
-                            effects.c.receipt_json, f"$.outcome.report_target.{field}"
-                        ),
-                        func.json_extract(
-                            effects.c.receipt_json, f"$.outcome.delivery_target.{field}"
-                        ),
-                    )
-                    == value
-                )
-                clauses.append(
-                    or_(
-                        func.json_extract(effects.c.receipt_json, "$.outcome.delivery_target").is_(
-                            None
-                        ),
-                        func.json_extract(
-                            effects.c.receipt_json, f"$.outcome.delivery_target.{field}"
-                        )
-                        == value,
-                    )
-                )
-            delivered = and_(
-                effects.c.state == "accepted",
-                func.json_extract(effects.c.receipt_json, "$.outcome.delivered_message") == 1,
-                *(
-                    func.json_extract(effects.c.receipt_json, f"$.outcome.delivery_target.{field}")
-                    == value
-                    for field, value in target.items()
-                ),
-            )
-            uncertain = or_(
-                effects.c.state.in_(("prepared", "unknown")),
-                func.json_extract(effects.c.receipt_json, "$.outcome.uncertain") == 1,
-                func.json_extract(effects.c.receipt_json, "$.outcome.pending") == 1,
-            )
-            if delivered_only:
-                clauses.append(delivered)
-            # Communication needs small facts, never the saved result/body.
-            # json_extract keeps those large values inside SQLite's row page.
-            fields = (
-                "work_report",
-                "report_target",
-                "delivery_target",
-                "delivered_message",
-                "uncertain",
-                "pending",
-                "ok",
-                "executed",
-                "status",
-                "error_code",
-            )
-            query = (
-                select(
-                    effects.c.effect_key,
-                    effects.c.state,
-                    *(
-                        func.json_extract(effects.c.receipt_json, f"$.outcome.{field}").label(field)
-                        for field in fields
-                    ),
-                )
-                .join(work, work.c.id == effects.c.work_id)
-                .where(*clauses)
-                .order_by(effects.c.effect_key)
-            )
-            if event_ids:
-                # Each queried input gets its own existence witness. A display
-                # page dominated by another input cannot hide a later reply.
-                witnessed = {}
-                for event_id in dict.fromkeys(event_ids):
-                    linked = query.order_by(None).where(
-                        select(links.c.value).where(links.c.value == event_id).exists()
-                    )
-                    # A failed earlier attempt cannot hide a later success;
-                    # uncertainty wins over known failure and forbids blind retry.
-                    # Existence witnesses avoid sorting/returning all receipts.
-                    item = (await session.execute(linked.limit(1))).mappings().first()
-                    if item is not None and not delivered_only:
-                        actual_target = item["delivery_target"]
-                        confirmed = (
-                            item["state"] == "accepted"
-                            and item["delivered_message"]
-                            and matches_target(actual_target)
-                        )
-                        if not confirmed:
-                            later = (
-                                (await session.execute(linked.where(delivered).limit(1)))
-                                .mappings()
-                                .first()
-                            )
-                            if later is not None:
-                                item = later
-                            elif not (
-                                item["state"] in {"prepared", "unknown"}
-                                or item["uncertain"]
-                                or item["pending"]
-                            ):
-                                later = (
-                                    (await session.execute(linked.where(uncertain).limit(1)))
-                                    .mappings()
-                                    .first()
-                                )
-                                if later is not None:
-                                    item = later
-                    if item is not None:
-                        witnessed[item["effect_key"]] = item
-                rows = list(witnessed.values())
-            else:
-                rows = list((await session.execute(query.limit(256))).mappings().all())
-            result = []
-            for row in rows:
-                evidence = {field: row[field] for field in fields}
-                for field in ("work_report", "report_target", "delivery_target"):
-                    value = evidence[field]
-                    evidence[field] = json.loads(value) if isinstance(value, str) else value
-                if not matches_target(
-                    evidence.get("report_target") or evidence.get("delivery_target")
-                ):
-                    continue
-                if row["state"] in {"prepared", "unknown"}:
-                    evidence["uncertain"] = True
-                if delivered_only and not (
-                    row["state"] == "accepted"
-                    and evidence.get("delivered_message")
-                    and matches_target(evidence.get("delivery_target"))
-                ):
-                    continue
-                result.append({**evidence, "effect_key": row["effect_key"], "state": row["state"]})
-            return result
-
-    async def communication_consumed_watermark(self, lease: WorkLease, identity: str) -> int:
-        """Legacy baseline, never evidence that an input has received a reply."""
-        async with self.database.sessions() as session:
-            if not await session.scalar(
-                select(self._lease_table(lease).c.fence).where(self._fence(lease))
-            ):
-                raise WorkConflict("work_activation_obsolete")
-            return int(
-                await session.scalar(
-                    select(inputs.c.id)
-                    .where(
-                        inputs.c.work_id == identity,
-                        inputs.c.conversation_id == lease.conversation_id,
-                        inputs.c.generation == lease.generation,
-                        inputs.c.state == "consumed",
-                    )
-                    .order_by(inputs.c.id.desc())
-                    .limit(1)
-                )
-                or 0
-            )
-
     async def enqueue(
         self,
         conversation_id: str,
@@ -1145,7 +1043,7 @@ class WorkRepository:
     ) -> int:
         from qq_ai_bot.runtime.execution_receipts import PROCESS_ID
 
-        if not 1 <= len(source_key) <= 256 or kind not in {"message", "completion", "control"}:
+        if not source_key or kind not in {"message", "completion", "control"}:
             raise ValueError("invalid_work_input")
         serialized = encode_json(resume[1]) if resume else "{}"
 
@@ -1215,11 +1113,15 @@ class WorkRepository:
                         work.c.id == work_id,
                         work.c.conversation_id == conversation_id,
                         work.c.generation == generation,
-                        work.c.state.not_in(TERMINAL),
+                        work.c.state.not_in(("completed", "cancelled")),
+                        func.json_extract(work.c.checkpoint_json, "$.archived").is_(None),
                     )
                     .values(
                         state="queued",
                         reason="explicit_resume",
+                        checkpoint_json=func.json_remove(
+                            work.c.checkpoint_json, "$.accepted_control"
+                        ),
                         revision=work.c.revision + 1,
                         updated=time.time(),
                     )
@@ -1227,6 +1129,11 @@ class WorkRepository:
                 )
                 if updated is None:
                     raise WorkConflict("work_resume_obsolete")
+                await session.execute(
+                    update(waits)
+                    .where(waits.c.work_id == work_id, waits.c.status == "active")
+                    .values(status="cancelled", updated=time.time())
+                )
             return int(row["id"])
 
     async def prepare_input(
@@ -1722,6 +1629,11 @@ class WorkRepository:
         await session.execute(
             update(owner_jobs).where(owner_jobs.c.work_id.in_(identities)).values(work_id=None)
         )
+        await session.execute(
+            update(work)
+            .where(work.c.conversation_id == conversation_id)
+            .values(parent_work_id=None)
+        )
         await session.execute(delete(work).where(work.c.conversation_id == conversation_id))
         await session.execute(
             delete(media).where(media.c.sha256.not_in(select(media_refs.c.sha256)))
@@ -1894,6 +1806,9 @@ class WorkRepository:
                 .where(
                     work.c.id == parent["id"],
                     work.c.state == "waiting_external",
+                    ~select(waits.c.id)
+                    .where(waits.c.work_id == work.c.id, waits.c.status == "active")
+                    .exists(),
                 )
                 .values(state="queued", revision=work.c.revision + 1, updated=time.time())
             )
@@ -2093,7 +2008,6 @@ class WorkRepository:
                         work.c.updated < time.time() - 7 * 86400,
                     ),
                     work.c.id.not_in(select(children.c.work_id)),
-                    work.c.id.not_in(select(children.c.root_id)),
                     # A live owner Job closes from its Work first; archive later.
                     work.c.id.not_in(
                         select(_OWNER_JOBS.c.work_id).where(
@@ -2149,8 +2063,13 @@ class WorkRepository:
                 update(work)
                 .where(
                     work.c.id.in_(selected),
-                    func.json_extract(work.c.source_json, "$.delivery_contract")
-                    == "return_to_caller",
+                    or_(
+                        func.json_extract(work.c.source_json, "$.delivery_contract")
+                        == "return_to_caller",
+                        work.c.id.in_(
+                            select(work.c.parent_work_id).where(work.c.parent_work_id.is_not(None))
+                        ),
+                    ),
                 )
                 .values(
                     checkpoint_json='{"archived":true}',
@@ -2588,10 +2507,9 @@ class WorkRepository:
 
     @staticmethod
     def _effect_scope(identity: str) -> Any:
-        return or_(
-            effects.c.work_id == identity,
-            effects.c.work_id.in_(select(children.c.work_id).where(children.c.root_id == identity)),
-        )
+        from qq_ai_bot.runtime.work_tree import descendants
+
+        return effects.c.work_id.in_(descendants(identity, include_self=True))
 
     @staticmethod
     def _lifecycle_role_clause() -> Any:
@@ -2792,32 +2710,6 @@ class WorkRepository:
                     break
         return result
 
-    async def has_unresolved_effects(
-        self,
-        lease: WorkLease,
-        identity: str,
-        *,
-        pending: bool = True,
-        uncertain: bool = True,
-    ) -> bool:
-        if not pending and not uncertain:
-            return False
-        async with self.database.sessions() as session:
-            if not await session.scalar(
-                select(self._lease_table(lease).c.fence).where(self._fence(lease))
-            ):
-                raise WorkConflict("work_activation_obsolete")
-            return bool(
-                await session.scalar(
-                    select(effects.c.effect_key)
-                    .where(
-                        self._effect_scope(identity),
-                        self._unresolved_clause(pending=pending, uncertain=uncertain),
-                    )
-                    .limit(1)
-                )
-            )
-
     async def resolve_run_effects(
         self,
         lease: WorkLease,
@@ -2908,8 +2800,8 @@ class WorkRepository:
                 cursor = rows[-1]["effect_key"]
         if not prepared:
             return
-        # Receipts are independent facts. A partial page commit retains exact
-        # unresolved originals, so completion stays blocked without replay.
+        # Receipts are independent facts; a partial page commit keeps the
+        # unresolved originals without granting any dispatch authority.
         for offset in range(0, len(prepared), 128):
             async with self.database.immediate_session() as writer:
                 await self._assert_lease(writer, lease)

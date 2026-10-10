@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from contextlib import AsyncExitStack
+from typing import Any
+
+from sqlalchemy import select
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
@@ -14,10 +18,12 @@ from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.identity.routing import PresenceRouter, RouteSendError
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
+from qq_ai_bot.plugin_host.db_models import PluginBackgroundTurnJobModel
 from qq_ai_bot.plugin_host.notification_repository import (
     BackgroundTurnFenceError,
     BackgroundTurnJobRecord,
     PluginNotificationRepository,
+    _turn_record,
     queued_work_error_category,
 )
 from qq_ai_bot.plugin_host.ownership import PluginOwnershipError
@@ -31,6 +37,8 @@ from qq_ai_bot.runtime.observability import (
 )
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.trigger import ExternalEventTurnTrigger
+from qq_ai_bot.runtime.work_activation import activate_work
+from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
 from qq_ai_bot.services.chat import ChatService
 from qq_ai_bot.services.turn_coordinator import (
     ConversationTurnCoordinator,
@@ -194,24 +202,50 @@ class PluginBackgroundTurnWorker:
         self,
         job: BackgroundTurnJobRecord,
         resolved_key: list[str] | None = None,
+        *,
+        work_item: dict[str, Any] | None = None,
     ) -> None:
         """Execute from persisted Conversation + current Presence. No raw QQ fallback."""
 
         async with AsyncExitStack() as attempt:
-            await self._execute_reserved(job, resolved_key, attempt)
+            await self._execute_reserved(job, resolved_key, attempt, work_item=work_item)
+
+    async def resume_work(self, item: dict[str, Any], source: dict[str, Any]) -> None:
+        """Continue a derived Work through its original external event and grant."""
+        async with self._repository._database.sessions() as reader:
+            stored = await reader.scalar(
+                select(PluginBackgroundTurnJobModel).where(
+                    PluginBackgroundTurnJobModel.source_event_id == source["trigger_event_id"],
+                    PluginBackgroundTurnJobModel.plugin_id == source["plugin_id"],
+                    PluginBackgroundTurnJobModel.canonical_conversation_id
+                    == item["conversation_id"],
+                )
+            )
+            if stored is None:
+                raise WorkConflict("plugin_turn_work_source_mismatch")
+            job = _turn_record(stored, generation=item["generation"])
+        await self._execute_admitted(job, work_item=item)
 
     async def _execute_reserved(
         self,
         job: BackgroundTurnJobRecord,
         resolved_key: list[str] | None,
         attempt: AsyncExitStack,
+        *,
+        work_item: dict[str, Any] | None = None,
     ) -> None:
 
         try:
-            context = await self._repository.load_background_context(job)
+            context = await self._repository.load_background_context(
+                job, work_id=work_item["id"] if work_item is not None else None
+            )
         except BackgroundTurnFenceError:
+            if work_item is not None:
+                raise
             return
         except PluginOwnershipError as exc:
+            if work_item is not None:
+                raise
             await self._repository.fail_turn(
                 job.id,
                 attempt=job.attempts,
@@ -234,6 +268,8 @@ class PluginBackgroundTurnWorker:
             or event.source_plugin_id != job.plugin_id
             or event.canonical_conversation_id != context.conversation_id
         ):
+            if work_item is not None:
+                raise WorkConflict("plugin_turn_work_source_mismatch")
             await self._repository.fail_turn(
                 job.id,
                 attempt=job.attempts,
@@ -241,6 +277,8 @@ class PluginBackgroundTurnWorker:
             )
             return
         if self._router is None:
+            if work_item is not None:
+                raise RouteSendError("none")
             await self._repository.fail_turn(
                 job.id,
                 attempt=job.attempts,
@@ -257,6 +295,8 @@ class PluginBackgroundTurnWorker:
             else:
                 raise RouteSendError("none")
         except RouteSendError as exc:
+            if work_item is not None:
+                raise
             await self._repository.fail_turn(
                 job.id,
                 attempt=job.attempts,
@@ -277,6 +317,8 @@ class PluginBackgroundTurnWorker:
                 transport_key=transport.key,
             )
         except PluginOwnershipError as exc:
+            if work_item is not None:
+                raise
             await self._repository.fail_turn(
                 job.id,
                 attempt=job.attempts,
@@ -288,6 +330,8 @@ class PluginBackgroundTurnWorker:
             resolved_key[0] = conversation_key
         token = await attempt.enter_async_context(self._turns.background_turn(conversation_key))
         if token is None:
+            if work_item is not None:
+                return
             try:
                 await self._repository.validate_turn_attempt(
                     job.id,
@@ -322,6 +366,34 @@ class PluginBackgroundTurnWorker:
             coordinator_version=token.version,
             transport_scope_key=transport.key,
         )
+
+        async def validate() -> None:
+            if work_item is None:
+                await self._repository.validate_turn_attempt(
+                    job.id, attempt=job.attempts, generation=job.generation
+                )
+            else:
+                fresh = await self._repository.load_background_context(job, work_id=work_item["id"])
+                if fresh != context or not await self._chat.validate_turn_snapshot(turn_snapshot):
+                    raise WorkConflict("plugin_turn_work_source_mismatch")
+
+        if work_item is not None:
+            await validate()
+            control = await attempt.enter_async_context(
+                activate_work(
+                    WorkRepository(self._repository._database),
+                    work_item["conversation_id"],
+                    work_item["generation"],
+                    work_item["source_key"],
+                    json.loads(work_item["source_json"]),
+                    validate,
+                    work_id=work_item["id"],
+                    bindings=self._chat.runtime.bindings,
+                    scope_key=conversation_key,
+                )
+            )
+            if control.current is None or control.current["id"] != work_item["id"]:
+                raise WorkConflict("work_schedule_target_changed")
         try:
             async with self._turns.track(token, "generation"):
                 result = await self._chat.generate_main_agent_wakeup(
@@ -331,7 +403,9 @@ class PluginBackgroundTurnWorker:
                         source_event_id=event.id,
                         target_type=job.target_type,
                         target_id=resolved.external_target_id,
-                        agent_intent=job.agent_intent,
+                        agent_intent=work_item["goal"]
+                        if work_item is not None
+                        else job.agent_intent,
                     ),
                     identity=transport,
                     runtime=runtime,
@@ -346,17 +420,17 @@ class PluginBackgroundTurnWorker:
                     space_id=context.space_id,
                     presence_id=resolved.presence_id,
                     conversation_id=context.conversation_id,
-                    before_model_request=lambda: self._repository.validate_turn_attempt(
-                        job.id,
-                        attempt=job.attempts,
-                        generation=job.generation,
-                    ),
-                    plugin_turn={
+                    before_model_request=validate,
+                    plugin_turn=None
+                    if work_item is not None
+                    else {
                         "job_id": job.id,
                         "attempt": job.attempts,
                         "work_id": job.work_id,
                     },
                 )
+            if work_item is not None:
+                return
             if result.work_state in {"queued", "running"}:
                 await self._repository.defer_turn(
                     job.id,
@@ -397,6 +471,8 @@ class PluginBackgroundTurnWorker:
             TurnInterruptedError,
             TurnSupersededError,
         ):
+            if work_item is not None:
+                raise
             try:
                 await self._repository.validate_turn_attempt(
                     job.id,
@@ -415,8 +491,12 @@ class PluginBackgroundTurnWorker:
                 preserve_budget=True,
             )
         except BackgroundTurnFenceError:
+            if work_item is not None:
+                raise
             return
         except ConversationCoverageError as exc:
+            if work_item is not None:
+                raise
             try:
                 await self._repository.validate_turn_attempt(
                     job.id,
@@ -431,6 +511,8 @@ class PluginBackgroundTurnWorker:
                 error_category=type(exc).__name__,
             )
         except asyncio.CancelledError:
+            if work_item is not None:
+                raise
             await self._repository.defer_turn(
                 job.id,
                 attempt=job.attempts,
@@ -440,6 +522,8 @@ class PluginBackgroundTurnWorker:
             )
             raise
         except Exception as exc:
+            if work_item is not None:
+                raise
             logger.exception(
                 "plugin_background_turn_failed plugin_id=%s event_id=%d error_category=%s",
                 job.plugin_id,

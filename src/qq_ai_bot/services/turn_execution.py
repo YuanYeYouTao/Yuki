@@ -71,11 +71,6 @@ from qq_ai_bot.services.turn_transcript import (
     TurnTranscript,
     validating_request,
 )
-from qq_ai_bot.services.work_reporting import (
-    append_input_feedback,
-    initialize_input_feedback,
-    stage_feedback_opportunity,
-)
 from qq_ai_bot.web.models import WebMode
 
 logger = logging.getLogger(__name__)
@@ -97,9 +92,6 @@ class TurnState:
     continuation_tools: tuple[ChatTool, ...] = ()
     continuation_native_tools: tuple[NativeToolDefinition, ...] = ()
     reusable_tool_results: dict[tuple[str, str], ReusableToolResult] = field(default_factory=dict)
-    input_feedback_watermark: int = 0
-    stage_feedback_batch: str | None = None
-    pending_stage_feedback: str | None = None
     provider_pause_replay: bool = False
     ordinary_compaction_tokens: int = 0
     ordinary_observations: list[dict[str, Any]] = field(default_factory=list)
@@ -110,12 +102,9 @@ class TurnState:
     control: WorkControl | None = None
     boundary: ContextBoundary | None = None
     paid_staging: bool = False
-    exact_dispatch_replay: bool = False
     definitions: tuple[ChatTool, ...] = ()
     response_observation: dict[str, Any] = field(default_factory=dict)
     coordinated: CoordinatedToolResult = field(default_factory=lambda: CoordinatedToolResult((), 0))
-    observations: list[dict[str, Any]] = field(default_factory=list)
-    opportunity: tuple[str, str] | None = None
     segment_handoff_index: int | None = None
 
 
@@ -178,8 +167,6 @@ class _PrimaryDispatch:
     runtime: AgentRuntime
     execute: Callable[[], Awaitable[ChatResponse]]
     sequence: TranscriptRequest
-    input_feedback_watermark: int
-    stage_feedback_batch: str | None
     boundary: ContextBoundary | None
     observed_event_ids: set[int]
     tools: AgentToolBackend | None = None
@@ -239,19 +226,10 @@ class _PrimaryDispatch:
                     )
                 else:
                     await self.selected_boundary.commit()
-            communication_updates: dict[str, Any] = {}
-            communication = self.runtime.work_control.communication
-            if self.input_feedback_watermark > communication.get("input_feedback_through_id", 0):
-                communication_updates["input_feedback_through_id"] = self.input_feedback_watermark
-            if self.stage_feedback_batch and self.stage_feedback_batch != communication.get(
-                "stage_feedback_batch"
-            ):
-                communication_updates["stage_feedback_batch"] = self.stage_feedback_batch
             if work_session is not None:
                 try:
                     await work_session.save(
                         "dispatched",
-                        communication_updates=communication_updates,
                         publication=candidate.publication if candidate is not None else None,
                     )
                 except BaseException:
@@ -262,8 +240,6 @@ class _PrimaryDispatch:
                     raise
                 if candidate is not None:
                     candidate.finalize()
-            elif communication_updates:
-                await self.runtime.work_control.patch_communication(**communication_updates)
             if self.selected_boundary is not None:
                 self.observed_event_ids.update(self.selected_boundary.event_ids)
                 if work_session is not None:
@@ -358,29 +334,12 @@ class TurnExecution:
             self.state.provider_pause_replay = bool(
                 self.runtime.work_control.session.progress.get("provider_pause_replay", False)
             )
-            await initialize_input_feedback(self.runtime.work_control)
-            self.state.observations = self.runtime.work_control.session.progress.get(
-                "model_observations", []
-            )
-            if self.state.observations:
-                self.state.opportunity = await stage_feedback_opportunity(
-                    self.runtime.work_control, self.state.observations[-1]
-                )
-                if self.state.opportunity is not None:
-                    self.state.stage_feedback_batch, self.state.pending_stage_feedback = (
-                        self.state.opportunity
-                    )
-            if self.runtime.work_control.handoff_work_id is not None:
-                await self.runtime.work_control.session.save("paired")
             if self.runtime.work_control.accepted_ending() is not None:
                 await self.runtime.work_control.validate()
                 await self.runtime.work_control.session.save("paired")
                 return self._accepted_result(0)
             if self.runtime.work_control.session.recovered_delivery:
                 # Pause by original ID; never execute a legacy frozen plan.
-                from qq_ai_bot.runtime.work_delivery import LEGACY_DELIVERY_PAUSE
-
-                self.runtime.work_control.completion_rejected = LEGACY_DELIVERY_PAUSE
                 return AgentRunResult(
                     text="",
                     tool_calls_used=0,
@@ -390,6 +349,7 @@ class TurnExecution:
                     work_state="suspended",
                 )
             if self.runtime.work_control.handoff_work_id is not None:
+                await self.runtime.work_control.session.save("paired")
                 return AgentRunResult(
                     text="",
                     tool_calls_used=0,
@@ -446,13 +406,6 @@ class TurnExecution:
             self._initial_inputs.extend(added)
         for message in added:
             self.state.transcript.append(message)
-        self.state.input_feedback_watermark = await append_input_feedback(
-            control,
-            self.state.transcript,
-            self.state.input_feedback_watermark,
-            extra_feedback=self.state.pending_stage_feedback,
-        )
-        self.state.pending_stage_feedback = None
         return None
 
     async def begin(self, request_index: int) -> LoopSignal | None:
@@ -522,11 +475,8 @@ class TurnExecution:
                                 "This activation has exhausted its business tool allowance. "
                                 "You have one model request before the working transcript retires. "
                                 "If the goal is verified, call task_control(action='complete'). "
-                                "Otherwise call task_control(action='update', context_note=...) "
-                                "alone. Save cumulative findings, necessary intermediate values, "
-                                "completed "
-                                "steps and the next step, merging any previous context_note. Use "
-                                "version=1, facts/unresolved/next_steps with text and valid refs. "
+                                "Otherwise retain useful findings and the next step in an optional "
+                                "task_control(action='update', context_note=...). "
                                 "No further business tool call can execute in this activation."
                             ),
                         },
@@ -539,12 +489,6 @@ class TurnExecution:
             and self.state.control.session
             and self.state.control.session.progress.get("compaction_staging")
         )
-        self.state.exact_dispatch_replay = bool(
-            request_index == 0
-            and self.state.control
-            and self.state.control.session
-            and self.state.control.session.recovered_phase == "dispatched"
-        )
         return None
 
     async def steer(self, request_index: int) -> End | None:
@@ -552,7 +496,6 @@ class TurnExecution:
             self.state.control is not None
             and not self.state.provider_pause_replay
             and not self.state.paid_staging
-            and not self.state.exact_dispatch_replay
         ):
             waiting = await self.take_boundary_inputs(request_index, self.state.boundary)
             if waiting is not None:
@@ -626,8 +569,6 @@ class TurnExecution:
                 runtime=self.runtime,
                 execute=execute,
                 sequence=candidate.sequence,
-                input_feedback_watermark=self.state.input_feedback_watermark,
-                stage_feedback_batch=self.state.stage_feedback_batch,
                 boundary=self.state.boundary,
                 observed_event_ids=self.state.observed_event_ids,
                 tools=self.tools,
@@ -678,6 +619,12 @@ class TurnExecution:
                     "provider-native request transport outcome is unknown",
                     diagnostics=exc.diagnostics,
                 ) from exc
+            if (
+                not isinstance(exc, RequestCancelledError)
+                and self.state.control is not None
+                and self.state.control.session is not None
+            ):
+                await self.state.control.session.save("paired")
             raise
         except (LLMEmptyResponseError, LLMMalformedFunctionCallError) as exc:
             malformed = isinstance(exc, LLMMalformedFunctionCallError)
@@ -701,86 +648,46 @@ class TurnExecution:
                 receipts = current_receipts.get()
                 if receipts is not None:
                     await receipts.confirm()
-            if (
-                malformed
-                and self.state.control is not None
-                and self.state.control.session is not None
-            ):
+            if self.state.control is not None and self.state.control.session is not None:
                 await self.state.control.session.save("paired")
             self.runner._record_failure_usage(
                 self.tools, tool_calls=self.state.calls_used, model_requests=request_index + 1
             )
             raise
-        except LLMError:
+        except LLMError as exc:
             self.runner._record_failure_usage(
                 self.tools, tool_calls=self.state.calls_used, model_requests=request_index + 1
             )
+            if (
+                self.state.control is not None
+                and self.state.control.session is not None
+                and not isinstance(exc, LLMNativeToolError)
+                and (
+                    prepared_request is None
+                    or not prepared_request.request.native_tools
+                    or not isinstance(exc, (LLMInvalidResponseError, LLMIncompleteResponseError))
+                )
+            ):
+                await self.state.control.session.save("paired")
             raise
         response = await self.observe_response(
             request_index, response, candidate.request.native_tools, compacting=candidate.compacting
         )
-        return (
-            await self.guard_native_response(
-                request_index, response, candidate.request.native_tools
-            )
-            or response
-        )
+        await self.guard_native_response(request_index, response)
+        return response
 
     async def guard_native_response(
         self,
         request_index: int,
         response: ChatResponse,
-        native_definitions: tuple[NativeToolDefinition, ...],
-    ) -> End | None:
+    ) -> None:
         """A paid native response grants no generic empty/truncation replay."""
         native_empty = (
-            (response.native_tool_events or native_definitions)
+            response.native_tool_events
             and not response.content.strip()
             and not response.tool_calls
             and not self.state.provider_pause_replay
         )
-        if (
-            native_empty
-            and response.status is ModelResponseStatus.COMPLETED
-            and response.incomplete_reason != "duplicate_tool_call_id"
-            and (self.state.control is None or self.state.control.current is None)
-            and not response.native_tool_events
-        ):
-            # Preserve the ordinary empty-final boundary after a real send.
-            # A progress report cannot complete an accepted Work, and a
-            # truncated/blocked response cannot borrow this closing rule.
-            delivered = bool(
-                self.tools is not None
-                and callable(getattr(self.tools, "has_visible_effects", None))
-                and self.tools.has_visible_effects()
-            )
-            try:
-                if (
-                    delivered
-                    and self.state.control is not None
-                    and self.state.control.session is not None
-                ):
-                    await self.state.control.session.save("paired")
-            except Exception as exc:
-                self.runner._record_failure_usage(
-                    self.tools, tool_calls=self.state.calls_used, model_requests=request_index + 1
-                )
-                raise LLMNativeToolError(
-                    "provider-native closing checkpoint could not be confirmed",
-                    diagnostics={"checkpoint_saved": False},
-                ) from exc
-            if delivered:
-                return End(
-                    AgentRunResult(
-                        text="",
-                        tool_calls_used=self.state.calls_used,
-                        model_requests=request_index + 1,
-                        web_was_used=self.state.web_was_used,
-                        native_tool_events=tuple(self.state.native_events),
-                        citations=tuple(self.state.citations),
-                        response_status=response.status,
-                    )
-                )
         if response.incomplete_reason == "duplicate_tool_call_id" or native_empty:
             # These are paid responses with retained protocol evidence, not
             # confirmed effect-free empty generations. Only a supported
@@ -972,7 +879,6 @@ class TurnExecution:
             and self.state.control.session is not None
             and self.state.control.current is not None
             and self.state.control.ending is None
-            and not self.state.exact_dispatch_replay
             and not self.state.deferred_paid_compaction
             and (
                 self.state.paid_staging
@@ -996,6 +902,7 @@ class TurnExecution:
                     "work_compaction_invalid_structure",
                     "work_compaction_invalid_reference",
                     "work_compaction_invalid_correction",
+                    "work_compaction_anchor_unavailable",
                 }
                 if predicted_tokens > input_budget or not candidate_failure:
                     raise
@@ -1189,11 +1096,9 @@ class TurnExecution:
                 del samples[:-32]
             if response.prompt_tokens is not None:
                 self.state.control.session.progress["context_tokens"] = response.prompt_tokens
-            self.state.observations = self.state.control.session.progress.setdefault(
-                "model_observations", []
-            )
+            observations = self.state.control.session.progress.setdefault("model_observations", [])
             self.state.response_observation["sequence"] = self.state.control.session.sequence
-            self.state.observations.append(self.state.response_observation)
+            observations.append(self.state.response_observation)
             self.state.continuation_tools = self.state.definitions
         return response
 
@@ -1251,13 +1156,16 @@ class TurnExecution:
                 assistant_recorded = True
             await self.state.control.session.retire_paid_compaction()
             self.state.deferred_paid_compaction = False
-        if self.state.control is not None and await self.state.control.pending():
+        if (
+            self.state.control is not None
+            and await self.state.control.has_pending_business_inputs()
+        ):
             if response.continuation is None and not assistant_recorded:
                 self.state.transcript.append(assistant_message)
             self.state.transcript.append(
                 ChatMessage(
                     role="system",
-                    content=("上一段回复尚未发送；有新的输入或执行信号到达，请先处理再继续。"),
+                    content="有新的输入到达，请先处理再继续。",
                 )
             )
             return Continue()
@@ -1265,9 +1173,7 @@ class TurnExecution:
             content = self.tools.finalize(content, self.runtime)
         control = self.state.control
         if control is not None and control.current is not None and control.ending is None:
-            # The same completion preparation as complete(result), using the
-            # sanitized final as the result. A rejection keeps its stable code
-            # as the pause reason; it never buys a correction turn.
+            # The sanitized internal final uses the original complete decision.
             await control.complete_final(content, f"final-answer:{request_index}")
         if self.state.control is not None and self.state.control.session is not None:
             if response.continuation is None and not assistant_recorded:
@@ -1411,16 +1317,6 @@ class TurnExecution:
         if self.runtime.work_control is not None and self.runtime.work_control.session is not None:
             control = self.runtime.work_control
             assert control.session is not None
-            persisted_progress = self.runtime.work_control.session.progress
-            self.state.observations = persisted_progress.get("model_observations", [])
-            if self.state.observations:
-                self.state.opportunity = await stage_feedback_opportunity(
-                    self.runtime.work_control, self.state.observations[-1]
-                )
-                if self.state.opportunity is not None:
-                    self.state.stage_feedback_batch, self.state.pending_stage_feedback = (
-                        self.state.opportunity
-                    )
             if self.state.deferred_paid_compaction:
                 await self.runtime.work_control.session.retire_paid_compaction()
                 self.state.deferred_paid_compaction = False

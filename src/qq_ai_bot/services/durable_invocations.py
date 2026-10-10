@@ -111,7 +111,6 @@ class DurableInvocations:
                 and previous["generation"] == generation
                 and previous["state"] == "completed"
             ):
-                await validate()
                 saved = json.loads(previous["checkpoint_json"])
                 if saved.get("archived"):
                     return AgentRunResult(
@@ -123,16 +122,15 @@ class DurableInvocations:
                         work_state="archived",
                         suppress_delivery=True,
                     )
-                if isinstance(saved.get("sync_result"), str):
-                    return AgentRunResult(
-                        text=saved["sync_result"],
-                        suppress_delivery=False,
-                        tool_calls_used=0,
-                        model_requests=0,
-                        web_was_used=False,
-                        work_state="completed",
-                        work_id=previous["id"],
-                    )
+                return AgentRunResult(
+                    text=saved.get("sync_result") or "",
+                    suppress_delivery=False,
+                    tool_calls_used=0,
+                    model_requests=0,
+                    web_was_used=False,
+                    work_state="completed",
+                    work_id=previous["id"],
+                )
 
             source = {
                 **requested,
@@ -178,8 +176,6 @@ class DurableInvocations:
                         {
                             "action": "accept",
                             "goal": runtime.invocation_goal,
-                            "output_kind": "answer",
-                            "deliver_artifacts": False,
                         },
                         "host-invocation-admission",
                     )

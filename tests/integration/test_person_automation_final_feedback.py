@@ -1,6 +1,7 @@
-"""Explicit Person notifications reuse bounded feedback, never implicit sends."""
+"""Automation sends explicitly; failed Work resumes without reopening its run."""
 
 import json
+from dataclasses import replace
 
 import pytest
 from sqlalchemy import select
@@ -113,24 +114,48 @@ async def test_agent_script_uses_original_work_budget_without_outer_flag(databas
     case.executor._enforce_runtime_limits(case.row, llm_calls=4, tool_calls=4, messages_sent=2)
 
 
-async def test_none_person_automation_nonempty_internal_final_is_silent(database, tmp_path):
+async def test_none_person_automation_nonempty_internal_final_is_silent(
+    database, tmp_path, monkeypatch
+):
     case = await setup_run(database, tmp_path, delivery="none", mode="silent")
+    handlers = case.executor._registry.require("yuki.agent").handler.__self__
+    compose = handlers._generation_composition
+    caller = []
+
+    async def capture_caller(arguments, context, **kwargs):
+        caller.append((arguments, context))
+        return await compose(arguments, context, **kwargs)
+
+    monkeypatch.setattr(handlers, "_generation_composition", capture_caller)
     result = await case.executor.execute(case.row, case.run)
     assert result.status is RunStatus.SUCCEEDED
+    assert len(case.provider.requests) == 1 and not sent(case.env)
+    async with database.sessions() as reader:
+        original = dict((await reader.execute(select(work))).mappings().one())
+    monkeypatch.setattr(case.chat, "_history_input_budget", lambda *_args, **_kwargs: 0)
+    replay = await handlers.agent(*caller[0])
+    assert replay.data["text"] == json.loads(original["checkpoint_json"])["sync_result"]
+    assert replay.llm_calls == replay.tool_calls == replay.messages_sent == 0
+    async with database.sessions() as reader:
+        assert dict((await reader.execute(select(work))).mappings().one()) == original
     assert len(case.provider.requests) == 1 and not sent(case.env)
 
 
 @pytest.mark.parametrize("principal", ["person", "self"])
-async def test_suspended_agent_preserves_automation_run_until_original_work_resumes(
+async def test_failed_agent_releases_owner_and_explicitly_resumes_original_work(
     database, tmp_path, principal
 ):
     from datetime import timedelta
+
+    from tests.support.runtime_execution import make_work_resumer
+    from tests.unit.test_work_owner_recovery import public_action
 
     from qq_ai_bot.automation.work_cursor import load
     from qq_ai_bot.automation.worker import AutomationWorker
     from qq_ai_bot.llm.base import LLMAuthenticationError
     from qq_ai_bot.persistence.models import AutomationModel, AutomationRunModel
     from qq_ai_bot.runtime.work_repository import WorkRepository
+    from qq_ai_bot.runtime.work_scheduler import WorkScheduler
 
     case = await setup_run(database, tmp_path, delivery="none", mode="silent", principal=principal)
     worker = AutomationWorker(
@@ -156,45 +181,77 @@ async def test_suspended_agent_preserves_automation_run_until_original_work_resu
     case.provider._responder = unavailable
     await claimed_process()
     async with database.sessions() as reader:
-        original = (await reader.execute(select(work))).mappings().one()
+        original = dict((await reader.execute(select(work))).mappings().one())
         run = await reader.get(AutomationRunModel, case.run.id)
         automation = await reader.get(AutomationModel, case.row.id)
-        assert original["state"] == "suspended" and original["reason"] == "LLMAuthenticationError"
-        assert run.status == "running" and run.finished_at is None
-        assert automation.status == "active" and automation.run_count == 0
-    phase, cursor = await load(database, case.run.id, case.row.script_hash)
-    assert phase == "agent" and cursor["work_id"] == original["id"]
-    assert cursor["llm_calls"] == original["model_requests"] == len(case.provider.requests) == 1
-    await claimed_process()
-    await claimed_process()
-    assert len(case.provider.requests) == 1
-    assert (await load(database, case.run.id, case.row.script_hash))[1]["work_id"] == original["id"]
-
-    from tests.unit.test_work_owner_recovery import public_action
-
+        assert original["state"] == "failed" and original["reason"] == "LLMAuthenticationError"
+        assert run.status == "failed" and run.finished_at is not None
+        assert run.llm_calls == original["model_requests"] == len(case.provider.requests) == 1
+        assert automation.status == "failed" and automation.run_count == 1
+        assert automation.claimed_by is None and automation.claimed_until is None
+        original_run = {column.name: getattr(run, column.name) for column in run.__table__.columns}
+        original_owner = {
+            column.name: getattr(automation, column.name) for column in automation.__table__.columns
+        }
+    original_cursor = await load(database, case.run.id, case.row.script_hash)
+    assert not await case.repository.claim_due(
+        worker_id=worker._worker_id,
+        now=case.row.next_run_at + timedelta(seconds=2),
+        lease_seconds=60,
+        limit=1,
+    )
     repository = WorkRepository(database)
-    resumed_control = await public_action(database, dict(original), "resume")
+    resumed_control = await public_action(database, original, "resume")
     assert resumed_control.success and resumed_control.effective_state["status"] == "queued"
-    # The generic chat scheduler must leave this Work to its original automation owner.
-    from unittest.mock import AsyncMock
+    handlers = case.executor._registry.require("yuki.agent").handler.__self__
 
-    from qq_ai_bot.runtime.work_scheduler import WorkScheduler
+    async def resume_automation(item, source):
+        await handlers.resume_work(database, item, source)
 
-    generic_resume = AsyncMock()
-    scheduler = WorkScheduler(repository, generic_resume, chat_admission_enabled=True)
-    await scheduler.drain_once()
-    generic_resume.assert_not_called()
+    resumer = make_work_resumer(
+        repository,
+        ledger=case.chat._ledger,
+        scopes=case.chat._conversation_scopes,
+        turns=case.chat._turn_coordinator,
+        router=case.env.router,
+        config=case.chat._runtime_config,
+        generate_self=case.chat.generate_self_initiative,
+        generate_wakeup=case.chat.generate_main_agent_wakeup,
+        validate_snapshot=case.chat.validate_turn_snapshot,
+        bindings=case.chat.runtime.bindings,
+    )
+    resumer.services = replace(
+        resumer.services,
+        settings=case.executor._settings,
+        resume_automation=resume_automation,
+    )
+    scheduler = WorkScheduler(repository, resumer.resume, chat_admission_enabled=True)
     case.provider._responder = lambda request: "Verified internal result after provider recovery."
-    await claimed_process()
+    owner_lease = await repository.acquire(original["conversation_id"], original["generation"])
+    await scheduler.drain_once()
+    assert len(case.provider.requests) == 1
+    await repository.release(owner_lease)
+    await scheduler.drain_once()
     async with database.sessions() as reader:
         resumed = (await reader.execute(select(work))).mappings().one()
         run = await reader.get(AutomationRunModel, case.run.id)
         automation = await reader.get(AutomationModel, case.row.id)
         assert resumed["id"] == original["id"] and resumed["state"] == "completed"
+        assert resumed["source_json"] == original["source_json"]
+        assert (
+            resumed["model_requests"]
+            == original["model_requests"] + 1
+            == len(case.provider.requests)
+        )
         assert json.loads(resumed["source_json"])["automation_run_id"] == run.id == case.run.id
-        assert run.status == "succeeded" and run.finished_at is not None
-        assert automation.status == "completed" and automation.run_count == 1
-        assert run.llm_calls == resumed["model_requests"] == len(case.provider.requests)
+        assert {
+            column.name: getattr(run, column.name) for column in run.__table__.columns
+        } == original_run
+        assert {
+            column.name: getattr(automation, column.name) for column in automation.__table__.columns
+        } == original_owner
+        assert len(list(await reader.scalars(select(AutomationRunModel.id)))) == 1
+    assert await load(database, case.run.id, case.row.script_hash) == original_cursor
     assert not sent(case.env)
 
 

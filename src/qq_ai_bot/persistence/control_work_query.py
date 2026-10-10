@@ -20,6 +20,7 @@ from qq_ai_bot.persistence.control_paging import numbered_statement
 from qq_ai_bot.runtime.subagent_schema import budgets, children
 from qq_ai_bot.runtime.work_recovery_schema import deliveries, recovery
 from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, journal, work
+from qq_ai_bot.runtime.work_tree import ancestor_work_ids, budget_root_id
 from qq_ai_bot.runtime.work_wait_schema import waits
 
 
@@ -28,12 +29,9 @@ def _stamp(value: float | None) -> str | None:
 
 
 def _conditions(text: str) -> list[dict[str, Any]]:
-    # The subscription has its own 8 KiB bound; reflect reviewed fields only.
-    if len(text.encode("utf-8")) > 8192:
-        raise ControlQueryError(Problem(ProblemCode.STATE_MISMATCH))
     try:
         value = json.loads(text)
-        if not isinstance(value, list) or len(value) > 8:
+        if not isinstance(value, list):
             raise ValueError("invalid conditions")
         result = []
         for item in value:
@@ -112,9 +110,7 @@ class ControlWorkQueryAdapter:
                 columns.append(waits.c.conditions_json)
             stmt = select(*columns)
             if section == "children":
-                stmt = stmt.join(children, children.c.work_id == work.c.id).where(
-                    children.c.root_id == work_id
-                )
+                stmt = stmt.where(work.c.parent_work_id == work_id)
             else:
                 stmt = stmt.where(table.c.work_id == work_id)
             prefix = f"work-history|{work_id}|{section}|{int(include_content)}|"
@@ -191,8 +187,7 @@ class ControlWorkQueryAdapter:
             "revision",
             "state",
             "reason",
-            "output_kind",
-            "deliver_artifacts",
+            "parent_work_id",
             "model_requests",
             "tool_calls",
             "active_seconds",
@@ -219,16 +214,16 @@ class ControlWorkQueryAdapter:
             lineage = (
                 (
                     await session.execute(
-                        select(children.c.root_id, children.c.archived_at).where(
-                            children.c.work_id == work_id
-                        )
+                        select(children.c.archived_at).where(children.c.work_id == work_id)
                     )
                 )
                 .mappings()
                 .first()
             )
-            root_id = lineage["root_id"] if lineage else work_id
+            root_id = await budget_root_id(session, work_id)
             result["root_id"] = root_id
+            result["budget_root_id"] = root_id
+            result["ancestor_work_ids"] = await ancestor_work_ids(session, work_id)
             result["archived_at"] = _stamp(lineage["archived_at"]) if lineage else None
             budget = (
                 (

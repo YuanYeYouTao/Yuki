@@ -110,7 +110,7 @@ class InvocationService:
         ):
             # A child is keyed by its parent and Host admission ordinal only.
             raise ValueError("invocation_journal_identity_conflict")
-        # A composition child never bypasses the pending-input fence.
+        # Direct sends retain the original boundary for responding to steer.
         allow_pending = (
             call.function.name == "send_message" and identity.parent_operation_id is None
         )
@@ -137,8 +137,6 @@ class InvocationService:
                 capture.outcome = outcome
             return json.dumps(outcome.model_payload(), ensure_ascii=False)
 
-        report = None
-        report_target = None
         if call.function.name == "send_message" and control.current is not None:
             child_intent = (
                 identity.parent_operation_id is not None
@@ -148,26 +146,12 @@ class InvocationService:
                 if not await control.repository.valid(control.lease):
                     raise WorkConflict("work_activation_obsolete")
                 return await journal.effect_result(key)
-            try:
-                arguments = json.loads(call.function.arguments)
-                if isinstance(arguments, dict):
-                    report = await control.validate_work_report(arguments)
-                    if report is not None:
-                        report_target = await control.communication_target()
-            except ValueError as exc:
-                return refuse(str(exc))
         if control.current is None:
             return await execute()
-        if not allow_pending and await control.pending():
+        if not allow_pending and await control.has_pending_business_inputs():
             return refuse("new_input_before_execution")
         if not allow_pending:
             await control.validate()
-        if (
-            side_effecting
-            and not allow_pending
-            and await control.has_unresolved_effects(pending=False)
-        ):
-            return refuse("unresolved_prior_effect", "先查询原执行结果；结果未知时不能继续副作用。")
         if not await control.repository.prepare_effect(
             control.lease,
             control.current["id"],
@@ -190,7 +174,6 @@ class InvocationService:
                     if not side_effecting
                     else {}
                 ),
-                **({"work_report": report, "report_target": report_target} if report else {}),
             },
         ):
             await control.repository.validate_invocation(key, invocation.durable_metadata())
@@ -242,8 +225,6 @@ class InvocationService:
                 tool=call.function.name,
                 side_effecting=side_effecting,
                 arguments=call.function.arguments,
-                report=report,
-                report_target=report_target,
             )
 
         parent_capture = current_result_capture.get()
@@ -264,11 +245,6 @@ class InvocationService:
                                 "side_effecting": side_effecting,
                                 "uncertain": True,
                                 "delivered_message": False,
-                                **(
-                                    {"work_report": report, "report_target": report_target}
-                                    if report
-                                    else {}
-                                ),
                             },
                         },
                     )

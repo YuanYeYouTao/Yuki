@@ -1,6 +1,7 @@
 """Observed terminal state is separate from this Work's execution dependencies."""
 
 import json
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +13,7 @@ from qq_ai_bot.capabilities.results import ToolExecutionResult
 from qq_ai_bot.domain.messages import ToolCall, ToolFunction
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_schema_v1 import effects
+from qq_ai_bot.sandbox.db_models import SandboxTaskRunModel
 from qq_ai_bot.sandbox.persistent import PersistentManager
 
 OWNED = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -54,6 +56,20 @@ async def launch(session, store):
         ),
         side_effecting=True,
     )
+    now = datetime.now(UTC)
+    async with session.control.repository.database.immediate_session() as writer:
+        writer.add(
+            SandboxTaskRunModel(
+                request_id=session.call_key("launch-owned"),
+                source_conversation_id=session.control.lease.conversation_id,
+                source_json=json.dumps({"work_id": session.control.current["id"]}),
+                payload_hash="0" * 64,
+                run_id=OWNED,
+                status="waiting",
+                created_at=now,
+                updated_at=now,
+            )
+        )
 
 
 async def original_launch(database, session):
@@ -91,10 +107,8 @@ async def test_external_read_preserves_observation_without_owning_execution(
     assert observation["pending"] is (status == "running")
     assert observation["uncertain"] is (status == "unknown")
     await control.reconcile_completed_children()
-    assert not await control.has_unresolved_effects()
     resumed = WorkControl(control.repository, control.lease, "result-test", {}, control.validate)
     resumed.current = await control.repository.get(control.current["id"])
-    assert not await resumed.has_unresolved_effects()
     assert (await complete(resumed))["ok"] is True
 
 
@@ -117,7 +131,10 @@ async def test_reading_own_running_execution_does_not_remove_original_dependency
         side_effecting=False,
     )
     assert (await original_launch(database, session))["pending"] is True
-    assert await complete(control) == {"ok": False, "error": "work_has_unresolved_execution"}
+    assert (await complete(control))["ok"] is True
+    await control.settle(pending_inputs=False)
+    assert control.current["state"] == "waiting_external"
+    assert control.accepted["action"] == "complete"
 
 
 async def test_reconnecting_control_cannot_settle_a_still_running_execution(database, tmp_path):
@@ -147,7 +164,10 @@ async def test_reconnecting_control_cannot_settle_a_still_running_execution(data
     after = await original_launch(database, session)
     assert after["status"] == "running" and after["pending"] is True
     assert after["mutation_committed"] is True
-    assert await complete(control) == {"ok": False, "error": "work_has_unresolved_execution"}
+    assert (await complete(control))["ok"] is True
+    await control.settle(pending_inputs=False)
+    assert control.current["state"] == "waiting_external"
+    assert control.accepted["action"] == "complete"
 
 
 async def test_interrupted_read_is_visible_but_not_an_unknown_mutation(database, tmp_path):
@@ -163,7 +183,6 @@ async def test_interrupted_read_is_visible_but_not_an_unknown_mutation(database,
         item for item in await control.effect_evidence() if item["tool"] == "read_status"
     )
     assert visible["side_effecting"] is False and visible["uncertain"] is True
-    assert not await control.has_unresolved_effects(pending=False)
     following = await execute(
         session,
         store,
@@ -179,7 +198,7 @@ async def test_interrupted_read_is_visible_but_not_an_unknown_mutation(database,
 async def test_terminal_receipt_preserves_original_committed_operation(
     database, tmp_path, status, exit_code
 ):
-    control, session, store = await ready(database, tmp_path)
+    _control, session, store = await ready(database, tmp_path)
     await launch(session, store)
     await execute(
         session,
@@ -198,10 +217,11 @@ async def test_terminal_receipt_preserves_original_committed_operation(
     assert after["side_effecting"] is True and after["tool"] == "terminal_exec"
     assert after["mutation_committed"] is True and after["pending"] is False
     assert after["ok"] is (status == "succeeded")
-    assert not await control.has_unresolved_effects()
 
 
-async def test_unknown_mutation_blocks_following_mutations_and_completion(database, tmp_path):
+async def test_unknown_mutation_remains_unknown_without_vetoing_new_call_or_completion(
+    database, tmp_path
+):
     control, session, store = await ready(database, tmp_path)
     await execute(
         session,
@@ -212,12 +232,35 @@ async def test_unknown_mutation_blocks_following_mutations_and_completion(databa
         ),
         side_effecting=True,
     )
-    assert await control.has_unresolved_effects(pending=False)
+    async with database.sessions() as reader:
+        original = dict(
+            (
+                await reader.execute(
+                    select(effects).where(effects.c.effect_key == session.call_key("unknown-write"))
+                )
+            )
+            .mappings()
+            .one()
+        )
     following = await execute(
         session, store, "following", ToolExecutionResult(ok=True, tool_name="write")
     )
-    assert json.loads(following)["error_code"] == "unresolved_prior_effect"
-    assert await complete(control) == {"ok": False, "error": "work_has_unresolved_execution"}
+    assert json.loads(following)["ok"] is True
+    assert (await complete(control))["ok"] is True
+    await control.settle(pending_inputs=False)
+    assert control.current["state"] == "completed"
+    async with database.sessions() as reader:
+        retained = dict(
+            (
+                await reader.execute(
+                    select(effects).where(effects.c.effect_key == session.call_key("unknown-write"))
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert retained == original
+    assert json.loads(retained["receipt_json"])["outcome"]["uncertain"] is True
 
 
 @pytest.mark.parametrize("tool", ["get_code_run", "terminal_read"])
@@ -256,5 +299,6 @@ async def test_external_running_read_through_real_kernel_does_not_block_completi
     assert [item["method"] for item in wire] == ["terminal_exec", tool]
     # The read does not create an owned SandboxTask for the observed run.
     assert await tasks.get(wire[1]["request_id"]) is None
-    assert not await work.control.has_unresolved_effects()
     assert (await complete(work.control))["ok"] is True
+    await work.control.settle(pending_inputs=False)
+    assert work.control.current["state"] == "completed"

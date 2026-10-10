@@ -1282,8 +1282,6 @@ class SemanticParticipationService:
                 source_key=source_key,
                 source=source,
                 goal=instruction,
-                output_kind="answer",
-                deliver_artifacts=False,
             )
         finally:
             await self.work.release(lease)

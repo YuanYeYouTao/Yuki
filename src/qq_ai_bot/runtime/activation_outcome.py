@@ -25,9 +25,9 @@ from qq_ai_bot.llm.base import (
 _JOURNAL_FAILURE_CODES = frozenset(
     {
         "work_journal_missing",
+        "work_response_not_persisted",
         "work_journal_corrupt",
         "work_journal_media_missing",
-        "work_compaction_anchor_unavailable",
         "work_compaction_anchor_corrupt",
         "work_readonly_reuse_corrupt",
         "work_effect_media_corrupt",
@@ -42,6 +42,7 @@ class ContextBoundaryChanged(LLMInvalidRequestError):
 
 class ExitReason(StrEnum):
     COMPLETED = "completed"
+    FAILED = "failed"
     SEGMENT = "segment_budget"
     EXTERNAL = "waiting_external"
     INPUT = "waiting_input"
@@ -90,38 +91,6 @@ class ActivationOutcome:
     pending_execution_ids: tuple[str, ...] = ()
     model_requests: int = 0
     tool_calls: int = 0
-
-
-def failure_status_text(failure: RuntimeFailure) -> str:
-    """Operational status when no owned activation can recover; never provider details."""
-    if failure.code == "sqlite_busy":
-        return "数据存储暂时繁忙，本次处理未完成，请稍后重试。"
-    if failure.code in {"database_failure", "sqlite_locked"}:
-        return "数据存储出现异常，本次处理未完成，请联系管理员。"
-    if failure.code == "context_boundary_changed":
-        return "会话上下文已变化，本次处理已停止。"
-    if failure.stage == "capacity":
-        if failure.code in {"model_request_capacity", "prompt_dynamic_capacity"}:
-            return (
-                "本轮上下文超过容量限制，后续处理已停止；已有结果会保留，"
-                "本次请求未完整完成。请缩小请求范围后再继续。"
-            )
-        return "本次处理达到容量限制，已停止继续执行；已有结果会保留，请联系管理员。"
-    if failure.diagnostics.get("category") == "work_conflict":
-        if failure.code == "work_journal_source_changed":
-            return "会话资料在处理期间变化，已保留已有结果；请先核对任务状态。"
-        return "工作状态发生冲突，已保留已有结果；请稍后核对状态。"
-    if failure.stage == "provider":
-        if failure.code in {"LLMAuthenticationError", "LLMConfigurationError"}:
-            return "AI 服务配置或认证异常，请联系管理员。"
-        if failure.code in {"LLMInvalidRequestError", "LLMUnsupportedFeatureError"}:
-            return "模型请求或功能配置不兼容，请联系管理员。"
-        if failure.code == "LLMTimeoutError":
-            return "模型响应超时，本次处理未完成，请稍后重试。"
-        if failure.retryable:
-            return "AI 服务暂时不可用，请稍后重试。"
-        return "模型未能完成这次回复，请稍后重试。"
-    return "这次处理遇到内部错误，请稍后重试；持续出现请联系管理员。"
 
 
 def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFailure:

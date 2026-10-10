@@ -6,18 +6,71 @@ import sys
 from dataclasses import asdict
 
 import pytest
+from tests.integration.test_codemode_lifecycle_recovery import environment
 from tests.integration.test_codemode_output_recovery import recreate
 from tests.support.codemode_cases import (
-    BINARY,
     effect_rows,
-    environment,
     outer_call,
     requires_worker,
 )
 
 from qq_ai_bot.codemode.driver import CodeModeDriver
+from qq_ai_bot.domain.messages import ChatMessage
 
 pytestmark = requires_worker
+
+CRASH_CHILD = r"""
+import asyncio, json, os, sys
+from tests.support.codemode_cases import build_host, outer_call
+from qq_ai_bot.codemode.driver import CodeModeDriver
+from qq_ai_bot.domain.messages import ChatMessage
+from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.runtime.work_control import WorkControl
+from qq_ai_bot.runtime.work_repository import WorkLease, WorkRepository
+from qq_ai_bot.runtime.work_session import WorkSession
+from qq_ai_bot.services.turn_transcript import TurnTranscript
+
+url, lease_json, identity, chain_id, code, log, stop_tool = sys.argv[1:]
+
+def record(value):
+    with open(log, 'a') as downstream:
+        downstream.write(json.dumps(value) + '\n')
+        downstream.flush()
+        os.fsync(downstream.fileno())
+
+async def main():
+    repository = WorkRepository(Database(url))
+    lease = WorkLease(**json.loads(lease_json))
+    current = await repository.get(identity)
+    async def validate():
+        assert await repository.valid(lease)
+    control = WorkControl(repository, lease, current['source_key'],
+                          json.loads(current['source_json']), validate)
+    control.current = current
+    owner = WorkSession(control, 'contract')
+    control.session = owner
+    owner.transcript = TurnTranscript((ChatMessage('system', 'test'),
+                                      ChatMessage('user', 'compose')))
+    owner.transcript.chain_id = chain_id
+    async def domain(name, arguments):
+        args = json.loads(arguments)
+        record([name, args])
+        return json.dumps({'ok': True, 'data': args})
+    env = build_host(owner, domain)
+    outer = outer_call(env, code)
+    owner.transcript.append(ChatMessage('assistant', tool_calls=(outer.call,)))
+    original = WorkRepository.record_effect
+    async def save_then_die(self, key, state, receipt, **kwargs):
+        await original(self, key, state, receipt, **kwargs)
+        if state == 'accepted' and receipt.get('outcome', {}).get('tool') == stop_tool:
+            record(['accepted', key])
+            os._exit(91)
+    WorkRepository.record_effect = save_then_die
+    await CodeModeDriver(env.host, outer).run()
+    raise AssertionError('the accepted receipt did not terminate the process')
+
+asyncio.run(main())
+"""
 
 
 @pytest.mark.parametrize("stop_tool", ["task_control", "lookup"])
@@ -33,12 +86,13 @@ async def test_host_death_after_accepted_receipt_restores_original_boundary(
         else "print('DURABLE_STDOUT_ONCE')\nawait yuki_lookup({'q':1})\nawait yuki_lookup({'q':2})"
     )
     outer = outer_call(env, code)
+    env.owner.transcript.append(ChatMessage("assistant", tool_calls=(outer.call,)))
+    await env.owner.save("response", (outer.call,))
     downstream = tmp_path / "independent-downstream.jsonl"
     process = await asyncio.create_subprocess_exec(
         sys.executable,
-        "-m",
-        "tests.support.codemode_boundary_crash",
-        str(BINARY),
+        "-c",
+        CRASH_CHILD,
         database.url,
         json.dumps(asdict(env.control.lease)),
         env.control.current["id"],

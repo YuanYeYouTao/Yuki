@@ -28,7 +28,6 @@ from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.runtime.activation_bindings import ActiveWorkBindings
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-from qq_ai_bot.runtime.subagent_schema import children
 from qq_ai_bot.runtime.subagent_tools import WORKER_NAMES, WORKER_REQUIRED_NAMES, worker_prompt
 from qq_ai_bot.runtime.work_activation import bind_work_activation
 from qq_ai_bot.runtime.work_control import WorkControl
@@ -127,13 +126,12 @@ class SubagentExecution:
                 await session.scalars(
                     select(SandboxTaskRunModel.run_id)
                     .join(
-                        children,
-                        children.c.work_id
+                        work,
+                        work.c.id
                         == func.json_extract(SandboxTaskRunModel.source_json, "$.work_id"),
                     )
-                    .join(work, work.c.id == children.c.work_id)
                     .where(
-                        work.c.state == "cancelled",
+                        work.c.state.in_(("failed", "cancelled")),
                         SandboxTaskRunModel.status == "waiting",
                         SandboxTaskRunModel.run_id.is_not(None),
                     )
@@ -209,7 +207,7 @@ class SubagentExecution:
                     )
                     if original is None and isinstance(recovered, MessageTaskSource):
                         raise WorkConflict("worker_source_deleted")
-                    child = await self.children.related(source["parent_work_id"], identity)
+                    child = await self.children.related(row["parent_work_id"], identity)
 
                     async def validate() -> None:
                         if not await self.repository.valid(lease):
@@ -225,13 +223,6 @@ class SubagentExecution:
                             != recovered
                         ):
                             raise WorkConflict("worker_authority_changed")
-                        parent = await self.repository.get(source["parent_work_id"])
-                        if parent is None or parent["state"] in {
-                            "completed",
-                            "failed",
-                            "cancelled",
-                        }:
-                            raise WorkConflict("worker_parent_obsolete")
 
                     async def command(run_id: str) -> dict[str, Any] | None:
                         record = await self.services.sandbox_tasks.by_run(run_id)
