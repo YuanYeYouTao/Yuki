@@ -1,6 +1,6 @@
 # Yuki Work 内核删减与 Pi durable 对照重构任务书
 
-日期：2026-10-10。实施记录更新至2026-10-11。状态：用户已授权实施，三名 gpt-6.1-sol/max 在隔离工作树并行修改，已经完成的项逐行标记。核心修改已合并并上线；逐入口终审继续补查原完成事实的外层消费，真实 QQ 验收进行中，未触发或失败的场景如实保留，详见末尾交付记录。
+日期：2026-10-10。实施记录更新至2026-10-11。状态：三名gpt-6.1-sol/max已按授权并行实施、逐行复核，R/T/D01–D38已完成本地实现和匹配验证；D38交叉终审发现的双层Deferred实际路径已补正。PR286/287/290已合并，cef02cda Bot与原Manager模块已上线。真实QQ已有追加、等待、子目标、SELF释放、新根与文件、跨轮取消记录；新的停止验收暴露上下文准备停顿及取消恢复错误，补丁上线后继续验收，V02/V03未完成，详见末尾交付记录。
 
 ## 0. 最高开发约束与本轮范围
 
@@ -192,8 +192,10 @@ Pi 默认收齐工具轮，所有 slot 都要求 terminate 才结束。上述顺
 | D35 | [x] | 删除Social与OneBot适配器重叠的30秒超时；取消/未知仍按原回执处理 | social/service.py::SocialService._call/_dispatch_claimed；实际OneBot适配器API timeout | 只删Social外层计时，保留原适配器30秒与真实回执。7个已有发送/重放/并发案例通过；原历史样本TimeoutError结果及CancelledError传播通过，不宣称已修好SL Highway网络故障 |
 | D36 | [x] | 删除持久Work被临时聊天coordinator_version重复否决的门槛及无调用者依赖；普通前台取消和真实generation/来源/租约仍沿原合同 | WorkResumer::_scene::validate/_resume_automation::validate；ChatService::validate_turn_snapshot/_run_agent::before_model_request/run_effect；ConversationEffectGate原锁；test_history_dispatch_ownership.py::test_real_work_restore_keeps_private_tail_out_of_ordinary_projection；test_work_owner_recovery.py::test_derived_automation_work_runs_on_original_scheduler_after_owner_settles | 真实snapshot/bind窗口普通群观察：原恢复1例、Person/SELF自动化3参数分别RED→GREEN，同Work/预算/来源且真实后续effect成功；普通无Work旧version拒绝、真实generation仍拒绝。删除Resumer两入口重复条件及无caller依赖；58个原边界案例通过，后续3例是其中子集，不累加 |
 | V01 | [x] | 隔离回归：完成、发送未知、重启、取消、子任务、晚到输入与各 Provider 协议 | 本文 §7 | 本地末轮pinned Code89例与native/Person58例全部通过、无skip；Linux全量两条旧断言已修正且原文件9例通过。远端CI状态另记，不冒充全绿；用户明确要求不等待CI便合并部署，详见§10.2 |
-| V02 | [ ] | 数字生命研究所真实 QQ 全链路：用户任务、自主触发、等待续跑与最终释放 | 本文 §7、§10.3 | 真人追加B、90秒等待、三个子目标、受控Host SELF安静结束、完成后独立C根与新文件成功、跨轮模型取消旧hds已有真实记录。旧B上传失败保留unknown；活动进程停止仍待最终Manager更新后补测 |
-| V03 | [ ] | 逐行回看任务索引，终局反向审计及交付记录 | 本文 §9、§10 | 已逐行核对并补正外层/pending/Manager/coordinator遗漏，末轮交叉审查45条R/T/D函数索引无失配、未见新分类/上限/状态/付费重跑；PR286/287已合并，核心7f2f5664已上线0105。最后源码/原Manager模块交付与真实停止验收独立记录 |
+| D37 | [x] | 核清上下文准备的重复累计计量和分页，删除无需分页仍逐条重算完整历史的路径；不增加经验上限或新计时器 | WorkSession::summary_source/_source_page；TurnExecution::prepare_request；AgentRunner::_compact_work；test_work_compaction_anchor_recovery.py::test_second_compaction_keeps_paid_observation_on_its_original_chain/test_partial_summary_recovers_original_work_without_format_policies | 整份来源可容纳便复用原完整来源；真正分页每原unit让出执行机会。源码+2/-1，六参数RED→GREEN；相关50例0skip，完整refs/原摘要/效果/预算及同snapshot跨页恢复已核。线上独立见V02 |
+| D38 | [x] | 父激活取消沿原asyncio事实传播；Deferred协调包装不裁决业务失败，合法新owner沿原原因/检查点恢复 | ConcurrencyManager::run_llm；supervise_lease；WorkResumer::_recover_preparation_failure；test_runtime_recovery.py::test_model_cancellation_preserves_original_owner_and_lease_failure；test_work_owner_recovery.py::test_expired_original_work_recovers_from_original_dispatch_facts | 父取消保原异常、单独Provider取消保原语义；合法原接管核验后仅展开已有Deferred原因链、共享既有orphan/phase段。源码+27/-22；实际双层Control→bind样本RED→GREEN，原cause/paired/丢响应/替换owner等74个不同节点分批通过，最后匹配19例0skip。未改中央分类/租约/授权，线上独立见V02 |
+| V02 | [ ] | 数字生命研究所真实 QQ 全链路：用户任务、自主触发、等待续跑与最终释放 | 本文 §7、§10.3 | 真人追加B、90秒等待、三个子目标、受控Host SELF安静结束、完成后独立C根与新文件成功、跨轮模型取消旧hds已有真实记录。旧B上传失败保留unknown；新事件95056尚未启动真实进程，活动进程停止继续待验收 |
+| V03 | [ ] | 逐行回看任务索引，终局反向审计及交付记录 | 本文 §9、§10 | 前一轮已补正外层/pending/Manager/coordinator遗漏并合并上线；UTC19:09:28真人新验收暴露上下文准备停顿、心跳失约与Deferred被误作业务失败，终审重新打开。需修正并重验，不能以已有115例、HTTP/WS或旧取消记录称全部完成 |
 
 ### 5.1 实施前基线中容易漏掉的实际分支
 
@@ -389,6 +391,8 @@ D14模式切换额外验证：原SDK3例加原关闭模式消费者4例共7例�
 
 末轮Linux全src Mypy644和全库Ruff lint通过；全库format查出本轮遗留6处纯排版差异并用现有formatter修正（条件/函数参数换行与空行），不增加逻辑或重跑无关全量测试。D36冻结后全库Ruff与format（875文件）、对应3源码LinuxMypy、release_validate及diff全部通过。
 
+D36最终匹配验证：原边界58例、未覆盖的SELF/Person/scheduled调用者49例、真实pinned Code交错恢复8例，合计115个独立既有案例全部通过、0skip。原恢复单例及Auto三参数的RED→GREEN复跑均是子集，不额外累加。Code八例覆盖chat/responses/anthropic/gemini的pending/settled，真实worker非skip。
+
 2026-10-11 最终源码差异，相对4c528898、启用Git重命名识别：生产src新增1773行、删除2428行，净删655行；迁移新增217行、删除4行；二者合计新增1990行、删除2432行，净删442行。构建脚本另删1行。测试新增3762行、删除648行；实际迁移、进程中断和原消费者链路样本与生产代码分别统计，不把测试增加隐藏在净删数中。PR286初次交付生产净删635行、PR287净删636行均为中间基线，不能替代此次全部补正。文档和README另计。
 
 ### 10.3 生产与真实 QQ
@@ -401,7 +405,7 @@ PR286：https://github.com/YuanYeYouTao/Yuki/pull/286 ，UTC2026-10-10 17:24:12�
 
 PR287：https://github.com/YuanYeYouTao/Yuki/pull/287 ，UTC17:53:22合并，main `201acdeb8392f02e1a80b157ab99fff27617e9df`，补正SDK/自动化已完成读取的模式切换。该SHA的direct镜像构建、离线封装和上传曾完成，但未部署；上传的中间归档已随临时文件清理删除。最终合并外层/pending与真实终端遗漏后构建新SHA一次更新，不把中间构建记为线上版本。
 
-以下线上事实均来自当前唯一Bot的7f2f5664，群数字生命研究所，可信Conversation `5b234414-7537-4f1f-8f27-d03c2c0949c7`、generation20；用户为2186567848。除受控Host接纳机会外只读核验，未伪造真人事件或启动第二个Bot。
+以下早期线上验收事实来自当时唯一Bot的7f2f5664，群数字生命研究所，可信Conversation `5b234414-7537-4f1f-8f27-d03c2c0949c7`、generation20；用户为2186567848。除受控Host接纳机会外只读核验，未伪造真人事件或启动第二个Bot。最后cef02cda部署独立见§10.4。
 
 | 实际场景 | 原身份与结果 | 验收范围 |
 | --- | --- | --- |
@@ -423,3 +427,29 @@ C主链14个真实HTTP200的transport合计173.716秒、最长45.835秒，另两
 清理回执 `/opt/yuki-qqbot/ops/cleanup-all-backups-temp-20261011.json`：264个目标，实际释放7,936,364,544 bytes，可用19,299,426,304 bytes；四处备份不存在，活跃Compose文件/挂载仍在，Bot/SL ID和StartedAt未变。UTC18:17换页si最高1656KiB/s、I/O wait 8–14%；清理后18:45可用内存572MiB、swap987MiB，4个新秒si16/292/116/8、so0、wa2/5/1/3%，压力减轻但未证明内存泄漏或其已修复。
 
 UTC18:46:18一次cgroup分解：SL resident charge455.22MiB中anon109.00/file305.01/kernel40.42、swap598.10；Bot359.14中anon295.88/file54.21/kernel8.57、swap134.09。文件缓存和换页会改变容器headline，RSS升降均不足以证明堆泄漏/释放。Host available654.82MiB、swap1028.04MiB、memory PSI10 some0.39/full0.32、IO2.16/1.73，无OOM/restart；Bot/SL无独立memory/CPU hard limit，共享Host1612MiB。当前证据支持确有资源竞争、后来压力减轻，不独断为SL泄漏。
+
+### 10.4 最后补正上线
+
+PR290：https://github.com/YuanYeYouTao/Yuki/pull/290 ，UTC19:01:06合并，main `cef02cda783d85aebcc18b21bcaadd637c86d57d`。该SHA本地构建direct并离线确认Monty binding/worker/launcher均无、Code默认false；归档267801600 bytes、SHA256 `e461e14ae7e15703cb253a1b9ce64d9306e49c01a7e25876322df2db64babbd8`，上传后逐字节验证加载。
+
+沿当时真实Compose全部文件只更新Bot，镜像 `ghcr.io/yuanyeyoutao/yuki-qqbot:ops-cef02cda`，imageID `sha256:cf29a926241d0bc45ae59288dfb381c2222dfb005f1161edf6ef8b98418aeb63`；Bot ID `5aa3d9a3d8aa0364df7ce265d4ababc8f5114970d59a836b124a7b592f712241`，UTC19:04:03.632979043启动。生产head保持0105，没有再备份、迁移或恢复数据库。运维回执 `/opt/yuki-qqbot/ops/work-completed-read-cef02cda-20261010T190351Z/rollout.json`。
+
+在Bot原边界停止后确认Manager queued/running均0，只替换 `/opt/yuki-sandbox/src/qq_ai_bot/sandbox/persistent.py` 并重启原systemd服务。UTC19:04:01.613870，新模块原字节SHA256 `0eef71b8623978c25d8e1c9c8a2ba4c512b3fdc1b06e324fd7a53a68e2b3b37c`；原environment ID `78a71ac5fa3eb593b3438d11aa4c63f4078745903e408abd70057653b0ab7695`、StartedAt `2026-10-09T04:17:34.878037247Z`完全未变，SL原ID/启动时间也未变。上线后只读核实际模块hash、Manager active、socket environment_status ready=true、jobs0。
+
+UTC19:05:23新Bot HTTP200/status及database ok、OOM=false/restarts0，最初onebot_connected=false；启动日志19:05:14完成startup，19:05:27原SL反向WS accepted/connected，首次采样比连接建立早4秒。19:08:43只读复核HTTP200/status/database ok、onebot_connected=true，DNS bot匹配新Bot IP且原SL→Bot TCP ESTABLISHED；无握手拒绝证据、未重启SL。活动进程停止仍另验收，不根据healthy勾V02。
+
+旧镜像ops750533d2/ops07815fb2及额外750回退tag已删除，Yuki仅保留cef02cda和7f2f5664；本次上传tar/Manager临时脚本已删除，可用磁盘约19.31GB。活动环境/SL/代理镜像保留。全部备份按用户要求仍为0，不创建新的数据库/目录备份。
+
+新版连接确认后，2186567848于UTC19:09:28发出新的child sleep300+main300秒等待停止验收，内部事件95056、Work `33bca33b-47cb-4a49-9094-fa098b64887d`。最初Gemini请求HTTP200、实际请求1；两次续跑均在HTTP前取消、实际请求0，未创建child、wait或终端执行。原响应仍在paired journal，累计模型1、工具0、发送0。UTC19:10:50/19:11:55出现lease heartbeat renew的WorkConflict；第一次孤儿回收queued，第二次Deferred被当作不可恢复业务错误写入failed。连接获取计时57.359606秒涵盖调度、pool、pre-ping与connect，现有日志不能单独证明SQLite写锁或SL泄漏。正在查上下文准备中的重复全量计量及父取消/Deferred异常传播，V02、V03保持未完成；需先核真实Supervisor started，再让真人停止并核原父子、run及回执收尾。
+
+### 10.5 真实验收暴露的准备停顿与恢复补正
+
+精确读取170744/170750两条trace，仅检查结构和容量资料：两者均为整理请求，source有1452条记录、1453条展示记录，分页1454/1453个unit全部装入一页；正文605106/607283字符。说明完整来源本来能容纳，却仍逐unit复制和重新编码完整累计前缀。离线合成224/449/898条记录分别耗时1.189/4.948/20.97秒；898条单次完整计量45.1毫秒，原分页循环同步阻塞事件循环。不能把summary请求可容纳等同于含工具声明的主请求可容纳，本轮不据此删除全部软整理触发。
+
+D37仅调整两个原位置：完整来源fits便不进入分页；真正分页每unit让出执行机会。未增加状态、缓存、次数或新计时器。真实超容量仍复用原分页与碎片算法；让位解决跨unit调度饥饿，不承诺任意巨型单JSON的处理耗时。原四参数完整来源恢复及两参数真实分页/调度场景分别RED→GREEN，原anchor/public-delta/protocol恢复50个唯一节点通过、0skip。
+
+D38沿原asyncio Task事实保留父取消，仅单独取消登记Provider时转换RequestCancelledError；原租约心跳异常可回到既有恢复边界。Deferred在已核原lease/fence+1/cancelEpoch/generation/revision的合法接管处保原cause；失租WorkConflict与既有orphan共享journal phase判断。paired沿同ID queued，dispatched丢响应仍work_response_not_persisted、不能重购，真实ValueError仍保原原因failed。交叉终审发现Runner先调用Control恢复、bind再包装会产生两层Deferred；实际Control→bind的永久错误及Provider重试样本RED2F→GREEN2P后，仅展开已有typed Deferred原因链，不设层数上限、不泛解全部异常。最后19个匹配节点全部通过；本轮原取消/Memory/真实Provider/付费发布40例，加原owner/来源/替换owner及新增重试34个不同节点通过、0skip，与D37的50例合计124个不同节点，不重复累加孤立复跑。未放宽旧owner写权限，也未将全部WorkConflict加入retry。
+
+合流Linux三个源码Mypy、全库Ruff lint/format（912文件）、release_validate v3.9.0与diff检查通过。当前相对cef补丁源码+29/-23，净增6行；多数为原恢复代码移动，未增加另一套恢复框架。相对原实施基线4c528898重新计算：src +1782/-2431、净删649；migrations +217/-4、净增213；两者合计净删436。tests +3954/-657、净增3297，单独列示，不将测试增加藏入源码删减。
+
+UTC19:33只读压力快照：Host内存约1612MiB、可用609MiB，swap约1GiB；memory PSI avg10 some1.94/full1.06，I/O some11.29/full7.63；两个新秒样本仍有swap-in640/332KiB/s、iowait2/16%。Bot/SL未OOM，SL StartedAt仍未变。删除备份释放的是磁盘，不能据此声称释放等量内存；现有SL RSS波动不足以证明泄漏。

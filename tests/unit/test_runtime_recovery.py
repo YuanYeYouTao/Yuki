@@ -6,22 +6,28 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select, update
+from tests.conftest import build_harness, make_settings
+from tests.support.runtime_wire import install_wire
 from tests.support.social_identity_cases import social_env
 from tests.support.work_session import WorkSession, invoke_tool
 
 from qq_ai_bot.capabilities.results import ToolExecutionResult, ToolResultBudgeter
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.domain.messages import ChatMessage, ToolCall, ToolFunction
+from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ToolCall, ToolFunction
 from qq_ai_bot.gateway.registry import RegistryClosed
 from qq_ai_bot.identity.routing import RouteSendError
 from qq_ai_bot.llm.base import LLMUnavailableError
+from qq_ai_bot.llm.fake import FakeLLMProvider
+from qq_ai_bot.model_runtime.dispatch_guard import model_dispatch_guard
+from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.runtime.activation_outcome import ExitReason
 from qq_ai_bot.runtime.delivery_intents import record, reserve
+from qq_ai_bot.runtime.lease_heartbeat import supervise_lease
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_journal import JournalUnavailable
 from qq_ai_bot.runtime.work_recovery_schema import deliveries, recovery
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import effects, scope
+from qq_ai_bot.runtime.work_schema_v1 import effects, journal, scope
 from qq_ai_bot.runtime.work_supervisor import recover_failure
 from qq_ai_bot.services.concurrency import RequestCancelledError
 from qq_ai_bot.services.turn_transcript import TurnTranscript
@@ -106,6 +112,82 @@ async def test_repeated_transient_failure_preserves_retained_boundary_and_can_co
     await control.settle(pending_inputs=False)
     assert control.current["id"] == identity and control.current["state"] == "completed"
     assert control.current["model_requests"] == 1
+
+
+@pytest.mark.parametrize("cancel", ["provider", "owner", "lease"])
+async def test_model_cancellation_preserves_original_owner_and_lease_failure(
+    database, tmp_path, cancel
+):
+    control = await setup(database, tmp_path)
+    identity = control.current["id"]
+    await control.repository.checkpoint(control.lease, identity, None, models=1)
+    await control.session.save("paired")
+    original_work = await control.repository.get(identity)
+    async with database.sessions() as reader:
+        original_journal = (
+            (await reader.execute(select(journal).where(journal.c.work_id == identity)))
+            .mappings()
+            .one()
+        )
+    provider = FakeLLMProvider()
+    harness = build_harness(database, make_settings(database.url), provider)
+    chat = harness.processor._chat
+    client, wire = install_wire(chat, provider, "chat_completions")
+    preparing, proceed = asyncio.Event(), asyncio.Event()
+
+    async def admit():
+        preparing.set()
+        await proceed.wait()
+
+    async def invoke():
+        async with supervise_lease(
+            lambda: control.repository.renew(control.lease),
+            lambda: control.repository.lease_expiry(control.lease),
+            interval=0.01,
+        ):
+            with model_dispatch_guard(admit):
+                return await harness.concurrency.run_llm(
+                    control.lease.conversation_id,
+                    lambda: chat.runtime.runner._models.execute(
+                        ModelTask.CHAT_AGENT,
+                        ChatRequest(messages=(ChatMessage("user", "original task"),)),
+                    ),
+                )
+
+    running = asyncio.create_task(invoke())
+    try:
+        await asyncio.wait_for(preparing.wait(), 2)
+        if cancel == "provider":
+            assert await harness.concurrency.cancel(control.lease.conversation_id)
+            expected = RequestCancelledError
+        elif cancel == "owner":
+            running.cancel("original activation shutdown")
+            expected = asyncio.CancelledError
+        else:
+            await control.repository.release(control.lease)
+            expected = WorkConflict
+        with pytest.raises(expected) as caught:
+            await asyncio.wait_for(running, 2)
+        if cancel == "provider":
+            assert caught.value.diagnostics["physical_request_count"] == 0
+            assert caught.value.diagnostics["unknown_usage_request_count"] == 0
+        elif cancel == "owner":
+            assert caught.value.args == ("original activation shutdown",)
+        else:
+            assert caught.value.code == "work_heartbeat_lease_obsolete"
+        assert not harness.concurrency.is_processing(control.lease.conversation_id)
+        assert wire == provider.requests == []
+        assert await control.repository.get(identity) == original_work
+        async with database.sessions() as reader:
+            assert (
+                (await reader.execute(select(journal).where(journal.c.work_id == identity)))
+                .mappings()
+                .one()
+            ) == original_journal
+    finally:
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+        await client.aclose()
 
 
 @pytest.mark.parametrize("failure", ["capacity", "uncertain", "cancel"])

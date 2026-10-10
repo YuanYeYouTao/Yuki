@@ -138,26 +138,7 @@ class WorkResumer:
                 ):
                     control.settled = True
                     return
-                control.current = current
-                async with self.repository.database.sessions() as reader:
-                    phase = await reader.scalar(
-                        select(journal.c.phase).where(journal.c.work_id == item["id"])
-                    )
-                if phase == "dispatched":
-                    from qq_ai_bot.runtime.work_journal import JournalUnavailable
-
-                    exc = JournalUnavailable("work_response_not_persisted")
-                else:
-                    if await control.has_pending_business_inputs():
-                        # New input continues a retained response/paired boundary.
-                        control.current = await self.repository.transition(
-                            lease, current["id"], current["revision"], "waiting_external"
-                        )
-                        control.settled = True
-                        return
-                    control.deferred_failure = WorkRecoveryDeferred(
-                        "work_activation_interrupted", work=item
-                    )
+            failure: BaseException = exc
             if deferred is not None:
                 failed = deferred.work
                 prior_lease = deferred.lease
@@ -175,9 +156,32 @@ class WorkResumer:
                     control.settled = True
                     return
                 control.deferred_failure = deferred
+                while isinstance(failure, WorkRecoveryDeferred) and failure.__cause__ is not None:
+                    failure = failure.__cause__
             if current and current["state"] in {"queued", "running"}:
                 control.current = current
-                await control.recover_failure(exc)
+                if orphan or (deferred is not None and isinstance(failure, WorkConflict)):
+                    async with self.repository.database.sessions() as reader:
+                        phase = await reader.scalar(
+                            select(journal.c.phase).where(journal.c.work_id == item["id"])
+                        )
+                    if phase == "dispatched":
+                        from qq_ai_bot.runtime.work_journal import JournalUnavailable
+
+                        failure = JournalUnavailable("work_response_not_persisted")
+                    else:
+                        if await control.has_pending_business_inputs():
+                            # New input continues a retained response/paired boundary.
+                            control.current = await self.repository.transition(
+                                lease, current["id"], current["revision"], "waiting_external"
+                            )
+                            control.settled = True
+                            return
+                        control.deferred_failure = WorkRecoveryDeferred(
+                            "work_activation_interrupted", work=current
+                        )
+                        failure = WorkConflict("work_activation_interrupted")
+                await control.recover_failure(failure)
 
     @asynccontextmanager
     async def _scene(

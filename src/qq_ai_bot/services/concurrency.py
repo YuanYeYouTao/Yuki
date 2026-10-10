@@ -56,7 +56,8 @@ class ConcurrencyManager:
         try:
             return await task
         except asyncio.CancelledError as exc:
-            if not translate_cancellation:
+            owner = asyncio.current_task()
+            if not translate_cancellation or (owner is not None and owner.cancelling()):
                 raise
             raise RequestCancelledError(
                 "request cancelled", diagnostics=getattr(exc, "diagnostics", None)

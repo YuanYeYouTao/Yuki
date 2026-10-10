@@ -1,5 +1,6 @@
 """Real journal round trips for anchors extended by public conversation deltas."""
 
+import asyncio
 import json
 
 import pytest
@@ -8,7 +9,8 @@ from tests.support.social_identity_cases import social_env
 from tests.support.work_session import WorkSession, invoke_tool
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.domain.messages import ChatMessage, ToolCall, ToolFunction
+from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ToolCall, ToolFunction
+from qq_ai_bot.model_runtime.capacity import estimate_request_tokens
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_journal import JournalUnavailable
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
@@ -187,12 +189,43 @@ async def test_partial_summary_recovers_original_work_without_format_policies(
     first.progress["task_material"] = {
         "directives": [{"id": "old-directive", "text": "old requirement", "refs": ["goal"]}]
     }
-    source = json.loads(await first.summary_source())
+    for index in range(4):
+        original.append(
+            ChatMessage("assistant", f"public observation {index}: " + "finding " * 1200)
+        )
+    await first.save("paired")
+    complete_source = await first.summary_source()
+    scheduled = False
+    event = asyncio.Event()
+
+    def source_fits(raw):
+        nonlocal scheduled
+        source = json.loads(raw)
+        if source.get("paging") and source.get("records") and not scheduled:
+            scheduled = True
+            asyncio.get_running_loop().call_soon(event.set)
+        return estimate_request_tokens(ChatRequest(messages=(ChatMessage("user", raw),))) <= 8192
+
+    assert not source_fits(complete_source)
+    source = json.loads(await first.summary_source(fits=source_fits))
+    assert event.is_set()
+    assert source["paging"]["next_cursor"] < [source["paging"]["total_units"], 0]
+    snapshot_ref = source["paging"]["snapshot_ref"]
+    await first.stage_compaction(None)
+    first = WorkSession(control, first.contract)
+    control.session = first
+    recovered = await first.restore(TurnTranscript((ChatMessage("user", "wake during paging"),)))
+    assert recovered.chain_id == original.chain_id
+    assert json.loads(await first.summary_source(fits=source_fits)) == source
     summary = {"pending": [{"text": "still checking", "refs": ["goal", "goal"], "future": True}]}
     if include_directives:
         record_ref = next(ref for ref in source["source_refs"] if ref.startswith("record:"))
         directive = {"text": "retain this observation", "refs": [record_ref]}
         summary.update(version=2, task_directives=[directive, directive])
+    while next_source := await first.next_summary_source(json.dumps(summary), fits=source_fits):
+        source = json.loads(next_source)
+        assert source["paging"]["snapshot_ref"] == snapshot_ref
+    await first.stage_compaction(json.dumps(summary))
     await first.compact(json.dumps(summary), ceiling_tokens=128000)
     assert first.transcript.chain_id != original.chain_id
     capsule = json.loads(first.transcript.request().messages[-1].content)
@@ -395,7 +428,16 @@ async def test_second_compaction_keeps_paid_observation_on_its_original_chain(
         )
     )
     assert restored.chain_id != old_chain
-    source = json.loads(await resumed.summary_source(fits=lambda raw: len(raw) < 100000))
+
+    def source_fits(raw):
+        return estimate_request_tokens(ChatRequest(messages=(ChatMessage("user", raw),))) <= 128000
+
+    complete_source = json.loads(await resumed.summary_source())
+    source = json.loads(await resumed.summary_source(fits=source_fits))
+    assert "paging" not in source
+    assert source["records"] == complete_source["records"]
+    assert source["source_refs"] == complete_source["source_refs"]
+    assert source["record_source_indices"] == complete_source["record_source_indices"]
     assert original_ref in source["source_refs"]
     assert f"record:{restored.chain_id}:1" in source["source_refs"]
     assert (
@@ -407,7 +449,12 @@ async def test_second_compaction_keeps_paid_observation_on_its_original_chain(
     if clear_completed:
         update["completed"] = []
     summary = json.dumps(update)
-    assert await resumed.next_summary_source(summary, fits=lambda raw: len(raw) < 100000) is None
+    assert await resumed.next_summary_source(summary, fits=source_fits) is None
+    await resumed.stage_compaction(summary)
+    resumed = WorkSession(control, first.contract)
+    control.session = resumed
+    await resumed.restore(TurnTranscript((ChatMessage("user", "wake after paid summary"),)))
+    assert resumed.compaction_ready_summary == summary
     candidate = await resumed.compact(summary, ceiling_tokens=128000)
     capsule = json.loads(candidate.request().messages[-1].content)
     assert capsule["summary"]["pending"][0]["refs"] == [original_ref]

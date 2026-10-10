@@ -779,7 +779,7 @@ class WorkSession:
             "model_observations": observations,
             "effects": evidence,
         }
-        if fits is not None:
+        if fits is not None and not fits(json.dumps(self._compaction_source, ensure_ascii=False)):
             units = [
                 {
                     "kind": "records",
@@ -897,6 +897,7 @@ class WorkSession:
                 raise WorkCapacityError("work_compaction_source_capacity")
             input_refs()
         while index < len(units):
+            await asyncio.sleep(0)
             unit = units[index]
             candidate = deepcopy(page)
             if not offset:
