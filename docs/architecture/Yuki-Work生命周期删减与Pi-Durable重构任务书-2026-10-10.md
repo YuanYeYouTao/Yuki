@@ -1,6 +1,6 @@
 # Yuki Work 内核删减与 Pi durable 对照重构任务书
 
-日期：2026-10-10。状态：用户已授权实施，三名 gpt-6.1-sol/max 在隔离工作树并行修改；已经完成的项逐行标记。当前正在运行集成验证和终审，PR、合并、生产部署与真实 QQ 验收尚未完成，详见末尾交付记录。
+日期：2026-10-10。实施记录更新至2026-10-11。状态：用户已授权实施，三名 gpt-6.1-sol/max 在隔离工作树并行修改，已经完成的项逐行标记。核心修改已合并并上线；逐入口终审继续补查原完成事实的外层消费，真实 QQ 验收进行中，未触发或失败的场景如实保留，详见末尾交付记录。
 
 ## 0. 最高开发约束与本轮范围
 
@@ -168,7 +168,7 @@ Pi 默认收齐工具轮，所有 slot 都要求 terminate 才结束。上述顺
 | D11 | [x] | 主动 fail/cancel 复用指定树管理撤权及原执行器取消能力，补模型入口；删除先清空子任务/远端全部确认停止才结束的要求 | work_management.py::stop_owned_execution/manage_work；SubagentExecution::cancel_commands | 原stop_owned_execution撤权子树，cancel_commands沿原Sandbox run停止；迟到真实成功不改写（本地；线上另见V02） |
 | D12 | [x] | 统一管理/模型恢复，删除整树 unknown/旧 notice/active wait 的恢复否决；显式继续替代旧等待时在原 writer 撤销绑定，无需先单独 cancel_wait | work_management.py::resume_blocker/manage_work；SubagentRepository::resume；WorkRepository::enqueue | 管理与模型resume删旧unknown否决；wait原绑定同次撤销、原ID恢复验证通过（本地；线上另见V02） |
 | D13 | [x] | 沿 TurnTranscript→response→原 effect/result→paired→journal publication 核查并删除重复分支；保留已付费响应与原协议恢复，Pi 仅作局部算法参考 | TurnTranscript::request/append_result；WorkSession::restore/save；WorkJournal::load/save/effect_result；AgentRunner::_run_with_receipts | 原journal/ProtocolStore/call/effect/预算身份保留；协议恢复与原调用不重放通过（本地；线上另见V02） |
-| D14 | [x] | 核对自动化、SELF、插件与子 Agent 终态消费；删除文档虚构的交付审批，不新增替代校验器 | WorkResumer::resume/_resume_automation/_resume_self；automation/handlers.py::AutomationCapabilityHandlers.agent/_generation_composition/resume_work；DurableInvocations::run；plugin_host/main_turn.py::run_plugin_main_turn/_execute_plugin_main_turn/resume_plugin_work；plugin_host/background_turns.py::PluginBackgroundTurnWorker.resume_work；SubagentExecution::run；recover_execution_source | 原来源消费/恢复通过；wait越界claim整段删除、原三场景全行不变；SDK实际3例与原插件外围47例通过。自动化cached读取与正常执行共用原结果出口；最终native44+Person自动化14共58例无skip通过，包含前次合流验证，重叠不累加（本地；线上另见V02） |
+| D14 | [x] | 核对自动化、SELF、插件与子 Agent 的已有结果消费；当前开关不否决原来源，待处理只读不要求新上下文；删除无消费者的额外接纳上限 | DurableInvocations::read_result/run；MainAgentTurnService::read_result/run；plugin_host/main_turn.py::run_plugin_main_turn/_execute_plugin_main_turn；automation/handlers.py::AutomationCapabilityHandlers.agent；automation/executor.py::AutomationExecutor.execute；WorkResumer及原SELF/plugin_background/worker恢复入口 | 将原Durable只读分支机械搬到一个reader供三个入口复用，无新cache/状态；SDK、Person/SELF自动化真实waiting→关闭Work+capacity0→同ID只读，原Work/Wait不变且0新请求；真实queued续跑仍走完整准备。删除Executor外层当前开关封口和SDK固定8任务上限，原调用复用保留；最终SDK等26例、native/Person/SELF/scheduled69例分别通过、无skip，不累加重叠（本地；线上另见V02） |
 | D15 | [x] | 精简无消费状态/字段；删 retained_tool_rounds 死清理；核对后删 journal ending 新写入及无人消费的旧提取复制；保留真实查询与恢复事实 | WorkSession::rebase_business/_unobserved_tool_round；WorkJournal::_load；WorkRepository的旧has_unresolved_effects与work_reporting模块删除 | 删work_reporting、communication专链、ending副本及无调用者has_unresolved_effects API；原回执/协议仍保留，Repo/runtime128例通过（本地；线上另见V02） |
 | D16 | [x] | 改写或删除冻结旧门槛的测试，合并重复样本，清理 CI 已无入口的检查 | 本文§7；既有tests；.github/workflows/quality.yml、release.yml；scripts/verify_monty_packaging.py | 旧分类/拒绝/布局镜像与空方法删改；Code悬空进程入口改既有case内真实os._exit、错误fake复用原typed回执；删除packaging中固定0099编号断言，保留实际init-db、完整性/FK及head报告。Quality/Release逐job核查，未新增workflow。最终冻结SHA的CI见V01 |
 | D17 | [x] | 修订现行开发合同、主 Agent、工作者、输出边界和用户说明；旧审查按日期保留 | 本文§8；现行开发合同、主Agent/worker/输出/工具/插件文档与README/3.9.0 | 开发约束/主Agent/worker/输出/工具/插件及README/3.9.0同步；当前函数名经AST复核，旧报告按日期保留；release_validate v3.9.0通过 |
@@ -188,9 +188,12 @@ Pi 默认收齐工具轮，所有 slot 都要求 terminate 才结束。上述顺
 | D31 | [x] | 生命周期与通知正文解耦：删 worker need_input 的 reason 隐性必填/None.strip 异常，以及 child 明确 resume 对额外 instruction 的强制要求 | SubagentRepository::resume；subagent_tools.py::execute_subagent；WorkControl::_control | worker need_input可省略reason，child原目标resume不必补instruction；树恢复通过（本地；线上另见V02） |
 | D32 | [x] | 逐条复核发现的漏删：删除一次 admin 失败关闭整个 Backend 后续能力及参数哈希单次写锁；原调用恢复复用真实ID和回执 | MainAgentBackend::execute_call/_is_mutating_call；旧_tools_closed/_mutation_identity/_completed_admin_mutations/_ADMIN_RETRYABLE_ERRORS删除；原领域operation回执 | 整链删除（Backend净删69行）；真实Admin失败→读取/修正→17→18→17新调用成功；原operation重入保持原change_id且不重做。原文件19例与最新pinned Code30例通过（本地；线上另见V02） |
 | D33 | [x] | 删除Control历史读取对合法wait的重复8192字节/8条条件拒绝；不让展示reader阻断已登记事实读取 | persistence/control_work_query.py::_conditions；test_work_settlement_writer.py::test_existing_timer_can_resolve_all_conditions_without_delay_policy | 两条旧大小门槛及过期注释删除；复用原9/300等实际time_due登记场景读取Control wait history，不新增状态、参数或校验器；定向结果见§10.2 |
+| D34 | [x] | 删除Manager将PTY未启动/旧APT无heartbeat按10/15秒猜成失败的分支；恢复原session，真实Supervisor回执裁决终态 | sandbox/persistent.py:480 reconcile/462 attach/503 no-session return/507 original attach；environment_supervisor.py:55 started O_EXCL；test_work_execution_receipt_regressions.py:182 | 源码净删12行；原case四参数PTY未started/已started、APT无/陈旧heartbeat分别RED→GREEN，最终Linux18例无skip。真实Supervisor证明原命令至多一次；APT真实status exit7由原finish/outbox落同ID，不依据年龄猜失败。Manager上线及QQstop独立见V02/V03 |
+| D35 | [x] | 删除Social与OneBot适配器重叠的30秒超时；取消/未知仍按原回执处理 | social/service.py::SocialService._call/_dispatch_claimed；实际OneBot适配器API timeout | 只删Social外层计时，保留原适配器30秒与真实回执。7个已有发送/重放/并发案例通过；原历史样本TimeoutError结果及CancelledError传播通过，不宣称已修好SL Highway网络故障 |
+| D36 | [x] | 删除持久Work被临时聊天coordinator_version重复否决的门槛及无调用者依赖；普通前台取消和真实generation/来源/租约仍沿原合同 | WorkResumer::_scene::validate/_resume_automation::validate；ChatService::validate_turn_snapshot/_run_agent::before_model_request/run_effect；ConversationEffectGate原锁；test_history_dispatch_ownership.py::test_real_work_restore_keeps_private_tail_out_of_ordinary_projection；test_work_owner_recovery.py::test_derived_automation_work_runs_on_original_scheduler_after_owner_settles | 真实snapshot/bind窗口普通群观察：原恢复1例、Person/SELF自动化3参数分别RED→GREEN，同Work/预算/来源且真实后续effect成功；普通无Work旧version拒绝、真实generation仍拒绝。删除Resumer两入口重复条件及无caller依赖；58个原边界案例通过，后续3例是其中子集，不累加 |
 | V01 | [x] | 隔离回归：完成、发送未知、重启、取消、子任务、晚到输入与各 Provider 协议 | 本文 §7 | 本地末轮pinned Code89例与native/Person58例全部通过、无skip；Linux全量两条旧断言已修正且原文件9例通过。远端CI状态另记，不冒充全绿；用户明确要求不等待CI便合并部署，详见§10.2 |
-| V02 | [ ] | 数字生命研究所真实 QQ 全链路：用户任务、自主触发、等待续跑与最终释放 | 本文 §7 | 待上线后实际验收；用户已确认配合2186567848账号追问、改向及终止。SELF沿原Host→outbox→原Bot调度，受控触发与自然唤醒分别记录 |
-| V03 | [ ] | 逐行回看任务索引，终局反向审计及交付记录 | 本文 §9 | T01–T04、D01–D33逐行复核完成，末轮遗漏与实际索引已补正；PR286已创建，合并、上传及Bot-only部署记录仍待取得 |
+| V02 | [ ] | 数字生命研究所真实 QQ 全链路：用户任务、自主触发、等待续跑与最终释放 | 本文 §7、§10.3 | 真人追加B、90秒等待、三个子目标、受控Host SELF安静结束、完成后独立C根与新文件成功、跨轮模型取消旧hds已有真实记录。旧B上传失败保留unknown；活动进程停止仍待最终Manager更新后补测 |
+| V03 | [ ] | 逐行回看任务索引，终局反向审计及交付记录 | 本文 §9、§10 | 已逐行核对并补正外层/pending/Manager/coordinator遗漏，末轮交叉审查45条R/T/D函数索引无失配、未见新分类/上限/状态/付费重跑；PR286/287已合并，核心7f2f5664已上线0105。最后源码/原Manager模块交付与真实停止验收独立记录 |
 
 ### 5.1 实施前基线中容易漏掉的实际分支
 
@@ -335,7 +338,7 @@ Control/API 中有实际模型、SDK或管理消费者的能力继续随内核�
 - 单层假设、旧审批是否移到了 Code、SQL、测试、提示、管理入口？是否为 Pi 概念新增无消费者框架？
 - 多 Work 的公共冻结前缀是否仍按原实际选取边界追加、私有协议是否仍按原 Work 隔离？有没有因为学习 Pi 新造上下文层？可选笔记/汇报是否又成了执行前置门槛？
 - 接纳是否还强制产出分类/普通写操作先 accept？wait 是否仍有 pending 资格双轨？继续 child 是否无故重开祖先？是否声称能恢复仅在内存且已丢失的响应？
-- T01–T04、D01–D33、V01–V03 是否逐行完成？没有实际跑的场景保持未验收；WebUI 不是新建设验收项。
+- T01–T04、D01–D36、V01–V03 是否逐行完成？没有实际跑的场景保持未验收；WebUI 不是新建设验收项。
 
 实施结束分别记录净删增行数、定向回归与 skip、CI、本地构建、PR、合并 SHA、部署镜像、迁移版本和真实群结果。净删行数不是唯一正确性证明。
 
@@ -343,7 +346,7 @@ Control/API 中有实际模型、SDK或管理消费者的能力继续随内核�
 
 ## 10. 实施、逐条复核与交付记录
 
-本地实现与逐项源码复核完成，已提交、推送并创建PR286，正在办理合并与交付；线上仍为原镜像，不能用原容器healthy证明本轮修改。用户已明确要求不等待远端全量CI，完成定向验证后直接合并部署。
+本地实现、定向验证及逐项复核已有记录。PR286/287已经合并，核心7f2f5664已上线；合并后的逐入口审查又发现AutomationExecutor外层仍以当前开关拒绝消费旧cursor，继续补正并准备最终镜像。用户已明确要求不等待远端全量CI，定向验证后直接合并部署；不把未结束的CI或未触发的QQ场景写成通过。
 
 ### 10.1 逐条复核额外发现并补正的遗漏
 
@@ -367,7 +370,10 @@ Control/API 中有实际模型、SDK或管理消费者的能力继续随内核�
 | 文档仍承诺暂停 notice、通用产物验收或旧固定暂停原因 | 删除冲突说明，按实际结束决定、独立效果查询和原来源消费者更新；本轮current函数索引纠正了类名缩写与旧consumer措辞 |
 | 构建packaging检查仍固定要求迁移0099 | 删除这条已过期编号断言，保留原init-db实际执行、数据库完整性/FK检查及实际head报告；0105空库/旧库升级由原迁移场景验证。重新提交并以新head复核CI |
 | 已登记多条件wait正常运行，Control读历史却因大于8条或8192字节报STATE_MISMATCH | D33删除reader两条重复门槛及过期注释，原JSON读取与安全字段继续复用；原多条件timer场景同时验证真实Control读回 |
-| D14模式切换漏点：关闭Work开关后，SDK/自动化重读旧completed又落入新上下文或模型路径 | 删两个caller的当前开关资格，MainAgentTurnService.run按原来源实际completed事实选已有Durable reader；非completed关闭模式保持原路径，无新cache/参数/状态。原SDK3例改后关闭开关、capacity0、整行不变且0新请求；原关闭模式消费者4例通过；最终native/Person58例通过、0skip，覆盖Auto同ID重入 |
+| D14模式切换仍有外层与pending漏点 | 原Durable只读分支搬到共享read_result，SDK/Auto不为旧等待构造新上下文；真实新进展走完整backend。Executor删除关闭Work时全拒agent脚本的6行；SDK删除固定8任务准入上限。原owner、原Work/Wait和累计预算不重置；26例及69例验证分别通过 |
+| 真实sleep300未开始就被判execution_interrupted | D34删除按PTY running=false/10秒和APT无heartbeat/15秒猜失败；复用原session和started标记，不新建PTY或重复命令。真实监督进程终态与容器代际继续提供事实 |
+| Social外层30秒计时与网关适配器重复 | D35纯删除外层asyncio.timeout；B文件仍是SL Highway连接失败和uncertain，不转成功或自动重发。C新文件真实发送成功独立验收 |
+| 合法原Work被背景恢复早期snapshot的临时协调版本拒绝 | D36沿现有持久Work authority处理，删除Resumer重复版本校验；Chat同一validator放开已持久Work的coordinator条件，普通前台和真实generation检查仍在，同一效果锁仍线性化重置 |
 
 ### 10.2 验证与行数
 
@@ -379,8 +385,41 @@ D33复用原timer登记/Control读取场景10个参数全部通过、0skip（7.8
 
 D14模式切换额外验证：原SDK3例加原关闭模式消费者4例共7例通过、0skip；最终native/Person58例复跑全部通过、0skip（45.61秒），不与前次58累加。SDK改前真实失败在assemble_plugin，Auto改前真实失败在assemble_automation；改后读取相同原结果，不写原Work、不请求模型。对应3个源码Linux mypy、Ruff/format和diff通过。
 
-2026-10-11 最终差异，相对4c528898、启用Git重命名识别：生产src新增1692行、删除2328行，净删636行；迁移新增217行、删除4行；二者合计新增1909行、删除2332行，净删423行。构建脚本另删1行。测试新增3416行、删除613行；实际迁移、进程中断和原消费者链路样本与生产代码分别统计，不把测试增加隐藏在净删数中。PR286初次交付是生产净删635行，D14模式切换补正后为636行。文档和README另计。
+最后pending/Executor补正：SDK/owner/mode-off入口26个唯一案例通过，native44/Person14/SELF4/scheduled7合计69个唯一案例通过、0skip（78.87秒），包括此前58/3/4的相关子集，不重复累加。Sandbox原receipt文件17+原FD案例1共18通过、0skip（14.99秒），四个新增参数实际RED→GREEN，真实监督进程防重不靠源码扫描；Linux Mypy该模块、Ruff/format/diff通过。Social原发送/重放/并发7案例通过、原历史TimeoutError及取消传播样本另执行通过。
+
+末轮Linux全src Mypy644和全库Ruff lint通过；全库format查出本轮遗留6处纯排版差异并用现有formatter修正（条件/函数参数换行与空行），不增加逻辑或重跑无关全量测试。D36冻结后全库Ruff与format（875文件）、对应3源码LinuxMypy、release_validate及diff全部通过。
+
+2026-10-11 最终源码差异，相对4c528898、启用Git重命名识别：生产src新增1773行、删除2428行，净删655行；迁移新增217行、删除4行；二者合计新增1990行、删除2432行，净删442行。构建脚本另删1行。测试新增3762行、删除648行；实际迁移、进程中断和原消费者链路样本与生产代码分别统计，不把测试增加隐藏在净删数中。PR286初次交付生产净删635行、PR287净删636行均为中间基线，不能替代此次全部补正。文档和README另计。
 
 ### 10.3 生产与真实 QQ
 
-PR286：https://github.com/YuanYeYouTao/Yuki/pull/286 。已进行direct预构建，离线证明未包含Monty且Code默认关闭；同一预构建容器空库迁移0105、integrity/FK通过，没有启动Bot或调用模型。正式镜像以合并SHA重新构建并记录。合并SHA、上传校验、备份、生产0105迁移和线上健康尚待实施。用户已确认上线后可配合账号2186567848在数字生命研究所的真人追问、改向和终止验收；在真实证据取得前，V02及未触发场景保持未验收。
+PR286：https://github.com/YuanYeYouTao/Yuki/pull/286 ，UTC2026-10-10 17:24:12合并，main `7f2f5664c6aa9737746515b29035e07262f70a04`。以此SHA本地构建direct镜像并离线验证无Monty、Code默认关闭；空库0105预检integrity/FK通过，没有启动Bot或调用模型。
+
+正式镜像 `ghcr.io/yuanyeyoutao/yuki-qqbot:ops-7f2f5664`，image ID `sha256:31a40809e19a3a998f7d18b8c9ccb1fb55ba361c535feda3a2e8e89295ba3c31`。归档267800576 bytes，上传SHA256 `2f11077fd53dbe75e68a4f171a0acca22f4867e66fbfa0fabd017aa7300304e7`。沿真实Compose全部叠加文件，只替换Bot；部署时曾保存0104一致性SQLite及配置/工作区备份，生产已经升级0105。UTC2026-10-10 18:34:46按用户最新明确要求，全部四处备份及废弃临时文件已删除，现无部署备份可恢复；不把旧备份位置写成仍存在。
+
+部署时全库integrity/FK扫描耗时过长，造成额外停机；确认备份完成、迁移已到0105后，停止本次部署进程多余的全库复查，改核受影响Work/worker表外键，0错误，启动Bot。没有停止迁移或恢复旧数据库。Bot于UTC17:37:06.559137启动，随后health HTTP200、database ok、OneBot连接正常、direct固定74工具；SnowLuma容器ID `cbdabcdf7c2fff6763d3688b10f606b26c6be06ffce98cfba8bccd2032850d89` 和StartedAt `2026-10-09T05:10:47.99332112Z` 完全未变。
+
+PR287：https://github.com/YuanYeYouTao/Yuki/pull/287 ，UTC17:53:22合并，main `201acdeb8392f02e1a80b157ab99fff27617e9df`，补正SDK/自动化已完成读取的模式切换。该SHA的direct镜像构建、离线封装和上传曾完成，但未部署；上传的中间归档已随临时文件清理删除。最终合并外层/pending与真实终端遗漏后构建新SHA一次更新，不把中间构建记为线上版本。
+
+以下线上事实均来自当前唯一Bot的7f2f5664，群数字生命研究所，可信Conversation `5b234414-7537-4f1f-8f27-d03c2c0949c7`、generation20；用户为2186567848。除受控Host接纳机会外只读核验，未伪造真人事件或启动第二个Bot。
+
+| 实际场景 | 原身份与结果 | 验收范围 |
+| --- | --- | --- |
+| 真人长任务及改向 | Event94923→Work `e508f663-c4ca-45c1-a95d-c60e6c13d02a`；追加B的Event94925→同Work input51，最终consumed | 同Work实际接入新要求；父最终completed，无新建伪造事件 |
+| 真实子目标与预算 | 三个child `42af61c5-55e7-4315-b2ab-bde407cdd7dd`、`b9d46937-404f-4fbe-ab5a-2c5711775668`、`4d63f9ec-4839-44b3-88bc-09763f5e6a3f` 全completed；原父e508；全树模型17+3+4+4=28、工具6+2+3+3=14，等于原shared budget | 三个实际直属子目标，不冒称线上三层树；返回inputs50/52/54已consumed |
+| 90秒等待同ID续跑 | 原wait `fc456d99-8fcb-4f61-8777-d8916678e75a`，UTC17:48:04.819814登记，17:49:34.819814到期，17:49:36.453648交付input53 | 原父恢复并结束，timer input consumed；无额外测试事件 |
+| B产物与文件交付 | 原artifact `9a2a0f3b-f491-4a0d-8501-8bb229b7bc5c`，13 bytes、revision1、SHA256 `70ad8ef0eabfb62adda977e5c3c47cbf89ad30ef14d0b287367ae741033baa92`，实际manifest一致 | B产物确实存在；QQ文件交付未通过，不能混作成功 |
+| 文件传输失败后仍结束 | Social `d40145fe-ca93-4050-9f17-5532c1c46761`，UTC17:51:46.565439派发→17:52:16.607670 TimeoutError/uncertain，无内部Event。SL在17:52:18明确报upload_group_file Highway TCP connect timeout、三次上传失败；用户最新确认未收到。随后说明text→Event94927 succeeded | 保留unknown、不重发；父及三child仍completed，journal paired/pending0/引用缺失0，scope无租约 |
+| 自主轮受控Host接纳 | 原proposal `work-kernel-self-20261011-7f2f5664-01`→run `25345010-1b22-488b-a043-070c98b2cf00`，UTC17:59:03.338814接纳→SELF Work `4e4cb139-30b3-4432-849e-a5167358c3a3`，17:59:04.877102创建 | 当前唯一Bot原outbox执行；principal self、actor空、owner semantic/epoch1、intrinsic、sources/support0；非自然概率唤醒 |
+| SELF安静完成与释放 | 原SELF Work UTC18:00:13.850796 completed，journal paired/pending0/1200引用无缺失；累计2模型/0工具/0发送；原run UTC18:00:15.759361 no_reply/feedback seq4，执行租约0 | 安静结束合法，无QQ发送；同原来源、ID和预算，未买额外收尾模型 |
+| 跨轮主动取消旧挂起目标 | 用户2186567848的真人Event95050→turn `569c7b72894f47afb6bbf3fcd04d5743`，原call_50436 task_control.cancel指定旧hds Work `a5f5aabd-6a7b-46f0-8dbf-6bad743766db`；实际trace170674 executed=true/ok=true/state=cancelled/rev10，目标UTC18:45:10.180146更新 | 真实模型控制能够结束另一个旧Work，CLI只读未重复取消；旧文件成功/附言unknown保持事实。该目标当时无真正活动终端，不代替进程停止验收 |
+| 完成后独立新请求及C文件 | Event94938→新Work `fa2f7bf5-8c5c-4dd3-9c29-0ad38f76ce03`，UTC18:07:11.848创建→18:18:08.624 completed；e508未复活。新Social `375b33fd-01bc-44c5-8885-52f9e8dee43a` succeeded→Event94980 file，18:16:27.124入账 | 新请求使用新Work；C文件真实网关成功，不能倒写旧B unknown |
+| sleep300及主动停止 | child `69376f07-2869-42e6-b98e-4c76cfea61c3` 的原Sandbox run `f69f763f-a386-45a3-bd08-2716f05d1f7e` 在WS握手超时后尚无Supervisor started/status，Manager用10秒推断failed/execution_interrupted；child随后completed，main没有登记300秒wait | 停止仍未验收，不能对已结束树发停止当作有效测试；D34修正后再等真实进程启动核对用户停止 |
+
+故障资源旁证：UTC18:04 Bot约305MiB、SL约315MiB，Host MemAvailable约653.5MiB，双方restarts0/OOMKilled=false/cgroup OOM计数0；17:50–17:54内核无OOM记录、无网关WS断连重连，之后普通文本发送成功。当前RSS不等于故障瞬时完整采样或内存泄露验收；这里只能支持现有证据指向QQ文件上传连接失败。
+
+C主链14个真实HTTP200的transport合计173.716秒、最长45.835秒，另两次work_turn_changed与两次取消均physical_attempts=0；journal的dispatched时间不能冒充211秒HTTP挂起。普通实际tool_start为写文件2/发布3/发送2，子任务及wait/get控制另外记录；多轮模型/准备和Host压力分别分析，不归为单一SL内存泄漏。
+
+清理回执 `/opt/yuki-qqbot/ops/cleanup-all-backups-temp-20261011.json`：264个目标，实际释放7,936,364,544 bytes，可用19,299,426,304 bytes；四处备份不存在，活跃Compose文件/挂载仍在，Bot/SL ID和StartedAt未变。UTC18:17换页si最高1656KiB/s、I/O wait 8–14%；清理后18:45可用内存572MiB、swap987MiB，4个新秒si16/292/116/8、so0、wa2/5/1/3%，压力减轻但未证明内存泄漏或其已修复。
+
+UTC18:46:18一次cgroup分解：SL resident charge455.22MiB中anon109.00/file305.01/kernel40.42、swap598.10；Bot359.14中anon295.88/file54.21/kernel8.57、swap134.09。文件缓存和换页会改变容器headline，RSS升降均不足以证明堆泄漏/释放。Host available654.82MiB、swap1028.04MiB、memory PSI10 some0.39/full0.32、IO2.16/1.73，无OOM/restart；Bot/SL无独立memory/CPU hard limit，共享Host1612MiB。当前证据支持确有资源竞争、后来压力减轻，不独断为SL泄漏。

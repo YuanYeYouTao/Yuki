@@ -770,7 +770,6 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
         config=case.chat._runtime_config,
         generate_self=case.chat.generate_self_initiative,
         generate_wakeup=case.chat.generate_main_agent_wakeup,
-        validate_snapshot=case.chat.validate_turn_snapshot,
         bindings=case.chat.runtime.bindings,
     )
 

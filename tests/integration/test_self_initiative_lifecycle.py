@@ -112,7 +112,6 @@ async def test_intrinsic_to_real_chat_and_terminal_feedback(database, tmp_path, 
         config=chat._runtime_config,
         generate_self=chat.generate_self_initiative,
         generate_wakeup=AsyncMock(side_effect=AssertionError("no inbound turn")),
-        validate_snapshot=chat.validate_turn_snapshot,
         bindings=chat.runtime.bindings,
     )
     scheduler = WorkScheduler(repo, resumer.resume, chat_admission_enabled=True)

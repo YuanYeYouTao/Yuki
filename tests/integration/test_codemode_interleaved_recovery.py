@@ -220,7 +220,6 @@ async def test_pending_code_interleave(database, tmp_path, monkeypatch, kind, pa
             config=chat._runtime_config,
             generate_self=chat.generate_self_initiative,
             generate_wakeup=chat.generate_main_agent_wakeup,
-            validate_snapshot=chat.validate_turn_snapshot,
             bindings=chat.runtime.bindings,
         )
         await database.close()

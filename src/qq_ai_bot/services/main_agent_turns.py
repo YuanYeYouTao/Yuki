@@ -708,6 +708,32 @@ class MainAgentTurnService:
                 ),
             )
 
+    async def read_result(self, runtime: AgentRuntime) -> AgentRunResult | None:
+        control = runtime.work_control or current_work_control.get()
+        if (
+            control is not None
+            or self._invocations is None
+            or not runtime.canonical_conversation_id
+        ):
+            return None
+        from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+        from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
+        from qq_ai_bot.services.durable_invocations import invocation_boundary
+
+        previous = await WorkRepository(self._invocations.database).by_source(
+            f"invocation:{invocation_boundary(runtime)}"
+        )
+        if previous is None:
+            return None
+        async with self._invocations.database.sessions() as session:
+            conversation = await session.get(
+                CanonicalConversationModel, runtime.canonical_conversation_id
+            )
+            if conversation is None:
+                raise WorkConflict("work_conversation_unavailable")
+            generation = conversation.generation
+        return await self._invocations.read_result(runtime, previous, generation)
+
     async def run(
         self,
         messages: tuple[ChatMessage, ...],
@@ -735,9 +761,7 @@ class MainAgentTurnService:
                     previous = await WorkRepository(self._invocations.database).by_source(
                         f"invocation:{invocation_boundary(runtime)}"
                     )
-                if self._composer._settings.runtime_work_enabled or (
-                    previous is not None and previous["state"] == "completed"
-                ):
+                if self._composer._settings.runtime_work_enabled or previous is not None:
                     return await self._invocations.run(messages, runtime, backend)
             return await self._run_prepared(
                 messages, replace(runtime, work_control=control), backend

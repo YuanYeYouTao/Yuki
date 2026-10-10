@@ -173,12 +173,6 @@ class AutomationExecutor:
         if snapshot.record.script_hash != automation.script_hash:
             phase = "changed"
         automation = snapshot.record
-        if not self._settings.runtime_work_enabled and any(
-            step.call in {"yuki.agent"} for step in automation.script.steps
-        ):
-            return ExecutionResult(
-                status=RunStatus.BLOCKED, error_category="automation_runtime_required"
-            )
         allowed = snapshot.allowed
         actor_is_superuser = snapshot.actor_is_superuser
         authority = DelegatedAuthority.model_validate(automation.authority_snapshot).model_copy(

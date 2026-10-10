@@ -22,7 +22,6 @@ def make_work_resumer(
     config,
     generate_self,
     generate_wakeup,
-    validate_snapshot,
     bindings=None,
     sandbox_tasks=None,
 ):
@@ -42,7 +41,6 @@ def make_work_resumer(
             active_bindings=bindings or ActiveWorkBindings(),
             generate_self=generate_self,
             generate_wakeup=generate_wakeup,
-            validate_snapshot=validate_snapshot,
             resume_plugin=AsyncMock(side_effect=AssertionError("unexpected plugin recovery")),
         ),
     )

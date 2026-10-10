@@ -252,27 +252,16 @@ class AutomationCapabilityHandlers:
                 "current_group_id": context.current_group_id,
             },
         )
-        previous = None
         messages_sent = 0
-        if current_work_control.get() is None and runtime.canonical_conversation_id:
-            from qq_ai_bot.runtime.work_repository import WorkRepository
-            from qq_ai_bot.services.durable_invocations import invocation_boundary
-
-            previous = await WorkRepository(self._ledger._database).by_source(
-                f"invocation:{invocation_boundary(runtime)}"
+        result = await self.main_turns.read_result(
+            replace(
+                runtime,
+                before_model_request=partial(context.revalidate_authority, None)
+                if context.revalidate_authority is not None
+                else None,
             )
-        if previous is not None and previous["state"] == "completed":
-            result = await self.main_turns.run(
-                (),
-                replace(
-                    runtime,
-                    before_model_request=partial(context.revalidate_authority, None)
-                    if context.revalidate_authority is not None
-                    else None,
-                ),
-                None,
-            )
-        else:
+        )
+        if result is None:
             context = replace(
                 context,
                 agent_instruction=str(arguments["instruction"]),

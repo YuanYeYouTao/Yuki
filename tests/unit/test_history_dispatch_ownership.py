@@ -73,7 +73,9 @@ def _tool(name, arguments, call_id):
     )
 
 
-async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(database, tmp_path):
+async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
+    database, tmp_path, monkeypatch
+):
     provider = FakeLLMProvider()
 
     def respond(request):
@@ -91,6 +93,23 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(d
                 "update",
             )
         if number == 3:
+            return ChatResponse(
+                "",
+                0,
+                tool_calls=(
+                    ToolCall("resumed-history", ToolFunction("get_recent_chat_history", "{}")),
+                    ToolCall(
+                        "resumed-write",
+                        ToolFunction(
+                            "update_short_state",
+                            json.dumps(
+                                {"slot": 1, "text": "resumed-work-result", "expected_revision": 3}
+                            ),
+                        ),
+                    ),
+                ),
+            )
+        if number == 4:
             return _tool("task_control", {"action": "complete"}, "complete")
         raise AssertionError("unexpected model replay")
 
@@ -106,7 +125,8 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(d
         assert "original-snapshot" in saved.payload_json
         assert "private-work-result" not in saved.payload_json
         assert "no_active_work" not in saved.payload_json
-    from qq_ai_bot.runtime.work_schema_v1 import work
+    from qq_ai_bot.runtime.work_activation import current_work_control
+    from qq_ai_bot.runtime.work_schema_v1 import effects, work
 
     async with database.sessions() as session:
         identity = await session.scalar(select(work.c.id))
@@ -121,6 +141,45 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(d
     chat.runtime.main_turns = MainAgentTurnService(
         chat._prompt_composer, chat.runtime.runner, database
     )
+    resolve = env.router.resolve_presence
+    observed = False
+
+    async def observe_before_work_binds(presence_id):
+        nonlocal observed
+        resolved = await resolve(presence_id)
+        if not observed:
+            observed = True
+            assert current_work_control.get() is None
+            result = await harness.processor.handle(
+                replace(
+                    message,
+                    message_id="observation-before-work-bind",
+                    text="新的普通群消息",
+                    mentions_bot=False,
+                ),
+                MemorySender(),
+            )
+            assert result.reason == "group_observed"
+        return resolved
+
+    monkeypatch.setattr(env.router, "resolve_presence", observe_before_work_binds)
+    wakeup = chat.generate_main_agent_wakeup
+
+    async def wake_original(**kwargs):
+        snapshot = kwargs["turn_snapshot"]
+        assert not chat._turn_coordinator.version_matches(
+            snapshot.scope_key, snapshot.coordinator_version
+        )
+        token = current_work_control.set(None)
+        try:
+            assert not await chat.validate_turn_snapshot(snapshot)
+        finally:
+            current_work_control.reset(token)
+        assert not await chat.validate_turn_snapshot(
+            replace(snapshot, generation=snapshot.generation + 1)
+        )
+        return await wakeup(**kwargs)
+
     resumer = make_work_resumer(
         repository,
         ledger=harness.ledger,
@@ -129,25 +188,35 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(d
         router=env.router,
         config=chat._runtime_config,
         generate_self=chat.generate_self_initiative,
-        generate_wakeup=chat.generate_main_agent_wakeup,
-        validate_snapshot=chat.validate_turn_snapshot,
+        generate_wakeup=wake_original,
         bindings=chat.runtime.bindings,
     )
     assert await resumer.resume(item) is None
-    assert len(provider.requests) == 3
+    assert len(provider.requests) == 4
     serialized = json.dumps([m.content for m in provider.requests[2].messages], ensure_ascii=False)
     assert "保存工作结果" in serialized and "work_current_material" in serialized
     assert "new-unsubmitted-state" in serialized
     assert not any(message.tool_calls for message in provider.requests[2].messages)
     async with database.sessions() as session:
         saved = (await session.scalars(select(PromptProjectionModel))).one()
-        assert (saved.epoch_id, saved.payload_json) == (original[0], original[2])
+        assert saved.epoch_id == original[0]
+        original_records = json.loads(original[2])
+        assert json.loads(saved.payload_json)[: len(original_records)] == original_records
+        assert "新的普通群消息" in saved.payload_json
         assert "work_resume" not in saved.payload_json
         assert "work_current_material" not in saved.payload_json
         assert "private-work-result" not in saved.payload_json
         assert saved.invalidated_reason is None
     completed = await repository.get(identity)
-    assert completed["state"] == "completed" and completed["model_requests"] == 3
+    assert completed["state"] == "completed" and completed["model_requests"] == 4
+    assert state.snapshot()[0]["text"] == "resumed-work-result"
+    async with database.sessions() as reader:
+        receipts = (await reader.scalars(select(effects.c.receipt_json))).all()
+    assert any(
+        (outcome := json.loads(receipt).get("outcome", {})).get("tool") == "get_recent_chat_history"
+        and outcome.get("ok")
+        for receipt in receipts
+    )
 
 
 async def _pending_composition(database, tmp_path):

@@ -66,7 +66,6 @@ def original_scheduler(repository, env, harness, chat):
         config=chat._runtime_config,
         generate_self=chat.generate_self_initiative,
         generate_wakeup=chat.generate_main_agent_wakeup,
-        validate_snapshot=chat.validate_turn_snapshot,
         bindings=chat.runtime.bindings,
     )
     scheduler = WorkScheduler(repository, resumer.resume, chat_admission_enabled=True)
@@ -495,7 +494,9 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
     from tests.support.automation_unified_delivery_helpers import sent, setup_run
 
     from qq_ai_bot.automation.models import RunStatus
+    from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
     from qq_ai_bot.persistence.models import AutomationModel, AutomationRunModel
+    from qq_ai_bot.runtime.work_activation import current_work_control
 
     case = await setup_run(database, tmp_path, delivery="none", mode="silent", principal=principal)
     wait_for_timer = principal == "person" and not promoted
@@ -583,7 +584,6 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
         config=case.chat._runtime_config,
         generate_self=case.chat.generate_self_initiative,
         generate_wakeup=case.chat.generate_main_agent_wakeup,
-        validate_snapshot=case.chat.validate_turn_snapshot,
         bindings=case.chat.runtime.bindings,
     )
 
@@ -595,6 +595,32 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
         settings=case.executor._settings,
         resume_automation=resume_automation,
     )
+    identity = ConversationScope.group("80001", "20001")
+    scene = await case.chat._conversation_scopes.get(identity)
+    resolve = case.env.router.resolve_presence
+    observed = False
+
+    async def observe_before_work_binds(presence_id):
+        nonlocal observed
+        resolved = await resolve(presence_id)
+        if not observed:
+            observed = True
+            assert current_work_control.get() is None
+            await case.chat._ledger.append(
+                bot_user_id="80001",
+                platform_message_id="derived-automation-observation",
+                scope_type=ScopeType.GROUP,
+                sender_user_id="10001",
+                group_id="20001",
+                direction="inbound",
+                content="新的普通群消息",
+            )
+            await case.chat._turn_coordinator.notify_message(
+                scene.runtime_scope_key or identity.key, observation=True
+            )
+        return resolved
+
+    monkeypatch.setattr(case.env.router, "resolve_presence", observe_before_work_binds)
     scheduler = WorkScheduler(repository, resumer.resume, chat_admission_enabled=True)
     scheduler._last_reclaim = time.monotonic()
     requests_before = len(case.provider.requests)
@@ -705,6 +731,12 @@ async def test_derived_sdk_plugin_work_resumes_original_id_and_permissions(
             return _tool(
                 "task_control", {"action": "derive", "goal": "derived plugin goal"}, "derive"
             )
+        if calls == 2 and authority == "original":
+            return _tool(
+                "task_control",
+                {"action": "wait", "conditions": [{"kind": "time_due", "after_seconds": 60}]},
+                "wait-original",
+            )
         return _tool("task_control", {"action": "complete", "result": "SDK done"}, "finish")
 
     provider._responder = respond
@@ -719,7 +751,9 @@ async def test_derived_sdk_plugin_work_resumes_original_id_and_permissions(
         prepared.setattr(chat._context_assembler, "assemble_plugin", capture_context)
         async with host.bind(invocation):
             result = await host.agent.run("original plugin goal")
-    assert result.ok and result.data["state"] == "completed", result
+    assert result.ok and result.data["state"] == (
+        "waiting_external" if authority == "original" else "completed"
+    ), result
     repository = WorkRepository(database)
     parent = await repository.get(result.data["work_id"])
     async with database.sessions() as reader:
@@ -735,6 +769,25 @@ async def test_derived_sdk_plugin_work_resumes_original_id_and_permissions(
 
         with pytest.raises(ConversationCoverageError, match="explicit compaction"):
             await assemble_plugin(**{**prepared_context, "capacity_budget": 0})
+        waits = WorkWaitRepository(repository)
+        wait_before = await waits.describe(parent["id"])
+        with monkeypatch.context() as constrained:
+            constrained.setattr(chat, "_history_input_budget", lambda *args, **kwargs: 0)
+            constrained.setattr(chat._settings, "runtime_work_enabled", False)
+            async with host.bind(invocation):
+                waiting = await host.agent.run("original plugin goal")
+            assert waiting.ok and waiting.data["state"] == "waiting_external", waiting
+            assert waiting.data["work_id"] == parent["id"]
+            assert waiting.data["model_requests"] == waiting.data["tool_calls_used"] == 0
+            assert calls == 2 and await repository.get(parent["id"]) == parent
+            assert await waits.describe(parent["id"]) == wait_before
+        assert await waits.deliver_due(now=wait_before["registered_at"] + 61) == 1
+        monkeypatch.setattr(chat._settings, "runtime_work_enabled", False)
+        async with host.bind(invocation):
+            result = await host.agent.run("original plugin goal")
+        assert result.ok and result.data["state"] == "completed", result
+        parent = await repository.get(parent["id"])
+        assert calls == 3
         with monkeypatch.context() as constrained:
             constrained.setattr(chat, "_history_input_budget", lambda *args, **kwargs: 0)
             constrained.setattr(chat._settings, "runtime_work_enabled", False)
@@ -757,7 +810,7 @@ async def test_derived_sdk_plugin_work_resumes_original_id_and_permissions(
                 assert repeated.data["work_id"] == parent["id"]
                 assert repeated.data["text"] == ("SDK done" if saved_result == "text" else "")
                 assert repeated.data["model_requests"] == repeated.data["tool_calls_used"] == 0
-                assert calls == 2 and await repository.get(parent["id"]) == before_read
+                assert calls == 3 and await repository.get(parent["id"]) == before_read
     revoked = authority == "revoked"
     if revoked:
         host._approved_permissions = frozenset()
@@ -781,7 +834,6 @@ async def test_derived_sdk_plugin_work_resumes_original_id_and_permissions(
         config=chat._runtime_config,
         generate_self=chat.generate_self_initiative,
         generate_wakeup=chat.generate_main_agent_wakeup,
-        validate_snapshot=chat.validate_turn_snapshot,
         bindings=chat.runtime.bindings,
     )
 
@@ -798,7 +850,7 @@ async def test_derived_sdk_plugin_work_resumes_original_id_and_permissions(
         await scheduler.health(),
     )
     assert final["parent_work_id"] == parent["id"] and final["source_json"] == child["source_json"]
-    assert calls == (2 if revoked else 3)
+    assert calls == (2 if revoked else 4 if authority == "original" else 3)
     assert resumed_authorities == ([] if revoked else [False])
     assert (await repository.get(parent["id"]))["state"] == "completed"
     if not revoked:
@@ -907,7 +959,6 @@ async def test_retained_background_plugin_work_resumes_after_job_settles_without
         config=chat._runtime_config,
         generate_self=chat.generate_self_initiative,
         generate_wakeup=chat.generate_main_agent_wakeup,
-        validate_snapshot=chat.validate_turn_snapshot,
         bindings=chat.runtime.bindings,
     )
     resumer.services = replace(resumer.services, resume_plugin=worker.resume_work)

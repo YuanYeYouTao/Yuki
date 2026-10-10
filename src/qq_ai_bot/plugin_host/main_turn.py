@@ -55,7 +55,7 @@ async def run_plugin_main_turn(
 ) -> AgentRunResult:
     """Bound the callback wait while the Host retains an accepted activation."""
     from qq_ai_bot.runtime.work_activation import current_work_control
-    from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
+    from qq_ai_bot.runtime.work_repository import WorkRepository
     from qq_ai_bot.services.durable_invocations import invocation_boundary
 
     if _ACTIVE.get() or current_work_control.get() is not None:
@@ -66,17 +66,6 @@ async def run_plugin_main_turn(
     )
     runtime = replace(runtime, execution_id=execution_id)
     key = invocation_boundary(runtime)
-    ledger = host._services.ledger
-    previous = None
-    if ledger is not None:
-        previous = await WorkRepository(ledger._database).by_source(f"invocation:{key}")
-        if previous is not None:
-            prior_source = json.loads(previous["source_json"])
-            if prior_source.get("owner") == "plugin_invocation" and (
-                prior_source.get("approval_revision") != host._services.approval_revision
-                or prior_source.get("plugin_id") != host.plugin_id
-            ):
-                raise WorkConflict("plugin_work_authority_changed")
     execute = partial(
         _execute_plugin_main_turn,
         host,
@@ -88,8 +77,6 @@ async def run_plugin_main_turn(
         permission=permission,
         context_profile=context_profile,
     )
-    if previous is not None and previous["state"] == "completed":
-        return await execute(completed_work=previous)
     task = _RUNNING.get(key)
     if task is not None and task.done():
         # A completed task may still be present before its done callback runs.
@@ -97,8 +84,6 @@ async def run_plugin_main_turn(
         _RUNNING.pop(key, None)
         task = None
     if task is None:
-        if len(_RUNNING) >= 8:
-            raise PluginPermissionError("plugin main Agent admission is busy; no work accepted")
         task = asyncio.create_task(
             execute(),
             name=f"plugin-main-{host.plugin_id}",
@@ -171,7 +156,6 @@ async def _execute_plugin_main_turn(
     tools: AgentToolBackend | None,
     permission: PluginPermission,
     context_profile: str = "none",
-    completed_work: dict[str, Any] | None = None,
 ) -> AgentRunResult:
     """Keep SDK reads/effects narrow; never synthesize a user or transport target."""
     from qq_ai_bot.runtime.work_activation import current_work_control
@@ -237,16 +221,19 @@ async def _execute_plugin_main_turn(
         if control is not None:
             control.validate = validate
         main = cast(MainAgentTurnService, contract.chat.runtime.main_turns)
-        if completed_work is not None:
-            return await main.run(
-                (),
-                replace(
-                    runtime,
-                    invocation_source=json.loads(completed_work["source_json"]),
-                    before_model_request=validate,
-                ),
-                None,
+        result = await main.read_result(
+            replace(
+                runtime,
+                invocation_source={
+                    "owner": "plugin_invocation",
+                    "plugin_id": host.plugin_id,
+                    "approval_revision": host._services.approval_revision,
+                },
+                before_model_request=validate,
             )
+        )
+        if result is not None:
+            return result
 
         payload = {"plugin": {"id": host.plugin_id, "source_event_id": event.id}}
         if context_data:

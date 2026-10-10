@@ -117,6 +117,16 @@ async def test_agent_script_uses_original_work_budget_without_outer_flag(databas
 async def test_none_person_automation_nonempty_internal_final_is_silent(
     database, tmp_path, monkeypatch
 ):
+    from datetime import timedelta
+
+    from qq_ai_bot.automation.work_cursor import load
+    from qq_ai_bot.automation.worker import AutomationWorker
+    from qq_ai_bot.persistence.models import (
+        AutomationModel,
+        AutomationRunModel,
+        AutomationStepRunModel,
+    )
+
     case = await setup_run(database, tmp_path, delivery="none", mode="silent")
     handlers = case.executor._registry.require("yuki.agent").handler.__self__
     compose = handlers._generation_composition
@@ -132,6 +142,10 @@ async def test_none_person_automation_nonempty_internal_final_is_silent(
     assert len(case.provider.requests) == 1 and not sent(case.env)
     async with database.sessions() as reader:
         original = dict((await reader.execute(select(work))).mappings().one())
+        original_step = dict(
+            (await reader.execute(select(AutomationStepRunModel.__table__))).mappings().one()
+        )
+    original_cursor = await load(database, case.run.id, case.row.script_hash)
     monkeypatch.setattr(case.chat._settings, "runtime_work_enabled", False)
     monkeypatch.setattr(case.chat, "_history_input_budget", lambda *_args, **_kwargs: 0)
     replay = await handlers.agent(*caller[0])
@@ -139,6 +153,41 @@ async def test_none_person_automation_nonempty_internal_final_is_silent(
     assert replay.llm_calls == replay.tool_calls == replay.messages_sent == 0
     async with database.sessions() as reader:
         assert dict((await reader.execute(select(work))).mappings().one()) == original
+    assert len(case.provider.requests) == 1 and not sent(case.env)
+
+    # The final step is durable, but its owning run has not been settled yet.
+    worker = AutomationWorker(
+        settings=case.executor._settings,
+        repository=case.repository,
+        executor=case.executor,
+        time_service=case.chat._time,
+    )
+    claimed = await case.repository.claim_due(
+        worker_id=worker._worker_id,
+        now=case.row.next_run_at + timedelta(seconds=1),
+        lease_seconds=60,
+        limit=1,
+    )
+    assert len(claimed) == 1
+    await worker._process(claimed[0])
+    async with database.sessions() as reader:
+        run = await reader.get(AutomationRunModel, case.run.id)
+        automation = await reader.get(AutomationModel, case.row.id)
+        assert run.status == "succeeded" and run.error_category is None
+        assert (run.steps_completed, run.llm_calls, run.tool_calls, run.messages_sent) == (
+            result.steps_completed,
+            result.llm_calls,
+            result.tool_calls,
+            result.messages_sent,
+        )
+        assert automation.status == "completed" and automation.run_count == 1
+        assert list(await reader.scalars(select(AutomationRunModel.id))) == [case.run.id]
+        assert dict((await reader.execute(select(work))).mappings().one()) == original
+        assert (
+            dict((await reader.execute(select(AutomationStepRunModel.__table__))).mappings().one())
+            == original_step
+        )
+    assert await load(database, case.run.id, case.row.script_hash) == original_cursor
     assert len(case.provider.requests) == 1 and not sent(case.env)
 
 
@@ -218,7 +267,6 @@ async def test_failed_agent_releases_owner_and_explicitly_resumes_original_work(
         config=case.chat._runtime_config,
         generate_self=case.chat.generate_self_initiative,
         generate_wakeup=case.chat.generate_main_agent_wakeup,
-        validate_snapshot=case.chat.validate_turn_snapshot,
         bindings=case.chat.runtime.bindings,
     )
     resumer.services = replace(
@@ -259,7 +307,7 @@ async def test_failed_agent_releases_owner_and_explicitly_resumes_original_work(
 @pytest.mark.parametrize("principal", ["person", "self"])
 @pytest.mark.parametrize("wait_kind", ["need_input", "time_due"])
 async def test_public_cancel_settles_owning_run_without_error_or_new_request(
-    database, tmp_path, principal, wait_kind
+    database, tmp_path, principal, wait_kind, monkeypatch
 ):
     from datetime import timedelta
 
@@ -313,9 +361,46 @@ async def test_public_cancel_settles_owning_run_without_error_or_new_request(
         "waiting_user" if wait_kind == "need_input" else "waiting_external"
     )
     if wait_kind == "time_due":
-        # Owner polls retain the original wait without another model/tool.
-        await process()
-        await process()
+        from qq_ai_bot.automation.work_cursor import load
+        from qq_ai_bot.runtime.work_wait_schema import waits
+
+        async with database.sessions() as reader:
+            original_run = dict(
+                (await reader.execute(select(AutomationRunModel.__table__))).mappings().one()
+            )
+            original_owner = dict(
+                (await reader.execute(select(AutomationModel.__table__))).mappings().one()
+            )
+            original_wait = dict((await reader.execute(select(waits))).mappings().one())
+        original_owner.pop("claimed_until")
+        phase, cursor = await load(database, case.run.id, case.row.script_hash)
+        cursor.pop("active_seconds")
+        monkeypatch.setattr(case.chat._settings, "runtime_work_enabled", False)
+        monkeypatch.setattr(case.chat, "_history_input_budget", lambda *_args, **_kwargs: 0)
+        # Owner polls read the original wait without preparing another model turn.
+        for _ in range(2):
+            await process()
+            async with database.sessions() as reader:
+                assert dict((await reader.execute(select(work))).mappings().one()) == original
+                assert (
+                    dict(
+                        (await reader.execute(select(AutomationRunModel.__table__)))
+                        .mappings()
+                        .one()
+                    )
+                    == original_run
+                )
+                current_owner = dict(
+                    (await reader.execute(select(AutomationModel.__table__))).mappings().one()
+                )
+                # Normal polling advances the owner backoff, retaining its business facts.
+                current_owner.pop("claimed_until")
+                assert current_owner == original_owner
+                assert dict((await reader.execute(select(waits))).mappings().one()) == original_wait
+            current_phase, current_cursor = await load(database, case.run.id, case.row.script_hash)
+            assert current_phase == phase
+            current_cursor.pop("active_seconds")
+            assert current_cursor == cursor
         assert len(case.provider.requests) == 1
     cancelled = await public_action(database, original, "cancel")
     assert cancelled.success

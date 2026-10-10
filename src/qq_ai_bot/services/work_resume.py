@@ -48,7 +48,6 @@ class WorkResumeDependencies:
     active_bindings: ActiveWorkBindings
     generate_wakeup: Callable[..., Awaitable[Any]]
     generate_self: Callable[..., Awaitable[Any]]
-    validate_snapshot: Callable[[ConversationTurnSnapshot], Awaitable[bool]]
     resume_plugin: Callable[[dict[str, Any], dict[str, Any]], Awaitable[None]]
     resume_automation: Callable[[dict[str, Any], dict[str, Any]], Awaitable[None]]
 
@@ -219,8 +218,6 @@ class WorkResumer:
                 )
                 if fresh_source != recovered:
                     raise ValueError("work_source_changed")
-                if not await self.services.validate_snapshot(snapshot):
-                    raise WorkConflict("work_turn_changed")
                 fresh = await self.services.presence_router.resolve_presence(recovered.presence_id)
                 if fresh.connection.snapshot != resolved.connection.snapshot:
                     raise ValueError("work_connection_changed")
@@ -268,8 +265,6 @@ class WorkResumer:
                 )
                 if fresh_source != recovered:
                     raise ValueError("work_source_changed")
-                if not self.services.turn_coordinator.is_current(token):
-                    raise WorkConflict("work_turn_changed")
                 fresh = await self.services.presence_router.resolve_presence(recovered.presence_id)
                 if fresh.connection.snapshot != resolved.connection.snapshot:
                     raise ValueError("work_connection_changed")

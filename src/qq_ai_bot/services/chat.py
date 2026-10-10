@@ -1515,9 +1515,13 @@ class ChatService:
         )
 
     async def validate_turn_snapshot(self, snapshot: ConversationTurnSnapshot) -> bool:
-        return self._turn_coordinator.version_matches(
-            snapshot.scope_key,
-            snapshot.coordinator_version,
+        control = current_work_control.get()
+        return (
+            (control is not None and control.current is not None)
+            or self._turn_coordinator.version_matches(
+                snapshot.scope_key,
+                snapshot.coordinator_version,
+            )
         ) and await self._conversation_scopes.generation_matches(
             snapshot.conversation_id,
             snapshot.generation,

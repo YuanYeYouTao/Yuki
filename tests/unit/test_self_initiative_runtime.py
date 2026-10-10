@@ -459,7 +459,6 @@ async def test_scheduler_resumes_self_without_reading_a_person_event_or_sending_
         config=app.runtime_config,
         generate_self=chat.generate_self_initiative,
         generate_wakeup=AsyncMock(side_effect=AssertionError("no message actor")),
-        validate_snapshot=chat.validate_turn_snapshot,
     )
     await resumer.resume(item)
     chat.generate_self_initiative.assert_awaited_once()

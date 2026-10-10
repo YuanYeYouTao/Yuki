@@ -201,9 +201,7 @@ async def test_compilable_schemas_execute_once_through_real_catalog_and_original
     await work.control.repository.release(work.control.lease)
 
 
-async def test_admin_failure_can_continue_correct_and_reuse_original_effect(
-    database, tmp_path
-):
+async def test_admin_failure_can_continue_correct_and_reuse_original_effect(database, tmp_path):
     from types import SimpleNamespace
 
     from tests.conftest import build_harness, make_settings
