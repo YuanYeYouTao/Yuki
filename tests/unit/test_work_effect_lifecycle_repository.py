@@ -1,4 +1,4 @@
-"""Real SQLite role-aware debt and exact original-run reconciliation."""
+"""Real SQLite execution facts and exact original-run reconciliation."""
 
 import asyncio
 import json
@@ -64,7 +64,7 @@ async def test_terminal_child_late_execution_receipt_settles_without_reviving_ch
     repo, lease, identity = owned
     workers = SubagentRepository(repo)
     child = await workers.start(
-        lease, identity, "late-child", {"goal": "inspect", "output_kind": "answer"}
+        lease, identity, "late-child", {"goal": "inspect"}
     )
     child_lease = await workers.acquire(child)
     run_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -108,9 +108,10 @@ async def test_terminal_child_late_execution_receipt_settles_without_reviving_ch
 
     control = WorkControl(repo, lease, "lifecycle", {}, validate)
     control.current = await repo.get(identity)
-    assert await control.has_unresolved_effects()
     await control.reconcile_completed_children()
-    assert not await control.has_unresolved_effects()
+    assert json.loads((await read_receipt(repo, "child-launch"))["receipt_json"])["outcome"][
+        "pending"
+    ] is False
     assert await repo.get(child) == before
     assert (
         json.loads((await read_receipt(repo, "child-launch"))["receipt_json"])["outcome"][
@@ -145,7 +146,6 @@ async def test_request_resolution_cannot_rebind_an_unrelated_original(owned, mis
         request_id=request_id,
     )
     assert await read_receipt(repo, "original-effect") == original
-    assert await repo.has_unresolved_effects(lease, identity)
 
 
 @pytest.mark.parametrize("by_request", [False, True])
@@ -206,13 +206,12 @@ async def test_completion_query_uses_identity_index_and_small_projection(owned, 
 
 @pytest.mark.parametrize("role", [False, True, None, "missing", 0])
 @pytest.mark.parametrize("flag", ["pending", "uncertain"])
-async def test_only_explicit_readonly_boolean_is_not_lifecycle_debt(owned, role, flag):
+async def test_readonly_observation_does_not_acquire_execution_ownership(owned, role, flag):
     repo, lease, identity = owned
     outcome = {"tool": "get_code_run", flag: True, "run_id": "external-run"}
     if role != "missing":
         outcome["side_effecting"] = role
     await receipt(owned, "observation", outcome)
-    assert await repo.has_unresolved_effects(lease, identity) is (role is not False)
     assert len(await repo.effect_evidence(lease, identity, only_unresolved=True)) == (
         role is not False
     )
@@ -225,7 +224,6 @@ async def test_only_explicit_readonly_boolean_is_not_lifecycle_debt(owned, role,
 async def test_readonly_state_keeps_explicit_observation_uncertainty(owned, state, uncertain):
     repo, lease, identity = owned
     await receipt(owned, "read", {"side_effecting": False, "uncertain": uncertain}, state)
-    assert not await repo.has_unresolved_effects(lease, identity)
     assert (await repo.effect_evidence(lease, identity))[0]["uncertain"] is uncertain
 
 
@@ -250,7 +248,6 @@ async def test_terminal_read_preserves_original_known_mutation_fact(owned, commi
     outcome = json.loads(row["receipt_json"])["outcome"]
     assert outcome["tool"] == "terminal_exec" and outcome["side_effecting"] is True
     assert outcome["mutation_committed"] is (None if committed == "missing" else committed)
-    assert not await repo.has_unresolved_effects(lease, identity)
     assert await read_receipt(repo, "poll") == poll
 
 
@@ -302,7 +299,6 @@ async def test_terminal_receipt_does_not_remove_unknown_mutating_state(owned):
     )
     await repo.resolve_run_effects(lease, identity, "original-run", finished())
     assert (await read_receipt(repo, "launch"))["state"] == "unknown"
-    assert await repo.has_unresolved_effects(lease, identity)
 
 
 @pytest.mark.parametrize("tool", ["terminal_exec", "legacy_tool", "get_code_run"])
@@ -310,7 +306,9 @@ async def test_missing_role_only_known_original_mutation_can_be_settled(owned, t
     repo, lease, identity = owned
     await receipt(owned, "legacy", {"tool": tool, "run_id": "original-run", "pending": True})
     await repo.resolve_run_effects(lease, identity, "original-run", finished())
-    assert await repo.has_unresolved_effects(lease, identity) is (tool != "terminal_exec")
+    assert json.loads((await read_receipt(repo, "legacy"))["receipt_json"])["outcome"][
+        "pending"
+    ] is (tool != "terminal_exec")
 
 
 async def test_same_run_identifier_does_not_cross_plugin_mutation_domain(owned):
@@ -328,7 +326,6 @@ async def test_same_run_identifier_does_not_cross_plugin_mutation_domain(owned):
     original = await read_receipt(repo, "plugin")
     await repo.resolve_run_effects(lease, identity, "original-run", finished())
     assert await read_receipt(repo, "plugin") == original
-    assert await repo.has_unresolved_effects(lease, identity)
 
 
 async def test_empty_and_unchanged_resolution_read_while_wal_writer_held(owned):
@@ -514,7 +511,7 @@ async def test_legitimate_root_child_and_child_own_lease_resolution(owned):
     repo, lease, identity = owned
     workers = SubagentRepository(repo)
     child = await workers.start(
-        lease, identity, "original-child", {"goal": "inspect", "output_kind": "answer"}
+        lease, identity, "original-child", {"goal": "inspect"}
     )
     child_lease = await workers.acquire(child)
     assert child_lease
@@ -530,9 +527,10 @@ async def test_legitimate_root_child_and_child_own_lease_resolution(owned):
         },
     )
     # Parent's trusted reconciliation enumerates its registered child's effects.
-    assert await repo.has_unresolved_effects(lease, identity)
     await repo.resolve_run_effects(lease, child, "original-run", finished())
-    assert not await repo.has_unresolved_effects(lease, identity)
+    assert json.loads((await read_receipt(repo, "child-launch"))["receipt_json"])["outcome"][
+        "status"
+    ] == "succeeded"
     await receipt(
         child_owned,
         "child-own-launch",
@@ -546,7 +544,9 @@ async def test_legitimate_root_child_and_child_own_lease_resolution(owned):
     await repo.resolve_run_effects(
         child_lease, child, "child-own-run", finished(run_id="child-own-run")
     )
-    assert not await repo.has_unresolved_effects(child_lease, child)
+    assert json.loads((await read_receipt(repo, "child-own-launch"))["receipt_json"])["outcome"][
+        "status"
+    ] == "succeeded"
     with pytest.raises(WorkConflict, match="work_effect_obsolete"):
         await repo.resolve_run_effects(child_lease, identity, "original-run", finished())
 
@@ -631,11 +631,9 @@ async def test_interrupted_second_page_retains_exact_unsettled_originals(
         await repo.resolve_run_effects(lease, identity, "original-run", finished())
     facts = await repo.effect_evidence(lease, identity)
     assert len(facts) == 129 and sum(fact.get("pending", False) for fact in facts) == 1
-    assert await repo.has_unresolved_effects(lease, identity)
     assert await repo.get(identity) == original_work
     monkeypatch.setattr(repo.database, "immediate_session", original_session)
     await repo.resolve_run_effects(lease, identity, "original-run", finished())
-    assert not await repo.has_unresolved_effects(lease, identity)
     assert len(await repo.effect_evidence(lease, identity)) == 129
     assert await repo.get(identity) == original_work
 
@@ -660,7 +658,7 @@ async def test_interrupted_second_page_retains_exact_unsettled_originals(
         ),
     ],
 )
-async def test_historical_unknown_reader_and_atomic_debt_agree_without_rewriting(
+async def test_historical_unknown_reader_preserves_facts_without_rewriting(
     owned, stored, unknown
 ):
     repo, lease, identity = owned
@@ -678,7 +676,6 @@ async def test_historical_unknown_reader_and_atomic_debt_agree_without_rewriting
     # so SQL reads only outcome.*: a result-only row written past that boundary
     # stays fenced even when the Python reader could decode it.
     fenced = unknown or "outcome" not in stored
-    assert await repo.has_unresolved_effects(lease, identity) is fenced
     assert bool(await repo.effect_evidence(lease, identity, only_unresolved=True)) is fenced
     assert (await read_receipt(repo, "history"))["receipt_json"] == raw
 
@@ -698,7 +695,6 @@ async def test_malformed_historical_status_is_unknown_in_reader_and_cas(owned, s
         )
     fact = (await repo.effect_evidence(lease, identity))[0]
     assert fact["uncertain"] is True and fact["ok"] is False
-    assert await repo.has_unresolved_effects(lease, identity)
 
 
 @pytest.mark.parametrize("data", [None, [], ""])
@@ -717,7 +713,6 @@ async def test_legacy_nondict_data_preserves_root_lifecycle_facts(owned, data, r
         )
     fact = (await repo.effect_evidence(lease, identity))[0]
     assert fact.get("pending") or fact.get("uncertain")
-    assert await repo.has_unresolved_effects(lease, identity)
 
 
 @pytest.mark.parametrize("kind", ["final", "tool"])
@@ -783,7 +778,6 @@ async def test_native_final_receipts_keep_domain_proof_without_exempting_tools(
     known = proven and kind == "final"
     fact = (await repo.effect_evidence(lease, identity))[0]
     assert bool(fact.get("uncertain")) is not known
-    assert await repo.has_unresolved_effects(lease, identity) is not known
     if known:
         assert fact["executed"] is (state == "accepted")
         assert fact["ok"] is (state == "accepted")

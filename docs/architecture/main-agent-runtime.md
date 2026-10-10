@@ -56,20 +56,22 @@ legacy/semantic 自主机会均以正式 SELF 来源进入这条执行链；
 查已完成、失败或取消的工作用 `terminal`，同时看活动与终态用 `all`。
 `limit` 默认 8、允许 1–50，`cursor` 用于续页，不把这个简表宣称为完整任务存档。
 全局投影只提供安全任务元数据和创建者标识，不提供 journal、工具正文或跨会话聊天内容。
-子 Agent 使用固定工作工具子集，其 `get` / `list` 只查看自身 Work，不继承主 Agent 的全局读取。
+子 Agent 使用固定工作工具子集，其 `get` / `list` 查看自身及实际后代的安全事实；指定节点
+管理也限于该子树，原祖先和兄弟不因此开放。`parent_work_id` 可分页查询直接子目标。
 两个查询不要求先接纳 Work，不获取执行租约，不追加输入、恢复工作或发放预算。
 进度、用途、结束时间和已有结果的追问先查询原 Work，不因此另行 `accept`。
 终态查询不会复活旧任务；真实独立新请求仍可接纳新 Work。
 持久状态是查询时刻的生命周期证据，具体执行与交付仍由原回执证明；
-查询不扩大修改权限、不解除未知效果围栏，也不把口头承诺当作已执行事实。
+查询不扩大修改权限、不授予原未知调用的重派资格，也不把口头承诺当作已执行事实。
 
 当前群的 active 自动化目录不再预取进每轮主 Agent 上下文。明确涉及自动化的当前请求由
 `automation_list` / `automation_get` 按需核实；读取目录不授予修改权限。普通聊天、SELF
 自主轮、插件唤醒和定时 Agent 不因群里存在任务而自动收到任务清单。
 
-Person 自动化以创建者的当前身份和权限执行，与其在目标会话发起普通聊天一致；不再交集创建时的
-工具白名单，不要求 TaskSpec 选择 capabilities。每次模型请求和工具执行重查任务有效性、
-所有者、租约、权限及会话 generation，权限变化终止旧授权下的执行。插件本身的安装批准边界不变。
+Person 自动化使用固定主 Agent 工具声明，不要求 TaskSpec 选择工具白名单。实际执行权限取
+创建者当前权限与原委托的共同范围，原 USER 委托不因后来升为超管而获得管理权限。
+每次模型请求和工具执行复核原来源、所有者、租约及会话 generation；本次激活使用的权限
+被撤销时停止该旧授权执行，同一 Work 可明确继续并取得当前权限。插件安装批准仍单独核验。
 
 `ToolActor` 传递真实主体和执行来源。聊天保留内部事件 ID，定时任务保留 run/step/execution ID；
 不能生成假的 InboundMessage、QQ 消息或提及来通过校验。定时来源仍为 scheduled_automation。
@@ -94,18 +96,15 @@ Conversation/generation、Space、Presence 和群绑定；场景失效即阻止�
 完全不发送；模型最终正文只供内部收尾，不会自动发给用户。`report_progress` 和本轮最终回复
 效果队列不再是模型可调用合同。工作完成可以安静结束，不需要人为制造发送回执。
 模型的无工具 final 在普通聊天、SELF 和自动化入口都是内部终止信号，不触发未发送纠正轮。
-存在原 Work 时经共同 complete 入口核验原目标、真实效果、交付要求和晚到输入；没有
-Work 时返回内部结果。自动化沿原Work终态收尾，完成不强制发送；发送是否发生由原回执证明，内部final不证明QQ已回复。参数、权限或预算拒绝不伪造发送尝试，未知发送不盲目重试。
+存在原 Work 时经共同 complete 入口接纳结束决定，由原 writer 收拢所属执行和晚到业务输入；没有
+Work 时返回内部结果。自动化沿原 Work 终态收尾，完成不强制发送；发送是否发生由原回执证明，内部 final 不证明 QQ 已回复。参数、权限或预算拒绝不伪造发送尝试，未知发送不盲目重试。
 共享执行提示明确要求：当前真人请求创建自动化、修改记忆或其他写操作后，Agent 根据
 真实回执用 `send_message` 给当前会话一次简短结果反馈；未确认不宣称成功，已送达的
 同一结果不重复反馈。明确安静执行、自主 SELF、定时任务和后台维护不因此额外发消息。
 这是 Agent 的执行指导，不新增关键词判断、强制代发或恢复循环；合成回放验证提示装配、
 工具回执顺序和显式发送边界，不证明真实模型在任意场景都遵守提示。
 记忆写入不创建独占轮、单次写配额或特殊发送权限。每次操作仍核对原 actor、授权、
-输入来源、预算和效果回执；发送继续经 Social 权限、路由与投递合同。直接调用批次若包含
-记忆写入，同批 `send_message` 仍返回未执行，须观察写入的真实成功或失败回执后再由下一
-模型请求决定发送内容；这不限制同批多次合法记忆变更或其他获准操作。Code 在真实记忆
-修改后保留既有 Host 停止边界，未知结果保留原围栏，不以删除独占政策取得重跑资格。
+输入来源、预算和效果回执；发送继续经 Social 权限、路由与投递合同。记忆写和发送可在同批或同一 Code 脚本按原调用顺序执行，真实结果逐条返回。原未知调用不重新派发，后续独立调用不因历史未知被整体拒绝。
 `NO_REPLY` 是合法内部沉默，`return_to_caller` 不制造真人收尾通知。作为 `send_message`
 正文的完整 `NO_REPLY` 仍在发送和回执前拒绝；子 Agent 返回内部结果，不继承主发送权限。
 
@@ -118,8 +117,7 @@ Work 时返回内部结果。自动化沿原Work终态收尾，完成不强制�
 逐条持久化发送回执；模型主动多次调用仍是独立的发送。部分发送未知时停止后续
 分条，重入只读取已有回执，不盲目重发。媒体仍按单次发送处理。
 `send_message` 是显式会话交付，不要求先 `task_control.accept`；它仍被视为真实副作用，
-目标权限、路由、mutation 围栏和投递回执均在执行处核验。其他业务副作用仍按工作接纳
-合同执行。社交工具不再对发消息或戳一戳施加额外的每目标/全局分钟频率上限。
+目标权限、路由、mutation 围栏和投递回执均在执行处核验。普通写操作沿原领域授权和回执执行，不强制先接纳 Work。社交工具不再对发消息或戳一戳施加额外的每目标/全局分钟频率上限。
 已接纳 Work 也不额外施加发送次数或 16 条/60 秒窗口；投递意图只负责身份、内容冲突和
 回执防重放，不是频率配额。已有明确未派发的 blocked 意图可按原身份恢复；accepted、
 dispatching 和 unknown 不因此获得重发资格。平台实际拒绝仍按真实结果处理。
@@ -151,9 +149,8 @@ canonical Conversation 时同样在模型调用前阻断。
 
 内部 DSL 的 `delivery_target` 记录已经解析的交付要求，不改变运行上下文的归属。
 `self_private` 核验创建者 Person，`current_group` 核验当前 Space，`none` 允许安静完成。
-存在交付要求时，只有原持久工作 completed 且该目标的完整工具回执与真实 Social 发送一致，
-才确认交付；分条和文件附言不能仅凭其中一项成功通过。确定失败可由后续完整发送解决，
-未知结果不能被另一次成功覆盖。内部最终正文始终不会被外层补发。
+原持久 Work 的业务完成与 Social 传输确认分别记录。分条、文件及附言按各自回执说明实际交付，
+未知结果不能被另一次成功覆盖，也不否决 Agent 的业务结束决定。内部最终正文始终不会被外层补发。
 核验在同一只读快照中读取工作与回执，不持 SQLite 写锁；原工作已归档、完整工具记录
 不可用时返回未知，不凭幸存的单条成功回执推断全部交付完成。
 单次 Social 操作的完整交付事实（计划、全部分片、文件/附言）由 `SocialOperationRepository.delivery_facts`
@@ -163,18 +160,11 @@ canonical Conversation 时同样在模型调用前阻断。
 这证明传输事实，不证明内容在语义上已完成目标；不按措辞猜测进度或最终回答。
 
 `task_control(complete)` 可在同一次调用中携带真实内部 `result`（主合同 17、
-worker 合同 4）。direct 与 Code 共用一个完成准备：先核对未决效果、活子任务、产物与交付
-回执以及结果消费者是否允许空结果，全部通过才把决定写入原 Work `checkpoint_json` 的
+worker 合同 4）。direct 与 Code 共用原结束入口，把 Agent 的结束决定写入 Work `checkpoint_json` 的
 `accepted_control`（complete/fail/need_input/wait 各一份，wait(conditions) 与原 wait
-绑定同事务）。配对保存后本次 activation 立即结束，不再请求后续模型。结算 writer 复核当前
-邮箱、未决效果与子任务，只有真正提交 completed 时才把 result 原子转存为 `sync_result`；
-caller 与子任务通知都只读取已提交行。need_input/fail 的 reason 是可选说明，不作为状态提交条件；已验证完成的 state_change 不额外要求 result 正文。无工具 final 以净化后的正文走同一完成准备；被拒绝时
-以稳定拒绝 code 作为暂停原因，不购买纠正轮。合法新输入、update(goal) 或 cancel_wait 在原
-边界撤销候选。恢复时先读取 accepted_control，任何新模型或业务派发前即按原 writer 结算。
-结果正文按实际output_kind与消费者使用：已验证的state_change无需附加prose，confirmed发送
-也可构成原完成事实；answer或artifact仍使用其真实结果与交付，不靠装饰性文案替代证据。
-这些边界由 `services/turn_execution.py` 的类型化循环实施，与 `execute_code` 的原 VM
-续接共存；恢复未决 composition 后仍按原来源重新核验完成提议，不回到旧 `_run`。
+绑定同事务）。配对保存后本次 activation 立即结束，不再请求后续模型。结算 writer 仅复核真实新授权输入及尚在执行的所属执行，等待期间保留结束决定；真正提交 completed 时才把 result 原子转存为 `sync_result`。caller 与子任务通知只读已提交行。need_input/fail 的 reason、context_note 和 reporting 是可选资料，不作为结束审批。
+合法无工具 final（包括空正文）走同一结束路径；正文供内部结果，QQ 仍须显式发送。旧 unknown、暂停子目标、产物标签与辅助通知不否决业务完成，查询仍保存实际失败和未知事实。
+恢复先读 accepted_control，配齐原调用后由同一 writer 收尾，不再购买模型确认完成；没有持久响应的丢进程请求不自动重购。真实输入和目标修改沿原边界接续。
 
 历史脚本保留原 run/step、script_hash、工作 ID、预算与游标。旧模型正文尾发不再执行：
 可以定位原工作及目标且已有完整成功证据时，记录跳过该尾步；未知则停在 uncertain，
@@ -204,10 +194,10 @@ Person ID、外部账号 ID 和当前可用显示名；`automation_get` 使用�
 | --- | --- | --- |
 | 用户消息 | WorkScheduler 选择，WorkResumer 恢复原 work/generation | Agent 显式 `send_message` |
 | SELF 自主群聊（legacy/semantic） | Host 接纳记录 → WorkScheduler 选择、WorkResumer 恢复原 initiative/work/generation | Agent 显式 `send_message`；允许 `NO_REPLY` |
-| 自动化生成、Agent 步骤 | AutomationWorker，原 run/step 游标 | Agent 显式 `send_message`；旧模型尾发仅核对回执后退休 |
-| 插件通知自主轮 | PluginBackgroundTurnWorker，原 job/event | Agent 显式 `send_message`；插件自己的通知 outbox 独立 |
+| 自动化生成、Agent 步骤 | AutomationWorker 保留原 run/step 游标；明确继续的 Work 或派生目标由 WorkScheduler 交回原 Agent 入口 | Agent 显式 `send_message`；旧模型尾发仅核对回执后退休 |
+| 插件通知自主轮 | PluginBackgroundTurnWorker 保留原 job/event；尚存 Work 由 WorkScheduler 交回原 Host 入口 | Agent 显式 `send_message`；插件自己的通知 outbox 独立 |
 | 有真实事件的 SDK 主调用 | Host 持有正在运行的协程，后续由 WorkScheduler 选择并交回插件 Host 恢复 | 原调用方查询结果 |
-| 子 Agent | SubagentScheduler 选择，SubagentExecution 恢复原父子关系 | 父 Agent 验收后交付 |
+| 子 Agent | SubagentScheduler 选择，SubagentExecution 恢复原父子关系 | 父 Agent 根据真实子结果决定交付 |
 
 调度器负责有界选择、时钟维护和循环生命周期；来源重建、权限复核、工具后端与发送
 编排归应用服务。`WorkResumer` 通过显式依赖取得原来源和 Host 回调，不接收整个容器。
@@ -287,7 +277,7 @@ WorkScheduler 每轮先只读发现至多 32 个已完成、失败或到期的�
 兼容边界；不能删除来源检查来获得缓存稳定。
 
 v3.8.3（head 0059–0061）写入的旧冻结最终投递计划（journal phase delivery/delivered）
-不再在线执行：恢复到这类 journal 时原 Work 以 `legacy_delivery_not_resumed` 暂停，零模型、
+不再在线执行：恢复到这类 journal 时原 Work 沿统一暂停结算，零模型、
 零发送。停写副本上运行 `qq-ai-bot-cli work import-legacy-deliveries`（可先 `--dry-run`）
 离线对账：已确认分片只补出站账本（按原回执字节 CAS），从未认领的分片在原 `final-N` 键
 记为确定未发送，计划意图为 dispatching/unknown 或有回执无意图的保持未知；全部已确认才完成。
@@ -333,10 +323,8 @@ Journal 恢复失败同样保留有限的内部原因码，未知异常文本使
 失效的私有协议和未发送草稿不进入新请求。已有确定效果不重复执行，未知投递继续按原回执
 对账。可重试错误不因固定次数转为长期挂起，累计次数和预算仍保留。
 
-暂停通知交付是原 Work 的维护，不把它改为 running，也不消费 pending 输入或进入业务
-结算，不计任务活动时间。同一暂停期间复用原通知身份与交付回执；真实恢复执行后再次
-失败才登记新暂停通知。通知准备或收尾失败不覆盖原业务失败；已确认接受的通知按原
-effect 修复交付记录，unknown 不获重发资格。
+固定暂停 notice 的生成、调度与发送已删除。0105 退役尚未派发的 planned/blocked notice，
+已接受、派发中和 unknown 仍保留原事实，不补发。进展与阻塞由 Agent 在原循环按需说明。
 
 原任务要求沿 goal、trigger/input 和显式登记资料保留，不从第一条 user 猜测，不让新唤醒
 替换原目标。保留要求不等于每次注入最初 compiled envelope；旧动态资料明确标为旧观察，
@@ -421,8 +409,9 @@ SELF 接纳记录构成持久待派发事实，以 `initiative:<run_id>` 唯一�
 子任务，保留执行 ID 和总预算。controller owner/epoch 切换只控制新接纳，不使已接受工作
 失效；generation reset 或原授权失效仍阻止继续执行。发送沿原 Presence，不借当前主动路由。
 Host 对原 run 独立对账真实效果；终态迟到回执保留，但不复活 Work、重复记账或重发。
-保留型 `suspended`/`waiting_user` 不使原 run 丧失执行资格，管理 resume 由原 SELF 来源继续；
-只有真实终态 Work 才终结 run，参与控制器不自行启动新任务。首次连接准备失败继续沿
+保留型 `suspended`/`waiting_user` 不使原 run 丧失执行资格，管理 resume 由原 SELF 来源继续。
+资料尚存的 failed 可明确沿原 ID 继续；子目标不为读取来源和预算重开已结束的祖先或原 run。
+只有真实终态根 Work 才终结原 run，参与控制器不自行启动新任务。首次连接准备失败继续沿
 原 Work 重排，不因三次重试或未开始执行另判终结失败。
 WorkScheduler 始终启动；普通聊天及无现有 WorkControl 的 Host 调用接纳、模型自动化执行
 仍各自核验 `RUNTIME_WORK_ENABLED`，
@@ -479,7 +468,7 @@ Work、工作者与自动化的续租任务由原激活 task 监督。续租返�
 停机等待有界，取消后按持久检查点恢复。插件自主轮不会因两次会话变动直接放弃。
 
 超时的写入和发送可能已经提交。插件副作用不因 transient_once 自动重试，未知结果携带
-`uncertain` 回执，后续副作用受现有 WorkSession 围栏阻止。读取可按声明重试。
+`uncertain` 回执，同一原调用不再取得派发资格；其他独立调用仍可执行。读取可按声明重试。
 自动化收到插件任务句柄后查询该 work，不重新执行产生句柄的 handler。
 未取得可核验结果的外层 dispatch 恢复为 uncertain，不猜测成功或重跑。
 DSL 外层 deadline 在权限复核后区分实际进入 handler 的 SEND/MUTATE 与纯 READ、
@@ -489,12 +478,12 @@ accepted/failed，部分复合交付不充当整个步骤已完成的证据。�
 仍报告运行失败，并保留已确认投递计数；恢复只读原 dispatch，不再次调用 handler。
 
 普通回答无需接纳 Work。模型最终文字可结束内部循环，但不触发发送；
-工作完成仍由同一回执校验检查未结束执行和 artifact。发送是否成功只看显式发送回执，
+工作完成由 Agent 提交决定，原 writer 收拢实际所属执行。发送是否成功只看显式发送回执，
 不自动把工具 JSON 或固定成功句发到聊天中。
 分条 `send_message` 在首条网关调用前持久记录计划段数，并按原调用的确定性子调用 ID
 核对每一段 Social 回执。自动化交付检查在最终工具汇总缺失时，仅凭完整计划和全部
 成功的同目标子回执确认实际投递；旧父回执没有计划段数时仍为未知。这个核对不补写
-原 Work 工具结果，也不解除通用 WorkSession 对未知效果的围栏；要自动续原 Work，
+原 Work 工具结果，也不给原未知调用重派资格；要自动续原 Work，
 必须先建立首写时持久的 Work effect 与 Social 父回执所有权关联。
 明确管理命令和模型完全不可用时的运行状态反馈与普通 Agent 正文区分。
 
@@ -505,26 +494,11 @@ accepted/failed，部分复合交付不充当整个步骤已完成的证据。�
 该元数据保存于原 checkpoint 的
 有界 `communication` 子路径，原 wait/need_input/fail 检查点不会擦除它。
 
-`send_message.work_report` 只声明 `start/progress/reply/final` 用途和原内部事件
-引用；它不进入平台消息字段，不授予权限，普通发送不要求先登记 Work。已有 Work 时保存关联，重复引用不改变所属集合；引用只可指向原 trigger 或同 Work 获准的
-staged/consumed 输入；目标须为当前 canonical 目标。派发前在原 prepared effect 保存关联，
-结果仍取原 Social/Work effect 回执；prepared、失败和 unknown 不当作用户已收到。
-查询原效果事实不依赖最近 64 条展示窗口，不新建投递状态副本。
+沟通由 Agent 在原循环决定，send_message 是有原领域权限和回执的显式工具。开始、实质进展、阻塞和追问需要说明时直接发送；没有必须先通报的门槛，不再分类汇报、保存答复水位或哈希批次，也不补固定暂停模板。
+同批 send→complete 依原调用顺序执行并配对；结束接纳后的业务调用明确未执行，前面发送不回滚或重发。记忆修改不再迫使整批发送或脚本停止。
+`task_control.derive` 沿已有 Work 派生普通业务子目标；get/list 可查父子与祖先，指定 work_id 的 cancel/fail/resume 使用原管理 writer。直接父与预算根不同，子任务继续保留来源和预算，不重开已完成祖先。
 
-开始报告属于模型交互决策，不构成业务工具的先决条件。原调用顺序和 send 串行屏障继续保留；每次业务派发仍独立核验权限、预算、来源与原效果回执，未知发送不得盲目重发。
-
-阶段报告由模型按实质发现、阻塞和目标调整判断，不建立阶段事项台账或定时群发。
-纯工具轮及读取子任务结果也可获得一次非阻断机会，不要求先生成正文；生命周期查询、
-未执行调用和明确 `NO_REPLY` 不自动成为阶段报告。同批普通闲聊不替代任务报告；
-仅原批次、当前合法目标的关联报告已确认送达时抑制相应机会，未知发送仍须先核对原回执。
-已有 steer 接入、输入消费及完成 CAS 不变；新真人输入按原输入水位提供有限非阻断答复
-机会，quiet 与旧 Work 也适用。消费/提醒并不证明答复，相关发送仍看真实回执。
-同一输入先发送失败后成功，取独立的真实成功见证；有未知发送时提供核对机会，不提示盲重发。
-提醒水位并入原 dispatched journal 原子发布，不单独提交或全量读取旧效果正文。
-模型的无工具 final 是内部终止信号，宿主在 complete 的同一完成准备中核验完整效果证据与交付要求，不生成结束礼仪纠正轮。answer 使用当前目标的成功发送回执，不要求额外 final 用途标签；模型的 complete/final 决定是否提交完成。state_change 的事实依据是已执行、确定成功且 `mutation_committed` 或领域 `request_postcondition_satisfied` 为真的非发送效果；有无 work_report 不改变结论。artifact 完成只核对显式 `artifact_ids`（隐式 final 仅取模型实际已发送的产物），不把内部草稿全选为交付义务。文件、业务变更、SELF 静默及内部返回继续各自交付合同，不额外群发。标签和传输成功都不能证明语义目标完成。未决或未知效果、未完成子任务及并发新输入仍由原 writer 围栏阻止完成。
-未知异常文本不进入通知，原因说明不形成新的暂停状态或自动重试资格。
-
-`task_control.wait` 保留单一所属 `run_id` 路径，也可登记一次性 `conditions`：
+`task_control.wait(run_id)` 是已有 owned_run conditions 的简写，已结束或未知的执行也可提供真实完成信号。也可登记一次性 `conditions`：
 `time_due`、当前 canonical Conversation 的新消息、获准插件发布的事件或所属 run。主工作和子工作都可按自己的原 Work ID 登记、接收并消费信号，再沿原 lease 完成。
 集合支持 `any` / `all` 和可选 `deadline_at`；没有隐式 90 秒有效期。绑定持久化在
 `runtime_work_waits`，带 Work ID、generation、主体、事件水位和唯一调用键。消息入口、
@@ -535,10 +509,11 @@ staged/consumed 输入；目标须为当前 canonical 目标。派发前在原 p
 AutomationWorker 只管理自己的计划、claim 和原 run/step 游标；等待状态通过 Runtime 查询。自动化内的 Work 暂停仍是原 step 的 pending 状态，保留原 run/cursor/Work ID；轮询只读原暂停状态，明确恢复后续跑，不将 suspended 升级为关闭整项自动化。
 释放自动化 claim 前后均核对原 Work 等待是否仍活跃，信号先到或后到都唤醒原计划，
 不因停放覆盖已经到达的唤醒，也不创建新 run。
-信号到达不解锁 `suspended`：容量、unknown、generation 等独立暂停原因不被信号覆盖，信号作为待处理
+信号到达不解锁 `suspended`：容量和来源失效等独立暂停原因不被信号覆盖，信号作为待处理
 输入保留在原邮箱。Work 详情（控制面 `read_work.management`）与等待详情（`wait_status` 的 `work`）
 同时给出暂停原因、已到达信号及其输入状态、可用的原 resume/cancel 动作；显式 resume 消费原信号，
 不创建新事件或新状态。
+明确 resume 或修改目标在同一 writer 撤销被替代的一次性等待，旧 timer 不再唤醒新执行。
 `task_control.wait_status` 查看原 Work 的绑定及未满足条件，`cancel_wait` 撤销它；
 `waiting_user` 只由原提问内部发送事件所收到的同一 Person 回复自动恢复，普通群消息仍按新输入处理。
 
@@ -604,17 +579,16 @@ Provider 调用等待前计到调用及结果准备完成，含 Provider slot �
 没有分段/版本时不可推断新阶段；取消仍不新增虚假的成功统计。互斥/嵌套计量见
 [执行过程查看](execution-trace.md)。
 
-WorkScheduler 仍按原顺序执行 repair_inputs/wake_rollups/reclaim/protocol_cleanup/selection，
-之后按会话 scope 有界派发 resume（最多 8 个并发，同 scope 不重复）；health 只记录每次
-完成的结果，phase_timings 的 resume 分桶与慢阶段数值日志分别计量这些区间，不改变
-maintenance 次序或已承诺 Work 生命周期。等待驱动仍独立。
+WorkScheduler 沿原循环尝试 repair_inputs/wake_rollups/reclaim/protocol_cleanup，再选择业务；
+维护错误记录原类别，不阻断正常 queued Work 的选择。SubagentScheduler 同样将维护和
+取消查询错误与 worker 选择分开。之后按会话 scope 有界派发 resume（最多 8 个并发，
+同 scope 不重复）；health、phase_timings 和慢阶段日志反映实际结果，等待驱动仍独立。
 
-尚未接纳工作的普通聊天，对原本发送运维反馈的 Provider、校验及其他内部异常分支
-复用 RuntimeFailure 分类，区分数据库繁忙、内部错误、认证/请求配置问题和 Provider
-超时。配置缺失、空响应保留各自的显式反馈。既有 OSError、RuntimeError、TypeError
-分支仍只记录 send_or_storage_failure，不发送额外消息；这一分支包含发送或存储结果
-不确定的情形，不能据此声称所有异常已经统一反馈。没有持久恢复所有者时不自动重放
-请求；有工作时继续由既有 supervisor 按原恢复合同处理。
+尚未接纳工作的普通聊天，Provider、配置、空响应、容量、校验和内部异常保留原日志、
+ProcessResult 原失败原因及 TURN_CLOSED，不因异常自动向 QQ 插入固定报错。
+工具失败仍按原工具结果交回模型；模型请求失败不另外购买一次请求来解释错误。
+没有持久恢复所有者时不自动重放；有 Work 时由原 supervisor 保存真实状态和恢复事实。
+发送或存储未知仍保持未知，不因删除通知改成成功。
 
 ## 执行诊断
 

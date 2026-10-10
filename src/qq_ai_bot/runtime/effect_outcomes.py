@@ -114,16 +114,6 @@ def execution_evidence(
         "caption_delivered": caption_delivered,
         "delivered_message": delivered_message,
         "delivery_target": body.get("target") if delivered or delivered_message else None,
-        **(
-            {
-                "work_report": args["work_report"],
-                "report_target": body.get("target"),
-            }
-            if tool == "send_message"
-            and isinstance(args, dict)
-            and isinstance(args.get("work_report"), dict)
-            else {}
-        ),
         "run_id": body.get("run_id"),
         **({"request_id": body["request_id"]} if isinstance(body.get("request_id"), str) else {}),
         "ok": outcome.ok
@@ -168,19 +158,13 @@ def effect_evidence(
     tool: str,
     side_effecting: bool,
     arguments: str,
-    report: dict[str, Any] | None = None,
-    report_target: Any = None,
 ) -> dict[str, Any]:
-    """Durable receipt evidence: typed facts plus readonly signature and report target."""
+    """Durable receipt evidence: typed facts plus the readonly signature."""
     evidence = execution_evidence(
         outcome, tool=tool, side_effecting=side_effecting, arguments=arguments
     )
     if not side_effecting:
         evidence["readonly_call_signature"] = readonly_call_signature(tool, arguments)
-    if report:
-        evidence.update(work_report=report)
-        if evidence.get("report_target") is None:
-            evidence["report_target"] = report_target
     return evidence
 
 

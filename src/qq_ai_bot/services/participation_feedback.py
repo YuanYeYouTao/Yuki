@@ -20,7 +20,6 @@ from qq_ai_bot.conversation.autonomy_binding import AcceptedInitiative, Autonomy
 from qq_ai_bot.conversation.autonomy_db_models import InitiativeFeedbackModel, InitiativeRunModel
 from qq_ai_bot.conversation.ordinary_admission import OrdinaryAdmission, OrdinaryAdmissionRepository
 from qq_ai_bot.persistence.models import ChatEventModel, MemoryToolReceiptModel
-from qq_ai_bot.runtime.subagent_schema import children
 from qq_ai_bot.runtime.work_schema_v1 import journal, work
 from qq_ai_bot.social.db_models import SocialOperationModel
 
@@ -416,18 +415,21 @@ async def _read_facts(
         )
     )
     task_ids = tuple(task["id"] for task in tasks)
+    from qq_ai_bot.runtime.work_tree import rooted_tree
+
+    tree = rooted_tree()
     charged = (
         (
             await session.execute(
                 select(
-                    children.c.root_id,
+                    tree.c.root_id,
                     work.c.id,
                     work.c.model_requests,
                     work.c.conversation_id,
                     work.c.generation,
                 )
-                .join(work, work.c.id == children.c.work_id)
-                .where(children.c.root_id.in_(task_ids))
+                .join(work, work.c.id == tree.c.work_id)
+                .where(tree.c.root_id.in_(task_ids), tree.c.work_id != tree.c.root_id)
             )
         )
         .mappings()

@@ -81,7 +81,7 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(d
         if number == 1:
             return _tool(
                 "task_control",
-                {"action": "accept", "goal": "保存工作结果", "output_kind": "state_change"},
+                {"action": "accept", "goal": "保存工作结果"},
                 "accept",
             )
         if number == 2:
@@ -131,7 +131,6 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(d
         generate_self=chat.generate_self_initiative,
         generate_wakeup=chat.generate_main_agent_wakeup,
         validate_snapshot=chat.validate_turn_snapshot,
-        run_effect=chat.run_effect,
         bindings=chat.runtime.bindings,
     )
     assert await resumer.resume(item) is None

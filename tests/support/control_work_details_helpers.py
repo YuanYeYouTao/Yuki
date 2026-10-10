@@ -5,7 +5,7 @@ import time
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import insert
+from sqlalchemy import insert, update
 from tests.support.webui_activity_helpers import ingress
 from tests.unit.test_canonical_ingress import _message
 
@@ -45,9 +45,11 @@ async def detailed_work(database):
             insert(work), [row(identity, "waiting_external"), row(child, "queued")]
         )
         await session.execute(
+            update(work).where(work.c.id == child).values(parent_work_id=identity)
+        )
+        await session.execute(
             insert(children).values(
                 work_id=child,
-                root_id=identity,
                 source_key="child-source",
                 brief_json='{"private":"brief-secret"}',
             )

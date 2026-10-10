@@ -173,8 +173,6 @@ async def recover_automation_source(
             or owner is None
             or conversation is None
             or cursor is None
-            or run.status != "running"
-            or owner.status != "active"
             or source.get("owner") != "automation"
             or owner.id != source.get("automation_id")
             or cursor["script_hash"] != owner.script_hash
@@ -266,7 +264,8 @@ async def recover_self_source(
     """Recheck the accepted run and original scene, never a controller's latest actor.
 
     Owner switches stop admission only. They cannot invalidate already accepted work;
-    generation reset, disabled identity, or a terminal run still fence execution.
+    generation reset and disabled identity still fence execution. Work owns its
+    continuation; settling the original initiative does not close its children.
     """
     if (
         source.get("origin") != TurnOrigin.SELF_INITIATIVE.value
@@ -296,8 +295,6 @@ async def recover_self_source(
             or run.presence_id != source.get("presence_id")
         ):
             raise ValueError("self_task_source_changed")
-        if run.state not in {"accepted", "running"}:
-            raise ValueError("self_task_terminal")
         space = await session.get(CanonicalSpaceModel, run.space_id)
         presence = await session.get(PresenceModel, run.presence_id)
         if space is None or not space.enabled:

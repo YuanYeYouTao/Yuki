@@ -26,7 +26,6 @@ from qq_ai_bot.capabilities import (
 from qq_ai_bot.capabilities.catalog import DescriptorRegistrySnapshot
 from qq_ai_bot.capabilities.exposure import NO_LONGER_AUTHORIZED
 from qq_ai_bot.capabilities.invocation import Invocation
-from qq_ai_bot.capabilities.models import CapabilityTrustSource
 from qq_ai_bot.capabilities.runtime import TurnCapabilityRuntime
 from qq_ai_bot.capabilities.validation import UNDECLARED_TOOL
 from qq_ai_bot.domain.messages import ChatImage, ChatTool, ToolCall, ToolFunction
@@ -44,11 +43,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _ARTIFACT_READER_NAME = "read_tool_artifact"
-
-
-_ADMIN_RETRYABLE_ERRORS = frozenset(
-    {"invalid_json", "invalid_arguments", "validation_error", "unknown_capability", "ValueError"}
-)
 
 
 class MainAgentBackend(AgentToolBackend):
@@ -113,11 +107,8 @@ class MainAgentBackend(AgentToolBackend):
         self.sent_current_texts: list[str] = []
         self.failed_model_requests = 0
         self.failed_tool_calls = 0
-        self._tools_closed = False
         self._web_was_used = False
         self._web_calls_used = 0
-        self._completed_admin_mutations: set[tuple[str, str]] = set()
-        self._mutation_committed = False
         self._catalog: UnifiedToolCatalog | None = None
         self._provider_registry: ToolProviderRegistry | None = None
         self._capability_runtime: TurnCapabilityRuntime | None = None
@@ -167,8 +158,7 @@ class MainAgentBackend(AgentToolBackend):
         # Lifecycle tools are declared globally, but remain subject to the
         # currently executing backend's mutation and delivery restrictions.
         if self._child_work():
-            # A child's lifecycle controls are exactly its frozen contract;
-            # spawn/control names are absent from it, so no recursion exists.
+            # A child's lifecycle controls follow its frozen tool contract.
             return self._allowed_tools is not None and name in self._allowed_tools
         if name == "task_control":
             # Recording lifecycle state grants no business or send authority.
@@ -176,7 +166,7 @@ class MainAgentBackend(AgentToolBackend):
             return True
         if self._allowed_tools is not None and name not in self._allowed_tools:
             return False
-        return not (self._prompt_tools_closed() or self._runtime.read_only)
+        return not (self._runtime.tools_closed or self._runtime.read_only)
 
     def work_query_allowed(self, action: str) -> bool:
         """Use the automation directory's read authority, without executing it.
@@ -194,7 +184,7 @@ class MainAgentBackend(AgentToolBackend):
         name = "automation_get" if action == "get" else "automation_list"
         if self._allowed_tools is not None and name not in self._allowed_tools:
             return False
-        if self._prompt_tools_closed():
+        if self._runtime.tools_closed:
             return False
         request_runtime = self._request_runtime()
         if not request_runtime.allow_automation:
@@ -218,11 +208,6 @@ class MainAgentBackend(AgentToolBackend):
             control = current_work_control.get()
         return control is not None and control.lease.work_id is not None
 
-    def _prompt_tools_closed(self) -> bool:
-        if self._tools_closed:
-            return True
-        return self._runtime.tools_closed
-
     def definitions(self, runtime: AgentRuntime, *, web_was_used: bool) -> tuple[ChatTool, ...]:
         child = self._child_work(runtime)
         self._web_was_used = self._web_was_used or web_was_used
@@ -243,8 +228,6 @@ class MainAgentBackend(AgentToolBackend):
                 for tool in definitions
                 if self._allowed_tools is not None and tool.name in self._allowed_tools
             )
-        if self._tools_closed:
-            definitions = tuple(tool for tool in definitions if tool.name == "send_message")
         definitions = tuple(sorted(definitions, key=lambda tool: tool.name))
         self._callable_tool_names = set(capability_runtime.callable_capability_ids())
         if not self._tool_turn_recorded and definitions:
@@ -398,7 +381,7 @@ class MainAgentBackend(AgentToolBackend):
             name != "send_message"
             and control is not None
             and self.is_side_effecting(name, arguments_json, runtime)
-            and await control.pending()
+            and await control.has_pending_business_inputs()
         ):
             return _refused_result(name, "new_input_before_execution")
         if name == "update_short_state" and self._service.runtime.runner.main_contract is not None:
@@ -407,14 +390,6 @@ class MainAgentBackend(AgentToolBackend):
         if self._runtime.tools_closed:
             return _refused_result(
                 name, "tools_closed", detail="本轮只声明会话前缀工具 schema，不允许真实调用。"
-            )
-        if self._tools_closed and name != "send_message":
-            return _refused_result(
-                name,
-                "mutation_already_committed" if self._mutation_committed else "tools_closed",
-                detail="本轮已有修改成功提交，后续工具调用已关闭。"
-                if self._mutation_committed
-                else "本轮工具调用已因之前的终止错误关闭。",
             )
         capability_runtime = self._capability_runtime
         if capability_runtime is not None:
@@ -452,13 +427,8 @@ class MainAgentBackend(AgentToolBackend):
             )
         config = self._runtime.runtime_config
         assert config is not None
-        mutation_identity = self._mutation_identity(call)
-        mutation_committed: bool | None = False
-        if mutation_identity is not None and mutation_identity in self._completed_admin_mutations:
-            result = _refused_result(
-                name, "duplicate_mutation", detail="本轮已经成功执行过相同修改，不再重复执行。"
-            )
-        elif is_web_tool and self._web_calls_used >= config.web.max_calls_per_turn:
+        mutating = self._is_mutating_call(call)
+        if is_web_tool and self._web_calls_used >= config.web.max_calls_per_turn:
             result = _refused_result(
                 name,
                 "web_tool_limit_exceeded",
@@ -467,7 +437,7 @@ class MainAgentBackend(AgentToolBackend):
             )
         else:
             execution_runtime = self._request_runtime()
-            if mutation_identity is not None and execution_runtime.turn_token is not None:
+            if mutating and execution_runtime.turn_token is not None:
                 await self._service._turn_coordinator.mark_mutation_started(
                     execution_runtime.turn_token
                 )
@@ -492,7 +462,7 @@ class MainAgentBackend(AgentToolBackend):
                                 await work.validate()
                             if not await work.repository.valid(work.lease):
                                 raise TurnSupersededError("work activation changed")
-                            if name != "send_message" and await work.pending():
+                            if name != "send_message" and await work.has_pending_business_inputs():
                                 return ToolExecutionResult(
                                     ok=False,
                                     data={"executed": False},
@@ -530,7 +500,7 @@ class MainAgentBackend(AgentToolBackend):
                         provider_id=descriptor.provider_id,
                         tool_name=descriptor.provider_tool_name or descriptor.model_name,
                     )
-                mutation_committed = self._is_mutating_call(call) and resolve_mutation_commit(
+                mutation_committed = mutating and resolve_mutation_commit(
                     outcome,
                     effective_descriptor,
                 )
@@ -642,22 +612,6 @@ class MainAgentBackend(AgentToolBackend):
             if is_web_tool:
                 self._web_calls_used += 1
                 self._web_was_used = True
-        decoded = self._service._decode_tool_result(result)
-        if self._is_mutating_call(call):
-            if descriptor.provider_id != "admin" and not decoded.get("ok"):
-                return result
-            if bool(decoded.get("ok")):
-                if mutation_identity is not None and mutation_committed:
-                    self._completed_admin_mutations.add(mutation_identity)
-                    self._mutation_committed = True
-            elif not decoded.get("retryable") and (
-                decoded.get("error") or decoded.get("error_code")
-            ) not in _ADMIN_RETRYABLE_ERRORS | {
-                "duplicate_mutation",
-                "memory_candidate_ambiguous",
-                "memory_candidate_not_found",
-            }:
-                self._tools_closed = True
         return result
 
     async def observe_response(self, response: Any, runtime: AgentRuntime) -> None:
@@ -820,29 +774,6 @@ class MainAgentBackend(AgentToolBackend):
         from qq_ai_bot.capabilities.invocation import counts_toward_business_limit
 
         return counts_toward_business_limit(name)
-
-    def _mutation_identity(self, call: ToolCall) -> tuple[str, str] | None:
-        if not self._is_mutating_call(call):
-            return None
-        entry = self._catalog.by_model_name(call.function.name) if self._catalog else None
-        if call.function.name != "memory_change" and (
-            entry is None or entry.descriptor.trust_source is not CapabilityTrustSource.ADMIN
-        ):
-            # This is a turn-local single-write grant, not effect deduplication.
-            # Legitimate sends, files, MCP and plugin writes keep their original IDs.
-            return None
-        try:
-            arguments = json.loads(call.function.arguments)
-        except json.JSONDecodeError:
-            normalized = call.function.arguments.strip()
-        else:
-            normalized = json.dumps(
-                arguments,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-        return call.function.name, normalized
 
     def _request_runtime(self) -> ToolRuntime:
         return self._runtime

@@ -71,7 +71,6 @@ async def resolve_self_origin(
         conversation.generation != run.generation
         or not presence.enabled
         or not space.enabled
-        or run.state not in {"accepted", "running"}
     ):
         raise MemoryPartitionResolutionError("initiative_source_inactive")
     bindings = (

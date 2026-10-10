@@ -14,9 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.runtime.subagent_schema import children
-from qq_ai_bot.runtime.work_recovery_schema import deliveries
 from qq_ai_bot.runtime.work_repository import TERMINAL, encode_json
-from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, journal, scope, work
+from qq_ai_bot.runtime.work_schema_v1 import inputs, journal, work
+from qq_ai_bot.runtime.work_tree import descendant_work_ids
 from qq_ai_bot.runtime.work_wait_schema import waits
 
 ManagementCode = Literal[
@@ -64,7 +64,7 @@ async def resume_blocker(
     Returns the code a resume would raise, or None when the original Work can be
     queued. A delivered wait signal does not unlock a suspended Work by itself.
     """
-    if row["state"] not in {"suspended", "waiting_user"}:
+    if row["state"] not in {"suspended", "waiting_user", "waiting_external", "failed"}:
         return "precondition_failed"
     generation = await session.scalar(
         select(CanonicalConversationModel.generation).where(
@@ -79,20 +79,11 @@ async def resume_blocker(
         .first()
     )
     if child:
-        root_state = await session.scalar(select(work.c.state).where(work.c.id == child["root_id"]))
-        if (
-            child["archived_at"] is not None
-            or child["lease_until"] > now
-            or root_state is None
-            or root_state in TERMINAL
+        if child["archived_at"] is not None or (
+            child["owner"] is not None and child["lease_until"] > now
         ):
             return "precondition_failed"
     else:
-        leased = await session.scalar(
-            select(scope.c.lease_until).where(scope.c.conversation_id == row["conversation_id"])
-        )
-        if leased is not None and leased > now:
-            return "precondition_failed"
         if source is None:
             return "state_mismatch"
         # Each queued Work stays with its original scheduler or run/step owner.
@@ -110,42 +101,64 @@ async def resume_blocker(
         if source.get("origin") == "self_initiative":
             from qq_ai_bot.conversation.autonomy_db_models import InitiativeRunModel
 
-            # The retained SELF Work continues only through its original run.
-            # A truly terminal initiative is not revived by an operator resume.
-            run_state = await session.scalar(
-                select(InitiativeRunModel.state).where(
+            # Continue the retained Work through its original run and scene;
+            # run settlement does not erase the Work's recovery authority.
+            original_run = await session.scalar(
+                select(InitiativeRunModel.id).where(
                     InitiativeRunModel.id == source.get("initiative_run_id")
                 )
             )
-            if run_state not in {"accepted", "running"}:
+            if original_run is None:
                 return "precondition_failed"
-    tree = [
-        row["id"],
-        *await session.scalars(select(children.c.work_id).where(children.c.root_id == row["id"])),
-    ]
-    unresolved = await session.scalar(
-        select(effects.c.effect_key)
-        .where(effects.c.work_id.in_(tree), effects.c.state.in_(("prepared", "unknown")))
-        .limit(1)
-    )
-    pending_delivery = await session.scalar(
-        select(deliveries.c.id)
-        .where(deliveries.c.work_id.in_(tree), deliveries.c.state.in_(("dispatching", "unknown")))
-        .limit(1)
-    )
-    active_wait = await session.scalar(
-        select(waits.c.id).where(waits.c.work_id == row["id"], waits.c.status == "active").limit(1)
-    )
-    if unresolved or pending_delivery or active_wait:
-        return "precondition_failed"
     retained = await session.scalar(select(journal.c.work_id).where(journal.c.work_id == row["id"]))
     if row["model_requests"] and retained is None:
         return "state_mismatch"
     return None
 
 
+async def stop_owned_execution(session: AsyncSession, identity: str, reason: str | None) -> None:
+    """Withdraw the selected subtree's authority, preserving original effect receipts.
+
+    The caller publishes the selected Work's final state in its original writer.
+    Revocation does not claim any external process has stopped or rolled back.
+    """
+    tree = await descendant_work_ids(session, identity, include_self=True)
+    now = time.time()
+    await session.execute(
+        update(work)
+        .where(work.c.id.in_(tree), work.c.id != identity, work.c.state.not_in(TERMINAL))
+        .values(
+            state="cancelled",
+            reason=reason,
+            checkpoint_json=func.json_remove(work.c.checkpoint_json, "$.accepted_control"),
+            revision=work.c.revision + 1,
+            updated=now,
+        )
+    )
+    await session.execute(
+        update(children)
+        .where(children.c.work_id.in_(tree))
+        .values(owner=None, lease_until=0, cancel_epoch=children.c.cancel_epoch + 1)
+    )
+    await session.execute(
+        update(inputs)
+        .where(inputs.c.work_id.in_(tree), inputs.c.state.in_(("pending", "staged")))
+        .values(state="cancelled")
+    )
+    await session.execute(
+        update(waits)
+        .where(waits.c.work_id.in_(tree), waits.c.status == "active")
+        .values(status="cancelled", updated=now)
+    )
+
+
 async def manage_work(
-    session: AsyncSession, identity: str, revision: int, action: str
+    session: AsyncSession,
+    identity: str,
+    revision: int,
+    action: str,
+    *,
+    reason: str | None = None,
 ) -> tuple[int, str]:
     """Caller owns a short writer and its durable management receipt.
 
@@ -155,61 +168,49 @@ async def manage_work(
     original source and authority before any model or effect.
     """
     require_work_id(identity)
-    if action not in {"cancel", "resume"}:
+    if action not in {"cancel", "fail", "resume"}:
+        raise WorkManagementError("validation_error")
+    if reason is not None and not isinstance(reason, str):
         raise WorkManagementError("validation_error")
     row = (await session.execute(select(work).where(work.c.id == identity))).mappings().first()
     if row is None:
         raise WorkManagementError("not_found")
     if row["revision"] != revision:
         raise WorkManagementError("version_conflict")
-    if row["state"] in TERMINAL:
+    if row["state"] in TERMINAL and not (action == "resume" and row["state"] == "failed"):
         raise WorkManagementError("precondition_failed")
     now = time.time()
-    if action == "cancel":
-        # Child work cannot have children. A root owns only its explicit tree;
-        # the conversation-wide activation lease and sibling roots stay intact.
-        tree = [
-            identity,
-            *await session.scalars(
-                select(children.c.work_id).where(children.c.root_id == identity)
-            ),
-        ]
+    if action in {"cancel", "fail"}:
+        stopped_reason = (
+            reason
+            if reason is not None
+            else "operator_cancelled"
+            if action == "cancel"
+            else "agent_failed"
+        )
+        state = "cancelled" if action == "cancel" else "failed"
+        await stop_owned_execution(session, identity, stopped_reason)
         await session.execute(
             update(work)
-            .where(work.c.id.in_(tree), work.c.state.not_in(TERMINAL))
+            .where(work.c.id == identity)
             .values(
-                state="cancelled",
-                reason="operator_cancelled",
+                state=state,
+                reason=stopped_reason,
                 checkpoint_json=func.json_remove(work.c.checkpoint_json, "$.accepted_control"),
                 revision=work.c.revision + 1,
                 updated=now,
             )
         )
-        await session.execute(
-            update(children)
-            .where(children.c.work_id.in_(tree))
-            .values(owner=None, lease_until=0, cancel_epoch=children.c.cancel_epoch + 1)
-        )
-        await session.execute(
-            update(inputs)
-            .where(inputs.c.work_id.in_(tree), inputs.c.state.in_(("pending", "staged")))
-            .values(state="cancelled")
-        )
-        await session.execute(
-            update(waits)
-            .where(waits.c.work_id.in_(tree), waits.c.status == "active")
-            .values(status="cancelled", updated=now)
-        )
-        parent_id = await session.scalar(
-            select(children.c.root_id).where(children.c.work_id == identity)
-        )
+        parent_id = row["parent_work_id"]
         if parent_id is not None:
             parent = (
-                (await session.execute(select(work).where(work.c.id == parent_id))).mappings().one()
+                (await session.execute(select(work).where(work.c.id == parent_id)))
+                .mappings()
+                .first()
             )
-            if parent["state"] not in TERMINAL:
-                # Same worker-result mailbox, with actual cancellation evidence.
-                # No fabricated user event, authorization or new Work.
+            if parent is not None:
+                # The mailbox stores actual stop evidence without granting new
+                # input authority or reviving a suspended/terminal parent.
                 await session.execute(
                     insert(inputs)
                     .values(
@@ -224,8 +225,8 @@ async def manage_work(
                                 "text": encode_json(
                                     {
                                         "child_id": identity,
-                                        "state": "cancelled",
-                                        "reason": "operator_cancelled",
+                                        "state": state,
+                                        "reason": stopped_reason,
                                     }
                                 )
                             }
@@ -234,13 +235,18 @@ async def manage_work(
                     )
                     .on_conflict_do_nothing(index_elements=[inputs.c.source_key])
                 )
-                if parent["state"] != "running":
+                active_wait = await session.scalar(
+                    select(waits.c.id)
+                    .where(waits.c.work_id == parent_id, waits.c.status == "active")
+                    .limit(1)
+                )
+                if parent["state"] == "waiting_external" and active_wait is None:
                     await session.execute(
                         update(work)
                         .where(work.c.id == parent_id)
                         .values(state="queued", revision=work.c.revision + 1, updated=now)
                     )
-        return revision + 1, "cancelled"
+        return revision + 1, state
     try:
         source = json.loads(row["source_json"])
     except (ValueError, TypeError):
@@ -249,9 +255,20 @@ async def manage_work(
     if blocker is not None:
         raise WorkManagementError(blocker)
     await session.execute(
+        update(waits)
+        .where(waits.c.work_id == identity, waits.c.status == "active")
+        .values(status="cancelled", updated=now)
+    )
+    await session.execute(
         update(work)
         .where(work.c.id == identity)
-        .values(state="queued", reason="operator_resume", revision=work.c.revision + 1, updated=now)
+        .values(
+            state="queued",
+            reason="operator_resume",
+            checkpoint_json=func.json_remove(work.c.checkpoint_json, "$.accepted_control"),
+            revision=work.c.revision + 1,
+            updated=now,
+        )
     )
     # Keep journal, budgets, inputs, source, failure attempts and not_before.
     return revision + 1, "queued"
@@ -291,7 +308,8 @@ async def management_view(session: AsyncSession, identity: str) -> dict[str, Any
         return None
     source = {key: row[key] for key in CLASSIFICATION_KEYS}
     terminal = row["state"] in TERMINAL
-    blocker = None if terminal else await resume_blocker(session, row, source, time.time())
+    resumable = not terminal or row["state"] == "failed"
+    blocker = await resume_blocker(session, row, source, time.time()) if resumable else None
     signal = (
         (
             await session.execute(
@@ -318,7 +336,9 @@ async def management_view(session: AsyncSession, identity: str) -> dict[str, Any
         .first()
     )
     return {
-        "pause_reason": row["reason"] if row["state"] in {"suspended", "waiting_user"} else None,
+        "pause_reason": row["reason"]
+        if row["state"] in {"suspended", "waiting_user", "failed"}
+        else None,
         "signal": {
             "wait_id": signal["id"],
             "status": signal["status"],
@@ -329,7 +349,7 @@ async def management_view(session: AsyncSession, identity: str) -> dict[str, Any
         if signal is not None
         else None,
         "actions": {
-            "resume": not terminal and blocker is None,
+            "resume": resumable and blocker is None,
             "resume_blocked_by": blocker,
             "cancel": not terminal,
         },

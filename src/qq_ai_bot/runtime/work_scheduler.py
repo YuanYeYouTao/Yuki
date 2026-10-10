@@ -13,7 +13,7 @@ from sqlalchemy import func, or_, select
 
 from qq_ai_bot.persistence.sqlite_diagnostics import TimingSummary
 from qq_ai_bot.runtime.subagent_schema import children
-from qq_ai_bot.runtime.work_recovery_schema import deliveries, recovery
+from qq_ai_bot.runtime.work_recovery_schema import recovery
 from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import inputs, scope, work
 from qq_ai_bot.runtime.work_wait import WorkWaitRepository
@@ -49,6 +49,7 @@ class WorkScheduler:
         self._wait_worker: asyncio.Task[None] | None = None
         self._last_error: str | None = None
         self._last_wait_error: str | None = None
+        self._last_maintenance_error: str | None = None
         self._last_reclaim = 0.0
         self._phase_timings = {
             name: TimingSummary()
@@ -129,6 +130,7 @@ class WorkScheduler:
             "wait_running": self._wait_worker is not None and not self._wait_worker.done(),
             "last_error_category": self._last_error,
             "wait_error_category": self._last_wait_error,
+            "maintenance_error_category": self._last_maintenance_error,
             "phase_timings": {
                 name: timing.snapshot() for name, timing in self._phase_timings.items()
             },
@@ -212,13 +214,24 @@ class WorkScheduler:
         with self._timed("wake_rollups"):
             await self.repository.wake_context_rollups()
         if time.monotonic() - self._last_reclaim > 600:
-            with self._timed("reclaim"):
-                await self.repository.reclaim_terminal()
             from qq_ai_bot.runtime.protocol_store import ProtocolStore
 
-            with self._timed("protocol_cleanup"):
-                await ProtocolStore(self.repository.database).cleanup()
             self._last_reclaim = time.monotonic()
+            self._last_maintenance_error = None
+            for phase, maintain in (
+                ("reclaim", self.repository.reclaim_terminal),
+                ("protocol_cleanup", ProtocolStore(self.repository.database).cleanup),
+            ):
+                try:
+                    with self._timed(phase):
+                        await maintain()
+                except Exception as exc:
+                    self._last_maintenance_error = type(exc).__name__
+                    logger.warning(
+                        "work_maintenance_failed phase=%s category=%s",
+                        phase,
+                        self._last_maintenance_error,
+                    )
         capacity = _MAX_IN_FLIGHT - len(self._in_flight)
         if not self._accepting or capacity <= 0:
             return []
@@ -234,19 +247,11 @@ class WorkScheduler:
                             )
                             .outerjoin(recovery, recovery.c.work_id == work.c.id)
                             .where(
+                                work.c.state.in_(("queued", "running")),
                                 or_(
-                                    work.c.state.in_(("queued", "running")),
-                                    (work.c.state == "suspended")
-                                    & work.c.id.in_(
-                                        select(deliveries.c.work_id).where(
-                                            deliveries.c.kind == "notice",
-                                            deliveries.c.state.in_(("planned", "blocked")),
-                                        )
+                                    func.json_extract(work.c.source_json, "$.owner").in_(
+                                        ("plugin_invocation", "automation", "plugin_background")
                                     ),
-                                ),
-                                or_(
-                                    func.json_extract(work.c.source_json, "$.owner")
-                                    == "plugin_invocation",
                                     func.json_extract(work.c.source_json, "$.origin").in_(
                                         ("user_message", "autonomous_group", "self_initiative")
                                     ),

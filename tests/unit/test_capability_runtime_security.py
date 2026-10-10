@@ -201,7 +201,7 @@ async def test_compilable_schemas_execute_once_through_real_catalog_and_original
     await work.control.repository.release(work.control.lease)
 
 
-async def test_admin_parameter_correction_can_read_before_retry_and_reuse_original_effect(
+async def test_admin_failure_can_continue_correct_and_reuse_original_effect(
     database, tmp_path
 ):
     from types import SimpleNamespace
@@ -214,7 +214,15 @@ async def test_admin_parameter_correction_can_read_before_retry_and_reuse_origin
     from qq_ai_bot.admin.capabilities import AdminCapabilityService
     from qq_ai_bot.capabilities.invocation import direct_invocations
     from qq_ai_bot.domain.conversations import ScopeType
-    from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity, ToolCall, ToolFunction
+    from qq_ai_bot.domain.messages import (
+        ChatMessage,
+        InboundMessage,
+        SenderIdentity,
+        ToolCall,
+        ToolFunction,
+    )
+    from qq_ai_bot.llm.fake import FakeLLMProvider
+    from qq_ai_bot.services.agent_runner import AgentRuntime
     from qq_ai_bot.services.agent_tools import ToolRuntime
     from qq_ai_bot.services.main_agent_backend import MainAgentBackend
 
@@ -236,7 +244,8 @@ async def test_admin_parameter_correction_can_read_before_retry_and_reuse_origin
         source_execution_id=actor.execution_id,
     )
     settings = make_settings(database.url, superusers_csv="10001")
-    chat = build_harness(database, settings).processor._chat
+    provider = FakeLLMProvider(lambda _: "配置已更新。")
+    chat = build_harness(database, settings, provider).processor._chat
     admin = AdminCapabilityService(
         settings=settings,
         runtime_config=chat._runtime_config,
@@ -261,13 +270,16 @@ async def test_admin_parameter_correction_can_read_before_retry_and_reuse_origin
     async def execute(name, arguments):
         call = ToolCall(f"admin-call-{len(calls)}", ToolFunction(name, json.dumps(arguments)))
         calls.append(call)
-        invocation = direct_invocations((call,), context)[0]
+        invocation = direct_invocations((call,), context, manifest_revision=work.contract)[0]
 
         async def invoke():
             return await backend.execute_call(invocation)
 
-        return invocation, await invoke_tool(work, call, invoke)
+        return invocation, await invoke_tool(work, call, invoke, invocation=invocation)
 
+    _, unavailable = await execute("admin_memory_rebuild_start", {"run_id": "unconfigured"})
+    assert json.loads(unavailable)["error_code"] == "RuntimeError"
+    assert backend.definitions(context, web_was_used=False) == declared
     values = {"key": "agent.max_tool_calls", "scope_type": "global", "scope_id": ""}
     _, failed = await execute("admin_set_config", {**values, "value": "not-an-integer"})
     assert json.loads(failed)["error_code"] == "validation_error"
@@ -280,11 +292,13 @@ async def test_admin_parameter_correction_can_read_before_retry_and_reuse_origin
     assert json.loads(committed)["ok"]
     assert (await chat._runtime_config.get_effective(values["key"])).value == 17
     change_id = json.loads(committed)["data"]["change_id"]
+    _, changed = await execute("admin_set_config", {**values, "value": 18})
+    assert json.loads(changed)["ok"]
 
     async def replay():
         return await backend.execute_call(original)
 
-    assert await invoke_tool(work, calls[-1], replay) == committed
+    assert await invoke_tool(work, original.call, replay, invocation=original) == committed
     assert (
         json.loads(await work.journal.effect_result(original.identity.operation_id))["data"][
             "change_id"
@@ -292,8 +306,33 @@ async def test_admin_parameter_correction_can_read_before_retry_and_reuse_origin
         == change_id
     )
     assert await work.journal.effect_state(original.identity.operation_id) == "accepted"
-    assert (await work.control.repository.get(work.control.current["id"]))["tool_calls"] == 3
+    assert (await chat._runtime_config.get_effective(values["key"])).value == 18
+    _, restored = await execute("admin_set_config", {**values, "value": 17})
+    assert json.loads(restored)["ok"]
+    assert json.loads(restored)["data"]["change_id"] != change_id
+    assert (await work.control.repository.get(work.control.current["id"]))["tool_calls"] == 6
     assert (await chat._runtime_config.get_effective(values["key"])).value == 17
+    runtime = AgentRuntime(
+        origin=TurnOrigin.USER_MESSAGE,
+        actor_user_id=actor.user_id,
+        actor_is_superuser=True,
+        delegated_authority=None,
+        conversation_key=tools.conversation_key,
+        current_group_id=actor.group_id,
+        bot_user_id=actor.bot_user_id,
+        gateway=None,
+        runtime_config=tools.runtime_config,
+        current_time=chat._time.current_default(),
+        allowed_capabilities=frozenset(),
+        max_tool_calls=8,
+        max_model_requests=1,
+        work_control=work.control,
+    )
+    result = await chat.runtime.runner.run(
+        (ChatMessage("user", actor.instruction),), runtime, backend
+    )
+    assert result.text == "配置已更新。" and work.control.accepted_ending() == "completed"
+    assert len(provider.requests) == 1
     await work.control.repository.release(work.control.lease)
 
 

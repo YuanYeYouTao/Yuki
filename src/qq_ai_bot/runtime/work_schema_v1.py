@@ -1,4 +1,4 @@
-"""Version 0056 durable work schema. Keep this migration contract immutable."""
+"""Current durable Work rows, inputs, effects and journal."""
 
 import sqlalchemy as sa
 
@@ -19,6 +19,7 @@ work = sa.Table(
     "runtime_work",
     Base.metadata,
     sa.Column("id", sa.String(36), primary_key=True),
+    sa.Column("parent_work_id", sa.ForeignKey("runtime_work.id", ondelete="RESTRICT")),
     sa.Column(
         "conversation_id",
         sa.ForeignKey("canonical_conversations.id", ondelete="RESTRICT"),
@@ -28,8 +29,6 @@ work = sa.Table(
     sa.Column("source_key", sa.String(256), nullable=False, unique=True),
     sa.Column("source_json", sa.Text, nullable=False),
     sa.Column("goal", sa.Text, nullable=False),
-    sa.Column("output_kind", sa.String(20), nullable=False, server_default="state_change"),
-    sa.Column("deliver_artifacts", sa.Boolean, nullable=False, server_default="1"),
     sa.Column("revision", sa.Integer, nullable=False, server_default="1"),
     sa.Column("state", sa.String(24), nullable=False),
     sa.Column("reason", sa.String(128)),
@@ -48,6 +47,7 @@ work = sa.Table(
         name="ck_runtime_work_counters",
     ),
     sa.Index("ix_runtime_work_scope_state", "conversation_id", "state", "updated"),
+    sa.Index("ix_runtime_work_parent", "parent_work_id"),
 )
 
 scope = sa.Table(
@@ -117,5 +117,3 @@ journal = sa.Table(
     sa.Column("payload_json", sa.Text, nullable=False),
     sa.Column("updated", sa.Float, nullable=False),
 )
-
-TABLES = (work, scope, inputs, effects, journal)

@@ -61,19 +61,17 @@ class ToolArtifactRepository:
 
     @staticmethod
     def _protected() -> Any:
-        from qq_ai_bot.runtime.subagent_schema import children
         from qq_ai_bot.runtime.work_schema_v1 import work
+        from qq_ai_bot.runtime.work_tree import ancestors
         from qq_ai_bot.tool_results.schema import artifact_refs
 
         cutoff = datetime.now(UTC).timestamp() - 7 * 86400
         retained = or_(
             work.c.state.not_in(("completed", "failed", "cancelled")), work.c.updated >= cutoff
         )
-        own = select(work.c.id).where(work.c.id == ToolArtifactModel.work_id, retained).exists()
-        parent = (
-            select(children.c.work_id)
-            .join(work, work.c.id == children.c.root_id)
-            .where(children.c.work_id == ToolArtifactModel.work_id, retained)
+        ownership = (
+            select(work.c.id)
+            .where(work.c.id.in_(ancestors(ToolArtifactModel.work_id, include_self=True)), retained)
             .exists()
         )
         references = (
@@ -89,7 +87,7 @@ class ToolArtifactRepository:
             )
             .exists()
         )
-        return or_(own, parent, references)
+        return or_(ownership, references)
 
     @staticmethod
     async def add_refs(

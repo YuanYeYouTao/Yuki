@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from tests.unit.test_runtime_recovery import setup
 
-from qq_ai_bot.runtime.activation_outcome import ExitReason, classify_failure, failure_status_text
+from qq_ai_bot.runtime.activation_outcome import ExitReason, classify_failure
 from qq_ai_bot.runtime.work_recovery_schema import recovery
 from qq_ai_bot.runtime.work_supervisor import recover_failure
 
@@ -33,7 +33,6 @@ def test_error_text_never_substitutes_for_driver_code(code, expected, retryable)
         failure = classify_failure(exc, "commit")
         assert (failure.code, failure.stage, failure.retryable) == (expected, "commit", retryable)
         assert "private" not in str(failure.diagnostics)
-        assert "private" not in failure_status_text(failure)
 
 
 def test_real_wal_writer_busy_and_snapshot_conflict_are_distinct_from_locked(tmp_path):
@@ -74,9 +73,7 @@ def test_real_wal_writer_busy_and_snapshot_conflict_are_distinct_from_locked(tmp
 
 
 @pytest.mark.parametrize("code", [sqlite3.SQLITE_LOCKED, sqlite3.SQLITE_LOCKED_SHAREDCACHE])
-async def test_locked_suspends_original_work_without_resetting_paid_budget(
-    database, tmp_path, code
-):
+async def test_locked_fails_original_work_without_resetting_paid_budget(database, tmp_path, code):
     control = await setup(database, tmp_path)
     original_id = control.current["id"]
     await control.repository.checkpoint(control.lease, original_id, None, models=1)
@@ -85,9 +82,9 @@ async def test_locked_suspends_original_work_without_resetting_paid_budget(
     original = sqlite3.OperationalError("database table is locked")
     original.sqlite_errorcode = code
     outcome = await recover_failure(control, OperationalError("UPDATE", {}, original))
-    assert outcome.reason is ExitReason.PAUSED
+    assert outcome.reason is ExitReason.FAILED
     assert control.current["id"] == original_id
-    assert control.current["state"] == "suspended"
+    assert control.current["state"] == "failed"
     assert control.current["model_requests"] == 1
     async with database.sessions() as session:
         row = (

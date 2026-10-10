@@ -22,6 +22,8 @@ from qq_ai_bot.runtime.work_repository import (
     encode_json,
 )
 from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, journal, work
+from qq_ai_bot.runtime.work_tree import descendants, rooted_tree
+from qq_ai_bot.runtime.work_wait_schema import waits
 
 
 class SubagentRepository:
@@ -30,83 +32,29 @@ class SubagentRepository:
         self.database = repository.database
         self.max_concurrency = int(getattr(self.database, "subagent_concurrency", 1))
 
-    async def reopen_parent(
-        self, lease: WorkLease, identity: str, *, models: int
-    ) -> dict[str, Any]:
-        """Resume a retained completed tree in its original scope and budget."""
-        if lease.work_id:
-            raise ValueError("subagent_parent_control_only")
-        async with self.database.immediate_session() as session:
-            await self.repository._assert_lease(session, lease)
-            child = (
-                (await session.execute(select(children).where(children.c.work_id == identity)))
-                .mappings()
-                .first()
-            )
-            if child is None or child["archived_at"] is not None:
-                raise ValueError("subagent_archived_or_unknown")
-            root = (
-                (await session.execute(select(work).where(work.c.id == child["root_id"])))
-                .mappings()
-                .one()
-            )
-            child_state = await session.scalar(select(work.c.state).where(work.c.id == identity))
-            if child_state in {"cancelled", "failed"}:
-                raise ValueError("subagent_not_resumable")
-            if (
-                root["conversation_id"] != lease.conversation_id
-                or root["generation"] != lease.generation
-                or root["state"] != "completed"
-            ):
-                raise ValueError("subagent_parent_not_resumable")
-            from qq_ai_bot.runtime.work_budget import charge
-
-            await charge(session, root["id"], models=models, tools=0)
-            return dict(
-                (
-                    await session.execute(
-                        update(work)
-                        .where(work.c.id == root["id"])
-                        .values(
-                            state="running",
-                            revision=work.c.revision + 1,
-                            updated=time.time(),
-                            model_requests=work.c.model_requests + models,
-                        )
-                        .returning(work)
-                    )
-                )
-                .mappings()
-                .one()
-            )
-
-    async def start(self, lease: WorkLease, root_id: str, key: str, brief: dict[str, Any]) -> str:
-        if lease.work_id:
-            raise ValueError("recursive_subagent_forbidden")
+    async def start(self, lease: WorkLease, parent_id: str, key: str, brief: dict[str, Any]) -> str:
+        if lease.work_id is not None and lease.work_id != parent_id:
+            raise ValueError("subagent_not_owned")
         goal = brief.get("goal")
         if not isinstance(goal, str) or not goal.strip():
             raise ValueError("invalid_subagent_goal")
-        if brief.get("output_kind") not in {"answer", "artifact", "state_change"}:
-            raise ValueError("invalid_subagent_output_kind")
         encoded = encode_json(brief)
         async with self.database.sessions() as reader:
             snapshot = (
-                (await reader.execute(select(work).where(work.c.id == root_id))).mappings().one()
+                (await reader.execute(select(work).where(work.c.id == parent_id))).mappings().one()
             )
-        identity, now = str(uuid4()), time.time()
+        identity = str(uuid4())
         source = json.loads(snapshot["source_json"])
-        source.update(work_id=identity, parent_work_id=root_id, worker=True)
-        encoded_source = encode_json(source)
+        source.update(work_id=identity, parent_work_id=parent_id, worker=True)
         async with self.database.immediate_session() as session:
             await self.repository._assert_lease(session, lease)
             root = (
-                (await session.execute(select(work).where(work.c.id == root_id))).mappings().one()
+                (await session.execute(select(work).where(work.c.id == parent_id))).mappings().one()
             )
             if (
                 root["conversation_id"] != lease.conversation_id
                 or root["generation"] != lease.generation
                 or root["state"] in TERMINAL
-                or root["revision"] != snapshot["revision"]
                 or root["source_json"] != snapshot["source_json"]
             ):
                 raise WorkConflict("subagent_parent_unavailable")
@@ -116,28 +64,24 @@ class SubagentRepository:
                 .first()
             )
             if previous:
-                if previous["root_id"] != root_id or previous["brief_json"] != encoded:
+                actual_parent = await session.scalar(
+                    select(work.c.parent_work_id).where(work.c.id == previous["work_id"])
+                )
+                if actual_parent != parent_id or previous["brief_json"] != encoded:
                     raise WorkConflict("subagent_start_conflict")
                 return str(previous["work_id"])
-            await session.execute(
-                insert(work).values(
-                    id=identity,
-                    conversation_id=root["conversation_id"],
-                    generation=root["generation"],
-                    source_key=f"worker:{identity}",
-                    source_json=encoded_source,
-                    goal=goal,
-                    output_kind=brief.get("output_kind", "answer"),
-                    deliver_artifacts=False,
-                    state="queued",
-                    created=now,
-                    updated=now,
-                )
+            await self.repository.accept_in_session(
+                session,
+                lease,
+                identity=identity,
+                parent_work_id=parent_id,
+                source_key=f"worker:{identity}",
+                source=source,
+                goal=goal,
+                initial_state="queued",
             )
             await session.execute(
-                insert(children).values(
-                    work_id=identity, root_id=root_id, source_key=key, brief_json=encoded
-                )
+                insert(children).values(work_id=identity, source_key=key, brief_json=encoded)
             )
             return identity
 
@@ -150,7 +94,11 @@ class SubagentRepository:
                 .mappings()
                 .first()
             )
-            states = {"completed", "failed", "suspended"} if reconcile else {"queued", "running"}
+            states = (
+                {"completed", "failed", "cancelled", "suspended", "waiting_user"}
+                if reconcile
+                else {"queued", "running"}
+            )
             if row is None or row["state"] not in states:
                 return None
             actual = await session.scalar(
@@ -158,11 +106,7 @@ class SubagentRepository:
                     CanonicalConversationModel.id == row["conversation_id"]
                 )
             )
-            root_id = await session.scalar(
-                select(children.c.root_id).where(children.c.work_id == identity)
-            )
-            root_state = await session.scalar(select(work.c.state).where(work.c.id == root_id))
-            if actual != row["generation"] or root_state in TERMINAL or root_state is None:
+            if actual != row["generation"]:
                 if reconcile:
                     return None
                 await session.execute(
@@ -170,7 +114,7 @@ class SubagentRepository:
                     .where(work.c.id == identity)
                     .values(
                         state="cancelled",
-                        reason="parent_obsolete",
+                        reason="generation_obsolete",
                         checkpoint_json=func.json_remove(
                             work.c.checkpoint_json, "$.accepted_control"
                         ),
@@ -222,7 +166,9 @@ class SubagentRepository:
                     select(children.c.work_id)
                     .join(work, work.c.id == children.c.work_id)
                     .where(
-                        work.c.state.in_(("completed", "failed", "suspended")),
+                        work.c.state.in_(
+                            ("completed", "failed", "cancelled", "suspended", "waiting_user")
+                        ),
                         children.c.notified_revision < work.c.revision,
                         children.c.archived_at.is_(None),
                     )
@@ -240,13 +186,24 @@ class SubagentRepository:
         cutoff = now - 7 * 86400
 
         def expired_query() -> Select[tuple[str]]:
+            tree = rooted_tree()
+            root = work.alias("archive_root")
+            retained = tree.alias("retained_tree")
             return (
                 select(children.c.work_id)
+                .join(work, work.c.id == children.c.work_id)
+                .join(tree, tree.c.work_id == work.c.id)
+                .join(root, root.c.id == tree.c.root_id)
                 .where(
                     children.c.archived_at.is_(None),
                     children.c.lease_until <= now,
-                    children.c.root_id.in_(
-                        select(work.c.id).where(work.c.state.in_(TERMINAL), work.c.updated < cutoff)
+                    work.c.state.in_(TERMINAL),
+                    root.c.state.in_(TERMINAL),
+                    root.c.updated < cutoff,
+                    tree.c.root_id.not_in(
+                        select(retained.c.root_id)
+                        .join(work, work.c.id == retained.c.work_id)
+                        .where(work.c.state.not_in(TERMINAL))
                     ),
                 )
                 .limit(16)
@@ -280,14 +237,15 @@ class SubagentRepository:
                 .where(work.c.id.in_(expired))
                 .values(checkpoint_json="{}", source_json="{}")
             )
+            tree = rooted_tree()
             expired_roots = list(
                 await session.scalars(
                     select(work.c.id).where(
-                        work.c.id.in_(
-                            select(children.c.root_id).where(children.c.work_id.in_(expired))
-                        ),
+                        work.c.id.in_(select(tree.c.root_id).where(tree.c.work_id.in_(expired))),
                         work.c.id.not_in(
-                            select(children.c.root_id).where(children.c.archived_at.is_(None))
+                            select(tree.c.root_id)
+                            .join(children, children.c.work_id == tree.c.work_id)
+                            .where(children.c.archived_at.is_(None))
                         ),
                         work.c.state.in_(TERMINAL),
                         work.c.updated < cutoff,
@@ -318,7 +276,7 @@ class SubagentRepository:
                 )
 
     async def related(
-        self, root_id: str, identity: str, *, include_checkpoint: bool = False
+        self, parent_id: str, identity: str, *, include_checkpoint: bool = False
     ) -> dict[str, Any]:
         async with self.database.sessions() as session:
             row = (
@@ -327,6 +285,7 @@ class SubagentRepository:
                         select(
                             children,
                             work.c.state,
+                            work.c.parent_work_id,
                             work.c.goal,
                             work.c.model_requests,
                             work.c.tool_calls,
@@ -337,7 +296,7 @@ class SubagentRepository:
                             ),
                         )
                         .join(work, children.c.work_id == work.c.id)
-                        .where(children.c.root_id == root_id, children.c.work_id == identity)
+                        .where(work.c.parent_work_id == parent_id, children.c.work_id == identity)
                     )
                 )
                 .mappings()
@@ -364,7 +323,7 @@ class SubagentRepository:
             return result
 
     async def list(
-        self, root_id: str, *, limit: int | None = None, cursor: str | None = None
+        self, parent_id: str, *, limit: int | None = None, cursor: str | None = None
     ) -> list[dict[str, Any]]:
         """Internal consumers read all owned children; model directory is explicitly paged."""
         result: list[dict[str, Any]] = []
@@ -375,12 +334,13 @@ class SubagentRepository:
                     select(
                         children,
                         work.c.state,
+                        work.c.parent_work_id,
                         work.c.goal,
                         work.c.model_requests,
                         work.c.tool_calls,
                     )
                     .join(work, children.c.work_id == work.c.id)
-                    .where(children.c.root_id == root_id)
+                    .where(work.c.parent_work_id == parent_id)
                 )
                 if cursor is not None:
                     query = query.where(children.c.work_id > cursor)
@@ -394,8 +354,8 @@ class SubagentRepository:
                     return result
                 cursor = str(page[-1]["work_id"])
 
-    async def unfinished(self, root_id: str) -> builtins.list[dict[str, Any]]:
-        """Exact nonterminal set; unlike directory pagination this is a completion fence."""
+    async def unfinished(self, parent_id: str) -> builtins.list[dict[str, Any]]:
+        """Read actual unfinished descendants without directory pagination."""
         async with self.database.sessions() as session:
             return [
                 dict(row)
@@ -403,7 +363,7 @@ class SubagentRepository:
                     await session.execute(
                         select(children, work.c.state)
                         .join(work, work.c.id == children.c.work_id)
-                        .where(children.c.root_id == root_id, work.c.state.not_in(TERMINAL))
+                        .where(work.c.id.in_(descendants(parent_id)), work.c.state.not_in(TERMINAL))
                     )
                 ).mappings()
             ]
@@ -411,20 +371,20 @@ class SubagentRepository:
     async def message(
         self,
         lease: WorkLease,
-        root_id: str,
+        parent_id: str,
         identity: str,
         key: str,
-        text: str,
+        text: str | None,
         *,
         ask: bool = False,
         reply_to: str | None = None,
     ) -> str:
-        if not text.strip():
+        if text is not None and not text.strip():
             raise ValueError("invalid_subagent_message")
         if lease.work_id and lease.work_id != identity:
             raise ValueError("subagent_not_owned")
-        await self.related(root_id, identity)
-        destination = root_id if lease.work_id else identity
+        await self.related(parent_id, identity)
+        destination = parent_id if lease.work_id else identity
         async with self.database.immediate_session() as session:
             await self.repository._assert_lease(session, lease)
             child = (
@@ -434,14 +394,19 @@ class SubagentRepository:
             )
             if child["archived_at"] is not None:
                 raise ValueError("subagent_archived")
+            if text is None:
+                return key
             target = (
                 (await session.execute(select(work).where(work.c.id == destination)))
                 .mappings()
                 .one()
             )
-            if target["state"] in {"failed", "cancelled"} or (
-                lease.work_id and target["state"] == "completed"
+            if (
+                target["conversation_id"] != lease.conversation_id
+                or target["generation"] != lease.generation
             ):
+                raise ValueError("subagent_not_owned")
+            if not lease.work_id and target["state"] == "cancelled":
                 raise ValueError("subagent_message_target_terminal")
             payload = {
                 "text": encode_json(
@@ -472,44 +437,109 @@ class SubagentRepository:
                     .returning(inputs.c.id)
                 )
             ).scalar_one_or_none()
-            if inserted is not None and target["state"] != "running":
+            waiting = await session.scalar(
+                select(waits.c.id)
+                .where(waits.c.work_id == destination, waits.c.status == "active")
+                .limit(1)
+            )
+            if inserted is not None and (
+                target["state"] == "waiting_external" and waiting is None
+                if lease.work_id
+                else target["state"] != "running"
+            ):
+                if not lease.work_id:
+                    await session.execute(
+                        update(waits)
+                        .where(waits.c.work_id == identity, waits.c.status == "active")
+                        .values(status="cancelled", updated=time.time())
+                    )
                 await session.execute(
                     update(work)
                     .where(work.c.id == destination)
-                    .values(state="queued", revision=work.c.revision + 1, updated=time.time())
+                    .values(
+                        state="queued",
+                        revision=work.c.revision + 1,
+                        checkpoint_json=func.json_remove(
+                            work.c.checkpoint_json, "$.accepted_control"
+                        )
+                        if not lease.work_id
+                        else work.c.checkpoint_json,
+                        updated=time.time(),
+                    )
                 )
             return key
 
-    async def cancel(self, lease: WorkLease, root_id: str, identity: str) -> None:
-        await self.related(root_id, identity)
+    async def resume(
+        self,
+        lease: WorkLease,
+        parent_id: str,
+        identity: str,
+        *,
+        key: str,
+        instruction: str | None = None,
+    ) -> None:
+        """Queue this retained child without changing any ancestor's lifecycle."""
+        if instruction:
+            await self.message(lease, parent_id, identity, key, instruction)
+            return
         async with self.database.immediate_session() as session:
             await self.repository._assert_lease(session, lease)
-            await session.execute(
-                update(children)
-                .where(children.c.work_id == identity)
-                .values(owner=None, lease_until=0, cancel_epoch=children.c.cancel_epoch + 1)
-            )
-            await session.execute(
-                update(work)
-                .where(work.c.id == identity)
-                .values(
-                    state="cancelled",
-                    reason="parent_cancelled",
-                    checkpoint_json=func.json_remove(work.c.checkpoint_json, "$.accepted_control"),
-                    revision=work.c.revision + 1,
-                    updated=time.time(),
+            row = (
+                (
+                    await session.execute(
+                        select(work, children.c.archived_at)
+                        .join(children, children.c.work_id == work.c.id)
+                        .where(work.c.id == identity)
+                    )
                 )
+                .mappings()
+                .one()
             )
+            if row["archived_at"] is not None:
+                raise ValueError("subagent_archived")
+            if row["state"] == "cancelled":
+                raise ValueError("subagent_not_resumable")
+            if (
+                row["parent_work_id"] != parent_id
+                or row["conversation_id"] != lease.conversation_id
+                or row["generation"] != lease.generation
+            ):
+                raise ValueError("subagent_not_owned")
+            await session.execute(
+                update(waits)
+                .where(waits.c.work_id == identity, waits.c.status == "active")
+                .values(status="cancelled", updated=time.time())
+            )
+            if row["state"] != "running":
+                await session.execute(
+                    update(work)
+                    .where(work.c.id == identity)
+                    .values(
+                        state="queued",
+                        reason="explicit_resume",
+                        checkpoint_json=func.json_remove(
+                            work.c.checkpoint_json, "$.accepted_control"
+                        ),
+                        revision=work.c.revision + 1,
+                        updated=time.time(),
+                    )
+                )
+
+    async def cancel(self, lease: WorkLease, parent_id: str, identity: str) -> None:
+        from qq_ai_bot.runtime.work_management import manage_work
+
+        await self.related(parent_id, identity)
+        async with self.database.immediate_session() as session:
+            await self.repository._assert_lease(session, lease)
+            row = (
+                (await session.execute(select(work).where(work.c.id == identity))).mappings().one()
+            )
+            await manage_work(session, identity, row["revision"], "cancel")
 
     async def finish(self, lease: WorkLease) -> None:
         """Notify the parent with the committed result of this exact revision."""
         async with self.database.immediate_session() as session:
             await self.repository._assert_lease(session, lease)
-            child = (
-                (await session.execute(select(children).where(children.c.work_id == lease.work_id)))
-                .mappings()
-                .one()
-            )
             row = (
                 (await session.execute(select(work).where(work.c.id == lease.work_id)))
                 .mappings()
@@ -518,8 +548,8 @@ class SubagentRepository:
             checkpoint = json.loads(row["checkpoint_json"])
             if row["state"] == "completed":
                 result = checkpoint.get("sync_result")
-            elif row["state"] == "suspended":
-                result = "工作暂停，已保留执行记录。"
+            elif row["state"] == "waiting_user":
+                result = checkpoint.get("reason")
             else:
                 result = checkpoint.get("reason") or row["reason"]
             receipt = {
@@ -545,22 +575,26 @@ class SubagentRepository:
                     notified_revision=row["revision"],
                 )
             )
-            if row["state"] not in {"completed", "failed", "suspended"}:
+            if row["state"] not in {
+                "completed",
+                "failed",
+                "cancelled",
+                "suspended",
+                "waiting_user",
+            }:
                 return
             parent = (
-                (await session.execute(select(work).where(work.c.id == child["root_id"])))
+                (await session.execute(select(work).where(work.c.id == row["parent_work_id"])))
                 .mappings()
                 .one()
             )
-            if parent["state"] in TERMINAL:
-                return
             await session.execute(
                 insert(inputs)
                 .values(
                     conversation_id=lease.conversation_id,
                     generation=lease.generation,
                     source_key=f"worker-result:{lease.work_id}:{row['revision']}",
-                    work_id=child["root_id"],
+                    work_id=row["parent_work_id"],
                     kind="subagent",
                     ready=True,
                     payload_json=encode_json(
@@ -579,9 +613,14 @@ class SubagentRepository:
                 )
                 .on_conflict_do_nothing(index_elements=[inputs.c.source_key])
             )
-            if parent["state"] != "running":
+            waiting = await session.scalar(
+                select(waits.c.id)
+                .where(waits.c.work_id == row["parent_work_id"], waits.c.status == "active")
+                .limit(1)
+            )
+            if parent["state"] == "waiting_external" and waiting is None:
                 await session.execute(
                     update(work)
-                    .where(work.c.id == child["root_id"])
+                    .where(work.c.id == row["parent_work_id"])
                     .values(state="queued", revision=work.c.revision + 1, updated=time.time())
                 )

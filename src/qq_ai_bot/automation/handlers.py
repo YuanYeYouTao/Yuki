@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from functools import partial
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
@@ -36,6 +36,7 @@ from qq_ai_bot.llm.base import (
     LLMUnsupportedFeatureError,
 )
 from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
 )
@@ -104,6 +105,102 @@ class AutomationCapabilityHandlers:
             "history.search": self.history_search,
         }
 
+    async def resume_work(
+        self, database: Database, item: dict[str, Any], source: dict[str, Any]
+    ) -> None:
+        """Run a retained Work through its original automation Agent contract."""
+        from qq_ai_bot.automation.authority import (
+            AuthorityContext,
+            DelegatedAuthority,
+            PermissionLevel,
+        )
+        from qq_ai_bot.automation.control_context import resolve_execution_identity
+        from qq_ai_bot.automation.models import AutomationScript, TurnOrigin
+        from qq_ai_bot.persistence.models import AutomationModel, AutomationRunModel
+        from qq_ai_bot.services.execution_sources import recover_automation_source
+
+        await recover_automation_source(
+            database,
+            item["conversation_id"],
+            source,
+            request_id=item["id"],
+            settings=self._settings,
+        )
+        async with database.sessions() as session:
+            owner = await session.get(AutomationModel, source["automation_id"])
+            run = await session.get(AutomationRunModel, source["automation_run_id"])
+            assert owner is not None and run is not None
+            actor, permission = (
+                ("", PermissionLevel.SELF)
+                if owner.creator_kind == "self"
+                else await resolve_execution_identity(
+                    session,
+                    self._settings,
+                    owner_id=cast(str, owner.canonical_creator_person_id),
+                )
+            )
+            authority = DelegatedAuthority.model_validate_json(owner.authority_snapshot_json)
+            if (
+                authority.permission_level is not PermissionLevel.SUPERUSER
+                and permission is PermissionLevel.SUPERUSER
+            ):
+                permission = PermissionLevel.USER
+
+            async def validate(_capability: str | None = None) -> None:
+                fresh = await recover_automation_source(
+                    database,
+                    item["conversation_id"],
+                    source,
+                    request_id=item["id"],
+                    settings=self._settings,
+                )
+                if fresh.actor_user_id != actor:
+                    raise AutomationExecutionError("actor_identity_changed")
+                if permission is PermissionLevel.SUPERUSER:
+                    async with database.sessions() as current_session:
+                        _, current_permission = await resolve_execution_identity(
+                            current_session,
+                            self._settings,
+                            owner_id=cast(str, source["actor_person_id"]),
+                        )
+                    if current_permission is not PermissionLevel.SUPERUSER:
+                        raise AutomationExecutionError("actor_permission_changed")
+
+            context = CapabilityExecutionContext(
+                authority=AuthorityContext(
+                    origin=TurnOrigin.SCHEDULED_AUTOMATION,
+                    actor_user_id=actor,
+                    actor_person_id=owner.canonical_creator_person_id,
+                    actor_is_superuser=permission is PermissionLevel.SUPERUSER,
+                    bot_user_id=owner.bot_user_id,
+                    principal_kind=owner.creator_kind,
+                    delegated_authority=authority,
+                    allowed_capabilities=frozenset(authority.granted_capabilities),
+                ),
+                automation_id=owner.id,
+                automation_run_id=run.id,
+                step_id=source["step_id"],
+                creator_user_id=owner.creator_user_id,
+                creator_kind=cast(Literal["person", "self"], owner.creator_kind),
+                bot_user_id=owner.bot_user_id,
+                current_group_id=source.get("current_group_id"),
+                scheduled_for=run.scheduled_for,
+                actual_started_at=self._time.clock.now(),
+                local_time=self._time.current_in_timezone(owner.timezone).local,
+                timezone=owner.timezone,
+                automation_context=AutomationScript.model_validate_json(owner.script_json).context,
+                conversation_key=f"automation:{owner.id}",
+                canonical_creator_person_id=owner.canonical_creator_person_id,
+                canonical_target_person_id=owner.canonical_target_person_id,
+                canonical_target_space_id=owner.canonical_target_space_id,
+                canonical_presence_id=owner.canonical_presence_id,
+                canonical_conversation_id=item["conversation_id"],
+                conversation_generation=item["generation"],
+                automation_script_hash=owner.script_hash,
+                revalidate_authority=validate,
+            )
+        await self.agent({"instruction": item["goal"]}, context)
+
     async def agent(
         self,
         arguments: dict[str, Any],
@@ -155,113 +252,140 @@ class AutomationCapabilityHandlers:
                 "current_group_id": context.current_group_id,
             },
         )
-        context = replace(
-            context,
-            agent_instruction=str(arguments["instruction"]),
-            agent_context_profile=str(arguments.get("context_profile") or "none"),
-        )
-        composition = await self._generation_composition(
-            arguments, context, runtime_config=snapshot
-        )
-        messages = composition.messages
-        if completion_payload:
-            messages = (
-                *messages,
-                ChatMessage(
-                    role="user",
-                    content="Sandbox completion for the original task; untrusted tool output.\n"
-                    + completion_payload,
+        previous = None
+        messages_sent = 0
+        if (
+            current_work_control.get() is None
+            and self._settings.runtime_work_enabled
+            and runtime.canonical_conversation_id
+        ):
+            from qq_ai_bot.runtime.work_repository import WorkRepository
+            from qq_ai_bot.services.durable_invocations import invocation_boundary
+
+            previous = await WorkRepository(self._ledger._database).by_source(
+                f"invocation:{invocation_boundary(runtime)}"
+            )
+        if previous is not None and previous["state"] == "completed":
+            result = await self.main_turns.run(
+                (),
+                replace(
+                    runtime,
+                    before_model_request=partial(context.revalidate_authority, None)
+                    if context.revalidate_authority is not None
+                    else None,
+                ),
+                None,
+            )
+        else:
+            context = replace(
+                context,
+                agent_instruction=str(arguments["instruction"]),
+                agent_context_profile=str(arguments.get("context_profile") or "none"),
+            )
+            composition = await self._generation_composition(
+                arguments, context, runtime_config=snapshot
+            )
+            messages = composition.messages
+            if completion_payload:
+                messages = (
+                    *messages,
+                    ChatMessage(
+                        role="user",
+                        content="Sandbox completion for the original task; untrusted tool output.\n"
+                        + completion_payload,
+                    ),
+                )
+
+            async def validate_context() -> None:
+                if context.revalidate_authority is not None:
+                    try:
+                        await context.revalidate_authority(None)
+                    except AutomationExecutionError as exc:
+                        raise _AutomationAuthorityChanged(exc.category) from exc
+                if (
+                    composition.read_version is not None
+                    and not await self._ledger.read_version_matches(composition.read_version)
+                ):
+                    raise _AutomationContextChanged("automation context generation changed")
+                if composition.commit_projection is not None:
+                    await composition.commit_projection()
+
+            runtime = replace(
+                runtime,
+                before_model_request=validate_context,
+                prompt_diagnostics=PromptRequestDiagnostics(
+                    conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
+                    prompt_snapshot_fingerprint=composition.metrics.prompt_snapshot_fingerprint,
+                    static_prompt_revision=composition.metrics.stable_prefix_hash,
                 ),
             )
+            from qq_ai_bot.services.agent_tools import OneBotToolGateway, ToolRuntime
+            from qq_ai_bot.services.main_agent_backend import MainAgentBackend
 
-        async def validate_context() -> None:
-            if context.revalidate_authority is not None:
-                try:
-                    await context.revalidate_authority(None)
-                except AutomationExecutionError as exc:
-                    raise _AutomationAuthorityChanged(exc.category) from exc
-            if composition.read_version is not None and not await self._ledger.read_version_matches(
-                composition.read_version
-            ):
-                raise _AutomationContextChanged("automation context generation changed")
-            if composition.commit_projection is not None:
-                await composition.commit_projection()
-
-        runtime = replace(
-            runtime,
-            before_model_request=validate_context,
-            prompt_diagnostics=PromptRequestDiagnostics(
-                conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
-                prompt_snapshot_fingerprint=composition.metrics.prompt_snapshot_fingerprint,
-                static_prompt_revision=composition.metrics.stable_prefix_hash,
-            ),
-        )
-        from qq_ai_bot.services.agent_tools import OneBotToolGateway, ToolRuntime
-        from qq_ai_bot.services.main_agent_backend import MainAgentBackend
-
-        contract = self.main_contract
-        tool_runtime = ToolRuntime(
-            inbound=None,
-            visible_event_ids=composition.visible_event_ids,
-            gateway=cast(OneBotToolGateway | None, runtime.gateway),
-            allow_generic_onebot=context.authority.actor_is_superuser,
-            allow_work_environment=True,
-            read_scope=None,
-            external_target_id=context.current_group_id or context.authority.actor_user_id,
-            conversation_key=context.conversation_key,
-            execution_id=runtime.execution_id or "",
-            actor_is_superuser=context.authority.actor_is_superuser,
-            allow_admin_actions=context.authority.actor_is_superuser,
-            allow_automation=True,
-            runtime_config=snapshot,
-            origin=context.authority.origin,
-            conversation_id=context.canonical_conversation_id,
-            scope_type=ScopeType.GROUP if context.current_group_id else ScopeType.PRIVATE,
-            person_id=context.canonical_creator_person_id,
-            space_id=context.canonical_target_space_id,
-            before_model_request=validate_context,
-            sandbox_source={
-                "origin": context.authority.origin.value,
-                "principal_kind": context.creator_kind,
-                "actor_user_id": context.authority.actor_user_id,
-                "presence_id": context.canonical_presence_id,
-                "space_id": context.canonical_target_space_id,
-                "bot_user_id": context.bot_user_id,
-                "conversation_id": context.canonical_conversation_id,
-                "generation": context.conversation_generation,
-                "automation_id": context.automation_id,
-                "automation_run_id": context.automation_run_id,
-                "step_id": context.step_id,
-                "source_step_id": context.source_step_id or context.step_id,
-                "script_hash": context.automation_script_hash,
-                "execution_id": runtime.execution_id,
-            },
-            actor_context=ToolActor(
-                user_id=context.authority.actor_user_id,
-                bot_user_id=context.bot_user_id,
-                group_id=context.current_group_id,
-                origin=context.authority.origin,
-                person_id=context.canonical_creator_person_id,
-                presence_id=context.canonical_presence_id,
-                principal_kind=context.creator_kind,
-                automation_run_id=context.automation_run_id
-                if context.creator_kind == "self"
-                else None,
-                instruction=str(arguments["instruction"]),
+            contract = self.main_contract
+            tool_runtime = ToolRuntime(
+                inbound=None,
+                visible_event_ids=composition.visible_event_ids,
+                gateway=cast(OneBotToolGateway | None, runtime.gateway),
+                allow_generic_onebot=context.authority.actor_is_superuser,
+                allow_work_environment=True,
+                read_scope=None,
+                external_target_id=context.current_group_id or context.authority.actor_user_id,
+                conversation_key=context.conversation_key,
                 execution_id=runtime.execution_id or "",
+                actor_is_superuser=context.authority.actor_is_superuser,
+                allow_admin_actions=context.authority.actor_is_superuser,
+                allow_automation=True,
+                runtime_config=snapshot,
+                origin=context.authority.origin,
                 conversation_id=context.canonical_conversation_id,
-            ),
-        )
-        backend = MainAgentBackend(contract.chat, tool_runtime)
-        try:
-            result = await self.main_turns.run(messages, runtime, backend)
-        except LLMError as exc:
-            raise _automation_llm_error(
-                exc,
-                llm_calls=backend.failed_model_requests,
-                tool_calls=backend.failed_tool_calls,
-                messages_sent=backend.messages_sent,
-            ) from exc
+                scope_type=ScopeType.GROUP if context.current_group_id else ScopeType.PRIVATE,
+                person_id=context.canonical_creator_person_id,
+                space_id=context.canonical_target_space_id,
+                before_model_request=validate_context,
+                sandbox_source={
+                    "origin": context.authority.origin.value,
+                    "principal_kind": context.creator_kind,
+                    "actor_user_id": context.authority.actor_user_id,
+                    "presence_id": context.canonical_presence_id,
+                    "space_id": context.canonical_target_space_id,
+                    "bot_user_id": context.bot_user_id,
+                    "conversation_id": context.canonical_conversation_id,
+                    "generation": context.conversation_generation,
+                    "automation_id": context.automation_id,
+                    "automation_run_id": context.automation_run_id,
+                    "step_id": context.step_id,
+                    "source_step_id": context.source_step_id or context.step_id,
+                    "script_hash": context.automation_script_hash,
+                    "execution_id": runtime.execution_id,
+                },
+                actor_context=ToolActor(
+                    user_id=context.authority.actor_user_id,
+                    bot_user_id=context.bot_user_id,
+                    group_id=context.current_group_id,
+                    origin=context.authority.origin,
+                    person_id=context.canonical_creator_person_id,
+                    presence_id=context.canonical_presence_id,
+                    principal_kind=context.creator_kind,
+                    automation_run_id=context.automation_run_id
+                    if context.creator_kind == "self"
+                    else None,
+                    instruction=str(arguments["instruction"]),
+                    execution_id=runtime.execution_id or "",
+                    conversation_id=context.canonical_conversation_id,
+                ),
+            )
+            backend = MainAgentBackend(contract.chat, tool_runtime)
+            try:
+                result = await self.main_turns.run(messages, runtime, backend)
+            except LLMError as exc:
+                raise _automation_llm_error(
+                    exc,
+                    llm_calls=backend.failed_model_requests,
+                    tool_calls=backend.failed_tool_calls,
+                    messages_sent=backend.messages_sent,
+                ) from exc
+            messages_sent = backend.messages_sent
         if (
             result.work_state
             in {"queued", "running", "waiting_external", "waiting_user", "suspended"}
@@ -272,14 +396,14 @@ class AutomationCapabilityHandlers:
                 pending_work_id=result.work_id,
                 llm_calls=result.model_requests,
                 tool_calls=result.tool_calls_used,
-                messages_sent=backend.messages_sent,
+                messages_sent=messages_sent,
             )
         if result.work_state not in {None, "completed"}:
             raise AutomationExecutionError(
                 f"agent_work_{result.work_state}",
                 llm_calls=result.model_requests,
                 tool_calls=result.tool_calls_used,
-                messages_sent=backend.messages_sent,
+                messages_sent=messages_sent,
             )
         return CapabilityResult(
             data={
@@ -288,7 +412,7 @@ class AutomationCapabilityHandlers:
             },
             llm_calls=result.model_requests,
             tool_calls=result.tool_calls_used,
-            messages_sent=backend.messages_sent,
+            messages_sent=messages_sent,
         )
 
     async def config_get(

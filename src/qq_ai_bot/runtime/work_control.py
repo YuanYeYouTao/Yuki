@@ -27,31 +27,10 @@ WORK_CONTROL_NAMES = frozenset(
 ACCEPTED_ENDINGS = {
     "complete": "completed",
     "fail": "failed",
+    "cancel": "cancelled",
     "need_input": "waiting_user",
     "wait": "waiting_external",
 }
-
-
-def state_fact(effect: dict[str, Any]) -> bool:
-    """A typed, settled business mutation; a platform send is never a state change.
-
-    send_message is the only PLATFORM_SEND tool and receipts keep its original
-    tool name. Receipts written before commit tracking carry no commit fact, so
-    only an explicit no-op (False) is rejected unless the domain verified the
-    request's postcondition.
-    """
-    return (
-        effect.get("tool") not in {"send_message", "sandbox_completion"}
-        and effect.get("side_effecting") is not False
-        and effect.get("ok") is True
-        and effect.get("executed") is not False
-        and not effect.get("pending")
-        and not effect.get("uncertain")
-        and (
-            effect.get("mutation_committed") is not False
-            or effect.get("request_postcondition_satisfied") is True
-        )
-    )
 
 
 class WorkInputsPreparing(RuntimeError):
@@ -70,22 +49,23 @@ def work_control_tools() -> tuple[ChatTool, ...]:
             description=(
                 "管理持久工作。get 用原 work_id 查看状态、完整 goal 和等待条件；"
                 "list 默认 active，终态用 status=terminal，全部用 all。"
-                "新操作先单独 accept(goal,output_kind)，成功后再调用执行工具；"
+                "持续目标可用 accept(goal) 登记；"
                 "普通聊天无需登记，发言用 send_message。"
                 "原工作用 resume(work_id) 续接，不重复 accept；"
                 "独立新工作用 accept 排队，update 只修正当前目标。"
+                "derive(goal) 为当前或指定 parent_work_id 登记实际子目标，继承原来源。"
                 "update 也可仅保存 context_note：facts/unresolved/next_steps "
                 "每项含 text 和 refs（goal、input:ID、event:ID、effect:原键、"
                 "artifact:handle、child:ID）；线索不改变执行状态，研究原文按 artifact 回读。"
-                "分段前保存累积发现、必要中间值与下一步；业务续跑使用当前聊天和 note，"
+                "按需要保存累积发现、必要中间值与下一步；业务续跑使用当前聊天和 note，"
                 "不会自动恢复此前整段工具往返。"
                 "wait 登记 conditions：time_due(after_seconds 或含时区 at)、conversation、"
                 "plugin_event(plugin_id,event_type)、owned_run(run_id)，"
                 "wait_mode=any/all，deadline_at 可选；信号到达续原 work_id。"
                 "wait_status 查询，cancel_wait 撤销。need_input 说明缺失信息；"
-                "complete 提出结束；可在 result 中给出真实内部结果（调用方或父工作读取它，"
-                "不会自动外发）；后端核对未决执行和 artifact，接受后本次执行立即结束。"
-                "get/list/wait_status 是只读查询；其余生命周期 action 必须独占一个工具批次。"
+                "complete 提交结束；可在 result 中给出真实内部结果（调用方或父工作读取它，"
+                "不会自动外发）；fail/cancel 终止指定工作及其所属执行。"
+                "接受结束后本次执行立即收尾；get/list/wait_status 是只读查询。"
             ),
             parameters={
                 "type": "object",
@@ -97,6 +77,7 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                             "get",
                             "list",
                             "accept",
+                            "derive",
                             "resume",
                             "update",
                             "wait",
@@ -105,6 +86,7 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                             "need_input",
                             "complete",
                             "fail",
+                            "cancel",
                         ],
                     },
                     "goal": {"type": "string"},
@@ -114,8 +96,7 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                         "enum": ["interactive", "quiet"],
                         "description": (
                             "较长交互式任务在 accept 时用 interactive："
-                            "先发送 start 说明再执行，"
-                            "阶段按需要汇报，明确 complete/wait/need_input/fail 收尾。"
+                            "按需要说明进展，明确 complete/wait/need_input/fail/cancel 收尾。"
                             "quiet 仅用于用户要求安静执行；新真人追问仍需处理。"
                             "update 可只修改此字段，不改变目标或等待。"
                         ),
@@ -123,32 +104,23 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                     "work_id": {
                         "type": "string",
                         "maxLength": 36,
-                        "description": "get 查询或 resume 续接原工作的内部 ID。",
+                        "description": "get 查询或 resume/cancel/fail 操作指定原工作的内部 ID。",
+                    },
+                    "parent_work_id": {
+                        "type": "string",
+                        "description": (
+                            "derive 的直属父工作，默认当前工作；list 可按此列出直属子工作。"
+                        ),
                     },
                     "limit": {"type": "integer", "minimum": 1, "maximum": 50},
                     "status": {"type": "string", "enum": ["active", "terminal", "all"]},
                     "cursor": {"type": "string", "maxLength": 256},
-                    "output_kind": {
-                        "type": "string",
-                        "enum": ["answer", "artifact", "state_change"],
-                        "description": (
-                            "accept 必填。调查/写作用 answer；绘图/文件生成用 artifact；"
-                            "修改状态用 state_change。"
-                        ),
-                    },
-                    "deliver_artifacts": {
-                        "type": "boolean",
-                        "description": (
-                            "文件任务默认需要实际发送。用户明确只要求保存在工作区时才设 false。"
-                        ),
-                    },
-                    "artifact_ids": {"type": "array", "items": {"type": "string"}},
                     "result": {
-                        "type": "string",
+                        "type": ["string", "null"],
                         "description": "complete 的内部结果；按实际工作需要填写。",
                     },
                     "reason": {"type": "string"},
-                    "run_id": {"type": "string", "maxLength": 36},
+                    "run_id": {"type": "string"},
                     "wait_mode": {"type": "string", "enum": ["any", "all"]},
                     "conditions": {
                         "type": "array",
@@ -177,8 +149,6 @@ class WorkControl:
     current_message: ChatMessage | None = None
     current: dict[str, Any] | None = None
     ending: str | None = None
-    # Stable code of the last rejected implicit completion; it becomes the pause reason.
-    completion_rejected: str | None = None
     known_effects: list[dict[str, Any]] = field(default_factory=list)
     requests_started: int = 0
     deferred_failure: Any = None
@@ -225,140 +195,20 @@ class WorkControl:
             self.lease, self.current["id"], updates
         )
 
-    async def communication_inputs(
-        self, *, after_id: int = 0, limit: int = 8
-    ) -> list[dict[str, int]]:
-        if self.current is None:
-            return []
-        return await self.repository.communication_inputs(
-            self.lease, self.current["id"], after_id=after_id, limit=limit
-        )
-
-    async def communication_target(self) -> dict[str, str]:
-        from sqlalchemy import select
-
-        from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-
-        async with self.repository.database.sessions() as session:
-            conversation = (
-                await session.execute(
-                    select(
-                        CanonicalConversationModel.space_id,
-                        CanonicalConversationModel.person_id,
-                    ).where(CanonicalConversationModel.id == self.lease.conversation_id)
-                )
-            ).first()
-        if conversation is None:
-            raise ValueError("work_delivery_conversation_missing")
-        target_id = conversation.space_id or conversation.person_id
-        if not target_id:
-            raise ValueError("work_delivery_target_missing")
-        return {
-            "kind": "space" if conversation.space_id else "person",
-            "id": target_id,
-        }
-
-    async def communication_consumed_watermark(self) -> int:
-        if self.current is None:
-            return 0
-        return await self.repository.communication_consumed_watermark(
-            self.lease, self.current["id"]
-        )
-
-    async def communication_reports(
-        self,
-        *,
-        kind: str | None = None,
-        event_ids: tuple[int, ...] = (),
-        effect_keys: tuple[str, ...] = (),
-        delivered_only: bool = False,
-    ) -> list[dict[str, Any]]:
-        if self.current is None:
-            return []
-        target = await self.communication_target()
-        if effect_keys:
-            result = []
-            # Exact batch witnesses use bounded SQL bind pages, without imposing
-            # a new limit on the configured number of model tool calls.
-            for offset in range(0, len(effect_keys), 128):
-                result.extend(
-                    await self.repository.communication_reports(
-                        self.lease,
-                        self.current["id"],
-                        target,
-                        kind=kind,
-                        event_ids=tuple(event_ids),
-                        effect_keys=effect_keys[offset : offset + 128],
-                        delivered_only=delivered_only,
-                    )
-                )
-            return result
-        return await self.repository.communication_reports(
-            self.lease,
-            self.current["id"],
-            target,
-            kind=kind,
-            event_ids=tuple(event_ids),
-            effect_keys=effect_keys,
-            delivered_only=delivered_only,
-        )
-
-    async def validate_work_report(self, arguments: dict[str, Any]) -> dict[str, Any] | None:
-        """Validate host-owned association before any social side effect."""
-        if "work_report" not in arguments:
-            return None
-        report = arguments["work_report"]
-        assert self.current is not None
-        if (
-            not isinstance(report, dict)
-            or set(report) - {"kind", "reply_to_event_ids"}
-            or not isinstance(report.get("kind"), str)
-        ):
-            raise ValueError("work_report_invalid")
-        event_ids = report.get("reply_to_event_ids", [])
-        if not isinstance(event_ids, list) or any(
-            type(identity) is not int or identity < 1 for identity in event_ids
-        ):
-            raise ValueError("work_report_event_ids_invalid")
-        from sqlalchemy import select
-
-        from qq_ai_bot.persistence.models import ChatEventModel
-        from qq_ai_bot.runtime.work_schema_v1 import inputs
-
-        async with self.repository.database.sessions() as session:
-            admitted = set(
-                await session.scalars(
-                    select(inputs.c.event_id).where(
-                        inputs.c.work_id == self.current["id"],
-                        inputs.c.conversation_id == self.lease.conversation_id,
-                        inputs.c.generation == self.lease.generation,
-                        inputs.c.state.in_(("staged", "consumed")),
-                        inputs.c.event_id.in_(event_ids),
-                    )
-                )
-            )
-            trigger = json.loads(self.current["source_json"]).get("trigger_event_id")
-            if trigger in event_ids:
-                original = await session.get(ChatEventModel, trigger)
-                if original and original.canonical_conversation_id == self.lease.conversation_id:
-                    admitted.add(trigger)
-        if not set(event_ids) <= admitted:
-            raise ValueError("work_report_event_not_admitted")
-        target = await self.communication_target()
-        selected = arguments.get("target")
-        if selected is not None and (
-            not isinstance(selected, dict)
-            or selected.get("kind") != target["kind"]
-            or selected.get("target_id") != target["id"]
-            or set(selected) - {"kind", "target_id"}
-        ):
-            raise ValueError("work_report_target_not_current")
-        return {"kind": report["kind"], "reply_to_event_ids": list(event_ids)}
-
     async def pending(self) -> list[dict[str, Any]]:
         if self.current is None:
             return []
         return await self.repository.pending(self.lease, work_id=self.current["id"])
+
+    async def has_pending_business_inputs(self) -> bool:
+        if self.current is None:
+            return False
+        return await self.repository.has_pending_business_inputs(self.lease, self.current["id"])
+
+    async def has_owned_execution(self) -> bool:
+        if self.current is None:
+            return False
+        return await self.repository.has_owned_execution(self.lease, self.current["id"])
 
     async def recover_failure(self, exc: BaseException) -> ActivationOutcome:
         from qq_ai_bot.runtime.activation_outcome import WorkRecoveryDeferred
@@ -372,7 +222,7 @@ class WorkControl:
             raise WorkRecoveryDeferred(type(exc).__name__) from exc
 
     async def background_state(self) -> str | None:
-        """A foreground answer/finalization cannot terminate unfinished workers."""
+        """Project background work while no lifecycle decision has been accepted."""
         if self.current is None or self.lease.work_id:
             return None
         from qq_ai_bot.runtime.subagent_repository import SubagentRepository
@@ -415,18 +265,9 @@ class WorkControl:
             )
 
     async def complete_final(self, text: str, call_key: str) -> None:
-        """An ordinary final uses the same completion preparation as complete(result)."""
-        try:
-            await self.validate()
-            if not await self.repository.valid(self.lease):
-                raise WorkConflict("work_activation_obsolete")
-            prepared = await self._prepare_completion({"result": text}, implicit=True)
-        except ValueError as exc:
-            # The original stable code stays visible as the pause reason; no
-            # correction model turn is bought and nothing is accepted.
-            self.completion_rejected = str(exc)
-            return
-        await self._accept("complete", call_key, **prepared)
+        """An ordinary final records the same completion decision as complete(result)."""
+        await self.validate()
+        await self._accept("complete", call_key, result=text)
 
     async def effect_evidence(self) -> list[dict[str, Any]]:
         if self.current is None:
@@ -448,21 +289,6 @@ class WorkControl:
             self.known_effects = list(
                 {item["effect_key"]: item for item in [*recent, *unresolved]}.values()
             )
-
-    async def has_unresolved_effects(
-        self,
-        *,
-        pending: bool = True,
-        uncertain: bool = True,
-    ) -> bool:
-        if self.current is None:
-            return False
-        return await self.repository.has_unresolved_effects(
-            self.lease,
-            self.current["id"],
-            pending=pending,
-            uncertain=uncertain,
-        )
 
     async def reconcile_completed_children(self) -> None:
         if self.current is None:
@@ -649,10 +475,15 @@ class WorkControl:
                 )
             )
         if selected:
+            assert self.current is not None
+            business_inputs = await self.repository.has_pending_business_inputs(
+                self.lease, self.current["id"], input_ids=tuple(selected)
+            )
             await self.reconcile_completed_children()
             await self.repository.stage(self.lease, selected, attempt)
             self.staged_attempt = attempt
-            await self.retire_accepted()
+            if business_inputs:
+                await self.retire_accepted()
         return tuple(messages)
 
     async def confirm_inputs(self) -> None:
@@ -787,22 +618,13 @@ class WorkControl:
             )
         # Publication is independently retryable. Its failure does not erase a
         # saved note or pretend the update/tool had no durable effect.
-        from qq_ai_bot.conversation.projections import ProjectionConflict
-
-        try:
-            await publish_pending_note(self)
-        except (ValueError, ProjectionConflict):
-            pass
+        await publish_pending_note(self)
 
     async def _control(self, args: dict[str, Any], call_key: str) -> dict[str, Any]:
         action = args.get("action")
         if not isinstance(action, str):
             raise ValueError("work_action_required")
-        if "context_note" in args and action != "update":
-            raise ValueError("work_context_note_action_invalid")
-        if "reporting" in args:
-            if action not in {"accept", "update"}:
-                raise ValueError("work_reporting_action_invalid")
+        if action in {"accept", "update"} and "reporting" in args:
             self.repository.encode_communication_updates({"reporting": args["reporting"]})
         if action in {"get", "list"}:
             from qq_ai_bot.runtime.work_queries import WorkQueries
@@ -828,12 +650,50 @@ class WorkControl:
             ):
                 raise ValueError("work_list_cursor_invalid")
             return await queries.list(
-                self.lease, self.source, limit=limit, status=status, cursor=cursor
+                self.lease,
+                self.source,
+                limit=limit,
+                status=status,
+                cursor=cursor,
+                parent_work_id=args.get("parent_work_id"),
             )
+        target = args.get("work_id")
+        if action in {"cancel", "fail", "resume"} and target is not None:
+            if not isinstance(target, str) or not target:
+                raise ValueError("work_id_required")
+            if (
+                action in {"cancel", "fail"}
+                and (self.current is None or target != self.current["id"])
+            ) or (action == "resume" and self.current is not None and target != self.current["id"]):
+                from qq_ai_bot.runtime.work_management import WorkManagementError, manage_work
+                from qq_ai_bot.runtime.work_queries import WorkQueries
+
+                candidate = await WorkQueries(self.repository).get(
+                    self.lease, self.source, target, local=True
+                )
+                if candidate is None:
+                    raise ValueError("work_not_found_or_not_authorized")
+                try:
+                    async with self.repository.database.immediate_session() as writer:
+                        await self.repository._assert_lease(writer, self.lease)
+                        revision, state = await manage_work(
+                            writer,
+                            target,
+                            candidate["revision"],
+                            action,
+                            reason=args.get("reason"),
+                        )
+                except WorkManagementError as exc:
+                    raise ValueError(exc.code) from exc
+                return {"work_id": target, "state": state, "revision": revision}
         if self.lease.work_id:
             if action == "accept":
                 raise ValueError("worker_already_registered")
-            if action in {"answer", "need_input"} and self.source.get("parent_work_id"):
+            if (
+                action in {"answer", "need_input"}
+                and self.current is not None
+                and self.current["parent_work_id"] is not None
+            ):
                 from qq_ai_bot.runtime.subagent_tools import execute_subagent
 
                 return await execute_subagent(
@@ -850,7 +710,6 @@ class WorkControl:
                 raise ValueError("resume_requires_neutral_foreground")
             identity = args.get("work_id")
             from qq_ai_bot.runtime.work_queries import WorkQueries
-            from qq_ai_bot.runtime.work_repository import TERMINAL
 
             candidate = (
                 await WorkQueries(self.repository).get(
@@ -859,7 +718,7 @@ class WorkControl:
                 if isinstance(identity, str)
                 else None
             )
-            if candidate is None or candidate["state"] in TERMINAL:
+            if candidate is None or candidate["state"] in {"completed", "cancelled"}:
                 raise ValueError("resume_work_not_authorized")
             await self.repository.enqueue(
                 self.lease.conversation_id,
@@ -880,26 +739,39 @@ class WorkControl:
             )
             self.handoff_work_id = identity
             return {"resumed_work_id": identity, "state": "queued", "continue_original_chain": True}
+        if action == "derive":
+            from qq_ai_bot.runtime.work_queries import WorkQueries
+
+            if self.current is None:
+                raise ValueError("no_active_work")
+            parent = args.get("parent_work_id", self.current["id"])
+            goal = args.get("goal")
+            if not isinstance(goal, str) or not goal.strip():
+                raise ValueError("work_goal_required")
+            candidate = (
+                await WorkQueries(self.repository).get(self.lease, self.source, parent, local=True)
+                if isinstance(parent, str)
+                else None
+            )
+            if candidate is None:
+                raise ValueError("derive_parent_not_authorized")
+            derived = await self.repository.derive(self.lease, parent, call_key, goal)
+            return {
+                "derived_work_id": derived["id"],
+                "parent_work_id": parent,
+                "state": derived["state"],
+            }
         if action == "accept":
             if self.current is not None:
                 return await self._queue_work(args)
             goal = args.get("goal")
             if not isinstance(goal, str) or not goal.strip():
                 raise ValueError("work_goal_required")
-            output_kind = args.get("output_kind")
-            if not isinstance(output_kind, str) or output_kind not in {
-                "answer",
-                "artifact",
-                "state_change",
-            }:
-                raise ValueError("work_output_kind_required")
             self.current = await self.repository.accept(
                 self.lease,
                 source_key=self.source_key,
                 source=self.source,
                 goal=goal,
-                output_kind=output_kind,
-                deliver_artifacts=args.get("deliver_artifacts") is not False,
                 reporting=args.get("reporting"),
             )
             if self.requests_started and self.current["model_requests"] == 0:
@@ -956,84 +828,89 @@ class WorkControl:
             if "context_note" in args:
                 await self.update_context_note(args["context_note"], call_key, note_plan)
         elif action == "wait":
-            if args.get("conditions") is not None:
-                if args.get("run_id") is not None:
+            from qq_ai_bot.runtime.work_wait import WorkWaitRepository, normalize_conditions
+
+            conditions = args.get("conditions", [])
+            if args.get("run_id") is not None:
+                if args.get("conditions") is not None:
                     raise ValueError("wait_requires_run_or_conditions")
-                from qq_ai_bot.runtime.work_wait import WorkWaitRepository, normalize_conditions
-
-                conditions = args["conditions"]
-                normalized = normalize_conditions(conditions, time.time())
-                for condition in normalized:
-                    if condition["kind"] != "owned_run":
-                        continue
-                    identity = condition["run_id"]
-                    child = await self.resolve_child(identity) if self.resolve_child else None
-                    if child is None:
-                        from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-
-                        try:
-                            child = await SubagentRepository(self.repository).related(
-                                self.current["id"], identity
-                            )
-                        except ValueError:
-                            pass
-                    if child is None:
-                        raise ValueError("waiting_requires_owned_execution")
-                wait = await WorkWaitRepository(self.repository).register(
-                    self.lease,
-                    work_id=self.current["id"],
-                    source=self.source,
-                    call_key=f"wait:{self.current['id']}:{hashlib.sha256(call_key.encode()).hexdigest()}",
-                    mode=args.get("wait_mode", "any"),
-                    conditions=conditions,
-                    deadline_at=args.get("deadline_at"),
-                    accepted={"action": "wait", "call_key": call_key},
+                conditions = [{"kind": "owned_run", "run_id": args["run_id"]}]
+            normalized = normalize_conditions(conditions, time.time())
+            for condition in normalized:
+                if condition["kind"] != "owned_run":
+                    continue
+                identity = condition["run_id"]
+                owned = (
+                    self.resolve_child is not None
+                    and await self.resolve_child(identity) is not None
                 )
-                self.current = await self.repository.get(self.current["id"]) or self.current
-                self.ending = "waiting_external"
-                return {
-                    "work_id": self.current["id"],
-                    "wait_id": wait["id"],
-                    "ending_proposed": self.ending,
-                    "mode": wait["mode"],
-                }
-            identity = args.get("run_id")
-            child = (
-                await self.resolve_child(identity)
-                if isinstance(identity, str) and self.resolve_child
-                else None
-            )
-            if (
-                not child
-                and isinstance(identity, str)
-                and self.current is not None
-                and not self.lease.work_id
-            ):
-                from qq_ai_bot.runtime.subagent_repository import SubagentRepository
+                if not owned:
+                    from sqlalchemy import func, or_, select
 
-                try:
-                    row = await SubagentRepository(self.repository).related(
-                        self.current["id"], identity
-                    )
-                    child = {
-                        "pending": row["state"]
-                        in {"queued", "running", "waiting_external", "waiting_user"}
-                    }
-                except ValueError:
-                    pass
-            if not child or not child.get("pending"):
-                raise ValueError("waiting_requires_owned_pending_execution")
-            await self._accept("wait", call_key, run_id=identity)
-        elif action in {"need_input", "fail"}:
-            if action == "fail" and await self.background_state() is not None:
-                raise ValueError("unfinished_subagents_use_wait_or_cancel_explicitly")
+                    from qq_ai_bot.runtime.work_schema_v1 import work
+                    from qq_ai_bot.runtime.work_tree import descendants
+                    from qq_ai_bot.sandbox.db_models import SandboxTaskRunModel
+
+                    owned_work = descendants(self.current["id"])
+                    async with self.repository.database.sessions() as reader:
+                        owned = bool(
+                            await reader.scalar(
+                                select(
+                                    or_(
+                                        select(work.c.id)
+                                        .where(
+                                            work.c.id == identity,
+                                            work.c.id.in_(owned_work),
+                                        )
+                                        .exists(),
+                                        select(SandboxTaskRunModel.request_id)
+                                        .where(
+                                            SandboxTaskRunModel.run_id == identity,
+                                            or_(
+                                                func.json_extract(
+                                                    SandboxTaskRunModel.source_json, "$.work_id"
+                                                )
+                                                == self.current["id"],
+                                                func.json_extract(
+                                                    SandboxTaskRunModel.source_json, "$.work_id"
+                                                ).in_(owned_work),
+                                            ),
+                                        )
+                                        .exists(),
+                                    )
+                                )
+                            )
+                        )
+                if not owned:
+                    raise ValueError("waiting_requires_owned_execution")
+            wait = await WorkWaitRepository(self.repository).register(
+                self.lease,
+                work_id=self.current["id"],
+                source=self.source,
+                call_key=f"wait:{self.current['id']}:{hashlib.sha256(call_key.encode()).hexdigest()}",
+                mode=args.get("wait_mode", "any"),
+                conditions=conditions,
+                deadline_at=args.get("deadline_at"),
+                accepted={"action": "wait", "call_key": call_key},
+            )
+            self.current = await self.repository.get(self.current["id"]) or self.current
+            self.ending = "waiting_external"
+            return {
+                "work_id": self.current["id"],
+                "wait_id": wait["id"],
+                "ending_proposed": self.ending,
+                "mode": wait["mode"],
+            }
+        elif action in {"need_input", "fail", "cancel"}:
             reason = args.get("reason")
             if reason is not None and not isinstance(reason, str):
                 raise ValueError("work_reason_invalid")
             await self._accept(action, call_key, reason=reason)
         elif action == "complete":
-            prepared = await self._prepare_completion(args, implicit=False)
-            await self._accept("complete", call_key, **prepared)
+            result = args.get("result")
+            if result is not None and not isinstance(result, str):
+                raise ValueError("work_result_invalid")
+            await self._accept("complete", call_key, result=result or "")
         else:
             raise ValueError("invalid_work_action")
         return {
@@ -1042,52 +919,6 @@ class WorkControl:
             "revision": self.current["revision"],
             "ending_proposed": self.ending,
         }
-
-    async def _prepare_completion(self, args: dict[str, Any], *, implicit: bool) -> dict[str, Any]:
-        """Domain checks outside the writer; the writer rechecks current competing facts."""
-        assert self.current is not None
-        if not self.lease.work_id:
-            from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-
-            if await SubagentRepository(self.repository).unfinished(self.current["id"]):
-                raise ValueError("work_has_unfinished_subagents")
-        await self.reconcile_completed_children()
-        if await self.has_unresolved_effects():
-            raise ValueError("work_has_unresolved_execution")
-        result = args.get("result", "")
-        if not isinstance(result, str):
-            raise ValueError("work_result_invalid")
-        facts = await self.effect_evidence()
-        kind = self.current["output_kind"]
-        if kind == "artifact":
-            known = {
-                identity
-                for effect in facts
-                if effect.get("ok") or effect.get("delivered_artifacts")
-                for identity in effect.get("artifacts", [])
-            }
-            delivered = {
-                identity for effect in facts for identity in effect.get("delivered_artifacts", [])
-            }
-            chosen = args.get("artifact_ids")
-            if chosen is None and implicit:
-                # An ordinary final selects what the model itself explicitly
-                # delivered (or, for workspace-only tasks, produced); drafts
-                # that were never sent are never promoted into a delivery duty.
-                chosen = sorted(delivered if self.current["deliver_artifacts"] else known)
-            if (
-                not isinstance(chosen, list)
-                or not chosen
-                or any(
-                    not isinstance(identity, str) or identity not in known for identity in chosen
-                )
-            ):
-                raise ValueError("work_completion_requires_verified_artifacts")
-            if self.current["deliver_artifacts"] and not set(chosen) <= delivered:
-                raise ValueError("work_completion_requires_artifact_delivery_receipt")
-        elif kind == "state_change" and not any(state_fact(effect) for effect in facts):
-            raise ValueError("work_completion_requires_execution_evidence")
-        return {"result": result}
 
     async def _queue_work(self, args: dict[str, Any]) -> dict[str, Any]:
         from sqlalchemy import select
@@ -1116,14 +947,9 @@ class WorkControl:
             )
         if event is None:
             raise ValueError("independent_work_source_invalid")
-        goal, kind = args.get("goal"), args.get("output_kind")
-        if (
-            not isinstance(goal, str)
-            or not goal.strip()
-            or not isinstance(kind, str)
-            or kind not in {"answer", "artifact", "state_change"}
-        ):
-            raise ValueError("work_goal_and_output_kind_required")
+        goal = args.get("goal")
+        if not isinstance(goal, str) or not goal.strip():
+            raise ValueError("work_goal_required")
         source = {
             **self.source,
             "actor_user_id": event.sender_user_id,
@@ -1135,8 +961,6 @@ class WorkControl:
             source_key=f"event:{self.lease.conversation_id}:{event.id}",
             source=source,
             goal=goal,
-            output_kind=kind,
-            deliver_artifacts=args.get("deliver_artifacts") is not False,
             handoff_from=self.current["id"],
             reporting=args.get("reporting"),
         )

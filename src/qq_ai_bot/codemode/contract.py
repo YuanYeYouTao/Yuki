@@ -63,7 +63,7 @@ EXECUTE_CODE_TOOL = ChatTool(
         "发送与修改按顺序执行。只能导入 Monty 内置支持的模块（例如 asyncio、math），"
         "不能导入宿主 Python 包；没有宿主文件系统、网络或环境变量访问。"
         "最后一个表达式是脚本结果。"
-        "memory_change、task_control 结束/等待、新输入、未知副作用或权限变化会由宿主"
+        "task_control 结束/等待、新要求或权限变化会由宿主"
         "停止脚本并交回模型，脚本无法捕获后继续。脚本结果不会自动发送给任何人。"
     ),
     parameters={
@@ -92,7 +92,6 @@ EXECUTE_CODE_TOOL = ChatTool(
 STOP_ADMISSION_CLOSED = "admission_closed"
 STOP_UNKNOWN_EFFECT = "unknown_effect"
 STOP_HOST_CONTROL = "host_control"
-STOP_MEMORY = "memory_observation_required"
 STOP_NEW_INPUT = "new_input"
 STOP_BUDGET = "work_total_budget_exhausted"
 STOP_SNAPSHOT = "snapshot_unavailable"
@@ -105,9 +104,7 @@ ADMISSION_CLOSING_ERRORS = frozenset(
         "capability_no_longer_authorized",
         "capability_not_allowed",
         "main_agent_contract_unavailable",
-        "mutation_already_committed",
         "tools_closed",
-        "unresolved_prior_effect",
         "work_activation_obsolete",
     }
 )

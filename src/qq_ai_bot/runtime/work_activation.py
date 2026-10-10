@@ -86,7 +86,6 @@ async def activate_work(
     work_id: str | None = None,
     bindings: ActiveWorkBindings | None = None,
     scope_key: str | None = None,
-    resume_execution: bool = True,
 ) -> AsyncIterator[WorkControl]:
     with ExitStack() as admission:
         if bindings is not None:
@@ -104,21 +103,7 @@ async def activate_work(
                 source,
                 work_id=work_id,
             )
-            if not resume_execution:
-                # A stale scheduler candidate must not recover a newer queued
-                # execution as though the notice itself were business work.
-                if control.current is not None:
-                    control.settled = True
-                if (
-                    work_id is None
-                    or control.current is None
-                    or control.current["state"] != "suspended"
-                ):
-                    raise WorkConflict("work_notice_target_changed")
-                # A persisted pause notice is maintenance, not a new execution.
-                # Pending input must not let its cleanup resume the paused Work.
-                control.ending = "suspended"
-            elif control.current is not None and control.current["state"] != "running":
+            if control.current is not None and control.current["state"] != "running":
                 control.current = await repository.transition(
                     lease,
                     control.current["id"],

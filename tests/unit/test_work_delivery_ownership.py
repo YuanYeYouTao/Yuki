@@ -13,13 +13,13 @@ from tests.conftest import build_harness, make_settings
 # P10: explicit Invocation fixture contract; existing assertions are retained.
 from tests.support.agent_backend import StubAgentBackend
 from tests.support.runtime_wire import install_wire
-from tests.support.runtime_work_helpers import _persisted_tool_receipt
 from tests.support.social_identity_cases import social_env
+from tests.support.work_runner_helpers import case, run, tool
 from tests.support.workspace_snapshots import snapshot_bytes
 
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.domain.messages import ChatMessage, ChatResponse, ToolCall, ToolFunction
+from qq_ai_bot.domain.messages import ChatMessage, ChatResponse, ChatTool, ToolCall, ToolFunction
 from qq_ai_bot.identity.db_models import CanonicalSpaceModel, IdentityBindingModel
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.persistence.models import ChatEventModel
@@ -47,9 +47,6 @@ class DeliveryBackend(StubAgentBackend):
             sorted((*work_control_tools(), *social_tool_definitions()), key=lambda t: t.name)
         )
 
-    def begin_batch(self, *args):
-        pass
-
     def parallel_safe(self, *args):
         return False
 
@@ -74,9 +71,6 @@ class DeliveryBackend(StubAgentBackend):
 
     def exhausted(self, runtime):
         raise AssertionError("unexpected exhaustion")
-
-    def post_commit_recovery_text(self):
-        return None
 
 
 @pytest.mark.asyncio
@@ -122,7 +116,7 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
         [
             call(
                 "task_control",
-                {"action": "accept", "goal": "make exam", "output_kind": "artifact"},
+                {"action": "accept", "goal": "make exam"},
                 "accept",
             ),
             call(
@@ -136,7 +130,7 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
             ),
             call(
                 "task_control",
-                {"action": "complete", "artifact_ids": [artifact["artifact_id"]]},
+                {"action": "complete"},
                 "complete",
             ),
         ]
@@ -228,7 +222,7 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
             [
                 call(
                     "task_control",
-                    {"action": "accept", "goal": "resend document", "output_kind": "artifact"},
+                    {"action": "accept", "goal": "resend document"},
                     "resend-accept",
                 ),
                 call(
@@ -242,7 +236,7 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
                 ),
                 call(
                     "task_control",
-                    {"action": "complete", "artifact_ids": [artifact["artifact_id"]]},
+                    {"action": "complete"},
                     "resend-done",
                 ),
             ]
@@ -268,68 +262,6 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
         assert len(captured) == 6
     finally:
         await client.aclose()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "caption_status,same_target",
-    [
-        ("succeeded", True),
-        ("succeeded", False),
-        ("failed", True),
-        ("not_sent", True),
-    ],
-)
-async def test_file_receipt_survives_caption_failure_and_other_targets_still_need_reply(
-    database, tmp_path, caption_status, same_target
-):
-    env = await social_env(database, tmp_path)
-    repo = WorkRepository(database)
-    lease = await repo.acquire(env.context.conversation_id, 1)
-
-    async def validate():
-        pass
-
-    control = WorkControl(repo, lease, "delivery", {}, validate)
-    await control.execute(
-        "task_control", {"action": "accept", "goal": "file", "output_kind": "artifact"}, "accept"
-    )
-    await _persisted_tool_receipt(
-        control,
-        "original-file",
-        "send_message",
-        json.dumps(
-            {
-                "ok": True,
-                "data": {
-                    "status": "succeeded" if caption_status == "succeeded" else "failed",
-                    "file": {"status": "succeeded"},
-                    "caption": {"status": caption_status},
-                    "target": {
-                        "kind": "space",
-                        "id": env.space if same_target else "another-space",
-                    },
-                    **(
-                        {"error": "file_sent_caption_unconfirmed"}
-                        if caption_status != "succeeded"
-                        else {}
-                    ),
-                },
-            }
-        ),
-        arguments='{"artifact_id":"doc","attachment_kind":"file","text":"done"}',
-    )
-    result = json.loads(
-        await control.execute(
-            "task_control", {"action": "complete", "artifact_ids": ["doc"]}, "finish"
-        )
-    )
-    assert result["ok"]  # Never require uploading the confirmed file again.
-    accepted = json.loads((await repo.get(control.current["id"]))["checkpoint_json"])[
-        "accepted_control"
-    ]
-    assert "artifact_ids" not in accepted
-    await repo.release(lease)
 
 
 @pytest.mark.asyncio
@@ -439,7 +371,7 @@ async def test_same_person_new_account_keeps_work_scope_and_queues_new_internal_
         response = json.loads(
             await control.execute(
                 "task_control",
-                {"action": "accept", "goal": "independent", "output_kind": "answer"},
+                {"action": "accept", "goal": "independent"},
                 "new-binding",
             )
         )
@@ -452,22 +384,228 @@ async def test_same_person_new_account_keeps_work_scope_and_queues_new_internal_
 
 
 @pytest.mark.asyncio
-async def test_work_report_kind_is_metadata(database, tmp_path):
+async def test_retired_work_report_is_ignored_by_original_social_reader(database, tmp_path):
     env = await social_env(database, tmp_path)
-    repo = WorkRepository(database)
-    lease = await repo.acquire(env.context.conversation_id, 1)
-
-    async def validate():
-        assert await repo.valid(lease)
-
-    control = WorkControl(repo, lease, "report-metadata", {}, validate)
-    control.current = await repo.accept(
-        lease, source_key="report-metadata", source={}, goal="report"
-    )
-    assert await control.validate_work_report({"work_report": {"kind": "research conclusion"}}) == {
-        "kind": "research conclusion",
-        "reply_to_event_ids": [],
+    original = {
+        "text": "原调用已发送",
+        "work_report": {"kind": "retired", "reply_to_event_ids": [999999]},
     }
+    result = await env.service.execute("send_message", original, env.context)
+    assert result["status"] == "succeeded"
+    assert await env.service.execute("send_message", original, env.context) == result
+    assert len([name for name, _ in env.bot.calls if name == "send_group_msg"]) == 1
     schema = next(t for t in social_tool_definitions() if t.name == "send_message").parameters
-    assert "enum" not in schema["properties"]["work_report"]["properties"]["kind"]
-    await repo.release(lease)
+    assert "work_report" not in schema["properties"]
+
+
+async def test_file_sent_caption_unknown_can_explain_and_complete_without_reupload(
+    database, tmp_path
+):
+    test_case = await case(database, tmp_path, [])
+    env, control = test_case.env, test_case.control
+    artifact = snapshot_bytes(env.store, "original.txt", b"confirmed original file")
+    original_gateway = env.bot.call_api
+
+    async def caption_disconnected(action, **parameters):
+        result = await original_gateway(action, **parameters)
+        if action == "send_group_msg" and "文件附言" in str(parameters):
+            raise RuntimeError("caption confirmation lost after gateway call")
+        return result
+
+    env.bot.call_api = caption_disconnected
+
+    async def execute_original(invocation):
+        from qq_ai_bot.capabilities.results import normalize_legacy_result
+        from qq_ai_bot.runtime.effect_outcomes import current_result_capture
+
+        test_case.observed.append(invocation.call.function.name)
+        receipt = await env.service.execute(
+            invocation.call.function.name,
+            json.loads(invocation.call.function.arguments),
+            replace(
+                env.context, turn_id=control.current["id"], call_id=invocation.identity.operation_id
+            ),
+        )
+        result = json.dumps({"ok": receipt["status"] == "succeeded", "data": receipt})
+        capture = current_result_capture.get()
+        capture.outcome = normalize_legacy_result(
+            result, provider_id="core", tool_name=invocation.call.function.name
+        )
+        return result
+
+    test_case.backend.execute_call = execute_original
+    responses = iter(
+        [
+            ChatResponse(
+                "",
+                0,
+                tool_calls=(
+                    tool(
+                        "send_message",
+                        {
+                            "artifact_id": artifact["artifact_id"],
+                            "attachment_kind": "file",
+                            "text": "文件附言",
+                        },
+                        "file",
+                    ),
+                ),
+            ),
+            ChatResponse(
+                "",
+                0,
+                tool_calls=(
+                    tool("send_message", {"text": "文件已送达，原附言尚未确认。"}, "explanation"),
+                    tool("task_control", {"action": "complete"}, "complete"),
+                ),
+            ),
+        ]
+    )
+    test_case.provider._responder = lambda _request: next(responses)
+    result = await run(test_case)
+    assert result.work_state == "completed" and len(test_case.provider.requests) == 2
+    recovered = WorkControl(
+        control.repository, control.lease, control.source_key, control.source, control.validate
+    )
+    recovered.current = await control.repository.get(control.current["id"])
+    await test_case.runner.run(
+        (ChatMessage("user", "resume original"),),
+        replace(test_case.runtime, work_control=recovered),
+        test_case.backend,
+    )
+    assert len(test_case.provider.requests) == 2
+    assert [name for name, _ in env.bot.calls].count("upload_group_file") == 1
+    assert [name for name, _ in env.bot.calls].count("send_group_msg") == 2
+    await recovered.settle(pending_inputs=False)
+    assert recovered.current["state"] == "completed"
+    file_fact = next(
+        fact for fact in await recovered.effect_evidence() if fact.get("delivered_artifacts")
+    )
+    assert file_fact["delivered_artifacts"] == [artifact["artifact_id"]]
+    assert file_fact["uncertain"] is True and file_fact["caption_delivered"] is False
+
+
+@pytest.mark.parametrize("send_status", ["succeeded", "failed", "uncertain"])
+async def test_direct_send_then_complete_pairs_later_calls_without_executing_them(
+    database, tmp_path, send_status
+):
+    calls = (
+        tool("send_message", {"text": "原调用说明"}, "send"),
+        tool("task_control", {"action": "complete", "result": "部分成果保留"}, "complete"),
+        tool("write_fixture", {}, "after-complete"),
+    )
+    test_case = await case(
+        database, tmp_path, [ChatResponse("", 0, tool_calls=calls)], send_status=send_status
+    )
+    result = await run(test_case)
+    assert result.work_state == "completed" and result.text == "部分成果保留"
+    assert test_case.observed == ["send_message"]
+    assert len(test_case.provider.requests) == 1
+    await test_case.control.settle(pending_inputs=False)
+    persisted = await test_case.repository.get(test_case.control.current["id"])
+    assert persisted["state"] == "completed"
+    transcript = test_case.control.session.transcript.request()
+    pairs = {
+        message.tool_call_id: json.loads(message.content)
+        for message in transcript.messages
+        if message.role == "tool"
+    }
+    assert set(pairs) == {call.id for call in calls}
+    assert pairs["after-complete"]["executed"] is False
+    facts = await test_case.control.effect_evidence()
+    assert facts[0]["uncertain"] is (send_status == "uncertain")
+
+
+@pytest.mark.parametrize("mode", ["active", "neutral", "disabled"])
+async def test_direct_memory_and_send_follow_original_order_without_work_admission(
+    database, tmp_path, mode
+):
+    calls = (
+        tool("memory_change", {}, "remember"),
+        tool("send_message", {"text": "执行后说明"}, "send"),
+    )
+    test_case = await case(
+        database, tmp_path, [ChatResponse("", 0, tool_calls=calls), ChatResponse("", 0)]
+    )
+    test_case.backend.definitions = lambda *_args, **_kwargs: (
+        *work_control_tools(),
+        *social_tool_definitions(),
+        ChatTool("memory_change", "remember", {"type": "object"}),
+    )
+    if mode == "neutral":
+        test_case.control.current = None
+    elif mode == "disabled":
+        test_case.runtime = replace(test_case.runtime, work_control=None)
+    result = await run(test_case)
+    assert test_case.observed == ["memory_change", "send_message"]
+    assert result.text == "" and len(test_case.provider.requests) == 2
+
+
+async def test_mixed_code_resource_yield_stops_later_calls_in_original_batch(
+    database, tmp_path, monkeypatch
+):
+    from qq_ai_bot.services.agent_runner import CODE_COMPOSITION_YIELDED
+
+    calls = (
+        tool("execute_code", {"code": "# resource pause"}, "original-code"),
+        tool("send_message", {"text": "not reached"}, "later-send"),
+    )
+    test_case = await case(database, tmp_path, [ChatResponse("", 0, tool_calls=calls)])
+    original_definitions = test_case.backend.definitions
+    test_case.backend.definitions = lambda *args, **kwargs: (
+        *original_definitions(*args, **kwargs),
+        ChatTool("execute_code", "compose", {"type": "object"}),
+    )
+
+    async def yield_original(*_args, **_kwargs):
+        test_case.control.yield_segment = True
+        return CODE_COMPOSITION_YIELDED
+
+    monkeypatch.setattr(test_case.runner, "_run_code_call", yield_original)
+    result = await run(test_case)
+    assert result.work_state == "queued" and len(test_case.provider.requests) == 1
+    assert test_case.observed == []
+    session = test_case.control.session
+    saved = await session.journal.load(
+        test_case.control.lease, test_case.control.current["id"], session.contract
+    )
+    assert saved.record["phase"] == "response"
+    assert [call["id"] for call in json.loads(saved.record["payload_json"])["pending"]] == [
+        "original-code",
+        "later-send",
+    ]
+
+
+@pytest.mark.parametrize("kind", ["message", "completion"])
+async def test_late_auxiliary_fact_does_not_veto_final_but_business_input_is_observed(
+    database, tmp_path, monkeypatch, kind
+):
+    test_case = await case(
+        database,
+        tmp_path,
+        [ChatResponse("first internal final", 0), ChatResponse("updated final", 0)],
+    )
+    complete = test_case.provider.complete
+
+    async def with_late_input(request):
+        response = await complete(request)
+        if len(test_case.provider.requests) == 1:
+            identity = await test_case.repository.enqueue(
+                test_case.control.lease.conversation_id,
+                test_case.control.lease.generation,
+                "late-" + kind,
+                kind=kind,
+                work_id=test_case.control.current["id"],
+                ready=False,
+            )
+            await test_case.repository.prepare_input(identity, {"text": "actual late " + kind})
+        return response
+
+    monkeypatch.setattr(test_case.provider, "complete", with_late_input)
+    result = await run(test_case)
+    assert len(test_case.provider.requests) == (2 if kind == "message" else 1)
+    assert result.text == ("updated final" if kind == "message" else "first internal final")
+    if kind == "message":
+        assert "actual late message" in str(test_case.provider.requests[-1].messages)
+    await test_case.control.settle(pending_inputs=bool(await test_case.control.pending()))
+    assert test_case.control.current["state"] == "completed"

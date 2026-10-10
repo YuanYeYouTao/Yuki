@@ -659,58 +659,6 @@ class AgentRunner:
             span.result = asdict(result)
             return result
 
-    async def _execute_code_batch(
-        self,
-        calls: tuple[ToolCall, ...],
-        tools: AgentToolBackend | None,
-        runtime: AgentRuntime,
-        *,
-        declared_names: frozenset[str],
-        chain_id: str,
-        request_sequence: int,
-        max_parallel_calls: int,
-    ) -> CoordinatedToolResult:
-        """Outer code calls run in model order, alone in their batch.
-
-        A composition is a lifecycle-bound program: mixing it with direct calls
-        in one response would let two owners race on the same effects.
-        """
-        if len(calls) != len([c for c in calls if c.function.name == EXECUTE_CODE_NAME]):
-            result = json.dumps(
-                {"ok": False, "executed": False, "error": "execute_code_requires_own_batch"}
-            )
-            return CoordinatedToolResult(tuple((call, result, False) for call in calls), 0)
-        ordered: list[tuple[ToolCall, str, bool]] = []
-        control = runtime.work_control
-        for index, call in enumerate(calls):
-            if (
-                index
-                and control is not None
-                and (control.ending is not None or control.handoff_work_id is not None)
-            ):
-                # An earlier composition ended or yielded the Work: no later code runs.
-                ordered.append(
-                    (
-                        call,
-                        json.dumps(
-                            {"ok": False, "executed": False, "error": "code_composition_closed"}
-                        ),
-                        False,
-                    )
-                )
-                continue
-            result = await self._run_code_call(
-                call,
-                tools,
-                runtime,
-                declared_names=declared_names,
-                chain_id=chain_id,
-                request_sequence=request_sequence,
-                max_parallel_calls=max_parallel_calls,
-            )
-            ordered.append((call, result, True))
-        return CoordinatedToolResult(tuple(ordered), 0)
-
     async def _resume_compositions(
         self,
         pending: list[Any],
@@ -868,8 +816,6 @@ class AgentRunner:
             name = call.function.name
             if name in WORK_CONTROL_NAMES:
                 return ChildClass("control", False, False)
-            if name == "memory_change":
-                return ChildClass("memory_write", False, True)
             side = self._is_side_effecting(tools, call, runtime)
             if name == "send_message":
                 return ChildClass("send", False, True)
@@ -961,23 +907,82 @@ class AgentRunner:
         declared_names: frozenset[str],
         chain_id: str = "",
         request_sequence: int = 0,
+        batch_calls: tuple[ToolCall, ...] | None = None,
     ) -> CoordinatedToolResult:
         """Preserve original IDs; only explicitly safe read results may be reused."""
 
         control = runtime.work_control
         session = getattr(control, "session", None)
+        if session is not None and batch_calls is None:
+            session.pending_readonly_keys = {}
 
         async def save_response() -> None:
             if session is not None:
-                session.pending_readonly_keys = {}
-                await session.save("response", calls)
+                await session.save("response", batch_calls if batch_calls is not None else calls)
 
-        if BatchPlan.prepare(calls).conflicting_ids:
+        if batch_calls is None and BatchPlan.prepare(calls).conflicting_ids:
             await save_response()
             result = json.dumps(
                 {"ok": False, "executed": False, "error": "duplicate_provider_call_id"}
             )
             return CoordinatedToolResult(tuple((call, result, False) for call in calls), 0)
+
+        if len(calls) > 1 and any(
+            call.function.name in WORK_CONTROL_NAMES or call.function.name == EXECUTE_CODE_NAME
+            for call in calls
+        ):
+            # Controls and compositions are ordered barriers. Keep every original
+            # call pending until the complete response is paired, including calls
+            # after an accepted ending that will receive non-execution receipts.
+            mixed_calls: list[tuple[ToolCall, str, bool]] = []
+            mixed_evidence: dict[str, dict[str, Any]] = {}
+            mixed_executed = mixed_reused = index = 0
+            while index < len(calls):
+                if control is not None and (
+                    control.ending is not None or control.handoff_work_id is not None
+                ):
+                    mixed_calls.extend(
+                        (
+                            call,
+                            _unexecuted_tool_result(call.function.name, "work_control_closed"),
+                            False,
+                        )
+                        for call in calls[index:]
+                    )
+                    break
+                end = index + 1
+                if (
+                    calls[index].function.name not in WORK_CONTROL_NAMES
+                    and calls[index].function.name != EXECUTE_CODE_NAME
+                ):
+                    while end < len(calls) and (
+                        calls[end].function.name not in WORK_CONTROL_NAMES
+                        and calls[end].function.name != EXECUTE_CODE_NAME
+                    ):
+                        end += 1
+                part_result = await self._execute_tool_batch_impl(
+                    calls[index:end],
+                    tools,
+                    runtime,
+                    remaining_calls=max(0, remaining_calls - mixed_executed),
+                    max_parallel_calls=max_parallel_calls,
+                    reusable_results=reusable_results,
+                    cacheable_names=cacheable_names,
+                    declared_names=declared_names,
+                    chain_id=chain_id,
+                    request_sequence=request_sequence,
+                    batch_calls=batch_calls if batch_calls is not None else calls,
+                )
+                mixed_calls.extend(part_result.calls)
+                mixed_evidence.update(part_result.evidence)
+                mixed_executed += part_result.executed_count
+                mixed_reused += part_result.reused_count
+                if any(result == CODE_COMPOSITION_YIELDED for _, result, _ in part_result.calls):
+                    break
+                index = end
+            return CoordinatedToolResult(
+                tuple(mixed_calls), mixed_executed, mixed_reused, mixed_evidence
+            )
 
         from qq_ai_bot.codemode.tool_visibility import TOOL_LOOKUP_NAME, lookup_tools
 
@@ -1010,11 +1015,12 @@ class AgentRunner:
             # its paired result still persists in the ordinary Work journal.
             return CoordinatedToolResult(tuple((call, result, False) for call in calls), 0)
 
-        code_calls = [call for call in calls if call.function.name == EXECUTE_CODE_NAME]
-        if code_calls:
+        if calls and calls[0].function.name == EXECUTE_CODE_NAME:
+            # The ordered barriers above have already reduced this to one call.
+            call = calls[0]
             await save_response()
-            return await self._execute_code_batch(
-                calls,
+            result = await self._run_code_call(
+                call,
                 tools,
                 runtime,
                 declared_names=declared_names,
@@ -1022,6 +1028,7 @@ class AgentRunner:
                 request_sequence=request_sequence,
                 max_parallel_calls=max_parallel_calls,
             )
+            return CoordinatedToolResult(((call, result, True),), 0)
 
         def readonly_control(call: ToolCall) -> bool:
             if call.function.name != "task_control":
@@ -1043,13 +1050,6 @@ class AgentRunner:
         ]
         if control_calls:
             await save_response()
-            if len(calls) != 1:
-                result = json.dumps({"ok": False, "error": "work_control_requires_single_call"})
-                return CoordinatedToolResult(
-                    calls=tuple((call, result, False) for call in calls),
-                    executed_count=0,
-                    reused_count=0,
-                )
             call = calls[0]
             capture = ResultCapture("", call.id)
             token = current_result_capture.set(capture)
@@ -1113,15 +1113,6 @@ class AgentRunner:
                 tuple((call, metadata_results[call.id], False) for call in calls), 0
             )
 
-        work_admission_blocked = {
-            call.id
-            for call in calls
-            if control is not None
-            and control.current is None
-            and call.function.name != "send_message"
-            and self._is_side_effecting(tools, call, runtime)
-        }
-
         signatures = {call.id: self._tool_call_signature(call) for call in calls}
         first_call_by_signature: dict[tuple[str, str], ToolCall] = {}
         reused_by_id: dict[str, str] = {}
@@ -1131,11 +1122,6 @@ class AgentRunner:
         unique_calls: list[ToolCall] = []
         for call in calls:
             if call.id in metadata_results:
-                continue
-            if call.id in work_admission_blocked:
-                rejected_by_id[call.id] = json.dumps(
-                    {"ok": False, "error": "accept_work_before_execution"}
-                )
                 continue
             if call.function.name not in declared_names:
                 rejected_by_id[call.id] = json.dumps(
@@ -1176,29 +1162,22 @@ class AgentRunner:
                 first_call_by_signature[signature] = call
             unique_calls.append(call)
 
-        if any(call.function.name == "memory_change" for call in unique_calls):
-            # Multiple authorized mutations remain legal. A message already
-            # authored in this batch cannot have observed their actual results.
-            for call in unique_calls:
-                if call.function.name == "send_message":
-                    rejected_by_id[call.id] = _unexecuted_tool_result(
-                        call.function.name, "delivery_requires_observed_result"
-                    )
-            unique_calls = [call for call in unique_calls if call.function.name != "send_message"]
-
         if session is not None:
-            session.pending_readonly_keys = {
-                call.id: session.readonly_result_keys[signatures[call.id]]
-                for call in calls
-                if call.id in reused_by_id and signatures[call.id] in session.readonly_result_keys
-            }
+            session.pending_readonly_keys.update(
+                {
+                    call.id: session.readonly_result_keys[signatures[call.id]]
+                    for call in calls
+                    if call.id in reused_by_id
+                    and signatures[call.id] in session.readonly_result_keys
+                }
+            )
             session.pending_readonly_keys.update(
                 {
                     alias: session.call_key(representative)
                     for alias, representative in aliases.items()
                 }
             )
-            await session.save("response", calls)
+            await session.save("response", batch_calls if batch_calls is not None else calls)
         coordinated = await self._tool_coordinator.execute_batch(
             tuple(unique_calls),
             tools,

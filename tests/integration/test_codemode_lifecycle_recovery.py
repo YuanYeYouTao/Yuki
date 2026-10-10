@@ -7,14 +7,34 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from tests.support.codemode_cases import effect_rows, environment, outer_call, requires_worker
-from tests.support.work_effect_results_helpers import execute, owned_session
-from tests.support.work_session import invoke_tool
+from tests.support.codemode_cases import (
+    FakeDomain,
+    build_host,
+    effect_rows,
+    outer_call,
+    requires_worker,
+)
+from tests.support.work_effect_results_helpers import execute
+from tests.support.work_runner_helpers import case
+from tests.support.work_session import WorkSession
 
 from qq_ai_bot.capabilities.results import ToolExecutionResult
 from qq_ai_bot.codemode.driver import ChildClass, CodeModeDriver, _Child, _State
 from qq_ai_bot.codemode.driver_types import EngineCall, EngineOutcome, HostCounters
+from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.runtime.work_repository import WorkRepository
+from qq_ai_bot.services.turn_transcript import TurnTranscript
+from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+
+
+async def environment(database, tmp_path, *, reporting=None):
+    test_case = await case(database, tmp_path, [], reporting=reporting)
+    owner = WorkSession(test_case.control, "contract")
+    test_case.control.session = owner
+    owner.transcript = TurnTranscript(
+        (ChatMessage("system", "test"), ChatMessage("user", "compose"))
+    )
+    return build_host(owner, FakeDomain())
 
 
 class FakeRun:
@@ -91,6 +111,7 @@ class FakeEngine:
         ("wait", "waiting_external"),
         ("complete", "completed"),
         ("fail", "failed"),
+        ("cancel", "cancelled"),
         ("accept", None),
     ],
 )
@@ -102,25 +123,7 @@ async def test_control_receipt_crash_must_not_resume_after_need_input(
     if action in {"need_input", "fail"}:
         args["reason"] = "Which file?"
     if action == "wait":
-        args["run_id"] = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-
-        async def owned_run(identity):
-            return {"pending": True} if identity == args["run_id"] else None
-
-        env.control.resolve_child = owned_run
-    if action == "complete":
-        # A state_change Work may complete only after an original real receipt.
-        from qq_ai_bot.domain.messages import ToolCall, ToolFunction
-
-        async def prior_write():
-            return await env.domain("workspace_write", '{"path":"already-done"}')
-
-        await invoke_tool(
-            env.owner,
-            ToolCall("prerequisite", ToolFunction("workspace_write", "{}")),
-            prior_write,
-            side_effecting=True,
-        )
+        args["conditions"] = [{"kind": "time_due", "after_seconds": 60}]
     if action == "accept":
         from sqlalchemy import select
 
@@ -140,7 +143,7 @@ async def test_control_receipt_crash_must_not_resume_after_need_input(
             actor_person_id=event.author_person_id,
             trigger_event_id=event.id,
         )
-        args.update(goal="independent next task", output_kind="answer")
+        args.update(goal="independent next task")
     before_log = list(env.domain.log)
     if not native:
         env.host.worker = SimpleNamespace(execution_digest=lambda: "fake-engine-for-audit")
@@ -150,8 +153,6 @@ async def test_control_receipt_crash_must_not_resume_after_need_input(
         f"await yuki_task_control({args!r})\n"
         "await yuki_workspace_write({'path':'should-not-run'})",
     )
-    from qq_ai_bot.domain.messages import ChatMessage
-
     env.owner.transcript.append(ChatMessage("assistant", tool_calls=(outer.call,)))
     await env.owner.save("response", (outer.call,))
     original = WorkRepository.record_effect
@@ -170,11 +171,7 @@ async def test_control_receipt_crash_must_not_resume_after_need_input(
         await CodeModeDriver(env.host, outer).run()
     assert env.domain.log == before_log
     # Recreate the activation objects and use the real journal restore path.
-    from tests.support.codemode_cases import build_host
-    from tests.support.work_session import WorkSession
-
     from qq_ai_bot.runtime.work_control import WorkControl
-    from qq_ai_bot.services.turn_transcript import TurnTranscript
 
     old = env.control
     restored_control = WorkControl(
@@ -186,7 +183,6 @@ async def test_control_receipt_crash_must_not_resume_after_need_input(
     await restored_session.restore(
         TurnTranscript((ChatMessage("system", "test"), ChatMessage("user", "resume")))
     )
-    print("RESTORED", restored_control.ending, len(restored_session.pending_compositions))
     assert len(restored_session.pending_compositions) == 1
     assert restored_control.ending is None
     new_env = build_host(restored_session, env.domain)
@@ -194,7 +190,6 @@ async def test_control_receipt_crash_must_not_resume_after_need_input(
     new_env.host.engine_factory = env.host.engine_factory
     env = new_env
     result = json.loads(await CodeModeDriver(env.host, outer).resume())
-    print("RESUME_RESULT", json.dumps(result), "DOWNSTREAM", env.domain.log)
     assert env.domain.log == before_log, (
         "A committed need_input must prevent subsequent script effects"
     )
@@ -205,15 +200,14 @@ async def test_control_receipt_crash_must_not_resume_after_need_input(
     assert env.controls == []  # Already committed control is never dispatched on restore.
     rows, tools, root = await effect_rows(database, restored_control.current["id"])
     assert rows[outer.identity.operation_id]["state"] == "accepted"
-    assert tools == (root or 0) == (1 if action == "complete" else 0)
-    assert len([row for row in rows.values() if row["kind"] == "tool"]) == (
-        2 if action == "complete" else 1
-    )
+    assert tools == root == 0
+    assert len([row for row in rows.values() if row["kind"] == "tool"]) == 1
 
 
-async def test_pending_owned_execution_allows_code_wait_control(database, tmp_path):
-    control, session, store = await owned_session(database, tmp_path)
-    control.session = session
+async def test_pending_owned_execution_allows_code_wait_condition(database, tmp_path):
+    env = await environment(database, tmp_path)
+    control, session = env.control, env.owner
+    store = ToolArtifactRepository(database, tmp_path / "results", retention_seconds=60)
     run_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
     await execute(
         session,
@@ -228,14 +222,7 @@ async def test_pending_owned_execution_allows_code_wait_control(database, tmp_pa
         ),
     )
 
-    async def resolve(identity):
-        return {"pending": True} if identity == run_id else None
-
-    control.resolve_child = resolve
-    from tests.support.codemode_cases import build_host
-
-    env = build_host(session, SimpleNamespace())
-    args = {"action": "wait", "run_id": run_id}
+    args = {"action": "wait", "conditions": [{"kind": "time_due", "after_seconds": 60}]}
     outer = outer_call(env, "await yuki_task_control(...)")
     driver = CodeModeDriver(env.host, outer)
     child = _Child(
@@ -259,10 +246,6 @@ async def test_pending_owned_execution_allows_code_wait_control(database, tmp_pa
     from qq_ai_bot.codemode.driver import _Stop
 
     with pytest.raises(_Stop) as stopped:
-        await driver._dispatch_child(_State(outer.identity.operation_id, 0), child, peers=[child])
+        await driver._dispatch_child(_State(outer.identity.operation_id, 0), child)
     assert stopped.value.reason == "host_control"
-    print("CODE_WAIT", child.receipt)
-    direct = json.loads(await control.execute("task_control", args, "direct-wait-control"))
-    print("DIRECT_WAIT", direct)
-    assert direct["ok"] is True
     assert json.loads(child.receipt)["ok"] is True, "Code Mode must retain direct wait semantics"

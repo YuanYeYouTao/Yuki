@@ -5,7 +5,7 @@ frozen final ``delivery_plan`` into the Work journal; v3.8.4 (head 0072) wrapped
 but never sent through it and the current runtime has no writer. A database
 restored from a v3.8.3/v3.8.4 backup and upgraded to head may still hold such
 plans. The online runtime never executes them: a restored ``delivery`` journal
-pauses its Work with ``legacy_delivery_not_resumed``.
+pauses its Work through the regular activation settlement.
 
 ``qq-ai-bot-cli work import-legacy-deliveries`` runs this module on a stopped
 copy. It never calls a gateway, never resends and never re-reserves budget:

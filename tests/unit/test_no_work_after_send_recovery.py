@@ -37,7 +37,6 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
                         {
                             "action": "accept",
                             "goal": "检查",
-                            "output_kind": "answer",
                             "reporting": "interactive",
                         },
                     )
@@ -49,7 +48,6 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
                 "send_message",
                 {
                     "text": "已确认的原消息",
-                    "work_report": {"kind": "start"},
                 },
             ),
             (failure, {}),
@@ -102,8 +100,7 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
     assert result.reason == (
         "chat" if accepted else "empty_llm_response" if failure == "empty" else "llm_failure"
     )
-    assert len(sender.messages) == (0 if accepted else 1)
-    assert all(message.text != "已确认的原消息" for message in sender.messages)
+    assert not sender.messages
     assert len(provider.requests) == (3 if accepted else 2)
     assert ownership == ([False, True, True] if accepted else [False, False])
     assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
@@ -118,7 +115,7 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
         ).all()
         works = (await reader.execute(select(work))).mappings().all()
     assert sum(row.content == "已确认的原消息" for row in outgoing) == 1
-    assert len(outgoing) == 1 + len(sender.messages)
+    assert len(outgoing) == 1
     if accepted:
         # The original confirmed send remains authoritative. Recovery is queued
         # on the same Work, without resending or buying an immediate repair turn.

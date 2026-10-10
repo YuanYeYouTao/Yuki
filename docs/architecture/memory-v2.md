@@ -10,6 +10,8 @@
 不重建记忆或 Conversation/Rollup 所有权，也不因账号切换重置聊天 generation；
 Route 有独立的 `route_generation`，有效发送路由迁移、暂停或恢复可推进它。
 
+SELF Work 和保留的子任务沿原 initiative 来源解析分区；原主动轮结束不单独阻止已接纳任务继续读取。仍核对真实 run 归属、当前 generation、Space、Presence 与 Binding，执行授权由原 Work 租约和领域入口核验；不重开祖先或把目标 Person 当作私聊授权。
+
 | 分类 | 所有者与含义 |
 |---|---|
 | Person | 人物的结构化事实、持续偏好及有意义经历 |

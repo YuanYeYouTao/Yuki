@@ -114,24 +114,6 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
                     "additionalProperties": False,
                 },
                 **message,
-                "work_report": {
-                    "type": "object",
-                    "description": (
-                        "可选的本地沟通用途，不发送到平台；已有工作时关联原工作。"
-                        "interactive 开工用 start，最终交付用 final；"
-                        "答复新增输入用 reply 并关联内部事件 ID。"
-                        "省略 target 或明确当前 canonical 目标；关联不能扩大权限。"
-                    ),
-                    "properties": {
-                        "kind": {"type": "string"},
-                        "reply_to_event_ids": {
-                            "type": "array",
-                            "items": {"type": "integer", "minimum": 1},
-                        },
-                    },
-                    "required": ["kind"],
-                    "additionalProperties": False,
-                },
                 "emoji": {
                     "type": "object",
                     "description": "选择一张已采用表情并立即发送；可与 text 同一条发送。",

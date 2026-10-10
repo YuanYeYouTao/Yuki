@@ -1,4 +1,4 @@
-"""P05 Unit B: Host control gate, memory observation and original-Work yield."""
+"""Host controls preserve original order, receipts and the original-Work yield."""
 
 import asyncio
 import json
@@ -7,7 +7,6 @@ from dataclasses import asdict
 
 import pytest
 from tests.support.codemode_cases import (
-    BINARY,
     effect_rows,
     environment,
     outer_call,
@@ -18,6 +17,52 @@ from tests.support.codemode_cases import (
 from qq_ai_bot.codemode.driver import CodeModeDriver
 
 pytestmark = requires_worker
+
+CRASH_CHILD = r"""
+import asyncio, json, os, sys
+from tests.support.codemode_cases import build_host, outer_call
+from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.runtime.work_control import WorkControl
+from qq_ai_bot.runtime.work_repository import WorkLease, WorkRepository
+from qq_ai_bot.runtime.work_session import WorkSession
+from qq_ai_bot.services.turn_transcript import TurnTranscript
+from qq_ai_bot.domain.messages import ChatMessage
+from qq_ai_bot.codemode.driver import CodeModeDriver
+
+url, lease_json, identity, chain_id, arguments, log = sys.argv[1:]
+
+async def main():
+    repository = WorkRepository(Database(url))
+    lease = WorkLease(**json.loads(lease_json))
+    current = await repository.get(identity)
+    async def validate():
+        assert await repository.valid(lease)
+    control = WorkControl(repository, lease, current['source_key'],
+                          json.loads(current['source_json']), validate)
+    control.current = current
+    owner = WorkSession(control, 'contract')
+    control.session = owner
+    owner.transcript = TurnTranscript((ChatMessage('user', 'compose'),))
+    owner.transcript.chain_id = chain_id
+    calls = 0
+    async def domain(name, arguments):
+        nonlocal calls
+        calls += 1
+        args = json.loads(arguments)
+        with open(log, 'a') as downstream:
+            downstream.write(json.dumps([name, args]) + '\n')
+            downstream.flush()
+            os.fsync(downstream.fileno())
+        if calls == 2:
+            os._exit(9)
+        return json.dumps({'ok': True, 'data': args})
+    env = build_host(owner, domain)
+    outer = outer_call(env, json.loads(arguments)['code'])
+    await CodeModeDriver(env.host, outer).run()
+    raise AssertionError('the second real dispatch did not terminate the process')
+
+asyncio.run(main())
+"""
 
 
 async def test_terminal_control_stops_remaining_code(database, tmp_path):
@@ -33,6 +78,35 @@ async def test_terminal_control_stops_remaining_code(database, tmp_path):
     assert [name for name, _ in env.domain.log] == ["lookup"]
     _, tools, _ = await effect_rows(database, env.control.current["id"])
     assert tools == 1  # Lifecycle control does not use the business allowance.
+
+
+@pytest.mark.parametrize(
+    "status,action,ending",
+    [
+        ("succeeded", "complete", "completed"),
+        ("failed", "complete", "completed"),
+        ("uncertain", "complete", "completed"),
+        ("uncertain", "fail", "failed"),
+        ("uncertain", "cancel", "cancelled"),
+    ],
+)
+async def test_send_terminal_control_and_write_are_paired_in_original_order(
+    database, tmp_path, status, action, ending
+):
+    env = await environment(database, tmp_path)
+    env.domain.replies["send_message"] = {"ok": status == "succeeded", "data": {"status": status}}
+    body, _ = await run_code(
+        env,
+        "import asyncio\n"
+        "await asyncio.gather(yuki_send_message({'text': 'before complete'}), "
+        f"yuki_task_control({{'action': {action!r}}}), "
+        "yuki_workspace_write({'path': 'never'}))",
+    )
+    assert body["stop_reason"] == "host_control" and env.control.ending == ending
+    assert [name for name, _ in env.domain.log] == ["send_message"]
+    assert body["operations"][-1]["status"] == "not_executed"
+    await env.control.settle(pending_inputs=False)
+    assert env.control.current["state"] == ending
 
 
 async def test_control_waits_for_peers_to_settle_then_runs_alone(database, tmp_path):
@@ -70,18 +144,21 @@ async def test_query_controls_keep_original_paging_and_continue(database, tmp_pa
     assert env.controls and json.loads(env.controls[0][0])["limit"] == 2
 
 
-async def test_memory_write_returns_to_model_and_blocks_later_send(database, tmp_path):
+async def test_memory_write_receipt_allows_later_send_in_same_program(database, tmp_path):
     env = await environment(database, tmp_path)
     body, _ = await run_code(
         env,
         "m = await yuki_memory_change({'op': 'remember'})\n"
         "await yuki_send_message({'text': 'unobserved'})\n",
     )
-    assert body["stop_reason"] == "memory_observation_required"
-    assert env.domain.log == [("memory_change", {"op": "remember"})]
+    assert body["status"] == "completed"
+    assert env.domain.log == [
+        ("memory_change", {"op": "remember"}),
+        ("send_message", {"text": "unobserved"}),
+    ]
 
 
-async def test_memory_and_send_in_one_step_never_dispatch_the_send(database, tmp_path):
+async def test_memory_and_send_in_one_step_follow_original_order(database, tmp_path):
     env = await environment(database, tmp_path)
     body, _ = await run_code(
         env,
@@ -89,21 +166,23 @@ async def test_memory_and_send_in_one_step_never_dispatch_the_send(database, tmp
         "m, s = await asyncio.gather(yuki_memory_change({'op': 'r'}),"
         " yuki_send_message({'text': 'x'}))\n",
     )
-    assert body["stop_reason"] == "memory_observation_required"
-    assert [name for name, _ in env.domain.log] == ["memory_change"]
+    assert body["status"] == "completed"
+    assert [name for name, _ in env.domain.log] == ["memory_change", "send_message"]
     send = next(op for op in body["operations"] if op["tool"] == "send_message")
-    assert send["status"] == "not_executed"
+    assert send["status"] == "succeeded"
 
 
-async def test_memory_after_another_side_effect_runs_and_returns_to_model(database, tmp_path):
+async def test_memory_after_another_side_effect_runs_and_returns_original_receipt(
+    database, tmp_path
+):
     env = await environment(database, tmp_path)
     body, _ = await run_code(
         env,
         "await yuki_send_message({'text': 'first'})\n"
         "m = await yuki_memory_change({'op': 'r'})\n"
-        "m['error']['code']",
+        "m['ok']",
     )
-    assert body["stop_reason"] == "memory_observation_required"
+    assert body["status"] == "completed" and body["result"] is True
     assert [name for name, _ in env.domain.log] == ["send_message", "memory_change"]
 
 
@@ -112,21 +191,22 @@ async def test_new_input_settles_partial_and_stops(database, tmp_path, monkeypat
     calls = 0
     from qq_ai_bot.runtime.work_control import WorkControl
 
-    original = WorkControl.pending
+    original = WorkControl.has_pending_business_inputs
 
     async def pending(self):
-        return [{"ready": True}] if calls else await original(self)
+        return bool(calls) or await original(self)
 
-    monkeypatch.setattr(WorkControl, "pending", pending)
+    monkeypatch.setattr(WorkControl, "has_pending_business_inputs", pending)
 
-    async def domain(name, arguments):
+    original_business = env.host.execute_business
+
+    async def execute_business(invocation, side_effecting):
         nonlocal calls
+        result = await original_business(invocation, side_effecting)
         calls += 1
-        return await env.domain(name, arguments)
+        return result
 
-    from tests.integration.test_codemode_composition import _wrap
-
-    env.host.execute_business = _wrap(env, domain)
+    env.host.execute_business = execute_business
     body, _ = await run_code(
         env,
         "await yuki_lookup({'q': 1})\nawait yuki_workspace_write({'path': 'stale-goal'})\n",
@@ -148,9 +228,8 @@ async def test_hard_kill_mid_script_resumes_without_redispatch(database, tmp_pat
     log = tmp_path / "downstream.log"
     process = await asyncio.create_subprocess_exec(
         sys.executable,
-        "-m",
-        "tests.support.codemode_crash_child",
-        str(BINARY),
+        "-c",
+        CRASH_CHILD,
         database.url,
         json.dumps(asdict(env.control.lease)),
         env.control.current["id"],
@@ -195,19 +274,20 @@ async def test_code_host_closing_uses_typed_child_fact_not_display(database, tmp
         env,
         "await yuki_send_message({'text': 'first'})\nawait yuki_send_message({'text': 'second'})",
     )
-    assert len(env.domain.log) == (1 if uncertain else 2)
+    assert len(env.domain.log) == 2
     assert body["operations"][0]["status"] == ("unknown" if uncertain else "succeeded")
-    assert body["status"] == ("partial" if uncertain else "completed")
+    assert body["status"] == "completed"
 
 
-async def test_unknown_memory_effect_closes_before_observation_success(database, tmp_path):
+async def test_unknown_memory_receipt_is_preserved_and_does_not_veto_complete(database, tmp_path):
     env = await environment(database, tmp_path)
     env.domain.replies["memory_change"] = {"ok": False, "uncertain": True}
     body, _ = await run_code(
         env,
         "await yuki_memory_change({'op': 'remember'})\n"
-        "await yuki_send_message({'text': 'must not send'})",
+        "await yuki_task_control({'action': 'complete'})\n"
+        "await yuki_send_message({'text': 'never after complete'})",
     )
-    assert body["stop_reason"] == "unknown_effect"
-    assert body["ok"] is False and body["operations"][0]["status"] == "unknown"
+    assert body["stop_reason"] == "host_control" and body["ok"] is True
+    assert body["operations"][0]["status"] == "unknown"
     assert [name for name, _ in env.domain.log] == ["memory_change"]

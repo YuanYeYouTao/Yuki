@@ -10,26 +10,25 @@ from typing import Any
 
 from sqlalchemy import select
 
-from qq_ai_bot.adapters.onebot.sender import OneBotRouteSender
 from qq_ai_bot.admin.config_service import RuntimeConfigService
+from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.rollup.repository import ConversationScopeRepository
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.identity.routing import PresenceRouter, ResolvedSend
+from qq_ai_bot.identity.routing import PresenceRouter
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.runtime.activation_bindings import ActiveWorkBindings
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.trigger import WorkResumeTrigger
 from qq_ai_bot.runtime.work_activation import activate_work
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_recovery_schema import deliveries
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import effects
+from qq_ai_bot.runtime.work_schema_v1 import journal
 from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.execution_sources import (
     MessageTaskSource,
     SelfTaskSource,
+    recover_automation_source,
     recover_execution_source,
     recover_self_source,
     recover_source,
@@ -39,6 +38,7 @@ from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator, Tur
 
 @dataclass(frozen=True, slots=True)
 class WorkResumeDependencies:
+    settings: Settings
     ledger: EventLedgerRepository
     conversation_scopes: ConversationScopeRepository
     turn_coordinator: ConversationTurnCoordinator
@@ -49,8 +49,8 @@ class WorkResumeDependencies:
     generate_wakeup: Callable[..., Awaitable[Any]]
     generate_self: Callable[..., Awaitable[Any]]
     validate_snapshot: Callable[[ConversationTurnSnapshot], Awaitable[bool]]
-    run_effect: Callable[..., Awaitable[dict[str, Any]]]
     resume_plugin: Callable[[dict[str, Any], dict[str, Any]], Awaitable[None]]
+    resume_automation: Callable[[dict[str, Any], dict[str, Any]], Awaitable[None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,7 +59,6 @@ class _ResumeScene:
     key: str
     snapshot: ConversationTurnSnapshot
     token: TurnToken
-    resolved: ResolvedSend
     validate: Callable[[], Awaitable[None]]
 
 
@@ -70,6 +69,8 @@ class WorkResumer:
 
     async def resume(self, item: dict[str, Any]) -> str | None:
         """Run one selected Work; return this run's error category, None on success."""
+        if item["state"] not in {"queued", "running"}:
+            return None
         source = json.loads(item["source_json"])
         try:
             if item["state"] == "running":
@@ -79,21 +80,16 @@ class WorkResumer:
                     item, source, WorkConflict("work_activation_interrupted"), orphan=True
                 )
                 return None
-            if source.get("owner") == "plugin_invocation":
+            if source.get("owner") in {"plugin_invocation", "plugin_background"}:
                 await self.services.resume_plugin(item, source)
+            elif source.get("owner") == "automation":
+                await self._resume_automation(item, source)
             elif source.get("origin") == "self_initiative":
-                if item["state"] != "suspended":
-                    return await self._resume_self(item, source)
+                return await self._resume_self(item, source)
             elif source.get("origin") in {"user_message", "autonomous_group"}:
                 return await self._resume(item, source)
             return None
-        except WorkConflict as exc:
-            if item["state"] == "suspended":
-                try:
-                    await self._recover_preparation_failure(item, source, exc)
-                except BaseException as cleanup:
-                    exc.add_note(f"notice reconciliation deferred: {type(cleanup).__name__}")
-                    raise exc from exc.__cause__
+        except WorkConflict:
             return None
         except Exception as exc:
             from qq_ai_bot.runtime.activation_outcome import (
@@ -144,21 +140,25 @@ class WorkResumer:
                     control.settled = True
                     return
                 control.current = current
-                if await control.pending():
-                    # A new admitted input owns the next activation. Let the
-                    # existing mailbox CAS retain it without recording old failure.
-                    control.current = await self.repository.transition(
-                        lease, current["id"], current["revision"], "waiting_external"
+                async with self.repository.database.sessions() as reader:
+                    phase = await reader.scalar(
+                        select(journal.c.phase).where(journal.c.work_id == item["id"])
                     )
-                    control.settled = True
-                    return
-                control.deferred_failure = WorkRecoveryDeferred(
-                    "work_activation_interrupted", work=item
-                )
-                if await control.has_unresolved_effects(pending=False):
-                    # Lost dispatch results cannot authorize another execution.
-                    # Keep the original receipts for explicit reconciliation.
-                    exc = WorkConflict("work_effect_unknown")
+                if phase == "dispatched":
+                    from qq_ai_bot.runtime.work_journal import JournalUnavailable
+
+                    exc = JournalUnavailable("work_response_not_persisted")
+                else:
+                    if await control.has_pending_business_inputs():
+                        # New input continues a retained response/paired boundary.
+                        control.current = await self.repository.transition(
+                            lease, current["id"], current["revision"], "waiting_external"
+                        )
+                        control.settled = True
+                        return
+                    control.deferred_failure = WorkRecoveryDeferred(
+                        "work_activation_interrupted", work=item
+                    )
             if deferred is not None:
                 failed = deferred.work
                 prior_lease = deferred.lease
@@ -176,63 +176,9 @@ class WorkResumer:
                     control.settled = True
                     return
                 control.deferred_failure = deferred
-            if (
-                item["state"] != "suspended"
-                and current
-                and current["state"] in {"queued", "running"}
-            ):
+            if current and current["state"] in {"queued", "running"}:
                 control.current = current
                 await control.recover_failure(exc)
-            elif current and current["state"] == "suspended":
-                control.current = current
-                control.ending = "suspended"
-                control.settled = True
-                # Preparation never dispatched a new effect. Close its existing
-                # notice instead of repeatedly selecting a broken pause scene.
-                async with self.repository.database.sessions() as session:
-                    key = await session.scalar(
-                        select(deliveries.c.id)
-                        .where(
-                            deliveries.c.work_id == item["id"],
-                            deliveries.c.kind == "notice",
-                            deliveries.c.state.in_(("planned", "blocked")),
-                        )
-                        .order_by(deliveries.c.created)
-                        .limit(1)
-                    )
-                if key is not None:
-                    await self._record_notice_failure(control, key, exc)
-
-    async def _record_notice_failure(
-        self, control: WorkControl, key: str, exc: BaseException
-    ) -> None:
-        """Keep the original effect receipt; a failed notice is never a new pause."""
-        from qq_ai_bot.runtime.delivery_intents import record
-
-        assert control.current is not None
-        async with self.repository.database.sessions() as session:
-            effect = (
-                (
-                    await session.execute(
-                        select(effects).where(
-                            effects.c.effect_key == key,
-                            effects.c.work_id == control.current["id"],
-                        )
-                    )
-                )
-                .mappings()
-                .first()
-            )
-        receipt = json.loads(effect["receipt_json"]) if effect else {}
-        if effect and effect["state"] == "accepted" and receipt.get("transport_accepted"):
-            await record(control, key, "accepted", receipt)
-        else:
-            await record(
-                control,
-                key,
-                "unknown" if effect and effect["state"] != "failed" else "failed",
-                {"error_category": type(exc).__name__},
-            )
 
     @asynccontextmanager
     async def _scene(
@@ -279,7 +225,7 @@ class WorkResumer:
                 if fresh.connection.snapshot != resolved.connection.snapshot:
                     raise ValueError("work_connection_changed")
 
-            yield _ResumeScene(identity, key, snapshot, token, resolved, validate)
+            yield _ResumeScene(identity, key, snapshot, token, validate)
 
     def _child_resolver(self, identity: str) -> Callable[[str], Awaitable[dict[str, Any] | None]]:
         async def child(run_id: str) -> dict[str, Any] | None:
@@ -289,6 +235,61 @@ class WorkResumer:
             return {"run_id": run_id, "pending": task.status != "completed"}
 
         return child
+
+    async def _resume_automation(self, item: dict[str, Any], source: dict[str, Any]) -> None:
+        recovered = await recover_automation_source(
+            self.repository.database,
+            item["conversation_id"],
+            source,
+            request_id=item["id"],
+            settings=self.services.settings,
+        )
+        identity = (
+            ConversationScope.group(recovered.bot_user_id, recovered.external_target_id)
+            if recovered.target_space_id
+            else ConversationScope.private(recovered.bot_user_id, recovered.external_target_id)
+        )
+        state = await self.services.conversation_scopes.get(identity)
+        if state is None or state.generation != recovered.generation:
+            raise ValueError("work_generation_changed")
+        key = state.runtime_scope_key or identity.key
+        async with self.services.turn_coordinator.background_turn(key) as token:
+            if token is None:
+                return
+            resolved = await self.services.presence_router.resolve_presence(recovered.presence_id)
+
+            async def validate() -> None:
+                fresh_source = await recover_automation_source(
+                    self.repository.database,
+                    item["conversation_id"],
+                    source,
+                    request_id=item["id"],
+                    settings=self.services.settings,
+                )
+                if fresh_source != recovered:
+                    raise ValueError("work_source_changed")
+                if not self.services.turn_coordinator.is_current(token):
+                    raise WorkConflict("work_turn_changed")
+                fresh = await self.services.presence_router.resolve_presence(recovered.presence_id)
+                if fresh.connection.snapshot != resolved.connection.snapshot:
+                    raise ValueError("work_connection_changed")
+
+            async with activate_work(
+                self.repository,
+                recovered.conversation_id,
+                recovered.generation,
+                item["source_key"],
+                source,
+                validate,
+                self._child_resolver(item["id"]),
+                work_id=item["id"],
+                bindings=self.services.active_bindings,
+                scope_key=key,
+            ) as control:
+                if control.current is None or control.current["id"] != item["id"]:
+                    raise WorkConflict("work_schedule_target_changed")
+                await validate()
+                await self.services.resume_automation(item, source)
 
     async def _resume_self(self, item: dict[str, Any], source: dict[str, Any]) -> str | None:
         """Resume the original SELF Work through the same Main Agent entry point."""
@@ -362,45 +363,7 @@ class WorkResumer:
             if scene is None:
                 return None
             identity, key, snapshot = scene.identity, scene.key, scene.snapshot
-            token, resolved, validate = scene.token, scene.resolved, scene.validate
-
-            async def deliver(text: str, effect_key: str) -> dict[str, Any]:
-                from qq_ai_bot.domain.messages import OutboundMessage
-
-                return await deliver_message(OutboundMessage(text=text), effect_key)
-
-            async def deliver_message(message: Any, effect_key: str) -> dict[str, Any]:
-                async def send() -> dict[str, Any]:
-                    await validate()
-                    group = original.scope_type is ScopeType.GROUP
-                    sender = OneBotRouteSender(
-                        resolved.connection.bot,
-                        group=original.scope_type is ScopeType.GROUP,
-                        target_id=recovered.external_target_id,
-                    )
-                    receipt = await sender.send(message)
-                    outcome = {
-                        "transport_accepted": True,
-                        "text": message.text,
-                        "message_id": receipt.platform_message_id,
-                    }
-                    await self.repository.record_effect(effect_key, "accepted", outcome)
-                    await self.services.ledger.append(
-                        bot_user_id=recovered.bot_user_id,
-                        platform_message_id=receipt.platform_message_id,
-                        scope_type=original.scope_type,
-                        sender_user_id=recovered.bot_user_id,
-                        direction="outbound",
-                        content=message.text,
-                        group_id=original.group_id,
-                        private_peer_user_id=None if group else recovered.external_target_id,
-                        sender_is_bot=True,
-                        origin=TurnOrigin.SYSTEM_TASK.value,
-                        caused_by_event_id=original.id,
-                    )
-                    return outcome
-
-                return await self.services.run_effect(snapshot, send)
+            token, validate = scene.token, scene.validate
 
             child = self._child_resolver(item["id"])
 
@@ -415,54 +378,9 @@ class WorkResumer:
                 work_id=item["id"],
                 bindings=self.services.active_bindings,
                 scope_key=key,
-                resume_execution=item["state"] != "suspended",
             ) as control:
                 if control.current is None or control.current["id"] != item["id"]:
                     raise WorkConflict("work_schedule_target_changed")
-                if item["state"] == "suspended":
-                    from qq_ai_bot.runtime.delivery_intents import record, reserve
-
-                    async with self.repository.database.sessions() as session:
-                        notices = (
-                            (
-                                await session.execute(
-                                    select(deliveries)
-                                    .where(
-                                        deliveries.c.work_id == item["id"],
-                                        deliveries.c.kind == "notice",
-                                        deliveries.c.state.in_(("planned", "blocked")),
-                                    )
-                                    .order_by(deliveries.c.created)
-                                    .limit(1)
-                                )
-                            )
-                            .mappings()
-                            .all()
-                        )
-                    control.ending = "suspended"
-                    for notice in notices:
-                        payload = json.loads(notice["payload_json"])
-                        try:
-                            await reserve(control, notice["id"], "notice", payload)
-                            if not await self.repository.prepare_effect(
-                                control.lease, item["id"], notice["id"], "progress"
-                            ):
-                                await self._record_notice_failure(
-                                    control, notice["id"], WorkConflict("notice_effect_exists")
-                                )
-                                continue
-                            await record(control, notice["id"], "dispatching", {})
-                            outcome = await deliver(payload["text"], notice["id"])
-                            await record(control, notice["id"], "accepted", outcome)
-                        except BaseException as exc:
-                            try:
-                                await self._record_notice_failure(control, notice["id"], exc)
-                            except BaseException as cleanup:
-                                exc.add_note(
-                                    f"notice reconciliation deferred: {type(cleanup).__name__}"
-                                )
-                            raise
-                    return None
                 runtime = await self.services.runtime_config.snapshot(
                     user_id=recovered.actor_user_id, group_id=original.group_id
                 )

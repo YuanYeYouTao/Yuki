@@ -53,7 +53,7 @@ async def test_new_memory_service_allows_distinct_mutations_and_preserves_effect
     env = build_host(owner, domain)
     first_code = "await yuki_memory_change(" + repr(claim("喜欢茶", "preference:tea")) + ")"
     first, outer = await run_code(env, first_code)
-    assert first["stop_reason"] == "memory_observation_required"
+    assert first["status"] == "completed"
     assert calls[-1].ok and calls[-1].new_fact_id is not None
     async with database.sessions() as reader:
         raw = await reader.scalar(
@@ -71,7 +71,7 @@ async def test_new_memory_service_allows_distinct_mutations_and_preserves_effect
         "await yuki_memory_change(" + repr(claim("喜欢咖啡", "preference:coffee")) + ")",
         call_id="code-after-recovery",
     )
-    assert second["stop_reason"] == "memory_observation_required"
+    assert second["status"] == "completed"
     assert calls[-1].ok
     assert len(await facts.list_person(event.sender_user_id, limit=20)) == 2
     # Reentering the original parent only reads its receipt, never mutates again.

@@ -311,12 +311,7 @@ async def prepare_history(
     )
     observation_messages = tuple((row.id, row.version, row.message()) for row in observations)
     extended = extended.append_observations(observation_messages)
-    fresh = FrozenFragments.load([]).extend_history(
-        context.history_fragments, context.history_event_fragments
-    )
-    # Canonical event coverage never proves private clues were summarized.
-    fresh = fresh.append_observations(observation_messages)
-    collect_phase_metrics(candidate_count=2)
+    collect_phase_metrics(candidate_count=1)
     extended_messages = extended.messages()
     fits = (
         context_fits(replace(selected_context, history_messages=extended_messages))
@@ -336,23 +331,29 @@ async def prepare_history(
         and bool(context.rollup_text.strip())
         and context.metrics.rollup_mode != "emergency"
     )
-    if extended.items != fresh.items and (not hard_fits or (not fits and ready_rollup)):
-        # This preparation is a new activation boundary. A published semantic
-        # summary may replace old chat here, never inside an active transcript.
-        reason = "capacity" if not hard_fits else "rollup_ready"
-        extended = fresh
-        selected_context = context
-        extended_messages = extended.messages()
-    fits = (
-        context_fits(replace(selected_context, history_messages=extended_messages))
-        if context_fits is not None
-        else history_fits(extended_messages)
-    )
-    hard_fits = (
-        context_hard_fits(replace(selected_context, history_messages=extended_messages))
-        if context_hard_fits is not None
-        else fits
-    )
+    if not hard_fits or (not fits and ready_rollup):
+        fresh = FrozenFragments.load([]).extend_history(
+            context.history_fragments, context.history_event_fragments
+        )
+        # Canonical event coverage never proves private clues were summarized.
+        fresh = fresh.append_observations(observation_messages)
+        collect_phase_metrics(candidate_count=1)
+        if extended.items != fresh.items:
+            # A new activation may adopt the already published summary.
+            reason = "capacity" if not hard_fits else "rollup_ready"
+            extended = fresh
+            selected_context = context
+            extended_messages = extended.messages()
+            fits = (
+                context_fits(replace(selected_context, history_messages=extended_messages))
+                if context_fits is not None
+                else history_fits(extended_messages)
+            )
+            hard_fits = (
+                context_hard_fits(replace(selected_context, history_messages=extended_messages))
+                if context_hard_fits is not None
+                else fits
+            )
     if not fits and observations and summarize_observations is not None:
         summary = await sources.prepared_summary(
             view_key=view_key,

@@ -43,7 +43,6 @@ from qq_ai_bot.codemode.contract import (
     STOP_ADMISSION_CLOSED,
     STOP_BUDGET,
     STOP_HOST_CONTROL,
-    STOP_MEMORY,
     STOP_NEW_INPUT,
     STOP_SNAPSHOT,
     STOP_UNKNOWN_EFFECT,
@@ -70,12 +69,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-MEMORY_WRITE = "memory_change"
-SEND = "send_message"
 # Lifecycle actions that end or yield the original Work. After any of them the
 # remaining code is never executed (design §8 control table).
 TERMINAL_CONTROL_ACTIONS = frozenset(
-    {"wait", "need_input", "complete", "fail", "answer", "accept", "handoff", "resume"}
+    {"wait", "need_input", "complete", "fail", "cancel", "accept", "handoff", "resume"}
 )
 
 
@@ -85,7 +82,7 @@ class CodeCompositionYield(Exception):
 
 @dataclass(frozen=True, slots=True)
 class ChildClass:
-    kind: str  # read / write / send / memory_write / control / state
+    kind: str  # read / write / send / control / state
     parallel_safe: bool
     side_effecting: bool
 
@@ -367,8 +364,6 @@ class CodeModeDriver:
                         STOP_HOST_CONTROL, child.operation_id, {"control": _loads(child.receipt)}
                     )
                 self._closing(child)
-                if child.klass.kind == "memory_write" and child.view and child.view.executed:
-                    raise _Stop(STOP_MEMORY, child.operation_id)
         except _Stop as stop:
             return await self._settle(state, stop=stop)
         return await self._drive(state, restore=(dump, composition["boundary_call"], counters))
@@ -551,7 +546,7 @@ class CodeModeDriver:
     # -- T2/T3 ---------------------------------------------------------------------
 
     async def _dispatch_all(self, state: _State, pending: list[_Child]) -> None:
-        """Bounded read stretches; sends, writes, memory and control are barriers."""
+        """Bounded read stretches; sends, writes and control are barriers."""
         index = 0
         while index < len(pending):
             child = pending[index]
@@ -559,7 +554,7 @@ class CodeModeDriver:
                 index += 1
                 continue
             if not child.klass.parallel_safe:
-                await self._dispatch_one(state, child, peers=pending)
+                await self._dispatch_one(state, child)
                 index += 1
                 continue
             end = index
@@ -580,7 +575,7 @@ class CodeModeDriver:
                     if stops:
                         return  # Admission closed; this sibling is never dispatched.
                     try:
-                        await self._dispatch_one(state, item, peers=pending)
+                        await self._dispatch_one(state, item)
                     except (_Stop, CodeCompositionYield) as stopped:
                         stops.append(stopped)
 
@@ -592,7 +587,7 @@ class CodeModeDriver:
                 # Ordered by Host ordinal; a yield never hides a stop.
                 raise next((item for item in stops if isinstance(item, _Stop)), stops[0])
 
-    async def _dispatch_one(self, state: _State, child: _Child, *, peers: list[_Child]) -> None:
+    async def _dispatch_one(self, state: _State, child: _Child) -> None:
         async with trace_span(
             "code_child",
             {
@@ -605,7 +600,7 @@ class CodeModeDriver:
             },
         ) as span:
             try:
-                await self._dispatch_child(state, child, peers=peers)
+                await self._dispatch_child(state, child)
             finally:
                 view = child.view
                 span.result = {
@@ -620,7 +615,7 @@ class CodeModeDriver:
                 # retain the observed status without duplicating the result body.
                 await record_trace("code_child_outcome", span.result)
 
-    async def _dispatch_child(self, state: _State, child: _Child, *, peers: list[_Child]) -> None:
+    async def _dispatch_child(self, state: _State, child: _Child) -> None:
         control = self.control
         if child.state != "prepared":
             # Restored child: the original receipt only, never a second dispatch.
@@ -647,14 +642,6 @@ class CodeModeDriver:
             raise _Stop(STOP_UNKNOWN_EFFECT, child.operation_id)
         call = ToolCall(f"c{child.ordinal}", ToolFunction(child.tool, child.arguments))
         if child.klass.kind == "control":
-            if any(item is not child and item.receipt is None for item in peers):
-                await self._not_dispatched(child, "work_control_requires_exclusive_gate")
-                return
-            if not self._query_control(child) and await control.repository.has_unresolved_effects(
-                control.lease, control.current["id"] if control.current else ""
-            ):
-                await self._not_dispatched(child, "unresolved_prior_effect")
-                return
             await self._dispatch_control(child, call)
             return
         # Segment allowance, checked synchronously with in-flight reservations so
@@ -713,8 +700,6 @@ class CodeModeDriver:
         if child.klass.side_effecting and child.view.executed:
             state.side_effect_done = True
         self._closing(child)
-        if child.klass.kind == "memory_write" and child.view.executed:
-            raise _Stop(STOP_MEMORY, child.operation_id)
 
     async def _dispatch_control(self, child: _Child, call: ToolCall) -> None:
         control = self.control
@@ -790,32 +775,12 @@ class CodeModeDriver:
         if view is None:
             return
         code = (view.error or {}).get("code")
-        if view.uncertain:
-            raise _Stop(STOP_UNKNOWN_EFFECT, child.operation_id)
         if code in NEW_INPUT_ERRORS:
             raise _Stop(STOP_NEW_INPUT, child.operation_id)
         if code in ADMISSION_CLOSING_ERRORS:
             raise _Stop(STOP_ADMISSION_CLOSED, str(code))
         if code == STOP_BUDGET:
             raise _Stop(STOP_BUDGET, child.operation_id)
-
-    def _query_control(self, child: _Child) -> bool:
-        """Reads and waiting use WorkControl's ownership/condition checks.
-
-        Pending owned execution is precisely why wait exists. It is not a new
-        business dispatch; unknown effects still fence complete and mutations.
-        """
-        if child.tool != "task_control":
-            return False
-        try:
-            return json.loads(child.arguments).get("action") in {
-                "get",
-                "list",
-                "wait",
-                "wait_status",
-            }
-        except (ValueError, AttributeError):
-            return False
 
     async def _admitted(self, key: str) -> bool:
         from sqlalchemy import select
@@ -870,14 +835,14 @@ class CodeModeDriver:
         }
         if stop is not None:
             body.update(
-                ok=stop.reason in {STOP_HOST_CONTROL, STOP_MEMORY},
-                status="stopped" if stop.reason in {STOP_HOST_CONTROL, STOP_MEMORY} else "partial",
+                ok=stop.reason == STOP_HOST_CONTROL,
+                status="stopped" if stop.reason == STOP_HOST_CONTROL else "partial",
                 stop_reason=stop.reason,
                 executed=executed,
                 detail=_STOP_DETAIL.get(stop.reason, ""),
                 **stop.payload,
             )
-            if stop.reason not in {STOP_HOST_CONTROL, STOP_MEMORY}:
+            if stop.reason != STOP_HOST_CONTROL:
                 body["error"] = stop.reason
             if stop.reason == STOP_UNKNOWN_EFFECT:
                 body["uncertain_operation_id"] = stop.detail
@@ -1227,7 +1192,6 @@ _STOP_DETAIL = {
     STOP_ADMISSION_CLOSED: "宿主已关闭本脚本的后续调用；已发生的子调用回执保留，需由模型重新规划。",
     STOP_UNKNOWN_EFFECT: "有子调用结果未知；脚本已停止，先按原 operation_id 核对，禁止重发。",
     STOP_HOST_CONTROL: "生命周期控制已执行，脚本余下代码不再运行。",
-    STOP_MEMORY: "记忆写入已保存；先观察回执再决定后续发送，脚本余下代码不再运行。",
     STOP_NEW_INPUT: "新输入到达；脚本已停止，按新要求继续。",
     STOP_BUDGET: "工作总预算已用尽；脚本已停止。",
     STOP_SNAPSHOT: "可信恢复点不可用；脚本以部分结果结束，不从头重跑。",

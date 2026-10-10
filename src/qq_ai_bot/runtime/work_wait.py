@@ -26,6 +26,7 @@ from qq_ai_bot.plugin_host.db_models import (
 )
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkLease, WorkRepository, encode_json
 from qq_ai_bot.runtime.work_schema_v1 import inputs, work
+from qq_ai_bot.runtime.work_tree import descendants
 from qq_ai_bot.runtime.work_wait_schema import waits
 
 
@@ -91,11 +92,7 @@ def normalize_conditions(raw: Any, now: float) -> list[dict[str, Any]]:
             )
         elif kind == "owned_run":
             run_id = item.get("run_id")
-            if (
-                not isinstance(run_id, str)
-                or not 1 <= len(run_id) <= 128
-                or set(item) != {"kind", "run_id"}
-            ):
+            if not isinstance(run_id, str) or not run_id or set(item) != {"kind", "run_id"}:
                 raise ValueError("invalid_wait_run")
             result.append({"kind": kind, "run_id": run_id, "matched": None})
         else:
@@ -400,17 +397,6 @@ class WorkWaitRepository:
                 updated=now,
             )
         )
-        if source.get("owner") == "automation" and isinstance(source.get("automation_id"), int):
-            from qq_ai_bot.persistence.models import AutomationModel
-
-            await session.execute(
-                update(AutomationModel)
-                .where(
-                    AutomationModel.id == source["automation_id"],
-                    AutomationModel.status == "active",
-                )
-                .values(claimed_until=None)
-            )
         return int(entry[0]) if entry else None
 
     async def match_event(
@@ -640,7 +626,6 @@ class WorkWaitRepository:
         session: AsyncSession, binding: Any, now: float
     ) -> tuple[list[dict[str, Any]], str] | None:
         """Read current facts; this same observation is repeated under the writer."""
-        from qq_ai_bot.runtime.subagent_schema import children
         from qq_ai_bot.sandbox.db_models import SandboxTaskRunModel
 
         if (
@@ -666,22 +651,32 @@ class WorkWaitRepository:
                 changed = True
             elif condition["kind"] == "owned_run":
                 state = await session.scalar(
-                    select(work.c.state)
-                    .select_from(children.join(work, work.c.id == children.c.work_id))
-                    .where(
-                        children.c.root_id == binding["work_id"],
-                        children.c.work_id == condition["run_id"],
+                    select(work.c.state).where(
+                        work.c.id.in_(descendants(binding["work_id"])),
+                        work.c.id == condition["run_id"],
                     )
                 )
                 if state is None:
                     task = await session.scalar(
                         select(SandboxTaskRunModel).where(
-                            SandboxTaskRunModel.run_id == condition["run_id"]
+                            SandboxTaskRunModel.run_id == condition["run_id"],
+                            func.json_extract(SandboxTaskRunModel.source_json, "$.work_id").in_(
+                                descendants(binding["work_id"], include_self=True)
+                            ),
                         )
                     )
-                    if task and json.loads(task.source_json).get("work_id") == binding["work_id"]:
+                    if task:
                         state = task.status
-                if state in {"completed", "succeeded", "failed", "cancelled", "uncertain"}:
+                        if state == "completed" and task.completion_json:
+                            state = json.loads(task.completion_json).get("status", state)
+                if state in {
+                    "completed",
+                    "succeeded",
+                    "failed",
+                    "cancelled",
+                    "uncertain",
+                    "unknown",
+                }:
                     condition["matched"] = {
                         "kind": "owned_run",
                         "run_id": condition["run_id"],

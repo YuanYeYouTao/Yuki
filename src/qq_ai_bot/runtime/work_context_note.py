@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 from sqlalchemy import select, text
+from sqlalchemy.exc import SQLAlchemyError
 
 from qq_ai_bot.runtime.work_compaction import SourcedFact
 
 if TYPE_CHECKING:
     from qq_ai_bot.runtime.work_control import WorkControl
+
+logger = logging.getLogger(__name__)
 
 
 class ContextNote(BaseModel):
@@ -34,8 +38,7 @@ async def validate_note(
     from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
     from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
     from qq_ai_bot.persistence.models import ChatEventModel, ToolArtifactModel
-    from qq_ai_bot.runtime.subagent_schema import children
-    from qq_ai_bot.runtime.work_schema_v1 import effects, inputs
+    from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, work
     from qq_ai_bot.tool_results.access import access_from_source
     from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
 
@@ -97,10 +100,9 @@ async def validate_note(
                 )
             elif kind == "child" and key:
                 valid = await reader.scalar(
-                    select(children.c.work_id).where(
-                        children.c.work_id == key,
-                        children.c.root_id == identity,
-                        children.c.archived_at.is_(None),
+                    select(work.c.id).where(
+                        work.c.id == key,
+                        work.c.parent_work_id == identity,
                     )
                 )
             elif kind == "artifact" and key:
@@ -131,13 +133,18 @@ async def publish_pending_note(control: WorkControl) -> str | None:
     saved = json.loads(control.current["checkpoint_json"]).get("context_note")
     if not isinstance(saved, dict):
         return None
-    if await visible_context_note(control) is None:
-        return None
     from qq_ai_bot.conversation.observations import ContextObservationRepository
+    from qq_ai_bot.conversation.projections import ProjectionConflict
 
-    return await ContextObservationRepository(control.repository.database).publish_note(
-        control.current, saved["revision"], saved["payload"], tuple(saved["artifact_handles"])
-    )
+    try:
+        if await visible_context_note(control) is None:
+            return None
+        return await ContextObservationRepository(control.repository.database).publish_note(
+            control.current, saved["revision"], saved["payload"], tuple(saved["artifact_handles"])
+        )
+    except (ValueError, ProjectionConflict, SQLAlchemyError) as exc:
+        logger.info("work_context_note_publication_deferred category=%s", type(exc).__name__)
+        return None
 
 
 async def visible_context_note(control: WorkControl) -> dict[str, Any] | None:

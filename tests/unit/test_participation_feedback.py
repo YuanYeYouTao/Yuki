@@ -346,7 +346,7 @@ async def test_running_child_does_not_block_intrinsic_admission_while_parent_wai
         lease,
         task["id"],
         "original-child",
-        {"goal": "verify original work", "output_kind": "answer"},
+        {"goal": "verify original work"},
     )
     child_lease = await workers.acquire(identity)
     assert child_lease is not None and child_lease.work_id == identity
@@ -524,6 +524,7 @@ async def test_worker_and_root_model_charges_are_paged_without_summing_budget_tw
         child = {
             **task,
             "id": child_id,
+            "parent_work_id": task["id"],
             "source_key": f"child:{child_id}",
             "state": "completed",
             "model_requests": 94,
@@ -532,7 +533,6 @@ async def test_worker_and_root_model_charges_are_paged_without_summing_budget_tw
         await session.execute(
             children.insert().values(
                 work_id=child_id,
-                root_id=task["id"],
                 source_key=child["source_key"],
                 brief_json="{}",
             )

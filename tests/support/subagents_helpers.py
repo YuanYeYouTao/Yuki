@@ -11,10 +11,10 @@ async def stack(database, tmp_path):
     repository = WorkRepository(database)
     lease = await repository.acquire(env.context.conversation_id, 1)
     parent = await repository.accept(
-        lease, source_key="parent", source={}, goal="draw", output_kind="answer"
+        lease, source_key="parent", source={}, goal="draw"
     )
     workers = SubagentRepository(repository)
     identity = await workers.start(
-        lease, parent["id"], "spawn", {"goal": "draw", "output_kind": "answer"}
+        lease, parent["id"], "spawn", {"goal": "draw"}
     )
     return repository, workers, lease, parent, identity

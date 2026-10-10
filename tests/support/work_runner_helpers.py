@@ -1,4 +1,4 @@
-"""Communication guarantees through the real Runner, journal and effect receipts."""
+"""Runner fixtures with original journal and effect receipts."""
 
 import json
 from types import SimpleNamespace
@@ -22,7 +22,7 @@ def tool(name, args=None, identity=None):
     return ToolCall(identity or name, ToolFunction(name, json.dumps(args or {})))
 
 
-START = {"text": "先查原因，再修复。", "work_report": {"kind": "start"}}
+START = {"text": "先查原因，再修复。"}
 
 
 async def case(database, tmp_path, responses, *, reporting="interactive", send_status="succeeded"):
@@ -41,7 +41,6 @@ async def case(database, tmp_path, responses, *, reporting="interactive", send_s
         source_key="report-runner",
         source=source,
         goal="调查并修复",
-        output_kind="state_change",
         reporting=reporting,
     )
     scripted = iter(responses)
@@ -59,9 +58,6 @@ async def case(database, tmp_path, responses, *, reporting="interactive", send_s
                 ChatTool("read_fixture", "read", {"type": "object"}),
                 ChatTool("write_fixture", "write", {"type": "object"}),
             )
-
-        def begin_batch(self, *args):
-            pass
 
         def parallel_safe(self, name, runtime):
             return name == "read_fixture"
@@ -91,9 +87,6 @@ async def case(database, tmp_path, responses, *, reporting="interactive", send_s
 
         def exhausted(self, runtime):
             return "exhausted"
-
-        def post_commit_recovery_text(self):
-            return None
 
     runtime = AgentRuntime(
         origin=TurnOrigin.USER_MESSAGE,
