@@ -18,6 +18,7 @@ from qq_ai_bot.control_plane.principal import ControlPrincipal, PrincipalSource
 from qq_ai_bot.domain.control import DecisionContext
 from qq_ai_bot.domain.identity import PrincipalId, RequestId
 from qq_ai_bot.domain.messages import ChatMessage, ToolCall, ToolFunction
+from qq_ai_bot.llm.base import LLMUnavailableError
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.persistence.control_command import ControlCommandAdapter
 from qq_ai_bot.runtime.work_control import WorkControl
@@ -105,6 +106,10 @@ def original_responses(provider):
         ("unknown", False),
         ("lost-response", False),
         ("lost-response-input", False),
+        ("deferred-heartbeat", True),
+        ("deferred-permanent", True),
+        ("deferred-provider-retry", True),
+        ("deferred-lost-response", False),
     ],
 )
 async def test_expired_original_work_recovers_from_original_dispatch_facts(
@@ -144,7 +149,7 @@ async def test_expired_original_work_recovers_from_original_dispatch_facts(
                 json.dumps({"slot": 1, "text": "committed-original", "expected_revision": 1}),
             ),
         )
-        if action.startswith("lost-response"):
+        if "lost-response" in action:
             control.session = session
             await control.reserve_request()
             await session.save("dispatched")
@@ -210,13 +215,56 @@ async def test_expired_original_work_recovers_from_original_dispatch_facts(
             .where(scope.c.conversation_id == original["conversation_id"])
             .values(owner="dead-process", lease_until=0)
         )
+    deferred = None
+    if action.startswith("deferred-"):
+        from qq_ai_bot.runtime.activation_outcome import WorkRecoveryDeferred
+        from qq_ai_bot.runtime.work_activation import bind_work_activation
+
+        owner = await repository.acquire(original["conversation_id"], original["generation"])
+
+        async def validate_owner():
+            assert await repository.valid(owner)
+
+        control = WorkControl(
+            repository,
+            owner,
+            original["source_key"],
+            json.loads(original["source_json"]),
+            validate_owner,
+        )
+        with pytest.raises(WorkRecoveryDeferred) as interrupted:
+            async with bind_work_activation(control):
+                control.current = await repository.get(original["id"])
+                async with database.immediate_session() as writer:
+                    await writer.execute(
+                        update(scope)
+                        .where(scope.c.conversation_id == original["conversation_id"])
+                        .values(lease_until=0)
+                    )
+                if action == "deferred-permanent":
+                    await control.recover_failure(ValueError("original preparation failure"))
+                if action == "deferred-provider-retry":
+                    await control.recover_failure(
+                        LLMUnavailableError("original provider unavailable")
+                    )
+                raise WorkConflict("work_heartbeat_lease_expired")
+        deferred = interrupted.value
+        assert deferred.lease == owner and deferred.work["id"] == original["id"]
+        if action in {"deferred-permanent", "deferred-provider-retry"}:
+            assert isinstance(deferred.__cause__, WorkRecoveryDeferred)
+            assert isinstance(deferred.__cause__.__cause__, (ValueError, LLMUnavailableError))
     await database.close()
     scheduler = original_scheduler(repository, env, harness, chat)
     requests_before = len(provider.requests)
     if action == "cancel":
         result = await public_action(database, original, "cancel")
         assert result.success
-    await scheduler.drain_once()
+    if deferred is not None:
+        await scheduler._resume.__self__._recover_preparation_failure(
+            original, json.loads(original["source_json"]), deferred
+        )
+    else:
+        await scheduler.drain_once()
     recovered = await repository.get(original["id"])
     if action == "lost-response-input":
         assert recovered["state"] == "queued"
@@ -233,9 +281,12 @@ async def test_expired_original_work_recovers_from_original_dispatch_facts(
         provider._responder = lambda _: _tool(
             "task_control", {"action": "complete", "result": "unknown retained"}, "unknown-finish"
         )
-    if action in {"auto", "unknown"}:
-        assert (
-            recovered["state"] == "queued" and recovered["reason"] == "work_activation_interrupted"
+    if action in {"auto", "unknown", "deferred-heartbeat", "deferred-provider-retry"}:
+        assert recovered["state"] == "queued"
+        assert recovered["reason"] == (
+            "LLMUnavailableError"
+            if action == "deferred-provider-retry"
+            else "work_activation_interrupted"
         )
         assert len(provider.requests) == requests_before
         await asyncio.sleep(2.05)
@@ -249,19 +300,20 @@ async def test_expired_original_work_recovers_from_original_dispatch_facts(
         "cancelled"
         if action == "cancel"
         else "failed"
-        if action == "lost-response"
+        if action in {"lost-response", "deferred-lost-response", "deferred-permanent"}
         else "completed"
     )
     assert state.snapshot()[0]["text"] == (
         "unsubmitted-fresh-state"
         if action == "lost-response-input"
         else "original-snapshot"
-        if action in {"cancel", "unknown", "lost-response"} and not accepted_effect
+        if action in {"cancel", "unknown", "lost-response", "deferred-lost-response"}
+        and not accepted_effect
         else "committed-original"
     )
-    if action in {"cancel", "lost-response"}:
+    if action in {"cancel", "lost-response", "deferred-lost-response", "deferred-permanent"}:
         assert len(provider.requests) == requests_before
-    if action == "lost-response":
+    if action in {"lost-response", "deferred-lost-response"}:
         assert final["reason"] == "work_response_not_persisted"
         async with database.sessions() as reader:
             retained = (await reader.execute(select(journal))).mappings().one()
@@ -271,6 +323,8 @@ async def test_expired_original_work_recovers_from_original_dispatch_facts(
         assert (await repository.get(original["id"]))["model_requests"] == original[
             "model_requests"
         ]
+    if action == "deferred-permanent":
+        assert final["reason"] == "ValueError"
     if action == "lost-response-input":
         assert len(provider.requests) == requests_before + 1
         assert final["model_requests"] == original["model_requests"] + 1
