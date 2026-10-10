@@ -170,7 +170,7 @@ Pi 默认收齐工具轮，所有 slot 都要求 terminate 才结束。上述顺
 | D13 | [x] | 沿 TurnTranscript→response→原 effect/result→paired→journal publication 核查并删除重复分支；保留已付费响应与原协议恢复，Pi 仅作局部算法参考 | TurnTranscript::request/append_result；WorkSession::restore/save；WorkJournal::load/save/effect_result；AgentRunner::_run_with_receipts | 原journal/ProtocolStore/call/effect/预算身份保留；协议恢复与原调用不重放通过（本地；线上另见V02） |
 | D14 | [x] | 核对自动化、SELF、插件与子 Agent 终态消费；删除文档虚构的交付审批，不新增替代校验器 | WorkResumer::resume/_resume_automation/_resume_self；automation/handlers.py::AutomationCapabilityHandlers.agent/_generation_composition/resume_work；DurableInvocations::run；plugin_host/main_turn.py::run_plugin_main_turn/_execute_plugin_main_turn/resume_plugin_work；plugin_host/background_turns.py::PluginBackgroundTurnWorker.resume_work；SubagentExecution::run；recover_execution_source | 原来源消费/恢复通过；wait越界claim整段删除、原三场景全行不变；SDK实际3例与原插件外围47例通过。自动化cached读取与正常执行共用原结果出口；最终native44+Person自动化14共58例无skip通过，包含前次合流验证，重叠不累加（本地；线上另见V02） |
 | D15 | [x] | 精简无消费状态/字段；删 retained_tool_rounds 死清理；核对后删 journal ending 新写入及无人消费的旧提取复制；保留真实查询与恢复事实 | WorkSession::rebase_business/_unobserved_tool_round；WorkJournal::_load；WorkRepository的旧has_unresolved_effects与work_reporting模块删除 | 删work_reporting、communication专链、ending副本及无调用者has_unresolved_effects API；原回执/协议仍保留，Repo/runtime128例通过（本地；线上另见V02） |
-| D16 | [x] | 改写或删除冻结旧门槛的测试，合并重复样本，清理 CI 已无入口的检查 | 本文§7；既有tests；.github/workflows/quality.yml、release.yml | 旧分类/拒绝/布局镜像与空方法删改；Code悬空进程入口改既有case内真实os._exit、错误fake复用原typed回执；Quality/Release逐job核查，无失效job需另删，未新增workflow。最终冻结SHA的CI见V01 |
+| D16 | [x] | 改写或删除冻结旧门槛的测试，合并重复样本，清理 CI 已无入口的检查 | 本文§7；既有tests；.github/workflows/quality.yml、release.yml；scripts/verify_monty_packaging.py | 旧分类/拒绝/布局镜像与空方法删改；Code悬空进程入口改既有case内真实os._exit、错误fake复用原typed回执；删除packaging中固定0099编号断言，保留实际init-db、完整性/FK及head报告。Quality/Release逐job核查，未新增workflow。最终冻结SHA的CI见V01 |
 | D17 | [x] | 修订现行开发合同、主 Agent、工作者、输出边界和用户说明；旧审查按日期保留 | 本文§8；现行开发合同、主Agent/worker/输出/工具/插件文档与README/3.9.0 | 开发约束/主Agent/worker/输出/工具/插件及README/3.9.0同步；当前函数名经AST复核，旧报告按日期保留；release_validate v3.9.0通过 |
 | D18 | [x] | 检查当前迁移链和真实消费者，完成必要的数据结构升级与旧记录恢复；不凭状态批量改成功 | migrations/versions/0105_work_tree_and_retired_completion_policy.py::upgrade；schema_guard.py::require_canonical_schema；0056/0057原schema冻结声明 | 0105空库完整升级与seed0104升级通过；0056/0057仅冻结原schema声明，数据库历史不变（本地；线上另见V02） |
 | D19 | [x] | 删除“同批有 memory_change 就不能 send_message”及 Code 强制 STOP_MEMORY 的特殊轮次政策 | AgentRunner::_execute_tool_batch_impl；codemode/driver.py::CodeModeDriver._dispatch_all；codemode/contract.py | 删memory_change/发送同批policy；真实pinned Code同脚本记忆与发送通过（本地；线上另见V02） |
@@ -364,6 +364,7 @@ Control/API 中有实际模型、SDK或管理消费者的能力继续随内核�
 | 同步completed缺正文仍重入接纳，后续循环又请求模型；SDK已完成读取先要求新上下文 | Durable删除正文资格门槛；真实空/缺/null同ID读取。SDK复用原来源验证与Durable读取，实际3例及外围47例通过；自动化同类读取接回唯一原返回出口，最终native44+Person自动化14共58例通过；无新cache，分批重叠不累加 |
 | Work notice删掉后，普通异常仍固定发送QQ失败文案 | issue285普通processor六异常固定发送与死文案整helper删除；SELF/自动化无其他此类广播消费者，原15例及Runner58消费者通过，不建立新分类/替代播报 |
 | 文档仍承诺暂停 notice、通用产物验收或旧固定暂停原因 | 删除冲突说明，按实际结束决定、独立效果查询和原来源消费者更新；本轮current函数索引纠正了类名缩写与旧consumer措辞 |
+| 构建packaging检查仍固定要求迁移0099 | 删除这条已过期编号断言，保留原init-db实际执行、数据库完整性/FK检查及实际head报告；0105空库/旧库升级由原迁移场景验证。重新提交并以新head复核CI |
 
 ### 10.2 验证与行数
 
