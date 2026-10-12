@@ -73,6 +73,100 @@ def route_from_stdin(stream: Any) -> tuple[ModelProfile, str]:
     return profile, key
 
 
+def build_provider(profile: ModelProfile, api_key: str, client: httpx.AsyncClient):
+    """Use the selected protocol's existing adapter without changing its route."""
+    provider_class = {
+        ModelProtocol.GEMINI: GeminiProvider,
+        ModelProtocol.RESPONSES: DeepSeekResponsesProvider,
+        ModelProtocol.CHAT_COMPLETIONS: OpenAICompatibleProvider,
+    }[profile.protocol]
+    options: dict[str, Any] = {}
+    if profile.protocol is ModelProtocol.CHAT_COMPLETIONS:
+        options["provider_name"] = "deepseek"
+    if profile.protocol is not ModelProtocol.RESPONSES:
+        options["options"] = profile.wire_options
+    return provider_class(
+        base_url=profile.base_url,
+        api_key=api_key,
+        timeout_seconds=profile.timeout_seconds,
+        max_retries=profile.max_retries,
+        client=client,
+        headers=profile.headers,
+        **options,
+    )
+
+
+def numeric_usage(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: numeric_usage(item)
+            for key, item in value.items()
+            if isinstance(item, dict) or type(item) in (int, float)
+        }
+    return value
+
+
+def response_usage(payload: dict[str, Any], protocol: str) -> dict[str, Any]:
+    """Raw numbers and field presence; no response text, headers or opaque state."""
+    usage = payload.get("usageMetadata" if protocol == "gemini" else "usage", {})
+    usage = usage if isinstance(usage, dict) else {}
+
+    def presence(value, prefix=""):
+        paths = []
+        for key, item in value.items():
+            paths.append(prefix + key)
+            if isinstance(item, dict):
+                paths.extend(presence(item, prefix + key + "."))
+        return paths
+
+    return {
+        "original_numeric_usage": numeric_usage(usage),
+        "usage_presence": sorted(usage),
+        "usage_field_presence": sorted(presence(usage)),
+        "model_version": payload.get("modelVersion" if protocol == "gemini" else "model"),
+        "response_model": payload.get("model"),
+        "response_model_version": payload.get("modelVersion"),
+        "response_id": payload.get("responseId" if protocol == "gemini" else "id"),
+    }
+
+
+def generation_shape(payload: dict[str, Any]) -> dict[str, Any]:
+    """Actual wire controls without instructions, schemas or transport secrets."""
+    result = {
+        key: payload[key]
+        for key in (
+            "model",
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "max_completion_tokens",
+            "max_output_tokens",
+            "stream",
+            "thinking",
+            "reasoning",
+            "reasoning_effort",
+            "tool_choice",
+            "parallel_tool_calls",
+        )
+        if key in payload
+    }
+    if "generationConfig" in payload:
+        config = payload["generationConfig"]
+        result["generationConfig"] = {
+            key: value
+            for key, value in config.items()
+            if key not in {"responseJsonSchema", "responseSchema"}
+        }
+        result["generationConfig_schema_fields_present"] = sorted(
+            key for key in ("responseJsonSchema", "responseSchema") if key in config
+        )
+    if "response_format" in payload:
+        result["response_format_type"] = payload["response_format"].get("type")
+    if "text" in payload and "format" in payload["text"]:
+        result["text_format_type"] = payload["text"]["format"].get("type")
+    return result
+
+
 def summary_shape(content: str, *, ordinary: bool = False) -> dict[str, Any]:
     """Shape-only diagnosis; generated text and unknown field names stay private."""
     schema = OrdinarySummary if ordinary else CompactionSummary
@@ -280,6 +374,22 @@ def prefix_comparison(previous: dict[str, Any], current: dict[str, Any]) -> dict
 
 
 def weighted_usage(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    coverage = {}
+    for field in (
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "cached_prompt_tokens",
+        "cache_creation_input_tokens",
+    ):
+        values = [row[field] for row in rows if type(row.get(field)) is int and row[field] >= 0]
+        subtotal = sum(values) if values else None
+        coverage[field] = {
+            "known_requests": len(values),
+            "unknown_or_invalid_requests": len(rows) - len(values),
+            "known_subtotal": subtotal,
+            "complete_total": subtotal if len(values) == len(rows) else None,
+        }
     known = [
         row
         for row in rows
@@ -288,25 +398,14 @@ def weighted_usage(rows: list[dict[str, Any]]) -> dict[str, Any]:
         and type(row.get("cached_prompt_tokens")) is int
         and 0 <= row["cached_prompt_tokens"] <= row["prompt_tokens"]
     ]
-    incoming = sum(row["prompt_tokens"] for row in known)
-    cached = sum(row["cached_prompt_tokens"] for row in known)
+    incoming = sum(row["prompt_tokens"] for row in known) if known else None
+    cached = sum(row["cached_prompt_tokens"] for row in known) if known else None
     return {
         "requests": len(rows),
-        "reported_input_tokens": sum(
-            row["prompt_tokens"]
-            for row in rows
-            if type(row.get("prompt_tokens")) is int and row["prompt_tokens"] >= 0
-        ),
-        "reported_output_tokens": sum(
-            row["completion_tokens"]
-            for row in rows
-            if type(row.get("completion_tokens")) is int and row["completion_tokens"] >= 0
-        ),
-        "reported_total_tokens": sum(
-            row["total_tokens"]
-            for row in rows
-            if type(row.get("total_tokens")) is int and row["total_tokens"] >= 0
-        ),
+        "reported_input_tokens": coverage["prompt_tokens"]["known_subtotal"],
+        "reported_output_tokens": coverage["completion_tokens"]["known_subtotal"],
+        "reported_total_tokens": coverage["total_tokens"]["known_subtotal"],
+        "reported_field_coverage": coverage,
         "cache_known": len(known),
         "cache_unknown_or_invalid": len(rows) - len(known),
         "positive": sum(row["cached_prompt_tokens"] > 0 for row in known),
@@ -366,6 +465,13 @@ class PhysicalRequests:
             "completion_tokens": None,
             "total_tokens": None,
             "cache_creation_input_tokens": None,
+            "header_latency_seconds": None,
+            "complete_response_latency_seconds": None,
+            "original_numeric_usage": None,
+            "usage_presence": None,
+            "usage_field_presence": None,
+            "model_version": None,
+            "actual_generation": generation_shape(payload),
             "unknown_usage": True,
             "response_format_type": (payload.get("response_format") or {}).get("type")
             if isinstance(payload.get("response_format"), dict)
@@ -387,9 +493,12 @@ class PhysicalRequests:
 
     async def response(self, response: httpx.Response) -> None:
         row = self._requests.pop(id(response.request))
-        row["latency_seconds"] = time.perf_counter() - self._started.pop(id(response.request))
+        started = self._started.pop(id(response.request))
+        row["latency_seconds"] = time.perf_counter() - started
+        row["header_latency_seconds"] = row["latency_seconds"]
         row["status_code"] = response.status_code
         await response.aread()
+        row["complete_response_latency_seconds"] = time.perf_counter() - started
         try:
             payload = response.json()
         except ValueError:
@@ -398,6 +507,7 @@ class PhysicalRequests:
         if not isinstance(payload, dict):
             row["response_shape"] = "non_object"
             return
+        row.update(response_usage(payload, self.protocol.value))
         if self.protocol is ModelProtocol.GEMINI:
             usage = GeminiProvider._usage_diagnostics(payload)["usage"]
         elif self.protocol is ModelProtocol.RESPONSES:
@@ -607,29 +717,9 @@ async def run_experiment(
             transport=transport,
             event_hooks={"request": [physical.request], "response": [physical.response]},
         )
-        provider_class = (
-            GeminiProvider
-            if profile.protocol is ModelProtocol.GEMINI
-            else DeepSeekResponsesProvider
-            if profile.protocol is ModelProtocol.RESPONSES
-            else OpenAICompatibleProvider
-        )
-        provider_options: dict[str, Any] = {}
-        if profile.protocol is ModelProtocol.CHAT_COMPLETIONS:
-            provider_options["provider_name"] = "deepseek"
-        if profile.protocol is not ModelProtocol.RESPONSES:
-            provider_options["options"] = profile.wire_options
-        report["provider_class"] = provider_class.__name__
+        provider = build_provider(profile, api_key, client)
+        report["provider_class"] = type(provider).__name__
         report["provider_session_headers"] = sorted(profile.headers)
-        provider = provider_class(
-            base_url=profile.base_url,
-            api_key=api_key,
-            timeout_seconds=profile.timeout_seconds,
-            max_retries=profile.max_retries,
-            client=client,
-            headers=profile.headers,
-            **provider_options,
-        )
         executor = TaskModelExecutor(
             router=ModelRouter(profile_catalog(profile)),
             pool=ModelClientPool(injected_profiles={profile.id: provider}),

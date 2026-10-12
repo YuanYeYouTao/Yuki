@@ -339,8 +339,6 @@ async def test_private_wakeup_targets_the_person_without_an_actor() -> None:
     assert items["scene"] == {
         "type": "private",
         "group_id": None,
-        "trigger": "external_event",
-        "current_actor": None,
     }
     # The target is the conversation person, never a fabricated current speaker.
     assert "current_person" not in items
@@ -369,8 +367,6 @@ async def test_group_wakeup_targets_the_group_without_a_person() -> None:
     assert items["scene"] == {
         "type": "group",
         "group_id": "group-100",
-        "trigger": "external_event",
-        "current_actor": None,
     }
     assert "conversation_target_person" not in items and "current_person" not in items
     assembler._people.get.assert_not_called()

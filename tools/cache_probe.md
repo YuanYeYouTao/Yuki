@@ -19,7 +19,7 @@ uv run python -m tools.cache_probe --live --profiles private-model-profiles.toml
 每轮自动生成新的命名空间。`--prefix-characters` 调整合成长历史长度，
 `--delay-seconds` 是请求间隔；补测应保留前一次完整报告。
 
-脚本创建临时 SQLite、原件目录和合成身份，使用真实 TaskModelExecutor、Gemini
+脚本创建临时 SQLite、原件目录和合成身份，使用真实 TaskModelExecutor、所选协议
 序列化器与持久仓库。它不启动 Application 生命周期、网关、调度器或插件，也不连接
 生产数据库。业务工具仅读取合成数据；发消息、联网或其他副作用不执行。
 
@@ -51,6 +51,11 @@ Work 辅助页另存合成的 section/允许引用与来源类别；非标准引
 Gemini input 已含 cached，已知输入加权比例是 `sum(cached)/sum(input)`。
 显式零、缺字段和不合法计数分开；缺 cache write 不造零。冷、热、对照和摘要各自汇总，
 总数包含全部调用。`unknown_usage` 指总 token 是否可计量，cache 未知另行统计。
+每个原计量字段分别记录已知与未知覆盖；没有已知数字时小计为 `null`，只有实际返回
+的零才计为零。部分已知数字的小计不能冒充全部请求总数。
+`latency_seconds` 保留原响应头到达耗时；新行另写同值的 `header_latency_seconds`
+及读完响应体后的 `complete_response_latency_seconds`，两者起点均为物理 request hook。
+缺完整响应体计时的旧样本不能用响应头 P95 代称完整响应或用户收到答复的延迟。
 
 `first_difference` 只报位置；比较实际发往配置 endpoint 的 body，固定部分含完整工具
 与 generation 设置，contents 按实际 role/part 顺序展开，避免连续 user 合并造成假差异。
@@ -75,12 +80,23 @@ A 从显式提供并核验为 24da979 的源码导入；B/C 共用冻结的候�
 请求、最终 fragment/map、原 wire 字节及结构体积保存在输出目录。空值、稳定值、
 变化、恢复 A、清空、过期、不同主体、cache 行回收及旧 snapshot/摘要/真实 note
 各自留样。行回收不是进程重启，合成资料不代替生产样本；mock usage/cache/费用未知。
+离线准备可以用 `--profile-json` 或私有管道 `--route-stdin` 选择实际 Profile，仍只走
+MockTransport，不发真实 API。Gemini、DeepSeek Chat Completions 和 Responses 各用现行
+适配器的原协议和实际模型；三组在同一个实验内共用同一 Profile，跨协议结果分别报告。
+测量 Profile 若显式加 tools 或改协议，应单列与原 saved catalog 的差异，不写回生产路由。
 
 真实输入重放显式加 `--live --route-stdin --replay .cache/materials-offline`，
 并指定新的 `--output`。`--order ABC,CBA` 平衡组序，`--warmups` 为每组每块的
 预热份数，`--limit` 限定每组每块正式请求数；全部尝试与预热均保留。
 私有 pipe 使用上述 profile/key 格式；`wire_options` 只序列化显式字段，不能把
 跨协议默认字段展开成实际配置。数字缺字段和 HTTP/non-JSON 失败保持未知。
+固定输入按原适配器的 endpoint/auth 发送捕获的正文，实际 route 的 provider/protocol/model
+必须与捕获 Profile 相同；失败保持原协议，不降级。响应的原数字 usage 及嵌套字段 presence
+另外保留，缓存、思考和完整账单的缺值不补零。字节公共前缀不是 token 缓存命中率。
+Profile 是路由及默认值，Main 的实际 ChatRequest 可以覆盖生成设置。新 hook 与 manifest
+另存实际 wire 的 generation shape（不存 instructions 或完整 schema），包括实际输出上限、
+thinking/reasoning 和格式；不得用 Profile 的默认值代称最终请求。该合成 Main fixture 的
+Settings 会要求 8192 输出及 thinking/low，须与所选 Profile 的默认值分别报告。
 
 加 `--closed-loop` 使用四步真实 Main 只读任务，调用 `get_my_capabilities(mode=summary)`
 后在内部答复当前线索、变化和原 note 证据。实验 controller 只把本组模型实际内部答案
@@ -89,6 +105,6 @@ A 从显式提供并核验为 24da979 的源码导入；B/C 共用冻结的候�
 该模式没有额外预热，使用 `--warmups 0` 明确记录。离线固定工具回包只核本地链路，
 真实 Provider 是否接受续轮、实际模型是否选择工具及保留事实，仍由付费实验核对；
 失败和未选工具均保留，不能替换样本称通过。它不代替自然 QQ 行为验收。
-付费闭环使用既有 trace codec 保存去 opaque 的诊断副本及原 body 字节/hash，
+付费闭环使用既有 trace codec 保存去 opaque 的诊断副本及原 body 字节数/hash，
 完整签名不写实验报告；该副本不能作为签名重放输入。实际上游账号、最后一跳、
 缓存热度、搜索/存储费和完整账单缺样时标未知，SSH relay 等实际网络路径单列。

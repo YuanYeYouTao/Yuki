@@ -6,3 +6,6 @@ frontend/** text=auto eol=lf
 
 *.apparmor text eol=lf
 deploy/security/*.json text eol=lf
+
+# Keep archived measurement CSV bytes and their published hashes intact.
+docs/architecture/experiments/**/*.csv -text whitespace=trailing-space,space-before-tab,cr-at-eol

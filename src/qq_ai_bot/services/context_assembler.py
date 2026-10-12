@@ -223,8 +223,6 @@ class ContextAssembler:
             "scene": {
                 "type": "group",
                 "group_id": trigger.group_id,
-                "trigger": "self_initiative",
-                "current_actor": "SELF",
             },
         }
         metadata = {"items": [{"id": key, "data": value} for key, value in data.items()]}
@@ -488,14 +486,7 @@ class ContextAssembler:
             "instruction": instruction,
         }
         content = json.dumps(trigger, ensure_ascii=False, separators=(",", ":"))
-        data["automation"] = {
-            "automation_id": context.automation_id,
-            "run_id": context.automation_run_id,
-            "step_id": context.step_id,
-            "context_profile": profile,
-            "scheduled_for": context.scheduled_for.isoformat(),
-            "actual_started_at": context.actual_started_at.isoformat(),
-        }
+        data["automation"] = {"automation_id": context.automation_id}
         history_size = sum(len(message.content or "") for message in history)
         metadata_size = len(json.dumps(data, ensure_ascii=False))
         if (
@@ -599,19 +590,9 @@ class ContextAssembler:
         current_time = self._time.current_in_timezone(metadata.timezone)
 
         context: dict[str, Any] = {
-            "current_person": {
-                "user_id": inbound.sender.user_id,
-                "nickname": profile.nickname,
-                "display_name": (
-                    profile.group_card if profile.scope_type is ScopeType.GROUP else ""
-                )
-                or profile.nickname
-                or profile.user_id,
-            },
             "scene": {
                 "type": inbound.scope_type.value,
                 "group_id": inbound.group_id,
-                "group_card": profile.group_card,
             },
         }
         total_budget = self._history_token_budget(runtime)
@@ -760,8 +741,6 @@ class ContextAssembler:
             "scene": {
                 "type": event.scope_type.value,
                 "group_id": event.group_id,
-                "trigger": "external_event",
-                "current_actor": None,
             }
         }
         if event.group_id is None:

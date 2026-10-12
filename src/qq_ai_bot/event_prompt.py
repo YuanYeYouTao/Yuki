@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from collections.abc import Iterable
@@ -18,9 +17,7 @@ from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.services.renderer import strip_internal_history_markers
 from qq_ai_bot.time.formatting import local_datetime, local_iso, stored_utc
 
-EXTERNAL_EVENT_CONTENT_TRUST = "external_untrusted"
 _MAIN_HISTORY_GROUP_SPAN = timedelta(minutes=5)
-_EXTERNAL_EVENT_DIGEST_METADATA_ID = "recent_external_events"
 
 _LEGACY_HISTORY_PREFIX = re.compile(
     r"^\[(?:(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]) )?"
@@ -67,64 +64,6 @@ def prompt_origin_class(row: EventRecord) -> str:
     if row.direction == "outbound" and row.origin == "plugin_background":
         return "plugin_proactive"
     return "ordinary"
-
-
-def external_event_digest_data(
-    events: Iterable[dict[str, object]],
-) -> dict[str, object]:
-    """Return the stable digest payload attached under the metadata wrapper."""
-
-    return {
-        "events": list(events),
-        "content_trust": EXTERNAL_EVENT_CONTENT_TRUST,
-    }
-
-
-def external_event_digest_metadata_item(
-    events: Iterable[dict[str, object]],
-) -> dict[str, object]:
-    """Return the serialized metadata item appended after ordinary context fit."""
-
-    return {
-        "id": _EXTERNAL_EVENT_DIGEST_METADATA_ID,
-        "data": external_event_digest_data(events),
-    }
-
-
-def external_event_digest_encoded_characters(events: Iterable[dict[str, object]]) -> int:
-    """Return the encoded size of the full appended digest metadata item."""
-
-    return len(
-        json.dumps(
-            external_event_digest_metadata_item(events),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            default=str,
-        )
-    )
-
-
-EXTERNAL_EVENT_DIGEST_ITEMS_SEPARATOR_CHARACTERS = 1
-
-
-def external_event_digest_appended_growth(
-    events: Iterable[dict[str, object]],
-    *,
-    parent_items_nonempty: bool = True,
-) -> int:
-    """Return metadata growth when the digest item is inserted into ``items``.
-
-    Production fit always leaves at least ``scene`` in ``items``. Insertion
-    into a nonempty JSON array adds a one-character comma separator. Selection
-    and reserve must keep this complete growth within the digest character cap.
-    """
-
-    items = tuple(events)
-    if not items:
-        return 0
-    encoded = external_event_digest_encoded_characters(items)
-    extra = EXTERNAL_EVENT_DIGEST_ITEMS_SEPARATOR_CHARACTERS if parent_items_nonempty else 0
-    return encoded + extra
 
 
 @lru_cache(maxsize=8)

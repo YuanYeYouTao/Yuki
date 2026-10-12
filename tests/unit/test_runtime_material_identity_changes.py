@@ -19,6 +19,11 @@ from qq_ai_bot.conversation.projection_models import PromptProjectionModel
 from qq_ai_bot.domain.messages import ChatMessage, SenderIdentity
 from qq_ai_bot.identity.canonical_repository import ensure_person
 from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
+from qq_ai_bot.memory.enums import MemoryScopeType, MemorySourceType
+from qq_ai_bot.memory.models import MemoryFactCreate
+from qq_ai_bot.memory.repository import MemoryFactRepository
+from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.memory.subjects import SubjectResolver
 from qq_ai_bot.plugin_host.extension_registry import ExtensionRegistry
 from qq_ai_bot.plugin_host.prompt_adapter import PluginPromptAdapter
 from yuki_plugin_sdk.models import PromptFragment, PromptStage
@@ -28,9 +33,12 @@ from yuki_plugin_sdk.permissions import PluginPermission
 @pytest.fixture
 async def wire_main(database, tmp_path):
     wire = []
+    responses = []
 
     async def transport(request):
         wire.append(json.loads(request.content))
+        if responses:
+            return httpx.Response(200, json=responses.pop(0))
         return httpx.Response(
             200,
             json={
@@ -56,7 +64,13 @@ async def wire_main(database, tmp_path):
         )
         env, harness, chat, state, message = await _scene(database, tmp_path, provider)
         yield SimpleNamespace(
-            env=env, harness=harness, chat=chat, state=state, message=message, wire=wire
+            env=env,
+            harness=harness,
+            chat=chat,
+            state=state,
+            message=message,
+            wire=wire,
+            responses=responses,
         )
 
 
@@ -89,11 +103,11 @@ async def _projection(database, actor_id):
         ).one()
 
 
-async def _handle(scene, message):
+async def _handle(scene, message, *, expected_requests=1):
     attempts = len(scene.wire)
     assert (await scene.harness.processor.handle(message, MemorySender())).reason == "chat"
-    assert len(scene.wire) == attempts + 1
-    return scene.wire[-1]
+    assert len(scene.wire) == attempts + expected_requests
+    return scene.wire[attempts]
 
 
 async def _assert_frozen_wire(database, actor_id, body):
@@ -102,7 +116,7 @@ async def _assert_frozen_wire(database, actor_id, body):
     return saved
 
 
-async def test_people_field_change_and_authoritative_removal_emit_one_delta(database, wire_main):
+async def test_name_changes_remain_real_events_without_publishing_material(database, wire_main):
     scene = wire_main
     message = replace(
         scene.message,
@@ -116,14 +130,8 @@ async def test_people_field_change_and_authoritative_removal_emit_one_delta(data
     )
     first = await _handle(scene, message)
     initial = _people(_changes(_current(first)))
-    assert initial == {
-        "current_person": {
-            "user_id": "10001",
-            "nickname": "caller-nickname-A",
-            "display_name": "caller-group-card",
-        },
-        "scene": {"type": "group", "group_id": "20001"},
-    }
+    assert initial == {"scene": {"type": "group", "group_id": "20001"}}
+    assert "caller-group-card|QQ:10001]" in _current(first).content
     saved = await _assert_frozen_wire(database, scene.env.person, first)
     original_items = json.loads(saved.payload_json)
     original_sources = await _sources(database)
@@ -142,40 +150,30 @@ async def test_people_field_change_and_authoritative_removal_emit_one_delta(data
         sender=replace(message.sender, nickname="caller-nickname-B"),
     )
     changed_wire = await _handle(scene, changed)
-    assert _changes(_current(changed_wire)) == {
-        "context.people_and_scene": {
-            "items": [{"id": "current_person", "data": {"nickname": "caller-nickname-B"}}]
-        }
-    }
+    assert _changes(_current(changed_wire)) == {}
+    assert "caller-group-card|QQ:10001]" in _current(changed_wire).content
+    assert (await scene.harness.profiles.get(user_id="10001", group_id="20001")).nickname == (
+        "caller-nickname-B"
+    )
     changed_sources = await _sources(database)
-    assert len(changed_sources) == len(original_sources) + 1
+    assert changed_sources == original_sources
     saved = await _assert_frozen_wire(database, scene.env.person, changed_wire)
     assert json.loads(saved.payload_json)[: len(original_items)] == original_items
-    assert _people(json.loads(saved.visible_material_json))["current_person"] == {
-        "user_id": "10001",
-        "nickname": "caller-nickname-B",
-        "display_name": "caller-group-card",
-    }
+    assert _people(json.loads(saved.visible_material_json)) == initial
 
     removed = replace(
         changed,
         message_id="people-clear-nickname",
-        text="昵称已清空，群名片仍有效。",
-        sender=replace(changed.sender, nickname="", nickname_known=True),
+        text="群名片已清空，昵称仍有效。",
+        sender=replace(changed.sender, group_card="", group_card_known=True),
     )
     removed_wire = await _handle(scene, removed)
-    assert _changes(_current(removed_wire)) == {
-        "context.people_and_scene": {
-            "items": [{"id": "current_person", "data": {"nickname": None}}]
-        }
-    }
+    assert _changes(_current(removed_wire)) == {}
+    assert "caller-nickname-B|QQ:10001]" in _current(removed_wire).content
     removed_sources = await _sources(database)
-    assert len(removed_sources) == len(changed_sources) + 1
+    assert removed_sources == original_sources
     saved = await _assert_frozen_wire(database, scene.env.person, removed_wire)
-    assert _people(json.loads(saved.visible_material_json))["current_person"] == {
-        "user_id": "10001",
-        "display_name": "caller-group-card",
-    }
+    assert _people(json.loads(saved.visible_material_json)) == initial
 
     still_removed = await _handle(
         scene, replace(removed, message_id="people-still-empty", text="继续没有昵称的场景。")
@@ -217,10 +215,8 @@ async def test_subject_switch_uses_its_own_material_and_source_owner(database, w
     )
     second_wire = await _handle(scene, second)
     second_people = _people(_changes(_current(second_wire)))
-    assert second_people == {
-        "current_person": {"user_id": "10002", "display_name": "person-B-card"},
-        "scene": {"type": "group", "group_id": "20001"},
-    }
+    assert second_people == {"scene": {"type": "group", "group_id": "20001"}}
+    assert "person-B-card|QQ:10002]" in _current(second_wire).content
     second_saved = await _assert_frozen_wire(database, second_person, second_wire)
     assert second_saved.view_key != first.view_key
     assert _people(json.loads(second_saved.visible_material_json)) == second_people
@@ -256,9 +252,74 @@ async def test_subject_switch_uses_its_own_material_and_source_owner(database, w
         json.loads((await _projection(database, second_person)).visible_material_json)
     ) == (second_people)
 
-    restored_first = await _handle(
-        scene, replace(original, message_id="first-person-returns", text="第一位用户继续原问题。")
+    facts = MemoryFactService(MemoryFactRepository(database))
+    for account in ("10001", "10002"):
+        await facts.remember(
+            MemoryFactCreate(
+                scope_type=MemoryScopeType.PERSON,
+                subject_user_id=account,
+                memory_key="hobby:astronomy",
+                category="hobby",
+                content=f"astronomy belongs to {account}",
+                source_type=MemorySourceType.EXPLICIT,
+            )
+        )
+    scene.responses.append(
+        {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "current-speaker-memory",
+                                "type": "function",
+                                "function": {
+                                    "name": "search_memory",
+                                    "arguments": json.dumps(
+                                        {
+                                            "query": "astronomy",
+                                            "target": {
+                                                "scope": "person",
+                                                "subject_ref": "current_speaker",
+                                            },
+                                        }
+                                    ),
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
     )
+    returning = replace(
+        original,
+        message_id="first-person-returns",
+        text="[提及10002] 第一位用户继续原问题。",
+        mentioned_user_ids=("10002",),
+        reply_to_event_id=event_id,
+        reply_to_message_id=second.message_id,
+        reply_sender_user_id="10002",
+    )
+    restored_first = await _handle(scene, returning, expected_requests=2)
+    current = _current(restored_first).content
+    assert "person-A-card|QQ:10001]" in current
+    assert "[提及person-B-card/QQ:10002]" in current
+    assert f"回复:#{event_id}/person-B-card/QQ:10002" in current
+    memory_result = json.loads(scene.wire[-1]["messages"][-1]["content"])
+    assert memory_result["ok"], memory_result
+    assert [item["content"] for item in memory_result["data"]["memories"]] == [
+        "astronomy belongs to 10001"
+    ]
+    latest = await scene.harness.ledger.get_event(
+        json.loads((await _projection(database, scene.env.person)).payload_json)[-1]["event_ids"][0]
+    )
+    subjects = SubjectResolver.context(latest)
+    assert subjects.resolve("speaker:person").subject_user_id == "10001"
+    assert subjects.resolve("reply_author:person_group").subject_user_id == "10002"
     assert _changes(_current(restored_first)) == {}
     assert await _sources(database) == sources
     assert (await _projection(database, scene.env.person)).visible_material_json == first_material

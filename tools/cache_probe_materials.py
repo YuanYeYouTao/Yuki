@@ -159,10 +159,11 @@ def usage_totals(rows: list[dict[str, Any]]) -> dict[str, Any]:
     totals = {}
     for field in fields:
         known = [row[field] for row in rows if type(row.get(field)) is int and row[field] >= 0]
+        subtotal = sum(known) if known else None
         totals[field] = {
             "known_requests": len(known),
-            "known_subtotal": sum(known) if known else None,
-            "complete_total": sum(known) if len(known) == len(rows) else None,
+            "known_subtotal": subtotal,
+            "complete_total": subtotal if len(known) == len(rows) else None,
         }
     eligible = [
         row
@@ -189,19 +190,118 @@ def usage_totals(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def numeric_usage(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {
-            key: numeric_usage(item)
-            for key, item in value.items()
-            if isinstance(item, dict) or type(item) in (int, float)
-        }
-    return value
+def wire_texts(payload: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Material text only; native tool/results and schemas remain in wire bytes."""
+    if "contents" in payload:
+        return (
+            [
+                part["text"]
+                for message in payload["contents"]
+                for part in message["parts"]
+                if "text" in part
+            ],
+            [
+                part["text"]
+                for part in payload.get("systemInstruction", {}).get("parts", [])
+                if "text" in part
+            ],
+        )
+    texts, system = [], []
+    for message in payload.get("messages", payload.get("input", [])):
+        if message.get("role") == "tool":
+            continue
+        content = message.get("content", [])
+        values = (
+            [content]
+            if isinstance(content, str)
+            else [part["text"] for part in content if "text" in part]
+            if isinstance(content, list)
+            else []
+        )
+        (system if message.get("role") in {"system", "developer"} else texts).extend(values)
+    if "instructions" in payload:
+        system.append(payload["instructions"])
+    return texts, system
+
+
+def response_metadata(payload: dict[str, Any], protocol: str, *, real: bool) -> dict[str, Any]:
+    result = {
+        "metering_kind": "real_numeric_response" if real else "mock_no_real_usage",
+    }
+    if protocol == "gemini":
+        result.update(
+            candidate_finish_reasons=[
+                item.get("finishReason") for item in payload.get("candidates", [])
+            ],
+            public_model_text=[
+                part["text"]
+                for candidate in payload.get("candidates", [])
+                for part in candidate.get("content", {}).get("parts", [])
+                if "text" in part and not part.get("thought")
+            ],
+            model_tool_calls=[
+                part["functionCall"]["name"]
+                for candidate in payload.get("candidates", [])
+                for part in candidate.get("content", {}).get("parts", [])
+                if "functionCall" in part
+            ],
+        )
+    elif protocol == "chat_completions":
+        result.update(
+            candidate_finish_reasons=[
+                item.get("finish_reason") for item in payload.get("choices", [])
+            ],
+            public_model_text=[
+                item["message"]["content"]
+                for item in payload.get("choices", [])
+                if isinstance(item.get("message", {}).get("content"), str)
+            ],
+            model_tool_calls=[
+                call["function"]["name"]
+                for item in payload.get("choices", [])
+                for call in item.get("message", {}).get("tool_calls", [])
+            ],
+        )
+    else:
+        result.update(
+            candidate_finish_reasons=[payload.get("status")],
+            public_model_text=[
+                part["text"]
+                for item in payload.get("output", [])
+                if item.get("type") == "message"
+                for part in item.get("content", [])
+                if part.get("type") == "output_text"
+            ],
+            model_tool_calls=[
+                item["name"]
+                for item in payload.get("output", [])
+                if item.get("type") == "function_call"
+            ],
+        )
+    return result
+
+
+def captured_generation(root: Path) -> dict[str, Any]:
+    from tools.cache_probe import generation_shape
+
+    return {
+        arm: [
+            {
+                "sample_index": index,
+                "body_sha256": sha(body.encode()),
+                "generation": generation_shape(json.loads(body)),
+            }
+            for index, body in enumerate(
+                (root / arm / "bodies.jsonl").read_text(encoding="utf-8").splitlines()
+            )
+        ]
+        for arm in "ABC"
+    }
 
 
 def measure_bodies(root: Path) -> dict[str, Any]:
     """Structural attribution for these synthetic fixtures, never a product filter."""
-    from tools.cache_probe import prefix_comparison
+    from tools.cache_probe import input_units, prefix_comparison
 
     header = "本轮运行资料（按 trust 字段区分可信度）："
     note_header = "[Observation; derived notes]\n"
@@ -221,23 +321,15 @@ def measure_bodies(root: Path) -> dict[str, Any]:
         previous_body = None
         for body, row in zip(bodies, physical, strict=True):
             payload = json.loads(body)
-            texts = [
-                part["text"]
-                for message in payload["contents"]
-                for part in message["parts"]
-                if "text" in part
-            ]
-            system_texts = [
-                part["text"]
-                for part in payload.get("systemInstruction", {}).get("parts", [])
-                if "text" in part
-            ]
+            texts, system_texts = wire_texts(payload)
             metrics = {
                 "physical_index": row["physical_index"],
                 "scenario": row["scenario"],
                 "wire_body_bytes": len(body.encode()),
-                "contents_roles": len(payload["contents"]),
-                "parts": sum(len(message["parts"]) for message in payload["contents"]),
+                "contents_roles": len(
+                    payload.get("contents", payload.get("messages", payload.get("input", [])))
+                ),
+                "parts": len(input_units(payload)),
                 "compiled_envelopes": 0,
                 "derived_notes": 0,
                 "retired_snapshot_packets": 0,
@@ -664,7 +756,6 @@ async def run_arm(root: Path, arm: str, plan: dict[str, Any], route=None) -> Non
     from qq_ai_bot.domain.conversations import ScopeType
     from qq_ai_bot.domain.messages import ChatTool, InboundMessage, SenderIdentity
     from qq_ai_bot.execution_trace.payload import decode_payload, encode_payload
-    from qq_ai_bot.llm.gemini import GeminiProvider
     from qq_ai_bot.model_runtime.executor import TaskModelExecutor
     from qq_ai_bot.model_runtime.models import ModelProfile
     from qq_ai_bot.model_runtime.pool import ModelClientPool
@@ -712,9 +803,7 @@ async def run_arm(root: Path, arm: str, plan: dict[str, Any], route=None) -> Non
             actual_upstream_account=plan.get("account_label", "offline_synthetic"),
         )
         payload = json.loads(request.content)
-        texts = [
-            part.get("text", "") for message in payload["contents"] for part in message["parts"]
-        ]
+        texts, _ = wire_texts(payload)
         physical.rows[-1]["prior_synthetic_messages_in_request"] = sum(
             any(message.text in text_value for text_value in texts) for message in sender.messages
         )
@@ -751,35 +840,14 @@ async def run_arm(root: Path, arm: str, plan: dict[str, Any], route=None) -> Non
     async def observe_response(response):
         await physical.response(response)
         physical.rows[-1]["finished_utc"] = datetime.now(UTC).isoformat()
-        if physical.rows[-1]["response_shape"] != "gemini_object":
+        if physical.rows[-1]["response_shape"] != profile.protocol.value + "_object":
             physical.rows[-1].update(original_numeric_usage=None, usage_presence=None)
             write_json(root / "physical.json", physical.rows)
             return
         payload = response.json()
-        physical.rows[-1]["original_numeric_usage"] = numeric_usage(
-            payload.get("usageMetadata", {})
+        physical.rows[-1].update(
+            response_metadata(payload, profile.protocol.value, real=bool(route))
         )
-        physical.rows[-1]["usage_presence"] = sorted(payload.get("usageMetadata", {}))
-        physical.rows[-1]["model_version"] = payload.get("modelVersion")
-        physical.rows[-1]["response_id"] = payload.get("responseId")
-        physical.rows[-1]["metering_kind"] = (
-            "real_numeric_response" if route else "mock_no_real_usage"
-        )
-        physical.rows[-1]["candidate_finish_reasons"] = [
-            item.get("finishReason") for item in payload.get("candidates", [])
-        ]
-        physical.rows[-1]["public_model_text"] = [
-            part["text"]
-            for candidate in payload.get("candidates", [])
-            for part in candidate.get("content", {}).get("parts", [])
-            if "text" in part and not part.get("thought")
-        ]
-        physical.rows[-1]["model_tool_calls"] = [
-            part["functionCall"]["name"]
-            for candidate in payload.get("candidates", [])
-            for part in candidate.get("content", {}).get("parts", [])
-            if "functionCall" in part
-        ]
         write_json(root / "physical.json", physical.rows)
 
     def respond(request):
@@ -805,9 +873,8 @@ async def run_arm(root: Path, arm: str, plan: dict[str, Any], route=None) -> Non
                         "SYNTHETIC_REAL_NOTE: the real notebook evidence remains available."
                     }
                 ]
-        return httpx.Response(
-            200,
-            json={
+        if profile.protocol.value == "gemini":
+            payload = {
                 "candidates": [
                     {
                         "finishReason": "STOP",
@@ -817,8 +884,58 @@ async def run_arm(root: Path, arm: str, plan: dict[str, Any], route=None) -> Non
                         },
                     }
                 ],
-            },
-        )
+            }
+        elif profile.protocol.value == "chat_completions":
+            call = parts[0].get("functionCall")
+            message = {"role": "assistant", "content": parts[0].get("text", "")}
+            if call:
+                message["tool_calls"] = [
+                    {
+                        "id": f"synthetic-call-{step}",
+                        "type": "function",
+                        "function": {"name": call["name"], "arguments": json.dumps(call["args"])},
+                    }
+                ]
+                message["reasoning_content"] = f"Synthetic reasoning for step {step}."
+            payload = {
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "tool_calls" if call else "stop",
+                        "message": message,
+                    }
+                ]
+            }
+        else:
+            call = parts[0].get("functionCall")
+            output = (
+                [
+                    {
+                        "type": "function_call",
+                        "call_id": f"synthetic-call-{step}",
+                        "name": call["name"],
+                        "arguments": json.dumps(call["args"]),
+                    }
+                ]
+                if call
+                else [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [
+                            {"type": "output_text", "text": parts[0]["text"], "annotations": []}
+                        ],
+                    }
+                ]
+            )
+            payload = {
+                "id": f"synthetic-response-{physical.sample['step']}-{len(physical.rows)}",
+                "object": "response",
+                "status": "completed",
+                "output": output,
+            }
+        return httpx.Response(200, json=payload)
 
     client = httpx.AsyncClient(
         base_url=profile.base_url.rstrip("/") + "/",
@@ -827,13 +944,10 @@ async def run_arm(root: Path, arm: str, plan: dict[str, Any], route=None) -> Non
         headers=profile.headers,
         event_hooks={"request": [observe_request], "response": [observe_response]},
     )
-    provider = GeminiProvider(
-        base_url=profile.base_url,
-        api_key=route[1] if route else "synthetic-key",
-        timeout_seconds=profile.timeout_seconds,
-        max_retries=profile.max_retries if route else 0,
-        client=client,
-        options=profile.wire_options,
+    provider = probe.build_provider(
+        profile if route else profile.model_copy(update={"max_retries": 0}),
+        route[1] if route else "synthetic-key",
+        client,
     )
     executor = TaskModelExecutor(
         router=ModelRouter(probe.profile_catalog(profile)),
@@ -1031,6 +1145,11 @@ async def live_closed_loop(args, profile, api_key) -> None:
             if scene["name"] in {"first", "unchanged", "change", "clear"}
         ],
         "profile": profile_data(profile),
+        "captured_initial_wire_generation_by_arm": captured_generation(args.replay),
+        "generation_semantics": (
+            "Profile is route/default configuration; Main's actual ChatRequest can override it. "
+            "Captured wire controls are separate, without instructions or schemas."
+        ),
         "account_label": args.account_label,
         "frozen_candidate_root": str(candidate),
         "source_run": str(args.replay.resolve()),
@@ -1102,14 +1221,22 @@ async def live_closed_loop(args, profile, api_key) -> None:
 
 async def live_replay(args) -> None:
     import httpx
-    from tools.cache_probe import PhysicalRequests, endpoint_origin, route_from_stdin
+    from tools.cache_probe import (
+        PhysicalRequests,
+        build_provider,
+        endpoint_origin,
+        route_from_stdin,
+    )
 
-    from qq_ai_bot.model_runtime.models import ModelProtocol
+    from qq_ai_bot.domain.messages import ChatRequest
 
     profile, api_key = route_from_stdin(sys.stdin)
     plan = json.loads((args.replay / "plan.json").read_text(encoding="utf-8"))
-    if profile.protocol is not ModelProtocol.GEMINI or profile.model != plan["profile"]["model"]:
-        raise ValueError("actual route must match the captured Gemini protocol and model")
+    if (
+        any(getattr(profile, key) != plan["profile"][key] for key in ("provider", "model"))
+        or profile.protocol.value != plan["profile"]["protocol"]
+    ):
+        raise ValueError("actual route must match the captured provider, protocol and model")
     if args.closed_loop:
         await live_closed_loop(args, profile, api_key)
         return
@@ -1132,7 +1259,7 @@ async def live_replay(args) -> None:
     async def observe_response(response):
         await physical.response(response)
         physical.rows[-1]["finished_utc"] = datetime.now(UTC).isoformat()
-        if physical.rows[-1]["response_shape"] != "gemini_object":
+        if physical.rows[-1]["response_shape"] != profile.protocol.value + "_object":
             physical.rows[-1].update(
                 original_numeric_usage=None,
                 usage_presence=None,
@@ -1141,14 +1268,9 @@ async def live_replay(args) -> None:
             write_json(args.output / "physical.json", physical.rows)
             return
         payload = response.json()
-        usage = payload.get("usageMetadata", {})
         physical.rows[-1].update(
-            original_numeric_usage=numeric_usage(usage),
-            usage_presence=sorted(usage),
-            model_version=payload.get("modelVersion"),
-            response_id=payload.get("responseId"),
+            **response_metadata(payload, profile.protocol.value, real=True),
             upstream_account=args.account_label,
-            metering_kind="real_numeric_response",
             complete_search_storage_cost=None,
         )
         write_json(args.output / "physical.json", physical.rows)
@@ -1159,6 +1281,9 @@ async def live_replay(args) -> None:
         headers=profile.headers,
         event_hooks={"request": [observe_request], "response": [observe_response]},
     ) as client:
+        provider = build_provider(profile, api_key, client)
+        endpoint = provider._path(ChatRequest(model=profile.model, messages=()))
+        request_headers = {**provider._request_headers(), "content-type": "application/json"}
         for block, order in enumerate(args.order.split(",")):
             for arm in order:
                 bodies = (
@@ -1179,9 +1304,9 @@ async def live_replay(args) -> None:
                     }
                     try:
                         response = await client.post(
-                            f"models/{profile.model}:generateContent",
+                            endpoint,
                             content=body.encode(),
-                            headers={"x-goog-api-key": api_key, "content-type": "application/json"},
+                            headers=request_headers,
                         )
                         if response.is_error:
                             physical.rows[-1]["error_category"] = "http_error"
@@ -1199,6 +1324,7 @@ async def live_replay(args) -> None:
             "started": started,
             "mode": "fixed_public_input_real_api_replay",
             "profile_id": profile.id,
+            "provider": profile.provider,
             "model": profile.model,
             "protocol": profile.protocol.value,
             "endpoint_origin": endpoint_origin(profile.base_url),
@@ -1210,6 +1336,11 @@ async def live_replay(args) -> None:
             "server_cache_cleared": False,
             "source_run": str(args.replay.resolve()),
             "closed_loop_or_QQ_acceptance": False,
+            "captured_wire_generation_by_arm": captured_generation(args.replay),
+            "generation_semantics": (
+                "fixed replay sends the captured body; actual generation is its wire shape, "
+                "separate from Profile defaults"
+            ),
         },
     )
 
@@ -1281,15 +1412,23 @@ def main() -> None:
             )
         asyncio.run(live_replay(args))
         return
-    if args.baseline_root is None or args.replay is not None or args.route_stdin:
+    if args.baseline_root is None or args.replay is not None:
         parser.error(
             "offline Main replay requires --baseline-root; live replay is separately explicit"
         )
     args.output.mkdir(parents=True, exist_ok=False)
     from qq_ai_bot.model_runtime.models import ModelProfile
 
+    if args.route_stdin and args.profile_json:
+        parser.error("select one offline profile source: --route-stdin or --profile-json")
     public_profile = (
-        json.loads(args.profile_json.read_text(encoding="utf-8"))
+        profile_data(
+            probe_helpers(args.candidate_root / "tools" / "cache_probe.py").route_from_stdin(
+                sys.stdin
+            )[0]
+        )
+        if args.route_stdin
+        else json.loads(args.profile_json.read_text(encoding="utf-8"))
         if args.profile_json
         else {
             "id": "synthetic-materials",
@@ -1306,8 +1445,6 @@ def main() -> None:
         }
     )
     profile = ModelProfile.model_validate(public_profile)
-    if profile.protocol.value != "gemini":
-        parser.error("this manual Main input replay currently supports the Gemini serializer")
     public_profile = profile_data(profile)
     frozen = args.output / "candidate-source"
     source = freeze_source(args.candidate_root, frozen)
@@ -1389,6 +1526,12 @@ def main() -> None:
             for arm in "ABC"
         },
     )
+    plan["actual_wire_generation_by_arm"] = captured_generation(args.output)
+    plan["generation_semantics"] = (
+        "Profile is route/default configuration; actual Main ChatRequest controls are captured "
+        "from the wire separately"
+    )
+    write_json(args.output / "plan.json", plan)
     metrics = measure_bodies(args.output)
     print(
         json.dumps(
