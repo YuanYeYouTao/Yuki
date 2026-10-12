@@ -205,6 +205,182 @@ async def test_self_schedule_memory_uses_original_execution_receipt_and_remains_
         } == original
 
 
+@pytest.mark.parametrize("work_enabled", [False, True])
+async def test_self_schedule_sdk_read_records_its_actual_call_and_original_source(
+    database, tmp_path, monkeypatch, caplog, work_enabled
+):
+    from qq_ai_bot.memory.self_origin import resolve_self_origin
+    from qq_ai_bot.plugin_host import main_turn
+    from qq_ai_bot.plugin_host.facades import HostPluginContext, PluginFacadeServices
+    from qq_ai_bot.runtime.work_schema_v1 import effects
+    from qq_ai_bot.sandbox.environment_tools import SANDBOX_TOOLS
+    from qq_ai_bot.workspace.service import WorkspaceService
+    from qq_ai_bot.workspace.tools import WORKSPACE_TOOLS
+    from yuki_plugin_sdk.permissions import PluginPermission
+
+    case = await setup_run(
+        database,
+        tmp_path,
+        principal="self",
+        delivery="none",
+        mode="silent",
+        work_enabled=work_enabled,
+    )
+    recorder = ToolInvocationRepository(database)
+    case.chat._tool_invocations = recorder
+    case.chat._tools.workspace_service = WorkspaceService(case.env.store)
+    host = HostPluginContext(
+        plugin_id="test.scheduled-self-read",
+        approved_permissions=(PluginPermission.AGENT_RUN,),
+        services=PluginFacadeServices(
+            approval_revision="same-approved-read",
+            ledger=case.harness.ledger,
+            agent_runner=case.chat.runtime.runner,
+            runtime_config=case.chat._runtime_config,
+            agent_capabilities=SANDBOX_TOOLS | WORKSPACE_TOOLS,
+        ),
+    )
+    runtimes, sources = [], []
+    original_backend = main_turn.MainAgentBackend
+
+    def backend(service, runtime, **kwargs):
+        runtimes.append(runtime)
+        return original_backend(service, runtime, **kwargs)
+
+    monkeypatch.setattr(main_turn, "MainAgentBackend", backend)
+
+    original_generate = case.worker._generate
+
+    async def scheduled_source(**kwargs):
+        sources.append(kwargs["source_runtime"])
+        return await original_generate(**kwargs)
+
+    case.worker._generate = scheduled_source
+    case.provider._responder = lambda _: "Schedule source prepared"
+    case.clock.advance(2)
+    result = await case.dispatch()
+    assert result.status is RunStatus.SUCCEEDED
+    before = len(case.provider.requests)
+
+    def respond(request):
+        if len(case.provider.requests) == before + 1:
+            return ChatResponse(
+                "",
+                0,
+                tool_calls=(
+                    ToolCall("sdk-approved-read", ToolFunction("workspace_list", "{}")),
+                    ToolCall("sdk-not-granted", ToolFunction("memory_change", "{}")),
+                ),
+            )
+        replies = {
+            message.tool_call_id: json.loads(message.content)
+            for message in request.messages
+            if message.role == "tool"
+        }
+        assert replies["sdk-approved-read"]["ok"], replies
+        assert replies["sdk-not-granted"]["error"] == "tool_not_declared", replies
+        if work_enabled:
+            return ChatResponse(
+                "",
+                0,
+                tool_calls=(
+                    ToolCall(
+                        "sdk-finish",
+                        ToolFunction(
+                            "task_control", '{"action":"complete","result":"SDK read complete"}'
+                        ),
+                    ),
+                ),
+            )
+        return "SDK read complete"
+
+    case.provider._responder = respond
+
+    try:
+        with host.invocation_scope(host.plugin_id, sources[0], web_was_used=False):
+            sdk_result = await host.agent.run(
+                "Read published workspace artifacts through the approved SDK tool"
+            )
+        assert sdk_result.ok and sdk_result.data["text"] == "SDK read complete"
+        root = f"automation:{result.id}:{case.row.script_hash}"
+        assert len(runtimes) == 1
+        actual = runtimes[0]
+        assert actual.inbound is None and actual.require_actor().principal_kind == "self"
+        assert actual.sandbox_source["parent_execution_id"] == root
+        assert actual.execution_id.startswith(f"plugin:{host.plugin_id}:execution:{root}:")
+        async with database.sessions() as session:
+            receipts = list(
+                await session.scalars(
+                    select(MemoryToolReceiptModel).where(
+                        MemoryToolReceiptModel.tool_name == "workspace_list"
+                    )
+                )
+            )
+            assert len(receipts) == 1
+            receipt = receipts[0]
+            assert receipt.success and receipt.execution_id == actual.execution_id
+            assert receipt.trigger_event_id is None and receipt.initiative_run_id is None
+            assert receipt.tool_call_id and receipt.source_call_key
+            assert (
+                receipt.canonical_person_id is None and receipt.canonical_space_id == case.env.space
+            )
+            resolved = await resolve_self_origin(
+                session,
+                execution_id=receipt.execution_id,
+                require_live=False,
+                require_group_projection=False,
+            )
+            assert resolved.space_id == case.env.space and resolved.presence_id == case.env.presence
+            saved = (await session.execute(select(work))).mappings().one_or_none()
+            if work_enabled:
+                source = json.loads(saved["source_json"])
+                assert source["execution_source"]["parent_execution_id"] == root
+                assert source["parent_execution_id"] == actual.execution_id
+                assert saved["state"] == "completed"
+                resolved_work = await resolve_self_origin(
+                    session,
+                    execution_id=saved["id"],
+                    require_live=False,
+                    require_group_projection=False,
+                )
+                assert resolved_work == resolved
+                assert list(await session.scalars(select(effects.c.state)))
+            else:
+                assert saved is None
+            assert await session.scalar(select(func.count(MemoryMutationReceiptModel.id))) == 0
+            assert await session.scalar(select(func.count(ChatEventModel.id))) == 1
+        # Repair/reentry keeps the SDK call key without another tool/model request.
+        original_calls = len(case.provider.requests)
+        await recorder.record_invocation(
+            conversation_key=actual.conversation_key,
+            provider_id=receipt.provider_id,
+            tool_name=receipt.tool_name,
+            success=True,
+            latency_seconds=0,
+            result_size=receipt.result_characters,
+            artifact_created=False,
+            error_category=None,
+            result_excerpt=receipt.result_excerpt,
+            canonical_conversation_id=actual.effective_conversation_id,
+            principal_kind="self",
+            execution_id=receipt.execution_id,
+            tool_call_id=receipt.tool_call_id,
+        )
+        async with database.sessions() as session:
+            assert (
+                await session.scalar(
+                    select(func.count(MemoryToolReceiptModel.id)).where(
+                        MemoryToolReceiptModel.tool_name == "workspace_list"
+                    )
+                )
+                == 1
+            )
+        assert len(case.provider.requests) == original_calls and not sent(case.env)
+        assert "coverage_incomplete" not in caplog.text
+    finally:
+        await host.close_host_resources()
+
+
 async def test_self_scheduled_work_memory_keeps_original_version_after_task_update(
     database, tmp_path
 ):

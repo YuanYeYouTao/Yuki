@@ -244,6 +244,7 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
             conversation_id = row.canonical_conversation_id
         runtime = SimpleNamespace(
             origin=TurnOrigin.PLUGIN_BACKGROUND,
+            actor_context=None,
             effective_trigger_event_id=event.event.id,
             effective_conversation_id=conversation_id,
             inbound=None,

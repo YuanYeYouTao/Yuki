@@ -47,6 +47,20 @@ def self_execution_origin_sql(execution_id: str) -> str:
     The expression is a bound parameter or a caller-owned static SQL column.
     No transport identity or newer automation definition reconstructs this source.
     """
+    # SDK boundaries retain the original actor.source_key between the plugin
+    # prefix and their final SHA-256 digest. Decode that saved internal anchor;
+    # the receipt's execution/call identity remains the SDK boundary itself.
+    source_execution = (
+        f"(CASE WHEN substr({execution_id},1,7)='plugin:' "
+        f"AND instr({execution_id},':execution:')>0 THEN "
+        f"substr({execution_id},instr({execution_id},':execution:')+length(':execution:'),"
+        f"length({execution_id})-instr({execution_id},':execution:')-length(':execution:')-64) "
+        f"ELSE {execution_id} END)"
+    )
+    step_id = (
+        "COALESCE(json_extract(w.source_json,'$.execution_source.step_id'),"
+        "json_extract(w.source_json,'$.step_id'))"
+    )
     return (
         "SELECT ic.id AS conversation_id, av.canonical_target_space_id AS space_id, "
         "av.canonical_presence_id AS presence_id, ip.external_account_id AS bot_user_id, "
@@ -58,16 +72,18 @@ def self_execution_origin_sql(execution_id: str) -> str:
         "ic.id=json_extract(av.authority_snapshot_json,'$.canonical_conversation_id') "
         "JOIN presences ip ON ip.id=av.canonical_presence_id "
         "JOIN spaces isp ON isp.id=av.canonical_target_space_id "
-        f"LEFT JOIN runtime_work w ON w.id={execution_id} "
+        f"LEFT JOIN runtime_work w ON w.id={source_execution} "
         "AND w.conversation_id=ic.id "
-        "AND json_extract(w.source_json,'$.parent_execution_id')="
-        "CASE WHEN json_extract(w.source_json,'$.step_id') IS NULL "
+        "AND COALESCE(json_extract(w.source_json,'$.execution_source.parent_execution_id'),"
+        "json_extract(w.source_json,'$.parent_execution_id'))="
+        f"CASE WHEN {step_id} IS NULL "
         "THEN printf('automation:%d:%s',ar.id,av.script_hash) "
         "ELSE printf('automation:%d:%s:%s',ar.id,"
-        "json_extract(w.source_json,'$.step_id'),av.script_hash) END "
+        f"{step_id},av.script_hash) END "
         "WHERE a.creator_kind='self' "
         "AND ic.kind='space' AND ic.space_id=av.canonical_target_space_id "
-        f"AND ({execution_id}=printf('automation:%d:%s',ar.id,av.script_hash) OR w.id IS NOT NULL)"
+        f"AND ({source_execution}=printf('automation:%d:%s',ar.id,av.script_hash) "
+        "OR w.id IS NOT NULL)"
     )
 
 

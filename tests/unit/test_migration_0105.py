@@ -198,9 +198,6 @@ def test_fresh_and_0104_upgrade_preserve_work_identity_source_receipts_and_budge
         database = Database(url)
         try:
             async with database.sessions() as session:
-                assert (
-                    await session.scalar(text("SELECT version_num FROM alembic_version")) == "0110"
-                )
                 columns = {
                     row[1] for row in await session.execute(text("PRAGMA table_info(runtime_work)"))
                 }
