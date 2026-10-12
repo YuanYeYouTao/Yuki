@@ -160,7 +160,7 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
                 system.append({"type": "text", "text": message.content or ""})
             else:
                 messages.append(self._message(message))
-        messages.extend(checkpoint_items(request, self.provider_name, self.protocol))
+        messages.extend(checkpoint_items(request, self.protocol))
         for item in ordered_delta(request):
             messages.append(
                 self._message(
@@ -279,7 +279,7 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
         native_events: list[NativeToolEvent] = []
         citations: list[ResponseCitation] = []
         search_calls: dict[str, str] = {}
-        for previous in checkpoint_items(request, self.provider_name, self.protocol):
+        for previous in checkpoint_items(request, self.protocol):
             for prior_block in previous.get("content", ()):
                 if (
                     not isinstance(prior_block, dict)
@@ -391,7 +391,7 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
         # Save only the protocol tail. Initial history is owned by TurnTranscript.
         # Coalescing can join a new tool result to the final initial message; use uncoalesced
         # checkpoint data so the initial prefix is never duplicated on replay.
-        tail = checkpoint_items(request, self.provider_name, self.protocol)
+        tail = checkpoint_items(request, self.protocol)
         for item in ordered_delta(request):
             tail.append(
                 self._message(

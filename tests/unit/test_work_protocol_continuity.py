@@ -41,6 +41,7 @@ from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.llm.gemini import GeminiProvider
 from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
 from qq_ai_bot.llm.openai_responses import OpenAIResponsesProvider
+from qq_ai_bot.llm.vendor_policy import ChatWireOptions
 from qq_ai_bot.model_runtime.executor import TaskModelExecutor
 from qq_ai_bot.model_runtime.models import (
     ModelCapability,
@@ -328,6 +329,206 @@ async def test_root_resume_uses_current_chat_and_task_material(
     twice = await again.compact(await session_summary(again))
     assert twice.request().messages[:2] == (fresh_system, fresh_task)
     await control.repository.release(control.lease)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider_type, protocol",
+    [
+        (GeminiProvider, ModelProtocol.GEMINI),
+        (AnthropicMessagesProvider, ModelProtocol.ANTHROPIC_MESSAGES),
+    ],
+)
+async def test_native_provider_brand_rename_resumes_paid_work(
+    database, tmp_path, monkeypatch, provider_type, protocol
+):
+    control = await _control(database, tmp_path, worker=True)
+    work_id = control.current["id"]
+    old_profile = ModelProfile(
+        id="original-connection",
+        provider=provider_type.provider_name,
+        protocol=protocol,
+        base_url="https://wire.invalid/v1",
+        api_key_env="TEST_KEY",
+        model="thinking-model",
+        timeout_seconds=2,
+        max_retries=0,
+        default_temperature=0.5,
+        default_max_output_tokens=8192,
+        headers={"x-client-label": "unchanged"},
+        capabilities=frozenset({ModelCapability.REASONING, ModelCapability.TOOLS}),
+    )
+
+    def catalog(profile):
+        return ModelProfileCatalog(
+            profiles={profile.id: profile},
+            routes={task: ModelRoute(task=task, profile_id=profile.id) for task in ModelTask},
+        )
+
+    captured = []
+
+    def transport(request):
+        captured.append((request.url, request.headers["x-session-id"], request.content))
+        if provider_type is GeminiProvider:
+            parts = (
+                [
+                    {
+                        "functionCall": {"name": "workspace_read", "args": {}},
+                        "thoughtSignature": "original-paid-signature",
+                    }
+                ]
+                if len(captured) == 1
+                else [{"text": "done"}]
+            )
+            body = {
+                "candidates": [
+                    {"finishReason": "STOP", "content": {"role": "model", "parts": parts}}
+                ]
+            }
+        else:
+            blocks = (
+                [
+                    {
+                        "type": "thinking",
+                        "thinking": "original private reasoning",
+                        "signature": "original-paid-signature",
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "original-call",
+                        "name": "workspace_read",
+                        "input": {},
+                    },
+                ]
+                if len(captured) == 1
+                else [{"type": "text", "text": "done"}]
+            )
+            body = {
+                "stop_reason": "tool_use" if len(captured) == 1 else "end_turn",
+                "content": blocks,
+            }
+        return httpx.Response(200, json=body)
+
+    mock_transport = httpx.MockTransport(transport)
+
+    async def handle(_transport, request):
+        return await mock_transport.handle_async_request(request)
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", handle)
+    old_pool = ModelClientPool(secret_overrides={"TEST_KEY": "synthetic"})
+    models = TaskModelExecutor(router=ModelRouter(catalog(old_profile)), pool=old_pool)
+    old_adapter = old_pool.get(old_profile)
+    first_contract = models.profile_revision(ModelTask.CHAT_AGENT)
+    first = WorkSession(control, first_contract)
+    task = ChatMessage("user", "original task")
+    transcript = await first.restore(
+        TurnTranscript((ChatMessage("system", "fixed"), task)), compaction_brief=task
+    )
+    session_id = f"yuki:{control.lease.conversation_id}:g1:work:{work_id}"
+    initial = ChatRequest(
+        messages=transcript.request().messages,
+        model=old_profile.model,
+        tools=(ChatTool("workspace_read", "Read", {"type": "object"}),),
+        request_chain_id=transcript.chain_id,
+        provider_session_id=session_id,
+    )
+    try:
+        await control.reserve_request()
+        answer = await models.execute(ModelTask.CHAT_AGENT, initial)
+        original_continuation = answer.continuation
+        assert original_continuation is not None
+        transcript.accept(original_continuation)
+        call = answer.tool_calls[0]
+        executions = 0
+
+        async def execute_once():
+            nonlocal executions
+            executions += 1
+            return '{"ok":true,"data":{"status":"succeeded","run_id":"original-execution"}}'
+
+        await invoke_tool(first, call, execute_once, side_effecting=False)
+        # Crash after accepting the original effect, before pairing its result.
+        await first.save("response", (call,))
+        async with database.sessions() as reader:
+            raw = await reader.scalar(
+                select(journal.c.payload_json).where(journal.c.work_id == work_id)
+            )
+        manifest = json.loads(raw)
+        original_ref = manifest["transcript"]["continuation"]
+        original_object = await first.journal.objects.get(original_ref)
+
+        renamed = old_profile.model_copy(update={"provider": "agm"})
+        new_pool = ModelClientPool(secret_overrides={"TEST_KEY": "synthetic"})
+        models.apply_catalog(catalog(renamed), new_pool)
+        next_contract = models.profile_revision(ModelTask.CHAT_AGENT)
+        assert next_contract == first_contract
+        for fields in (
+            {"base_url": "https://different.invalid/v1"},
+            {"model": "different-model"},
+            {"api_key_env": "DIFFERENT_KEY"},
+            {"provider": "fake"},
+            {"headers": {"x-client-label": "different"}},
+            {"wire_options": ChatWireOptions(reasoning="budget", thinking_budget_tokens=2048)},
+        ):
+            different = renamed.model_copy(update=fields)
+            router = ModelRouter(catalog(different))
+            actual_revision = TaskModelExecutor.profile_revision(
+                SimpleNamespace(_runtime=lambda router=router: (router, new_pool)),
+                ModelTask.CHAT_AGENT,
+            )
+            assert actual_revision != first_contract
+
+        resumed_control = WorkControl(
+            control.repository, control.lease, control.source_key, control.source, control.validate
+        )
+        resumed_control.current = await control.repository.get(work_id)
+        resumed = WorkSession(resumed_control, next_contract)
+        loaded = await resumed.journal.load(control.lease, work_id, next_contract)
+        assert loaded.reason == "resume"
+        restored = await resumed.restore(TurnTranscript((ChatMessage("user", "new wakeup"),)))
+        assert restored.chain_id == transcript.chain_id
+        assert restored.continuation == original_continuation
+        assert restored.continuation.provider == provider_type.provider_name
+        assert resumed.uses_recovery_transcript and "chain_links" not in resumed.progress
+        assert executions == 1 and len(captured) == 1
+        sequence = restored.request()
+        continuation_request = replace(
+            initial,
+            messages=sequence.messages,
+            continuation=sequence.continuation,
+            continuation_items=sequence.items,
+        )
+        expected = httpx.Request(
+            "POST",
+            "https://wire.invalid",
+            json=old_adapter._build_payload(
+                models.capacity_request(ModelTask.CHAT_AGENT, continuation_request)
+            ),
+        ).content
+        for wrong in (
+            replace(original_continuation, profile_id="different-connection"),
+            replace(original_continuation, protocol=ModelProtocol.RESPONSES.value),
+        ):
+            with pytest.raises(ValueError, match="different model profile"):
+                await models.execute(
+                    ModelTask.CHAT_AGENT, replace(continuation_request, continuation=wrong)
+                )
+        assert len(captured) == 1
+        await resumed_control.reserve_request()
+        continued = await models.execute(ModelTask.CHAT_AGENT, continuation_request)
+        assert continued.continuation is not None and continued.continuation.provider == "agm"
+        restored.accept(continued.continuation)
+        await resumed.save("paired")
+        assert captured[1][0] == captured[0][0] and captured[1][1] == session_id
+        assert captured[1][2] == expected
+        assert b"original-paid-signature" in expected and b"original-execution" in expected
+        assert executions == 1 and len(captured) == 2
+        assert await first.journal.objects.get(original_ref) == original_object
+        row = await control.repository.get(work_id)
+        assert (row["model_requests"], row["tool_calls"]) == (2, 1)
+    finally:
+        await models.close()
+        await control.repository.release(control.lease)
 
 
 @pytest.mark.asyncio

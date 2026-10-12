@@ -287,9 +287,7 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
             assert not await app.lifecycle._close_entries(app.lifecycle._entries)
 
 
-async def test_original_gemini_work_provider_rename_rebuilds_chain_and_keeps_receipts(
-    database, tmp_path
-):
+async def test_original_gemini_work_provider_rename_keeps_contract_and_receipts(database, tmp_path):
     wire, sessions, neutral = [], [], []
 
     def transport(request):
@@ -409,14 +407,14 @@ async def test_original_gemini_work_provider_rename_rebuilds_chain_and_keeps_rec
                 _catalog(renamed_profile), ModelClientPool(injected_profiles={"main": renamed})
             )
             next_contract = await app.runtime.main_turns.recovery_contract(config)
-            assert next_contract != original_contract
-            assert app.models.profile_revision(ModelTask.CHAT_AGENT) != original_profile_revision
-            # Existing contract selection rejects the old owner before forwarding a request.
+            assert next_contract == original_contract
+            assert app.models.profile_revision(ModelTask.CHAT_AGENT) == original_profile_revision
+            # A connection label does not retire the original paid protocol contract.
             lease = await repository.acquire(old_work["conversation_id"], old_work["generation"])
             try:
                 assert (
                     await WorkJournal(repository).load(lease, old_work["id"], next_contract)
-                ).reason == "contract_changed"
+                ).reason == "resume"
             finally:
                 await repository.release(lease)
             await app.work_resumer.resume(await repository.get(old_work["id"]))

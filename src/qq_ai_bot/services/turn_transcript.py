@@ -100,8 +100,7 @@ class TurnTranscript:
 
     def accept(self, continuation: ProviderContinuation) -> None:
         previous = self.continuation
-        if previous is not None and (previous.provider, previous.protocol, previous.profile_id) != (
-            continuation.provider,
+        if previous is not None and (previous.protocol, previous.profile_id) != (
             continuation.protocol,
             continuation.profile_id,
         ):

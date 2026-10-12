@@ -10,12 +10,12 @@ from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, FunctionCallOutp
 from qq_ai_bot.llm.base import LLMInvalidRequestError
 
 
-def checkpoint_items(request: ChatRequest, provider: str, protocol: str) -> list[dict[str, Any]]:
+def checkpoint_items(request: ChatRequest, protocol: str) -> list[dict[str, Any]]:
     continuation = request.continuation
     if continuation is None:
         return []
-    if continuation.provider != provider or continuation.protocol != protocol:
-        raise LLMInvalidRequestError("continuation belongs to another provider or protocol")
+    if continuation.protocol != protocol:
+        raise LLMInvalidRequestError("continuation belongs to another protocol")
     if not isinstance(continuation.payload, tuple) or not all(
         isinstance(item, dict) for item in continuation.payload
     ):

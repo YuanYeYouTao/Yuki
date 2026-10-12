@@ -166,7 +166,7 @@ class GeminiProvider(JSONHTTPProvider):
         raise LLMInvalidRequestError("Gemini tool receipt has no matching call")
 
     def _tail(self, request: ChatRequest) -> list[dict[str, Any]]:
-        tail = checkpoint_items(request, self.provider_name, self.protocol)
+        tail = checkpoint_items(request, self.protocol)
         history: list[dict[str, Any]] = []
         for message in request.messages:
             if message.role in {"system", "developer"} and not history:

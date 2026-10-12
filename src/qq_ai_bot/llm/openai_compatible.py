@@ -89,7 +89,7 @@ class OpenAICompatibleProvider(JSONHTTPProvider):
 
     def _history(self, request: ChatRequest) -> list[dict[str, Any]]:
         messages = [self._message(message) for message in request.messages]
-        messages.extend(checkpoint_items(request, self.provider_name, self.protocol))
+        messages.extend(checkpoint_items(request, self.protocol))
         for item in ordered_delta(request):
             messages.append(
                 {"role": "tool", "tool_call_id": item.call_id, "content": item.output}

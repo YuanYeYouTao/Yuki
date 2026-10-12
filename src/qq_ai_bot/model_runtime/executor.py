@@ -28,7 +28,9 @@ from qq_ai_bot.execution_trace.phases import (
     switch_model_phase,
 )
 from qq_ai_bot.execution_trace.recorder import TraceRecorder, record_trace, trace_span
+from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
 from qq_ai_bot.llm.base import LLMError, LLMUnsupportedFeatureError
+from qq_ai_bot.llm.gemini import GeminiProvider
 from qq_ai_bot.model_runtime.capacity import ModelCapacity, estimate_request_tokens
 from qq_ai_bot.model_runtime.dispatch_guard import check_model_dispatch
 from qq_ai_bot.model_runtime.models import (
@@ -513,7 +515,6 @@ class TaskModelExecutor:
         ):
             if (
                 continuation.profile_id != profile.id
-                or continuation.provider != profile.provider.casefold()
                 or continuation.protocol != profile.protocol.value
             ):
                 raise ValueError("continuation cannot be routed to a different model profile")
@@ -1017,6 +1018,14 @@ class TaskModelExecutor:
         if profile.search_mode is None:
             excluded.add("search_mode")
         serialized = profile.model_dump(mode="json", exclude=excluded)
+        wire_provider = profile.provider.casefold()
+        if wire_provider != "fake":
+            if profile.protocol is ModelProtocol.GEMINI:
+                wire_provider = GeminiProvider.provider_name
+                serialized["provider"] = wire_provider
+            elif profile.protocol is ModelProtocol.ANTHROPIC_MESSAGES:
+                wire_provider = AnthropicMessagesProvider.provider_name
+                serialized["provider"] = wire_provider
         serialized["capabilities"] = sorted(item.value for item in profile.capabilities)
         serialized_route = route.model_dump(mode="json")
         serialized_route["required_capabilities"] = sorted(
@@ -1025,9 +1034,9 @@ class TaskModelExecutor:
         if profile.protocol is not ModelProtocol.RESPONSES:
             from qq_ai_bot.llm.vendor_policy import wire_options
 
-            # Chat's changed vendor dialect deliberately establishes a new chain;
-            # unchanged Responses defaults retain the previous persisted revision.
-            effective_wire_options = wire_options(profile.provider.casefold(), profile.wire_options)
+            # Native serializers fix the wire dialect independently of the
+            # connection label; Chat still uses its selected vendor preset.
+            effective_wire_options = wire_options(wire_provider, profile.wire_options)
             serialized["wire_options"] = effective_wire_options.model_dump(
                 mode="json",
             )
