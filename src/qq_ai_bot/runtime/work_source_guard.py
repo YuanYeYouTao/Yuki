@@ -100,11 +100,6 @@ class WorkSourceGuard:
         if self.codec != 2:
             return False
         version = self.version
-        if (control.lease.conversation_id, control.lease.generation) != (
-            version.conversation_id,
-            version.generation,
-        ):
-            return False
         from qq_ai_bot.services.turn_transcript import dispatch_request
 
         dispatch = dispatch_request()

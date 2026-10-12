@@ -19,7 +19,6 @@ from qq_ai_bot.identity.routing import PresenceRouter, RouteSendError
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
-from qq_ai_bot.social.automation import SocialAutomationAdapter
 from qq_ai_bot.social.models import SocialError
 from qq_ai_bot.social.service import SocialContext, SocialService
 from qq_ai_bot.social.transfer import ArtifactTransfer
@@ -359,36 +358,6 @@ async def test_mentions_reject_ambiguous_or_nonmember_accounts(social_env):
     assert not any(action == "send_group_msg" for action, _ in env.bot.calls)
 
 
-async def test_group_automation_poke_keeps_delegated_boundary(social_env, override, allowed):
-    env = social_env
-    context = SimpleNamespace(
-        authority=SimpleNamespace(
-            allowed_capabilities={"social.poke_person"},
-            delegated_authority=object(),
-            actor_is_superuser=False,
-        ),
-        automation_run_id=1,
-        step_id="poke",
-        canonical_conversation_id=env.context.conversation_id,
-        canonical_target_space_id=env.space,
-        canonical_target_person_id=None,
-    )
-    adapter = SocialAutomationAdapter(env.service, None, None)
-    invoke = adapter.mapping()["social.poke_person"]
-    args = {"target_id": env.person, **override}
-    if allowed:
-        result = await invoke(args, context)
-        assert result.data["status"] == "succeeded"
-        assert env.bot.calls[-1][1]["group_id"] == 20001
-    else:
-        with pytest.raises(SocialError, match="delegated_target_not_allowed"):
-            await invoke(args, context)
-        assert not any(action == "send_poke" for action, _ in env.bot.calls)
-    context.authority.delegated_authority = None
-    with pytest.raises(SocialError, match="capability_denied"):
-        await invoke(args, context)
-
-
 async def run_identity_scenarios(tmp_path):
     """Run the social identity safety scenarios."""
     from tests.support.social_history_cases import (
@@ -419,15 +388,6 @@ async def run_identity_scenarios(tmp_path):
             for attachment in (None, "image", "file")
         ],
         (test_mentions_reject_ambiguous_or_nonmember_accounts, ()),
-        *[
-            (test_group_automation_poke_keeps_delegated_boundary, (override, allowed))
-            for override, allowed in (
-                ({}, True),
-                ({"scene": "private"}, False),
-                ({"space_id": str(uuid4())}, False),
-                ({"scene": "current"}, True),
-            )
-        ],
     ]
     with pytest.MonkeyPatch.context() as monkeypatch:
         scenarios.append((test_recall_rechecks_connection_before_claim, (monkeypatch,)))

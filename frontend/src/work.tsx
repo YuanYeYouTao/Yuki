@@ -408,7 +408,8 @@ export function Work({ allowed, act, refresh, conversation }: PageProps) {
                 </div>
               </div>
               <JsonNote title="时间安排" value={fields.schedule} />
-              <JsonNote title="脚本" value={fields.script} />
+              <JsonNote title="任务要求" value={fields.task} />
+              <JsonNote title="原定义存档" value={fields.archived_definition} />
               <button
                 className="btn-secondary"
                 disabled={!allowed("mutate_automation")}
@@ -416,13 +417,15 @@ export function Work({ allowed, act, refresh, conversation }: PageProps) {
               >
                 编辑脚本
               </button>
-              {editing === "update" && fields.script != null && (
+              {editing === "update" && (
                 <AutomationEditor
                   key={`${id}:${fields.revision}`}
                   automationId={id}
                   creatorKind={String(fields.creator_kind)}
                   revision={Number(fields.revision)}
-                  initial={fields.script as Row}
+                  initial={
+                    fields.task == null ? undefined : (fields.task as Row)
+                  }
                   props={props}
                   close={() => setEditing(null)}
                 />

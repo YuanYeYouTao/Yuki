@@ -6,7 +6,6 @@ Effect authorization and durable receipts remain at the calling service.
 from __future__ import annotations
 
 import logging
-from typing import Protocol
 
 from qq_ai_bot.identity.routing import PresenceRouter, RouteSendError
 
@@ -20,10 +19,6 @@ class ProactiveGatewayError(RuntimeError):
         super().__init__(category)
         self.category = category
         self.uncertain = uncertain
-
-
-class AutomationGateway(Protocol):
-    async def call_api(self, action: str, params: dict[str, object]) -> object: ...
 
 
 class OneBotAutomationGateway:

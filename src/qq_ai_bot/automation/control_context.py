@@ -8,7 +8,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.automation.authority import PermissionLevel, permission_for_accounts
-from qq_ai_bot.automation.validator import CreationProvenance
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
@@ -23,6 +22,14 @@ from qq_ai_bot.identity.db_models import (
     PresenceModel,
     SpaceBindingModel,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class CreationProvenance:
+    creator_user_id: str
+    bot_user_id: str
+    current_group_id: str | None
+    permission: PermissionLevel
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,14 +76,14 @@ async def resolve_control_context(
         if person is None or conversation.person_id != owner_id:
             raise PermissionError("automation_private_scene_owner_mismatch")
         person_route = await session.get(PersonActiveRouteModel, owner_id)
-        if person_route is None or person_route.paused:
+        if person_route is None:
             raise PermissionError("automation_route_unavailable")
         owner_binding = await session.get(IdentityBindingModel, person_route.identity_binding_id)
         presence_id = person_route.presence_id
     else:
         space = await session.get(CanonicalSpaceModel, conversation.space_id)
         space_route = await session.get(SpaceActiveRouteModel, conversation.space_id)
-        if space is None or not space.enabled or space_route is None or space_route.paused:
+        if space is None or not space.enabled or space_route is None:
             raise PermissionError("automation_route_unavailable")
         space_binding = await session.get(SpaceBindingModel, space_route.space_binding_id)
         if (
@@ -107,7 +114,7 @@ async def resolve_control_context(
     if person is not None:
         if owner_binding is None:
             route = await session.get(PersonActiveRouteModel, owner_id)
-            if route is not None and not route.paused:
+            if route is not None:
                 owner_binding = await session.get(IdentityBindingModel, route.identity_binding_id)
             elif len(accounts) == 1:
                 owner_binding = accounts[0]
@@ -158,8 +165,6 @@ async def resolve_execution_identity(
     )
     route = await session.get(PersonActiveRouteModel, owner_id)
     if route is not None:
-        if route.paused:
-            raise PermissionError("automation_owner_route_paused")
         binding = next((item for item in bindings if item.id == route.identity_binding_id), None)
     else:
         binding = bindings[0] if len(bindings) == 1 else None

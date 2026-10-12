@@ -121,8 +121,6 @@ class MainAgentTurnService:
         read_scope: str | None = None,
         allowed_capabilities: frozenset[str] = frozenset(),
         before_preparation: Callable[[], Awaitable[None]] | None = None,
-        automation_run_id: int | None = None,
-        max_preparation_requests: int | None = None,
     ) -> PromptComposition:
         with self.executions.track():
             active = current_work_control.get()
@@ -203,7 +201,6 @@ class MainAgentTurnService:
                     else "main",
                     actor_id,
                     read_scope,
-                    include_plugin_context,
                 ]
             )
             if context.current_message.images:
@@ -255,9 +252,22 @@ class MainAgentTurnService:
                 )
                 - 4096,
             )
+            owner_conversation = active.lease.conversation_id if active else version.conversation_id
+            owner_generation = active.lease.generation if active else version.generation
+            owner_work = (
+                active.current["id"]
+                if active is not None and active.current is not None
+                else active.lease.work_id
+                if active is not None
+                else None
+            )
             prepared_request = self._runner._capacity_request(
                 ChatRequest(
                     messages=composition.messages,
+                    provider_session_id=(
+                        f"yuki:{owner_conversation}:g{owner_generation}:"
+                        + (f"work:{owner_work}" if owner_work else "main")
+                    ),
                     model=runtime.llm.model or "fake",
                     temperature=runtime.llm.temperature,
                     max_output_tokens=runtime.llm.max_output_tokens,
@@ -345,26 +355,10 @@ class MainAgentTurnService:
                         ).read_version_matches(version):
                             raise WorkConflict("observation_compaction_source_changed")
                         if not dispatched:
-                            if (
-                                max_preparation_requests is not None
-                                and preparation_requests >= max_preparation_requests
-                            ):
-                                from qq_ai_bot.runtime.work_budget import WorkBudgetExceeded
-
-                                raise WorkBudgetExceeded("agent_segment_budget_exhausted")
-                            if (
-                                active is not None or automation_run_id is None
-                            ) and preparation_requests + 1 >= runtime.agent.max_model_requests:
+                            if preparation_requests + 1 >= runtime.agent.max_model_requests:
                                 raise WorkConflict("model_request_budget")
                             if active is not None:
                                 await active.reserve_request(auxiliary=True)
-                            elif automation_run_id is not None:
-                                from qq_ai_bot.runtime.work_budget import charge_automation_run
-
-                                async with repository.database.immediate_session() as writer:
-                                    await charge_automation_run(
-                                        writer, automation_run_id, models=1, tools=0
-                                    )
                             preparation_requests += 1
                             dispatched = True
 
@@ -413,13 +407,10 @@ class MainAgentTurnService:
                 read_scope=read_scope,
             )
             composition = compose_context(prepared.context)
-            work_wakeup = context.projection_scope == "main" and context.current_event_id is None
             fragments = (
-                prepared.fragments
-                if work_wakeup
-                else prepared.fragments.append_current(
-                    context.current_event_id, composition.messages[-1]
-                )
+                prepared.fragments.append_current(context.current_event_id, context.current_message)
+                if context.current_event_id is not None
+                else prepared.fragments
             )
             projection_closed = False
             observation_watermark = max(
@@ -444,9 +435,8 @@ class MainAgentTurnService:
                 if sequence.layout_public_initial is not None:
                     valid_layout = sequence.layout_public_initial == composition.messages
                     expected = (
-                        *composition.messages[:-1],
+                        *composition.messages,
                         *sequence.layout_host_initial,
-                        composition.messages[-1],
                         *sequence.layout_current_inputs,
                     )
                     valid_layout = valid_layout and sequence.messages[: len(expected)] == expected
@@ -461,15 +451,7 @@ class MainAgentTurnService:
                 # the temporary execution tail even for ordinary chat.
                 submitted = fragments.append_protocol(sequence.public_initial_suffix or ())
                 try:
-                    publication = await prepared.prepare_commit(
-                        submitted,
-                        current_snapshot=None if work_wakeup else composition.current_snapshot,
-                        visible_material=(
-                            prepared.context.visible_material
-                            if work_wakeup
-                            else composition.visible_material
-                        ),
-                    )
+                    publication = await prepared.prepare_commit(submitted)
                     control = current_work_control.get()
                     work_session = control.session if control is not None else None
                     guard = work_session.source_guard if work_session is not None else None
@@ -637,7 +619,6 @@ class MainAgentTurnService:
                         selected_summary_coverage=previous.selected_summary_coverage,
                         selected_summary_kind=previous.selected_summary_kind,
                         selected_summary_renderer=previous.selected_summary_renderer,
-                        visible_material=json.loads(previous.visible_material_json),
                     )
                     original_guard = guard.snapshot() if guard is not None else None
                     snapshot = None
@@ -789,39 +770,6 @@ class MainAgentTurnService:
                 await validate()
 
         runtime = replace(runtime, before_model_request=validate_prepared)
-        prepaid = 0
-        if (
-            control is not None
-            and runtime.invocation_source is not None
-            and runtime.invocation_source.get("owner") == "automation"
-        ):
-            prepaid = runtime.preparation_model_requests
-            runtime = replace(
-                runtime,
-                preparation_model_requests=0,
-                max_model_requests=(
-                    runtime.max_model_requests - prepaid
-                    if runtime.max_model_requests is not None
-                    else None
-                ),
-            )
-        if (
-            control is None
-            and runtime.origin.value == "scheduled_automation"
-            and runtime.invocation_source is not None
-            and runtime.invocation_source.get("owner") == "automation"
-        ):
-            from qq_ai_bot.runtime.work_budget import charge_automation_run
-
-            assert self._invocations is not None
-            database = self._invocations.database
-            run_id = int(runtime.invocation_source["automation_run_id"])
-
-            async def admit_model_request() -> None:
-                async with database.immediate_session() as writer:
-                    await charge_automation_run(writer, run_id, models=1, tools=0)
-
-            runtime = replace(runtime, admit_model_request=admit_model_request)
         result = await self._runner.run(
             messages,
             replace(
@@ -831,7 +779,7 @@ class MainAgentTurnService:
             ),
             backend,
         )
-        return replace(result, model_requests=result.model_requests + prepaid)
+        return result
 
 
 def _hash(value: object) -> str:

@@ -17,9 +17,10 @@ import re
 import sys
 import tempfile
 import time
+from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -30,9 +31,7 @@ from sqlalchemy import select
 from qq_ai_bot.config import Settings
 from qq_ai_bot.container import ApplicationContainer
 from qq_ai_bot.domain.messages import ChatImage, ChatMessage, ChatRequest, ChatTool
-from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
-from qq_ai_bot.llm.gemini import GeminiProvider
-from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
+from qq_ai_bot.llm.json_http import JSONHTTPProvider
 from qq_ai_bot.model_runtime.db_models import ModelInvocationModel
 from qq_ai_bot.model_runtime.executor import TaskModelExecutor
 from qq_ai_bot.model_runtime.models import ModelProfile, ModelProtocol, ModelRoute, ModelTask
@@ -71,29 +70,6 @@ def route_from_stdin(stream: Any) -> tuple[ModelProfile, str]:
     if not isinstance(key, str) or not key:
         raise ValueError("selected profile credential is unavailable")
     return profile, key
-
-
-def build_provider(profile: ModelProfile, api_key: str, client: httpx.AsyncClient):
-    """Use the selected protocol's existing adapter without changing its route."""
-    provider_class = {
-        ModelProtocol.GEMINI: GeminiProvider,
-        ModelProtocol.RESPONSES: DeepSeekResponsesProvider,
-        ModelProtocol.CHAT_COMPLETIONS: OpenAICompatibleProvider,
-    }[profile.protocol]
-    options: dict[str, Any] = {}
-    if profile.protocol is ModelProtocol.CHAT_COMPLETIONS:
-        options["provider_name"] = "deepseek"
-    if profile.protocol is not ModelProtocol.RESPONSES:
-        options["options"] = profile.wire_options
-    return provider_class(
-        base_url=profile.base_url,
-        api_key=api_key,
-        timeout_seconds=profile.timeout_seconds,
-        max_retries=profile.max_retries,
-        client=client,
-        headers=profile.headers,
-        **options,
-    )
 
 
 def numeric_usage(value: Any) -> Any:
@@ -420,8 +396,9 @@ def weighted_usage(rows: list[dict[str, Any]]) -> dict[str, Any]:
 class PhysicalRequests:
     """Each transport attempt is retained, including failures and parse failures."""
 
-    def __init__(self, protocol: ModelProtocol = ModelProtocol.GEMINI) -> None:
-        self.protocol = protocol
+    def __init__(self, provider: JSONHTTPProvider) -> None:
+        self.protocol = ModelProtocol(provider.protocol)
+        self._usage_diagnostics = provider._usage_diagnostics
         self.rows: list[dict[str, Any]] = []
         self.payloads: list[dict[str, Any]] = []
         self.sample: dict[str, Any] = {}
@@ -508,27 +485,7 @@ class PhysicalRequests:
             row["response_shape"] = "non_object"
             return
         row.update(response_usage(payload, self.protocol.value))
-        if self.protocol is ModelProtocol.GEMINI:
-            usage = GeminiProvider._usage_diagnostics(payload)["usage"]
-        elif self.protocol is ModelProtocol.RESPONSES:
-            usage = DeepSeekResponsesProvider._reported_usage(response)
-        else:
-            raw = payload.get("usage")
-            raw = raw if isinstance(raw, dict) else {}
-            details = raw.get("prompt_tokens_details")
-            details = details if isinstance(details, dict) else {}
-            usage = {
-                "prompt_tokens": raw.get("prompt_tokens"),
-                "completion_tokens": raw.get("completion_tokens"),
-                "total_tokens": raw.get("total_tokens"),
-                "cached_prompt_tokens": details.get(
-                    "cached_tokens", raw.get("prompt_cache_hit_tokens")
-                ),
-            }
-            usage = {
-                key: value for key, value in usage.items() if type(value) is int and value >= 0
-            }
-        row.update(usage)
+        row.update(cast(dict[str, object], self._usage_diagnostics(payload)["usage"]))
         row["unknown_usage"] = type(row.get("total_tokens")) is not int
         row["response_shape"] = self.protocol.value + "_object"
         error = payload.get("error")
@@ -634,14 +591,6 @@ async def run_experiment(
 ) -> dict[str, Any]:
     from tools.cache_probe_runtime import OrdinaryDriver, WorkDriver
 
-    if not (
-        (profile.protocol is ModelProtocol.GEMINI and profile.provider == "gemini")
-        or (
-            profile.provider == "deepseek"
-            and profile.protocol in {ModelProtocol.CHAT_COMPLETIONS, ModelProtocol.RESPONSES}
-        )
-    ):
-        raise ValueError("manual experiment requires a Gemini or DeepSeek profile")
     if compaction_mode not in {"ordinary", "work"}:
         raise ValueError("invalid manual compaction mode")
     if samples < 1 or warmups < 1 or prefix_characters < 1 or delay_seconds < 0:
@@ -680,7 +629,9 @@ async def run_experiment(
             "context_window_tokens": profile.context_window_tokens,
             "max_output_tokens_limit": profile.max_output_tokens_limit,
             "temperature": profile.default_temperature,
-            "reasoning_effort": profile.reasoning_effort.value,
+            "reasoning_effort": profile.reasoning_effort.value
+            if profile.reasoning_effort is not None
+            else None,
             "structured_output_mode": profile.structured_output_mode.value,
             "timeout_seconds": profile.timeout_seconds,
             "max_retries": profile.max_retries,
@@ -689,10 +640,11 @@ async def run_experiment(
         "logical_calls": [],
         "physical_calls": [],
     }
-    physical = PhysicalRequests(profile.protocol)
-    with tempfile.TemporaryDirectory(prefix="yuki-cache-probe-") as temporary:
+    async with AsyncExitStack() as resources:
+        temporary = resources.enter_context(tempfile.TemporaryDirectory(prefix="yuki-cache-probe-"))
         root = Path(temporary)
         app, tools = await isolated_application(root)
+        resources.push_async_callback(app.database.close)
         if manifest is not None:
             tools = manifest
         report["manifest"] = {
@@ -712,17 +664,22 @@ async def run_experiment(
             ),
             "external_plugins_loaded": False,
         }
-        client = httpx.AsyncClient(
-            base_url=profile.base_url.rstrip("/") + "/",
-            transport=transport,
-            event_hooks={"request": [physical.request], "response": [physical.response]},
-        )
-        provider = build_provider(profile, api_key, client)
+        pool = ModelClientPool(secret_overrides={profile.api_key_env: api_key})
+        resources.push_async_callback(pool.close)
+        provider = cast(JSONHTTPProvider, pool.get(profile))
+        physical = PhysicalRequests(provider)
+        client = provider._client
+        if transport is not None:
+            client = await resources.enter_async_context(
+                httpx.AsyncClient(base_url=client.base_url, transport=transport)
+            )
+            provider._client = client
+        client.event_hooks = {"request": [physical.request], "response": [physical.response]}
         report["provider_class"] = type(provider).__name__
         report["provider_session_headers"] = sorted(profile.headers)
         executor = TaskModelExecutor(
             router=ModelRouter(profile_catalog(profile)),
-            pool=ModelClientPool(injected_profiles={profile.id: provider}),
+            pool=pool,
             invocations=ModelInvocationRepository(app.database),
         )
         original_execute = executor.execute
@@ -1098,13 +1055,11 @@ async def run_experiment(
             report["totals"] = weighted_usage(physical.rows)
             report["unknown_usage_requests"] = sum(row["unknown_usage"] for row in physical.rows)
             await executor.close()
-            await client.aclose()
             # Constructors registered resources but lifecycle was never started.
             # Only close callbacks run; no scheduled work or gateway is started.
             errors = await app.lifecycle._close_entries(app.lifecycle._entries)
             if errors:
                 report["cleanup_errors"] = [type(error).__name__ for error in errors]
-            await app.database.close()
     report["finished_at"] = datetime.now(UTC).isoformat()
     output.parent.mkdir(parents=True, exist_ok=True)
     await asyncio.to_thread(
@@ -1120,7 +1075,6 @@ def main() -> None:
     routes.add_argument("--profiles", type=Path)
     routes.add_argument("--route-stdin", action="store_true", help="private JSON profile/key pipe")
     parser.add_argument("--profile")
-    parser.add_argument("--provider", choices=("gemini", "deepseek"), default="gemini")
     parser.add_argument(
         "--protocol",
         choices=("gemini", "chat_completions", "responses"),
@@ -1158,8 +1112,6 @@ def main() -> None:
         api_key = environment.get(profile.api_key_env, "")
     if not api_key:
         parser.error("selected profile credential is unavailable")
-    if profile.provider != args.provider:
-        parser.error("selected profile does not match --provider")
     original_origin = endpoint_origin(profile.base_url)
     original_protocol = profile.protocol.value
     if args.protocol:

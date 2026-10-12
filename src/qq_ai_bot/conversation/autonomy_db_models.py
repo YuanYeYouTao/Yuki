@@ -70,7 +70,7 @@ class InitiativeRunModel(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    proposal_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    proposal_id: Mapped[str] = mapped_column(Text, nullable=False)
     conversation_id: Mapped[str] = mapped_column(String(36), nullable=False)
     generation: Mapped[int] = mapped_column(Integer, nullable=False)
     owner: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -94,31 +94,7 @@ class InitiativeRunModel(Base):
     trigger_kind: Mapped[str] = mapped_column(
         String(16), nullable=False, default="source", server_default=text("'source'")
     )
-    thread_key: Mapped[str | None] = mapped_column(String(256), nullable=True)
-
-
-class InitiativeSourceClaimModel(Base):
-    """Accepted focus sources shared by both proposers, including silent outcomes."""
-
-    __tablename__ = "autonomy_source_claims"
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ["conversation_id", "generation"],
-            ["autonomy_bindings.conversation_id", "autonomy_bindings.generation"],
-            ondelete="RESTRICT",
-        ),
-        CheckConstraint("source_kind IN ('event', 'memory')"),
-        Index("ix_autonomy_sources_run", "run_id"),
-    )
-
-    conversation_id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    generation: Mapped[int] = mapped_column(Integer, primary_key=True)
-    source_kind: Mapped[str] = mapped_column(String(16), primary_key=True)
-    source_id: Mapped[str] = mapped_column(String(20), primary_key=True)
-    source_revision: Mapped[str] = mapped_column(String(128), primary_key=True)
-    run_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("autonomy_initiative_runs.id", ondelete="RESTRICT"), nullable=False
-    )
+    thread_key: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class InitiativeFeedbackModel(Base):

@@ -1313,7 +1313,7 @@ class MemoryFactRepository:
             receipt = await session.get(MemoryToolReceiptModel, evidence.tool_receipt_id)
             if receipt is None:
                 return False
-            if receipt.initiative_run_id is not None:
+            if receipt.trigger_event_id is None:
                 from qq_ai_bot.memory.self_origin import receipt_evidence_readable
 
                 if not await receipt_evidence_readable(
@@ -1324,8 +1324,6 @@ class MemoryFactRepository:
                 ):
                     return False
             else:
-                if receipt.trigger_event_id is None:
-                    return False
                 trigger = await session.get(ChatEventModel, receipt.trigger_event_id)
                 if trigger is None or not await v2_evidence_event_chain_readable(
                     session, fact_row, trigger

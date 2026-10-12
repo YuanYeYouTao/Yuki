@@ -109,7 +109,7 @@ class ControlAutomationQueryAdapter:
     async def list_automation_steps(
         self, request: PageRequest, *, automation_id: int, run_id: int | None = None
     ) -> Page[ActivityView]:
-        """Page existing legacy audits; new runs use their original cursor and effect receipts."""
+        """Page archived step audits; new occurrences use the original Main/Work receipts."""
         _id(automation_id)
         if run_id is not None:
             _id(run_id)
@@ -236,6 +236,7 @@ class ControlAutomationQueryAdapter:
             )
             if row is None:
                 raise ControlQueryError(Problem(ProblemCode.NOT_FOUND))
+            definition = json.loads(row["script_json"])
             # Do not expose authority snapshots, transport IDs or raw result payloads.
             return ActivityView(
                 str(row["id"]),
@@ -249,7 +250,8 @@ class ControlAutomationQueryAdapter:
                     "target_space_id": row["canonical_target_space_id"],
                     "timezone": row["timezone"],
                     "schedule": json.loads(row["schedule_json"]),
-                    "script": json.loads(row["script_json"]),
+                    "task": definition if "goal" in definition else None,
+                    "archived_definition": definition if "goal" not in definition else None,
                     "script_hash": row["script_hash"],
                     "next_run_at": _stamp(row["next_run_at"]),
                     "last_run_at": _stamp(row["last_run_at"]),

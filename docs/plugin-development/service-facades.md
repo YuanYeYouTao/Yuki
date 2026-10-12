@@ -35,7 +35,7 @@
 并停止该回调后续发送。已提交成功的回执不会因后续唤醒通知失败而降级。
 
 每个显式发送调用使用独立序号，相同正文主动调用两次仍发送两次，不按正文去重。
-工具调用使用原执行/调用 ID，自动化插件步骤使用原 run/step ID；同一可信身份按原顺序
+工具调用使用原执行/调用 ID；归档的旧自动化插件步骤保留原 run/step ID，新的定时执行已退出步骤解释器。同一可信身份按原顺序
 重放只读取回执，参数或来源冲突明确拒绝。身份不因批准版本变化而更新，权限仍每次核验。
 其他没有持久 callback ID 的入口仅有本次 Host 回调的唯一身份，重新调用属于新调用，
 **不承诺任意插件回调的跨重启 exactly-once**；插件不得据 `unknown` 自行重跑整个回调。
@@ -98,7 +98,7 @@ await ctx.messages.send_text(turn.text)
 
 `ctx.agent.run()` 是唯一的主 Agent 调用入口，使用固定提示词、工具声明和 short_state 编译。`context_profile` 显式选择 `none`、`current_user` 或 `current_group`；默认不加入人物或群资料。选择上下文还需要对应资料读取权限，聊天历史另外需要 `message.history.read`。
 
-调用必须绑定真实入站事件、canonical Conversation 和 Presence；缺少来源或来源已被会话重置淘汰时明确报错。执行能力取插件批准与本轮允许的交集，不能传入超级管理员标志；每次物理模型请求重新检查来源与权限。后台任务通过授权目标的通知入口发起，独立计算使用 `agent_sessions`。
+调用绑定原 ToolActor、canonical Conversation 和 Presence。消息来源保原事件编号；SELF、定时等无入站消息的来源保原执行编号或自主 run，不制造真人事件。执行能力取插件实际批准与本轮允许的交集；每次物理模型请求检查当前真实身份、原来源与权限，用户权限变更不被旧 USER 快照封顶。
 
 主调用复用 `MainAgentBackend`，Host 根据批准权限设置执行范围：
 
@@ -122,8 +122,11 @@ await ctx.messages.send_text(turn.text)
 
 `ctx.onebot.send_music_card(provider=..., resource_id=...)` 使用 `onebot.send` 权限，将
 OneBot `music` 消息段发送到触发插件的当前真实私聊或群聊。插件不能为这个方法传入 QQ 号或
-群号，因此它不能跨会话改变目标；Host 会再次验证当前事件、provider、资源 ID 和
+群号，因此它不能跨会话改变目标；Host 会再次验证真实执行来源、provider、资源 ID 和
 发送权限，成功后再写事件账本与脱敏审计。
+
+SELF 与定时 Main 使用原 actor 和场景，无真人事件时不伪造 Inbound；来源、原调用 ID 与
+发送回执继续由 Host 持有，媒体和音乐卡不另有来源菜单。
 
 当前 provider 支持 `qq`、`netease`（发送时规范化为 `163`）、`kugou`、`kuwo` 和 `migu`。
 如果资源来自网页或其他外部数据，插件应先做结构校验和重名消歧，不得把自定义 URL 当成
@@ -138,8 +141,8 @@ Runtime 升级后，`agent.run` 返回 `state`、`work_id`、`pending`。
 每次调用均返回 `PluginResult`；调用方检查状态与结果，不把等待句柄当作生成正文。
 Host 等待约 5 秒后可返回持久任务句柄，生成由 Host 继续持有。
 `await ctx.agent.result(work_id)` 可在原回调退出后查询本插件的任务；检查批准版本、权限和 generation。
-同一合法 invocation 用同样参数接回原工作；不要将等待结果当正文发送。分段、恢复和重复查询不重置预算。
-新的后台目标仍通过通知 API 接纳，不能伪造调用者。已经接纳的 SDK 工作由 Host 调度器恢复；
+同一合法来源用同样参数读取原工作和已存结果，不再次执行；不同实际来源使用不同执行键。分段、恢复和重复查询不重置预算。
+独立调用隔离原 invocation/Work 的协议上下文；同会话已占用的租约仍由现有执行层报告冲突。新的后台目标通过通知 API 接纳。已经接纳的 SDK 工作由 Host 调度器恢复；
 普通 `agent_sessions` 保持独立。详见 [主入口执行合同](../architecture/main-agent-runtime.md)。
 
 已接纳 Work 的子目标沿原任务树派生，继承原调用者、批准和来源。SDK 与后台通知子目标由原 Host 入口继续；父 Work 或原 Job 已结束不妨碍尚保留的子目标执行，也不重开它们。结果与查询不提升原工具授权或重置预算。

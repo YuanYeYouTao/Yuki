@@ -768,11 +768,11 @@ async def test_mixed_recovery_prepares_full_tail_before_cursor_write_and_sees_st
 
 
 @pytest.mark.asyncio
-async def test_run_receipt_xor_dedup_and_no_manufactured_events(database):
+async def test_run_receipt_dedup_and_no_manufactured_events(database):
     _, _, event, run_id = await seed(database)
     await record(database, event, run_id)
     await record(database, event, run_id)
-    with pytest.raises(ValueError, match="exclusive"):
+    with pytest.raises(ValueError, match="actorless"):
         await record(database, event, run_id, trigger_event_id=event.id)
     async with database.sessions() as session:
         rows = list(await session.scalars(select(MemoryToolReceiptModel)))
@@ -1218,7 +1218,6 @@ async def test_main_self_memory_write_uses_original_tool_receipt_without_human_e
                     external_target_id="20001",
                     space_id=env.space,
                     sandbox_source={**source, "work_id": item["id"]},
-                    allow_work_environment=True,
                 ),
             )
     assert result.text == "" and len(provider.requests) == 4, results

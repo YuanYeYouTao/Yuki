@@ -66,6 +66,7 @@ class GeminiProvider(JSONHTTPProvider):
             "usage": {
                 "prompt_tokens": integer(usage.get("promptTokenCount")),
                 "completion_tokens": output + (thinking or 0) if output is not None else None,
+                "reasoning_tokens": thinking,
                 "total_tokens": integer(usage.get("totalTokenCount")),
                 "cached_prompt_tokens": integer(usage.get("cachedContentTokenCount")),
             }

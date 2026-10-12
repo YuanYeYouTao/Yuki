@@ -46,6 +46,7 @@ class RestartPolicy(StrEnum):
 class TurnOrigin(StrEnum):
     USER_MESSAGE = "user_message"
     AUTONOMOUS_GROUP = "autonomous_group"
+    SELF_INITIATIVE = "self_initiative"
     SCHEDULED_AUTOMATION = "scheduled_automation"
     SYSTEM_TASK = "system_task"
     PLUGIN_SESSION = "plugin_session"

@@ -115,9 +115,15 @@ class GeminiSearchBridge:
     async def _search(self, request: WebSearchRequest) -> WebSearchResponse:
         started = time.perf_counter()
         control = current_work_control.get()
+        provider_session_id = None
         if control is not None:
             await control.validate()
             await control.reserve_request(auxiliary=True)
+            work_id = control.current["id"] if control.current else control.lease.work_id
+            provider_session_id = (
+                f"yuki:{control.lease.conversation_id}:g{control.lease.generation}:"
+                + (f"work:{work_id}" if work_id else "main")
+            )
         else:
             await check_model_dispatch()
         constraints = {key: value for key, value in asdict(request).items() if value is not None}
@@ -127,6 +133,7 @@ class GeminiSearchBridge:
             + json.dumps(constraints, ensure_ascii=False, default=str)
         )
         model_request = ChatRequest(
+            provider_session_id=provider_session_id,
             messages=(ChatMessage(role="user", content=prompt),),
             model=self.profile.model,
             max_output_tokens=self.profile.default_max_output_tokens,

@@ -121,7 +121,6 @@ class PluginCapabilityAdapter:
             )
 
         metadata = registration.metadata.model_dump(mode="json")
-        metadata["allowed_origins"] = sorted(metadata["allowed_origins"])
         encoded = json.dumps(
             {
                 "plugin_id": item.plugin_id,
@@ -219,7 +218,6 @@ class PluginCapabilityAdapter:
                                     item, registration, runtime, web_was_used, context
                                 )
                                 assert isinstance(context, HostPluginContext)
-                                context._authorize_tool_media(item.canonical_name)
                                 assert item.model_name is not None
                                 images = await context._prepare_selected_media(
                                     result.media_artifacts, tool_name=item.model_name
@@ -281,7 +279,6 @@ class PluginCapabilityAdapter:
             async with self._scope(plugin_id, runtime, web_was_used=web_was_used) as context:
                 await self._media_available(item, registration, runtime, web_was_used, context)
                 assert isinstance(context, HostPluginContext)
-                context._authorize_tool_media(item.canonical_name)
                 await context._validate_selected_media(tuple(selected))
 
     async def _media_available(
@@ -329,8 +326,6 @@ class PluginCapabilityAdapter:
         web_was_used: bool,
     ) -> bool:
         metadata = registration.metadata
-        if runtime.origin.value not in {origin.value for origin in metadata.allowed_origins}:
-            return False
         if not _permission_level_allowed(metadata.permission, runtime.actor_is_superuser):
             return False
         if runtime.tools_closed:

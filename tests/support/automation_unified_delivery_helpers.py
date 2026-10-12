@@ -1,24 +1,23 @@
-"""Exercise actual scheduled Main Agent sends, receipts and cursor recovery."""
+"""Real due-slot -> common Main -> Social/Work regression fixtures."""
 
 import json
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from tests.conftest import build_harness, make_settings
+from tests.support.automation_runtime_helpers import FakeClock
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.automation.executor import AutomationExecutor
-from qq_ai_bot.automation.gateway import OneBotAutomationGateway
-from qq_ai_bot.automation.handlers import AutomationCapabilityHandlers
-from qq_ai_bot.automation.models import AutomationLimits
-from qq_ai_bot.automation.registry import build_capability_registry
 from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.service import AutomationService
+from qq_ai_bot.automation.tools import AutomationToolService
+from qq_ai_bot.automation.worker import AutomationWorker
 from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
 from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.runtime.origin import TurnOrigin
+from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.services.main_agent_contract import MainAgentContract
-from qq_ai_bot.social.automation import SocialAutomationAdapter
 from qq_ai_bot.workspace.short_state import ShortState
 
 
@@ -26,16 +25,17 @@ async def setup_run(
     database,
     tmp_path,
     *,
-    strategy="agentic",
     delivery="current_group",
     mode="send",
     principal="person",
-    worker=None,
     trigger=None,
     max_runs=None,
     superusers_csv=None,
-    context=None,
-    limits=None,
+    goal="完成任务",
+    constraints=(),
+    work_enabled=True,
+    self_memory_enabled=False,
+    provider=None,
 ):
     env = await social_env(database, tmp_path)
     if delivery == "self_private":
@@ -47,8 +47,6 @@ async def setup_run(
         turns += 1
         if turns == 1 and mode != "silent":
             args = {"text": "PUBLIC_RESULT"}
-            if delivery == "self_private":
-                args["target"] = {"kind": "person", "subject_ref": "current_speaker"}
             if mode == "reject":
                 args = {"text": ""}
             return ChatResponse(
@@ -63,60 +61,27 @@ async def setup_run(
             )
         return "INTERNAL_FINAL_TEXT_MUST_NOT_DELIVER"
 
-    provider = FakeLLMProvider(responder=respond)
+    provider = provider or FakeLLMProvider(responder=respond)
     settings = make_settings(
         database.url,
         automation_enabled=True,
         enabled_groups_csv="20001",
-        runtime_work_enabled=True,
+        runtime_work_enabled=work_enabled,
+        self_memory_enabled=self_memory_enabled,
         **({"superusers_csv": superusers_csv} if superusers_csv is not None else {}),
     )
-    if worker is not None:
-        import hashlib
-
-        from tests.support.codemode_cases import worker as pinned_worker
-
-        settings.code_mode_launcher_path = pinned_worker().launcher_path
-        settings.code_mode_launcher_sha256 = pinned_worker().launcher_sha256
-        settings.code_mode_enabled = True
-        settings.code_mode_worker_path = worker
-        settings.code_mode_worker_sha256 = hashlib.sha256(worker.read_bytes()).hexdigest()
     harness = build_harness(database, settings, provider)
     chat = harness.processor._chat
     chat._tools.social_service = env.service
     env.service.runtime_config = chat._runtime_config
-    contract = MainAgentContract(
-        chat, ShortState(env.store), code_enabled=settings.code_mode_enabled
-    )
-    chat.runtime.runner.main_contract = contract
+    chat.runtime.runner.main_contract = MainAgentContract(chat, ShortState(env.store))
     chat.runtime.runner.code_mode_settings = settings
     repository = AutomationRepository(database)
-
-    def gateway(context):
-        return OneBotAutomationGateway(
-            bot_user_id=context.bot_user_id,
-            automation_id=context.automation_id,
-            automation_run_id=context.automation_run_id,
-            router=env.router,
-        )
-
-    handlers = AutomationCapabilityHandlers(
-        settings=settings,
-        main_turns=chat.runtime.main_turns,
-        main_contract=chat.runtime.runner.main_contract,
-        runtime_config=chat._runtime_config,
-        time_service=chat._time,
-        ledger=harness.ledger,
-        memories=chat._memories,
-        web_provider=None,
-        gateway_factory=gateway,
-    )
-    registry = build_capability_registry(
-        {**handlers.mapping(), **SocialAutomationAdapter(env.service, None, None).mapping()}
-    )
-    service = AutomationService(
-        settings=settings, repository=repository, registry=registry, time_service=chat._time
-    )
+    clock = FakeClock(datetime.now(UTC))
+    chat._time._clock = clock
+    service = AutomationService(settings=settings, repository=repository, time_service=chat._time)
+    chat.set_automation_tools(AutomationToolService(service))
+    # Freeze after all real Main providers have been bound.
     actor = ToolActor(
         user_id="10001",
         bot_user_id="80001",
@@ -126,53 +91,69 @@ async def setup_run(
         event_id=1,
         person_id=env.person,
         conversation_id=env.context.conversation_id,
+        presence_id=env.presence,
     )
     if principal == "self":
         from tests.integration.test_self_automation_delivery import self_actor
 
         actor = await self_actor(database, env)
-    row, plan = await service.create_task(
+    row = await service.create_task(
         {
             "name": "delivery regression",
-            "goal": "完成任务",
-            "strategy": strategy,
-            "trigger": trigger or {"type": "after", "seconds": 60},
+            "goal": goal,
+            "constraints": constraints,
+            "trigger": trigger or {"type": "after", "seconds": 1},
             "delivery": {"target": delivery},
-            **({"context": context} if context is not None else {}),
         },
         actor=actor,
         conversation_key="group:80001:20001",
         max_runs=max_runs,
     )
-    if limits is not None:
-        row = await service.update(
-            row.id,
-            row.script.model_copy(update={"limits": AutomationLimits.model_validate(limits)}),
-            actor=actor,
-            conversation_key="group:80001:20001",
-        )
-        plan = plan.model_copy(update={"script": row.script})
-    run = await repository.create_run(
-        row.id, scheduled_for=row.next_run_at, actual_started_at=chat._time.clock.now()
-    )
-    executor = AutomationExecutor(
+    works = WorkRepository(database)
+    worker = AutomationWorker(
         settings=settings,
-        registry=registry,
         repository=repository,
         time_service=chat._time,
-        gateway_factory=gateway,
+        generate=chat.generate_origin_turn,
+        runtime_config=chat._runtime_config,
+        conversation_scopes=chat._conversation_scopes,
+        turns=chat._turn_coordinator,
+        router=env.router,
+        work_repository=works,
+        bindings=chat.runtime.bindings,
     )
-    return SimpleNamespace(
+
+    async def dispatch():
+        now = clock.now()
+        rows = await repository.claim_due(
+            worker_id="fixture-owner",
+            now=now,
+            lease_seconds=settings.automation_lease_seconds,
+            clock=clock.now,
+        )
+        for claimed in rows:
+            await worker._process_guarded(claimed)
+        history = await repository.run_history(row.id)
+        case.run = history[0] if history else None
+        return case.run
+
+    case = SimpleNamespace(
         env=env,
         provider=provider,
         row=row,
-        run=run,
-        executor=executor,
         repository=repository,
-        plan=plan,
-        clock=chat._time.clock,
+        clock=clock,
         chat=chat,
+        worker=worker,
+        works=works,
+        settings=settings,
+        actor=actor,
+        service=service,
+        dispatch=dispatch,
+        harness=harness,
+        run=None,
     )
+    return case
 
 
 def sent(env):

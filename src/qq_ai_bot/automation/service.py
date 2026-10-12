@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import replace
 from datetime import datetime
 from typing import cast
 
@@ -18,29 +17,23 @@ from qq_ai_bot.automation.authority import (
     PermissionLevel,
     permission_for_accounts,
 )
-from qq_ai_bot.automation.compiler import AutomationCompiler, ExecutionPlan, TaskSpec
-from qq_ai_bot.automation.control_context import ControlAutomationContext, resolve_control_context
+from qq_ai_bot.automation.control_context import (
+    ControlAutomationContext,
+    CreationProvenance,
+    resolve_control_context,
+)
 from qq_ai_bot.automation.creation_key import creation_key as _creation_key
 from qq_ai_bot.automation.models import (
     AfterSchedule,
     AutomationDirectoryEntry,
     AutomationRecord,
     AutomationRunRecord,
-    AutomationScript,
     AutomationStatus,
     IntervalSchedule,
     OnceSchedule,
 )
-from qq_ai_bot.automation.registry import (
-    AutomationCapabilityRegistry,
-)
 from qq_ai_bot.automation.repository import AutomationRepository
-from qq_ai_bot.automation.validator import (
-    AutomationValidator,
-    CreationProvenance,
-    ValidatedAutomation,
-    canonical_script_hash,
-)
+from qq_ai_bot.automation.task_spec import TaskSpec, canonical_task_hash, prepare_task
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.persistence.unit_of_work import optional_session
@@ -51,19 +44,18 @@ from qq_ai_bot.time.service import TimeContextService, validate_timezone
 logger = logging.getLogger(__name__)
 
 
-def _schedule_changed(before: AutomationScript, after: AutomationScript) -> bool:
-    if before.schedule.model_dump(exclude={"timezone"}) != after.schedule.model_dump(
+def _schedule_changed(before: AutomationRecord, after: TaskSpec) -> bool:
+    if before.schedule.model_dump(exclude={"timezone"}) != after.trigger.model_dump(
         exclude={"timezone"}
     ):
         return True
-    if isinstance(after.schedule, AfterSchedule | IntervalSchedule) or (
-        isinstance(after.schedule, OnceSchedule)
-        and after.schedule.local_datetime.tzinfo is not None
+    if isinstance(after.trigger, AfterSchedule | IntervalSchedule) or (
+        isinstance(after.trigger, OnceSchedule) and after.trigger.local_datetime.tzinfo is not None
     ):
         return False
     return validate_timezone(
         getattr(before.schedule, "timezone", None) or before.timezone
-    ) != validate_timezone(after.schedule.timezone or after.timezone)
+    ) != validate_timezone(cast(str, getattr(after.trigger, "timezone", None) or after.timezone))
 
 
 class AutomationService:
@@ -74,16 +66,12 @@ class AutomationService:
         *,
         settings: Settings,
         repository: AutomationRepository,
-        registry: AutomationCapabilityRegistry,
         time_service: TimeContextService,
         audit: AdminAuditService | None = None,
     ) -> None:
         self._settings = settings
         self._repository = repository
-        self._registry = registry
         self._time = time_service
-        self._validator = AutomationValidator(registry=registry)
-        self._compiler = AutomationCompiler()
         self._audit = audit
 
     @property
@@ -91,53 +79,7 @@ class AutomationService:
         return self._settings.automation_enabled
 
     def management_schema(self) -> dict[str, object]:
-        """Project the running registry's public declarations without executing handlers."""
-        return {
-            "script": AutomationScript.model_json_schema(),
-            "capabilities": [
-                {
-                    "name": item.name,
-                    "description": item.description,
-                    "schema": item.input_schema,
-                    "permission": item.required_permission.value,
-                    "permitted_levels": [
-                        level.value for level in PermissionLevel if item.permits(level)
-                    ],
-                    "risk": item.risk_class.value,
-                    "schema_version": item.schema_version,
-                    "provider_plugin_id": item.provider_plugin_id,
-                }
-                for item in self._registry.list()
-            ],
-        }
-
-    async def create_task(
-        self,
-        task_payload: object,
-        *,
-        actor: ToolActor,
-        conversation_key: str,
-        max_runs: int | None = None,
-    ) -> tuple[AutomationRecord, ExecutionPlan]:
-        """Compile, validate, and persist a high-level task as one atomic operation."""
-
-        try:
-            task = TaskSpec.model_validate(task_payload)
-        except ValidationError as exc:
-            raise ValueError(f"任务规格格式错误：{exc.errors()[0]['msg']}") from exc
-        _creator_person_id, _permission, provenance = await self._creator_context(actor)
-        plan = self._compiler.compile(
-            task,
-            provenance,
-            default_timezone=await self._time.timezone_for(actor.user_id or "self"),
-        )
-        row = await self.create(
-            plan.script,
-            actor=actor,
-            conversation_key=conversation_key,
-            max_runs=max_runs,
-        )
-        return row, plan
+        return {"task": TaskSpec.model_json_schema()}
 
     async def find_equivalent_directory_entries(
         self,
@@ -146,16 +88,13 @@ class AutomationService:
         actor: ToolActor,
         max_runs: int | None = None,
     ) -> tuple[AutomationDirectoryEntry, ...]:
-        """Return exact candidates with creator projections for the Agent tool."""
-
-        task = TaskSpec.model_validate(task_payload)
-        _creator, _permission, provenance = await self._creator_context(actor)
-        plan = self._compiler.compile(
-            task,
-            provenance,
-            default_timezone=await self._time.timezone_for(actor.user_id or "self"),
+        _, _, provenance = await self._creator_context(actor)
+        task = prepare_task(
+            TaskSpec.model_validate(task_payload),
+            timezone=await self._time.timezone_for(actor.user_id or "self"),
+            current_group_id=provenance.current_group_id,
         )
-        expected = plan.script.model_dump(mode="json", exclude={"name"}, exclude_none=True)
+        expected = task.model_dump(mode="json", exclude={"name"}, exclude_none=True)
         matched: list[AutomationDirectoryEntry] = []
         offset = 0
         while rows := await self._repository.list_directory(
@@ -165,52 +104,11 @@ class AutomationService:
         ):
             for entry in rows:
                 record = cast(AutomationRecord, entry.record)
-                if (
-                    record.max_runs == max_runs
-                    and record.script.model_dump(mode="json", exclude={"name"}, exclude_none=True)
-                    == expected
-                ):
+                actual = {key: value for key, value in record.script.items() if key != "name"}
+                if record.max_runs == max_runs and actual == expected:
                     matched.append(entry)
             offset += len(rows)
         return tuple(matched)
-
-    async def update_task(
-        self,
-        automation_id: int,
-        task_payload: object,
-        *,
-        actor: ToolActor,
-        conversation_key: str,
-    ) -> tuple[AutomationRecord, ExecutionPlan]:
-        """Compile and validate a high-level replacement before switching versions."""
-
-        try:
-            task = TaskSpec.model_validate(task_payload)
-        except ValidationError as exc:
-            raise ValueError(f"任务规格格式错误：{exc.errors()[0]['msg']}") from exc
-        (
-            existing,
-            owner_person_id,
-            owner_account_id,
-            owner_permission,
-            provenance,
-        ) = await self._management_context(automation_id, actor)
-        plan = self._compiler.compile(
-            task,
-            provenance,
-            default_timezone=existing.timezone,
-        )
-        row = await self._commit_update(
-            existing,
-            plan.script,
-            actor=actor,
-            conversation_key=conversation_key,
-            owner_person_id=owner_person_id,
-            owner_account_id=owner_account_id,
-            owner_permission=owner_permission,
-            provenance=provenance,
-        )
-        return row, plan
 
     async def record_creation_failure(
         self,
@@ -219,7 +117,7 @@ class AutomationService:
         conversation_key: str,
         error: Exception,
     ) -> None:
-        """Persist a redacted failed compile/create attempt for later diagnosis."""
+        """Persist a redacted failed creation attempt for later diagnosis."""
 
         if self._audit is None:
             return
@@ -230,7 +128,7 @@ class AutomationService:
                 operation="create_task",
                 target_type="automation_draft",
                 target_id=actor.platform_message_id,
-                after={"phase": "compile_or_commit"},
+                after={"phase": "validate_or_commit"},
                 success=False,
                 error_category=type(error).__name__,
             )
@@ -258,9 +156,9 @@ class AutomationService:
             for event in relevant[:10]
         )
 
-    async def _commit_script(
+    async def _commit_task(
         self,
-        validated: ValidatedAutomation,
+        task: TaskSpec,
         authority: DelegatedAuthority,
         *,
         creator_person_id: str,
@@ -271,12 +169,12 @@ class AutomationService:
         max_runs: int | None = None,
         next_run_at: datetime | None = None,
     ) -> AutomationRecord:
-        """Single compiled-script persistence path; each entry owns its authority checks."""
+        """Publish a complete task version with its real creation authority."""
         if automation_id is not None:
-            row = await self._repository.update_script(
+            row = await self._repository.publish_task(
                 automation_id,
                 creator_person_id=creator_person_id,
-                validated=validated,
+                task=task,
                 authority=authority,
                 now=now,
                 next_run_at=next_run_at,
@@ -288,21 +186,21 @@ class AutomationService:
         if max_runs is not None and (type(max_runs) is not int or max_runs <= 0):
             raise ValueError("max_runs 必须是正整数")
         return await self._repository.create(
-            validated,
+            task,
             authority,
             creator_person_id=creator_person_id,
             creation_source_key=creation_source_key,
             max_runs=max_runs,
             next_run_at=next_run_at
             if next_run_at is not None
-            else initial_run_at(validated.script.schedule, now, validated.script.timezone),
+            else initial_run_at(task.trigger, now, cast(str, task.timezone)),
             now=now,
             session=session,
         )
 
-    async def create(
+    async def create_task(
         self,
-        script_payload: object,
+        task_payload: object,
         *,
         actor: ToolActor,
         conversation_key: str,
@@ -314,25 +212,28 @@ class AutomationService:
             raise ValueError("max_runs 必须是正整数")
         started = time.perf_counter()
         try:
-            script = AutomationScript.model_validate(script_payload)
+            task = TaskSpec.model_validate(task_payload)
         except ValidationError as exc:
-            raise ValueError(f"自动化脚本格式错误：{exc.errors()[0]['msg']}") from exc
+            raise ValueError(f"定时任务格式错误：{exc.errors()[0]['msg']}") from exc
         now = self._time.clock.now()
         creator_person_id, permission, provenance = await self._creator_context(actor)
+        task = prepare_task(
+            task,
+            timezone=await self._time.timezone_for(actor.user_id or "self"),
+            current_group_id=provenance.current_group_id,
+        )
         existing = await self._repository.get_by_creation_key(
             creator_person_id, _creation_key(actor.source_key)
         )
         if existing is not None:
             if (
-                await self._repository.initial_script_hash(existing.id)
-                != canonical_script_hash(script)
+                await self._repository.initial_script_hash(existing.id) != canonical_task_hash(task)
                 or existing.max_runs != max_runs
             ):
                 raise ValueError("automation_creation_key_conflict")
             return existing
         self._require_enabled()
-        validated = self._validator.validate(script, provenance)
-        next_run_at = initial_run_at(validated.script.schedule, now, validated.script.timezone)
+        next_run_at = initial_run_at(task.trigger, now, cast(str, task.timezone))
         scene_fields: dict[str, object] = {}
         if actor.principal_kind == "self":
             scene_fields = await self._self_scene_fields(actor)
@@ -355,12 +256,6 @@ class AutomationService:
             created_from_message_id=actor.platform_message_id,
             created_at=now.isoformat(),
             permission_level=permission,
-            granted_capabilities=validated.required_capabilities,
-            capability_schema_versions={
-                name: self._registry.require(name).schema_version
-                for name in validated.required_capabilities
-            },
-            capability_provenance=self._capability_provenance(validated.required_capabilities),
             current_group_id=actor.group_id,
             principal_kind=actor.principal_kind,
             **scene_fields,
@@ -375,8 +270,8 @@ class AutomationService:
                 current_scene = await self._self_scene_fields(actor, session=session)
                 if any(getattr(authority, key) != value for key, value in current_scene.items()):
                     raise PermissionError("self_automation_scene_changed")
-            row = await self._commit_script(
-                validated,
+            row = await self._commit_task(
+                task,
                 authority,
                 creation_source_key=_creation_key(actor.source_key),
                 creator_person_id=creator_person_id,
@@ -396,10 +291,10 @@ class AutomationService:
             )
         return row
 
-    async def update(
+    async def update_task(
         self,
         automation_id: int,
-        script_payload: object,
+        task_payload: object,
         *,
         actor: ToolActor,
         conversation_key: str,
@@ -413,7 +308,7 @@ class AutomationService:
         ) = await self._management_context(automation_id, actor)
         return await self._commit_update(
             existing,
-            script_payload,
+            task_payload,
             actor=actor,
             conversation_key=conversation_key,
             owner_person_id=owner_person_id,
@@ -425,7 +320,7 @@ class AutomationService:
     async def _commit_update(
         self,
         existing: AutomationRecord,
-        script_payload: object,
+        task_payload: object,
         *,
         actor: ToolActor,
         conversation_key: str,
@@ -435,23 +330,19 @@ class AutomationService:
         provenance: CreationProvenance,
     ) -> AutomationRecord:
         try:
-            script = AutomationScript.model_validate(script_payload)
+            task = TaskSpec.model_validate(task_payload)
         except ValidationError as exc:
-            raise ValueError(f"自动化脚本格式错误：{exc.errors()[0]['msg']}") from exc
+            raise ValueError(f"定时任务格式错误：{exc.errors()[0]['msg']}") from exc
         now = self._time.clock.now()
-        validated = self._validator.validate(script, provenance)
+        task = prepare_task(
+            task, timezone=existing.timezone, current_group_id=provenance.current_group_id
+        )
         authority = DelegatedAuthority(
             creator_user_id=owner_account_id,
             bot_user_id=existing.bot_user_id,
             created_from_message_id="" if owner_person_id == "self" else actor.platform_message_id,
             created_at=now.isoformat(),
             permission_level=owner_permission,
-            granted_capabilities=validated.required_capabilities,
-            capability_schema_versions={
-                name: self._registry.require(name).schema_version
-                for name in validated.required_capabilities
-            },
-            capability_provenance=self._capability_provenance(validated.required_capabilities),
             current_group_id=provenance.current_group_id,
             principal_kind=existing.creator_kind,
             **(
@@ -468,20 +359,14 @@ class AutomationService:
         )
         async with self._repository._database.immediate_session() as session:
             current = await self.require_manageable(existing.id, actor, session=session)
-            if actor.principal_kind == "self":
-                current_scene = await self._self_scene_fields(actor, session=session)
-                if any(getattr(authority, key) != value for key, value in current_scene.items()):
-                    raise PermissionError("self_automation_scene_changed")
-            row = await self._commit_script(
-                validated,
+            row = await self._commit_task(
+                task,
                 authority,
                 automation_id=existing.id,
                 creator_person_id=owner_person_id,
                 now=now,
-                next_run_at=initial_run_at(
-                    validated.script.schedule, now, validated.script.timezone
-                )
-                if _schedule_changed(current.script, validated.script)
+                next_run_at=initial_run_at(task.trigger, now, cast(str, task.timezone))
+                if _schedule_changed(current, task)
                 else None,
                 session=session,
             )
@@ -507,6 +392,10 @@ class AutomationService:
 
         creator_person_id = await self._resolve_creator_person(creator_user_id)
         return await self._repository.list_current_for_creator(creator_person_id)
+
+    async def list_for_actor(self, actor: ToolActor) -> tuple[AutomationRecord, ...]:
+        owner, _, _ = await self._creator_context(actor)
+        return await self._repository.list_current_for_creator(owner)
 
     async def list_directory(
         self,
@@ -568,14 +457,6 @@ class AutomationService:
         row = await self._repository.get(automation_id, session=session)
         if row is None:
             raise ValueError("自动化任务不存在")
-        if actor.principal_kind == "self" and row.creator_kind == "self":
-            scene = await self._self_scene_fields(actor, session=session)
-            if (
-                scene["canonical_conversation_id"]
-                != row.authority_snapshot.get("canonical_conversation_id")
-                or scene["canonical_space_id"] != row.canonical_target_space_id
-            ):
-                raise PermissionError("self_automation_outside_current_scene")
         if (
             permission is not PermissionLevel.SUPERUSER
             and self._canonical_owner(row) != actor_person_id
@@ -611,6 +492,7 @@ class AutomationService:
         now = self._time.clock.now()
         async with self._repository._database.immediate_session() as session:
             current = await self.require_manageable(automation_id, actor, session=session)
+            TaskSpec.model_validate(current.script)
             next_run = current.next_run_at or now
             changed = await self._repository.resume(
                 automation_id,
@@ -654,7 +536,8 @@ class AutomationService:
         row = await self.require_manageable(automation_id, actor)
         creator_person_id = self._canonical_owner(row)
         async with self._repository._database.immediate_session() as session:
-            await self.require_manageable(automation_id, actor, session=session)
+            current = await self.require_manageable(automation_id, actor, session=session)
+            TaskSpec.model_validate(current.script)
             changed = await self._repository.schedule_now(
                 automation_id,
                 creator_person_id=creator_person_id,
@@ -686,21 +569,13 @@ class AutomationService:
     async def set_timezone(self, user_id: str, timezone: str) -> str:
         return await self._time.set_timezone(user_id, timezone)
 
-    def _control_authority(
-        self, context: ControlAutomationContext, validated: ValidatedAutomation
-    ) -> DelegatedAuthority:
-        capabilities = validated.required_capabilities
+    def _control_authority(self, context: ControlAutomationContext) -> DelegatedAuthority:
         return DelegatedAuthority(
             creator_user_id=context.provenance.creator_user_id,
             bot_user_id=context.provenance.bot_user_id,
             created_from_message_id="",
             created_at=self._time.clock.now().isoformat(),
             permission_level=context.provenance.permission,
-            granted_capabilities=capabilities,
-            capability_schema_versions={
-                name: self._registry.require(name).schema_version for name in capabilities
-            },
-            capability_provenance=self._capability_provenance(capabilities),
             current_group_id=context.provenance.current_group_id,
             principal_kind="self" if context.owner_id == "self" else "person",
             canonical_conversation_id=context.conversation_id,
@@ -711,7 +586,7 @@ class AutomationService:
 
     async def administer_create(
         self,
-        script_payload: object,
+        task_payload: object,
         *,
         owner_id: str,
         creation_source_key: str,
@@ -720,7 +595,7 @@ class AutomationService:
         max_runs: int | None = None,
     ) -> AutomationRecord:
         """Persist a control request with canonical ownership, never a fabricated event."""
-        script = AutomationScript.model_validate(script_payload)
+        task = TaskSpec.model_validate(task_payload)
         now = self._time.clock.now()
         transaction = (
             self._repository._database.immediate_session()
@@ -731,22 +606,26 @@ class AutomationService:
             context = await resolve_control_context(
                 active, self._settings, owner_id=owner_id, conversation_id=conversation_id
             )
+            task = prepare_task(
+                task,
+                timezone=self._time.default_timezone,
+                current_group_id=context.provenance.current_group_id,
+            )
             existing = await self._repository.get_by_creation_key(
                 owner_id, creation_source_key, session=active
             )
             if existing is not None:
                 if (
                     await self._repository.initial_script_hash(existing.id, session=active)
-                    != canonical_script_hash(script)
+                    != canonical_task_hash(task)
                     or existing.max_runs != max_runs
                 ):
                     raise ValueError("automation_creation_key_conflict")
                 return existing
             self._require_enabled()
-            validated = self._validator.validate(script, context.provenance)
-            return await self._commit_script(
-                validated,
-                self._control_authority(context, validated),
+            return await self._commit_task(
+                task,
+                self._control_authority(context),
                 creator_person_id=owner_id,
                 creation_source_key=creation_source_key,
                 max_runs=max_runs,
@@ -757,11 +636,11 @@ class AutomationService:
     async def administer_update(
         self,
         automation_id: int,
-        script_payload: object,
+        task_payload: object,
         *,
         session: AsyncSession | None = None,
     ) -> AutomationRecord:
-        script = AutomationScript.model_validate(script_payload)
+        task = TaskSpec.model_validate(task_payload)
         now = self._time.clock.now()
         async with optional_session(self._repository._database, session, write=True) as active:
             existing = await self._repository.get(automation_id, session=active)
@@ -788,25 +667,19 @@ class AutomationService:
             context = await resolve_control_context(
                 active, self._settings, owner_id=owner_id, conversation_id=conversation_id
             )
-            original = DelegatedAuthority.model_validate(existing.authority_snapshot)
-            if (
-                original.permission_level is not PermissionLevel.SUPERUSER
-                and context.provenance.permission is PermissionLevel.SUPERUSER
-            ):
-                context = replace(
-                    context, provenance=replace(context.provenance, permission=PermissionLevel.USER)
-                )
-            validated = self._validator.validate(script, context.provenance)
-            row = await self._commit_script(
-                validated,
-                self._control_authority(context, validated),
+            task = prepare_task(
+                task,
+                timezone=self._time.default_timezone,
+                current_group_id=context.provenance.current_group_id,
+            )
+            row = await self._commit_task(
+                task,
+                self._control_authority(context),
                 automation_id=automation_id,
                 creator_person_id=owner_id,
                 now=now,
-                next_run_at=initial_run_at(
-                    validated.script.schedule, now, validated.script.timezone
-                )
-                if _schedule_changed(existing.script, validated.script)
+                next_run_at=initial_run_at(task.trigger, now, cast(str, task.timezone))
+                if _schedule_changed(existing, task)
                 else None,
                 session=active,
             )
@@ -844,6 +717,7 @@ class AutomationService:
                 session=session,
             )
         elif action == "resume":
+            TaskSpec.model_validate(existing.script)
             next_run = existing.next_run_at or now
             changed = await self._repository.resume(
                 automation_id,
@@ -853,6 +727,7 @@ class AutomationService:
                 session=session,
             )
         elif action == "run_now":
+            TaskSpec.model_validate(existing.script)
             changed = await self._repository.schedule_now(
                 automation_id,
                 creator_person_id=owner_person_id,
@@ -996,16 +871,7 @@ class AutomationService:
                 session, self._settings, owner_id=owner_person_id, conversation_id=conversation_id
             )
         owner_permission = context.provenance.permission
-        original = DelegatedAuthority.model_validate(row.authority_snapshot)
-        if (
-            original.permission_level is not PermissionLevel.SUPERUSER
-            and owner_permission is PermissionLevel.SUPERUSER
-        ):
-            owner_permission = PermissionLevel.USER
-        provenance = replace(
-            context.provenance,
-            permission=owner_permission,
-        )
+        provenance = context.provenance
         return (
             row,
             owner_person_id,
@@ -1052,22 +918,6 @@ class AutomationService:
             conversation_key=conversation_key,
             bot_user_id=actor.bot_user_id,
         )
-
-    def _capability_provenance(
-        self,
-        names: tuple[str, ...],
-    ) -> dict[str, dict[str, str]]:
-        result: dict[str, dict[str, str]] = {}
-        for name in names:
-            definition = self._registry.require(name)
-            if definition.provider_plugin_id is None:
-                continue
-            result[name] = {
-                "plugin_id": definition.provider_plugin_id,
-                "plugin_version": definition.provider_version or "",
-                "manifest_hash": definition.provider_manifest_hash or "",
-            }
-        return result
 
     async def _audit_event(
         self,

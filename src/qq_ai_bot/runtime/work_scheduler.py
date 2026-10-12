@@ -57,6 +57,7 @@ class WorkScheduler:
                 "wake_rollups",
                 "reclaim",
                 "protocol_cleanup",
+                "settle_schedules",
                 "selection",
                 "resume",
             )
@@ -231,6 +232,17 @@ class WorkScheduler:
                         phase,
                         self._last_maintenance_error,
                     )
+        from qq_ai_bot.automation.repository import AutomationRepository
+
+        try:
+            with self._timed("settle_schedules"):
+                await AutomationRepository(self.repository.database).settle_work_occurrences()
+        except Exception as exc:
+            self._last_maintenance_error = type(exc).__name__
+            logger.warning(
+                "work_maintenance_failed phase=settle_schedules category=%s",
+                self._last_maintenance_error,
+            )
         capacity = _MAX_IN_FLIGHT - len(self._in_flight)
         if not self._accepting or capacity <= 0:
             return []

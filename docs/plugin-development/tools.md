@@ -7,7 +7,6 @@ from yuki_plugin_sdk.models import (
     PermissionLevel,
     RiskClass,
     StrictModel,
-    TurnOrigin,
 )
 from yuki_plugin_sdk.registrar import ToolMetadata, ToolRegistration
 
@@ -34,7 +33,6 @@ registrar.register_tool(
             permission=PermissionLevel.USER,
             risk=RiskClass.GENERATE,
             schema_version=1,
-            allowed_origins=frozenset({TurnOrigin.USER_MESSAGE}),
             timeout_seconds=5,
             namespace="",
             aliases=(),
@@ -60,10 +58,12 @@ registrar.register_tool(
 
 - 插件运行且批准仍匹配当前 Manifest；
 - 注册权限和工具所需服务权限仍有效；
-- 当前真实用户达到 `permission`；
-- 当前 `TurnOrigin` 在 `allowed_origins`；
+- 当前真实主体的权限达到 `permission`；
 - 只读模式下，工具风险被 Host 判定为只读；
-- 当前真实来源、效果围栏与自动化委托允许本次操作。
+- 当前真实来源和效果围栏允许本次操作。
+
+普通、SELF 与定时 Main 使用同一工具注册与执行后端，不保来源许可菜单；SELF 保原自身
+主体，定时保原到期执行来源。插件的 Manifest 批准和真实权限仍单独核验。
 
 插件不能借工具声明可见绕过执行授权，也不能在主循环中追加定义。`ToolResult`/输出数据作为不可信工具结果传给模型，不能成为系统指令或权限凭证。
 

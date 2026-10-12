@@ -763,30 +763,23 @@ class TurnExecution:
         # detection. Opaque/protocol entries can only belong to an old chain.
         if any(message.tool_calls or message.role in {"assistant", "tool"} for message in host):
             return
-        state = await control.runtime_state() if control is not None else None
-        envelope = ChatMessage(
-            role="user",
-            content=json.dumps(
-                {
-                    "source": "host",
-                    "kind": "initial_runtime_context",
-                    "state_scope": "activation",
-                    "data": {
-                        "runtime_state": state,
-                        "observations": [
-                            {"role": message.role, "content": message.content} for message in host
-                        ],
-                    },
-                },
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ),
-            images=tuple(image for message in host for image in message.images),
+        hosts = (
+            (
+                ChatMessage(
+                    role="user",
+                    content="当前工作："
+                    + json.dumps(
+                        await control.runtime_state(), ensure_ascii=False, separators=(",", ":")
+                    ),
+                ),
+                *host,
+            )
+            if control is not None
+            else host
         )
-        hosts = (envelope,) if control is not None or host else ()
         current_inputs = tuple(self._initial_inputs)
         transcript.finalize_initial(initial, hosts, current_inputs)
-        self.initial_messages = (*initial[:-1], *hosts, initial[-1], *current_inputs)
+        self.initial_messages = (*initial, *hosts, *current_inputs)
 
     async def prepare_request(
         self,
@@ -830,8 +823,32 @@ class TurnExecution:
                         ).encode()
                     ).hexdigest(),
                 )
+        control = self.state.control
+        work_id = (
+            control.current["id"]
+            if control is not None and control.current is not None
+            else control.lease.work_id
+            if control is not None
+            else None
+        )
+        generation = (
+            control.lease.generation
+            if control is not None
+            else self.runtime.conversation_generation
+        )
+        conversation_id = (
+            control.lease.conversation_id
+            if control is not None
+            else self.runtime.canonical_conversation_id
+        )
         request = ChatRequest(
             messages=sequence.messages,
+            provider_session_id=(
+                f"yuki:{conversation_id}:g{generation}:"
+                + (f"work:{work_id}" if work_id else "main")
+                if conversation_id is not None and generation is not None
+                else None
+            ),
             request_chain_id=self.state.transcript.chain_id,
             continuation_items=sequence.items,
             model=self.runtime.runtime_config.llm.model or "fake",

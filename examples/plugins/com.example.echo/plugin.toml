@@ -12,7 +12,6 @@ permissions = [
   "command.register",
   "event.subscribe",
   "prompt.context.register",
-  "automation.action.register",
   "plugin.config.read",
   "plugin.config.write",
   "storage.private",

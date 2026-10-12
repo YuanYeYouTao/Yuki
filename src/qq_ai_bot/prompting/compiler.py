@@ -55,7 +55,7 @@ class PromptCompiler:
             messages.append(ChatMessage(role="system", content=stable_text))
         messages.extend(history)
         if current_message is not None:
-            messages.append(_with_dynamic_prefix(current_message, dynamic_text))
+            messages.append(_with_current_material(current_message, dynamic_text))
         elif dynamic_text:
             messages.append(ChatMessage(role="user", content=dynamic_text))
         stable_hash = hashlib.sha256(stable_text.encode("utf-8")).hexdigest()
@@ -85,13 +85,14 @@ class PromptCompiler:
             ),
         )
 
+
 def _stability_rank(stability: PromptStability) -> int:
     if stability is PromptStability.STATIC:
         return 0
     return 1
 
 
-def _with_dynamic_prefix(message: ChatMessage, dynamic_text: str) -> ChatMessage:
+def _with_current_material(message: ChatMessage, dynamic_text: str) -> ChatMessage:
     """Keep Responses `input` append-only by not inserting a mid-history system turn."""
 
     if not dynamic_text:
@@ -99,5 +100,5 @@ def _with_dynamic_prefix(message: ChatMessage, dynamic_text: str) -> ChatMessage
     body = message.content or ""
     return replace(
         message,
-        content=f"{dynamic_text}\n\n{body}" if body else dynamic_text,
+        content=f"{body}\n\n{dynamic_text}" if body else dynamic_text,
     )

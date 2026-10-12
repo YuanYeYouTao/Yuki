@@ -1026,15 +1026,11 @@ class MemoryMutationService:
         from qq_ai_bot.memory.self_origin import resolve_self_origin
 
         main_self = bool(
-            context.turn_origin == "self_initiative"
-            and context.delegation_mode == "main_agent"
+            context.delegation_mode == "main_agent"
             and context.decision_actor_type is MemoryDecisionActorType.AGENT
             and context.decision_actor_id
         )
-        if (
-            not (self._trusted_self_reflection(context) or main_self)
-            or not context.initiative_run_id
-        ):
+        if not (self._trusted_self_reflection(context) or main_self):
             raise MemoryMutationRejected("untrusted_actorless_memory_source")
         if not main_self and (context.evidence_tool_receipt_id is None or target is None):
             raise MemoryMutationRejected("initiative_tool_evidence_required")
@@ -1044,6 +1040,7 @@ class MemoryMutationService:
             source = await resolve_self_origin(
                 session,
                 initiative_run_id=context.initiative_run_id,
+                execution_id=context.decision_actor_id,
                 require_live=main_self,
                 group_id=context.source_group_id,
             )
@@ -1453,7 +1450,8 @@ class MemoryMutationService:
                 try:
                     origin = await resolve_self_origin(
                         session,
-                        initiative_run_id=receipt.initiative_run_id or "",
+                        initiative_run_id=receipt.initiative_run_id,
+                        execution_id=receipt.execution_id,
                         require_live=False,
                         require_group_projection=False,
                     )

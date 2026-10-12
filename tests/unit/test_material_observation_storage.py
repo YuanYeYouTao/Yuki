@@ -26,9 +26,8 @@ from qq_ai_bot.conversation.observations import (
     encode,
     validate_observations,
 )
-from qq_ai_bot.conversation.projection_material_schema import PROJECTION_TRIGGERS_0108
+from qq_ai_bot.conversation.projection_current_schema import PROJECTION_TRIGGERS_0109
 from qq_ai_bot.conversation.projection_models import PromptProjectionModel
-from qq_ai_bot.conversation.projections import ProjectionConflict
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.identity.canonical_repository import ensure_space
 from qq_ai_bot.persistence.database import Database
@@ -149,48 +148,14 @@ async def test_hot_reader_uses_real_note_and_actual_summary_roots(database, tmp_
     assert all("dynamic_snapshot" not in row.payload_json for row in (*hot, *adopted, *cold))
 
 
-async def test_exact_material_hydration_never_reads_parent_payload(database, tmp_path):
-    env = await social_env(database, tmp_path)
-    parent, current = str(uuid4()), str(uuid4())
-    async with database.immediate_session() as writer:
-        writer.add_all(
-            [
-                source(env, parent, "snapshot:parent", {"old_style": "retired"}),
-                source(
-                    env,
-                    current,
-                    "snapshot:current",
-                    {"kind": "dynamic_snapshot", "contributions": [{"slot": "new"}]},
-                    ((parent, 1),),
-                ),
-            ]
-        )
-    repository = ContextObservationRepository(database)
-    with capture_sql(database) as statements:
-        roots = await repository.sources_by_ids(
-            env.context.conversation_id, 1, env.person, "main", ((current, 1),)
-        )
-    assert [row.id for row in roots] == [current]
-    assert roots[0].parent_sources == ((parent, 1),)
-    assert "retired" not in roots[0].payload_json
-    assert not any(parent in parameters for _, parameters in statements)
-    for actor, scope, version in (
-        ("other", "main", 1),
-        (env.person, "other", 1),
-        (env.person, "main", 2),
-    ):
-        with pytest.raises(ProjectionConflict, match="observation source changed"):
-            await repository.sources_by_ids(
-                env.context.conversation_id, 1, actor, scope, ((current, version),)
-            )
-
-
-async def seed_0107(url, tmp_path, protection, malformed=False):
+async def seed_0107(url, tmp_path, protection, malformed=False, outdated_config=True):
     database = Database(url)
     try:
         env = await social_env(database, tmp_path)
         identities = [str(uuid4()) for _ in range(3)]
         summary = str(uuid4())
+        useful_note = str(uuid4())
+        useful_payload = encode(note("必须保留的工作事实", ("goal",)))
         raw_body = HEADER + '[{"id":"quoted-user-text"}]\n\nkeep this quotation'
         originals = []
         async with database.immediate_session() as writer:
@@ -201,6 +166,8 @@ async def seed_0107(url, tmp_path, protection, malformed=False):
                 "plugins.max_total_prompt_characters",
                 "plugins.hook_timeout_seconds",
             ):
+                if not outdated_config and key != "plugins.hook_timeout_seconds":
+                    continue
                 writer.add(
                     RuntimeConfigOverrideModel(
                         config_key=key,
@@ -384,6 +351,11 @@ async def seed_0107(url, tmp_path, protection, malformed=False):
                         text("INSERT INTO runtime_protocol_refs(work_id,sha256) VALUES (:id,:sha)"),
                         {"id": work_id, "sha": "e" * 64},
                     )
+            writer.add(source(env, useful_note, "work-note:kept:1", json.loads(useful_payload)))
+            await writer.flush()
+            writer.add(
+                selected(env, useful_note, "[Observation; derived notes]\n" + useful_payload)
+            )
             await writer.flush()
             owner = await writer.get(CanonicalConversationModel, env.context.conversation_id)
             original_revision = owner.prompt_source_revision
@@ -417,23 +389,28 @@ async def seed_0107(url, tmp_path, protection, malformed=False):
             raw_body=raw_body,
             originals=originals,
             work_id=work_id,
+            useful_note=useful_note,
+            useful_payload=useful_payload,
         )
     finally:
         await database.close()
 
 
+@pytest.mark.parametrize("start_revision", ["0107", "0108"])
 @pytest.mark.parametrize(
     "protection", ["none", "active", "journal", "protocol", "artifact", "mixed"]
 )
 def test_upgrade_retires_public_packages_without_deleting_real_occurrences_or_private_sources(
-    tmp_path, monkeypatch, protection
+    tmp_path, monkeypatch, protection, start_revision
 ):
     url = f"sqlite+aiosqlite:///{(tmp_path / 'upgrade.db').as_posix()}"
     monkeypatch.setenv("DATABASE_URL", url)
     config = Config("alembic.ini")
-    command.upgrade(config, "0107")
-    baseline = asyncio.run(seed_0107(url, tmp_path, protection))
-    command.upgrade(config, "head")
+    command.upgrade(config, start_revision)
+    baseline = asyncio.run(
+        seed_0107(url, tmp_path, protection, outdated_config=start_revision == "0107")
+    )
+    command.upgrade(config, "0109")
 
     async def verify():
         database = Database(url)
@@ -448,14 +425,13 @@ def test_upgrade_retires_public_packages_without_deleting_real_occurrences_or_pr
             )
             assert [item["message"]["content"] for item in selected_rows] == [
                 baseline["raw_body"],
-                "same real SDK input",
-                "same real SDK input",
+                "[Observation; derived notes]\n" + baseline["useful_payload"],
             ]
-            no_event_keys = [
-                item["selection_key"] for item in selected_rows if not item["event_ids"]
-            ]
-            assert len(no_event_keys) == len(set(no_event_keys)) == 2
-            assert all("observation_id" not in item for item in selected_rows)
+            assert all(
+                item["event_ids"] or item.get("observation_id") == baseline["useful_note"]
+                for item in selected_rows
+            )
+            assert all("observation_id" not in item for item in selected_rows if item["event_ids"])
             pure_chat = await repository.selected(
                 view_key="f" * 64,
                 conversation_id=baseline["conversation"],
@@ -466,23 +442,29 @@ def test_upgrade_retires_public_packages_without_deleting_real_occurrences_or_pr
             assert [item["message"]["content"] for item in pure_chat] == [baseline["raw_body"]]
             async with database.sessions() as reader:
                 assert (
-                    await reader.scalar(text("SELECT version_num FROM alembic_version")) == "0108"
+                    await reader.scalar(text("SELECT version_num FROM alembic_version")) == "0109"
                 )
                 cache = await reader.get(PromptProjectionModel, VIEW)
-                assert (cache.payload_json, cache.visible_material_json, cache.byte_size) == (
-                    "[]",
-                    "{}",
-                    4,
-                )
+                assert (cache.payload_json, cache.byte_size) == ("[]", 2)
+                columns = {
+                    row[1]
+                    for row in await reader.execute(text("PRAGMA table_info(prompt_projections)"))
+                }
+                assert "visible_material_json" not in columns
                 rows = (await reader.scalars(select(ContextObservationModel))).all()
                 assert list(
                     await reader.scalars(select(RuntimeConfigOverrideModel.config_key))
                 ) == ["plugins.hook_timeout_seconds"]
                 retained = {row.id for row in rows}
+                assert baseline["useful_note"] in retained
                 if protection == "none":
-                    assert not retained
+                    assert retained == {baseline["useful_note"]}
                 if protection in {"active", "journal", "protocol"}:
-                    assert retained == {*baseline["identities"], baseline["summary"]}
+                    assert retained == {
+                        *baseline["identities"],
+                        baseline["summary"],
+                        baseline["useful_note"],
+                    }
                     assert (
                         await reader.scalar(
                             text(
@@ -559,7 +541,7 @@ def test_failed_upgrade_rolls_back_ddl_public_retirement_and_original_triggers(
     command.upgrade(config, "0107")
     baseline = asyncio.run(seed_0107(url, tmp_path, "active", malformed=True))
     with pytest.raises(ValueError, match="original compiled material envelope"):
-        command.upgrade(config, "head")
+        command.upgrade(config, "0109")
 
     async def verify():
         database = Database(url)
@@ -596,13 +578,12 @@ def test_failed_upgrade_rolls_back_ddl_public_retirement_and_original_triggers(
     asyncio.run(verify())
 
 
-async def test_metadata_trigger_invalidates_material_and_preserves_ordinary_rollup_updates(
+async def test_metadata_trigger_invalidates_selected_chat_and_preserves_ordinary_rollup_updates(
     database, tmp_path
 ):
     env = await social_env(database, tmp_path)
     async with database.immediate_session() as writer:
         owner = await writer.get(CanonicalConversationModel, env.context.conversation_id)
-        material = encode({"short_state": {"slot": "证据"}})
         writer.add(
             PromptProjectionModel(
                 view_key=VIEW,
@@ -616,8 +597,7 @@ async def test_metadata_trigger_invalidates_material_and_preserves_ordinary_roll
                 revision=1,
                 rebuild_reason="bootstrap",
                 payload_json="[]",
-                visible_material_json=material,
-                byte_size=2 + len(material.encode()),
+                byte_size=2,
                 updated_at=datetime.now(UTC),
             )
         )
@@ -645,14 +625,13 @@ async def test_metadata_trigger_invalidates_material_and_preserves_ordinary_roll
     async with database.sessions() as reader:
         current = await reader.get(PromptProjectionModel, VIEW)
         owner = await reader.get(CanonicalConversationModel, env.context.conversation_id)
-        assert current.visible_material_json == material
         assert current.invalidated_reason is None
         assert owner.prompt_source_revision == original_revision
     async with database.immediate_session() as writer:
         await writer.execute(text("UPDATE chat_events SET audio_transcript='实际语音'"))
     async with database.sessions() as reader:
         row = await reader.get(PromptProjectionModel, VIEW)
-        assert (row.payload_json, row.visible_material_json, row.byte_size) == ("[]", "{}", 4)
+        assert (row.payload_json, row.byte_size) == ("[]", 2)
         installed = dict(
             (
                 await reader.execute(
@@ -660,7 +639,7 @@ async def test_metadata_trigger_invalidates_material_and_preserves_ordinary_roll
                 )
             ).all()
         )
-        for name, expected in PROJECTION_TRIGGERS_0108.items():
+        for name, expected in PROJECTION_TRIGGERS_0109.items():
             assert " ".join(installed[name].replace("IF NOT EXISTS ", "").split()) == " ".join(
                 expected.split()
             )
@@ -737,7 +716,6 @@ async def _trigger_sources(database, tmp_path, privacy_update):
             writer.add(raw)
             owner = await writer.get(CanonicalConversationModel, event.canonical_conversation_id)
             body = encode([json.loads(representation.payload_json)])
-            material = encode({"runtime.short_state": [{"slot": 1, "text": "material"}]})
             writer.add(
                 PromptProjectionModel(
                     view_key=view,
@@ -751,8 +729,7 @@ async def _trigger_sources(database, tmp_path, privacy_update):
                     revision=1,
                     rebuild_reason="bootstrap",
                     payload_json=body,
-                    visible_material_json=material,
-                    byte_size=len(body.encode()) + len(material.encode()),
+                    byte_size=len(body.encode()),
                     updated_at=datetime.now(UTC),
                 )
             )
@@ -826,7 +803,7 @@ _TRIGGER_OPERATIONS = (
 async def test_current_trigger_sql_keeps_material_and_source_boundaries(
     database, tmp_path, trigger, operation, reason, main_increment, other_increment
 ):
-    assert trigger in PROJECTION_TRIGGERS_0108
+    assert trigger in PROJECTION_TRIGGERS_0109
     env, event, other, identities, moved_space = await _trigger_sources(
         database, tmp_path, operation == "privacy_update"
     )
@@ -940,10 +917,9 @@ async def test_current_trigger_sql_keeps_material_and_source_boundaries(
             if increment and reason is not None:
                 assert (
                     current["payload_json"],
-                    current["visible_material_json"],
                     current["byte_size"],
                     current["invalidated_reason"],
-                ) == ("[]", "{}", 4, reason)
+                ) == ("[]", 2, reason)
                 assert current["revision"] > original["revision"]
                 assert all(
                     current[key] == value
@@ -951,7 +927,6 @@ async def test_current_trigger_sql_keeps_material_and_source_boundaries(
                     if key
                     not in {
                         "payload_json",
-                        "visible_material_json",
                         "byte_size",
                         "invalidated_reason",
                         "revision",

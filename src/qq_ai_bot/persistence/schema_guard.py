@@ -10,8 +10,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-from qq_ai_bot.conversation.projection_material_schema import (
-    PROJECTION_TRIGGERS_0108 as PROJECTION_TRIGGERS_CURRENT,
+from qq_ai_bot.conversation.projection_current_schema import (
+    PROJECTION_TRIGGERS_0109 as PROJECTION_TRIGGERS_CURRENT,
 )
 
 
@@ -179,7 +179,6 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "rebuild_reason",
             "invalidated_reason",
             "payload_json",
-            "visible_material_json",
             "byte_size",
             "updated_at",
             "selected_summary_text",

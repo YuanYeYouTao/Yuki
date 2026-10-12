@@ -1,6 +1,6 @@
 # 语义参与 V6：宿主接入与验证边界
 
-2026-10-10。独立仓库：
+2026-10-13。独立仓库：
 [Yuki-Semantic-Participation](https://github.com/YuanYeYouTao/Yuki-Semantic-Participation)。
 本文描述 SELF 接入与普通持续接话的合同。实现、验证和生产启用状态分别由交付记录证明；
 历史 T20 真实 QQ 集成验收不是本轮持续接话的验收结果。
@@ -29,21 +29,22 @@ revision。有效 owner 只有 off、legacy、semantic：总开关关闭始终 o
 
 原 `AutonomousGroupService` 保留本地机会评分，经同一 selector 和 `accept_legacy`
 登记自主工作；不再把最新真人的 profile/权限交给 `ChatService.respond()` 冒充发起者。
-两种 proposer 共用来源去重与同一接纳合同，不能重复接纳同一机会。主会话 queued/running Work占用新机会；暂停和等待的原run保留恢复权，同时释放新机会。
+两种 proposer 共用同一接纳合同，相同 proposal 重放返回原 run。已有 queued/running Work
+不封住真实新提议，执行容量沿原 Work 调度处理；等待和暂停继续保留原恢复身份。
 
 尚未建立互动时，单纯名字提及仍是优先观察线索，不等同于 `@`。
 Jev 判断为邀请/续聊且回应楼层留给 Yuki 时，即使无法归入已有讨论，
 Controller 可采用 Host 提供并核验的该作者新讨论单元。真人邀请和已有互动的续聊进入
 原 `USER_MESSAGE` 主入口；普通续接不创建自主 Work，也不逐条等待 Jev 评分。
 非请求式加入、回忆、联系和无来源参与按[连续概率模型](autonomous-participation-model.md)
-决定时机；Host 继续核验来源、停聊边界、并发占用、代际、权限和发送链。
+决定时机；Host 继续核验来源、真实停聊边界、代际、权限和发送链。
 活跃/非活跃观察去抖、调用间隔、最长等待分别为 2/8/15 秒和 3/12/20 秒；
 conversation 观测在源事件后 90 秒内完成才有资格，支持最多到源事件后 150 秒，
 且评分完成后最多再保留 75 秒。这是来源新鲜度边界，不是整个会话的统一有效期。
 
 接纳在数据库内 CAS 核对 owner/epoch 和 proposal 身份；同一 proposal 重放返回原 run。
-已考虑来源按类型、内部 ID 和 revision 持久去重，跨 legacy/semantic 共用；仅被动出现在
-上下文的消息不会因此标成已考虑焦点。接纳后的原 run 可在模式切换后继续查询和接收反馈，
+Host 不因某来源曾被另一提议考虑过而拒绝新提议；来源按内部 ID 和 revision 核对实际版本。
+接纳后的原 run 可在模式切换后继续查询和接收反馈，
 controller_epoch 不是已接纳 Work 的执行授权版本。
 普通真人入场使用 `ordinary_turn_admissions` 冻结原事件、actor/Presence、激活及单元来源，
 与自主 proposal 分开；自主开关关闭不拦截原确定性入口。语义开关开启时，获准群中的真实
@@ -63,8 +64,9 @@ controller_epoch 不是已接纳 Work 的执行授权版本。
 `intrinsic` 是无 event/memory 来源的独立提议类型，不伪造 Jev 观测或真人消息；
 已核验的本群互动、实际自主 Work 密度和回应共同决定机会率。极久沉寂时机会率
 随真人活动与沉默情境持续趋近零，无真人活动证据时为零；不等待累积门槛，也不将静默转成真人来源。
-宿主只在 semantic owner、有效群授权和主会话没有queued/running Work时接纳，并拒绝提议之后出现真人发言、
-Yuki 发言或未解除的全群停止边界的待接纳提议。已接纳 run 仍按原执行身份恢复。
+宿主按 semantic owner、有效群授权、来源事实和真实停止边界接纳；
+不叠加 proposal 经验到期、支持强度、全集覆盖、较新发言或等待他人评分门槛。
+已接纳 run 仍按原执行身份恢复。
 获准群记忆可在没有近期真人消息时形成 recall 候选；无来源机会由主 SELF 决定行动或沉默。
 
 ## SELF 主体与同一执行链
@@ -87,10 +89,14 @@ WorkScheduler 调用 `generate_self_initiative`，随后仍经过 `MainAgentTurn
 SubagentScheduler 和 Runner 运行，身份保持 SELF，内部结果交给父 Work；它不获得 QQ
 发送权，也不继承主 SELF 的“发送正文或沉默”反馈。没有另起一套工作执行循环。
 
-SELF 社交范围目前限定为当前群：发送、当前空间通讯录、历史和成员查询。不能借此私聊
-目标人、访问目标人的私人资料、撤回或戳人；本期不支持 SELF 自动结构化 @。
+SELF 使用共同 Social 目标解析、通讯录、历史、发送、结构化 @、戳人和原发送撤回。
+默认当前群仍使用原场景与 Presence；显式目标沿共同路由和真实授权核验。
 Memory 按需查询当前群与该群可见的 SELF 范围，不自动预取或从最后发言者生成个人上下文。
 完整工具声明仍固定提供；工具是否可执行由上述可信来源和现有权限检查决定。
+
+SELF 当前指令只保简短意图与真实来源编号，不重复附来源正文包；详情沿已有历史和记忆
+工具按需读取。Host 与固定语义依赖的 DTO 不按摘要、字符串或来源数量经验帽截断。
+Jev 保留 Host 已提供的快照，实际请求容量错误沿原 Provider 失败处理。
 
 ## 交付、回执与缓存
 
@@ -128,8 +134,8 @@ Host 提交后按原 scope/generation 聚合回放并保存一次控制器；冷
 冷加载先为本页未知入场来源建立版本，再批量核验，保持原逐事件 projection 顺序。
 尚未识别且没有保留依赖的来源暂为 unknown，不授权、不提前失效；已知来源缺证明仍失效。
 
-工具证据使用内部事件或 initiative run 严格互斥的来源，并按 run、execution、Provider、
-工具名和实际调用身份去重。SELF 的调用身份以原 journal chain/请求序号限定 Provider
+工具证据沿实际内部事件、initiative 或已保存执行来源，并按 run、execution、Provider、
+工具名和实际调用身份去重；无真人事件的定时 SELF 不制造事件或主动轮。SELF 的调用身份以原 journal chain/请求序号限定 Provider
 call ID，避免不同响应重复使用 `call_0` 被误合并；Provider 请求历史仍保留原始 ID。
 无聊天消息但有工具执行的自主回合仍可进入 Self Reflection；
 每个 run 使用独立回执水位，迟到回执进入后续窗口，不借聊天事件水位、不伪造聊天事件。
@@ -174,9 +180,10 @@ Jev 密钥不得写入公开配置、提示词或验收记录。
 ## 迁移与验收边界
 
 迁移链从 `0064` 接到 `0066`，后者为 autonomy selector/run/
-来源去重/反馈，`0067` 为 SELF 工具来源与自省回执水位，`0068` 为接入时解析的内部引用事件，
+反馈，`0067` 为 SELF 工具来源与自省回执水位，`0068` 为接入时解析的内部引用事件，
 `0069` 将 Social 回执关联至内部事件，`0070` 持久化自主触发类型与讨论 thread。
 没有修改已发布迁移来加入新行为；
+当前升级清退辅助 `autonomy_source_claims`，保原 run、来源和反馈回执。
 新增表默认不会开启 semantic，也不会恢复被用户关闭的自主总开关。
 
 本地定向验证覆盖接纳并发与重复、模式切换、代际失效、原 Work/沙箱/子任务恢复、当前群

@@ -52,7 +52,8 @@ mutation 的正常拒绝、重复与 no_change 是已处理终态；实际数据
 ## SELF 自主执行证据
 
 schema 0067 允许工具回执由内部 `trigger_event_id` 或可信 `initiative_run_id` 单独归属，
-两者严格互斥。自主执行从 run 的 canonical Conversation、Space、Presence 解析来源，
+0111取消仅限这两种来源的 CHECK；定时 SELF 主入口及其 Work 使用原 occurrence、版本和 execution，不制造聊天事件或 initiative。主动轮自省窗口仍沿原 initiative 水位，不把定时回执强塞成主动轮。
+自主执行从实际发起来源的 canonical Conversation、Space、Presence 解析来源，
 `target_person_id` 不授予任何私人 Memory 权限。执行回执按 run、execution、Provider、
 tool 和真实 tool call ID 去重；没有聊天发言也保留实际成功或失败结果，不制造聊天事件。
 
@@ -68,8 +69,8 @@ cycle、每日请求预算、检查点和原 run 恢复机制；管理输出以 
 tool_receipt_id 非空索引；原 receipt、run 和证据仍是唯一事实来源。
 
 主 SELF 入口使用 actorless TurnMemorySession，按真实来源准备当前群与可见 SELF 范围，
-需要长期事实时通过 `search_memory` 读取；主SELF的 `memory_change` 沿原initiative和
-原execution的实际工具回执写SELF事实，引用按真实摘录查证，不借真人event。
+需要长期事实时通过 `search_memory` 读取；主SELF的 `memory_change` 沿实际原发起来源和
+原execution的工具回执写SELF事实，引用按真实摘录查证，不借真人event。
 不借最近发言者或目标人的身份准备上下文。纯工具自省经同一 MutationService 验证、
 冲突处理和原子回执写入；只能影响有相应证据的 SELF global/当前群范围，不能写私人事实。
 历史 run 证据可保留，不能因此恢复已失效 generation 的执行权限。

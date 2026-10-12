@@ -116,7 +116,7 @@ class FrozenFragments:
         return self.load(result)
 
     def append_current(self, event_id: int | None, message: ChatMessage) -> FrozenFragments:
-        """Freeze the compiled current input, including its exact dynamic envelope."""
+        """Freeze the adopted event rendering without activation-only material."""
         if event_id is not None and event_id in self.event_ids:
             raise ProjectionConflict("trigger already exists in frozen input")
         return self.load(

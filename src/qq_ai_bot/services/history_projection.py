@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
@@ -51,9 +50,6 @@ class PreparedHistory:
     async def prepare_commit(
         self,
         fragments: FrozenFragments,
-        *,
-        current_snapshot: dict[str, Any] | None = None,
-        visible_material: dict[str, Any] | None = None,
     ) -> ProjectionPublication:
         version = self.context.read_version
         if version is None or version.conversation_id is None:
@@ -77,23 +73,11 @@ class PreparedHistory:
             selected_summary_coverage=self.context.prompt_effective_coverage,
             selected_summary_kind=self.context.metrics.rollup_mode,
             selected_summary_renderer=SUMMARY_RENDERER_VERSION,
-            current_snapshot=current_snapshot,
-            snapshot_event_id=self.context.current_event_id,
-            snapshot_fragment_index=(
-                len(fragments.items) - 1
-                if self.context.current_event_id is None
-                and len(fragments.items) == len(self.fragments.items) + 1
-                and list(fragments.items[:-1]) == list(self.fragments.items)
-                else None
-            ),
             previous_snapshot=previous,
             previous_item_count=(
                 (len(self.committed_input) if self.committed_input is not None else None)
                 if self.committed is not None
                 else self.previous_item_count
-            ),
-            visible_material=(
-                visible_material if visible_material is not None else self.context.visible_material
             ),
             replace_event_id=self.replace_event_id if self.committed is None else None,
         )
@@ -101,9 +85,6 @@ class PreparedHistory:
     async def commit(
         self,
         fragments: FrozenFragments,
-        *,
-        current_snapshot: dict[str, Any] | None = None,
-        visible_material: dict[str, Any] | None = None,
     ) -> ProjectionSnapshot:
         """Call after authority/source validation, immediately before model dispatch.
 
@@ -113,9 +94,7 @@ class PreparedHistory:
         if self.committed is not None:
             if self.committed_input == list(fragments.items):
                 return self.committed
-        publication = await self.prepare_commit(
-            fragments, current_snapshot=current_snapshot, visible_material=visible_material
-        )
+        publication = await self.prepare_commit(fragments)
         async with self.repository.database.immediate_session() as writer:
             self.committed = await publication(writer)
         self.committed_input = list(fragments.items)
@@ -343,32 +322,7 @@ async def prepare_history(
     observation_messages = tuple((row.id, row.version, row.message()) for row in observations)
     extended = extended.append_observations(observation_messages)
 
-    async def adopt(
-        candidate: AssembledContext, fragments: FrozenFragments, *, inherit: bool = False
-    ) -> AssembledContext:
-        if inherit and previous is not None:
-            material = json.loads(previous.visible_material_json)
-        else:
-            from qq_ai_bot.services.prompt_composer import apply_material_delta
-
-            roots = await sources.sources_by_ids(
-                conversation_id=conversation_id,
-                generation=version.generation,
-                actor_id=actor_id,
-                read_scope=read_scope,
-                sources=fragments.observation_sources,
-            )
-            payloads = {row.id: json.loads(row.payload_json) for row in roots}
-            material = {}
-            for item in fragments.items:
-                if "observation_id" not in item:
-                    continue
-                payload = payloads.get(item["observation_id"])
-                if payload is not None and payload.get("kind") == "dynamic_snapshot":
-                    material = apply_material_delta(material, payload["contributions"])
-        return replace(candidate, history_messages=fragments.messages(), visible_material=material)
-
-    selected_context = await adopt(selected_context, extended, inherit=reason is None)
+    selected_context = replace(selected_context, history_messages=extended.messages())
     collect_phase_metrics(candidate_count=1)
     extended_messages = extended.messages()
     fits = (
@@ -407,7 +361,7 @@ async def prepare_history(
             # A new activation may adopt the already published summary.
             reason = "capacity" if not hard_fits else "rollup_ready"
             extended = fresh
-            selected_context = await adopt(context, fresh)
+            selected_context = replace(context, history_messages=fresh.messages())
             extended_messages = extended.messages()
             fits = (
                 context_fits(replace(selected_context, history_messages=extended_messages))
@@ -479,7 +433,7 @@ async def prepare_history(
         if summary is not None and candidate_fits:
             extended, reason = candidate, "capacity"
             extended_messages = candidate_messages
-            selected_context = await adopt(selected_context, candidate)
+            selected_context = replace(selected_context, history_messages=candidate.messages())
         elif context_hard_fits is not None and context_hard_fits(
             replace(original_context, history_messages=original_messages)
         ):

@@ -24,6 +24,7 @@ class ConversationTurnSnapshot:
     coordinator_version: int
     transport_scope_key: str | None = None
     initiative_run_id: str | None = None
+    automation_run_id: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.conversation_id, str) or not self.conversation_id.strip():
@@ -32,12 +33,20 @@ class ConversationTurnSnapshot:
             raise ValueError("scope_key must not be empty")
         if self.generation < 1:
             raise ValueError("generation must be positive")
-        if (self.trigger_event_id is None) == (self.initiative_run_id is None):
-            raise ValueError("turn requires exactly one event or initiative anchor")
+        if (
+            sum(
+                value is not None
+                for value in (self.trigger_event_id, self.initiative_run_id, self.automation_run_id)
+            )
+            != 1
+        ):
+            raise ValueError("turn requires exactly one event, initiative or scheduled run anchor")
         if self.trigger_event_id is not None and self.trigger_event_id < 1:
             raise ValueError("trigger_event_id must be positive")
         if self.initiative_run_id is not None and not self.initiative_run_id.strip():
             raise ValueError("initiative_run_id must not be empty")
+        if self.automation_run_id is not None and self.automation_run_id < 1:
+            raise ValueError("automation_run_id must be positive")
         if self.coordinator_version < 1:
             raise ValueError("coordinator_version must be positive")
         if self.transport_scope_key is not None and not self.transport_scope_key:

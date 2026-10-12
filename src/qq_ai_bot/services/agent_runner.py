@@ -126,6 +126,7 @@ class AgentRuntime:
     before_model_request: Callable[[], Awaitable[None]] | None = None
     admit_model_request: Callable[[], Awaitable[None]] | None = None
     canonical_conversation_id: str | None = None
+    conversation_generation: int | None = None
     dynamic_context_prepared: bool = False
     work_control: WorkControl | None = None
     execution_id: str | None = None
@@ -147,6 +148,7 @@ class AgentRunResult:
     tool_calls_used: int
     model_requests: int
     web_was_used: bool
+    messages_sent: int = 0
     native_tool_events: tuple[NativeToolEvent, ...] = ()
     citations: tuple[ResponseCitation, ...] = ()
     response_status: ModelResponseStatus = ModelResponseStatus.COMPLETED
@@ -300,6 +302,7 @@ class AgentRunner:
 
         request = ChatRequest(
             model=main_request.model,
+            provider_session_id=main_request.provider_session_id,
             messages=(
                 ChatMessage(
                     role="system",

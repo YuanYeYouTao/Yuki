@@ -769,8 +769,8 @@ class ControlManagementGateway:
             owner_id: object = principal.person_id.text if principal.person_id is not None else None
             conversation_id: object = None
             max_runs: object = None
-            if "script" not in spec or set(spec) - {
-                "script",
+            if "task" not in spec or set(spec) - {
+                "task",
                 "owner_id",
                 "conversation_id",
                 "max_runs",
@@ -779,7 +779,7 @@ class ControlManagementGateway:
             owner_id = spec.get("owner_id", owner_id)
             conversation_id = spec.get("conversation_id")
             max_runs = spec.get("max_runs")
-            script_payload = spec["script"]
+            task_payload = spec["task"]
             if owner_id is None:
                 raise ManagementFailure(ProblemCode.PRECONDITION_FAILED)
             if (
@@ -790,7 +790,7 @@ class ControlManagementGateway:
                 raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
             try:
                 row = await service.administer_create(
-                    script_payload,
+                    task_payload,
                     owner_id=owner_id,
                     conversation_id=conversation_id,
                     creation_source_key=f"control:{principal.principal_id.text}:{command.request_id.text}",
@@ -819,11 +819,11 @@ class ControlManagementGateway:
         _require_revision(state_revision(existing.updated_at), command.expected_revision)
         try:
             if parsed.action == "update":
-                if parsed.spec is None or set(parsed.spec) != {"script"}:
+                if parsed.spec is None or set(parsed.spec) != {"task"}:
                     raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
                 row = await service.administer_update(
                     automation_id,
-                    parsed.spec["script"],
+                    parsed.spec["task"],
                     session=session,
                 )
             elif parsed.action in {"pause", "resume", "cancel", "run_now"}:

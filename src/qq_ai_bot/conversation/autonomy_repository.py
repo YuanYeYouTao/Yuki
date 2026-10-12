@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal, cast
 from uuid import uuid4
 
-from sqlalchemy import and_, or_, select, tuple_, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.autonomy_binding import (
@@ -31,7 +31,6 @@ from qq_ai_bot.conversation.autonomy_db_models import (
     AutonomyBindingModel,
     InitiativeFeedbackModel,
     InitiativeRunModel,
-    InitiativeSourceClaimModel,
 )
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.identity.db_models import CanonicalSpaceModel, PresenceModel
@@ -207,27 +206,21 @@ class AutonomyRepository:
         target_person_id: str | None = None,
         support_refs: tuple[str, ...] = (),
         source_guard: tuple[InitiativeSource, ...] = (),
-        expires_at: float | None = None,
         trigger_kind: Literal["source", "intrinsic"] = "source",
         thread_key: str | None = None,
     ) -> AdmissionResult:
         """Persist a host-validated opportunity, not permission to invoke an Agent.
 
-        The SELF host adapter validates source visibility and semantic support before this
-        short transaction. Only *focus* sources are claimed: shared context must
-        not become a consumed opportunity. Already accepted proposal replay returns its
+        The SELF host adapter validates source visibility before this short transaction.
+        Already accepted proposal replay returns its
         original run even after a mode/generation switch; it never dispatches it again.
         """
-        if not proposal_id or len(proposal_id) > 128 or proposal_id != proposal_id.strip():
+        if not proposal_id or proposal_id != proposal_id.strip():
             raise ValueError("initiative_proposal_id_invalid")
-        if len(support_refs) > 32 or any(not item or len(item) > 128 for item in support_refs):
+        if any(not item for item in support_refs):
             raise ValueError("initiative_support_refs_invalid")
-        if owner is AutonomyOwner.SEMANTIC and trigger_kind == "source" and not support_refs:
-            raise ValueError("initiative_semantic_support_required")
         if trigger_kind == "intrinsic" and (source_guard or support_refs):
             raise ValueError("intrinsic_initiative_requires_empty_evidence")
-        if len(source_guard) > 256:
-            raise ValueError("initiative_source_guard_too_large")
         now = datetime.now(UTC)
         requested = AcceptedInitiative(
             run_id=str(uuid4()),
@@ -265,8 +258,6 @@ class AutonomyRepository:
                     raise AutonomyConflict("initiative_proposal_replay_conflict")
                 return AdmissionResult("duplicate", _run(prior))
             now = datetime.now(UTC)
-            if expires_at is not None and now.timestamp() >= expires_at:
-                return AdmissionResult("expired")
             current = await session.get(
                 AutonomyBindingModel, (binding.conversation_id, binding.generation)
             )
@@ -299,7 +290,7 @@ class AutonomyRepository:
                 return AdmissionResult("scene_unavailable")
             if source_guard:
                 # Keyed content CAS only; full semantic/lineage hydration already finished
-                # outside this short transaction. Context dependencies are checked but not claimed.
+                # outside this short transaction.
                 from qq_ai_bot.conversation.initiative_sources import (
                     memory_revision,
                     source_revision,
@@ -357,59 +348,6 @@ class AutonomyRepository:
                             or memory_revision(memory_row) != ref.revision
                         ):
                             return AdmissionResult("source_changed")
-            claimed = (
-                await session.scalar(
-                    select(InitiativeSourceClaimModel.run_id)
-                    .where(
-                        InitiativeSourceClaimModel.conversation_id == binding.conversation_id,
-                        InitiativeSourceClaimModel.generation == binding.generation,
-                        tuple_(
-                            InitiativeSourceClaimModel.source_kind,
-                            InitiativeSourceClaimModel.source_id,
-                            InitiativeSourceClaimModel.source_revision,
-                        ).in_(
-                            [
-                                (source.kind.value, source.source_id, source.revision)
-                                for source in sources
-                            ]
-                        ),
-                    )
-                    .limit(1)
-                )
-                if sources
-                else None
-            )
-            if claimed is not None:
-                return AdmissionResult("source_considered")
-            from qq_ai_bot.runtime.work_schema_v1 import work
-
-            active = await session.scalar(
-                select(InitiativeRunModel.id)
-                .outerjoin(work, work.c.source_key == "initiative:" + InitiativeRunModel.id)
-                .where(
-                    InitiativeRunModel.conversation_id == binding.conversation_id,
-                    InitiativeRunModel.generation == binding.generation,
-                    InitiativeRunModel.state.in_(_ACTIVE),
-                    or_(work.c.id.is_(None), work.c.state.in_(("running", "queued"))),
-                )
-                .limit(1)
-            )
-            if active is not None:
-                return AdmissionResult("busy")
-            from qq_ai_bot.runtime.subagent_schema import children
-
-            existing_work = await session.scalar(
-                select(work.c.id)
-                .where(
-                    work.c.conversation_id == binding.conversation_id,
-                    work.c.generation == binding.generation,
-                    work.c.state.in_(("running", "queued")),
-                    work.c.id.not_in(select(children.c.work_id)),
-                )
-                .limit(1)
-            )
-            if existing_work is not None:
-                return AdmissionResult("busy")
             row = InitiativeRunModel(
                 id=requested.run_id,
                 proposal_id=proposal_id,
@@ -432,17 +370,6 @@ class AutonomyRepository:
             )
             session.add(row)
             await session.flush()
-            session.add_all(
-                InitiativeSourceClaimModel(
-                    conversation_id=binding.conversation_id,
-                    generation=binding.generation,
-                    source_kind=source.kind.value,
-                    source_id=source.source_id,
-                    source_revision=source.revision,
-                    run_id=row.id,
-                )
-                for source in sources
-            )
             return AdmissionResult("accepted", _run(row))
 
     async def get_run(
@@ -627,9 +554,9 @@ class AutonomyRepository:
         if sequence < 1 or outcome not in _OUTCOMES:
             raise ValueError("initiative_feedback_invalid")
         for refs in (actual_target_refs, effect_refs):
-            if len(refs) > 64 or any(not item or len(item) > 128 for item in refs):
+            if any(not item for item in refs):
                 raise ValueError("initiative_feedback_refs_invalid")
-        if len(considered_sources) > 32 or len(set(considered_sources)) != len(considered_sources):
+        if len(set(considered_sources)) != len(considered_sources):
             raise ValueError("initiative_feedback_sources_invalid")
         payload = _json(
             {
@@ -638,8 +565,6 @@ class AutonomyRepository:
                 "considered_sources": _source_values(considered_sources),
             }
         )
-        if len(payload.encode("utf-8")) > 16_384:
-            raise ValueError("initiative_feedback_too_large")
         async with _feedback_session(self._database, session) as session:
             row = await session.get(InitiativeRunModel, run_id)
             if row is None:
@@ -654,32 +579,6 @@ class AutonomyRepository:
                 raise AutonomyConflict("initiative_run_terminal")
             if sequence != row.feedback_sequence + 1:
                 raise AutonomyConflict("initiative_feedback_sequence_gap")
-            claimed = (
-                set(
-                    await session.execute(
-                        select(
-                            InitiativeSourceClaimModel.source_kind,
-                            InitiativeSourceClaimModel.source_id,
-                            InitiativeSourceClaimModel.source_revision,
-                        ).where(
-                            InitiativeSourceClaimModel.conversation_id == row.conversation_id,
-                            InitiativeSourceClaimModel.generation == row.generation,
-                            tuple_(
-                                InitiativeSourceClaimModel.source_kind,
-                                InitiativeSourceClaimModel.source_id,
-                                InitiativeSourceClaimModel.source_revision,
-                            ).in_(
-                                [
-                                    (item.kind.value, item.source_id, item.revision)
-                                    for item in considered_sources
-                                ]
-                            ),
-                        )
-                    )
-                )
-                if considered_sources
-                else set()
-            )
             now = datetime.now(UTC)
             if active:
                 row.state = outcome
@@ -693,17 +592,5 @@ class AutonomyRepository:
                     payload_json=payload,
                     created_at=now,
                 )
-            )
-            session.add_all(
-                InitiativeSourceClaimModel(
-                    conversation_id=row.conversation_id,
-                    generation=row.generation,
-                    source_kind=item.kind.value,
-                    source_id=item.source_id,
-                    source_revision=item.revision,
-                    run_id=row.id,
-                )
-                for item in considered_sources
-                if (item.kind.value, item.source_id, item.revision) not in claimed
             )
             return _run(row)

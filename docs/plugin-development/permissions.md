@@ -3,10 +3,11 @@
 插件要同时满足三层条件：Manifest 请求、管理员按 Manifest 哈希批准、当前真实调用上下文允许。模型文本、历史、OCR、网页、AdmissionSignal 和插件参数都不能增加权限。
 
 ```text
-实际能力 = Manifest 声明 ∩ 当前批准 ∩ 当前用户/群/TurnOrigin ∩ 本轮安全策略
+实际能力 = Manifest 声明 ∩ 当前批准 ∩ 真实主体/目标权限 ∩ 显式只读策略
 ```
 
-自动化 `DelegatedAuthority`、插件批准权限和显式只读策略继续约束执行。图片或网页资料本身不撤销其他已获准能力，也不改变固定工具声明。
+原执行来源、插件批准权限和显式只读策略继续约束执行。普通、SELF 和定时 Main 不另设
+来源菜单；图片或网页资料本身不撤销其他已获准能力，也不改变固定工具声明。
 
 ## 权限家族
 
@@ -18,7 +19,7 @@
 | 记忆 | `memory.write` | 写操作影响长期人格上下文 |
 | 模型 | `agent.run`, `agent.session` | 消耗额度；Agent 能力仍由 Host 裁剪 |
 | 联网 | `network.http.allowlisted` | 仅 Manifest 精确公共域名 |
-| 自动化 | `automation.manage_self`, `automation.action.register` | 委托权限必须可重验证 |
+| 自动化 | `automation.manage_self`, `automation.read` | 使用 Host 原主体和安排所有权 |
 | 配置/Secret/KV | `plugin.config.*`, `storage.private` | Secret 不等于普通配置，不得记录 |
 | OneBot | `onebot.read/send/mutate` | `mutate` 是高风险外部操作 |
 | 扩展注册 | `tool.register`, `event.subscribe` | 只允许在 `register()` 声明 |
@@ -27,7 +28,8 @@
 
 ## 组件自身权限级别
 
-工具、命令和自动化 Action 还声明 `PermissionLevel`：`user`、`trusted`、`moderator`、`superuser`。当前只有普通用户与真实 `SUPERUSERS` 是可执行授权来源；预留等级不能由插件分配。
+工具和命令还声明 `PermissionLevel`：`user`、`trusted`、`moderator`、`superuser`。
+普通执行级别与真实 `SUPERUSERS` 按原主体核验；预留等级不能由插件分配，SELF 不借真人或超管身份。
 
 ## 高风险权限
 

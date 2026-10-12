@@ -41,10 +41,9 @@ class InitiativeSource:
             not self.source_id.isascii()
             or not self.source_id.isdecimal()
             or self.source_id.startswith("0")
-            or len(self.source_id) > 20
         ):
             raise ValueError("initiative_source_requires_internal_id")
-        if not self.revision or self.revision != self.revision.strip() or len(self.revision) > 128:
+        if not self.revision or self.revision != self.revision.strip():
             raise ValueError("initiative_source_revision_invalid")
 
 
@@ -102,7 +101,7 @@ class AutonomyBinding:
         conversation_id: str,
         generation: int,
     ) -> bool:
-        """Only checks proposal ownership; permissions/source/run occupancy remain host checks."""
+        """Only checks proposal ownership; permissions and source facts remain host checks."""
         return (
             self.master_enabled
             and owner is not AutonomyOwner.OFF
@@ -144,10 +143,10 @@ class AcceptedInitiative:
             raise ValueError("initiative_requires_host_identity")
         if self.generation < 1 or self.controller_epoch_at_acceptance < 0:
             raise ValueError("initiative_requires_nonnegative_version")
-        if len(self.sources) > 32 or len(set(self.sources)) != len(self.sources):
-            raise ValueError("initiative_requires_distinct_bounded_sources")
+        if len(set(self.sources)) != len(self.sources):
+            raise ValueError("initiative_requires_distinct_sources")
         if self.trigger_kind == "source" and not self.sources:
-            raise ValueError("initiative_requires_distinct_bounded_sources")
+            raise ValueError("initiative_requires_sources")
         if self.trigger_kind == "intrinsic" and (
             self.sources
             or self.support_refs
@@ -157,7 +156,7 @@ class AcceptedInitiative:
             raise ValueError("intrinsic_initiative_requires_self_group")
         if self.trigger_kind not in {"source", "intrinsic"}:
             raise ValueError("initiative_trigger_kind_invalid")
-        if self.thread_key is not None and (not self.thread_key or len(self.thread_key) > 256):
+        if self.thread_key is not None and not self.thread_key:
             raise ValueError("initiative_thread_key_invalid")
         if self.owner not in {AutonomyOwner.LEGACY, AutonomyOwner.SEMANTIC}:
             raise ValueError("initiative_requires_controller_owner")

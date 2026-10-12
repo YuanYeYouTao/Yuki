@@ -8,12 +8,10 @@ from typing import Any
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
-from qq_ai_bot.automation.registry import AutomationCapabilityRegistry
 from qq_ai_bot.model_runtime.executor import ModelExecutor
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.plugin_host.admission_adapter import PluginAdmissionSignalAdapter
 from qq_ai_bot.plugin_host.audit import PluginAuditService
-from qq_ai_bot.plugin_host.automation_adapter import PluginAutomationAdapter
 from qq_ai_bot.plugin_host.capability_adapter import PluginCapabilityAdapter
 from qq_ai_bot.plugin_host.command_adapter import PluginCommandAdapter
 from qq_ai_bot.plugin_host.direct_command_router import DirectCommandRouter
@@ -55,7 +53,6 @@ class PluginBundle:
     extensions: ExtensionRegistry
     emoji_signals: PluginEmojiSelectionSignalAdapter
     prompts: PluginPromptAdapter
-    automation: PluginAutomationAdapter
     manager: PluginManager
     tools: PluginCapabilityAdapter
     direct_commands: DirectCommandRouter
@@ -75,10 +72,8 @@ class PluginModule:
         concurrency: ConcurrencyManager,
         runtime_config: RuntimeConfigService,
         prompt_registry: PromptRegistry,
-        automation_registry: AutomationCapabilityRegistry,
         context_factory: Callable[..., Any],
         plugin_invocation_scope: InvocationScope,
-        automation_invocation_scope: InvocationScope,
         signal_invocation_scope: InvocationScope,
         on_activated: Callable[..., Any],
         on_deactivated: Callable[..., Any],
@@ -92,10 +87,8 @@ class PluginModule:
         self._concurrency = concurrency
         self._runtime_config = runtime_config
         self._prompt_registry = prompt_registry
-        self._automation_registry = automation_registry
         self._context_factory = context_factory
         self._plugin_invocation_scope = plugin_invocation_scope
-        self._automation_invocation_scope = automation_invocation_scope
         self._signal_invocation_scope = signal_invocation_scope
         self._on_activated = on_activated
         self._on_deactivated = on_deactivated
@@ -128,11 +121,6 @@ class PluginModule:
             timeout_seconds=settings.plugin_hook_timeout_seconds,
         )
         prompts = PluginPromptAdapter(extensions, self._prompt_registry)
-        automation = PluginAutomationAdapter(
-            extensions=extensions,
-            automation=self._automation_registry,
-            invocation_scope=self._automation_invocation_scope,
-        )
         manager = PluginManager(
             enabled=settings.plugin_system_enabled,
             discovery=PluginDiscovery(
@@ -190,7 +178,6 @@ class PluginModule:
             extensions=extensions,
             emoji_signals=emoji_signals,
             prompts=prompts,
-            automation=automation,
             manager=manager,
             tools=tools,
             direct_commands=direct_commands,

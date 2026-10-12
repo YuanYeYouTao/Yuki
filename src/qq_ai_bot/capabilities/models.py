@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
-from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.messages import ChatTool
 
 if TYPE_CHECKING:
@@ -61,7 +60,6 @@ class CapabilityDescriptor:
     effect: CapabilityEffect
     risk: CapabilityRisk
     trust_source: CapabilityTrustSource
-    allowed_origins: frozenset[TurnOrigin]
     required_permissions: frozenset[str]
     uses_external_data: bool
     cancellable: bool

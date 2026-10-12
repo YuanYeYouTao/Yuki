@@ -5,14 +5,9 @@ from typing import cast
 
 from tests.conftest import make_settings
 
-from qq_ai_bot.automation.models import (
-    AutomationScript,
-)
-from qq_ai_bot.automation.registry import (
-    build_capability_registry,
-)
 from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.service import AutomationService
+from qq_ai_bot.automation.task_spec import TaskSpec
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.identity.routing import PresenceRouter, RouteSendError
@@ -62,66 +57,14 @@ def _inbound(user_id: str = "10001") -> InboundMessage:
     )
 
 
-def _script() -> AutomationScript:
-    return AutomationScript.model_validate(
+def _script() -> TaskSpec:
+    return TaskSpec.model_validate(
         {
-            "version": 1,
             "name": "一次提醒",
+            "goal": "提醒本人：测试",
             "timezone": "Asia/Shanghai",
-            "schedule": {"type": "after", "seconds": 1},
-            "context": {"scene": "none"},
-            "steps": [
-                {
-                    "id": "send",
-                    "call": "social.send_message",
-                    "arguments": {
-                        "target": {"kind": "person", "subject_ref": "current_speaker"},
-                        "text": "测试",
-                    },
-                }
-            ],
-            "limits": {
-                "max_steps": 1,
-                "max_llm_calls": 0,
-                "max_tool_calls": 1,
-                "max_messages": 1,
-                "timeout_seconds": 30,
-            },
-        }
-    )
-
-
-def _script_to(user_id: str, extra: str | None = None) -> AutomationScript:
-    steps = [
-        {
-            "id": "send",
-            "call": "social.send_message",
-            "arguments": {"target": {"kind": "person", "target_id": user_id}, "text": "测试"},
-        }
-    ]
-    if extra is not None:
-        steps.append(
-            {
-                "id": "send2",
-                "call": "social.send_message",
-                "arguments": {"target": {"kind": "person", "target_id": extra}, "text": "另一人"},
-            }
-        )
-    return AutomationScript.model_validate(
-        {
-            "version": 1,
-            "name": "定向提醒",
-            "timezone": "Asia/Shanghai",
-            "schedule": {"type": "after", "seconds": 1},
-            "context": {"scene": "none"},
-            "steps": steps,
-            "limits": {
-                "max_steps": len(steps),
-                "max_llm_calls": 0,
-                "max_tool_calls": len(steps),
-                "max_messages": len(steps),
-                "timeout_seconds": 30,
-            },
+            "trigger": {"type": "after", "seconds": 1},
+            "delivery": {"target": "self_private"},
         }
     )
 
@@ -146,6 +89,5 @@ def _canonical_service(database):
     return AutomationService(
         settings=settings,
         repository=AutomationRepository(database),
-        registry=build_capability_registry(),
         time_service=TimeContextService(database, clock=clock),
     )

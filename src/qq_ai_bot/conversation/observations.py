@@ -322,55 +322,6 @@ class ContextObservationRepository:
                 for row in rows
             )
 
-    async def sources_by_ids(
-        self,
-        conversation_id: str,
-        generation: int,
-        actor_id: str,
-        read_scope: str,
-        sources: tuple[tuple[str, int], ...],
-    ) -> tuple[ContextObservation, ...]:
-        """Hydrate exact authorized roots; parent payloads are never loaded."""
-        if not sources:
-            return ()
-        async with self.database.sessions() as session:
-            await session.execute(text("BEGIN"))
-            privacy = await privacy_generation(session)
-            identities = tuple(dict.fromkeys(identity for identity, _ in sources))
-            rows: dict[str, ContextObservationModel] = {}
-            for offset in range(0, len(identities), 256):
-                loaded = await session.scalars(
-                    select(ContextObservationModel)
-                    .join(
-                        CanonicalConversationModel,
-                        ContextObservationModel.conversation_id == CanonicalConversationModel.id,
-                    )
-                    .where(
-                        ContextObservationModel.id.in_(identities[offset : offset + 256]),
-                        ContextObservationModel.conversation_id == conversation_id,
-                        ContextObservationModel.generation == generation,
-                        CanonicalConversationModel.generation == generation,
-                        ContextObservationModel.actor_id == actor_id,
-                        ContextObservationModel.read_scope == read_scope,
-                        ContextObservationModel.privacy_generation == privacy,
-                    )
-                )
-                rows.update((row.id, row) for row in loaded)
-            if {(row.id, row.version) for row in rows.values()} != set(sources):
-                raise ProjectionConflict("projection observation source changed")
-            return tuple(
-                ContextObservation(
-                    rows[identity].id,
-                    rows[identity].version,
-                    rows[identity].payload_json,
-                    tuple(
-                        (parent, int(version))
-                        for parent, version in json.loads(rows[identity].parent_sources_json)
-                    ),
-                )
-                for identity in identities
-            )
-
     async def prepared_summary(
         self,
         *,

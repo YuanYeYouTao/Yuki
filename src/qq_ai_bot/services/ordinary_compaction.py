@@ -201,6 +201,7 @@ async def summarize_records(
     """Measured, tool-free paging shared by turn tails and selected clues."""
     request = ChatRequest(
         model=main_request.model,
+        provider_session_id=main_request.provider_session_id,
         messages=(
             ChatMessage(
                 "system",

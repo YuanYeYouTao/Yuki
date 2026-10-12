@@ -7,7 +7,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, insert, literal, select
+from sqlalchemy import func, insert, literal, select, text
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from qq_ai_bot.conversation.autonomy_db_models import InitiativeRunModel
@@ -102,13 +102,14 @@ class ToolInvocationRepository:
         canonical_conversation_id: str | None = None,
         ingress_presence_id: str | None = None,
         initiative_run_id: str | None = None,
+        principal_kind: str = "person",
         tool_call_id: str | None = None,
         execution_id: str | None = None,
         audit_source: tuple[str, int, int] | None = None,
     ) -> None:
         # Evidence remains source-authorized synchronous persistence; only the
         # content-free invocation is disposable telemetry.
-        if initiative_run_id is not None and (
+        if (initiative_run_id is not None or principal_kind == "self") and (
             trigger_event_id is not None
             or not tool_call_id
             or not tool_call_id.strip()
@@ -116,7 +117,7 @@ class ToolInvocationRepository:
             or not execution_id.strip()
         ):
             raise ValueError(
-                "initiative receipt requires an exclusive run source and call identity"
+                "SELF receipt requires an actorless source and call identity"
             )
         if any(len(value) > 255 for value in (tool_call_id, execution_id) if value):
             raise ValueError("tool call identity exceeds storage bounds")
@@ -152,12 +153,16 @@ class ToolInvocationRepository:
                     or 0
                 )
             )
-            if initiative_run_id is not None:
-                from qq_ai_bot.memory.self_origin import resolve_self_origin
+            if initiative_run_id is not None or principal_kind == "self":
+                from qq_ai_bot.memory.self_origin import (
+                    resolve_self_origin,
+                    self_execution_origin_sql,
+                )
 
                 source = await resolve_self_origin(
                     session,
                     initiative_run_id=initiative_run_id,
+                    execution_id=execution_id,
                     canonical_conversation_id=canonical_conversation_id,
                     require_live=False,
                     require_group_projection=False,
@@ -178,32 +183,45 @@ class ToolInvocationRepository:
                 }
                 # Historical evidence can stay readable; a delayed write cannot
                 # resurrect an old generation or disabled source after erasure.
-                guards.append(
-                    select(InitiativeRunModel.id)
-                    .join(
-                        CanonicalConversationModel,
-                        CanonicalConversationModel.id == InitiativeRunModel.conversation_id,
+                if initiative_run_id is None:
+                    guards.append(
+                        text(
+                            "EXISTS ("
+                            + self_execution_origin_sql(":self_execution_id")
+                            + " AND ic.generation=:self_generation AND ip.enabled=1 "
+                            "AND isp.enabled=1)"
+                        ).bindparams(
+                            self_execution_id=execution_id, self_generation=source.generation
+                        )
                     )
-                    .join(PresenceModel, PresenceModel.id == InitiativeRunModel.presence_id)
-                    .join(
-                        CanonicalSpaceModel, CanonicalSpaceModel.id == InitiativeRunModel.space_id
+                else:
+                    guards.append(
+                        select(InitiativeRunModel.id)
+                        .join(
+                            CanonicalConversationModel,
+                            CanonicalConversationModel.id == InitiativeRunModel.conversation_id,
+                        )
+                        .join(PresenceModel, PresenceModel.id == InitiativeRunModel.presence_id)
+                        .join(
+                            CanonicalSpaceModel,
+                            CanonicalSpaceModel.id == InitiativeRunModel.space_id,
+                        )
+                        .where(
+                            InitiativeRunModel.id == initiative_run_id,
+                            InitiativeRunModel.conversation_id == source.canonical_conversation_id,
+                            InitiativeRunModel.space_id == source.space_id,
+                            InitiativeRunModel.presence_id == source.presence_id,
+                            InitiativeRunModel.generation == CanonicalConversationModel.generation,
+                            CanonicalConversationModel.kind == "space",
+                            CanonicalConversationModel.space_id == source.space_id,
+                            CanonicalConversationModel.person_id.is_(None),
+                            PresenceModel.platform == "qq",
+                            PresenceModel.external_account_id == source.bot_user_id,
+                            PresenceModel.enabled.is_(True),
+                            CanonicalSpaceModel.enabled.is_(True),
+                        )
+                        .exists()
                     )
-                    .where(
-                        InitiativeRunModel.id == initiative_run_id,
-                        InitiativeRunModel.conversation_id == source.canonical_conversation_id,
-                        InitiativeRunModel.space_id == source.space_id,
-                        InitiativeRunModel.presence_id == source.presence_id,
-                        InitiativeRunModel.generation == CanonicalConversationModel.generation,
-                        CanonicalConversationModel.kind == "space",
-                        CanonicalConversationModel.space_id == source.space_id,
-                        CanonicalConversationModel.person_id.is_(None),
-                        PresenceModel.platform == "qq",
-                        PresenceModel.external_account_id == source.bot_user_id,
-                        PresenceModel.enabled.is_(True),
-                        CanonicalSpaceModel.enabled.is_(True),
-                    )
-                    .exists()
-                )
             else:
                 event = await load_correlated_chat_event(
                     session,

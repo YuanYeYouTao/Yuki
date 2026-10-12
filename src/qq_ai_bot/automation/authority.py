@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from enum import StrEnum
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, model_validator
 
 from qq_ai_bot.automation.models import StrictModel, TurnOrigin
 from qq_ai_bot.config import Settings
@@ -24,9 +24,7 @@ class DelegatedAuthority(StrictModel):
     created_from_message_id: str
     created_at: str
     permission_level: PermissionLevel
-    granted_capabilities: tuple[str, ...]
-    capability_schema_versions: dict[str, int | str]
-    capability_provenance: dict[str, dict[str, str]] = Field(default_factory=dict)
+    model_config = ConfigDict(extra="ignore", frozen=True)
     authority_version: int = 1
     origin: TurnOrigin = TurnOrigin.SCHEDULED_AUTOMATION
     current_group_id: str | None = None
@@ -54,17 +52,6 @@ class DelegatedAuthority(StrictModel):
         elif self.principal_kind != "person" or self.permission_level is PermissionLevel.SELF:
             raise ValueError("invalid_person_automation_authority")
         return self
-
-
-class AuthorityContext(StrictModel):
-    origin: TurnOrigin
-    actor_user_id: str
-    actor_person_id: str | None = None
-    actor_is_superuser: bool
-    bot_user_id: str
-    principal_kind: str = "person"
-    delegated_authority: DelegatedAuthority | None = None
-    allowed_capabilities: frozenset[str] = Field(default_factory=frozenset)
 
 
 def permission_for_accounts(settings: Settings, account_ids: Iterable[str]) -> PermissionLevel:

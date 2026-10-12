@@ -8,8 +8,8 @@
 `MainAgentTurnService`、`AgentRunner` 和 `MainAgentBackend`。自动化不再拥有第二套
 模型工具后端、名称映射或参数转换。独立 agent_sessions、子 Agent 合同和辅助模型不属于主合同。
 应用装配采用同一个 `YukiRuntime`，持有共享的主 TurnService、Runner、固定工具合同及
-Work/子任务调度器生命周期。Chat、SELF、自动化和插件主调用使用这个实例；自动化显式
-接收共享 TurnService 和合同，不再构造只用于取得 Chat 主服务的 Runner。
+Work/子任务调度器生命周期。Chat、SELF、定时和插件主调用使用这个实例；定时与SELF
+通过共同的真实来源入口装配本轮材料，再调用共享 TurnService、Runner 与固定合同。
 Runtime 不持有单一当前 Conversation；每次调用仍显式传递其原来源、权限、场景和执行 ID。
 插件注册完成后冻结主工具清单，再启动 Runtime 的恢复调度器和插件后台主调用。
 legacy/semantic 自主机会均以正式 SELF 来源进入这条执行链；
@@ -43,15 +43,13 @@ legacy/semantic 自主机会均以正式 SELF 来源进入这条执行链；
 不因为查询工具能读全局目录就自动注入其他会话的工作。
 不注入完整 journal、工具正文或其他主体的任务。既有请求链只追加当前视图，不重写历史状态。
 
-人物与场景块只提供当前说话人、当前场景及本次授权来源需要的目标资料；不预取称呼全集、
-记忆引用或关系评分，不重复展示已有的当前人物和场景。短期记录只展示有内容的 slot/text，
-`short_state` 写入只需要 slot/text，返回本次槽位结果；清空和到期仍沿原存储语义处理。
-必要资料首次展示后冻结，未变化不再注入，变化只追加字段或槽位差量，退出展示明确追加移除。
-清空差量保留空 text，不按初始空槽过滤。自动 `dynamic_snapshot` 记录这些实际差量的来源，
-不再作为整包派生笔记反复进入历史。
+当前场景只用简短的群聊/私聊说明，不预取称呼全集、记忆引用或关系评分。短期记录只展示当前有内容的 slot/text，写入只需要 slot/text，返回本次槽位结果；清空和到期仍沿原存储语义处理。插件资料按实际来源保留不可信标记。
+本轮资料每次准备当前有效值，只在当前触发尾部呈现；为空无标题。它不进入公共 FrozenFragments、自动 dynamic_snapshot、观察或摘要，不再保存首份、变化差量、移除流水和最后展示值。公共投影只冻结实际采用的原事件渲染和有用笔记，保名字、引用、AT与附件事实。
+
+Provider 会话元数据沿真实 canonical conversation、generation 和已有 Work ID 传递。未接纳 Work 的主请求使用 main 分支，接纳后沿原 Work 分支；分页整理继承原请求的身份。独立公共 Rollup 使用其原候选会话与代际。通用结构化请求与原生搜索辅助请求在已有 Work 控制器时沿原租约传递身份；独立结构化请求可透传已知元数据，没有明确来源时保持空值。该元数据只进入 HTTP header，正文和固定工具合同保持原有装配。
 时间、participation 内部状态、管理权限证明、最近投递包装及空视觉观察不默认注入。
 执行仍核验当前身份和授权；真实媒体、附件错误、聊天时间线及发送回执保留在原入口。
-当前 Work 使用原 Host 私有激活输入，固定工具合同保持一次稳定前缀；本轮不改 Work 布局。
+当前 Work 状态沿原私有有序输入尾部接入。工具往返与恢复保原签名、调用/回执配对和初始请求，不将新运行块插回已经增长的轨迹前面。
 文件、终端、完整自动化目录和长期记忆均使用已有工具按需查询。
 
 主 Agent 的 `task_control(action=get, work_id=...)` 按原内部 Work ID 只读查询全局安全目录，
@@ -72,26 +70,25 @@ legacy/semantic 自主机会均以正式 SELF 来源进入这条执行链；
 `automation_list` / `automation_get` 按需核实；读取目录不授予修改权限。普通聊天、SELF
 自主轮、插件唤醒和定时 Agent 不因群里存在任务而自动收到任务清单。
 
-Person 自动化使用固定主 Agent 工具声明，不要求 TaskSpec 选择工具白名单。实际执行权限取
-创建者当前权限与原委托的共同范围，原 USER 委托不因后来升为超管而获得管理权限。
-每次模型请求和工具执行复核原来源、所有者、租约及会话 generation；本次激活使用的权限
-被撤销时停止该旧授权执行，同一 Work 可明确继续并取得当前权限。插件安装批准仍单独核验。
+定时使用固定主 Agent 工具声明，TaskSpec 不选择工具名单。执行时依据原永久创建者或
+SELF 及当前真实授权核验；创建时的 USER 身份不永久封顶。每次模型请求和效果执行复核
+原来源、所有者、租约及会话 generation；当前授权被撤销时停止旧授权执行。原 Work
+可明确沿原 ID 继续，插件安装批准仍按原事实核验。
 
-`ToolActor` 传递真实主体和执行来源。聊天保留内部事件 ID，定时任务保留 run/step/execution ID；
+`ToolActor` 传递真实主体和执行来源。聊天保留内部事件 ID，定时任务保留原 run/execution ID；
 不能生成假的 InboundMessage、QQ 消息或提及来通过校验。定时来源仍为 scheduled_automation。
 历史、记忆的主动补查使用同一读取授权；长期记忆不自动预取或注入。记忆写入仍需真实证据，
 定时任务通过 evidence_event_id 引用创建者在当前会话的原始事件，不把任务指令伪装成人类发言。
 
 SELF 使用数据库内唯一的 `PrincipalRef(self, self)`，不携带真人 user/person。自主入口的
 `ToolActor` / `TurnAuthority` 使用可信 `initiative_run_id`；SELF 定时入口使用真实
-`automation_run_id` 与 `scheduled_automation`，沿普通自动化的 claim、run/step 游标和
-主 Agent 工具合同执行。`SelfInitiativeTrigger` 固定原 Conversation、
+`automation_run_id` 与 `scheduled_automation`，沿同一时间扫描、唯一到期发生和共同 Main 工具合同执行。`SelfInitiativeTrigger` 固定原 Conversation、
 generation、Space、Presence 与群传输目标。目标成员和资料来源都不授予其私人权限。
-`ConversationTurnSnapshot` 的事件 ID 与 initiative run 严格二选一；无事件工作不得借
+`ConversationTurnSnapshot` 使用原 event、initiative run 或 automation run 三者之一；无事件工作不得借
 最近真人消息补锚点。SELF主入口按需读取当前群及该群可见的SELF Memory；主动SELF写入沿原initiative和原执行的真实工具回执，不借真人事件。
-每次模型请求、工具执行和发送准备仍复核原 run 与场景权限。SELF 自动化还固定创建时
-Conversation/generation、Space、Presence 和群绑定；场景失效即阻止执行。当前 SELF 社交工具只允许
-当前群发送、通讯录、历史和成员读取；不支持自动结构化 @、私人目标、撤回或戳人。
+每次模型请求、工具执行和发送准备仍复核原 run 与场景权限。SELF 自动化保留原
+Conversation、Space、Presence 和群绑定；每次新到期发生使用该会话的当前 generation，
+已接纳 Work 则保留原发生代次。SELF 的社交调用沿共同目标选择、资料授权和发送回执处理，不设来源专属四动作、当前群或提及名单。
 固定直调声明与完整执行 API 均不随主体改动，执行处拒绝不获准的能力；详见 [语义参与接入](semantic-participation.md)。
 
 模型侧只用 `send_message` 发送可见内容：省略 target 时发到当前群或私聊，显式 target 可指定
@@ -140,29 +137,22 @@ Work 或假 initiative。`join/stay/quiet` 不必逐轮填写，没报不清空�
 真实发送效果保持原 Space/person 投递目标，讨论关联只使用原持久入场/source；来源失效或
 绑定缺失就保持未知，不能从后来当前话题补造。查询和反馈沿原主执行链，不增加逐轮审核模型。
 
-新建 `agentic` 和 `auto` 任务统一编译为一个 `yuki.agent` 步骤，
-完整保存用户的 goal、constraints 与 delivery；不裁剪编码后的指令，不重复注入通用规则。
-主 Agent 用 `send_message` 显式交付。手工 DSL 明确声明的受权 Social SEND 也可读取前步模型
-或其衍生结果，沿原目标、operation 与回执执行；没有声明发送的内部 final 不被补发。
-`generated` 和 `yuki.generate` 新执行入口已退役；历史回执沿原 ID 保存，不重新派发。
-静态字面量提醒由 DSL 调用 `social.send_message`，与主 Agent 使用相同的 Social
-路由、净化和持久发送回执，不进入模型循环。SELF 与用户创建的提醒走同一合同；
-SELF 只可投递到原群。`delivery=none` 只执行内部工作，不会产生可见提醒。
-`runtime_work_enabled` 控制新持久 Work 接纳；关闭时普通模型自动化复用主 Agent 已有的非 Work 路径。
-原 cursor 和已完成 Work 的读取、记账与收尾不因当前开关重新执行模型。
-明确交付任务缺少 canonical Conversation 时仍按原投递来源报告无法执行。
+定时定义只保存 name、完整 goal/constraints、trigger、timezone 与 delivery.target。
+固定文字提醒也作为完整要求到点激活同一个 Main；没有静态直送、Compiler、专属能力
+注册表、steps、模板、save_as 或外层步骤解释器。原目标 Conversation、scope、generation
+及 run ID 构成本次真实来源，不生成真人 Inbound。群和私聊都复用共同历史准备；不再有
+scene/include_memories/history_limit/context_profile 读取预设或 creator_private 旁路。
+长期记忆沿共同检索工具按需读取。
 
-内部 DSL 的 `delivery_target` 记录已经解析的交付要求，不改变运行上下文的归属。
-`self_private` 核验创建者 Person，`current_group` 核验当前 Space，`none` 允许安静完成。
-原持久 Work 的业务完成与 Social 传输确认分别记录。分条、文件及附言按各自回执说明实际交付，
-未知结果不能被另一次成功覆盖，也不否决 Agent 的业务结束决定。内部最终正文始终不会被外层补发。
-核验在同一只读快照中读取工作与回执，不持 SQLite 写锁；原工作已归档、完整工具记录
-不可用时返回未知，不凭幸存的单条成功回执推断全部交付完成。
-单次 Social 操作的完整交付事实（计划、全部分片、文件/附言）由 `SocialOperationRepository.delivery_facts`
-在调用方同一读快照内解释；`RuntimeEffectQueries` 先核对 Work/效果归属再组合，Automation 消费类型化结论，
-不自行解释内部 Work journal 或 Social ORM 状态。
-查询不补写工具结果、解除未知效果围栏或改变 Social 执行语义。
-这证明传输事实，不证明内容在语义上已完成目标；不按措辞猜测进度或最终回答。
+已有 claim_due → 唯一到期槽 create_run → 共同 Main → 原回执/finish_run 安排链保持。
+到点首次激活使用原版本保存的 hash；同一次发生重扫或重启不购买第二份模型/工具执行，
+不同日期保留不同 run、私有执行身份和效果。时间扫描只负责安排，WorkScheduler 负责
+实际 Work 的等待和恢复，暂停或取消未来安排不停止已经接纳的 Work。
+
+定时入口不强制 Host accept，也不为工具、沙箱或环境增加先登记 Work 的门槛。
+真正需要持久工作时由 Main 沿普通 task_control 接纳；已接纳工作按原 Work ID、私有
+检查点、真实预算和效果回执接续。模型最终文字只作内部结束，QQ 可见内容必须显式发送。
+delivery.target 是任务要求与原目标，不裁剪工具或制造另一套静默 Agent。
 
 `task_control(complete)` 可在同一次调用中携带真实内部 `result`（主合同 17、
 worker 合同 4）。direct 与 Code 共用原结束入口，把 Agent 的结束决定写入 Work `checkpoint_json` 的
@@ -171,19 +161,18 @@ worker 合同 4）。direct 与 Code 共用原结束入口，把 Agent 的结束
 合法无工具 final（包括空正文）走同一结束路径；正文供内部结果，QQ 仍须显式发送。旧 unknown、暂停子目标、产物标签与辅助通知不否决业务完成，查询仍保存实际失败和未知事实。
 恢复先读 accepted_control，配齐原调用后由同一 writer 收尾，不再购买模型确认完成；没有持久响应的丢进程请求不自动重购。真实输入和目标修改沿原边界接续。
 
-历史脚本保留原 run/step、script_hash、工作 ID、预算、游标与已发生回执。
-步骤是否完成、发送是否确认沿原执行事实读取，不按模型依赖或正文分类新增收尾门槛。
+0110 一次升级将有真实高层要求的旧定义发布为干净 Main 任务，固定提醒原文和目标完整
+保留。不能恢复真实目标的多步骤、插件或模板定义停止未来安排并作为原件存档。
+原 run/version/raw/hash、私有检查点、历史步骤审计和已发生回执不变；旧 Main/Work
+沿原来源接续，未完成的外层 DSL 不再解释。原 hash 直接读取保存值，不由新 schema 重算。
+旧 cursor 与第二预算表仅为私有历史记录，不再写入或参与新执行。
 
-Social 回执来源键保留 128 字符以内的旧键；超长完整内部身份统一映射为版本化 SHA256。
-写入、查找和交付核验使用同一映射，不截断原执行 ID，也不改变任务恢复和预算身份。
-
-调度器的结构化步骤、执行游标、原有业务集成和发送回执保留；它们不再构成另一套模型工具声明。
-旧存储的 Agent `allowed_capabilities` 元数据由迁移删除；主 Agent 的固定工具合同不读取
-TaskSpec 内的工具白名单。
+Social 回执来源键保留旧键；较长的完整内部身份沿共同 SHA256 映射。写入、查找和
+回执核对使用同一映射，不截断原执行 ID，不以另一项 Schedule 的来源合并私有执行。
 
 自动化意图和自然语言时间由主 Agent 根据真实请求与上下文解释；歧义由 Agent 澄清。
 后端不使用关键词或正则判断是否应创建任务、不重新解析原话中的时间，也不按成功措辞拦截正文。
-后端继续校验结构化 schedule、时区、当前主体权限、目标来源及幂等；Agent 以持久化回执和真实 ID 报告结果。
+后端继续校验结构化 trigger、时区、当前主体权限、目标来源及幂等；Agent 以持久化回执和真实 ID 报告结果。
 `automation_list` 提供不按当前发言人过滤的全局任务简表，默认只列 active，并返回创建者的稳定
 Person ID、外部账号 ID 和当前可用显示名；`automation_get` 使用相同的创建者投影。读取不授予修改权限，
 更新、暂停、恢复、取消、立即运行和执行历史按真实 actor 授权：普通用户只能管理自己的任务，
@@ -196,9 +185,9 @@ Person ID、外部账号 ID 和当前可用显示名；`automation_get` 使用�
 | --- | --- | --- |
 | 用户消息 | WorkScheduler 选择，WorkResumer 恢复原 work/generation | Agent 显式 `send_message` |
 | SELF 自主群聊（legacy/semantic） | Host 接纳记录 → WorkScheduler 选择、WorkResumer 恢复原 initiative/work/generation | Agent 显式 `send_message`；允许 `NO_REPLY` |
-| 自动化生成、Agent 步骤 | AutomationWorker 保留原 run/step 游标；明确继续的 Work 或派生目标由 WorkScheduler 交回原 Agent 入口 | Agent 显式 `send_message`；旧模型尾发仅核对回执后退休 |
+| 定时 Main 发生 | AutomationWorker 保存唯一 run；实际 Work/派生目标由 WorkScheduler 交给共同 Main 入口 | Agent 显式 `send_message`，原 Social 回执不重发 |
 | 插件通知自主轮 | PluginBackgroundTurnWorker 保留原 job/event；尚存 Work 由 WorkScheduler 交回原 Host 入口 | Agent 显式 `send_message`；插件自己的通知 outbox 独立 |
-| 有真实事件的 SDK 主调用 | Host 持有正在运行的协程，后续由 WorkScheduler 选择并交回插件 Host 恢复 | 原调用方查询结果 |
+| 真实 actor/source 的 SDK 主调用 | Host 持有正在运行的协程，后续由 WorkScheduler 选择并交回插件 Host 恢复；无消息来源保原 run/执行编号 | 原调用方查询结果 |
 | 子 Agent | SubagentScheduler 选择，SubagentExecution 恢复原父子关系 | 父 Agent 根据真实子结果决定交付 |
 
 调度器负责有界选择、时钟维护和循环生命周期；来源重建、权限复核、工具后端与发送
@@ -228,8 +217,10 @@ SDK 回调等待约 5 秒可返回 `work_id/state/pending`；等待不是模型�
 接纳前超时取消准备，接纳后回调退出不取消 Host 工作。`return_to_caller` 的原同步结果
 保留供调用方读取，不按七天期限回收；查询不重新执行模型或工具。
 插件停止时取消进程内任务，保留已接纳工作和回执；失效授权不得继续执行或自行发送。
-没有真实事件的 SDK 调用仍须用目标明确的通知 API，禁止补造用户。
-主 Agent 正在执行插件工具时，插件递归调用主生成会被拒绝，不能抢占父锁或绕开总预算。
+SDK 主调用使用 Host 原 actor/source，不要求真人事件；SELF 保自身主体和原 run，定时来源保原到期执行。
+相同来源及参数读取原 Work 和保存结果；不同实际来源的独立调用隔离原协议上下文。
+SDK 先沿原 durable 来源取得实际 Work 租约，再准备上下文和请求；同 Conversation 已占用的执行租约仍沿原执行层报告冲突。
+不同真实来源和 Conversation 的独立调用是独立根，不声称继承另一根的预算，也不重置原 Work。
 嵌套的独立 agent_sessions 保留自己的提示词和完整历史，不按固定 120000 字符截取历史或
 24000 字符截取结果；每次模型尝试仍计入发起工作的预算，完整请求沿原 Runner/执行器容量
 核验。初始输入超过真实容量仍报告原容量错误，不承诺额外的私有 Rollup。
@@ -276,6 +267,8 @@ WorkScheduler 每轮先只读发现至多 32 个已完成、失败或到期的�
 未决私有协议恢复在群史准备前核原 journal、固定合同和持久来源依赖；合法时复用原
 协议，不无谓准备最终不会派发的新群史。完整配对的业务恢复使用当前获准聊天与轻量
 任务材料；整理只在完整往返安全点建立新输入，来源冲突保留明确链边界。
+旧请求的私聊读取会话可以与 Work 的群聊业务归属不同；恢复分别核原读取来源和
+原 Work 租约，不要求两者相等，也不将原私有请求转为公共历史。
 
 来源核验须覆盖实际提交的事件、观察、摘要版本和读取范围。只读快照准备结束后，在同一
 新的显式读快照核验原执行租约、SQL 执行时的期限、generation、owner、来源 revision 和
@@ -319,11 +312,8 @@ pending 完成通知可在同一事务退役。未观察的异步结果、staged
 来源和覆盖口径；owner、scope、generation、事件身份冲突不能用忽略重复插入隐藏。
 只有首次选中的摘要转移 parent artifact refs，写时批量核验真实 parent handles 已由
 对应摘要保留，空集不删除；后续 journal 失败与 projection、selection、refs 一起回滚。
-历史观察从实际选取及合法任务笔记确定来源根，再核验其依赖；合法未选的新 work-note
-仍进入下一请求。自动 snapshot 及只概括自动资料的摘要不作为通用笔记回读；它们为已经
-选中的首份/差量提供结构化来源。未选候选不能充当已观察覆盖。投影缓存淘汰后的最后可见
-资料只按实际保留的选取顺序重建一次，正常轮读取原投影内的小 JSON 缓存，不扫描全部聊天
-文本或每轮折叠所有观察。
+历史观察从实际选取及合法任务笔记确定来源根，再核验其依赖；合法未选的新 work-note仍进入下一请求。自动 snapshot 及只概括自动资料的摘要退出公共回读，没有资料基线恢复或逐轮折叠。未选候选不能充当已观察覆盖。
+0109 一次性清退公共资料和无事件触发选取，删除 visible_material_json；有用 note、原摘要事实及 Work 私有依赖保留，旧冻结迁移不改写。原付费请求、预算、工具与投递回执不被迁移重跑。
 
 普通 journal 保存因来源标量版本变化而失败时，最多在 writer 之外用原入口授权与来源
 guard 重新核验一次，再重备同一数据库保存；无原 guard 或真实来源变化保持拒绝。
@@ -429,8 +419,7 @@ Host 对原 run 独立对账真实效果；终态迟到回执保留，但不复�
 只有真实终态根 Work 才终结原 run，参与控制器不自行启动新任务。首次连接准备失败继续沿
 原 Work 重排，不因三次重试或未开始执行另判终结失败。
 WorkScheduler 始终启动；`RUNTIME_WORK_ENABLED` 控制普通聊天及 Host 调用的新 Work 接纳。
-关闭开关不停止 WorkScheduler 所管理的已有 Work，也不阻断 AutomationWorker 对原 cursor、
-已完成步骤与 Work 的消费。SELF 接纳继续使用这套持久恢复机制，不能产生无人调度的执行记录。
+关闭开关不停止 WorkScheduler 所管理的已有 Work，也不阻断原定时 Work 的恢复与发生结算。SELF 接纳继续使用这套持久恢复机制，不能产生无人调度的执行记录。
 SubagentScheduler 同样启动以恢复原子任务；新子任务接纳关闭不等于停止已有子任务的恢复。
 
 ## 预算、等待与异常
@@ -438,17 +427,13 @@ SubagentScheduler 同样启动以恢复原子任务；新子任务接纳关闭�
 自动化创建在最终短 writer 中复核永久创建者、当前权限与 SELF 场景；
 同 creation key 读取原创建版本，不重新校验已经过去的首次日期。普通 create/update/pause/resume/cancel/run_now
 与强制管理审计共用事务，审计失败一同回滚，before 使用写时实际版本；resume/run_now
-保留原准入 policy。读取目录不授予修改权限，修改按当前 canonical owner 或 superuser 核验。
+沿当前任务定义合同核验未来安排。读取目录不授予修改权限，修改按当前 canonical owner 或 superuser 核验。
 
-每段默认 24 次模型请求、32 次业务工具调用，单段用尽仅让出并排队续跑。新主任务、子任务
-及自动化 run 没有默认累计次数上限；root/run 持久计数不清零，显式有限限额仍同事务预留。
-未声明段限额的非 Work 自动化不制造段门；模型与工具在真实派发处消费原 Run 累计账本。
-无 Work 时，明确有限段额或累计预算耗尽沿原失败事实退出，不返回固定停止文字冒充普通成功。
-旧已登记的有限预算保留原值，不因升级、换步骤、重启或取结果获得新额度。纯 DSL 保留原声明限制。
-含 Yuki 生成步骤的脚本采用原 Run/Work 累计账本，显式及旧存有限值仍消费原上限。
-准备阶段及辅助搜索的实际模型请求也记入原 Run；纯结果读取不转计另一个 Work 的旧累计。
-自动化不制造累计激活期限；原脚本明示或已存的有限 timeout 由原 Run 外层按 active_seconds 消费，
-等待期间不计为这段活动执行。独立 WorkScheduler 没有因此新增墙钟计时器；Provider 请求超时和原总预算仍有效。
+所有 Main 激活使用同一部署配置的模型/工具段预算。持久工作仅记入原根 Work 账本，
+同一次发生不再叠加定时 limits、timeout、第二 run 预算或二次扣费。根 Work 的既存
+累计值、明确有限预算和真实 Provider 超时仍保持；恢复不清零，不为升级取得新额度。
+发生记录在真实根 Work 终态后投影其计数并安排下一次时间；没有 Work 的激活结算其
+实际返回计数，丢进程或未知执行保留 uncertain，不重跑模型或工具猜测结果。
 
 主模型请求在 `TaskModelExecutor` 统一接纳；AutomationWorker 不再按模型池 N−1 限制整项任务。
 后台与维护请求合计不超过
@@ -473,43 +458,34 @@ SubagentScheduler 同样启动以恢复原子任务；新子任务接纳关闭�
 实施；无普通私聊入口的 SDK backend 不获得该抢占状态。
 主请求的派发 admission 在真实原生工具请求启动前调用该保护；不依赖已退休的旧循环。
 
-自动化 claim 使用每次唯一所有者并续期，提交时再次核验；忙任务延迟接纳，不创建新 run。
-Work、工作者与自动化的续租任务由原激活 task 监督。续租返回失效、非瞬态数据库错误
-或计量失败会停止该激活，并交回原 Work/run 的恢复；不新建执行身份、不清空预算或 journal。
-续租只对具有明确 SQLite `BUSY` 扩展错误码的错误，在最后确认的租约到期前有界重试；
-`LOCKED` 不按外部 writer 繁忙重试。renew 与 meter 分别记录失败阶段，meter 写入失败
-不在心跳中重放。等待 writer 后的自动化续租也在 SQL 执行时检查原 claim 尚未到期。
-新 run 与原 owner/slot、既存 version 唯一引用及初始 ready 游标在同一短事务登记；
-version 保存该次原 script、delegation 和已绑定 canonical 目标，更新后的定义供新 run 使用。
-登记后重启恢复同一个 run，改名或新授权不覆写旧目标；缺失旧版本事实不按 hash、日期或当前角色猜补。
-运行时 creator_user_id 模板变量使用该原永久 Person 当前已解析的执行账号；历史创建账号仍作来源元数据，
-不拿旧 QQ 账号替代当前执行范围，也不随账号切换提高原委托权限。
-恢复已接纳的历史 running run 时，只消费原 run、版本、游标及回执，不按当前时段重新派发。
-缺少初始游标的旧 run 明确记为 uncertain/missing_initial_run_cursor，保留已有计数、预算与结果，
-不补造空游标或重新执行业务步骤；缺失原版本也不按当前定义补造。
-前置权限、路由或配置拒绝同样保留累计计数；旧工作者不能重新载入新领取者身份来通过执行检查。
-停机等待有界，取消后按持久检查点恢复。插件自主轮不会因两次会话变动直接放弃。
+定时 claim 使用每次唯一所有者并续期，首次发生提交时核对原 owner、到期时间和版本。
+会话忙时不分配新 run。原版本与绑定的 canonical 目标保存于既有版本表，新定义只用于
+未来发生；缺失旧版本事实不按当前角色、日期或 hash 猜补。实际身份从原永久 Person
+当前账号关系解析，历史创建账号仅为来源元数据。
+每次新发生使用原目标会话的当前 generation；创建时的旧 generation 不封锁未来发生。
+已接纳 Work 仍绑定原 generation，重置不会重开旧工作或清零其预算、效果与回执。
+Main 的读取与内部执行不要求发送路由未暂停，也不按后来的主动发送路由重选原触发目标。
+实际发送沿共同 Social 路由与发送权限核验，暂停发送仍在发送处生效。
+
+Work、子任务与定时激活的租约由原 task 监督；失效后沿原 Work/run 事实收拢，不新建
+执行身份或清空检查点。具有明确 SQLite BUSY 扩展码的续租错误沿原租约期限重试，
+LOCKED 不当外部 writer 繁忙；心跳不重放模型、工具或计量。已有 Work 只由共同调度器
+恢复，不再周期扫描 running_runs、步骤游标或 pending_work_id。未接纳 Work 且丢失
+进程的原发生一次记录未知，不重新激活。
 
 超时的写入和发送可能已经提交。插件副作用不因 transient_once 自动重试，未知结果携带
 `uncertain` 回执，同一原调用不再取得派发资格；其他独立调用仍可执行。读取可按声明重试。
-自动化仅通过 Host 私有类型化结果取得真实插件 Work/Social 事实，不从普通业务 JSON 的
-state、pending、work_id、usage 或 uncertain 字段推断控制、预算或回执。同步和异步读取保同一
-SDK结果投影；原 waiting/suspended 不当成功，查询不重计旧累计或重执行 handler。
-未取得可核验结果的外层 dispatch 恢复为 uncertain，不猜测成功或重跑。
-DSL 外层 deadline 在权限复核后区分实际进入 handler 的 SEND/MUTATE 与纯 READ、
-尚未通过验证的步骤：前者没有终态效果证据时保留 uncertain，后两者保持 failed。
-原 cursor、run/step 请求键和 Social receipt 不重建；单效果的已确认回执可以说明
-accepted/failed，部分复合交付不充当整个步骤已完成的证据。步骤结果保存在原 cursor 和领域
-回执，不等待独立 step 审计 writer；真正检查点失败仍保原已确认效果，不再次调用 handler。
+插件 Work/Social 状态由共同 Host 类型化回执解释，业务 JSON 的 state、pending、
+work_id 或 usage 不授予恢复、控制或预算权。查询不重计旧累计，不重新执行原工具。
+原效果未知时保留未知，同一原调用不得重新派发，独立新调用仍沿普通执行合同处理。
 
 普通回答无需接纳 Work。模型最终文字可结束内部循环，但不触发发送；
 工作完成由 Agent 提交决定，原 writer 收拢实际所属执行。发送是否成功只看显式发送回执，
 不自动把工具 JSON 或固定成功句发到聊天中。
 分条 `send_message` 在首条网关调用前持久记录计划段数，并按原调用的确定性子调用 ID
-核对每一段 Social 回执。自动化交付检查在最终工具汇总缺失时，仅凭完整计划和全部
-成功的同目标子回执确认实际投递；旧父回执没有计划段数时仍为未知。这个核对不补写
-原 Work 工具结果，也不给原未知调用重派资格；要自动续原 Work，
-必须先建立首写时持久的 Work effect 与 Social 父回执所有权关联。
+核对每一段 Social 回执。完整计划和同目标的全部子回执说明实际投递，部分成功不
+冒充整次发送成功；缺失计划或结果保持未知。领域回执不补造原 Work 工具结果，也不
+给未知调用重新派发资格。原 Work effect 与 Social 操作之间的真实归属继续核验。
 明确管理命令和模型完全不可用时的运行状态反馈与普通 Agent 正文区分。
 
 较长的用户交互任务可在 `task_control.accept` 声明 `reporting=interactive`；
@@ -531,9 +507,9 @@ accepted/failed，部分复合交付不充当整个步骤已完成的证据。�
 不创建第二项 Agent 工作。局部满足的 `all` 条件留在绑定中；超时向原 Work 交付明确结果，
 不视作同意。插件必须显式设置 SDK 的 `resume_waiting_work`，否则维持原通知和新轮行为；
 命中原 Work 的事件不会同时启动独立的插件 Agent 轮。等待命中与输入只保存事件引用和匹配元数据；构造请求时按当前 canonical Conversation、generation 和可见性读取原账本正文，历史 matched.text 不再采用。
-AutomationWorker 只管理自己的计划、claim 和原 run/step 游标；等待状态通过 Runtime 查询。自动化内的 Work 暂停仍是原 step 的 pending 状态，保留原 run/cursor/Work ID；轮询只读原暂停状态，明确恢复后续跑，不将 suspended 升级为关闭整项自动化。
-释放自动化 claim 前后均核对原 Work 等待是否仍活跃，信号先到或后到都唤醒原计划，
-不因停放覆盖已经到达的唤醒，也不创建新 run。
+AutomationWorker 只扫描未来安排、接纳唯一发生并结算真实结果。实际 Work 的等待
+和信号由 WorkWaitRepository 与 WorkScheduler 沿原 Work ID 处理，不唤醒第二个步骤机，
+也不因停放或迟到信号创建另一份 run。
 信号到达不解锁 `suspended`：容量和来源失效等独立暂停原因不被信号覆盖，信号作为待处理
 输入保留在原邮箱。Work 详情（控制面 `read_work.management`）与等待详情（`wait_status` 的 `work`）
 同时给出暂停原因、已到达信号及其输入状态、可用的原 resume/cancel 动作；显式 resume 消费原信号，
@@ -551,13 +527,13 @@ Emoji 只接管候选中的到期分析租约，不全局清扫过期行。Work 
 
 ## 持久化与验证
 
-0060 为新的自动化创建调用键增加部分唯一索引，为跨步骤预算增加 run 级计数。
+既有迁移保存自动化创建调用键、历史发生与累计计数；0110 只发布干净未来定义，旧执行记录存档。
 0071 为 SELF 自动化增添可判别创建者和唯一调用键，并增添 SELF 时区、Work 等待绑定与
 插件恢复选择字段；原 Person 任务和运行回执不重建身份。
 同一 Host 调用重放和并发提交只登记一次，参数冲突明确拒绝；同事件的两个合法调用不合并。
-automation_list 的 match_task 按结构化目标、时间、读取范围及交付查询等价待执行项，忽略显示名称；
+automation_list 的 match_task 按完整目标、约束、时间及交付要求查询等价待执行项，忽略显示名称；
 只返回候选，不自动合并或阻止用户要求的另一个实例，不猜测近义自然语言。
-迁移继承既有 run 及未完成步骤的消耗；缺恢复所有者的旧 SDK/自动化 work 明确暂停并保留原因。
+迁移保留既有 run、Work 的消耗与旧步骤原件；缺恢复所有者的旧 SDK/自动化 work 明确暂停并保留原因。
 迁移不重跑旧日记、不清除原 work、artifact、预算或交付回执。
 
 V6 迁移链从 `0064` 接到 `0066`（autonomy 接纳和反馈）→

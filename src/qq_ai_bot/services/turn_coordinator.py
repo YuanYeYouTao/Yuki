@@ -311,15 +311,19 @@ class ConversationTurnCoordinator:
             return self._background_token(conversation_key, state)
 
     @staticmethod
-    def _background_token(conversation_key: str, state: _TurnState) -> TurnToken:
+    def _background_token(
+        conversation_key: str, state: _TurnState, origin: TurnOrigin = TurnOrigin.PLUGIN_BACKGROUND
+    ) -> TurnToken:
         state.version += 1
-        state.origin = TurnOrigin.PLUGIN_BACKGROUND
+        state.origin = origin
         state.mutation_started = False
         state.protected_version = None
-        return TurnToken(conversation_key, state.version, TurnOrigin.PLUGIN_BACKGROUND)
+        return TurnToken(conversation_key, state.version, origin)
 
     @asynccontextmanager
-    async def background_turn(self, conversation_key: str) -> AsyncIterator[TurnToken | None]:
+    async def background_turn(
+        self, conversation_key: str, *, origin: TurnOrigin = TurnOrigin.PLUGIN_BACKGROUND
+    ) -> AsyncIterator[TurnToken | None]:
         """Atomically check idle and reserve until the background attempt returns."""
         task = asyncio.current_task()
         if task is None:
@@ -329,7 +333,7 @@ class ConversationTurnCoordinator:
             if self._occupied(state):
                 token = None
             else:
-                token = self._background_token(conversation_key, state)
+                token = self._background_token(conversation_key, state, origin)
                 state.holders[task] = state.holders.get(task, 0) + 1
         try:
             yield token

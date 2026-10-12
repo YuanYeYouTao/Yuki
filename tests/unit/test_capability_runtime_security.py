@@ -41,7 +41,6 @@ def _descriptor(
     effect: CapabilityEffect = CapabilityEffect.READ_STATE,
     risk: CapabilityRisk = CapabilityRisk.READ,
     schema: dict[str, object] | None = None,
-    origins: frozenset[TurnOrigin] | None = None,
     permissions: frozenset[str] = frozenset(),
     revision: str = "1",
 ) -> CapabilityDescriptor:
@@ -61,7 +60,6 @@ def _descriptor(
         effect=effect,
         risk=risk,
         trust_source=CapabilityTrustSource.CORE,
-        allowed_origins=origins or frozenset(TurnOrigin),
         required_permissions=permissions,
         uses_external_data=False,
         cancellable=True,
@@ -601,7 +599,8 @@ def test_read_only_origin_hides_destructive_and_writes() -> None:
     assert [item.model_name for item in visible] == ["web_search"]
 
 
-def test_destructive_is_visible_for_user_and_autonomous_not_plugin() -> None:
+@pytest.mark.parametrize("origin", tuple(TurnOrigin))
+def test_destructive_uses_actual_permissions_for_every_origin(origin) -> None:
     destructive = _descriptor(
         "admin_execute_action",
         namespace="admin.action.write",
@@ -617,21 +616,18 @@ def test_destructive_is_visible_for_user_and_autonomous_not_plugin() -> None:
             permissions=frozenset({"superuser"}),
         )
     }
-    user = engine.visible(
+    allowed = engine.visible(
         (destructive,),
-        CapabilityPolicyContext(**context, origin=TurnOrigin.USER_MESSAGE),
+        CapabilityPolicyContext(**context, origin=origin),
     )
-    autonomous = engine.visible(
+    refused = engine.visible(
         (destructive,),
-        CapabilityPolicyContext(**context, origin=TurnOrigin.AUTONOMOUS_GROUP),
+        CapabilityPolicyContext(
+            authority=AuthorityContext(actor_user_id="u1", is_superuser=False), origin=origin
+        ),
     )
-    plugin = engine.visible(
-        (destructive,),
-        CapabilityPolicyContext(**context, origin=TurnOrigin.PLUGIN_BACKGROUND),
-    )
-    assert [item.model_name for item in user] == ["admin_execute_action"]
-    assert [item.model_name for item in autonomous] == ["admin_execute_action"]
-    assert plugin == ()
+    assert [item.model_name for item in allowed] == ["admin_execute_action"]
+    assert refused == ()
 
 
 def test_catalog_entry_round_trip_for_security_fixtures() -> None:

@@ -351,7 +351,10 @@ class WorkRepository:
             )
             if parent is None or (lease.work_id is not None and lease.work_id != parent_work_id):
                 raise WorkConflict("work_parent_source_invalid")
-        elif source.get("origin") == "self_initiative" or source.get("principal_kind") == "self":
+        elif source.get("origin") == "self_initiative" or (
+            source.get("origin") == "scheduled_automation"
+            and source.get("principal_kind") == "self"
+        ):
             if (
                 source.get("origin") == "scheduled_automation"
                 and source.get("principal_kind") == "self"
@@ -2010,6 +2013,7 @@ class WorkRepository:
 
     async def reclaim_terminal(self) -> None:
         """Keep the latest 128 terminal work receipts; never evict an active work."""
+        from qq_ai_bot.persistence.models import MemoryEvidenceModel, MemoryToolReceiptModel
         from qq_ai_bot.runtime.subagent_schema import media, media_refs
 
         def terminal_query() -> Any:
@@ -2086,6 +2090,12 @@ class WorkRepository:
                             select(work.c.parent_work_id).where(work.c.parent_work_id.is_not(None))
                         ),
                         work.c.id.in_(select(_OWNER_JOBS.c.work_id)),
+                        work.c.id.in_(
+                            select(MemoryToolReceiptModel.execution_id).join(
+                                MemoryEvidenceModel,
+                                MemoryEvidenceModel.tool_receipt_id == MemoryToolReceiptModel.id,
+                            )
+                        ),
                     ),
                 )
                 .values(

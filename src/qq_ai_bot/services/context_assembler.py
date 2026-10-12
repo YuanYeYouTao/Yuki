@@ -6,12 +6,11 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from datetime import UTC
 from typing import Any
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
-from qq_ai_bot.automation.registry import CapabilityExecutionContext
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
 from qq_ai_bot.conversation.rollup.models import ConversationRollupState
@@ -27,7 +26,6 @@ from qq_ai_bot.domain.messages import ChatMessage, InboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
 from qq_ai_bot.execution_trace.phases import collect_phase_metrics
-from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.model_runtime.capacity import estimate_text_tokens
 from qq_ai_bot.persistence.event_repository import ConversationReadVersion
 from qq_ai_bot.persistence.repositories import (
@@ -38,7 +36,6 @@ from qq_ai_bot.persistence.repositories import (
 from qq_ai_bot.runtime.trigger import (
     ExternalEventTurnTrigger,
     SandboxTaskTurnTrigger,
-    SelfInitiativeTrigger,
     WorkResumeTrigger,
 )
 from qq_ai_bot.services.rollup_wakeup import rollup_wakeup_history, rollup_wakeup_watermark
@@ -71,7 +68,6 @@ class AssembledContext:
     current_message: ChatMessage
     current_time: TimeContext
     metrics: ContextMetrics
-    visible_material: dict[str, Any] = field(default_factory=dict)
     visible_event_ids: frozenset[int] = frozenset()
     history_anchor_event_id: int | None = None
     rollup_text: str = ""
@@ -187,13 +183,7 @@ class ContextAssembler:
             return None
         if turn is not None:
             await self._ensure_turn_generation(identity, turn)
-        current, _ = await self._ledger.read_scope_context(identity, limit=0)
         original = recovery.guard.version
-        if (current.conversation_id, current.generation) != (
-            original.conversation_id,
-            original.generation,
-        ):
-            raise ConversationCoverageError("protocol recovery scope changed")
         return AssembledContext(
             metadata_payload={},
             history_messages=(),
@@ -206,40 +196,18 @@ class ContextAssembler:
             recovery_protocol=True,
         )
 
-    async def assemble_self_initiative(
+    async def _assemble_activation(
         self,
         *,
-        trigger: SelfInitiativeTrigger,
-        runtime: RuntimeConfigSnapshot,
+        identity: ConversationScope,
         turn: ConversationTurnSnapshot,
+        content: str,
+        runtime: RuntimeConfigSnapshot,
     ) -> AssembledContext:
-        """Project the real group history for SELF, without a synthetic human event."""
-        identity = ConversationScope.group(trigger.bot_user_id, trigger.group_id)
-        recovery = await self._protocol_recovery_context(identity, turn)
-        if recovery is not None:
-            return recovery
+        """Prepare the common history for a real execution without a chat event."""
         snapshot = await self._load_history_snapshot(identity, turn=turn, before_event_id=None)
-        data: dict[str, Any] = {
-            "scene": {
-                "type": "group",
-                "group_id": trigger.group_id,
-            },
-        }
-        metadata = {"items": [{"id": key, "data": value} for key, value in data.items()]}
-        current = ChatMessage(
-            role="user",
-            content=json.dumps(
-                {
-                    "kind": "self_initiative",
-                    "initiative_run_id": trigger.run_id,
-                    "instruction": trigger.instruction,
-                    "current_actor": "SELF",
-                    "source_content_trust": "untrusted_context",
-                },
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ),
-        )
+        metadata = {"scene": "群聊" if identity.scope_type is ScopeType.GROUP else "私聊"}
+        current = ChatMessage(role="user", content=content)
         remaining = max(
             0,
             self._history_token_budget(runtime)
@@ -249,8 +217,8 @@ class ContextAssembler:
             snapshot=snapshot,
             recent=snapshot.recent,
             current_event_id=None,
-            content=trigger.instruction,
-            yuki_account_ids=frozenset({trigger.bot_user_id}),
+            content=content,
+            yuki_account_ids=frozenset({identity.bot_user_id}),
             current_message_override=current,
             remainder=remaining,
             capacity_remainder=max(
@@ -264,8 +232,8 @@ class ContextAssembler:
         bounded = self._bounded_history(
             recent,
             current_event_id=None,
-            content=trigger.instruction,
-            yuki_account_ids=frozenset({trigger.bot_user_id}),
+            content=content,
+            yuki_account_ids=frozenset({identity.bot_user_id}),
             current_message_override=current,
             bot_display_name=self._settings.bot_display_name,
             timezone=self._settings.default_timezone,
@@ -305,13 +273,15 @@ class ContextAssembler:
             read_version=snapshot.read_version,
             history_fragments=bounded.history_fragments,
             history_event_fragments=bounded.history_event_fragments,
-            projection_scope="self_initiative",
+            projection_scope="main",
         )
 
     async def assemble_plugin(
         self,
         *,
-        inbound: InboundMessage,
+        inbound: InboundMessage | None,
+        identity: ConversationScope,
+        source_event_id: int | None = None,
         content: str,
         metadata: dict[str, Any],
         current_time: TimeContext,
@@ -321,7 +291,7 @@ class ContextAssembler:
         capacity_budget: int | None = None,
     ) -> AssembledContext:
         """Use the canonical Rollup/raw-tail projection within the plugin read grant."""
-        scope = inbound.scope()
+        scope = identity
         recovery = await self._protocol_recovery_context(scope)
         if recovery is not None:
             return recovery
@@ -349,7 +319,7 @@ class ContextAssembler:
                 )
             if not loaded.raw_complete:
                 raise ConversationCoverageError("plugin context requires explicit compaction")
-            rows = tuple(row for row in loaded.raw_events if row.id != inbound.source_event_id)
+            rows = tuple(row for row in loaded.raw_events if row.id != source_event_id)
             rollup = loaded.rollup.summary_text if loaded.rollup else ""
             rollup_mode = loaded.rollup.summary_kind.value if loaded.rollup else None
             coverage = loaded.effective_coverage
@@ -407,128 +377,6 @@ class ContextAssembler:
             projection_scope=projection_scope,
         )
 
-    @staticmethod
-    async def assemble_automation(
-        *,
-        settings: Settings,
-        ledger: EventLedgerRepository,
-        memories: MemoryFactService,
-        context: CapabilityExecutionContext,
-        instruction: str,
-        profile: str,
-        current_time: TimeContext,
-        token_budget: int,
-    ) -> AssembledContext:
-        """Apply the declared read scope, then use the normal event projection.
-
-        An automation is a real backend trigger, never a synthetic QQ sender.
-        Its declared context remains narrower than the target conversation when
-        required; sharing the composer grants no additional reads or effects.
-        """
-        if profile not in {"none", "creator_private", "current_group"}:
-            raise ConversationCoverageError("invalid automation context profile")
-        declared = context.automation_context
-        if profile != "none" and profile != declared.scene:
-            raise ConversationCoverageError("automation context profile exceeds declaration")
-        if profile == "current_group" and not context.current_group_id:
-            raise ConversationCoverageError("automation group context is unavailable")
-        data: dict[str, Any] = {}
-        rows: tuple[EventRecord, ...] = ()
-        read_version = None
-        if profile != "none":
-            if declared.include_memories:
-                data["memories"] = (
-                    []
-                    if context.creator_kind == "self"
-                    else [
-                        {"content": row.content, "source_type": row.source_type}
-                        for row in await memories.list_person(context.creator_user_id, limit=30)
-                    ]
-                )
-                data["preferences"] = (
-                    []
-                    if context.creator_kind == "self"
-                    else [
-                        {"key": row.key, "value": row.value}
-                        for row in await memories.list_preferences(
-                            context.creator_user_id, limit=30
-                        )
-                    ]
-                )
-                if profile == "current_group" and context.current_group_id:
-                    data["group_memories"] = [
-                        {"content": row.content, "source_type": row.source_type}
-                        for row in await memories.list_group(context.current_group_id, limit=30)
-                    ]
-            if declared.history_limit:
-                # The send target's canonical id is not a read-scope grant. Resolve
-                # the declared transport scope through the canonical ledger instead.
-                scope = (
-                    ConversationScope.group(context.bot_user_id, context.current_group_id)
-                    if profile == "current_group" and context.current_group_id
-                    else ConversationScope.private(context.bot_user_id, context.creator_user_id)
-                )
-                read_version, rows = await ledger.read_scope_context(
-                    scope,
-                    limit=declared.history_limit,
-                    message_only=True,
-                )
-        renderer = ChatEventPromptRenderer(
-            rows,
-            bot_display_name=settings.bot_display_name,
-            timezone=context.timezone,
-        )
-        rendered_history = renderer.main_agent_history(rows)
-        history = tuple(message for _, _, message in rendered_history)
-        trigger = {
-            "origin": context.authority.origin.value,
-            "content_trust": "untrusted_automation_input",
-            "instruction": instruction,
-        }
-        content = json.dumps(trigger, ensure_ascii=False, separators=(",", ":"))
-        data["automation"] = {"automation_id": context.automation_id}
-        history_size = sum(len(message.content or "") for message in history)
-        metadata_size = len(json.dumps(data, ensure_ascii=False))
-        if (
-            sum(estimate_text_tokens(message.content or "") for message in history)
-            + estimate_text_tokens(json.dumps(data, ensure_ascii=False))
-            + estimate_text_tokens(content)
-            > token_budget
-        ):
-            raise ConversationCoverageError("automation context requires explicit compaction")
-        return AssembledContext(
-            metadata_payload=data,
-            history_messages=history,
-            current_message=ChatMessage(role="user", content=content),
-            current_time=current_time,
-            metrics=ContextMetrics(
-                metadata_characters=metadata_size,
-                history_characters=history_size,
-                history_messages=len(history),
-                current_message_characters=len(content),
-                raw_history_window_shifted=False,
-            ),
-            visible_event_ids=frozenset(row.id for row in rows),
-            read_version=read_version,
-            projection_scope=json.dumps(
-                [
-                    "automation",
-                    context.automation_id,
-                    context.creator_user_id,
-                    profile,
-                    declared.model_dump(mode="json"),
-                ],
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
-            history_fragments=tuple((ids, message) for _, ids, message in rendered_history),
-            history_event_fragments=tuple(
-                (ids, message)
-                for row in rows
-                for _, ids, message in renderer.main_agent_history((row,))
-            ),
-        )
-
     async def assemble(
         self,
         *,
@@ -562,6 +410,10 @@ class ContextAssembler:
                 turn=turn,
                 runtime=runtime,
             )
+        if inbound is None and profile is None:
+            return await self._assemble_activation(
+                identity=identity, turn=turn, content=content, runtime=runtime
+            )
         if inbound is None or profile is None:
             raise ConversationCoverageError("message turn requires a real inbound actor")
         if turn.trigger_event_id is None:
@@ -589,14 +441,8 @@ class ContextAssembler:
         )
         current_time = self._time.current_in_timezone(metadata.timezone)
 
-        context: dict[str, Any] = {
-            "scene": {
-                "type": inbound.scope_type.value,
-                "group_id": inbound.group_id,
-            },
-        }
         total_budget = self._history_token_budget(runtime)
-        metadata_payload = {"items": [{"id": key, "data": value} for key, value in context.items()]}
+        metadata_payload = {"scene": "群聊" if inbound.group_id else "私聊"}
         metadata_json = json.dumps(
             metadata_payload,
             ensure_ascii=False,
@@ -737,19 +583,13 @@ class ContextAssembler:
         ) or event.id <= snapshot.starts_after_event_id:
             raise ConversationCoverageError("external trigger is already covered")
         recent = snapshot.recent
-        context: dict[str, Any] = {
-            "scene": {
-                "type": event.scope_type.value,
-                "group_id": event.group_id,
-            }
-        }
+        context: dict[str, Any] = {"scene": "群聊" if event.group_id else "私聊"}
         if event.group_id is None:
             profile = await self._people.get(user_id=trigger.target_id)
             if profile is None:
                 raise ConversationCoverageError("external private target profile is unavailable")
             context["conversation_target_person"] = {
                 "user_id": trigger.target_id,
-                "nickname": profile.nickname,
                 "display_name": (
                     profile.group_card if profile.scope_type is ScopeType.GROUP else ""
                 )
@@ -757,7 +597,7 @@ class ContextAssembler:
                 or profile.user_id,
                 "not_current_speaker": True,
             }
-        metadata_payload = {"items": [{"id": key, "data": value} for key, value in context.items()]}
+        metadata_payload = context
         metadata_json = json.dumps(metadata_payload, ensure_ascii=False, separators=(",", ":"))
         remainder = max(
             0, self._history_token_budget(runtime) - estimate_text_tokens(metadata_json)

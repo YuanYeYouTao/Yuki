@@ -80,6 +80,7 @@ class SelfTaskSource:
     actor_user_id: str = ""
     actor_person_id: None = None
     event_id: None = None
+    actor_is_superuser: bool = False
 
     def actor(self, execution_id: str) -> ToolActor:
         """The stable SELF principal of the original run; no person is borrowed."""
@@ -128,6 +129,7 @@ class AutomationTaskSource:
     content: str = field(compare=False)
     origin: str = TurnOrigin.SCHEDULED_AUTOMATION.value
     event_id: None = None
+    actor_is_superuser: bool = False
 
     def actor(self, execution_id: str) -> ToolActor:
         return ToolActor(
@@ -154,7 +156,6 @@ async def recover_automation_source(
     settings: Settings | None,
 ) -> AutomationTaskSource:
     from qq_ai_bot.automation.repository import AutomationRepository
-    from qq_ai_bot.runtime.work_recovery_schema import invocations
     from qq_ai_bot.runtime.work_schema_v1 import work
 
     async with database.sessions() as session:
@@ -165,27 +166,25 @@ async def recover_automation_source(
             else None
         )
         conversation = await session.get(CanonicalConversationModel, conversation_id)
-        cursor = (
-            (await session.execute(select(invocations).where(invocations.c.run_id == run.id)))
-            .mappings()
-            .first()
-            if run
-            else None
-        )
         if (
             run is None
             or owner is None
             or conversation is None
-            or cursor is None
             or source.get("owner") != "automation"
             or owner.id != source.get("automation_id")
-            or cursor["script_hash"] != owner.script_hash
             or source.get("parent_execution_id")
-            != f"automation:{run.id}:{source.get('step_id')}:{owner.script_hash}"
+            != (
+                f"automation:{run.id}:{source['step_id']}:{owner.script_hash}"
+                if source.get("step_id") is not None
+                else f"automation:{run.id}:{owner.script_hash}"
+            )
+            or (
+                source.get("script_hash") is not None and source["script_hash"] != owner.script_hash
+            )
             or source.get("conversation_id") != conversation_id
             or conversation.generation != source.get("generation")
             or owner.creator_kind != source.get("principal_kind", "person")
-            or owner.canonical_creator_person_id != source.get("actor_person_id")
+            or owner.canonical_creator_person_id != (source.get("actor_person_id") or None)
             or owner.canonical_presence_id != source.get("presence_id")
             or owner.bot_user_id != source.get("bot_user_id")
             or owner.canonical_target_space_id != conversation.space_id
@@ -202,6 +201,7 @@ async def recover_automation_source(
             raise ValueError("task_presence_disabled")
         actor_person = owner.canonical_creator_person_id
         actor_user = ""
+        actor_is_superuser = False
         if owner.creator_kind == "self":
             scene = owner.authority_snapshot
             if (
@@ -211,7 +211,6 @@ async def recover_automation_source(
                 or source.get("trigger_event_id") is not None
                 or source.get("initiative_run_id") is not None
                 or scene.get("canonical_conversation_id") != conversation_id
-                or scene.get("conversation_generation") != conversation.generation
                 or scene.get("canonical_space_id") != conversation.space_id
                 or scene.get("canonical_presence_id") != presence.id
             ):
@@ -220,9 +219,10 @@ async def recover_automation_source(
             from qq_ai_bot.automation.control_context import resolve_execution_identity
 
             assert settings is not None and actor_person is not None
-            actor_user, _ = await resolve_execution_identity(
+            actor_user, permission = await resolve_execution_identity(
                 session, settings, owner_id=actor_person
             )
+            actor_is_superuser = permission.value == "superuser"
         if conversation.space_id:
             space = await session.get(CanonicalSpaceModel, conversation.space_id)
             binding = await session.scalar(
@@ -254,7 +254,8 @@ async def recover_automation_source(
             presence.id,
             owner.bot_user_id,
             target,
-            content or "",
+            content or source.get("instruction", ""),
+            actor_is_superuser=actor_is_superuser,
         )
 
 

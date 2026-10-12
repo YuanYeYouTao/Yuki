@@ -104,16 +104,12 @@ class SocialService:
     async def _validate_self_context(
         self, context: SocialContext, *, session: AsyncSession | None = None
     ) -> None:
-        if context.origin == "scheduled_automation" or context.automation_run_id is not None:
+        if context.automation_run_id is not None:
             if (
-                context.origin != "scheduled_automation"
-                or context.automation_run_id is None
-                or not context.space_id
+                not context.space_id
                 or not context.presence_id
                 or context.trigger_event_id is not None
                 or context.caused_by_event_id is not None
-                or context.person_refs
-                or context.account_refs
                 or context.inbound is not None
                 or context.actor is None
                 or context.actor.principal_kind != "self"
@@ -152,28 +148,25 @@ class SocialService:
                 if (
                     authority.principal_kind != "self"
                     or authority.permission_level is not PermissionLevel.SELF
-                    or authority.origin.value != context.origin
                     or authority.bot_user_id != owner.bot_user_id
                     or authority.bot_user_id != context.actor.bot_user_id
                     or authority.current_group_id != context.actor.group_id
                     or authority.canonical_conversation_id != context.conversation_id
-                    or authority.conversation_generation != conversation.generation
                     or authority.canonical_space_id != context.space_id
                     or authority.canonical_presence_id != context.presence_id
                 ):
                     raise SocialError("self_automation_scene_changed")
             return
-        if context.origin != "self_initiative" and context.initiative_run_id is None:
+        if context.initiative_run_id is None and (
+            context.actor is None or context.actor.principal_kind != "self"
+        ):
             return
         if (
-            context.origin != "self_initiative"
-            or not context.initiative_run_id
+            not context.initiative_run_id
             or not context.space_id
             or not context.presence_id
             or context.trigger_event_id is not None
             or context.caused_by_event_id is not None
-            or context.person_refs
-            or context.account_refs
             or context.inbound is not None
             or context.actor is None
             or context.actor.principal_kind != "self"
@@ -405,8 +398,6 @@ class SocialService:
         else:
             raw = str(args["target_id"])
         target = SocialTarget.model_validate({"kind": kind, "id": raw})
-        if _self_scene(context) and (target.kind != "space" or str(target.id) != context.space_id):
-            raise SocialError("self_target_outside_current_space")
         await self.check_target(target)
         return target
 
@@ -466,10 +457,8 @@ class SocialService:
         return result
 
     async def send_route(self, target: SocialTarget, context: SocialContext) -> ResolvedSend:
-        if _self_scene(context):
+        if _self_scene(context) and target.kind == "space" and str(target.id) == context.space_id:
             await self._validate_self_context(context)
-            if target.kind != "space" or str(target.id) != context.space_id:
-                raise SocialError("self_target_outside_current_space")
             async with self.database.sessions() as session:
                 bindings = list(
                     await session.scalars(
@@ -840,24 +829,6 @@ class SocialService:
                 return await self._receipt_result(prior, context)
             raise SocialError("invalid_message_arguments")
         await self._validate_self_context(context)
-        if _self_scene(context):
-            if name not in {
-                "send_message",
-                "find_contacts",
-                "read_conversation_history",
-                "get_group_members",
-            }:
-                raise SocialError("self_social_action_not_allowed")
-            if args.get("mentions"):
-                raise SocialError("self_mentions_not_allowed")
-            if name in {"find_contacts", "read_conversation_history"}:
-                if args.get("kind", "space") != "space" or args.get("operation_id"):
-                    raise SocialError("self_target_outside_current_space")
-                args = {**args, "kind": "space"}
-                if name == "read_conversation_history":
-                    if args.get("presence_id", context.presence_id) != context.presence_id:
-                        raise SocialError("self_presence_changed")
-                    args["presence_id"] = context.presence_id
         if name == "send_message":
             args = self._canonical_send_arguments(args)
         if name == "send_message" and context.sequence_part_index is None:
@@ -872,15 +843,6 @@ class SocialService:
             if args.get("target_id") or args.get("subject_ref"):
                 target = await self.target(kind, args, context)
                 items = [{"target_id": str(target.id), "kind": target.kind}]
-            elif _self_scene(context):
-                async with self.database.sessions() as session:
-                    space = await session.get(CanonicalSpaceModel, context.space_id)
-                    query = str(args.get("display_name", ""))
-                    items = (
-                        [{"target_id": space.id, "display_name": space.name, "kind": "space"}]
-                        if space is not None and query in space.name
-                        else []
-                    )
             else:
                 items = [
                     dict(item)

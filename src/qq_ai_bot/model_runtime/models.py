@@ -22,7 +22,6 @@ class ModelTask(StrEnum):
     MEMORY_SELF_REFLECTION = "memory_self_reflection"
     MEMORY_DREAM = "memory_dream"
     EMOJI_REPLACEMENT = "emoji_replacement"
-    AUTOMATION_AGENT = "automation_agent"
     PLUGIN_AGENT_SESSION = "plugin_agent_session"
     UTILITY_STRUCTURED = "utility_structured"
     CONVERSATION_COMPACTION = "conversation_compaction"

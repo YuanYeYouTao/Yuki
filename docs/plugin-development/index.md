@@ -24,7 +24,7 @@ Plugin API `3.4` 移除旧评分关系Facade；3.3已移除直接模型LLMFacade
 - [AdmissionSignal](admission-signals.md)
 - [Agent 工具](tools.md)
 - [确定性命令](commands.md)
-- [自动化 Action](automation.md)
+- [共同 Main 的定时安排](automation.md)
 - [配置与 Secret](config-and-secrets.md)
 - [私有 KV Storage](storage.md)
 - [网络访问](networking.md)
@@ -46,7 +46,7 @@ Plugin API `3.4` 移除旧评分关系Facade；3.3已移除直接模型LLMFacade
 - [Result 与会话模型](api-reference/results.md)
 - [EmojiFacade 与选择信号](api-reference/emoji.md)
 
-仓库中的 [`com.example.echo`](../../examples/plugins/com.example.echo/README.md) 是可运行的无网络参考实现，覆盖工具、命令、事件、Prompt、普通用户自动化、配置和 KV。
+仓库中的 [`com.example.echo`](../../examples/plugins/com.example.echo/README.md) 是可运行的无网络参考实现，覆盖工具、命令、事件、Prompt、配置和 KV，并说明共同 TaskSpec 的定时安排接口。
 
 订阅类插件可参考 [GitHub Monitor](../../plugins/github-monitor/README.md) 和
 [Subscription Monitor](../../plugins/subscription-monitor/README.md)。后者展示如何轮询 feed、

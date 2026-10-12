@@ -36,7 +36,6 @@ export const taskNames: Record<string, string> = {
   memory_self_reflection: "自省",
   memory_dream: "记忆归纳",
   emoji_replacement: "表情替换",
-  automation_agent: "自动化执行",
   plugin_agent_session: "插件会话",
   utility_structured: "结构化任务",
   conversation_compaction: "会话压缩",
@@ -117,14 +116,6 @@ const protocolLabels: Record<string, string> = {
   anthropic_messages: "Claude Messages",
   gemini: "Gemini GenerateContent",
 };
-const protocolsFor = (provider: unknown) =>
-  provider === "anthropic"
-    ? ["anthropic_messages"]
-    : provider === "gemini"
-      ? ["gemini"]
-      : ["deepseek", "openai", "openai_compatible"].includes(String(provider))
-        ? ["chat_completions", "responses"]
-        : ["chat_completions"];
 const presetValues = (provider: string): Row => {
   const preset = providerPresets.find((item) => item.id === provider);
   const gemini = provider === "gemini";
@@ -351,51 +342,21 @@ function ModelDocument({
           <div className="provider-basic-fields">
             <label className="form-group">
               供应商
-              <select
+              <input
                 className="form-control"
+                list="model-provider-presets"
                 value={String(profile.provider || "")}
-                onChange={(event) => {
-                  const next: Row = {
-                    ...profile,
-                    ...presetValues(event.target.value),
-                  };
-                  // New-connection defaults do not migrate an existing search choice.
-                  if (Object.hasOwn(profile, "search_mode")) {
-                    next.search_mode = profile.search_mode;
-                  } else {
-                    delete next.search_mode;
-                  }
-                  const capabilities = (next.capabilities as string[]).filter(
-                    (capability) => capability !== "native_web_search",
-                  );
-                  if (
-                    Array.isArray(profile.capabilities) &&
-                    profile.capabilities.includes("native_web_search")
-                  ) {
-                    capabilities.push("native_web_search");
-                  }
-                  next.capabilities = capabilities;
-                  delete next.base_url_env;
-                  delete next.model_env;
-                  delete next.reasoning_effort_env;
-                  delete next.wire_options;
-                  update(next);
-                  changeKey(selected, "");
-                }}
-              >
-                {!providerPresets.some(
-                  (item) => item.id === profile.provider,
-                ) && (
-                  <option value={String(profile.provider || "")}>
-                    {String(profile.provider || "当前供应商")}
-                  </option>
-                )}
+                onChange={(event) =>
+                  update({ ...profile, provider: event.target.value })
+                }
+              />
+              <datalist id="model-provider-presets">
                 {providerPresets.map((item) => (
                   <option key={item.id} value={item.id}>
                     {item.label}
                   </option>
                 ))}
-              </select>
+              </datalist>
             </label>
             <label className="form-group">
               接口协议
@@ -406,7 +367,7 @@ function ModelDocument({
                   update({ ...profile, protocol: event.target.value })
                 }
               >
-                {protocolsFor(profile.provider).map((protocol) => (
+                {Object.keys(protocolLabels).map((protocol) => (
                   <option value={protocol} key={protocol}>
                     {protocolLabels[protocol]}
                   </option>

@@ -140,14 +140,12 @@ async def v2_evidence_row_readable(
     receipt = await session.get(MemoryToolReceiptModel, evidence.tool_receipt_id)
     if receipt is None:
         return False
-    if receipt.initiative_run_id is not None:
+    if receipt.trigger_event_id is None:
         from qq_ai_bot.memory.self_origin import receipt_evidence_readable
 
         return await receipt_evidence_readable(
             session, fact=fact, evidence=evidence, receipt=receipt
         )
-    if receipt.trigger_event_id is None:
-        return False
     trigger = await session.get(ChatEventModel, receipt.trigger_event_id)
     if trigger is None:
         return False

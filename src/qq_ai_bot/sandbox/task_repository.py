@@ -54,23 +54,18 @@ class SandboxTaskRepository:
                 type(generation) is not int or generation != control.lease.generation
             ):
                 raise ValueError("invalid_task_work_generation")
-            # Automation has no chat snapshot. Anchor its receipt to the validated
-            # work lease, without modifying the caller's source or delegation.
+            # Anchor the terminal receipt to the original validated Work lease.
             source = {
                 **source,
                 "conversation_id": control.lease.conversation_id,
                 "generation": control.lease.generation,
             }
-        elif source.get("origin") not in {
-            "user_message",
-            "autonomous_group",
-            "scheduled_automation",
-        } or not source.get("actor_user_id"):
-            raise ValueError("invalid_task_source")
-        if not owned_work and source["origin"] == "scheduled_automation":
-            raise ValueError("scheduled_task_requires_work_lease")
-        elif not owned_work and (
-            type(source.get("trigger_event_id")) is not int or source["trigger_event_id"] <= 0
+        if (
+            not owned_work
+            and not (
+                isinstance(source.get("parent_execution_id"), str) and source["parent_execution_id"]
+            )
+            and (type(source.get("trigger_event_id")) is not int or source["trigger_event_id"] <= 0)
         ):
             raise ValueError("invalid_task_event_anchor")
         source_json = canonical_json(source, limit=65536)

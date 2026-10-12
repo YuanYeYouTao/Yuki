@@ -7,6 +7,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
+from pydantic import TypeAdapter
 from sqlalchemy import and_, false, func, or_, select, true, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
@@ -19,15 +20,11 @@ from qq_ai_bot.automation.models import (
     AutomationDirectoryRecord,
     AutomationRecord,
     AutomationRunRecord,
-    AutomationScript,
     AutomationStatus,
     RunStatus,
+    Schedule,
 )
-from qq_ai_bot.automation.validator import (
-    ValidatedAutomation,
-    canonical_script_hash,
-    collect_send_targets,
-)
+from qq_ai_bot.automation.task_spec import TaskSpec, canonical_task_hash
 from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.identity.canonical_repository import (
@@ -66,7 +63,7 @@ class AutomationRepository:
 
     async def create(
         self,
-        validated: ValidatedAutomation,
+        task: TaskSpec,
         authority: DelegatedAuthority,
         *,
         creator_person_id: str,
@@ -76,8 +73,8 @@ class AutomationRepository:
         creation_source_key: str | None = None,
         session: AsyncSession | None = None,
     ) -> AutomationRecord:
-        script_json = validated.script.model_dump_json(exclude_none=True)
-        schedule_json = validated.script.schedule.model_dump_json(exclude_none=True)
+        script_json = task.model_dump_json(exclude_none=True)
+        schedule_json = task.trigger.model_dump_json(exclude_none=True)
         authority_json = authority.model_dump_json()
         timestamp = _aware_utc(now)
         transaction = (
@@ -98,7 +95,7 @@ class AutomationRepository:
                 )
                 if previous is not None:
                     initial_hash = await self.initial_script_hash(previous.id, session=active)
-                    if initial_hash != validated.script_hash or previous.max_runs != max_runs:
+                    if initial_hash != canonical_task_hash(task) or previous.max_runs != max_runs:
                         raise ValueError("automation_creation_key_conflict")
                     return _automation_record(previous)
             if creator_person_id == "self":
@@ -110,7 +107,7 @@ class AutomationRepository:
                     raise ValueError("创建者没有对应的永久主体")
             target_person, target_space = await _bind_canonical_send_targets(
                 active,
-                validated,
+                task,
                 authority,
                 now=timestamp,
             )
@@ -119,15 +116,13 @@ class AutomationRepository:
                 creator_kind=authority.principal_kind,
                 creator_user_id=authority.creator_user_id,
                 bot_user_id=authority.bot_user_id,
-                name=validated.script.name,
+                name=task.name,
                 status=AutomationStatus.ACTIVE.value,
-                timezone=validated.script.timezone,
+                timezone=task.timezone,
                 schedule_json=schedule_json,
                 script_json=script_json,
-                script_hash=validated.script_hash,
-                required_capabilities_json=json.dumps(
-                    validated.required_capabilities, separators=(",", ":")
-                ),
+                script_hash=canonical_task_hash(task),
+                required_capabilities_json="[]",
                 authority_snapshot_json=authority_json,
                 created_from_message_id=authority.created_from_message_id,
                 creation_source_key=creation_source_key,
@@ -153,7 +148,7 @@ class AutomationRepository:
                 automation_id=row.id,
                 version=1,
                 script_json=script_json,
-                script_hash=validated.script_hash,
+                script_hash=canonical_task_hash(task),
                 authority_snapshot_json=authority_json,
                 canonical_target_person_id=target_person,
                 canonical_target_space_id=target_space,
@@ -197,14 +192,16 @@ class AutomationRepository:
         owner, version = pair
         if version.authority_snapshot_json is None:
             return None
-        script = AutomationScript.model_validate_json(version.script_json)
+        script = json.loads(version.script_json)
         return _automation_record(owner, version.id).model_copy(
             update={
                 "script": script,
-                "name": script.name,
-                "timezone": script.timezone,
+                "name": script["name"],
+                "timezone": script["timezone"],
+                "schedule": TypeAdapter(Schedule).validate_python(
+                    script.get("trigger", script.get("schedule"))
+                ),
                 "script_hash": version.script_hash,
-                "required_capabilities": tuple(dict.fromkeys(step.call for step in script.steps)),
                 "authority_snapshot": json.loads(version.authority_snapshot_json),
                 "canonical_target_person_id": version.canonical_target_person_id,
                 "canonical_target_space_id": version.canonical_target_space_id,
@@ -271,18 +268,17 @@ class AutomationRepository:
     async def initial_script_hash(
         self, automation_id: int, *, session: AsyncSession | None = None
     ) -> str | None:
+        """The immutable first publication identifies an original creation."""
         async with optional_session(self._database, session, write=False) as active:
-            script_json = await active.scalar(
-                select(AutomationVersionModel.script_json).where(
-                    AutomationVersionModel.automation_id == automation_id,
-                    AutomationVersionModel.version == 1,
-                )
+            return cast(
+                str | None,
+                await active.scalar(
+                    select(AutomationVersionModel.script_hash)
+                    .where(AutomationVersionModel.automation_id == automation_id)
+                    .order_by(AutomationVersionModel.version)
+                    .limit(1)
+                ),
             )
-        return (
-            canonical_script_hash(AutomationScript.model_validate_json(script_json))
-            if script_json is not None
-            else None
-        )
 
     async def list_for_creator(
         self,
@@ -453,83 +449,21 @@ class AutomationRepository:
         now: datetime,
         session: AsyncSession | None = None,
     ) -> bool:
-        """Withdraw the actual admitted run trees in the management transaction."""
-        from qq_ai_bot.runtime.work_management import manage_work, stop_owned_execution
-        from qq_ai_bot.runtime.work_repository import TERMINAL
-        from qq_ai_bot.runtime.work_schema_v1 import work
-
-        transaction = (
-            self._database.immediate_session()
-            if session is None
-            else optional_session(self._database, session, write=True)
-        )
-        async with transaction as active:
-            changed = await self.set_status(
-                automation_id,
-                creator_person_id=creator_person_id,
-                status=AutomationStatus.CANCELLED,
-                now=now,
-                session=active,
-            )
-            owned = select(work.c.id).where(
-                func.json_extract(work.c.source_json, "$.owner") == "automation",
-                func.json_extract(work.c.source_json, "$.automation_id") == automation_id,
-            )
-            roots = (
-                (
-                    await active.execute(
-                        select(work.c.id, work.c.revision, work.c.state).where(
-                            work.c.id.in_(owned),
-                            or_(
-                                work.c.parent_work_id.is_(None), work.c.parent_work_id.not_in(owned)
-                            ),
-                        )
-                    )
-                )
-                .mappings()
-                .all()
-            )
-            for root in roots:
-                if root["state"] in TERMINAL:
-                    await stop_owned_execution(active, root["id"], "automation_cancelled")
-                else:
-                    await manage_work(
-                        active,
-                        root["id"],
-                        root["revision"],
-                        "cancel",
-                        reason="automation_cancelled",
-                    )
-                changed = True
-            runs = (
-                await active.scalars(
-                    select(AutomationRunModel).where(
-                        AutomationRunModel.automation_id == automation_id,
-                        AutomationRunModel.status == RunStatus.RUNNING.value,
-                    )
-                )
-            ).all()
-            for run in runs:
-                changed |= await self.finish_run(
-                    run.id,
-                    status=RunStatus.CANCELLED,
-                    steps_completed=run.steps_completed,
-                    llm_calls=run.llm_calls,
-                    tool_calls=run.tool_calls,
-                    messages_sent=run.messages_sent,
-                    error_category="automation_cancelled",
-                    summary=json.loads(run.result_summary_json),
-                    finished_at=now,
-                    session=active,
-                )
-            # Terminal plan identity stays terminal; cancellation still withdraws
-            # a retained tree and releases its actual processing claim.
-            await active.execute(
+        async with optional_session(self._database, session, write=True) as active:
+            result = await active.execute(
                 update(AutomationModel)
-                .where(AutomationModel.id == automation_id, self._owner_clause(creator_person_id))
-                .values(claimed_by=None, claimed_until=None)
+                .where(
+                    AutomationModel.id == automation_id,
+                    self._owner_clause(creator_person_id),
+                    AutomationModel.status != AutomationStatus.CANCELLED.value,
+                )
+                .values(
+                    status=AutomationStatus.CANCELLED.value,
+                    next_run_at=None,
+                    updated_at=_aware_utc(now),
+                )
             )
-            return changed
+            return cast(CursorResult[Any], result).rowcount == 1
 
     async def resume(
         self,
@@ -590,12 +524,12 @@ class AutomationRepository:
             )
         return bool(cast(CursorResult[Any], result).rowcount)
 
-    async def update_script(
+    async def publish_task(
         self,
         automation_id: int,
         *,
         creator_person_id: str,
-        validated: ValidatedAutomation,
+        task: TaskSpec,
         authority: DelegatedAuthority,
         now: datetime,
         next_run_at: datetime | None = None,
@@ -629,13 +563,13 @@ class AutomationRepository:
                 )
                 or 0
             )
-            script_json = validated.script.model_dump_json(exclude_none=True)
-            row.name = validated.script.name
-            row.timezone = validated.script.timezone
-            row.schedule_json = validated.script.schedule.model_dump_json(exclude_none=True)
+            script_json = task.model_dump_json(exclude_none=True)
+            row.name = task.name
+            row.timezone = cast(str, task.timezone)
+            row.schedule_json = task.trigger.model_dump_json(exclude_none=True)
             row.script_json = script_json
-            row.script_hash = validated.script_hash
-            row.required_capabilities_json = json.dumps(validated.required_capabilities)
+            row.script_hash = canonical_task_hash(task)
+            row.required_capabilities_json = "[]"
             row.authority_snapshot_json = authority.model_dump_json()
             if next_run_at is not None:
                 row.next_run_at = next_run_at
@@ -643,7 +577,7 @@ class AutomationRepository:
             row.updated_at = timestamp
             target_person, target_space = await _bind_canonical_send_targets(
                 active,
-                validated,
+                task,
                 authority,
                 now=timestamp,
             )
@@ -653,7 +587,7 @@ class AutomationRepository:
                 automation_id=automation_id,
                 version=latest_version + 1,
                 script_json=script_json,
-                script_hash=validated.script_hash,
+                script_hash=canonical_task_hash(task),
                 authority_snapshot_json=authority.model_dump_json(),
                 canonical_target_person_id=target_person,
                 canonical_target_space_id=target_space,
@@ -675,14 +609,6 @@ class AutomationRepository:
         clock: Callable[[], datetime] | None = None,
     ) -> tuple[AutomationRecord, ...]:
         timestamp = _aware_utc(now)
-        running = (
-            select(AutomationRunModel.id)
-            .where(
-                AutomationRunModel.automation_id == AutomationModel.id,
-                AutomationRunModel.status == RunStatus.RUNNING.value,
-            )
-            .exists()
-        )
 
         def due_at(current: datetime) -> Any:
             return and_(
@@ -690,6 +616,12 @@ class AutomationRepository:
                 AutomationModel.status == AutomationStatus.ACTIVE.value,
                 AutomationModel.next_run_at.is_not(None),
                 AutomationModel.next_run_at <= current,
+                ~select(AutomationRunModel.id)
+                .where(
+                    AutomationRunModel.automation_id == AutomationModel.id,
+                    AutomationRunModel.scheduled_for == AutomationModel.next_run_at,
+                )
+                .exists(),
             )
 
         async with self._database.sessions() as session:
@@ -697,7 +629,7 @@ class AutomationRepository:
                 await session.scalars(
                     select(AutomationModel.id)
                     .where(
-                        or_(running, due_at(timestamp)),
+                        due_at(timestamp),
                         or_(
                             AutomationModel.claimed_until.is_(None),
                             AutomationModel.claimed_until < timestamp,
@@ -716,7 +648,7 @@ class AutomationRepository:
                         update(AutomationModel)
                         .where(
                             AutomationModel.id.in_(page),
-                            or_(running, due_at(timestamp)),
+                            due_at(timestamp),
                             or_(
                                 AutomationModel.claimed_until.is_(None),
                                 AutomationModel.claimed_until < claimed_at,
@@ -821,8 +753,6 @@ class AutomationRepository:
         worker_id: str | None = None,
         version_id: int | None = None,
     ) -> AutomationRunRecord | None:
-        from qq_ai_bot.runtime.work_budget_schema import automation_budgets
-        from qq_ai_bot.runtime.work_recovery_schema import invocations
 
         scheduled = _aware_utc(scheduled_for)
         started = _aware_utc(actual_started_at)
@@ -911,44 +841,127 @@ class AutomationRepository:
             )
             if run_id is None:
                 return None
-            limits = AutomationScript.model_validate_json(version.script_json).limits
-            await session.execute(
-                insert(automation_budgets)
-                .values(
-                    run_id=run_id,
-                    model_limit=limits.max_llm_calls,
-                    tool_limit=limits.max_tool_calls,
-                )
-                .on_conflict_do_nothing(index_elements=[automation_budgets.c.run_id])
-            )
-            # The initial resume boundary is part of admitting the run. A crash
-            # cannot leave a new RUNNING run without its original script identity.
-            await session.execute(
-                insert(invocations).values(
-                    run_id=run_id,
-                    script_hash=version.script_hash,
-                    phase="ready",
-                    payload_json=json.dumps({"next_step": 0, "version_id": version.id}),
-                    updated=datetime.now(UTC).timestamp(),
-                )
-            )
             row = await session.get(AutomationRunModel, run_id)
             assert row is not None
             return _run_record(row)
 
-    async def running_runs(self, automation_id: int) -> tuple[AutomationRunRecord, ...]:
-        async with self._database.sessions() as session:
-            rows = (
-                await session.scalars(
-                    select(AutomationRunModel)
-                    .where(
-                        AutomationRunModel.automation_id == automation_id,
+    async def settle_interrupted_occurrences(
+        self,
+        *,
+        run_id: int | None = None,
+        error_category: str = "main_activation_interrupted",
+    ) -> None:
+        """Close unowned original occurrences without dispatching any effects."""
+        from qq_ai_bot.runtime.work_schema_v1 import work
+
+        async with self._database.sessions() as reader:
+            owned = (
+                select(work.c.id)
+                .where(
+                    func.json_extract(work.c.source_json, "$.owner") == "automation",
+                    func.json_extract(work.c.source_json, "$.automation_run_id")
+                    == AutomationRunModel.id,
+                    work.c.parent_work_id.is_(None),
+                )
+                .exists()
+            )
+            runs = (
+                await reader.scalars(
+                    select(AutomationRunModel).where(
                         AutomationRunModel.status == RunStatus.RUNNING.value,
+                        ~owned,
+                        AutomationRunModel.id == run_id if run_id is not None else true(),
                     )
-                    .order_by(AutomationRunModel.scheduled_for, AutomationRunModel.id)
                 )
             ).all()
-            return tuple(_run_record(row) for row in rows)
+        for run in runs:
+            await self.finish_run(
+                run.id,
+                status=RunStatus.UNCERTAIN,
+                steps_completed=run.steps_completed,
+                llm_calls=run.llm_calls,
+                tool_calls=run.tool_calls,
+                messages_sent=run.messages_sent,
+                error_category=error_category,
+                summary=json.loads(run.result_summary_json),
+                finished_at=datetime.now(UTC),
+            )
+
+    async def settle_work_occurrences(self) -> None:
+        """Settle the original execution's root; recovery stays in WorkScheduler."""
+        from qq_ai_bot.runtime.work_recovery_schema import invocations
+        from qq_ai_bot.runtime.work_schema_v1 import work
+
+        async with self._database.sessions() as reader:
+            rows = (
+                (
+                    await reader.execute(
+                        select(
+                            AutomationRunModel.id,
+                            work.c.id.label("work_id"),
+                            work.c.state,
+                            work.c.model_requests,
+                            work.c.tool_calls,
+                            work.c.sent_messages,
+                        )
+                        .join(
+                            AutomationVersionModel,
+                            AutomationVersionModel.id == AutomationRunModel.version_id,
+                        )
+                        .outerjoin(invocations, invocations.c.run_id == AutomationRunModel.id)
+                        .join(
+                            work,
+                            and_(
+                                func.json_extract(work.c.source_json, "$.owner") == "automation",
+                                func.json_extract(work.c.source_json, "$.automation_run_id")
+                                == AutomationRunModel.id,
+                                work.c.parent_work_id.is_(None),
+                                or_(
+                                    and_(
+                                        invocations.c.script_hash
+                                        == AutomationVersionModel.script_hash,
+                                        work.c.id
+                                        == func.json_extract(
+                                            invocations.c.payload_json, "$.work_id"
+                                        ),
+                                    ),
+                                    and_(
+                                        invocations.c.run_id.is_(None),
+                                        work.c.source_key
+                                        == func.printf(
+                                            "automation:%d:%s",
+                                            AutomationRunModel.id,
+                                            AutomationVersionModel.script_hash,
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        )
+                        .where(
+                            AutomationRunModel.status == RunStatus.RUNNING.value,
+                            work.c.state.in_(("completed", "failed", "cancelled")),
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        for row in rows:
+            await self.finish_run(
+                row["id"],
+                status={
+                    "completed": RunStatus.SUCCEEDED,
+                    "failed": RunStatus.FAILED,
+                    "cancelled": RunStatus.CANCELLED,
+                }[row["state"]],
+                steps_completed=0,
+                llm_calls=row["model_requests"],
+                tool_calls=row["tool_calls"],
+                messages_sent=row["sent_messages"],
+                error_category=None if row["state"] == "completed" else row["state"],
+                summary={"work_id": row["work_id"], "work_state": row["state"]},
+                finished_at=datetime.now(UTC),
+            )
 
     async def finish_run(
         self,
@@ -965,8 +978,6 @@ class AutomationRepository:
         worker_id: str | None = None,
         session: AsyncSession | None = None,
     ) -> bool:
-        from qq_ai_bot.runtime.work_budget_schema import automation_budgets
-        from qq_ai_bot.runtime.work_recovery_schema import invocations
         from qq_ai_bot.time.schedules import schedule_after_completion
 
         timestamp = _aware_utc(finished_at)
@@ -979,28 +990,11 @@ class AutomationRepository:
             run = await active.get(AutomationRunModel, run_id)
             if run is None:
                 return False
-            cursor_json = await active.scalar(
-                select(invocations.c.payload_json).where(invocations.c.run_id == run_id)
-            )
-            cursor = json.loads(cursor_json) if cursor_json is not None else {}
-            steps_completed = max(
-                steps_completed, run.steps_completed, cursor.get("steps_completed", 0)
-            )
-            llm_calls = max(llm_calls, run.llm_calls, cursor.get("llm_calls", 0))
-            tool_calls = max(tool_calls, run.tool_calls, cursor.get("tool_calls", 0))
-            messages_sent = max(messages_sent, run.messages_sent, cursor.get("messages_sent", 0))
+            steps_completed = max(steps_completed, run.steps_completed)
+            llm_calls = max(llm_calls, run.llm_calls)
+            tool_calls = max(tool_calls, run.tool_calls)
+            messages_sent = max(messages_sent, run.messages_sent)
             accepted = await self.get_for_run(run.id, session=active)
-            ledger = (
-                await active.execute(
-                    select(automation_budgets.c.models, automation_budgets.c.tools).where(
-                        automation_budgets.c.run_id == run_id
-                    )
-                )
-            ).first()
-            if ledger is not None:
-                llm_calls = max(llm_calls, ledger.models)
-                if accepted is not None and accepted.script.uses_runtime_budget:
-                    tool_calls = ledger.tools
             result = await active.execute(
                 update(AutomationRunModel)
                 .where(
@@ -1045,7 +1039,7 @@ class AutomationRepository:
             ):
                 if accepted is not None:
                     row.next_run_at = schedule_after_completion(
-                        accepted.script.schedule,
+                        accepted.schedule,
                         _aware_utc(run.scheduled_for),
                         timestamp,
                         accepted.timezone,
@@ -1053,10 +1047,7 @@ class AutomationRepository:
                 else:
                     row.next_run_at = None
                 if row.status != AutomationStatus.PAUSED.value:
-                    if status is RunStatus.CANCELLED:
-                        row.status = AutomationStatus.CANCELLED.value
-                        row.next_run_at = None
-                    elif status is RunStatus.BLOCKED:
+                    if status is RunStatus.BLOCKED:
                         row.status = AutomationStatus.BLOCKED.value
                     elif row.next_run_at is None:
                         row.status = (
@@ -1098,50 +1089,26 @@ class AutomationRepository:
 
 async def _bind_canonical_send_targets(
     session: AsyncSession,
-    validated: ValidatedAutomation,
+    task: TaskSpec,
     authority: DelegatedAuthority,
     *,
     now: datetime,
 ) -> tuple[str | None, str | None]:
-    collected = collect_send_targets(
-        validated.script,
-        creator_user_id=authority.creator_user_id,
-        current_group_id=authority.current_group_id,
-    )
-    if collected.kind is None:
-        return await _default_canonical_target(session, authority)
-    if collected.kind == "person":
-        owners: set[str] = set()
-        for raw in collected.raw_ids:
-            found = await active_person_id_for(session, raw)
-            if found is None:
-                raise ValueError("发送目标没有对应的永久主体")
-            owners.add(found)
-        if len(owners) != 1:
-            raise ValueError("一条自动化只能绑定一个永久发送目标")
-        owner = owners.pop()
-        if any(step.call == "social.send_message" for step in validated.script.steps):
-            # A new reminder created in a group may deliver to its creator's
-            # private chat before a private event exists. Create the canonical
-            # conversation, without inventing an inbound message.
-            await ensure_canonical_conversation(
-                session,
-                kind="private",
-                primary_scope_key=ConversationScope.private(
-                    authority.bot_user_id, collected.raw_ids[0]
-                ).key,
-                person_id=owner,
-            )
-        return owner, None
-    owners = set()
-    for raw in collected.raw_ids:
-        found = await active_space_id_for(session, raw)
-        if found is None:
-            raise ValueError("发送目标没有对应的永久空间")
-        owners.add(found)
-    if len(owners) != 1:
-        raise ValueError("一条自动化只能绑定一个永久发送目标")
-    return None, owners.pop()
+    target = task.delivery.target
+    if target == "self_private":
+        target_person = await active_person_id_for(session, authority.creator_user_id)
+        if target_person is None:
+            raise ValueError("发送目标没有对应的永久主体")
+        await ensure_canonical_conversation(
+            session,
+            kind="private",
+            primary_scope_key=ConversationScope.private(
+                authority.bot_user_id, authority.creator_user_id
+            ).key,
+            person_id=target_person,
+        )
+        return target_person, None
+    return await _default_canonical_target(session, authority)
 
 
 async def _default_canonical_target(
@@ -1184,9 +1151,9 @@ def _automation_record(row: AutomationModel, version_id: int | None = None) -> A
         name=row.name,
         status=AutomationStatus(row.status),
         timezone=row.timezone,
-        script=AutomationScript.model_validate_json(row.script_json),
+        script=json.loads(row.script_json),
+        schedule=TypeAdapter(Schedule).validate_json(row.schedule_json),
         script_hash=row.script_hash,
-        required_capabilities=tuple(json.loads(row.required_capabilities_json)),
         authority_snapshot=json.loads(row.authority_snapshot_json),
         created_from_message_id=row.created_from_message_id,
         next_run_at=_aware_utc(row.next_run_at) if row.next_run_at else None,

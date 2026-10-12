@@ -1,6 +1,6 @@
 # 模型供应商与协议合同
 
-模型由 `ModelTask → ModelProfile → Provider` 显式绑定。更换供应商只影响协议转换；
+模型由 `ModelTask → ModelProfile → Provider` 显式绑定。Provider 是连接名称，协议由 Profile 显式选择；
 主 Agent、插件、自动化、记忆、媒体与 Work 共用原执行层，不按消息内容自动选择模型。
 部署向导可选择主模型供应商和协议；多个 Profile 可分别配置 endpoint、密钥环境变量和任务路由。
 默认示例仍是 DeepSeek，不会自动覆盖部署中的 `.env`、模型路由或人格提示词。
@@ -86,6 +86,10 @@ Gemini 使用显式 bridge；支持原生搜索的连接仍须声明实际能力
 
 `provider` 用于选择参数方言，不通过模型名称猜测，不在上游 400 后自动删参数重试。
 
+供应商名称和接口协议分别配置。AGM、OpenRouter 等中转连接及自定义名称使用显式
+`protocol` 的原适配器；没有 AGM 专用执行器或按品牌自动换协议的分支。WebUI 改名称时
+保留原 endpoint、model、密钥引用、协议和参数，预设只用于明确创建新连接。
+
 | provider | 思考参数与差异 |
 | --- | --- |
 | openai、azure_openai | reasoning_effort、max_completion_tokens；不回传非标准 reasoning_content |
@@ -169,8 +173,8 @@ Work compaction 继续使用原任务 Profile 的超时。两类摘要的生成�
   原样保存，内部映射不发给上游。它不是平台 message_id。
 - WorkJournal 保存完整检查点；进程重启保持执行身份、请求链、预算、调用 ID 和实际 HTTP 请求。
   供应商、协议或 Profile 修订变化必须显式开新链，不能把旧签名状态拼入新模型。
-- 普通聊天、必要资料首份/差量和有用笔记可在各协议保留。自动资料 snapshot 只提供已选
-  资料的结构化来源，不整包重复注入。公共投影扩展原生块仅支持 Responses；
+- 普通聊天和有用、带来源的笔记可在各协议保留。本轮资料只在当前激活准备，不冻结
+  首份、差量或自动 snapshot，也不进入公共历史与摘要。公共投影扩展原生块仅支持 Responses；
   其他协议的工具、签名和 continuation 私有检查点只属于当前 Work。
   非 Work 普通投影遇到不可共享的原生块时结束该视图的扩展；开启 Work runtime 时只冻结获准的
   初始普通输入，其后的工具和 continuation 留原 journal，下一普通轮仍复用普通投影。
@@ -228,6 +232,9 @@ Gemini 独立搜索桥另记一条 `model_invocations.task=web_search`，归入�
 应用层 `provider_cache_shape_diagnostics` 只覆盖归一 messages/tools，明确排除 native
 continuation 正文。缓存前缀与首差异以各适配器最终 HTTP body 的 `WireRequestObserver`
 为准；相同 messages 的不同原生签名仍可能改变最终输入。代理上游最后一跳不在此观测内。
+主 Agent 从真实 Conversation、generation 与当前 Work 分支传递 `x-session-id` 请求元数据；
+编号不写进模型正文，不使用每次激活的 chain UUID 或 prompt hash。每个请求单独建 Header，
+不修改共享连接。没有真实代次的独立调用不借其他会话编号。
 WebUI 确认缓存比例使用 `cache_reported_cached_tokens` 与已记录完整 input 的同一覆盖集合；
 原始 `cached_input_tokens` 单独展示，不截到 100% 或由 TTL 子项猜缺项。
 
@@ -236,7 +243,8 @@ WebUI 确认缓存比例使用 `cache_reported_cached_tokens` 与已记录完整
 定向测试覆盖参数、图片/schema、截断、私有签名、工具结果顺序、SQLite 重启后的 HTTP 字节一致性，
 以及真实 Runner/隔离数据库/假网关中的可见输出边界。Gemini 独立桥已用现有连接凭据
 在无 QQ/Work 的合成请求中得到上游可信 grounding 与用量；Bot 容器用现有连接地址的
-搜索专用请求也返回可信来源。生产主 Agent 尚未启用桥，因此桥的真实 QQ 工具回合仍待验收。
+搜索专用请求也返回可信来源。当前生产 Gemini 连接已配置 `search_mode="bridge"`；
+这项配置与合成请求成功不能替代真实 QQ 工具回合验收。
 模型效果、长上下文缓存和实际账单计费需独立验收。
 
 - [OpenAI Chat 参考](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)

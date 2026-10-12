@@ -28,7 +28,6 @@ from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.control_resolution import ControlAccess
 from qq_ai_bot.admin.models import ControlAuditRef, RuntimeConfigSnapshot
 from qq_ai_bot.automation.authority import DelegatedAuthority
-from qq_ai_bot.automation.authority import PermissionLevel as DelegatedPermissionLevel
 from qq_ai_bot.automation.models import AutomationRecord, TurnOrigin
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.control_plane.principal import ControlPrincipal
@@ -199,11 +198,11 @@ class OneBotFacadeGateway(OneBotMediaGateway, Protocol):
 class ToolRuntimeProjection(Protocol):
     """Minimal trusted fields consumed from the existing Agent ToolRuntime."""
 
-    inbound: InboundMessage
+    inbound: InboundMessage | None
     origin: TurnOrigin
 
+    def require_actor(self) -> ToolActor: ...
 
-AutomationTemplate = Callable[[Mapping[str, JsonValue]], object]
 ConfigFacadeFactory = Callable[[str | None, str | None], BoundConfigFacade]
 AgentSessionFacadeFactory = Callable[["PluginInvocation"], BoundAgentSessionFacade]
 
@@ -271,6 +270,8 @@ class PluginInvocation:
     actor_user_id: str
     bot_user_id: str
     actor_person_id: str | None = None
+    actor: ToolActor | None = field(default=None, repr=False)
+    execution_source: dict[str, Any] | None = field(default=None, repr=False)
     inbound: InboundMessage | None = field(default=None, repr=False)
     gateway: OneBotFacadeGateway | None = field(default=None, repr=False)
     runtime_config: RuntimeConfigSnapshot | None = field(default=None, repr=False)
@@ -292,7 +293,9 @@ class PluginInvocation:
             not self.plugin_id
             or not self.bot_user_id
             or (
-                not self.actor_user_id and (authority is None or authority.principal_kind != "self")
+                not self.actor_user_id
+                and (self.actor is None or self.actor.principal_kind != "self")
+                and (authority is None or authority.principal_kind != "self")
             )
         ):
             raise ValueError("plugin invocation identity fields cannot be empty")
@@ -301,15 +304,6 @@ class PluginInvocation:
                 raise ValueError("plugin invocation actor must match the real inbound sender")
             if self.inbound.bot_user_id and self.inbound.bot_user_id != self.bot_user_id:
                 raise ValueError("plugin invocation bot must match the real inbound event")
-        if self.origin is TurnOrigin.SCHEDULED_AUTOMATION:
-            if authority is None or (
-                authority.principal_kind == "person"
-                and (
-                    not self.actor_person_id
-                    or authority.canonical_creator_person_id != self.actor_person_id
-                )
-            ):
-                raise ValueError("scheduled plugin invocation requires matching delegation")
         if self.inbound is not None:
             anchor = self.inbound.source_event_id
             if anchor is not None:
@@ -327,6 +321,8 @@ class PluginInvocation:
 
     @property
     def current_group_id(self) -> str | None:
+        if self.actor is not None:
+            return self.actor.group_id
         if self.inbound is not None:
             return self.inbound.group_id
         if self.delegated_authority is not None:
@@ -375,7 +371,6 @@ class PluginFacadeServices:
     emoji_selector: EmojiSelector | None = None
     emoji_lifecycle: EmojiLifecycleService | None = None
     automation: AutomationService | None = None
-    automation_templates: Mapping[str, AutomationTemplate] = field(default_factory=dict)
     storage: BoundStorageFacade | None = None
     config_factory: ConfigFacadeFactory | None = None
     secrets: BoundSecretsFacade | None = None
@@ -640,20 +635,24 @@ class HostPluginContext:
         """Adapter helper accepting the existing ToolRuntime without importing it."""
 
         inbound = runtime.inbound
-        actor_user_id = str(getattr(runtime, "actor_user_id", ""))
-        if not actor_user_id:
-            actor_user_id = inbound.sender.user_id
+        actor = runtime.require_actor()
         invocation = PluginInvocation(
             plugin_id=plugin_id,
             origin=TurnOrigin(runtime.origin),
-            actor_user_id=actor_user_id,
-            bot_user_id=inbound.bot_user_id,
+            actor_user_id=actor.user_id,
+            actor_person_id=actor.person_id,
+            actor=actor,
+            execution_source=cast(
+                dict[str, Any] | None, getattr(runtime, "sandbox_source", None)
+            ),
+            bot_user_id=actor.bot_user_id,
             inbound=inbound,
-            legacy_conversation_key=inbound.legacy_conversation_key,
-            person_id=inbound.person_id,
-            space_id=inbound.space_id,
-            conversation_id=inbound.conversation_id,
-            presence_id=inbound.presence_id,
+            legacy_conversation_key=getattr(runtime, "conversation_key", None),
+            person_id=getattr(runtime, "person_id", None),
+            space_id=getattr(runtime, "space_id", None),
+            conversation_id=actor.conversation_id,
+            presence_id=actor.presence_id,
+            source_event_id=actor.event_id,
             gateway=cast(OneBotFacadeGateway | None, getattr(runtime, "gateway", None)),
             runtime_config=cast(
                 RuntimeConfigSnapshot | None,
@@ -740,15 +739,6 @@ class HostPluginContext:
             ):
                 raise PluginPermissionError("selected media artifact version does not match")
 
-    def _authorize_tool_media(self, canonical_name: str) -> None:
-        invocation = self._require(PluginPermission.MEDIA_ARTIFACT_CREATE)
-        assert invocation is not None
-        if (
-            invocation.origin is TurnOrigin.SCHEDULED_AUTOMATION
-            and canonical_name not in invocation.allowed_capabilities
-        ):
-            raise PluginPermissionError("selected media tool was not delegated")
-
     def _require(
         self,
         permission: PluginPermission,
@@ -765,32 +755,16 @@ class HostPluginContext:
         invocation = self._invocation(required=require_invocation)
         if invocation is None:
             return None
-        if invocation.origin is TurnOrigin.SCHEDULED_AUTOMATION:
-            authority = invocation.delegated_authority
-            allowed = invocation.allowed_capabilities
-            if authority is None or (
-                authority.principal_kind == "person"
-                and (
-                    not invocation.actor_person_id
-                    or authority.canonical_creator_person_id != invocation.actor_person_id
-                )
-            ):
-                raise PluginPermissionError("scheduled invocation has no valid delegation")
-            plugin_prefix = f"plugin.{self._plugin_id}."
-            if not any(item.startswith(plugin_prefix) for item in allowed):
-                raise PluginPermissionError("plugin action was not delegated to this automation")
         if privileged:
             direct_user_event = bool(
-                invocation.origin is TurnOrigin.USER_MESSAGE
-                and invocation.inbound is not None
+                invocation.inbound is not None
                 and invocation.inbound.sender.user_id == invocation.actor_user_id
             )
             delegated_task = bool(
-                invocation.origin is TurnOrigin.SCHEDULED_AUTOMATION
-                and invocation.delegated_authority is not None
-                and invocation.delegated_authority.canonical_creator_person_id
-                == invocation.actor_person_id
-                and invocation.actor_person_id is not None
+                invocation.actor is not None
+                and invocation.actor.principal_kind == "person"
+                and invocation.actor.person_id == invocation.actor_person_id
+                and invocation.actor.execution_id
             )
             if not self._is_real_superuser(invocation) or not (direct_user_event or delegated_task):
                 raise PluginPermissionError(
@@ -821,10 +795,7 @@ class HostPluginContext:
         )
 
     def _is_real_superuser(self, invocation: PluginInvocation) -> bool:
-        authority = invocation.delegated_authority
-        return invocation.actor_user_id in self._superuser_ids and (
-            authority is None or authority.permission_level is DelegatedPermissionLevel.SUPERUSER
-        )
+        return invocation.actor_user_id in self._superuser_ids
 
     def _control_access(self) -> ControlAccess:
         people = self._services.people
@@ -1642,7 +1613,7 @@ class _AgentFacade:
         result = await run_plugin_main_turn(
             self._host,
             invocation,
-            instruction=_bounded_text(instruction, maximum=12_000, field_name="instruction"),
+            instruction=instruction.strip(),
             context_data=await _agent_context(self._host, invocation, context_profile),
             runtime=runtime,
             tools=None,
@@ -2098,29 +2069,34 @@ class _AutomationFacade:
         invocation = self._host._require(PluginPermission.AUTOMATION_READ)
         assert invocation is not None
         service = _require_service(self._host._services.automation, "automation")
-        rows = await service.list_current(invocation.actor_user_id)
+        rows = await service.list_for_actor(_invocation_actor(invocation))
         return tuple(_automation_record(row) for row in rows)
 
-    async def create_from_template(
+    async def create_task(
         self,
-        template: str,
-        parameters: Mapping[str, JsonValue],
+        task: Mapping[str, JsonValue],
     ) -> PluginResult:
         invocation = self._host._require(
             PluginPermission.AUTOMATION_MANAGE_SELF,
             mutation=True,
         )
         assert invocation is not None
-        inbound = invocation.inbound
-        if inbound is None or inbound.sender.user_id != invocation.actor_user_id:
-            raise PluginPermissionError("automation creation requires a real current message")
-        builder = self._host._services.automation_templates.get(template)
-        if builder is None:
-            return _unavailable("unknown or unreviewed automation template")
         service = _require_service(self._host._services.automation, "automation")
-        row = await service.create(
-            builder(parameters),
-            actor=ToolActor.from_inbound(inbound),
+        row = await service.create_task(
+            dict(task),
+            actor=_invocation_actor(invocation),
+            conversation_key=invocation.conversation_key,
+        )
+        return PluginResult(data={"automation": _automation_record(row)})
+
+    async def update_task(self, task_id: str, task: Mapping[str, JsonValue]) -> PluginResult:
+        invocation = self._host._require(PluginPermission.AUTOMATION_MANAGE_SELF, mutation=True)
+        assert invocation is not None
+        service = _require_service(self._host._services.automation, "automation")
+        row = await service.update_task(
+            int(task_id),
+            dict(task),
+            actor=_invocation_actor(invocation),
             conversation_key=invocation.conversation_key,
         )
         return PluginResult(data={"automation": _automation_record(row)})
@@ -2139,7 +2115,7 @@ class _AutomationFacade:
             PluginPermission.AUTOMATION_MANAGE_SELF,
             mutation=True,
         )
-        assert invocation is not None and invocation.inbound is not None
+        assert invocation is not None
         try:
             numeric_id = int(task_id)
         except ValueError as exc:
@@ -2150,7 +2126,7 @@ class _AutomationFacade:
         ]
         changed = await method(
             numeric_id,
-            actor=ToolActor.from_inbound(invocation.inbound),
+            actor=_invocation_actor(invocation),
             conversation_key=invocation.conversation_key,
         )
         return PluginResult(
@@ -2330,12 +2306,6 @@ class _OneBotFacade:
         async def send() -> PluginResult:
             checked = self._host._require(PluginPermission.ONEBOT_SEND, send=True)
             assert checked is not None
-            if checked.origin not in {
-                TurnOrigin.USER_MESSAGE,
-                TurnOrigin.AUTONOMOUS_GROUP,
-                TurnOrigin.SCHEDULED_AUTOMATION,
-            }:
-                raise PluginPermissionError("music cards require a bound conversation scene")
             card_provider = _validated_music_provider(provider)
             card_resource_id = _validated_music_resource_id(resource_id)
             message = [
@@ -2392,12 +2362,6 @@ class _OneBotFacade:
         async def send() -> PluginResult:
             checked = self._host._require(PluginPermission.ONEBOT_SEND, send=True)
             assert checked is not None
-            if checked.origin not in {
-                TurnOrigin.USER_MESSAGE,
-                TurnOrigin.AUTONOMOUS_GROUP,
-                TurnOrigin.SCHEDULED_AUTOMATION,
-            }:
-                raise PluginPermissionError("music cards require a bound conversation scene")
             card_data = {
                 "type": "custom",
                 "url": normalize_public_url(url),
@@ -2615,7 +2579,11 @@ async def _agent_dependencies(
     now = datetime.now(UTC)
     contract = runner.main_contract
     current_time = (
-        await contract.chat._time.current(invocation.actor_user_id)
+        (
+            await contract.chat._time.current(invocation.actor_user_id)
+            if invocation.actor_user_id
+            else contract.chat._time.current_default()
+        )
         if contract is not None
         else TimeContext(utc=now, local=now, timezone="UTC")
     )
@@ -2648,6 +2616,12 @@ async def _agent_context(
         raise ValueError("context_profile must be none, current_user, or current_group")
     if profile == "current_group" and invocation.current_group_id is None:
         raise PluginPermissionError("current_group context requires a real group turn")
+    if not invocation.actor_user_id:
+        return (
+            f" Current group id={invocation.current_group_id}."
+            if profile == "current_group"
+            else ""
+        )
     people = _require_service(host._services.people, "people")
     person = await people.get(
         user_id=invocation.actor_user_id,
@@ -2688,6 +2662,7 @@ async def _send_onebot(
             source_conversation_id=invocation.conversation_id,
             source_event_id=invocation.source_event_id,
             actor_user_id=invocation.actor_user_id,
+            actor=invocation.actor,
             origin=invocation.origin.value,
             bot_user_id=invocation.bot_user_id,
             group_id=outbound.group_id,
@@ -2964,6 +2939,14 @@ def _control_audit_ref(invocation: PluginInvocation) -> ControlAuditRef:
         decision_actor_type="plugin",
         decision_actor_id=invocation.plugin_id,
     )
+
+
+def _invocation_actor(invocation: PluginInvocation) -> ToolActor:
+    if invocation.actor is not None:
+        return invocation.actor
+    if invocation.inbound is not None:
+        return ToolActor.from_inbound(invocation.inbound)
+    raise PluginPermissionError("plugin invocation has no execution actor")
 
 
 def _memory_mutation_subject(

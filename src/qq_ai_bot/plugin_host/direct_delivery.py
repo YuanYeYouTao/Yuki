@@ -12,6 +12,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.identity.canonical_repository import (
     find_identity_binding,
     find_presence,
@@ -41,6 +42,7 @@ async def prepare_delivery(
     source_conversation_id: str,
     source_event_id: int | None,
     actor_user_id: str,
+    actor: ToolActor | None,
     origin: str,
     bot_user_id: str,
     group_id: str | None,
@@ -68,7 +70,7 @@ async def prepare_delivery(
                 or event.id <= conversation.starts_after_event_id
             ):
                 raise SocialError("plugin_send_source_mismatch")
-        elif origin != "scheduled_automation":
+        elif actor is None:
             raise SocialError("plugin_send_source_unavailable")
         presence = await find_presence(session, bot_user_id)
         if presence is None or not presence.enabled:

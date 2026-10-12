@@ -20,7 +20,9 @@ plugin.toml
 - `qq_ai_bot.plugin_host`：Host 私有实现，负责发现、批准、名称冲突、事件超时、数据隔离和权限校验。
 - 插件：只能依赖 SDK。不要导入 `qq_ai_bot`、访问 `_` 开头属性或保存 Host 内部对象。
 
-`register()` 得到的是声明型 `PluginRegistrar`，没有运行时 Facade；`start()` 才得到已绑定 `plugin_id`、真实当前用户/群和已批准权限的 `PluginContext`。
+`register()` 得到的是声明型 `PluginRegistrar`，没有运行时 Facade；`start()` 才得到已绑定
+`plugin_id`、真实运行主体/场景和已批准权限的 `PluginContext`。SELF 不需要真人 Inbound；
+普通、SELF 和定时 Main 的插件工具使用同一声明与后端，权限沿原主体和实际批准核验。
 
 ## Conversation Runtime 主聊天
 

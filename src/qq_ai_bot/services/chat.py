@@ -229,6 +229,7 @@ class ToolInvocationRecorder(Protocol):
         canonical_conversation_id: str | None = None,
         ingress_presence_id: str | None = None,
         initiative_run_id: str | None = None,
+        principal_kind: str = "person",
         tool_call_id: str | None = None,
         execution_id: str | None = None,
         audit_source: tuple[str, int, int] | None = None,
@@ -602,9 +603,7 @@ class ChatService:
                     execute=artifact_execute,
                 )
             )
-        if (
-            runtime.declaration_only or runtime.allow_automation
-        ) and self._automation_tools is not None:
+        if self._automation_tools is not None:
             automation = self._automation_tools
 
             async def automation_execute(
@@ -993,7 +992,6 @@ class ChatService:
                         "generation": turn_snapshot.generation,
                         "conversation_id": inbound.conversation_id,
                         "allow_admin_actions": inbound.sender.user_id in self._settings.superusers,
-                        "allow_automation": True,
                         "actor_is_superuser": inbound.sender.user_id in self._settings.superusers,
                         "presence_id": inbound.presence_id,
                     }
@@ -1111,15 +1109,8 @@ class ChatService:
                 runtime = ToolRuntime(
                     inbound=inbound,
                     gateway=gateway,
-                    allow_generic_onebot=(
-                        not visual_input_present
-                        and inbound.sender.user_id in self._settings.superusers
-                    ),
-                    allow_admin_actions=(
-                        not visual_input_present
-                        and inbound.sender.user_id in self._settings.superusers
-                    ),
-                    allow_automation=not visual_input_present,
+                    allow_generic_onebot=inbound.sender.user_id in self._settings.superusers,
+                    allow_admin_actions=inbound.sender.user_id in self._settings.superusers,
                     conversation_key=conversation_key,
                     trigger_message_id=inbound.message_id,
                     actor_is_superuser=inbound.sender.user_id in self._settings.superusers,
@@ -1212,6 +1203,9 @@ class ChatService:
                 canonical_conversation_id=runtime.effective_conversation_id,
                 ingress_presence_id=runtime.effective_presence_id,
                 initiative_run_id=runtime.initiative_run_id,
+                principal_kind=(
+                    runtime.actor_context.principal_kind if runtime.actor_context else "person"
+                ),
                 tool_call_id=tool_call_id,
                 execution_id=runtime.effective_execution_id,
                 audit_source=audit_source,
@@ -1463,14 +1457,8 @@ class ChatService:
                     replace(runtime, conversation_key=conversation_key),
                     current_time=current_time,
                     allowed_capabilities=self.web_capabilities(config),
-                    max_tool_calls=min(config.agent.max_tool_calls, runtime.max_tool_calls_override)
-                    if runtime.max_tool_calls_override is not None
-                    else config.agent.max_tool_calls,
-                    max_model_requests=min(
-                        config.agent.max_model_requests, runtime.max_model_requests_override
-                    )
-                    if runtime.max_model_requests_override is not None
-                    else config.agent.max_model_requests,
+                    max_tool_calls=config.agent.max_tool_calls,
+                    max_model_requests=config.agent.max_model_requests,
                 ),
                 before_model_request=before_model_request,
                 invocation_goal=invocation_goal,
@@ -1479,7 +1467,7 @@ class ChatService:
             backend,
         )
         return _CompletedAgentRun(
-            result=result,
+            result=replace(result, messages_sent=backend.messages_sent),
             messages_sent=backend.messages_sent,
             sent_current_texts=tuple(backend.sent_current_texts),
         )
@@ -1527,6 +1515,66 @@ class ChatService:
             partition_lookup=self._memory_partition_lookup,
         )
 
+    async def generate_origin_turn(
+        self,
+        *,
+        content: str,
+        identity: ConversationScope,
+        runtime: RuntimeConfigSnapshot,
+        turn_token: TurnToken,
+        turn_snapshot: ConversationTurnSnapshot,
+        source_runtime: ToolRuntime,
+        before_model_request: Callable[[], Awaitable[None]] | None = None,
+        memory_session: TurnMemorySession | None = None,
+    ) -> AgentRunResult:
+        """Compose a real non-message activation through the ordinary Main path."""
+        with self.runtime.executions.track():
+            context = await prepare_context(
+                partial(
+                    self._context_assembler.assemble,
+                    inbound=None,
+                    profile=None,
+                    identity=identity,
+                    turn=turn_snapshot,
+                    content=content,
+                    runtime=runtime,
+                ),
+                current_work_control.get(),
+                recovery_contract=await self.runtime.main_turns.recovery_contract(runtime),
+            )
+            composition = await self.runtime.main_turns.compose(
+                inbound=None,
+                context=context,
+                runtime=runtime,
+                allowed_capabilities=self.web_capabilities(runtime),
+                before_preparation=before_model_request,
+            )
+            tools = replace(
+                source_runtime,
+                runtime_config=runtime,
+                turn_token=turn_token,
+                turn_snapshot=turn_snapshot,
+                read_scope=identity,
+                memory_session=memory_session,
+                visible_event_ids=composition.visible_event_ids,
+                observation_boundary=composition.observation_boundary,
+                selection_query=content,
+                prompt_diagnostics=PromptRequestDiagnostics(
+                    conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
+                    prompt_snapshot_fingerprint=composition.metrics.prompt_snapshot_fingerprint,
+                    static_prompt_revision=composition.metrics.stable_prefix_hash,
+                    preparation_model_requests=composition.preparation_model_requests,
+                ),
+                before_model_request=self._context_validator(
+                    composition.read_version,
+                    before_model_request,
+                    composition.commit_projection,
+                ),
+            )
+            return (
+                await self._run_agent(source_runtime.conversation_key, composition.messages, tools)
+            ).result
+
     async def generate_self_initiative(
         self,
         *,
@@ -1537,88 +1585,33 @@ class ChatService:
         before_model_request: Callable[[], Awaitable[None]],
         source_runtime: ToolRuntime,
     ) -> AgentRunResult:
-        """Run accepted SELF work through the same composition, tools and durable loop."""
-        with self.runtime.executions.track():
-            from qq_ai_bot.conversation.self_initiative import validate_self_initiative
-            from qq_ai_bot.runtime.work_activation import current_work_control
-            from qq_ai_bot.runtime.work_repository import WorkConflict
+        from qq_ai_bot.conversation.self_initiative import validate_self_initiative
 
-            control = current_work_control.get()
-            actor = source_runtime.require_actor()
-            if (
-                control is None
-                or control.current is None
-                or control.source.get("initiative_run_id") != trigger.run_id
-                or actor.initiative_run_id != trigger.run_id
-                or actor.conversation_id != trigger.conversation_id
-                or actor.presence_id != trigger.presence_id
-                or actor.bot_user_id != trigger.bot_user_id
-                or actor.group_id != trigger.group_id
-                or turn_snapshot.initiative_run_id != trigger.run_id
-                or turn_snapshot.generation != trigger.generation
-                or source_runtime.execution_id != control.current["id"]
-            ):
-                raise WorkConflict("self_initiative_execution_mismatch")
+        async def validate() -> None:
+            await before_model_request()
+            await validate_self_initiative(
+                self._ledger._database,
+                trigger.run_id,
+                conversation_id=trigger.conversation_id,
+                space_id=trigger.space_id,
+                presence_id=trigger.presence_id,
+            )
 
-            async def validate() -> None:
-                await before_model_request()
-                await validate_self_initiative(
-                    self._ledger._database,
-                    trigger.run_id,
-                    conversation_id=trigger.conversation_id,
-                    space_id=trigger.space_id,
-                    presence_id=trigger.presence_id,
-                )
-
-            await validate()
-            memory = await self.open_self_memory_session(trigger)
-            async with AsyncExitStack() as cleanup:
-                if memory is not None:
-                    cleanup.push_async_callback(memory.close)
-                context = await prepare_context(
-                    partial(
-                        self._context_assembler.assemble_self_initiative,
-                        trigger=trigger,
-                        runtime=runtime,
-                        turn=turn_snapshot,
-                    ),
-                    current_work_control.get(),
-                    recovery_contract=await self.runtime.main_turns.recovery_contract(runtime),
-                )
-                composition = await self.runtime.main_turns.compose(
-                    inbound=None,
-                    context=context,
-                    runtime=runtime,
-                    allowed_capabilities=self.web_capabilities(runtime),
-                    before_preparation=validate,
-                )
-                tool_runtime = replace(
-                    source_runtime,
-                    runtime_config=runtime,
-                    turn_token=turn_token,
-                    turn_snapshot=turn_snapshot,
-                    memory_session=memory,
-                    visible_event_ids=composition.visible_event_ids,
-                    observation_boundary=composition.observation_boundary,
-                    selection_query=trigger.instruction,
-                    prompt_diagnostics=PromptRequestDiagnostics(
-                        conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
-                        prompt_snapshot_fingerprint=composition.metrics.prompt_snapshot_fingerprint,
-                        static_prompt_revision=composition.metrics.stable_prefix_hash,
-                        preparation_model_requests=composition.preparation_model_requests,
-                    ),
-                    before_model_request=self._context_validator(
-                        composition.read_version,
-                        validate,
-                        composition.commit_projection,
-                    ),
-                )
-                completed = await self._run_agent(
-                    source_runtime.conversation_key,
-                    composition.messages,
-                    tool_runtime,
-                )
-                return completed.result
+        await validate()
+        memory = await self.open_self_memory_session(trigger)
+        async with AsyncExitStack() as cleanup:
+            if memory is not None:
+                cleanup.push_async_callback(memory.close)
+            return await self.generate_origin_turn(
+                content=trigger.instruction,
+                identity=ConversationScope.group(trigger.bot_user_id, trigger.group_id),
+                runtime=runtime,
+                turn_token=turn_token,
+                turn_snapshot=turn_snapshot,
+                before_model_request=validate,
+                source_runtime=source_runtime,
+                memory_session=memory,
+            )
 
     async def generate_main_agent_wakeup(
         self,
@@ -1682,7 +1675,6 @@ class ChatService:
                 ),
                 allow_generic_onebot=False,
                 allow_admin_actions=False,
-                allow_automation=True,
                 conversation_key=conversation_key,
                 trigger_message_id=event.platform_message_id,
                 actor_is_superuser=False,
@@ -1690,7 +1682,6 @@ class ChatService:
                 origin=TurnOrigin.PLUGIN_BACKGROUND,
                 read_scope=identity,
                 target_presence_id=presence_id,
-                allow_work_environment=True,
                 tools_closed=False,
                 read_only=False,
                 turn_token=turn_token,

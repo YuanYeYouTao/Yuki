@@ -324,9 +324,7 @@ async def _assemble_wakeup(
 
 
 def _metadata_items(context: AssembledContext) -> dict[str, object]:
-    items = context.metadata_payload["items"]
-    assert isinstance(items, list)
-    return {item["id"]: item["data"] for item in items if isinstance(item, dict)}
+    return context.metadata_payload
 
 
 @pytest.mark.asyncio
@@ -336,10 +334,7 @@ async def test_private_wakeup_targets_the_person_without_an_actor() -> None:
     assembler, context = await _assemble_wakeup(current)
 
     items = _metadata_items(context)
-    assert items["scene"] == {
-        "type": "private",
-        "group_id": None,
-    }
+    assert items["scene"] == "私聊"
     # The target is the conversation person, never a fabricated current speaker.
     assert "current_person" not in items
     assert "current_group" not in items
@@ -364,10 +359,7 @@ async def test_group_wakeup_targets_the_group_without_a_person() -> None:
     assembler, context = await _assemble_wakeup(current, target_type="group", target_id="group-100")
 
     items = _metadata_items(context)
-    assert items["scene"] == {
-        "type": "group",
-        "group_id": "group-100",
-    }
+    assert items["scene"] == "群聊"
     assert "conversation_target_person" not in items and "current_person" not in items
     assembler._people.get.assert_not_called()
 
@@ -531,14 +523,8 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     assert wakeup_context.prompt_raw_tail_end_event_id == (
         ordinary_context.prompt_raw_tail_end_event_id
     )
-    target_person = next(
-        item
-        for item in wakeup_context.metadata_payload["items"]  # type: ignore[index]
-        if isinstance(item, dict) and item.get("id") == "conversation_target_person"
-    )
-    assert target_person["data"] == {
+    assert wakeup_context.metadata_payload["conversation_target_person"] == {
         "user_id": "1001",
-        "nickname": "Ada",
         "display_name": "Ada",
         "not_current_speaker": True,
     }
@@ -554,7 +540,7 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
     context = _assembled(
         history=history,
         current=current,
-        metadata={"items": [{"id": "scene", "data": {"type": "private"}}]},
+        metadata={"scene": "私聊"},
     )
     runtime = MagicMock()
     runtime.context.window_tokens = 96_000
@@ -582,7 +568,6 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
     assert "github-monitor" not in system_text
     assert "PushEvent" not in system_text
     assert "【资料与查证】" in system_text
-    assert "已有材料充分时不重复查询" in system_text
     assert "不代表长期记忆不存在" in system_text
     assert tuple(item.content for item in composed.messages if item.role == "system") == tuple(
         item.content for item in ordinary.messages if item.role == "system"
@@ -661,7 +646,6 @@ async def test_external_wakeup_and_ordinary_turn_send_the_same_provider_shape(
         "gateway": None,
         "allow_generic_onebot": False,
         "allow_admin_actions": False,
-        "allow_automation": True,
         "conversation_key": "canonical:conv-stable:generation:1",
         "actor_is_superuser": False,
         "runtime_config": runtime_config,
@@ -804,7 +788,6 @@ async def test_plugin_wakeup_can_end_without_creating_a_fake_reply(
         gateway=None,
         allow_generic_onebot=False,
         allow_admin_actions=False,
-        allow_automation=True,
         conversation_key="canonical:conv-stable:generation:1",
         trigger_message_id="external-current",
         trigger_event_id=2,

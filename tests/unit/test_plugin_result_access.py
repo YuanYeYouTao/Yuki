@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import select
 from tests.conftest import build_harness, make_settings
 from tests.support.background_authority import approve_background_plugin
 from tests.support.social_identity_cases import social_env
@@ -224,578 +224,109 @@ async def test_archive_identity_rejection_keeps_original_typed_outcome_without_a
         current_result_capture.reset(token)
 
 
-@pytest.mark.parametrize(
-    "web_kind",
-    [
-        "pages",
-        "gemini_summary",
-        "gemini_run",
-        "gemini_revoked",
-        "gemini_late_revoked",
-        "gemini_deadline",
-    ],
-)
-async def test_automation_research_keeps_source_tail_and_filters_history_before_requested_limit(
-    database, tmp_path, web_kind
+@pytest.mark.parametrize("work_enabled", [False, True])
+async def test_scheduled_main_reads_complete_original_memory_fact_on_demand(
+    database, tmp_path, work_enabled
 ):
-    import asyncio
-    from datetime import timedelta
-
     from tests.support.automation_unified_delivery_helpers import setup_run
 
-    from qq_ai_bot.automation.models import AutomationScript, RunStatus
-    from qq_ai_bot.automation.service import AutomationService
-    from qq_ai_bot.automation.work_cursor import load
-    from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-    from qq_ai_bot.domain.messages import CitationOrigin, ResponseCitation
-    from qq_ai_bot.domain.tool_actor import ToolActor
-    from qq_ai_bot.identity.db_models import CanonicalPersonModel
-    from qq_ai_bot.model_runtime.models import ModelProfile
-    from qq_ai_bot.runtime.work_budget_schema import automation_budgets
-    from qq_ai_bot.web.bridge_state import BridgeState
-    from qq_ai_bot.web.gemini_bridge import GeminiSearchBridge
-    from qq_ai_bot.web.models import WebSearchResponse, WebSearchSource
-
-    case = await setup_run(database, tmp_path, delivery="none", mode="silent")
-    writer = case.chat._ledger._writer
-    scope = ConversationScope.group("80001", "20001")
-    occurred = datetime(2026, 10, 11, 8, tzinfo=UTC)
-    body = "needle " + "history original " * 200 + "HISTORY_TAIL"
-    for index in range(101):
-        await writer.append(
-            scope=scope,
-            platform_message_id=f"matching-{index}",
-            sender_user_id="10001",
-            direction="inbound",
-            content=body,
-            occurred_at=occurred,
-        )
-    suppressed = await writer.append(
-        scope=scope,
-        platform_message_id="suppressed-match",
-        sender_user_id="10001",
-        direction="inbound",
-        content="needle excluded",
-        occurred_at=occurred,
-    )
-    async with database.immediate_session() as session:
-        await session.execute(
-            update(ChatEventModel)
-            .where(ChatEventModel.id == suppressed.event.id)
-            .values(suppression_status="duplicate", utterance_fingerprint="fixture-duplicate")
-        )
-    await writer.append(
-        scope=scope,
-        platform_message_id="newest-nonmatch",
-        sender_user_id="10001",
-        direction="inbound",
-        content="newer unrelated message",
-        occurred_at=occurred + timedelta(minutes=1),
-    )
-    event = await writer.append(
-        scope=scope,
-        platform_message_id="research-source",
-        sender_user_id="10001",
-        direction="inbound",
-        content="Read the original evidence",
-        occurred_at=occurred + timedelta(minutes=2),
-    )
-    title = "original title " * 80
-    content = "original source " * 700 + "SOURCE_TAIL"
-    summary = "provider original " * 700 + "SUMMARY_TAIL"
-    url = "https://example.com/" + "x" * 2200
-    requests = []
-    reads = []
-    queued = asyncio.Event()
-    queued_request = 1 if web_kind == "gemini_revoked" else 2
-    sources = tuple(
-        WebSearchSource(
-            str(index),
-            title,
-            f"https://example.com/{index}",
-            "example.com",
-            content,
-            content,
-        )
-        for index in range(7)
-    )
-    cancelled = []
-
-    class NativeProvider(FakeLLMProvider):
-        async def complete(self, request):
-            try:
-                return await super().complete(request)
-            except asyncio.CancelledError:
-                cancelled.append(request)
-                raise
-
-    search_provider = NativeProvider(
-        lambda _: ChatResponse(
-            summary,
-            0,
-            citations=tuple(
-                ResponseCitation(
-                    url=source.url,
-                    title=title,
-                    origin=CitationOrigin.ANNOTATION,
-                )
-                for source in sources
-            ),
-        ),
-        delay_seconds=2 if web_kind == "gemini_deadline" else 0,
-    )
-    bridge = GeminiSearchBridge(
-        profile=ModelProfile(
-            id="actual-search",
-            provider="fake",
-            model="fake",
-            timeout_seconds=1,
-            max_retries=0,
-            default_temperature=0.5,
-            default_max_output_tokens=32768,
-        ),
-        credential="synthetic",
-        provider=search_provider,
-        state=BridgeState(tmp_path / "search.sqlite3"),
-    )
-
-    class Web:
-        async def search(self, request):
-            requests.append(request)
-            if web_kind in {"gemini_revoked", "gemini_late_revoked"} and (
-                len(requests) == queued_request
-            ):
-                await bridge.slot.acquire()
-                queued.set()
-            if web_kind != "pages":
-                return await bridge.search(request)
-            return WebSearchResponse(request.query, sources, None, 0, provider_summary=summary)
-
-        async def extract(self, target, question):
-            reads.append((target, question))
-            return WebSearchSource("read", title, target, "example.com", content, content)
-
-    handlers = case.executor._registry.require("yuki.agent").handler.__self__
-    handlers._web = Web()
-    script = AutomationScript.model_validate(
-        {
-            "version": 1,
-            "name": "original research results",
-            "timezone": "Asia/Shanghai",
-            "schedule": {"type": "after", "seconds": 1},
-            "context": {"scene": "current_group"},
-            "limits": {"max_llm_calls": 1}
-            if web_kind == "gemini_run"
-            else {"timeout_seconds": 1}
-            if web_kind == "gemini_deadline"
-            else {},
-            "steps": [
-                {"id": "search", "call": "web.search", "arguments": {"query": "q" * 701}},
-                {
-                    "id": "read",
-                    "call": "web.read_page",
-                    "arguments": {"url": url, "question": "q" * 1201},
-                },
-                {
-                    "id": "history",
-                    "call": "history.search",
-                    "arguments": {
-                        "keyword": "needle",
-                        "after": "2026-10-11T16:00:00",
-                        "before": "2026-10-11T16:00:30",
-                        "limit": 101,
-                    },
-                },
-                {
-                    "id": "tail",
-                    "call": "web.search",
-                    "arguments": {"query": "${search.provider_summary}"},
-                },
-            ],
-        }
-    )
-    service = AutomationService(
-        settings=case.executor._settings,
-        repository=case.repository,
-        registry=case.executor._registry,
-        time_service=case.chat._time,
-    )
-    row = await service.create(
-        script,
-        actor=ToolActor(
-            user_id="10001",
-            bot_user_id="80001",
-            group_id="20001",
-            origin=TurnOrigin.USER_MESSAGE,
-            instruction="Read the original evidence",
-            event_id=event.event.id,
-            person_id=case.env.person,
-            conversation_id=case.env.context.conversation_id,
-        ),
-        conversation_key=scope.key,
-    )
-    run = await case.repository.create_run(
-        row.id,
-        scheduled_for=row.next_run_at,
-        actual_started_at=case.clock.now(),
-    )
-    try:
-        if web_kind in {"gemini_revoked", "gemini_late_revoked"}:
-            executing = asyncio.create_task(case.executor.execute(row, run))
-            await queued.wait()
-            async with database.immediate_session() as writer:
-                await writer.execute(
-                    update(CanonicalPersonModel)
-                    .where(CanonicalPersonModel.id == case.env.person)
-                    .values(enabled=False)
-                )
-            bridge.slot.release()
-            result = await executing
-        else:
-            result = await case.executor.execute(row, run)
-    finally:
-        await bridge.close()
-    expected_models = {
-        "pages": 0,
-        "gemini_summary": 2,
-        "gemini_run": 1,
-        "gemini_revoked": 0,
-        "gemini_late_revoked": 1,
-        "gemini_deadline": 1,
-    }[web_kind]
-    assert result.llm_calls == len(search_provider.requests) == expected_models, result
-    async with database.sessions() as reader:
-        budget = (
-            (
-                await reader.execute(
-                    select(automation_budgets).where(automation_budgets.c.run_id == run.id)
-                )
-            )
-            .mappings()
-            .one()
-        )
-        assert budget["models"] == expected_models
-    if web_kind in {"gemini_run", "gemini_revoked", "gemini_late_revoked", "gemini_deadline"}:
-        assert result.status is RunStatus.FAILED, result
-        assert result.error_category == (
-            "automation_run_total_budget_exhausted"
-            if web_kind == "gemini_run"
-            else "runtime_timeout"
-            if web_kind == "gemini_deadline"
-            else "delegated_authority_revoked"
-        )
-        _, cursor = await load(database, run.id, row.script_hash)
-        if web_kind == "gemini_deadline":
-            assert cancelled == search_provider.requests
-            assert not cursor["outputs"] and result.steps_completed == 0
-        elif expected_models:
-            assert cursor["outputs"]["search"]["provider_summary"] == summary
-            assert result.steps_completed == 3 and cursor["next_step"] == 3
-        else:
-            assert not cursor["outputs"] and result.steps_completed == 0
-        assert await case.repository.finish_run(
-            run.id,
-            status=result.status,
-            steps_completed=result.steps_completed,
-            llm_calls=result.llm_calls,
-            tool_calls=result.tool_calls,
-            messages_sent=result.messages_sent,
-            error_category=result.error_category,
-            summary=result.summary,
-            finished_at=case.clock.now(),
-        )
-        retained = (await case.repository.run_history(row.id))[0]
-        assert retained.llm_calls == expected_models
-        replay = await case.executor.execute(row, retained)
-        assert replay.status is RunStatus.FAILED and replay.llm_calls == expected_models
-        assert len(search_provider.requests) == expected_models
-        assert not case.provider.requests
-        return
-    assert result.status is RunStatus.SUCCEEDED and result.tool_calls == 4, result
-    _, cursor = await load(database, run.id, row.script_hash)
-    assert len(cursor["outputs"]["search"]["sources"]) == 7
-    assert all(
-        item["title"] == title and item["summary"] == (content if web_kind == "pages" else "")
-        for item in cursor["outputs"]["search"]["sources"]
-    )
-    assert cursor["outputs"]["search"]["provider_summary"] == summary
-    assert "外部不可信总结" in cursor["outputs"]["search"]["provider_summary_instruction"]
-    assert cursor["outputs"]["read"] == {"title": title, "url": url, "summary": content}
-    assert len(cursor["outputs"]["history"]["events"]) == 101
-    assert all(item["content"] == body for item in cursor["outputs"]["history"]["events"])
-    assert [request.query for request in requests] == ["q" * 701, summary]
-    assert reads == [(url, "q" * 1201)] and not case.provider.requests
-    async with database.immediate_session() as session:
-        await session.execute(
-            update(CanonicalConversationModel)
-            .where(CanonicalConversationModel.id == case.env.context.conversation_id)
-            .values(
-                starts_after_event_id=event.event.id,
-                covered_through_event_id=event.event.id,
-            )
-        )
-    assert (
-        await case.chat._ledger.search(
-            keyword="needle",
-            conversation_id=case.env.context.conversation_id,
-            limit=101,
-        )
-        == ()
-    )
-
-
-@pytest.mark.parametrize(
-    "case_kind", ["canonical", "alias", "revoked", "secret", "scope", "partial"]
-)
-async def test_automation_config_uses_original_writer_role_scope_and_restart_fact(
-    database, tmp_path, monkeypatch, case_kind
-):
-    from uuid import uuid4
-
-    from tests.support.automation_unified_delivery_helpers import setup_run
-
-    from qq_ai_bot.admin.models import ConfigApplyMode
-    from qq_ai_bot.automation.models import AutomationScript, RunStatus
-    from qq_ai_bot.automation.service import AutomationService
-    from qq_ai_bot.automation.work_cursor import load
-    from qq_ai_bot.domain.tool_actor import ToolActor
-    from qq_ai_bot.identity.db_models import IdentityBindingModel
-    from qq_ai_bot.persistence.models import RuntimeConfigOverrideModel
-
-    case = await setup_run(
-        database,
-        tmp_path,
-        delivery="none",
-        mode="silent",
-        superusers_csv="10001",
-    )
-    key = (
-        "定时任务开关"
-        if case_kind == "alias"
-        else "llm.api_key"
-        if case_kind == "secret"
-        else "automation.enabled"
-    )
-    script = AutomationScript.model_validate(
-        {
-            "version": 1,
-            "name": "original authorized config writer",
-            "schedule": {"type": "after", "seconds": 1},
-            "context": {"scene": "current_group"},
-            "steps": [
-                {
-                    "id": "configure",
-                    "call": "config.set",
-                    "arguments": {
-                        "key": key,
-                        "value": "synthetic-secret" if case_kind == "secret" else False,
-                        "scope_type": "group" if case_kind == "scope" else "global",
-                        "scope_id": "20001" if case_kind == "scope" else "",
-                    },
-                },
-                *(
-                    [
-                        {
-                            "id": "read",
-                            "call": "history.search",
-                            "arguments": {"keyword": "Save", "limit": 1},
-                        }
-                    ]
-                    if case_kind == "partial"
-                    else []
-                ),
-            ],
-        }
-    )
-    event = await case.chat._ledger._writer.append(
-        scope=ConversationScope.group("80001", "20001"),
-        platform_message_id="original-config-source",
-        sender_user_id="10001",
-        direction="inbound",
-        content="Save the explicitly delegated configuration change",
-    )
-    service = AutomationService(
-        settings=case.executor._settings,
-        repository=case.repository,
-        registry=case.executor._registry,
-        time_service=case.chat._time,
-    )
-    row = await service.create(
-        script,
-        actor=ToolActor(
-            user_id="10001",
-            bot_user_id="80001",
-            group_id="20001",
-            origin=TurnOrigin.USER_MESSAGE,
-            instruction="Save the explicitly delegated configuration change",
-            event_id=event.event.id,
-            person_id=case.env.person,
-            conversation_id=case.env.context.conversation_id,
-        ),
-        conversation_key="group:80001:20001",
-    )
-    run = await case.repository.create_run(
-        row.id,
-        scheduled_for=row.next_run_at,
-        actual_started_at=case.clock.now(),
-    )
-    if case_kind == "partial":
-        from qq_ai_bot.automation import work_cursor
-
-        save = work_cursor.save
-
-        async def stop_after_saved_step(database, run_id, script_hash, phase, payload, **kwargs):
-            await save(database, run_id, script_hash, phase, payload, **kwargs)
-            if phase == "ready" and payload["next_step"] == 1:
-                raise RuntimeError("Host stopped after the original step cursor was saved")
-
-        with monkeypatch.context() as interrupted:
-            interrupted.setattr(work_cursor, "save", stop_after_saved_step)
-            first = await case.executor.execute(row, run)
-        assert first.status is RunStatus.FAILED and first.steps_completed == first.tool_calls == 1
-    if case_kind in {"revoked", "partial"}:
-        async with database.immediate_session() as writer:
-            await writer.execute(
-                update(IdentityBindingModel)
-                .where(
-                    IdentityBindingModel.person_id == case.env.person,
-                )
-                .values(status="disabled")
-            )
-            writer.add(
-                IdentityBindingModel(
-                    id=str(uuid4()),
-                    person_id=case.env.person,
-                    platform="qq",
-                    external_account_id="19002",
-                    status="active",
-                    revision=1,
-                    first_seen_at=case.clock.now(),
-                    last_seen_at=case.clock.now(),
-                    created_at=case.clock.now(),
-                    updated_at=case.clock.now(),
-                )
-            )
-    result = await case.executor.execute(row, run)
-    success = case_kind in {"canonical", "alias", "partial"}
-    assert result.status is (RunStatus.SUCCEEDED if success else RunStatus.FAILED), result
-    async with database.sessions() as reader:
-        overrides = (await reader.scalars(select(RuntimeConfigOverrideModel))).all()
-        assert len(overrides) == int(success)
-        if success:
-            assert overrides[0].config_key == "automation.enabled"
-            assert json.loads(overrides[0].value_json) is False
-    if success:
-        _, cursor = await load(database, run.id, row.script_hash)
-        assert cursor["outputs"]["configure"] == {
-            "key": "automation.enabled",
-            "after": False,
-            "ok": True,
-        }
-        effective = await case.chat._runtime_config.get_effective("automation.enabled")
-        assert effective.value is True
-        assert len(await case.chat._runtime_config.pending_restart_entries()) == 1
-        assert effective.apply_mode is ConfigApplyMode.RESTART_REQUIRED
-        assert case.executor._settings.automation_enabled is True
-        if case_kind == "partial":
-            assert (
-                cursor["outputs"]["read"]["events"][0]["content"]
-                == "Save the explicitly delegated configuration change"
-            )
-            assert result.steps_completed == result.tool_calls == 2
-        await case.executor.execute(row, run)
-    assert not case.provider.requests and not [
-        action for action, _ in case.env.bot.calls if action.startswith("send_")
-    ]
-
-
-@pytest.mark.parametrize("scope_kind", ["person", "group"])
-async def test_automation_memory_reads_original_requested_101_facts(database, tmp_path, scope_kind):
-    from tests.support.automation_unified_delivery_helpers import setup_run
-
-    from qq_ai_bot.automation.models import AutomationScript, RunStatus
-    from qq_ai_bot.automation.service import AutomationService
-    from qq_ai_bot.automation.work_cursor import load
-    from qq_ai_bot.domain.tool_actor import ToolActor
+    from qq_ai_bot.automation.models import RunStatus
     from qq_ai_bot.memory.enums import MemoryKind, MemoryScopeType, MemorySourceType
     from qq_ai_bot.memory.models import MemoryFactCreate
+    from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
 
-    case = await setup_run(database, tmp_path, delivery="none", mode="silent")
-    originals = []
-    for index in range(101):
-        content = f"original {scope_kind} fact {index}"
-        await case.chat._memories.remember(
-            MemoryFactCreate(
-                scope_type=MemoryScopeType.PERSON
-                if scope_kind == "person"
-                else MemoryScopeType.GROUP,
-                subject_user_id="10001" if scope_kind == "person" else None,
-                group_id="20001" if scope_kind == "group" else None,
-                kind=MemoryKind.FACT,
-                memory_key=f"original-{index}",
-                category="test",
-                content=content,
-                importance=4,
-                confidence=0.9,
-                source_type=MemorySourceType.AUTOMATIC,
-            )
+    case = await setup_run(
+        database, tmp_path, delivery="none", mode="silent", work_enabled=work_enabled
+    )
+    store = ToolArtifactRepository(database, tmp_path / "artifacts", retention_seconds=60)
+    case.chat._tool_artifacts = store
+    original = "original person fact " + "长期资料" * 300 + "MEMORY_BODY_TAIL"
+    fact = await case.chat._memories.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="10001",
+            group_id=None,
+            kind=MemoryKind.FACT,
+            memory_key="original-long-fact",
+            category="test",
+            content=original,
+            importance=4,
+            confidence=0.9,
+            source_type=MemorySourceType.AUTOMATIC,
         )
-        originals.append(content)
-    script = AutomationScript.model_validate(
-        {
-            "version": 1,
-            "name": "original requested memory page",
-            "schedule": {"type": "after", "seconds": 1},
-            "context": {"scene": "current_group"},
-            "steps": [
-                {
-                    "id": "facts",
-                    "call": f"memory.get_{scope_kind}",
-                    "arguments": {
-                        "user_id" if scope_kind == "person" else "group_id": "10001"
-                        if scope_kind == "person"
-                        else "20001",
-                        "limit": 101,
-                    },
-                }
-            ],
-        }
     )
-    event = await case.chat._ledger._writer.append(
-        scope=ConversationScope.group("80001", "20001"),
-        platform_message_id="original-memory-source",
-        sender_user_id="10001",
-        direction="inbound",
-        content="Read the original requested memory page",
+    case.provider._responder = lambda _: (
+        ChatResponse(
+            "",
+            0,
+            tool_calls=(
+                ToolCall(
+                    "original-fact",
+                    ToolFunction("get_memory_fact", json.dumps({"fact_id": fact.id})),
+                ),
+            ),
+        )
+        if len(case.provider.requests) == 1
+        else "读完原始记忆"
     )
-    service = AutomationService(
-        settings=case.executor._settings,
-        repository=case.repository,
-        registry=case.executor._registry,
-        time_service=case.chat._time,
+    case.clock.advance(2)
+    result = await case.dispatch()
+    assert result.status is RunStatus.SUCCEEDED and result.tool_calls == 1
+    reply = next(m for m in case.provider.requests[1].messages if m.role == "tool")
+    rendered = json.loads(reply.content)
+    assert rendered["ok"], rendered
+    if "artifact_handle" in rendered:
+        page = await store.read(rendered["artifact_handle"], limit=1000000, max_characters=1000000)
+        rendered = json.loads(page["content"])
+    assert rendered["data"]["memory"]["content"] == original
+    assert original not in "\n".join(m.content or "" for m in case.provider.requests[0].messages)
+
+
+@pytest.mark.parametrize("promoted", [False, True])
+async def test_scheduled_main_uses_current_permission_for_real_config_operation(
+    database, tmp_path, promoted
+):
+    from tests.support.automation_unified_delivery_helpers import setup_run
+
+    from qq_ai_bot.automation.models import RunStatus
+    from qq_ai_bot.persistence.models import RuntimeConfigOverrideModel
+
+    case = await setup_run(database, tmp_path, delivery="none", mode="silent", superusers_csv="")
+    if promoted:
+        case.settings.superusers_csv = "10001"
+        del case.settings.__dict__["superusers"]
+    from qq_ai_bot.admin.action_service import ActionRegistry
+    from qq_ai_bot.admin.capabilities import AdminCapabilityService
+
+    case.chat.set_admin_tools(
+        AdminCapabilityService(
+            settings=case.settings,
+            runtime_config=case.chat._runtime_config,
+            actions=SimpleNamespace(registry=ActionRegistry()),
+        )
     )
-    row = await service.create(
-        script,
-        actor=ToolActor(
-            user_id="10001",
-            bot_user_id="80001",
-            group_id="20001",
-            origin=TurnOrigin.USER_MESSAGE,
-            instruction="Read the original requested memory page",
-            event_id=event.event.id,
-            person_id=case.env.person,
-            conversation_id=case.env.context.conversation_id,
-        ),
-        conversation_key="group:80001:20001",
+    args = {"key": "automation.enabled", "value": False, "scope_type": "global", "scope_id": ""}
+    case.provider._responder = lambda _: (
+        ChatResponse(
+            "",
+            0,
+            tool_calls=(
+                ToolCall("original-config", ToolFunction("admin_set_config", json.dumps(args))),
+            ),
+        )
+        if len(case.provider.requests) == 1
+        else "处理配置结果"
     )
-    run = await case.repository.create_run(
-        row.id,
-        scheduled_for=row.next_run_at,
-        actual_started_at=case.clock.now(),
-    )
-    result = await case.executor.execute(row, run)
-    assert result.status is RunStatus.SUCCEEDED and result.tool_calls == 1, result
-    _, cursor = await load(database, run.id, row.script_hash)
-    returned = cursor["outputs"]["facts"]["memories"]
-    assert len(returned) == 101 and {item["content"] for item in returned} == set(originals)
-    assert not case.provider.requests
+    case.clock.advance(2)
+    result = await case.dispatch()
+    assert result.status is RunStatus.SUCCEEDED
+    reply = next(m for m in case.provider.requests[1].messages if m.role == "tool")
+    rendered = json.loads(reply.content)
+    assert rendered["ok"] == promoted, rendered
+    async with database.sessions() as reader:
+        overrides = (await reader.scalars(select(RuntimeConfigOverrideModel))).all()
+        assert len(overrides) == int(promoted)
+        if promoted:
+            assert overrides[0].config_key == "automation.enabled"
+            assert json.loads(overrides[0].value_json) is False
+    assert await case.dispatch() == result and len(case.provider.requests) == 2

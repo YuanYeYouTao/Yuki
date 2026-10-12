@@ -7,7 +7,6 @@ from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any, Protocol
 
-from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities.binding import InProcessToolBinding
 from qq_ai_bot.capabilities.invocation import ToolInvocationContext, current_invocation
 from qq_ai_bot.capabilities.models import (
@@ -24,11 +23,6 @@ from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.sandbox.environment_tools import READ_TOOLS, SANDBOX_TOOLS
 from qq_ai_bot.workspace.tools import WORKSPACE_READ_TOOLS, WORKSPACE_TOOLS
 
-_ALL_ORIGINS = frozenset(TurnOrigin)
-_DIRECT_ORIGINS = frozenset(
-    {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP, TurnOrigin.SCHEDULED_AUTOMATION}
-)
-_SOCIAL_ORIGINS = _DIRECT_ORIGINS
 _RESIDENT_YUKI_TOOLS = (
     frozenset(
         {
@@ -51,18 +45,6 @@ _RESIDENT_YUKI_TOOLS = (
     | SANDBOX_TOOLS
     | WORKSPACE_TOOLS
 )
-_ORIGIN_OVERRIDES: dict[str, frozenset[TurnOrigin]] = {
-    **{name: _SOCIAL_ORIGINS for name in _RESIDENT_YUKI_TOOLS},
-    **{name: _ALL_ORIGINS for name in SANDBOX_TOOLS | WORKSPACE_TOOLS},
-    "find_contacts": _ALL_ORIGINS,
-    "read_conversation_history": _ALL_ORIGINS,
-    "send_message": _SOCIAL_ORIGINS
-    | frozenset({TurnOrigin.PLUGIN_BACKGROUND, TurnOrigin.SELF_INITIATIVE}),
-    "poke_person": _SOCIAL_ORIGINS,
-    "get_group_members": _SOCIAL_ORIGINS | frozenset({TurnOrigin.SELF_INITIATIVE}),
-    "recall_own_message": _SOCIAL_ORIGINS,
-}
-
 _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
     **{
         name: (
@@ -326,14 +308,6 @@ class ChatToolCapabilityProvider:
             effect=effect,
             risk=risk,
             trust_source=self._source,
-            allowed_origins=_ORIGIN_OVERRIDES.get(
-                tool.name,
-                (
-                    _DIRECT_ORIGINS
-                    if self._source is CapabilityTrustSource.ADMIN or namespace.startswith("qq.")
-                    else _ALL_ORIGINS
-                ),
-            ),
             required_permissions=permissions,
             uses_external_data=effect is CapabilityEffect.EXTERNAL_READ,
             cancellable=effect in {CapabilityEffect.READ_STATE, CapabilityEffect.EXTERNAL_READ},

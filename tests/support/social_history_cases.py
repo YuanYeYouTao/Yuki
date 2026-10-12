@@ -4,7 +4,6 @@ import asyncio
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -17,7 +16,6 @@ from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.identity.canonical_repository import ensure_presence
 from qq_ai_bot.identity.db_models import PresenceModel
 from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.social.automation import SocialAutomationAdapter
 from qq_ai_bot.social.db_models import SocialOperationModel
 from qq_ai_bot.social.models import SocialError
 
@@ -252,26 +250,6 @@ async def history_targets_and_delegation(env):
     with patch.object(env.service, "_call", AsyncMock(side_effect=asyncio.CancelledError)):
         with pytest.raises(asyncio.CancelledError):
             await env.service.execute("read_conversation_history", group, env.context)
-    adapter = SocialAutomationAdapter(env.service, None, None)
-    invoke = adapter.mapping()["social.read_conversation_history"]
-    context = SimpleNamespace(
-        authority=SimpleNamespace(
-            allowed_capabilities={"social.read_conversation_history"},
-            delegated_authority=object(),
-            actor_is_superuser=False,
-        ),
-        automation_run_id=1,
-        step_id="read",
-        canonical_conversation_id=env.context.conversation_id,
-        canonical_target_space_id=env.space,
-        canonical_target_person_id=None,
-    )
-    assert (await invoke(group, context)).data["count"] == 0
-    with pytest.raises(SocialError, match="delegated_target_not_allowed"):
-        await invoke({**args, "binding_id": binding, "presence_id": second}, context)
-    context.authority.delegated_authority = None
-    with pytest.raises(SocialError, match="capability_denied"):
-        await invoke(group, context)
     async with env.db.sessions() as session, session.begin():
         presence = await session.get(PresenceModel, second)
         presence.enabled = False

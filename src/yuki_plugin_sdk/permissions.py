@@ -41,7 +41,6 @@ class PluginPermission(StrEnum):
     EMOJI_HOOK = "emoji.hook"
     AUTOMATION_READ = "automation.read"
     AUTOMATION_MANAGE_SELF = "automation.manage_self"
-    AUTOMATION_ACTION_REGISTER = "automation.action.register"
     PLUGIN_CONFIG_READ = "plugin.config.read"
     PLUGIN_CONFIG_WRITE = "plugin.config.write"
     RUNTIME_CONFIG_READ = "runtime.config.read"

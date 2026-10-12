@@ -237,11 +237,14 @@ class DeepSeekResponsesProvider(JSONHTTPProvider):
             total_tokens = input_tokens + output_tokens
         input_details = usage.get("input_tokens_details")
         input_details = input_details if isinstance(input_details, dict) else {}
+        output_details = usage.get("output_tokens_details")
+        output_details = output_details if isinstance(output_details, dict) else {}
         return {
             name: value
             for name, value in (
                 ("prompt_tokens", input_tokens),
                 ("completion_tokens", output_tokens),
+                ("reasoning_tokens", nonnegative(output_details.get("reasoning_tokens"))),
                 ("total_tokens", total_tokens),
                 ("cached_prompt_tokens", nonnegative(input_details.get("cached_tokens"))),
             )

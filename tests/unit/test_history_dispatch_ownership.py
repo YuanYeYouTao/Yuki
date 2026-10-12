@@ -120,7 +120,7 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
         saved = (await session.scalars(select(PromptProjectionModel))).one()
         original = (saved.epoch_id, saved.revision, saved.payload_json)
         assert saved.invalidated_reason is None
-        assert "original-snapshot" in saved.payload_json
+        assert "original-snapshot" not in saved.payload_json
         assert "private-work-result" not in saved.payload_json
         assert "no_active_work" not in saved.payload_json
     from qq_ai_bot.runtime.work_activation import current_work_control
@@ -312,7 +312,7 @@ async def test_same_actor_new_turn_honors_snapshot_boundaries(
     async with database.sessions() as reader:
         saved = (await reader.scalars(select(PromptProjectionModel))).one()
         original_epoch, original_key = saved.epoch_id, saved.view_key
-        assert "original-snapshot" in saved.payload_json
+        assert "original-snapshot" not in saved.payload_json
         original_event = await reader.scalar(
             select(ChatEventModel.id).where(
                 ChatEventModel.platform_message_id == message.message_id
@@ -366,21 +366,21 @@ async def test_same_actor_new_turn_honors_snapshot_boundaries(
         [m.content for m in provider.requests[2].messages], ensure_ascii=False
     )
     assert "current-safe-snapshot" in current_input
-    if boundary in {"profile", "contract"}:
-        assert "original-snapshot" in current_input
-    else:
-        assert "original-snapshot" not in current_input
+    assert "original-snapshot" not in current_input
     async with database.sessions() as reader:
         rows = (await reader.scalars(select(PromptProjectionModel))).all()
         active = [row for row in rows if row.invalidated_reason is None]
-        current = next(row for row in active if "current-safe-snapshot" in row.payload_json)
-        assert current.epoch_id != original_epoch and current.revision == 1
-        if boundary in {"profile", "contract"}:
-            assert "original-snapshot" in current.payload_json
+        current = next(row for row in active if next_message.text in row.payload_json)
+        if boundary == "plugin_permission":
+            assert current.epoch_id == original_epoch
         else:
-            assert "original-snapshot" not in current.payload_json
-        if boundary in {"plugin_permission", "selected_scope"}:
+            assert current.epoch_id != original_epoch and current.revision == 1
+        assert "original-snapshot" not in current.payload_json
+        assert "current-safe-snapshot" not in current.payload_json
+        if boundary == "selected_scope":
             assert current.view_key != original_key
+        elif boundary == "plugin_permission":
+            assert current.view_key == original_key
         else:
             assert current.view_key == original_key
             assert (

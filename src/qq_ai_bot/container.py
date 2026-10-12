@@ -7,7 +7,7 @@ import logging
 import time
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.exc import SQLAlchemyError
@@ -335,9 +335,6 @@ class ApplicationContainer:
             else:
                 await resume_plugin_work(self._plugin_contexts.get, self.ledger, work, source)
 
-        async def resume_automation(work: dict[str, Any], source: dict[str, Any]) -> None:
-            await self._automation_handlers.resume_work(self.database, work, source)
-
         self.work_resumer = WorkResumer(
             works,
             WorkResumeDependencies(
@@ -352,7 +349,7 @@ class ApplicationContainer:
                 generate_wakeup=self.chat.generate_main_agent_wakeup,
                 generate_self=self.chat.generate_self_initiative,
                 resume_plugin=resume_plugin,
-                resume_automation=resume_automation,
+                generate_origin=self.chat.generate_origin_turn,
             ),
         )
         self.work_scheduler = WorkScheduler(
@@ -441,38 +438,21 @@ class ApplicationContainer:
         self.automation_module = AutomationModule(
             settings=settings,
             database=self.database,
-            main_turns=self.runtime.main_turns,
-            main_contract=self.runtime.contract,
+            chat=self.chat,
             runtime_config=self.runtime_config,
             time_service=self.time_context,
-            ledger=self.ledger,
-            memories=self.memories,
             admin_audit=self.admin_audit,
-            web_provider=self.web_provider,
-            emoji_repository=self.emoji_repository,
-            emoji_storage=self.emoji_storage,
             presence_router=self.presence_router,
+            conversation_scopes=self.conversation_scopes,
+            turns=self.turn_coordinator,
+            work_repository=works,
         )
         automation = self.automation_module.build()
         self.automation_bundle = automation
         self.automation_repository = automation.repository
-        self._automation_handlers = automation.handlers
-        from qq_ai_bot.social.automation import SocialAutomationAdapter
-
-        self.social_automation = SocialAutomationAdapter(
-            self.social_service, self.workspace_service, self.sandbox_client
-        )
-        for capability_name, handler in self.social_automation.mapping().items():
-            from dataclasses import replace
-
-            definition = automation.registry.require(capability_name)
-            automation.registry.unregister(capability_name)
-            automation.registry.register(replace(definition, handler=handler))
-        self.automation_registry = automation.registry
         self.automation = automation.service
         self.automation_tools = automation.tools
         self.chat.set_automation_tools(self.automation_tools)
-        self.automation_executor = automation.executor
         self.automation_worker = automation.worker
         self._plugin_contexts: dict[str, HostPluginContext] = {}
         self.plugin_notification_repository = PluginNotificationRepository(
@@ -510,10 +490,8 @@ class ApplicationContainer:
             concurrency=self.concurrency,
             runtime_config=self.runtime_config,
             prompt_registry=self.prompt_registry,
-            automation_registry=self.automation_registry,
             context_factory=self._create_plugin_context,
             plugin_invocation_scope=self._plugin_invocation_scope,
-            automation_invocation_scope=self._plugin_automation_invocation_scope,
             signal_invocation_scope=self._plugin_signal_scope,
             on_activated=self._activate_plugin_extensions,
             on_deactivated=self._deactivate_plugin_extensions,
@@ -533,7 +511,6 @@ class ApplicationContainer:
         self.plugin_extensions = plugins.extensions
         self.plugin_emoji_signals = plugins.emoji_signals
         self.plugin_prompts = plugins.prompts
-        self.plugin_automation = plugins.automation
         self.plugin_manager = plugins.manager
         self.plugin_tools = plugins.tools
         self.plugin_direct_commands = plugins.direct_commands
@@ -824,16 +801,6 @@ class ApplicationContainer:
             web_was_used=web_was_used,
         )
 
-    def _plugin_automation_invocation_scope(
-        self,
-        plugin_id: str,
-        invocation: PluginInvocation,
-    ) -> AbstractAsyncContextManager[object]:
-        context = self._plugin_contexts.get(plugin_id)
-        if context is None:
-            raise RuntimeError("plugin is not running")
-        return context.bind(invocation)
-
     def _plugin_signal_scope(
         self,
         plugin_id: str,
@@ -857,11 +824,9 @@ class ApplicationContainer:
 
     def _activate_plugin_extensions(self, manifest: PluginManifest) -> None:
         self.plugin_prompts.activate(manifest.id)
-        self.plugin_automation.activate(manifest)
 
     def _deactivate_plugin_extensions(self, plugin_id: str) -> None:
         self.plugin_prompts.deactivate(plugin_id)
-        self.plugin_automation.deactivate(plugin_id)
         self._plugin_contexts.pop(plugin_id, None)
 
     @classmethod

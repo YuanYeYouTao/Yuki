@@ -13,7 +13,6 @@ DEFAULT_FEATURES: frozenset[str] = frozenset(
         "message.current.mentions.v1",
         "prompt.fragment.v1",
         "admission.signal.v1",
-        "automation.action.v1",
         "plugin.agent_session.v1",
         "emoji.facade.v1",
         "emoji.selection_signals.v1",

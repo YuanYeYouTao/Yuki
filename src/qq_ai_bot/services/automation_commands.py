@@ -78,7 +78,7 @@ class AutomationCommandHandler:
                     f"自动化 ID：{automation_id}\n名称：{current.name}\n"
                     f"状态：{current.status.value}\n时区：{timezone}\n下次："
                     f"{local_text(current.next_run_at, timezone)}\n"
-                    f"能力：{', '.join(current.required_capabilities)}"
+                    "到期由主 Agent 执行完整任务。"
                 )
             if operation == "history":
                 _current, history_rows = await self._automation.history(automation_id, actor=actor)

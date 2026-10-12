@@ -9,7 +9,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
-from uuid import NAMESPACE_URL, uuid4, uuid5
+from uuid import uuid4
 
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.exc import IntegrityError
@@ -66,7 +66,6 @@ class ProjectionSnapshot:
 
     selected_summary_kind: str | None = None
     selected_summary_renderer: int | None = None
-    visible_material_json: str = "{}"
 
     def items(self) -> list[dict[str, Any]]:
         # Each consumer gets a copy; changing it cannot mutate the committed view.
@@ -147,10 +146,6 @@ class PromptProjectionRepository:
         selected_summary_coverage: int = 0,
         selected_summary_kind: str | None = None,
         selected_summary_renderer: int | None = None,
-        current_snapshot: dict[str, Any] | None = None,
-        snapshot_event_id: int | None = None,
-        snapshot_fragment_index: int | None = None,
-        visible_material: dict[str, Any] | None = None,
         replace_event_id: int | None = None,
     ) -> ProjectionSnapshot:
         publication = await self.prepare_commit(
@@ -171,10 +166,6 @@ class PromptProjectionRepository:
             selected_summary_coverage=selected_summary_coverage,
             selected_summary_kind=selected_summary_kind,
             selected_summary_renderer=selected_summary_renderer,
-            current_snapshot=current_snapshot,
-            snapshot_event_id=snapshot_event_id,
-            snapshot_fragment_index=snapshot_fragment_index,
-            visible_material=visible_material,
             replace_event_id=replace_event_id,
         )
         async with self.database.immediate_session() as session:
@@ -200,12 +191,8 @@ class PromptProjectionRepository:
         selected_summary_coverage: int = 0,
         selected_summary_kind: str | None = None,
         selected_summary_renderer: int | None = None,
-        current_snapshot: dict[str, Any] | None = None,
-        snapshot_event_id: int | None = None,
-        snapshot_fragment_index: int | None = None,
         previous_snapshot: ProjectionSnapshot | None = None,
         previous_item_count: int | None = None,
-        visible_material: dict[str, Any] | None = None,
         replace_event_id: int | None = None,
     ) -> ProjectionPublication:
         """Append exact items, or explicitly replace an epoch under a compare-and-swap.
@@ -219,61 +206,13 @@ class PromptProjectionRepository:
         if rebuild_reason is not None and rebuild_reason not in REBUILD_REASONS:
             raise ValueError("invalid projection rebuild reason")
         items = deepcopy(items)
-        prepared_snapshot: dict[str, Any] | None = None
-        if current_snapshot and actor_id and read_scope:
-            from qq_ai_bot.conversation.observations import encode
-
-            snapshot_payload = encode(current_snapshot)
-            snapshot_key = (
-                "snapshot:"
-                + hashlib.sha256(
-                    encode(
-                        [
-                            view_key,
-                            conversation_id,
-                            generation,
-                            actor_id,
-                            read_scope,
-                            snapshot_event_id,
-                            snapshot_payload,
-                        ]
-                    ).encode()
-                ).hexdigest()
-            )
-            snapshot_id = str(uuid5(NAMESPACE_URL, snapshot_key))
-            prepared_snapshot = dict(
-                id=snapshot_id,
-                conversation_id=conversation_id,
-                generation=generation,
-                actor_id=actor_id,
-                read_scope=read_scope,
-                source_key=snapshot_key,
-                source_event_id=snapshot_event_id,
-                version=1,
-                payload_json=snapshot_payload,
-                parent_sources_json="[]",
-                summary_view_key=view_key,
-                created_at=datetime.now(UTC),
-            )
-            for item in reversed(items):
-                if snapshot_event_id is not None and snapshot_event_id in item["event_ids"]:
-                    item["observation_id"], item["observation_version"] = snapshot_id, 1
-                    break
-            if snapshot_event_id is None and snapshot_fragment_index is not None:
-                if not 0 <= snapshot_fragment_index < len(items):
-                    raise ProjectionConflict("snapshot fragment is missing")
-                item = items[snapshot_fragment_index]
-                if item["event_ids"] or "observation_id" in item:
-                    raise ProjectionConflict("snapshot fragment is not a fresh envelope")
-                item["observation_id"], item["observation_version"] = snapshot_id, 1
         for position, item in enumerate(items):
             if not item["event_ids"] and "selection_key" not in item:
                 item["selection_key"] = _selection_key(item, position)
         if len(items) > 262_144 or not all(isinstance(item, dict) for item in items):
             raise ProjectionCapacityError("projection item limit exceeded")
         payload = json.dumps(items, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-        material_payload = _encode_item(visible_material or {})
-        size = len(payload.encode("utf-8")) + len(material_payload.encode("utf-8"))
+        size = len(payload.encode("utf-8"))
         collect_phase_metrics(item_count=len(items), payload_bytes=size)
         if size > self.view_bytes:
             raise ProjectionCapacityError("projection view budget exceeded")
@@ -301,56 +240,8 @@ class PromptProjectionRepository:
         replaced_selection_ids: list[int] = []
         summary_parents: dict[str, tuple[str, ...]] = {}
 
-        if prepared_snapshot is not None:
-            # Source publication is not observation. Only the dispatch CAS below
-            # adds selection/coverage, and readers exclude unselected snapshots.
-            async def checked_snapshot(
-                session: AsyncSession, *, snapshot_privacy: int | None = None
-            ) -> bool:
-                owner = await session.get(CanonicalConversationModel, conversation_id)
-                if (
-                    owner is None
-                    or (owner.generation, owner.starts_after_event_id, owner.prompt_source_revision)
-                    != (generation, starts_after_event_id, expected_source_revision)
-                    or (
-                        await privacy_generation(session)
-                        if snapshot_privacy is None
-                        else snapshot_privacy
-                    )
-                    != prepared_privacy
-                ):
-                    raise ProjectionConflict("snapshot source changed before publication")
-                if snapshot_event_id is not None:
-                    from qq_ai_bot.persistence.models import ChatEventModel
-
-                    anchor = await session.scalar(
-                        select(ChatEventModel.canonical_conversation_id).where(
-                            ChatEventModel.id == snapshot_event_id
-                        )
-                    )
-                    if anchor != conversation_id:
-                        raise ProjectionConflict("snapshot event source changed")
-                stored = await session.get(ContextObservationModel, prepared_snapshot["id"])
-                if stored is not None and stored.payload_json != prepared_snapshot["payload_json"]:
-                    raise ProjectionConflict("snapshot source changed")
-                return stored is not None
-
-            with model_detail("projection_snapshot_read"):
-                async with self.database.sessions() as source_reader:
-                    await source_reader.execute(text("BEGIN"))
-                    prepared_privacy = await privacy_generation(source_reader)
-                    prepared_snapshot["privacy_generation"] = prepared_privacy
-                    exists = await checked_snapshot(
-                        source_reader, snapshot_privacy=prepared_privacy
-                    )
-            if not exists:
-                with model_detail("projection_snapshot_publish"):
-                    async with self.database.immediate_session() as source_writer:
-                        if not await checked_snapshot(source_writer):
-                            source_writer.add(ContextObservationModel(**prepared_snapshot))
-        else:
-            async with self.database.sessions() as prepared_session:
-                prepared_privacy = await privacy_generation(prepared_session)
+        async with self.database.sessions() as prepared_session:
+            prepared_privacy = await privacy_generation(prepared_session)
 
         # Traverse parent references in a read snapshot, never in the journal
         # writer. Every mutation/deletion advances the canonical source revision
@@ -616,15 +507,14 @@ class PromptProjectionRepository:
                                 )
                             )
                         continue
-                    used -= victim.byte_size - 4
+                    used -= victim.byte_size - 2
                     count -= 1
                     await session.execute(
                         update(PromptProjectionModel)
                         .where(PromptProjectionModel.view_key == victim.view_key)
                         .values(
                             payload_json="[]",
-                            visible_material_json="{}",
-                            byte_size=4,
+                            byte_size=2,
                             invalidated_reason="capacity",
                             revision=PromptProjectionModel.revision + 1,
                             updated_at=datetime.now(UTC),
@@ -678,7 +568,6 @@ class PromptProjectionRepository:
             row.rebuild_reason = rebuild_reason or row.rebuild_reason
             row.invalidated_reason = None
             row.payload_json, row.byte_size = payload, size
-            row.visible_material_json = material_payload
             row.selected_summary_text = selected_summary_text
             row.selected_summary_coverage = selected_summary_coverage
             row.selected_summary_kind = selected_summary_kind
@@ -814,8 +703,7 @@ class PromptProjectionRepository:
                 )
                 .values(
                     payload_json="[]",
-                    visible_material_json="{}",
-                    byte_size=4,
+                    byte_size=2,
                     invalidated_reason=reason,
                     revision=PromptProjectionModel.revision + 1,
                     updated_at=datetime.now(UTC),
@@ -874,5 +762,4 @@ def _snapshot(row: PromptProjectionModel) -> ProjectionSnapshot:
         (row.view_key, row.payload_json, stamp),
         selected_summary_kind=row.selected_summary_kind,
         selected_summary_renderer=row.selected_summary_renderer,
-        visible_material_json=row.visible_material_json,
     )

@@ -1,4 +1,4 @@
-"""Strict automation DSL and runtime projections."""
+"""Schedule definitions and immutable occurrence projections."""
 
 from __future__ import annotations
 
@@ -60,60 +60,6 @@ Schedule = Annotated[
 ]
 
 
-class AutomationContext(StrictModel):
-    scene: Literal["none", "creator_private", "current_group"] = "none"
-    include_memories: bool = False
-    history_limit: int = Field(default=0, ge=0)
-
-
-class AutomationStep(StrictModel):
-    id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
-    call: str = Field(min_length=1)
-    arguments: dict[str, Any]
-    save_as: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]*$")
-
-
-class AutomationLimits(StrictModel):
-    agent_budget_managed: bool = False
-    max_steps: int | None = Field(default=None, ge=1)
-    max_llm_calls: int | None = Field(default=None, ge=0)
-    max_tool_calls: int | None = Field(default=None, ge=1)
-    max_messages: int | None = Field(default=None, ge=0)
-    timeout_seconds: int | None = Field(default=None, ge=1)
-
-
-class AutomationScript(StrictModel):
-    """Versioned JSON-only automation declaration accepted from the Agent."""
-
-    version: Literal[1]
-    name: str = Field(min_length=1)
-    timezone: str = Field(default="Asia/Shanghai", min_length=1)
-    schedule: Schedule
-    context: AutomationContext = Field(default_factory=AutomationContext)
-    steps: tuple[AutomationStep, ...] = Field(min_length=1)
-    limits: AutomationLimits = Field(default_factory=AutomationLimits)
-
-    @property
-    def uses_runtime_budget(self) -> bool:
-        # A Yuki step owns a durable runtime budget, including declarations
-        # saved before this distinction existed. Its outer DSL counts steps.
-        return self.limits.agent_budget_managed or any(
-            step.call in {"yuki.agent"} for step in self.steps
-        )
-
-    @model_validator(mode="after")
-    def _consistent_limits(self) -> AutomationScript:
-        ids = [step.id for step in self.steps]
-        if len(set(ids)) != len(ids):
-            raise ValueError("步骤 id 不能重复")
-        aliases = [step.save_as for step in self.steps if step.save_as]
-        if len(set(aliases)) != len(aliases):
-            raise ValueError("save_as 不能重复")
-        if self.limits.max_steps is not None and len(self.steps) > self.limits.max_steps:
-            raise ValueError("步骤数量超过脚本 limits.max_steps")
-        return self
-
-
 class AutomationStatus(StrEnum):
     ACTIVE = "active"
     PAUSED = "paused"
@@ -133,19 +79,6 @@ class RunStatus(StrEnum):
     BLOCKED = "blocked"
 
 
-class RiskClass(StrEnum):
-    READ = "read"
-    GENERATE = "generate"
-    SEND = "send"
-    MUTATE = "mutate"
-    DESTRUCTIVE = "destructive"
-
-
-class RetryPolicy(StrEnum):
-    NONE = "none"
-    TRANSIENT_ONCE = "transient_once"
-
-
 class AutomationRecord(StrictModel):
     id: int
     version_id: int | None = None
@@ -156,9 +89,9 @@ class AutomationRecord(StrictModel):
     name: str
     status: AutomationStatus
     timezone: str
-    script: AutomationScript
+    script: dict[str, Any]
+    schedule: Schedule
     script_hash: str
-    required_capabilities: tuple[str, ...]
     authority_snapshot: dict[str, Any]
     created_from_message_id: str
     next_run_at: datetime | None
@@ -217,13 +150,3 @@ class AutomationRunRecord(StrictModel):
     messages_sent: int
     error_category: str | None
     result_summary: dict[str, Any]
-
-
-class ExecutionResult(StrictModel):
-    status: RunStatus
-    steps_completed: int = 0
-    llm_calls: int = 0
-    tool_calls: int = 0
-    messages_sent: int = 0
-    error_category: str | None = None
-    summary: dict[str, Any] = Field(default_factory=dict)

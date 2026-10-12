@@ -61,7 +61,6 @@ capabilities = ["structured_output", "reasoning"]
 
 [routes]
 chat_agent = "main"
-automation_agent = "main"
 plugin_agent_session = "main"
 memory_extraction = "background_tasks"
 memory_self_reflection = "self_reflection"

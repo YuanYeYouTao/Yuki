@@ -67,14 +67,18 @@ class MemoryMutationReceiptRepository:
         session: AsyncSession,
         initiative_run_id: str | None = None,
     ) -> MemoryMutationReceipt:
-        if (trigger_event_id is None) == (initiative_run_id is None):
-            raise ValueError("memory mutation requires exactly one trusted source")
         row = MemoryMutationReceiptModel(
             mutation_id=mutation_id,
             idempotency_key=idempotency_key,
             claim_fingerprint=claim_fingerprint,
             target_fingerprint=target_fingerprint,
-            trigger_source_type="initiative_run" if initiative_run_id else "chat_event",
+            trigger_source_type=(
+                "initiative_run"
+                if initiative_run_id
+                else "chat_event"
+                if trigger_event_id
+                else "execution"
+            ),
             trigger_event_id=trigger_event_id,
             initiative_run_id=initiative_run_id,
             dream_operation_id=None,

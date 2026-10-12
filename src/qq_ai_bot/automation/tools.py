@@ -7,7 +7,6 @@ from collections.abc import Mapping
 from dataclasses import replace
 from typing import Any, ClassVar
 
-from qq_ai_bot.automation.compiler import ExecutionPlan
 from qq_ai_bot.automation.models import (
     AutomationDirectoryEntry,
     AutomationRecord,
@@ -20,10 +19,10 @@ from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.time.formatting import local_iso
 
 _CREATE_DESCRIPTION = (
-    "创建持久化定时任务。纯提醒使用 static；需要模型或工具时使用 agentic。"
+    "创建持久化安排。到期激活同一个主 Agent，完整处理目标与约束，包括固定文字提醒。"
     "运行时使用主 Agent 的完整工具，按创建者当前权限执行，无需选择工具或预算。"
     "需要到时发消息时明确设置 delivery.target：群聊用 current_group，私聊用 self_private；"
-    "none 表示只执行内部工作，不会发送，不能用它创建提醒。SELF 任务与用户任务使用同一发送合同。"
+    "none 表示请求内部处理；是否发言由真实目标、完整要求与主 Agent 决定。"
     "创建时不要提前执行任务；收到 confirmation='persisted' 和 automation_id 才表示成功。"
 )
 
@@ -46,7 +45,7 @@ def _task_intent_schema() -> dict[str, object]:
         "type": "object",
         "additionalProperties": False,
         "required": ["name", "goal", "trigger"],
-        "description": "高层任务意图。后端按声明策略编译为 DSL。",
+        "description": "完整的主 Agent 任务要求与时间安排。",
         "properties": {
             "version": {"type": "integer", "const": 1},
             "name": {"type": "string", "minLength": 1},
@@ -117,26 +116,9 @@ def _task_intent_schema() -> dict[str, object]:
                 ]
             },
             "timezone": {"type": "string", "minLength": 1},
-            "strategy": {
-                "type": "string",
-                "enum": ["auto", "static", "agentic"],
-                "description": "纯提醒用 static；运行时需要模型或工具时用 agentic。",
-            },
             "constraints": {
                 "type": "array",
                 "items": {"type": "string"},
-            },
-            "context": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "scene": {
-                        "type": "string",
-                        "enum": ["none", "creator_private", "current_group"],
-                    },
-                    "include_memories": {"type": "boolean"},
-                    "history_limit": {"type": "integer", "minimum": 0},
-                },
             },
             "delivery": {
                 "type": "object",
@@ -150,11 +132,6 @@ def _task_intent_schema() -> dict[str, object]:
                             "不会投递；auto 由创建时会话选择目标。SELF 没有私人目标。"
                         ),
                     },
-                    "text": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "static 任务的发送正文。",
-                    },
                 },
             },
         },
@@ -164,10 +141,8 @@ def _task_intent_schema() -> dict[str, object]:
                 "name": "五分钟后喝水提醒",
                 "goal": "提醒我喝水",
                 "trigger": {"type": "after", "seconds": 300},
-                "strategy": "static",
                 "constraints": [],
-                "context": {"scene": "none"},
-                "delivery": {"target": "auto", "text": "该喝水啦～"},
+                "delivery": {"target": "auto"},
             }
         ],
     }
@@ -254,7 +229,7 @@ class AutomationToolService:
             ChatTool(
                 name="automation_update",
                 description=(
-                    "用完整的新 TaskSpec 编译并替换任务版本；普通用户只能修改自己的任务，"
+                    "发布完整的新 TaskSpec 版本；普通用户只能修改自己的任务，"
                     "超级管理员可以修改任意任务且不改变原创建者。"
                 ),
                 parameters=_object_schema(
@@ -343,14 +318,14 @@ class AutomationToolService:
             )
         try:
             if name == "automation_create":
-                row, plan = await self._service.create_task(
+                row = await self._service.create_task(
                     arguments.get("task"),
                     actor=actor,
                     conversation_key=runtime.conversation_key,
                     max_runs=arguments.get("max_runs"),
                 )
                 return _result(
-                    data=_record(row, plan=plan, persisted=True),
+                    data=_record(row, persisted=True),
                     public_message=f"自动化任务已创建（ID {row.id}）。",
                     mutation_committed=True,
                 )
@@ -426,14 +401,14 @@ class AutomationToolService:
                     data=_directory_record(await self._service.get_visible(automation_id))
                 )
             if name == "automation_update":
-                row, plan = await self._service.update_task(
+                row = await self._service.update_task(
                     automation_id,
                     arguments.get("task"),
                     actor=actor,
                     conversation_key=runtime.conversation_key,
                 )
                 return _result(
-                    data=_record(row, plan=plan, persisted=True),
+                    data=_record(row, persisted=True),
                     public_message=f"自动化任务已更新（ID {row.id}）。",
                     mutation_committed=True,
                 )
@@ -513,7 +488,7 @@ class AutomationToolService:
             _ = actor.source_key
         except (PermissionError, ValueError):
             return False
-        return runtime.allow_automation
+        return True
 
 
 def _automation_id(arguments: dict[str, Any]) -> int:
@@ -526,7 +501,6 @@ def _automation_id(arguments: dict[str, Any]) -> int:
 def _record(
     row: AutomationRecord,
     *,
-    plan: ExecutionPlan | None = None,
     persisted: bool = False,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
@@ -534,13 +508,10 @@ def _record(
         "name": row.name,
         "status": row.status.value,
         "timezone": row.timezone,
-        "schedule": row.script.schedule.model_dump(mode="json"),
+        "schedule": row.schedule.model_dump(mode="json"),
         "next_run_at_local": local_iso(row.next_run_at, row.timezone),
-        "required_capabilities": row.required_capabilities,
         "run_count": row.run_count,
     }
-    if plan is not None:
-        payload["compiled_strategy"] = plan.strategy
     if persisted:
         payload["confirmation"] = "persisted"
     return payload

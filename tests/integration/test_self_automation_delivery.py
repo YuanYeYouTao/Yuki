@@ -1,28 +1,27 @@
-"""SELF scheduled work must use the same main Agent and social receipts as a person task."""
+"""SELF schedules retain their own actor and use the ordinary Main path."""
 
 import json
 
 import pytest
-from tests.conftest import build_harness, make_settings
-from tests.support.social_identity_cases import social_env
+from sqlalchemy import func, select
+from tests.support.automation_unified_delivery_helpers import sent, setup_run
+from tests.support.runtime_execution import make_work_resumer
 
-from qq_ai_bot.automation.executor import AutomationExecutor
-from qq_ai_bot.automation.handlers import AutomationCapabilityHandlers
 from qq_ai_bot.automation.models import RunStatus
-from qq_ai_bot.automation.registry import build_capability_registry
-from qq_ai_bot.automation.repository import AutomationRepository
-from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.conversation.autonomy_repository import AutonomyRepository
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
 from qq_ai_bot.domain.tool_actor import ToolActor
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.operations.reset_conversations import reset_all
-from qq_ai_bot.persistence.models import AutomationRunModel
+from qq_ai_bot.memory.authorized_scope import AuthorizedMemoryScope
+from qq_ai_bot.memory.models import MemoryScopeType
+from qq_ai_bot.memory.self_origin import read_self_seed_candidates
+from qq_ai_bot.persistence.models import (
+    ChatEventModel,
+    MemoryMutationReceiptModel,
+    MemoryToolReceiptModel,
+)
 from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.services.main_agent_contract import MainAgentContract
-from qq_ai_bot.social.automation import SocialAutomationAdapter
-from qq_ai_bot.workspace.short_state import ShortState
+from qq_ai_bot.runtime.work_schema_v1 import work
+from qq_ai_bot.tool_results.recorder import ToolInvocationRepository
 
 
 async def self_actor(database, env):
@@ -54,173 +53,339 @@ async def self_actor(database, env):
     )
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("delivery", ["none", "current_group"])
-async def test_self_daily_agent_runs_without_borrowing_a_person(database, tmp_path, delivery):
-    env = await social_env(database, tmp_path)
-    actor = await self_actor(database, env)
-    settings = make_settings(
-        database.url, automation_enabled=True, enabled_groups_csv="20001", runtime_work_enabled=True
+async def test_self_schedule_uses_real_actor_without_preaccepted_work(database, tmp_path, delivery):
+    case = await setup_run(
+        database,
+        tmp_path,
+        principal="self",
+        delivery=delivery,
+        mode="silent" if delivery == "none" else "send",
     )
-    turns = 0
+    sources = []
+    generate = case.worker._generate
+
+    async def capture(**kwargs):
+        actor = kwargs["source_runtime"].require_actor()
+        assert actor.principal_kind == "self" and actor.user_id == "" and actor.person_id is None
+        assert kwargs["turn_snapshot"].trigger_event_id is None
+        assert kwargs["turn_snapshot"].automation_run_id is not None
+        sources.append(actor)
+        return await generate(**kwargs)
+
+    case.worker._generate = capture
+    case.clock.advance(2)
+    result = await case.dispatch()
+    assert result.status is RunStatus.SUCCEEDED
+    assert len(sources) == 1
+    assert len(sent(case.env)) == (delivery == "current_group")
+    assert case.provider.requests
+    assert not await case.works.active(case.env.context.conversation_id, 1)
+    before = len(case.provider.requests)
+    assert (await case.dispatch()).id == result.id
+    assert len(case.provider.requests) == before
+
+
+@pytest.mark.parametrize("accept_work", [False, True])
+async def test_self_schedule_memory_uses_original_execution_receipt_and_remains_readable(
+    database, tmp_path, accept_work
+):
+    from tests.unit.test_self_initiative_memory import _service
+
+    case = await setup_run(
+        database,
+        tmp_path,
+        principal="self",
+        delivery="none",
+        mode="silent",
+        self_memory_enabled=True,
+    )
+    mutations, facts, _, _ = _service(database, self_memory_enabled=True)
+    case.chat._tools._memory_mutations = mutations
+    case.chat._tool_invocations = ToolInvocationRepository(database)
+    calls = []
+    if accept_work:
+        calls.append(("task_control", {"action": "accept", "goal": "记录真实工具经历"}))
+    calls.extend(
+        [
+            ("get_group_members", {"limit": 10}),
+            (
+                "memory_change",
+                {
+                    "operation": "create",
+                    "target": {"subject_ref": "self", "scope_type": "self"},
+                    "new_content": "我实际查询了当前群成员列表，确认了 member 的成员资料。",
+                    "memory_key": "self_episode:scheduled",
+                    "category": "self_episode",
+                    "kind": "episode",
+                    "evidence_quote": "member",
+                },
+            ),
+            ("get_memory_fact", None),
+        ]
+    )
+    if accept_work:
+        calls.append(("task_control", {"action": "complete", "result": "已保存真实记忆"}))
+    responses = {}
 
     def respond(request):
-        nonlocal turns
-        turns += 1
-        if delivery == "current_group" and turns == 1:
-            return ChatResponse(
-                content="",
-                latency_seconds=0,
-                tool_calls=(
-                    ToolCall(
-                        id="self-daily-send",
-                        function=ToolFunction(
-                            name="send_message", arguments=json.dumps({"text": "现在喝水"})
-                        ),
+        index = len(case.provider.requests) - 1
+        if index:
+            result = json.loads(request.messages[-1].content)
+            previous = calls[index - 1][0]
+            responses[previous] = result
+            assert result["ok"], result
+        if index >= len(calls):
+            return "NO_REPLY"
+        name, arguments = calls[index]
+        if name == "get_memory_fact":
+            arguments = {"fact_id": responses["memory_change"]["data"]["new_fact_id"]}
+        return ChatResponse(
+            "",
+            0,
+            tool_calls=(
+                ToolCall(f"scheduled-memory-{index}", ToolFunction(name, json.dumps(arguments))),
+            ),
+        )
+
+    case.provider._responder = respond
+    case.clock.advance(2)
+    result = await case.dispatch()
+    assert result.status is RunStatus.SUCCEEDED, responses
+    assert responses["memory_change"]["data"]["ok"]
+    assert (
+        responses["get_memory_fact"]["data"]["memory"]["content"]
+        == calls[1 + int(accept_work)][1]["new_content"]
+    )
+    async with database.sessions() as session:
+        mutation = await session.scalar(select(MemoryMutationReceiptModel))
+        receipt = await session.scalar(
+            select(MemoryToolReceiptModel).where(
+                MemoryToolReceiptModel.tool_name == "get_group_members"
+            )
+        )
+        actual_work = (await session.execute(select(work))).mappings().one_or_none()
+        assert mutation.trigger_source_type == "execution"
+        assert mutation.trigger_event_id is None and mutation.initiative_run_id is None
+        assert receipt.trigger_event_id is None and receipt.initiative_run_id is None
+        assert receipt.execution_id == mutation.decision_actor_id
+        assert receipt.tool_call_id and receipt.source_call_key
+        assert receipt.execution_id == f"automation:{result.id}:{case.row.script_hash}"
+        if accept_work:
+            source = json.loads(actual_work["source_json"])
+            assert source["automation_run_id"] == result.id
+            assert source["parent_execution_id"] == receipt.execution_id
+            assert actual_work["state"] == "completed"
+        else:
+            assert actual_work is None
+        assert await session.scalar(select(func.count(ChatEventModel.id))) == 1
+        original = {
+            column.name: getattr(mutation, column.name)
+            for column in MemoryMutationReceiptModel.__table__.columns
+        }
+    fact = await facts.get_fact(mutation.new_fact_id)
+    evidence = await facts.list_evidence(fact.id)
+    assert fact.scope_type is MemoryScopeType.SELF and fact.visibility_group_id == "20001"
+    assert len(evidence) == 1 and evidence[0].tool_receipt_id == receipt.id
+    assert evidence[0].event_id is None
+    assert [
+        item.id
+        for item in await read_self_seed_candidates(
+            database, canonical_conversation_id=case.env.context.conversation_id
+        )
+    ] == [fact.id]
+    requests = len(case.provider.requests)
+    assert await case.dispatch() == result
+    assert len(case.provider.requests) == requests and not sent(case.env)
+    async with database.sessions() as session:
+        after = await session.get(MemoryMutationReceiptModel, mutation.id)
+        assert {
+            column.name: getattr(after, column.name)
+            for column in MemoryMutationReceiptModel.__table__.columns
+        } == original
+
+
+async def test_self_scheduled_work_memory_keeps_original_version_after_task_update(
+    database, tmp_path
+):
+    from tests.unit.test_self_initiative_memory import _service
+
+    case = await setup_run(
+        database,
+        tmp_path,
+        principal="self",
+        delivery="none",
+        mode="silent",
+        self_memory_enabled=True,
+        trigger={"type": "interval", "seconds": 60},
+    )
+    mutations, facts, _, _ = _service(database, self_memory_enabled=True)
+    case.chat._tools._memory_mutations = mutations
+    case.chat._tool_invocations = ToolInvocationRepository(database)
+
+    def parent_response(request):
+        calls = (
+            (
+                ToolCall(
+                    "accept-original",
+                    ToolFunction("task_control", '{"action":"accept","goal":"原任务"}'),
+                ),
+                ToolCall(
+                    "derive-original",
+                    ToolFunction(
+                        "task_control", '{"action":"derive","goal":"沿真实工具写入自己的记忆"}'
                     ),
                 ),
             )
-        return "NO_REPLY" if delivery == "none" else "done"
+            if len(case.provider.requests) == 1
+            else (
+                ToolCall(
+                    "complete-original",
+                    ToolFunction("task_control", '{"action":"complete","result":"已派发原任务"}'),
+                ),
+            )
+        )
+        return ChatResponse("", 0, tool_calls=calls)
 
-    provider = FakeLLMProvider(responder=respond)
-    harness = build_harness(database, settings, provider)
-    chat = harness.processor._chat
-    chat._tools.social_service = env.service
-    chat.runtime.runner.main_contract = MainAgentContract(chat, ShortState(env.store))
-    handlers = AutomationCapabilityHandlers(
-        settings=settings,
-        main_turns=chat.runtime.main_turns,
-        main_contract=chat.runtime.runner.main_contract,
-        runtime_config=chat._runtime_config,
-        time_service=chat._time,
-        ledger=harness.ledger,
-        memories=chat._memories,
-        web_provider=None,
-        gateway_factory=lambda context: None,
-    )
-    registry = build_capability_registry(handlers.mapping())
-    repository = AutomationRepository(database)
-    service = AutomationService(
-        settings=settings, repository=repository, registry=registry, time_service=chat._time
-    )
-    row, _plan = await service.create_task(
-        {
-            "name": "SELF 每日工作",
-            "goal": "每天在当前群做自己的工作",
-            "trigger": {"type": "daily", "hour": 15, "minute": 0},
-            "strategy": "agentic",
-            "context": {"scene": "current_group", "history_limit": 5},
-            "delivery": {"target": delivery},
-        },
-        actor=actor,
-        conversation_key="bot:80001:group:20001",
-    )
-    run = await repository.create_run(
-        row.id, scheduled_for=row.next_run_at, actual_started_at=chat._time.clock.now()
-    )
-    result = await AutomationExecutor(
-        settings=settings,
-        registry=registry,
-        repository=repository,
-        time_service=chat._time,
-        gateway_factory=lambda context: None,
-    ).execute(row, run)
-    assert result.status is RunStatus.SUCCEEDED, result
-    assert provider.requests
-    assert len([call for call in env.bot.calls if call[0] == "send_group_msg"]) == int(
-        delivery == "current_group"
-    )
-
-
-@pytest.mark.asyncio
-async def test_self_static_reminder_uses_social_receipt_and_replay(database, tmp_path):
-    env = await social_env(database, tmp_path)
-    actor = await self_actor(database, env)
-    settings = make_settings(database.url, automation_enabled=True, enabled_groups_csv="20001")
-    adapter = SocialAutomationAdapter(env.service, None, None)
-    registry = build_capability_registry(adapter.mapping())
-    repository = AutomationRepository(database)
-    time_service = build_harness(database, settings, FakeLLMProvider()).processor._chat._time
-    service = AutomationService(
-        settings=settings, repository=repository, registry=registry, time_service=time_service
-    )
-    row, _plan = await service.create_task(
-        {
-            "name": "SELF 静态提醒",
-            "goal": "喝水",
-            "trigger": {"type": "daily", "hour": 15, "minute": 0},
-            "strategy": "static",
-            "context": {"scene": "current_group"},
-            "delivery": {"target": "current_group", "text": "现在喝水"},
-        },
-        actor=actor,
-        conversation_key="bot:80001:group:20001",
-    )
-    assert row.required_capabilities == ("social.send_message",)
-    run = await repository.create_run(
-        row.id, scheduled_for=row.next_run_at, actual_started_at=time_service.clock.now()
-    )
-    executor = AutomationExecutor(
-        settings=settings,
-        registry=registry,
-        repository=repository,
-        time_service=time_service,
-    )
-    result = await executor.execute(row, run)
-    assert result.status is RunStatus.SUCCEEDED, result
-    assert result.messages_sent == 1
-    assert len([call for call in env.bot.calls if call[0] == "send_group_msg"]) == 1
-    replay = await executor.execute(row, run)
-    assert replay.status is RunStatus.SUCCEEDED
-    assert len([call for call in env.bot.calls if call[0] == "send_group_msg"]) == 1
-
-
-@pytest.mark.asyncio
-async def test_offline_generation_reset_rebinds_future_self_automation(database, tmp_path):
-    env = await social_env(database, tmp_path)
-    actor = await self_actor(database, env)
-    settings = make_settings(database.url, automation_enabled=True, enabled_groups_csv="20001")
-    service = AutomationService(
-        settings=settings,
-        repository=AutomationRepository(database),
-        registry=build_capability_registry(),
-        time_service=build_harness(database, settings, FakeLLMProvider()).processor._chat._time,
-    )
-    row, _ = await service.create_task(
-        {
-            "name": "切换后的 SELF 提醒",
-            "goal": "喝水",
-            "trigger": {"type": "daily", "hour": 15, "minute": 0},
-            "strategy": "static",
-            "context": {"scene": "current_group"},
-            "delivery": {"target": "current_group", "text": "现在喝水"},
-        },
-        actor=actor,
-        conversation_key="bot:80001:group:20001",
-    )
-    before = row.authority_snapshot["conversation_generation"]
-    repository = AutomationRepository(database)
-    run = await repository.create_run(
-        row.id,
-        scheduled_for=row.next_run_at,
-        actual_started_at=service._time.clock.now(),
-    )
-    assert run is not None
-    preview = await reset_all(database, "self-media-cutover", apply=False)
-    assert preview["running_automation"] == 1
-    with pytest.raises(RuntimeError, match="active_execution_must_drain"):
-        await reset_all(database, "self-media-cutover", apply=True)
-    async with database.sessions() as session, session.begin():
-        live_run = await session.get(AutomationRunModel, run.id)
-        assert live_run is not None
-        live_run.status = RunStatus.SUCCEEDED.value
-    result = await reset_all(database, "self-media-cutover", apply=True)
-    assert result["self_automations_rebound"] == 1
-    current = await AutomationRepository(database).get(row.id)
-    assert (
-        current is not None and current.authority_snapshot["conversation_generation"] == before + 1
-    )
+    case.provider._responder = parent_response
+    case.clock.advance(61)
+    original_run = await case.dispatch()
+    assert original_run.status is RunStatus.SUCCEEDED
     async with database.sessions() as session:
-        conversation = await session.get(CanonicalConversationModel, env.context.conversation_id)
-    assert conversation is not None and conversation.generation == before + 1
-    assert not [call for call in env.bot.calls if call[0] == "send_group_msg"]
+        rows = [dict(row) for row in (await session.execute(select(work))).mappings()]
+    child = next(row for row in rows if row["parent_work_id"] is not None)
+    source = json.loads(child["source_json"])
+    assert source["automation_run_id"] == original_run.id
+    updated = await case.service.update_task(
+        case.row.id,
+        {
+            "name": "new definition",
+            "goal": "新的任务定义",
+            "trigger": {"type": "interval", "seconds": 60},
+            "delivery": {"target": "none"},
+        },
+        actor=case.actor,
+        conversation_key="group:80001:20001",
+    )
+    assert updated.script_hash != case.row.script_hash
+    child_turns = 0
+    responses = {}
+    write = {
+        "operation": "create",
+        "target": {"subject_ref": "self", "scope_type": "self"},
+        "new_content": "我在原定时任务的派生工作中查询了 member 的真实成员资料。",
+        "memory_key": "self_episode:original-work",
+        "category": "self_episode",
+        "kind": "episode",
+        "evidence_quote": "member",
+    }
+    calls = (
+        ("get_group_members", {}),
+        ("memory_change", write),
+        ("get_memory_fact", None),
+        ("task_control", {"action": "complete", "result": "原工作已写入记忆"}),
+    )
+
+    def child_response(request):
+        nonlocal child_turns
+        index = child_turns
+        child_turns += 1
+        if index:
+            result = json.loads(request.messages[-1].content)
+            responses[calls[index - 1][0]] = result
+            assert result["ok"], result
+        if index >= len(calls):
+            return "NO_REPLY"
+        name, arguments = calls[index]
+        if name == "get_memory_fact":
+            arguments = {"fact_id": responses["memory_change"]["data"]["new_fact_id"]}
+        return ChatResponse(
+            "",
+            0,
+            tool_calls=(
+                ToolCall(f"original-work-{index}", ToolFunction(name, json.dumps(arguments))),
+            ),
+        )
+
+    case.provider._responder = child_response
+    source_runtimes = []
+
+    async def capture(**kwargs):
+        source_runtimes.append(kwargs["source_runtime"])
+        return await case.chat.generate_origin_turn(**kwargs)
+
+    resumer = make_work_resumer(
+        case.works,
+        ledger=case.chat._ledger,
+        scopes=case.chat._conversation_scopes,
+        turns=case.chat._turn_coordinator,
+        router=case.env.router,
+        config=case.chat._runtime_config,
+        generate_self=case.chat.generate_self_initiative,
+        generate_wakeup=case.chat.generate_main_agent_wakeup,
+        bindings=case.chat.runtime.bindings,
+        settings=case.settings,
+        generate_origin=capture,
+    )
+    await resumer.resume(child)
+    assert (await case.works.get(child["id"]))["state"] == "completed", responses
+    assert len(source_runtimes) == 1
+    actor = source_runtimes[0].require_actor()
+    assert actor.execution_id == child["id"] and actor.automation_run_id == original_run.id
+    assert actor.principal_kind == "self" and actor.initiative_run_id is None
+    assert actor.person_id is None and actor.event_id is None and actor.user_id == ""
+    assert responses["memory_change"]["data"]["ok"]
+    assert responses["get_memory_fact"]["data"]["memory"]["content"] == write["new_content"]
+    async with database.sessions() as session:
+        receipt = await session.scalar(
+            select(MemoryToolReceiptModel).where(
+                MemoryToolReceiptModel.tool_name == "get_group_members"
+            )
+        )
+        mutation = await session.scalar(select(MemoryMutationReceiptModel))
+        assert receipt.execution_id == mutation.decision_actor_id == child["id"]
+        assert receipt.initiative_run_id is None and receipt.trigger_event_id is None
+    assert [
+        item.id
+        for item in await read_self_seed_candidates(
+            database, canonical_conversation_id=case.env.context.conversation_id
+        )
+    ] == [mutation.new_fact_id]
+    before = len(case.provider.requests)
+    await resumer.resume(await case.works.get(child["id"]))
+    assert len(case.provider.requests) == before and not sent(case.env)
+    original_source = (await case.works.get(child["id"]))["source_json"]
+    lease = await case.works.acquire(child["conversation_id"], child["generation"])
+    for index in range(130):
+        recent = await case.works.accept(
+            lease, source_key=f"recent-terminal:{index}", source={}, goal="已完成的工作记录"
+        )
+        await case.works.transition(lease, recent["id"], recent["revision"], "completed")
+    await case.works.release(lease)
+    await case.works.reclaim_terminal()
+    await case.works.reclaim_terminal()
+    retained = await case.works.get(child["id"])
+    assert json.loads(retained["checkpoint_json"])["archived"] is True
+    assert (
+        json.loads(retained["source_json"])["parent_execution_id"] == source["parent_execution_id"]
+    )
+    assert json.loads(original_source)["parent_execution_id"] == source["parent_execution_id"]
+    visible = await facts.repository.get_active_authorized(
+        AuthorizedMemoryScope(
+            current_space_id=case.env.space,
+            current_group_only=True,
+            allowed_scopes=(MemoryScopeType.SELF,),
+        ),
+        (mutation.new_fact_id,),
+    )
+    assert [fact.id for fact in visible] == [mutation.new_fact_id]
+    assert [
+        fact.id
+        for fact in await read_self_seed_candidates(
+            database, canonical_conversation_id=case.env.context.conversation_id
+        )
+    ] == [mutation.new_fact_id]
+    async with database.sessions() as session:
+        current = await session.get(MemoryMutationReceiptModel, mutation.id)
+        assert current.decision_actor_id == receipt.execution_id == child["id"]
+    assert len(case.provider.requests) == before and not sent(case.env)

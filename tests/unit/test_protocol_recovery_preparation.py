@@ -111,6 +111,7 @@ async def test_actual_journal_selects_exact_before_assembler_reads_history(datab
     async def builder():
         return await assembler.assemble_plugin(
             inbound=inbound,
+            identity=scope,
             content="new",
             metadata={},
             current_time=TimeContext(now, now, "UTC"),
@@ -424,6 +425,8 @@ async def test_response_paid_stage_prepares_current_main_history_before_retiring
     async def assemble():
         return await chat._context_assembler.assemble_plugin(
             inbound=inbound,
+            identity=inbound.scope(),
+            source_event_id=inbound.source_event_id,
             content="Continue the current Work.",
             metadata={},
             current_time=chat._time.current_default(),

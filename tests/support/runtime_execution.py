@@ -24,14 +24,15 @@ def make_work_resumer(
     generate_wakeup,
     bindings=None,
     sandbox_tasks=None,
+    settings=None,
+    generate_origin=None,
 ):
     return WorkResumer(
         repository,
         WorkResumeDependencies(
-            settings=Settings(_env_file=None),
-            resume_automation=AsyncMock(
-                side_effect=AssertionError("unexpected automation recovery")
-            ),
+            settings=settings or Settings(_env_file=None),
+            generate_origin=generate_origin
+            or AsyncMock(side_effect=AssertionError("unexpected automation recovery")),
             ledger=ledger,
             conversation_scopes=scopes,
             turn_coordinator=turns,

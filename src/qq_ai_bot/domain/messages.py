@@ -380,6 +380,9 @@ class ChatRequest:
     prompt_snapshot_fingerprint: str = ""
     static_prompt_revision: str = ""
 
+    # Trusted conversation/execution identity, transported outside model content.
+    provider_session_id: str | None = None
+
 
 @dataclass(frozen=True, slots=True)
 class ChatResponse:

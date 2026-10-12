@@ -12,7 +12,7 @@ Yuki 不会把记忆、权限、视觉、联网、自动化核心或 AgentRunner
 | 拼接系统提示词 | `plugin_context`/`tool_guidance` Fragment |
 | 自行决定群里插话 | 有界 `AdmissionSignal`（仅自主群评分） |
 | 裸 `asyncio.create_task` | Background Service / `ctx.scheduler` |
-| 自建 cron 表 | Automation Action |
+| 自建 cron 表 | `ctx.automation` 管理共同 Main 定时安排 |
 | 在主历史里保存游戏上下文 | `ctx.agent_sessions` 独立会话 |
 | 直接发 OneBot action | `messages`/`onebot` Facade + 显式权限 |
 

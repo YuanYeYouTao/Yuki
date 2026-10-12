@@ -17,7 +17,6 @@ from yuki_plugin_sdk.models import CurrentMessage, PromptFragment, PromptStage
 from yuki_plugin_sdk.plugin import Plugin
 from yuki_plugin_sdk.registrar import (
     AdmissionSignalRegistration,
-    AutomationActionRegistration,
     BackgroundServiceRegistration,
     CommandRegistration,
     EventHookRegistration,
@@ -36,7 +35,6 @@ class RecordingRegistrar:
         self.commands: list[CommandRegistration] = []
         self.event_hooks: list[EventHookRegistration] = []
         self.prompt_fragments: list[PromptFragment] = []
-        self.automation_actions: list[AutomationActionRegistration] = []
         self.admission_signals: list[AdmissionSignalRegistration] = []
         self.config_schemas: list[type[BaseModel]] = []
         self.background_services: list[BackgroundServiceRegistration] = []
@@ -52,9 +50,6 @@ class RecordingRegistrar:
 
     def register_prompt_fragment(self, fragment: PromptFragment) -> None:
         self.prompt_fragments.append(fragment)
-
-    def register_automation_action(self, registration: AutomationActionRegistration) -> None:
-        self.automation_actions.append(registration)
 
     def register_admission_signal(self, registration: AdmissionSignalRegistration) -> None:
         self.admission_signals.append(registration)
@@ -128,12 +123,6 @@ async def test_echo_extensions_use_fake_context_without_network() -> None:
     hook = registrar.event_hooks[0]
     await hook.handler(EventEnvelope(name=EventName.REPLY_SENT, payload={"sent": True}))
     assert await context.storage.get("stats", "reply_sent") == 1
-
-    automation = registrar.automation_actions[0]
-    automation_result = await automation.handler(
-        automation.input_model.model_validate({"text": "later"})
-    )
-    assert automation_result.text == "Group: later"
 
     await plugin.stop()
 

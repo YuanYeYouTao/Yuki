@@ -78,6 +78,8 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
         creation = integer(usage.get("cache_creation_input_tokens"))
         creation_5m, creation_1h = AnthropicMessagesProvider._cache_creation_breakdown(usage)
         output = integer(usage.get("output_tokens"))
+        output_details = usage.get("output_tokens_details")
+        output_details = output_details if isinstance(output_details, dict) else {}
         total_input = (
             incoming + cached + creation
             if incoming is not None and cached is not None and creation is not None
@@ -87,6 +89,7 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
             "usage": {
                 "prompt_tokens": total_input,
                 "completion_tokens": output,
+                "reasoning_tokens": integer(output_details.get("thinking_tokens")),
                 "total_tokens": total_input + output
                 if total_input is not None and output is not None
                 else None,
@@ -417,6 +420,8 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
         ):
             logger.warning("claude_cache_creation_breakdown_mismatch")
         output = integer(usage.get("output_tokens"))
+        output_details = usage.get("output_tokens_details")
+        output_details = output_details if isinstance(output_details, dict) else {}
         total_input = (
             incoming + cached + creation
             if incoming is not None and cached is not None and creation is not None
@@ -430,6 +435,7 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
             tool_calls=() if duplicate_call_ids else tuple(calls),
             prompt_tokens=total_input,
             completion_tokens=output,
+            reasoning_tokens=integer(output_details.get("thinking_tokens")),
             cached_prompt_tokens=cached,
             cache_creation_input_tokens=creation,
             cache_creation_5m_input_tokens=creation_5m,

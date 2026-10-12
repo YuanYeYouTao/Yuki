@@ -10,7 +10,9 @@
 不重建记忆或 Conversation/Rollup 所有权，也不因账号切换重置聊天 generation；
 Route 有独立的 `route_generation`，有效发送路由迁移、暂停或恢复可推进它。
 
-SELF Work 和保留的子任务沿原 initiative 来源解析分区；原主动轮结束不单独阻止已接纳任务继续读取。仍核对真实 run 归属、当前 generation、Space、Presence 与 Binding，执行授权由原 Work 租约和领域入口核验；不重开祖先或把目标 Person 当作私聊授权。
+SELF 主入口、Work 和保留的子任务沿实际发起来源解析分区：主动轮用原 initiative，定时任务用原 occurrence、版本和 execution。原主动轮结束、任务后来被编辑不单独阻止已接纳任务继续读取。仍核对真实 run 归属、当前 generation、Space、Presence 与 Binding，执行授权由原 Work 租约和领域入口核验；不重开祖先或把目标 Person 当作私聊授权。
+
+终态 Work 清理明细时，已有 Memory evidence 实际引用的执行保留原来源身份，复用现有归档记录；不因工作结束删除永久事实的出处，也不保留整份公共运行资料。
 
 | 分类 | 所有者与含义 |
 |---|---|
@@ -86,7 +88,7 @@ Control Plane 仍要求 capability。
 模型审计、重复合并治理队列、归因与强化运行链已退休；管理权限和真实 SQL 来源审计保留。
 
 - 证据明细及 readable evidence count 共用同一 SQL 来源谓词，按 canonical event、普通
-  tool receipt 或无事件 SELF initiative 分支核验来源、owner、隐藏状态及 SELF 可见范围。
+  tool receipt 或无事件 SELF 执行的原回执核验来源、owner、隐藏状态及 SELF 可见范围。
   明细在 SQL 中过滤后排序，公开分页继续应用请求的 limit，不逐 evidence 查来源。
   内部证据聚合读取全部可读来源，不以固定条数截断历史尾部；原始 confidence/authority
   和来源资格保留。无消费者的完整 lineage 装配入口已删除，原 operation/result/source 账本保留。

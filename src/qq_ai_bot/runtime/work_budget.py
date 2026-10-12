@@ -1,10 +1,10 @@
 """Atomic accounting shared by a root task and all its workers."""
 
-from sqlalchemy import func, or_, select, true, update
+from sqlalchemy import or_, select, true, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from qq_ai_bot.runtime.work_budget_schema import automation_budgets, budgets
+from qq_ai_bot.runtime.work_budget_schema import budgets
 from qq_ai_bot.runtime.work_schema_v1 import work
 from qq_ai_bot.runtime.work_tree import budget_root_id
 
@@ -24,8 +24,6 @@ async def charge(session: AsyncSession, identity: str, *, models: int, tools: in
             select(
                 work.c.model_requests,
                 work.c.tool_calls,
-                func.json_extract(work.c.source_json, "$.owner").label("source_owner"),
-                func.json_extract(work.c.source_json, "$.automation_run_id").label("run_id"),
             ).where(work.c.id == root)
         )
     ).one()
@@ -64,38 +62,3 @@ async def charge(session: AsyncSession, identity: str, *, models: int, tools: in
     ).first()
     if accepted is None:
         raise WorkBudgetExceeded("work_total_budget_exhausted")
-    if current.source_owner == "automation" and isinstance(current.run_id, int):
-        await charge_automation_run(session, current.run_id, models=models, tools=tools)
-
-
-async def charge_automation_run(
-    session: AsyncSession, run_id: int, *, models: int, tools: int
-) -> None:
-    run_budgets = automation_budgets
-    if models < 0 or tools < 0:
-        raise ValueError("invalid_work_budget_charge")
-    if not models and not tools:
-        return
-    await session.execute(
-        insert(run_budgets)
-        .values(run_id=run_id, model_limit=None, tool_limit=None)
-        .on_conflict_do_nothing()
-    )
-    accepted = await session.scalar(
-        update(run_budgets)
-        .where(
-            run_budgets.c.run_id == run_id,
-            or_(
-                run_budgets.c.model_limit.is_(None),
-                run_budgets.c.models + models <= run_budgets.c.model_limit,
-            ),
-            or_(
-                run_budgets.c.tool_limit.is_(None),
-                run_budgets.c.tools + tools <= run_budgets.c.tool_limit,
-            ),
-        )
-        .values(models=run_budgets.c.models + models, tools=run_budgets.c.tools + tools)
-        .returning(run_budgets.c.run_id)
-    )
-    if accepted is None:
-        raise WorkBudgetExceeded("automation_run_total_budget_exhausted")

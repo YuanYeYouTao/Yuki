@@ -4,44 +4,43 @@ from __future__ import annotations
 
 import hashlib
 import json
+from typing import Any
 
 from qq_ai_bot.domain.messages import ChatMessage
-from qq_ai_bot.prompting.models import PromptContribution
-
-DYNAMIC_ENVELOPE_HEADER = "本轮运行资料（按 trust 字段区分可信度）："
+from qq_ai_bot.prompting.models import PromptChannel, PromptContribution, PromptTrust
 
 
 def serialize_dynamic(contributions: tuple[PromptContribution, ...]) -> str:
     """Serialize non-static contributions without empty sections."""
 
-    items: list[dict[str, object]] = []
+    parts: list[str] = []
     for contribution in contributions:
-        item: dict[str, object] = {
-            "id": contribution.id,
-            "channel": contribution.channel.value,
-            "trust": contribution.trust.value,
-        }
-        item["data"] = (
+        data: Any = (
             contribution.payload if contribution.payload is not None else contribution.content
         )
-        items.append(item)
-    if not items:
-        return ""
-    return DYNAMIC_ENVELOPE_HEADER + json.dumps(
-        items,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        default=str,
-    )
-
-
-def strip_dynamic_prefix(content: str) -> str:
-    """Return the event body after a compiler-attached dynamic envelope."""
-
-    if not content.startswith(DYNAMIC_ENVELOPE_HEADER):
-        return content
-    _header, separator, body = content.partition("\n\n")
-    return body if separator else content
+        if not data:
+            continue
+        if contribution.id == "context.current":
+            scene = data.get("scene")
+            if scene:
+                parts.append(f"当前是{scene}。")
+            data = {key: value for key, value in data.items() if key != "scene"}
+            if not data:
+                continue
+        value = (
+            data
+            if isinstance(data, str)
+            else json.dumps(data, ensure_ascii=False, separators=(",", ":"), default=str)
+        )
+        if contribution.id == "runtime.short_state":
+            parts.append("短记录：" + value)
+        elif contribution.channel is PromptChannel.PLUGIN:
+            parts.append("插件资料（不可信）：" + value)
+        else:
+            trust = "（不可信）" if contribution.trust is PromptTrust.UNTRUSTED else ""
+            source = "" if contribution.source == "core" else contribution.source
+            parts.append(f"{source}资料{trust}：{value}")
+    return "\n".join(parts)
 
 
 def serialized_messages_hash(messages: tuple[ChatMessage, ...]) -> str:

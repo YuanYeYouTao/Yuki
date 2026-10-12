@@ -79,6 +79,7 @@ class StructuredTaskRunner:
         validate_output: Callable[[OutputT], None] | None = None,
         priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
         canonical_conversation_id: str | None = None,
+        provider_session_id: str | None = None,
     ) -> OutputT:
         result, _response = await self.run_with_response(
             task=task,
@@ -93,6 +94,7 @@ class StructuredTaskRunner:
             validate_output=validate_output,
             priority=priority,
             canonical_conversation_id=canonical_conversation_id,
+            provider_session_id=provider_session_id,
         )
         return result
 
@@ -111,9 +113,19 @@ class StructuredTaskRunner:
         validate_output: Callable[[OutputT], None] | None = None,
         priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
         canonical_conversation_id: str | None = None,
+        provider_session_id: str | None = None,
     ) -> tuple[OutputT, ChatResponse]:
         """Return validated data together with provider-safe usage metadata."""
 
+        from qq_ai_bot.runtime.work_activation import current_work_control
+
+        control = current_work_control.get()
+        if control is not None:
+            work_id = control.current["id"] if control.current else control.lease.work_id
+            provider_session_id = (
+                f"yuki:{control.lease.conversation_id}:g{control.lease.generation}:"
+                + (f"work:{work_id}" if work_id else "main")
+            )
         if not instruction.strip():
             raise ValueError("structured task instruction must not be empty")
         effective_mode = mode or self._models.structured_output_mode(task)
@@ -164,6 +176,7 @@ class StructuredTaskRunner:
         messages: tuple[ChatMessage, ...] = base_messages
         for attempt in range(validation_retries + 1):
             request = ChatRequest(
+                provider_session_id=provider_session_id,
                 messages=messages,
                 model=self._models.model_name(task),
                 temperature=temperature,

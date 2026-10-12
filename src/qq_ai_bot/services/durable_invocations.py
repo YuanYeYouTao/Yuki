@@ -82,7 +82,7 @@ class DurableInvocations:
                 "parent_execution_id": runtime.execution_id,
                 "delivery_contract": "return_to_caller",
             }
-            # Synchronous plugin/automation calls return to their owning step.
+            # Synchronous invocations return to their original caller.
             async with activate_work(
                 repository,
                 runtime.canonical_conversation_id,

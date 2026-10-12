@@ -1,5 +1,6 @@
 """Wire-level parity and private checkpoint recovery, without paid calls."""
 
+import asyncio
 import json
 from dataclasses import replace
 
@@ -25,10 +26,69 @@ from qq_ai_bot.llm.base import (
     LLMInvalidRequestError,
     LLMInvalidResponseError,
 )
+from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
 from qq_ai_bot.llm.gemini import GeminiProvider
 from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
+from qq_ai_bot.llm.openai_responses import OpenAIResponsesProvider
+from qq_ai_bot.model_runtime.models import ModelProfile, ModelProtocol
+from qq_ai_bot.model_runtime.pool import ModelClientPool
 from qq_ai_bot.runtime.work_journal import decode_transcript, encode_transcript
 from qq_ai_bot.services.turn_transcript import TurnTranscript
+
+
+@pytest.mark.parametrize("protocol", list(ModelProtocol))
+async def test_custom_provider_name_keeps_explicit_protocol_and_connection(protocol):
+    original = ModelProfile(
+        id="third-party",
+        provider="gateway-one",
+        protocol=protocol,
+        model="explicit-model",
+        base_url="https://wire.invalid/v1",
+        api_key_env="TEST_KEY",
+        headers={"x-client-label": "operator-setting"},
+        timeout_seconds=60,
+        max_retries=0,
+        default_temperature=0.7,
+        default_max_output_tokens=8192,
+    )
+    serialized = json.loads(original.model_dump_json())
+    serialized["provider"] = "gateway-two"
+    renamed = ModelProfile.model_validate(serialized)
+    assert renamed.model_dump(exclude={"provider"}) == original.model_dump(exclude={"provider"})
+    old_pool = ModelClientPool(secret_overrides={"TEST_KEY": "synthetic-key"})
+    new_pool = ModelClientPool(secret_overrides={"TEST_KEY": "synthetic-key"})
+    try:
+        before, after = old_pool.get(original), new_pool.get(renamed)
+        assert before.protocol == after.protocol == protocol.value
+        assert before._build_payload(request()) == after._build_payload(request())
+        assert after._headers == original.headers
+    finally:
+        await old_pool.close()
+        await new_pool.close()
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [OpenAICompatibleProvider, OpenAIResponsesProvider, AnthropicMessagesProvider, GeminiProvider],
+)
+async def test_business_session_metadata_is_per_request_and_outside_prompt(kind):
+    captured = []
+
+    def transport(req):
+        captured.append((req.headers.get("x-session-id"), json.loads(req.content)))
+        return httpx.Response(200, json={})
+
+    async with httpx.AsyncClient(
+        base_url="https://wire.invalid/v1/", transport=httpx.MockTransport(transport)
+    ) as client:
+        adapter = provider(kind, client, headers={"x-client-label": "shared-profile"})
+        ids = ["yuki:conversation-a:g2:main", "yuki:conversation-b:g4:work:real-work", None]
+        await asyncio.gather(
+            *(adapter._post(replace(request(), provider_session_id=identity)) for identity in ids)
+        )
+        assert [identity for identity, _ in captured] == ids
+        assert captured[0][1] == captured[1][1] == captured[2][1]
+        assert adapter._headers == {"x-client-label": "shared-profile"}
 
 
 def request():
@@ -79,6 +139,7 @@ async def test_signed_tool_result_and_redirect_survive_journal(kind):
                         "ephemeral_1h_input_tokens": 0,
                     },
                     "output_tokens": 4,
+                    "output_tokens_details": {"thinking_tokens": 2},
                 },
             }
         elif kind is GeminiProvider:
@@ -183,6 +244,7 @@ async def test_signed_tool_result_and_redirect_survive_journal(kind):
             assert answer.cache_creation_input_tokens == 2
             assert answer.cache_creation_5m_input_tokens == 2
             assert answer.cache_creation_1h_input_tokens == 0
+            assert answer.completion_tokens == 4 and answer.reasoning_tokens == 2
         elif kind is GeminiProvider:
             assert answer.completion_tokens == 6 and answer.reasoning_tokens == 2
 
@@ -745,6 +807,7 @@ async def test_rejected_provider_response_keeps_only_numeric_usage_diagnostics()
             "usage": {
                 "prompt_tokens": 12,
                 "completion_tokens": 5,
+                "reasoning_tokens": 2,
                 "total_tokens": 17,
                 "cached_prompt_tokens": 4,
             }
@@ -766,6 +829,7 @@ async def test_rejected_provider_response_keeps_only_numeric_usage_diagnostics()
                                 "ephemeral_1h_input_tokens": 1,
                             },
                             "output_tokens": 2,
+                            "output_tokens_details": {"thinking_tokens": 1},
                         },
                     },
                 ),
@@ -775,10 +839,31 @@ async def test_rejected_provider_response_keeps_only_numeric_usage_diagnostics()
             "usage": {
                 "prompt_tokens": 11,
                 "completion_tokens": 2,
+                "reasoning_tokens": 1,
                 "total_tokens": 13,
                 "cached_prompt_tokens": 3,
                 "cache_creation_input_tokens": 1,
                 "cache_creation_5m_input_tokens": 0,
                 "cache_creation_1h_input_tokens": 1,
             }
+        }
+        deepseek = provider(DeepSeekResponsesProvider, client)
+        assert deepseek._reported_usage(
+            httpx.Response(
+                400,
+                json={
+                    "error": {"message": "private response body"},
+                    "usage": {
+                        "input_tokens": 12,
+                        "output_tokens": 5,
+                        "total_tokens": 17,
+                        "output_tokens_details": {"reasoning_tokens": 3},
+                    },
+                },
+            )
+        ) == {
+            "prompt_tokens": 12,
+            "completion_tokens": 5,
+            "total_tokens": 17,
+            "reasoning_tokens": 3,
         }

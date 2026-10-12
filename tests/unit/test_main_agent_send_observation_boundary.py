@@ -7,8 +7,8 @@ import httpx
 import pytest
 from sqlalchemy import select
 from tests.conftest import MemorySender
+from tests.unit.test_current_activation_material import _saved
 from tests.unit.test_history_dispatch_ownership import _scene
-from tests.unit.test_runtime_material_delta import _saved
 
 from qq_ai_bot.capabilities.results import ToolExecutionResult
 from qq_ai_bot.domain.conversations import ConversationScope

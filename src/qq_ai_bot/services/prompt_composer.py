@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass
 from typing import Any
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
@@ -19,7 +19,6 @@ from qq_ai_bot.prompting import (
     PromptCompiler,
     PromptContribution,
     PromptProgram,
-    PromptStability,
     PromptTrust,
 )
 from qq_ai_bot.prompting.contracts import core_contract
@@ -27,10 +26,7 @@ from qq_ai_bot.prompting.contributors import static_text
 from qq_ai_bot.prompting.models import CompiledPrompt, PromptMetrics
 from qq_ai_bot.services.context_assembler import AssembledContext
 from qq_ai_bot.services.context_boundary import ContextBoundaryReader
-from qq_ai_bot.services.model_context_projection import (
-    project_people_and_scene,
-    project_short_state,
-)
+from qq_ai_bot.services.model_context_projection import project_short_state
 from qq_ai_bot.services.prompt_registry import PromptRegistry, PromptTarget
 
 
@@ -42,94 +38,7 @@ class PromptComposition:
     read_version: ConversationReadVersion | None = None
     commit_projection: Callable[[], Awaitable[None]] | None = None
     preparation_model_requests: int = 0
-    current_snapshot: dict[str, Any] | None = None
-    visible_material: dict[str, Any] = field(default_factory=dict)
     observation_boundary: ContextBoundaryReader | None = None
-
-
-def _material_change(identity: str, old: Any, current: Any) -> Any:
-    """Compare the existing slot, identity item and plugin fragment units."""
-    if old is None:
-        return current
-    if old == current:
-        return None
-    if identity == "runtime.short_state":
-        before = {item["slot"]: item for item in old}
-        after = {item["slot"]: item for item in current}
-        return (
-            [item for key, item in after.items() if before.get(key) != item]
-            + [{"slot": key, "text": ""} for key in before if key not in after]
-        ) or None
-    if identity == "context.people_and_scene":
-        if "items" not in old or "items" not in current:
-            return current
-        before = {item["id"]: item["data"] for item in old["items"]}
-        after = {item["id"]: item["data"] for item in current["items"]}
-        changes = []
-        for key, data in after.items():
-            previous = before.get(key)
-            if previous == data:
-                continue
-            if isinstance(previous, dict) and isinstance(data, dict):
-                data = {
-                    name: value for name, value in data.items() if previous.get(name) != value
-                } | {name: None for name in previous if name not in data}
-            changes.append({"id": key, "data": data})
-        changes.extend({"id": key, "data": None} for key in before if key not in after)
-        return {"items": changes} if changes else None
-    if identity == "context.plugins":
-        before = {item["fragment_id"]: item for item in old}
-        after = {item["fragment_id"]: item for item in current}
-        return (
-            [item for key, item in after.items() if before.get(key) != item]
-            + [{"fragment_id": key, "content": None} for key in before if key not in after]
-        ) or None
-    return current
-
-
-def apply_material_delta(baseline: dict[str, Any], contributions: dict[str, Any]) -> dict[str, Any]:
-    """Fold submitted changes into the discardable last-visible projection."""
-    material = dict(baseline)
-    for identity, contribution in contributions.items():
-        data = contribution["payload"]
-        if identity == "runtime.short_state":
-            slots = {item["slot"]: item for item in material.get(identity, [])}
-            for item in data:
-                if item["text"]:
-                    slots[item["slot"]] = item
-                else:
-                    slots.pop(item["slot"], None)
-            material[identity] = list(slots.values())
-        elif identity == "context.people_and_scene" and "items" in data:
-            people = {
-                item["id"]: item["data"] for item in material.get(identity, {"items": []})["items"]
-            }
-            for item in data["items"]:
-                key, value = item["id"], item["data"]
-                if value is None:
-                    people.pop(key, None)
-                elif isinstance(value, dict) and isinstance(people.get(key), dict):
-                    people[key] = {**people[key], **value}
-                    people[key] = {
-                        name: field for name, field in people[key].items() if field is not None
-                    }
-                else:
-                    people[key] = value
-            material[identity] = {
-                "items": [{"id": key, "data": value} for key, value in people.items()]
-            }
-        elif identity == "context.plugins":
-            plugins = {item["fragment_id"]: item for item in material.get(identity, [])}
-            for item in data:
-                key = item["fragment_id"]
-                if item["content"] is None:
-                    plugins.pop(key, None)
-                else:
-                    plugins[key] = item
-            material[identity] = list(plugins.values())
-        else:
-            material[identity] = data
-    return material
 
 
 class PromptComposer:
@@ -182,7 +91,7 @@ class PromptComposer:
     ) -> PromptComposition:
         contributions: list[PromptContribution] = [*self._static_contributions()]
         state = project_short_state(short_state or [])
-        if state or context.visible_material.get("runtime.short_state"):
+        if state:
             contributions.append(
                 PromptContribution(
                     id="runtime.short_state",
@@ -193,21 +102,21 @@ class PromptComposer:
                     required=True,
                 )
             )
-        if context.metadata_payload or context.visible_material.get("context.people_and_scene"):
+        if context.metadata_payload:
             contributions.append(
                 PromptContribution(
-                    id="context.people_and_scene",
+                    id="context.current",
                     channel=PromptChannel.CONTEXT,
                     trust=PromptTrust.UNTRUSTED,
                     priority=85,
-                    payload=project_people_and_scene(context.metadata_payload or {"items": []}),
+                    payload=context.metadata_payload,
                     required=True,
                 )
             )
         plugin_context = (
             self._registry.render(target=PromptTarget.AGENT) if include_plugin_context else ()
         )
-        if plugin_context or context.visible_material.get("context.plugins"):
+        if plugin_context:
             contributions.append(
                 PromptContribution(
                     id="context.plugins",
@@ -219,35 +128,12 @@ class PromptComposer:
                 )
             )
         history = self._conversation_history(context)
-        selected = []
-        for item in contributions:
-            if item.stability is PromptStability.STATIC:
-                selected.append(item)
-                continue
-            data = item.payload if item.payload is not None else item.content
-            old = context.visible_material.get(item.id)
-            changed = _material_change(item.id, old, data)
-            if changed is not None:
-                selected.append(item.model_copy(update={"payload": changed}))
         compiled = self._compiler.compile(
-            PromptProgram(contributions=tuple(selected)),
+            PromptProgram(contributions=tuple(contributions)),
             history=history,
             current_message=context.current_message,
         )
-        composition = self._finalize(context, compiled)
-        snapshot = {
-            item.id: {"payload": item.payload if item.payload is not None else item.content}
-            for item in compiled.selected
-            if item.channel in {PromptChannel.CONTEXT, PromptChannel.PLUGIN, PromptChannel.MODALITY}
-            or item.id == "runtime.short_state"
-        }
-        return replace(
-            composition,
-            current_snapshot={"kind": "dynamic_snapshot", "contributions": snapshot}
-            if snapshot
-            else None,
-            visible_material=apply_material_delta(context.visible_material, snapshot),
-        )
+        return self._finalize(context, compiled)
 
     @staticmethod
     def _conversation_history(context: AssembledContext) -> tuple[ChatMessage, ...]:

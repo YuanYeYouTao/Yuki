@@ -447,6 +447,7 @@ async def test_plugin_capacity_reads_hot_snapshot_and_shared_fixed_contract_rese
         inbound=InboundMessage(
             "one", "message", ScopeType.PRIVATE, SenderIdentity("1001"), "", bot_user_id="8000"
         ),
+        identity=ConversationScope.private("8000", "1001"),
         content="x" * 25_000,
         metadata={},
         current_time=TimeContext(

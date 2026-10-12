@@ -13,9 +13,7 @@ from sqlalchemy import select, text
 from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.automation.authority import DelegatedAuthority, PermissionLevel
-from qq_ai_bot.automation.models import AutomationScript
 from qq_ai_bot.automation.repository import AutomationRepository
-from qq_ai_bot.automation.validator import canonical_script_hash
 from qq_ai_bot.control_plane.paging import PageRequest
 from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_space
 from qq_ai_bot.persistence.control_automation_query import ControlAutomationQueryAdapter
@@ -201,7 +199,7 @@ def test_fresh_and_0104_upgrade_preserve_work_identity_source_receipts_and_budge
         try:
             async with database.sessions() as session:
                 assert (
-                    await session.scalar(text("SELECT version_num FROM alembic_version")) == "0108"
+                    await session.scalar(text("SELECT version_num FROM alembic_version")) == "0110"
                 )
                 columns = {
                     row[1] for row in await session.execute(text("PRAGMA table_info(runtime_work)"))
@@ -277,29 +275,27 @@ def test_0105_upgrade_keeps_missing_original_version_and_new_admission_freezes_c
     command.upgrade(config, "0105")
     original_work_id = str(uuid4())
     started = datetime.now(UTC) - timedelta(days=40)
-    script = AutomationScript.model_validate(
-        {
-            "version": 1,
-            "name": "retained definition",
-            "timezone": "UTC",
-            "schedule": {"type": "interval", "seconds": 60},
-            "steps": [
-                {
-                    "id": "original_agent",
-                    "call": "yuki.agent",
-                    "arguments": {"instruction": "original target"},
-                }
-            ],
-            "limits": {
-                "max_steps": 1,
-                "max_llm_calls": 8,
-                "max_tool_calls": 12,
-                "max_messages": 10,
-                "timeout_seconds": 600,
-            },
-        }
-    )
-    script_hash = canonical_script_hash(script)
+    script = {
+        "version": 1,
+        "name": "retained definition",
+        "timezone": "UTC",
+        "schedule": {"type": "interval", "seconds": 60},
+        "steps": [
+            {
+                "id": "original_agent",
+                "call": "yuki.agent",
+                "arguments": {"instruction": "original target"},
+            }
+        ],
+        "limits": {
+            "max_steps": 1,
+            "max_llm_calls": 8,
+            "max_tool_calls": 12,
+            "max_messages": 10,
+            "timeout_seconds": 600,
+        },
+    }
+    script_hash = "original-immutable-script-hash"
     cursor = json.dumps(
         {"next_step": 0, "work_id": original_work_id, "llm_calls": 2, "tool_calls": 3}
     )
@@ -339,8 +335,8 @@ def test_0105_upgrade_keeps_missing_original_version_and_new_admission_freezes_c
                         ":future, 3, NULL, 0, 1800, :started, :started, :person, :space, :presence)"
                     ),
                     {
-                        "schedule": script.schedule.model_dump_json(),
-                        "script": script.model_dump_json(),
+                        "schedule": json.dumps(script["schedule"]),
+                        "script": json.dumps(script),
                         "hash": script_hash,
                         "authority": authority.model_dump_json(),
                         "future": (datetime.now(UTC) + timedelta(minutes=1)).isoformat(),
@@ -357,7 +353,7 @@ def test_0105_upgrade_keeps_missing_original_version_and_new_admission_freezes_c
                         "VALUES (1, 1, 1, :script, :hash, '10001', :started)"
                     ),
                     {
-                        "script": script.model_dump_json(),
+                        "script": json.dumps(script),
                         "hash": script_hash,
                         "started": started.isoformat(),
                     },
@@ -466,7 +462,7 @@ def test_0105_upgrade_keeps_missing_original_version_and_new_admission_freezes_c
                 1, scheduled_for=current.next_run_at, actual_started_at=datetime.now(UTC)
             )
             accepted = await repository.get_for_run(admitted.id)
-            assert admitted.version_id != 1 and accepted.script == script
+            assert admitted.version_id != 1 and accepted.script["goal"] == "original target"
             assert accepted.canonical_target_space_id == current.canonical_target_space_id
             assert accepted.authority_snapshot == current.authority_snapshot
             async with database.sessions() as reader:
@@ -487,23 +483,11 @@ def test_0105_upgrade_keeps_missing_original_version_and_new_admission_freezes_c
                     )
                     == old_budget
                 )
-                new_budget = (
-                    (
-                        await reader.execute(
-                            select(automation_budgets).where(
-                                automation_budgets.c.run_id == admitted.id
-                            )
-                        )
+                assert not (
+                    await reader.execute(
+                        select(automation_budgets).where(automation_budgets.c.run_id == admitted.id)
                     )
-                    .mappings()
-                    .one()
-                )
-                assert (
-                    new_budget["models"],
-                    new_budget["tools"],
-                    new_budget["model_limit"],
-                    new_budget["tool_limit"],
-                ) == (0, 0, 8, 12)
+                ).first()
             audits = await ControlAutomationQueryAdapter(database.sessions).list_automation_steps(
                 PageRequest(), automation_id=1
             )

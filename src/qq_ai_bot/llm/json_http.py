@@ -101,10 +101,13 @@ class JSONHTTPProvider(LLMProvider):
 
         with model_detail("payload_preparation"):
             payload = self._build_payload(request)
+            headers = self._request_headers()
+            if request.provider_session_id is not None:
+                headers["x-session-id"] = request.provider_session_id
             prepared = self._client.build_request(
                 "POST",
                 self._path(request),
-                headers=self._request_headers(),
+                headers=headers,
                 json=payload,
                 timeout=self._timeout,
             )

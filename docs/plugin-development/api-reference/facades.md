@@ -74,6 +74,11 @@ agent_sessions.reset(session_id: UUID) -> AgentSession
 agent_sessions.close(session_id: UUID) -> AgentSession
 ```
 
+`agent.run` 复用真实 Host actor/source；无入站消息的 SELF 或定时来源同样进入 Main。
+同来源及参数读取原 Work 与结果，恢复保原来源、执行 ID、回执和预算；不同来源不会共用结果。
+当前真实 Person 的权限在执行处核验，SELF 保自身主体。已有 Work 上下文本身不禁用独立调用，
+同会话已占用的执行租约沿原执行层处理。
+
 ## Web / HTTP / Vision / Media
 
 ```python
@@ -112,11 +117,15 @@ handle/SHA/expiry。完全相同的重试返回原 receipt；任一字段不同�
 
 ```python
 automation.list_current_owner() -> tuple[Mapping, ...]
-automation.create_from_template(template, parameters) -> PluginResult
+automation.create_task(task: Mapping[str, JsonValue]) -> PluginResult
+automation.update_task(task_id, task: Mapping[str, JsonValue]) -> PluginResult
 automation.pause(task_id) -> PluginResult
 automation.resume(task_id) -> PluginResult
 automation.cancel(task_id) -> PluginResult
 ```
+
+task 使用共同 Main 安排定义：name、goal、trigger、timezone、constraints 和 delivery.target。
+Facade 复用 Host 原 actor 与会话，SELF 不需要制造真人入站消息。
 
 ## Config / Secret / Storage
 

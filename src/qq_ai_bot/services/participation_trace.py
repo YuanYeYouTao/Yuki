@@ -26,10 +26,6 @@ class TracedSemanticObserver:
         self._observer = observer
         self._recorder = recorder
 
-    def prepare_snapshot(self, snapshot: Snapshot) -> Snapshot:
-        prepare = getattr(self._observer, "prepare_snapshot", None)
-        return prepare(snapshot) if prepare is not None else snapshot
-
     async def evaluate(self, snapshot: Snapshot) -> Observation:
         if self._recorder is None:
             return await self._observer.evaluate(snapshot)

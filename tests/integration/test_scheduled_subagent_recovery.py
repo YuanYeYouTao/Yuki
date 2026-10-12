@@ -112,10 +112,17 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
             )
         else:
             return "Parent verified the worker result."
-        return ChatResponse("", 0, tool_calls=(call,))
+        accept = ToolCall(
+            "accept-original",
+            ToolFunction(
+                "task_control", '{"action":"accept","goal":"Check the original scheduled task"}'
+            ),
+        )
+        return ChatResponse("", 0, tool_calls=(accept, call) if parent_requests == 1 else (call,))
 
     case.provider._responder = respond
-    first = await case.executor.execute(case.row, case.run)
+    case.clock.advance(2)
+    first = await case.dispatch()
     assert first.status is RunStatus.RUNNING
     async with database.sessions() as session:
         rows = [dict(row) for row in (await session.execute(select(work))).mappings()]
@@ -165,7 +172,7 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
         child["conversation_id"],
         source,
         request_id=child["id"],
-        settings=case.executor._settings,
+        settings=case.settings,
     )
     if principal == "person":
         recovered = await recover_execution_source(
@@ -173,7 +180,7 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
             child["conversation_id"],
             {**source, "actor_user_id": "old-derived-account"},
             request_id=child["id"],
-            settings=case.executor._settings,
+            settings=case.settings,
         )
         assert recovered.actor_person_id == source["actor_person_id"]
         assert recovered.actor_user_id == "10001"
@@ -189,7 +196,7 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
                 child["conversation_id"],
                 {**source, **changed},
                 request_id=child["id"],
-                settings=case.executor._settings,
+                settings=case.settings,
             )
     async with database.sessions() as session, session.begin():
         await session.execute(
@@ -206,7 +213,7 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
             child["conversation_id"],
             source,
             request_id=child["id"],
-            settings=case.executor._settings,
+            settings=case.settings,
         )
     async with database.sessions() as session, session.begin():
         await session.execute(
@@ -259,28 +266,28 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
     assert json.loads(completed["checkpoint_json"])["sync_result"].startswith("Worker verified")
     assert json.loads(completed["source_json"]) == source
     await WorkWaitRepository(repository).deliver_due()
-    result = await case.executor.execute(case.row, case.run)
+    from tests.support.runtime_execution import make_work_resumer
+
+    from qq_ai_bot.runtime.work_scheduler import WorkScheduler
+
+    resumer = make_work_resumer(
+        repository,
+        ledger=case.chat._ledger,
+        scopes=case.chat._conversation_scopes,
+        turns=case.chat._turn_coordinator,
+        router=case.env.router,
+        config=case.chat._runtime_config,
+        generate_self=case.chat.generate_self_initiative,
+        generate_wakeup=case.chat.generate_main_agent_wakeup,
+        bindings=case.chat.runtime.bindings,
+        settings=case.settings,
+        generate_origin=case.chat.generate_origin_turn,
+    )
+    await WorkScheduler(repository, resumer.resume, chat_admission_enabled=True).drain_once()
+    result = (await case.repository.run_history(case.row.id))[0]
     assert result.status is RunStatus.SUCCEEDED
     assert (await repository.get(parent["id"]))["state"] == "completed"
     assert case.run.id == source["automation_run_id"]
-    # The actual original owner settles; continuing the child must not reopen it.
-    owner = "original-run-owner"
-    assert await case.repository.claim_due(
-        worker_id=owner, now=case.row.next_run_at, lease_seconds=60
-    )
-    assert await case.repository.finish_run(
-        case.run.id,
-        status=result.status,
-        steps_completed=result.steps_completed,
-        llm_calls=result.llm_calls,
-        tool_calls=result.tool_calls,
-        messages_sent=result.messages_sent,
-        error_category=result.error_category,
-        summary=result.summary,
-        finished_at=case.clock.now(),
-        worker_id=owner,
-    )
-    await case.repository.release_claim(case.row.id, worker_id=owner)
     original_parent = await repository.get(parent["id"])
     lease = await repository.acquire(parent["conversation_id"], parent["generation"])
     workers = SubagentRepository(repository)
@@ -636,7 +643,6 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
     database, tmp_path, monkeypatch
 ):
     import time
-    from dataclasses import replace
     from types import SimpleNamespace
 
     from tests.support.runtime_execution import make_work_resumer
@@ -645,14 +651,13 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
     from qq_ai_bot.admin.capabilities import AdminCapabilityService
     from qq_ai_bot.automation.authority import PermissionLevel
     from qq_ai_bot.automation.control_context import resolve_execution_identity
-    from qq_ai_bot.persistence.models import AutomationModel
     from qq_ai_bot.runtime.work_budget_schema import budgets
     from qq_ai_bot.runtime.work_scheduler import WorkScheduler
 
     case = await setup_run(
         database, tmp_path, delivery="none", mode="silent", superusers_csv="10001"
     )
-    settings = case.executor._settings
+    settings = case.settings
     settings.superusers_csv = "9001"
     del settings.__dict__["superusers"]
     assert await case.env.router.cas_takeover_person(case.env.person) == "taken"
@@ -682,7 +687,24 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
 
     def respond(_request):
         if len(case.provider.requests) == 1:
-            name, args = "task_control", {"action": "derive", "goal": "original delegated child"}
+            return ChatResponse(
+                "",
+                0,
+                tool_calls=(
+                    ToolCall(
+                        "accept",
+                        ToolFunction(
+                            "task_control", '{"action":"accept","goal":"Original delegated work"}'
+                        ),
+                    ),
+                    ToolCall(
+                        "derive",
+                        ToolFunction(
+                            "task_control", '{"action":"derive","goal":"original delegated child"}'
+                        ),
+                    ),
+                ),
+            )
         elif len(case.provider.requests) == 3:
             name, args = (
                 "admin_set_config",
@@ -722,7 +744,8 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
         return response
 
     monkeypatch.setattr(case.provider, "complete", complete)
-    first = await case.executor.execute(case.row, case.run)
+    case.clock.advance(2)
+    first = await case.dispatch()
     assert first.status is RunStatus.SUCCEEDED
     assert len(case.provider.requests) == 2
     assert "admin_set_config" in {tool.name for tool in case.provider.requests[0].tools}
@@ -731,26 +754,17 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
         rows = list((await reader.execute(select(work))).mappings())
     parent = next(dict(row) for row in rows if row["parent_work_id"] is None)
     child = next(dict(row) for row in rows if row["parent_work_id"] == parent["id"])
-    assert await case.repository.finish_run(
-        case.run.id,
-        status=first.status,
-        steps_completed=first.steps_completed,
-        llm_calls=first.llm_calls,
-        tool_calls=first.tool_calls,
-        messages_sent=first.messages_sent,
-        error_category=None,
-        summary=first.summary,
-        finished_at=case.clock.now(),
-    )
-    handlers = case.executor._registry.require("yuki.agent").handler.__self__
-    original_agent = handlers.agent
-    resumed_authority = []
+    resumed_runtime = []
 
-    async def capture_agent(arguments, context, **kwargs):
-        resumed_authority.append(context.authority)
-        return await original_agent(arguments, context, **kwargs)
+    async def capture_main(**kwargs):
+        resumed_runtime.append(kwargs["source_runtime"])
+        async with database.sessions() as reader:
+            account, permission = await resolve_execution_identity(
+                reader, settings, owner_id=case.env.person
+            )
+            assert account == "10001" and permission is PermissionLevel.SUPERUSER
+        return await case.chat.generate_origin_turn(**kwargs)
 
-    monkeypatch.setattr(handlers, "agent", capture_agent)
     resumer = make_work_resumer(
         repository,
         ledger=case.chat._ledger,
@@ -761,24 +775,14 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
         generate_self=case.chat.generate_self_initiative,
         generate_wakeup=case.chat.generate_main_agent_wakeup,
         bindings=case.chat.runtime.bindings,
+        settings=settings,
+        generate_origin=capture_main,
     )
 
-    async def resume_automation(item, source):
-        async with database.sessions() as reader:
-            actual = await reader.get(AutomationModel, source["automation_id"])
-            account, permission = await resolve_execution_identity(
-                reader, settings, owner_id=actual.canonical_creator_person_id
-            )
-            assert account == "10001" and permission is PermissionLevel.SUPERUSER
-        await handlers.resume_work(database, item, source)
-
-    resumer.services = replace(
-        resumer.services, settings=settings, resume_automation=resume_automation
-    )
     scheduler = WorkScheduler(repository, resumer.resume, chat_admission_enabled=True)
     scheduler._last_reclaim = time.monotonic()
     await scheduler.drain_once()
-    assert resumed_authority[0].actor_is_superuser
+    assert resumed_runtime[0].actor_is_superuser
     assert (
         await case.chat._runtime_config.get_effective("agent.max_tool_calls")
     ).value == original_value

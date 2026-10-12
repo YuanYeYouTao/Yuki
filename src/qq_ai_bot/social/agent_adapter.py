@@ -18,11 +18,7 @@ from qq_ai_bot.social.service import SocialContext, SocialService
 async def invoke_social(
     service: SocialService, name: str, arguments: dict[str, Any], runtime: Any
 ) -> dict[str, Any]:
-    if runtime.origin is TurnOrigin.SELF_INITIATIVE or (
-        runtime.origin is TurnOrigin.SCHEDULED_AUTOMATION
-        and runtime.actor_context is not None
-        and runtime.actor_context.principal_kind == "self"
-    ):
+    if runtime.actor_context is not None and runtime.actor_context.principal_kind == "self":
         invocation = current_invocation.get()
         actor = runtime.require_actor()
         if (
@@ -111,7 +107,7 @@ async def invoke_social(
             raise SocialError(exc.category) from exc
         except ValidationError as exc:
             raise SocialError("invalid_message_arguments") from exc
-    if getattr(runtime, "read_scope", None) is not None and name in {
+    if getattr(runtime, "read_target_id", None) is not None and name in {
         "read_conversation_history",
         "find_contacts",
     }:
@@ -186,6 +182,7 @@ async def invoke_social(
         turn_id=f"{conversation_id}:{execution_id}",
         call_id=invocation.call_id,
         conversation_id=conversation_id,
+        origin=runtime.origin.value,
         person_refs={key: by_account[value] for key, value in refs.items() if value in by_account},
         account_refs={key: value for key, value in refs.items() if value in by_account},
         space_id=runtime.space_id or getattr(inbound, "space_id", None),

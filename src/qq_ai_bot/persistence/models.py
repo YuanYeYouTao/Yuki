@@ -724,15 +724,6 @@ class MemoryMutationReceiptModel(Base):
             "'no_change','rejected')",
             name="ck_memory_mutation_outcome",
         ),
-        CheckConstraint(
-            "(trigger_source_type = 'chat_event' AND trigger_event_id IS NOT NULL "
-            "AND dream_operation_id IS NULL AND initiative_run_id IS NULL) OR "
-            "(trigger_source_type = 'dream_operation' AND trigger_event_id IS NULL "
-            "AND dream_operation_id IS NOT NULL AND initiative_run_id IS NULL) OR "
-            "(trigger_source_type = 'initiative_run' AND trigger_event_id IS NULL "
-            "AND dream_operation_id IS NULL AND initiative_run_id IS NOT NULL)",
-            name="ck_memory_mutation_trigger_source",
-        ),
         Index(
             "ix_memory_mutation_receipts_event_created",
             "trigger_event_id",
@@ -854,11 +845,6 @@ class MemoryToolReceiptModel(Base):
 
     __tablename__ = "memory_tool_receipts"
     __table_args__ = (
-        CheckConstraint(
-            "(trigger_event_id IS NOT NULL AND initiative_run_id IS NULL) OR "
-            "(trigger_event_id IS NULL AND initiative_run_id IS NOT NULL)",
-            name="ck_memory_tool_receipts_source",
-        ),
         CheckConstraint(
             "initiative_run_id IS NULL OR (tool_call_id IS NOT NULL AND execution_id IS NOT NULL "
             "AND source_call_key IS NOT NULL AND canonical_person_id IS NULL)",

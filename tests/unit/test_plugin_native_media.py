@@ -13,7 +13,6 @@ import pytest
 from PIL import Image
 from sqlalchemy import delete, update
 
-from qq_ai_bot.automation.authority import DelegatedAuthority, PermissionLevel
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities.results import ToolExecutionResult
 from qq_ai_bot.domain.conversations import ScopeType
@@ -21,7 +20,7 @@ from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.plugin_host.capability_adapter import PluginCapabilityAdapter
 from qq_ai_bot.plugin_host.db_models import PluginInstallationModel, PluginMediaArtifactModel
 from qq_ai_bot.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
-from qq_ai_bot.plugin_host.facades import HostPluginContext, PluginFacadeServices, PluginInvocation
+from qq_ai_bot.plugin_host.facades import HostPluginContext, PluginFacadeServices
 from qq_ai_bot.plugin_host.media_artifacts import PluginMediaArtifactStore
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
@@ -207,7 +206,7 @@ async def test_dispatch_hook_refuses_invalid_origin_despite_live_archive(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "change", ["delete", "expire", "digest", "revision", "disabled", "tool", "closed", "origin"]
+    "change", ["delete", "expire", "digest", "revision", "disabled", "tool", "closed"]
 )
 async def test_archive_copy_cannot_bypass_original_plugin_source(database, tmp_path, change):
     env = await environment(database, tmp_path)
@@ -235,8 +234,6 @@ async def test_archive_copy_cannot_bypass_original_plugin_source(database, tmp_p
         images = tuple(replace(image, plugin_tool_name="another-action") for image in images)
     elif change == "closed":
         env.runtime = replace(env.runtime, tools_closed=True)
-    else:
-        env.runtime = replace(env.runtime, origin=TurnOrigin.SYSTEM_TASK, actor_context=None)
     with pytest.raises(PluginPermissionError):
         await env.adapter.validate_images(images, env.runtime, web_was_used=False)
     assert len(env.calls) == 1
@@ -279,36 +276,30 @@ def test_empty_sdk_result_serialization_stays_compatible():
 
 
 @pytest.mark.asyncio
-async def test_plugin_prefix_delegation_cannot_authorize_another_selected_action(
-    database, tmp_path
-):
+async def test_scheduled_media_uses_real_plugin_approval_without_second_menu(database, tmp_path):
     env = await environment(database, tmp_path)
-    from qq_ai_bot.identity.canonical_repository import ensure_person
+    from qq_ai_bot.domain.tool_actor import ToolActor
 
-    async with database.immediate_session() as session:
-        person_id = await ensure_person(session, "10001")
-    inbound = replace(env.runtime.inbound, person_id=person_id)
-    action = "plugin.example.plugin.tool.select"
-    invocation = PluginInvocation(
-        plugin_id="example.plugin",
-        origin=TurnOrigin.SCHEDULED_AUTOMATION,
-        actor_user_id="10001",
+    actor = ToolActor(
+        user_id="10001",
         bot_user_id="99999",
-        inbound=inbound,
-        actor_person_id=person_id,
-        delegated_authority=DelegatedAuthority(
-            creator_user_id=inbound.sender.user_id,
-            canonical_creator_person_id=person_id,
-            bot_user_id=inbound.bot_user_id,
-            created_from_message_id=inbound.message_id,
-            created_at=datetime.now(UTC).isoformat(),
-            permission_level=PermissionLevel.USER,
-            granted_capabilities=(action, "plugin.example.plugin.tool.other"),
-            capability_schema_versions={action: 1, "plugin.example.plugin.tool.other": 1},
-        ),
-        allowed_capabilities=frozenset({"plugin.example.plugin.tool.other"}),
+        group_id=None,
+        origin=TurnOrigin.SCHEDULED_AUTOMATION,
+        instruction="select owned image",
+        execution_id="scheduled-media-occurrence",
+        conversation_id="scheduled-source-conversation",
     )
-    with env.context.bind(invocation), pytest.raises(PluginPermissionError, match="not delegated"):
-        env.context._authorize_tool_media(action)
-    with env.context.bind(replace(invocation, allowed_capabilities=frozenset({action}))):
-        env.context._authorize_tool_media(action)
+    source = replace(
+        env.runtime,
+        inbound=None,
+        actor_context=actor,
+        origin=actor.origin,
+        execution_id=actor.execution_id,
+        conversation_id=actor.conversation_id,
+        scope_type=ScopeType.PRIVATE,
+        external_target_id=actor.user_id,
+        conversation_key="private:scheduled-source",
+    )
+    result = await env.adapter.execute(env.name, "{}", source, web_was_used=False)
+    assert result.ok and result.images
+    assert len(env.calls) == 1

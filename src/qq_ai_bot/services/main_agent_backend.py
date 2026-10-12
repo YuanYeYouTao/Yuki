@@ -450,19 +450,6 @@ class MainAgentBackend(AgentToolBackend):
                                 retryable=True,
                                 mutation_committed=False,
                             )
-                    source = execution_runtime.sandbox_source
-                    if (
-                        work is None
-                        and source is not None
-                        and execution_runtime.origin is RuntimeTurnOrigin.SCHEDULED_AUTOMATION
-                        and self.counts_toward_limit(name, runtime)
-                    ):
-                        from qq_ai_bot.runtime.work_budget import charge_automation_run
-
-                        async with self._service._ledger._database.immediate_session() as writer:
-                            await charge_automation_run(
-                                writer, int(source["automation_run_id"]), models=0, tools=1
-                            )
                     binding_started = True
                     if self.counts_toward_limit(name, runtime):
                         self.failed_tool_calls += 1

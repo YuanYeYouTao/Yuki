@@ -36,7 +36,7 @@ async def histories(database, tmp_path):
                     "spec": {
                         "owner_id": "self",
                         "conversation_id": env.context.conversation_id,
-                        "script": script,
+                        "task": script,
                     },
                 },
             ),

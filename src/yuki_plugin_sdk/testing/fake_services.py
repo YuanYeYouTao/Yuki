@@ -397,19 +397,23 @@ class FakeAutomationFacade:
     async def list_current_owner(self) -> tuple[Mapping[str, JsonValue], ...]:
         return tuple(self.tasks)
 
-    async def create_from_template(
-        self, template: str, parameters: Mapping[str, JsonValue]
-    ) -> PluginResult:
+    async def create_task(self, task: Mapping[str, JsonValue]) -> PluginResult:
         task_id = str(uuid4())
         self.tasks.append(
             {
                 "id": task_id,
-                "template": template,
-                "parameters": dict(parameters),
+                "task": dict(task),
                 "status": "active",
             }
         )
         return PluginResult(data={"task_id": task_id})
+
+    async def update_task(self, task_id: str, task: Mapping[str, JsonValue]) -> PluginResult:
+        for row in self.tasks:
+            if row.get("id") == task_id:
+                row["task"] = dict(task)
+                return PluginResult(data={"task_id": task_id})
+        return PluginResult(ok=False, error_code="automation.not_found")
 
     async def pause(self, task_id: str) -> PluginResult:
         return self._set_status(task_id, "paused")

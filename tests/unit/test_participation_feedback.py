@@ -324,8 +324,7 @@ async def test_retained_wait_releases_new_opportunity_without_revoking_original_
         run.run_id,
         result.run.run_id,
     }
-    # The new un-dispatched admission still owns an actual outbox slot.
-    busy = await service.repository.accept_host_proposal(
+    third = await service.repository.accept_host_proposal(
         proposal_id="third-opportunity",
         binding=binding,
         owner=run.owner,
@@ -334,7 +333,8 @@ async def test_retained_wait_releases_new_opportunity_without_revoking_original_
         sources=(),
         trigger_kind="intrinsic",
     )
-    assert busy.outcome == "busy"
+    assert third.outcome == "accepted"
+    assert third.run.run_id not in {run.run_id, result.run.run_id}
 
 
 @pytest.mark.asyncio

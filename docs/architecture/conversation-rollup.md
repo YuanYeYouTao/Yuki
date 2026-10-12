@@ -160,9 +160,9 @@ Provider 输入顺序固定为：
 ```text
 TRUSTED STATIC INSTRUCTIONS
 UNTRUSTED ROLLUP SUMMARY INPUT
-FROZEN AUTHORIZED CHAT, MATERIAL BASELINES/CHANGES AND USEFUL NOTES
-CURRENT MATERIAL CHANGES
-CURRENT MESSAGE
+FROZEN AUTHORIZED CHAT AND USEFUL NOTES
+CURRENT TRIGGER AND CURRENT ACTIVATION MATERIAL
+ORDERED EXECUTION INPUTS AND PAIRED TOOL RESULTS
 ```
 
 已选摘要冻结正文、coverage、kind 与 renderer version（当前 1）。同 epoch 的 append
@@ -170,29 +170,17 @@ CURRENT MESSAGE
 renderer 的旧记录按当前获准来源进行 `rollup` 显式重建并记录新 epoch；不猜旧语义。
 重启、fit/soft/hard 容量及隐私/来源复核仍走原合同。
 
-Rollup 永不进入 system instructions。冻结历史保留所选聊天、资料差量与有用观察的原顺序，
-新事件在安全点追加。昵称、群名片和正文来自落账时事件；必要人物与场景资料首次展示后
-冻结，未变化不重复注入，变化只追加实际字段差量。授权在执行处核验，不常驻权限证明包装。
-长期记忆由 Main Agent 按需调用记忆检索工具，
-不在每轮自动预取或注入。
+Rollup 永不进入 system instructions。冻结历史保留所选原聊天与有用观察的原顺序，新事件在安全点追加。昵称、群名片、正文、AT、引用和附件描述来自实际采用的事件渲染，不保存带本轮资料的 compiled 当前消息。长期记忆由 Main Agent 按需调用记忆检索工具，不在每轮自动预取或注入。
 
-普通输入派发前冻结获准聊天和实际采用的资料首份/差量；后来的变化或移除追加而不重写
-旧块。初始空短记录不展示，已展示槽位的清空或到期以一次空 text 差量退出。自动
-`dynamic_snapshot` 只保存实际已选资料的结构化来源，不作为整包观察再注入；有用的
-context_note/work-note 继续按原授权与依赖读取。开启 Work runtime 但尚未 accept 的普通轮
-仍提交该投影。当前 Work 的目标、工具/steer 尾部及不透明签名
-继续属于原执行的私有 journal，不并入共享普通历史。
+短记录只展示当前有内容的 slot/text，清空和到期后下一激活直接不展示；默认场景只用简短的群聊/私聊说明。插件内容保实际来源与不可信标记。当前触发、场景、短记录、插件资料和 Work 状态只属于本次激活，不发布自动 dynamic_snapshot，不进入公共投影、历史观察或摘要。无聊天事件的 SELF、定时及执行唤醒同样不把触发文字登记为公共聊天。
+
+普通输入派发前只冻结获准的原事件渲染与实际选取的有用笔记，后台变化不改写它们。开启 Work runtime 但尚未 accept 的普通轮仍提交原消息投影。当前 Work 的目标、工具/steer 尾部及不透明签名继续属于原执行的私有 journal；新状态从有序输入尾部接入，不插在已经增长的轨迹前面。
 派发明确标识新 composition 或恢复 journal 的来源；恢复、合同/来源改变及旧检查点
 缺失后的恢复路径，不能调用另一份新 composition 的提交闭包。批准 suffix 必须与实际
 请求的对应位置完全一致，CAS、actor/read-scope、容量及隐私围栏继续生效。
 投影证明准备和派发边界的输入，不证明模型响应或消息送达。
 
-原 `prompt_projections` 行内的最后可见资料 JSON 是可丢缓存，与实际选取及原 projection
-CAS 同事务提交，计入缓存字节容量；失败不推进基线。正常轮只比较这个小视图，缓存
-淘汰或合法 epoch 重建时按实际保留的选取及其结构化来源顺序重建一次。新 Rollup 前缀
-只计算真正保留的资料，不复用已退出输入的旧基线。它不改变 Conversation generation，
-不新增业务状态表、hash 注册表或另一套来源 revision。Work 的一次 Host 私有初始化布局
-和真实协议检查点沿原合同，本轮不改。
+`prompt_projections` 只缓存已选聊天和有用笔记，淘汰后按实际保留的选取来源恢复，没有最后可见资料 JSON 或资料折叠查询。0109 在一次升级中清退旧公共资料选取及无事件触发，删除展示值字段；有用 note、混合摘要事实、原 Work/journal/protocol 依赖仍保原来源。旧付费私有请求不被改写，其资料也不再被采用为公共历史。
 
 普通投影在派发前按完整初始 composition 与固定函数工具，使用 Runner 同一请求估算器
 核对真实容量；压缩比例及 4096 token 余量仅用于安排整理，不能成为另一层硬容量。

@@ -15,7 +15,6 @@ from yuki_plugin_sdk.models import PromptFragment, PromptStage, TrustedLevel
 from yuki_plugin_sdk.permissions import PluginPermission
 from yuki_plugin_sdk.registrar import (
     AdmissionSignalRegistration,
-    AutomationActionRegistration,
     BackgroundServiceRegistration,
     CommandRegistration,
     EmojiSelectionSignalRegistration,
@@ -50,7 +49,6 @@ class ExtensionKind(StrEnum):
     COMMAND = "command"
     EVENT_HOOK = "event_hook"
     PROMPT_FRAGMENT = "prompt_fragment"
-    AUTOMATION_ACTION = "automation_action"
     ADMISSION_SIGNAL = "admission_signal"
     EMOJI_SELECTION_SIGNAL = "emoji_selection_signal"
     CONFIG_SCHEMA = "config_schema"
@@ -230,17 +228,6 @@ class BoundPluginRegistrar(PluginRegistrar):
             kind=ExtensionKind.PROMPT_FRAGMENT,
             local_name=normalized.id,
             registration=normalized,
-        )
-
-    def register_automation_action(self, registration: AutomationActionRegistration) -> None:
-        self._require(PluginPermission.AUTOMATION_ACTION_REGISTER)
-        _validate_schema(registration.input_model, "automation input")
-        _validate_schema(registration.output_model, "automation output")
-        self._registry._add(
-            plugin_id=self._plugin_id,
-            kind=ExtensionKind.AUTOMATION_ACTION,
-            local_name=registration.metadata.name,
-            registration=registration,
         )
 
     def register_admission_signal(self, registration: AdmissionSignalRegistration) -> None:

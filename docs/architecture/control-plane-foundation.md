@@ -98,21 +98,21 @@ rebuild/dream 的首次命令、重入与查询复用同一投影；旧诊断不
 ## 自动化的操作人与执行归属
 
 operator Principal 负责管理授权和审计；自动化长期 owner 明确为已有 canonical Person 或 SELF。
-创建可用 spec 包装：`script`、`owner_id`、`conversation_id`、可选 `max_runs`。
+创建可用 spec 包装：`task`、`owner_id`、`conversation_id`、可选 `max_runs`。
 无包装时兼容绑定了 Person 的 operator 默认归属；无 Person 时必须明确 owner。
 更新保留既有 owner 和场景，不改成操作人；SELF 暂停/恢复等操作不要求 Person QQ 绑定。
 编辑保留原计划状态与未改调度，不自动启用暂停计划或重置after。暂停只停未来slot，已接纳Run
-沿原版本、授权和canonical目标继续。取消在原短writer撤真正所属树及无Work的活动Run；
-计划/root已终态仍可撤活动后代，计划行未变不导致Control回滚已接纳取消，也不改旧终态。
+沿原版本、来源和canonical目标继续。取消只撤未来安排；当前 Work 的结束与取消沿其原管理入口处理。
 run_now接纳新的调度，不给旧max_runs充值；原slot结算不覆写用户后来设置的日期或状态。
 
-群任务要求明确 canonical Conversation、当前 SpaceActiveRoute、Binding 和真实 Presence。
+创建群安排使用明确 canonical Conversation、SpaceActiveRoute、Binding 和真实 Presence。
 Person 账号复用活动路由，多个候选没有明确路由时拒绝首项猜测。私聊场景与 owner 匹配。
-脚本按真实 owner 当前权限验证，SELF 使用稳定 SELF 权限，不继承管理员能力。
-TaskSpec、Social 路由、run/step/投递回执和 source_key 使用原服务，不伪造入站事件。
+任务按真实 owner 当前权限执行，SELF 保自身主体，不继承管理员能力。
+发送路由暂停不阻止安排、读取或内部 Main 激活，发送仍在共同 Social 实现核验路由。
+TaskSpec、Social 路由、run/历史step/投递回执和 source_key 使用原服务，不伪造入站事件。
 Run终态与计划推进共享一次短writer，以原RUNNING→terminal成功写入计数一次；
-缺逐Run历史计数凭证不按时间或尚存行数猜补。执行结果沿原cursor、Work journal与领域回执读取，
-不依赖独立step审计writer。关闭新调度后，旧目录、取消及已接纳结果收尾仍可用。
+缺逐Run历史计数凭证不按时间或尚存行数猜补。执行结果沿原发生、Work journal与领域回执读取，
+旧step只供存档查询。关闭新调度后，旧目录、取消及已接纳结果收尾仍可用。
 
 ## 公开协议与发现
 

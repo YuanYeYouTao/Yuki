@@ -291,7 +291,6 @@ class SubagentExecution:
                         conversation_id=recovered.conversation_id,
                         person_id=recovered.actor_person_id,
                         space_id=recovered.target_space_id,
-                        allow_work_environment=not isinstance(recovered, MessageTaskSource),
                         scope_type=ScopeType.GROUP
                         if recovered.target_space_id
                         else ScopeType.PRIVATE,

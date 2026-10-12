@@ -320,24 +320,11 @@ async def test_confirmed_send_native_empty_tail_stops_without_failure_or_paid_re
 
 
 def _native_caller(case, monkeypatch):
-    case.executor._settings.web_enabled = True
-    case.executor._settings.web_mode = WebMode.BOTH
-    case.executor._settings.tavily_api_key = "test-placeholder"
-    case.executor._settings.__dict__.pop("web", None)
-    handler = case.executor._registry.require("yuki.agent").handler.__self__
-    chat = handler.main_contract.chat
-    original_run = handler.main_turns.run
-
-    async def authorized_native_caller(messages, runtime, backend, **kwargs):
-        # This caller fixture explicitly grants web at the original trusted
-        # boundary. The default automation producer does not declare native
-        # search, and production authority/routing is unchanged by this test.
-        return await original_run(
-            messages, replace(runtime, allowed_capabilities=frozenset({"web"})), backend, **kwargs
-        )
-
-    monkeypatch.setattr(handler.main_turns, "run", authorized_native_caller)
-    return chat
+    case.settings.web_enabled = True
+    case.settings.web_mode = WebMode.BOTH
+    case.settings.tavily_api_key = "test-placeholder"
+    case.settings.__dict__.pop("web", None)
+    return case.chat
 
 
 CONFIRMED_SEND = native_response(
@@ -368,7 +355,16 @@ async def test_caller_native_declaration_allows_empty_final_and_keeps_actual_nat
 
     monkeypatch.setattr(chat.runtime.main_turns, "run", capture_caller)
     outputs = [
-        CONFIRMED_SEND,
+        native_response(
+            {
+                "type": "function_call",
+                "id": "fc-accept",
+                "call_id": "accept-work",
+                "name": "task_control",
+                "arguments": json.dumps({"action": "accept", "goal": "finish original task"}),
+            },
+            *CONFIRMED_SEND["output"],
+        ),
         native_response(
             {
                 "type": "reasoning",
@@ -407,7 +403,8 @@ async def test_caller_native_declaration_allows_empty_final_and_keeps_actual_nat
 
         monkeypatch.setattr(RuntimeWorkSession, "save", fail_tail_checkpoint)
     try:
-        result = await case.executor.execute(case.row, case.run)
+        case.clock.advance(2)
+        result = await case.dispatch()
     finally:
         await client.aclose()
     # No paid replay and no extra model request after the native empty tail.
@@ -460,9 +457,8 @@ async def test_caller_native_declaration_allows_empty_final_and_keeps_actual_nat
                     .values(checkpoint_json=json.dumps(retained))
                 )
             before = await repository.get(saved.id)
-            replay = await original_run(*caller[0])
-            assert replay.work_id == saved.id and replay.work_state == "completed"
-            assert replay.text == "" and replay.model_requests == replay.tool_calls_used == 0
+            replay = await case.dispatch()
+            assert replay.id == result.id and replay.status is RunStatus.SUCCEEDED
             assert await repository.get(saved.id) == before
         assert len(wire) == 2
 
@@ -474,7 +470,16 @@ async def test_caller_send_then_complete_result_ends_without_third_request(
     case = await setup_run(database, tmp_path, delivery="current_group")
     chat = _native_caller(case, monkeypatch)
     outputs = [
-        CONFIRMED_SEND,
+        native_response(
+            {
+                "type": "function_call",
+                "id": "fc-accept",
+                "call_id": "accept-work",
+                "name": "task_control",
+                "arguments": json.dumps({"action": "accept", "goal": "finish original task"}),
+            },
+            *CONFIRMED_SEND["output"],
+        ),
         native_response(
             {
                 "type": "function_call",
@@ -492,7 +497,8 @@ async def test_caller_send_then_complete_result_ends_without_third_request(
     )
     chat.runtime.runner._models._invocations = ModelInvocationRepository(database)
     try:
-        result = await case.executor.execute(case.row, case.run)
+        case.clock.advance(2)
+        result = await case.dispatch()
     finally:
         await client.aclose()
     assert len(wire) == 2 and all(payload["tools"] == wire[0]["tools"] for payload in wire)

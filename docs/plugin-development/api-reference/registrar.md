@@ -7,7 +7,6 @@ register_tool(ToolRegistration) -> None
 register_command(CommandRegistration) -> None
 register_event_hook(EventHookRegistration) -> None
 register_prompt_fragment(PromptFragment) -> None
-register_automation_action(AutomationActionRegistration) -> None
 register_admission_signal(AdmissionSignalRegistration) -> None
 register_config_schema(type[BaseModel]) -> None
 register_background_service(BackgroundServiceRegistration) -> None
@@ -22,7 +21,6 @@ class ToolMetadata(StrictModel):
     permission: PermissionLevel = user
     risk: RiskClass = read
     schema_version: int = 1
-    allowed_origins: frozenset[TurnOrigin] = {user_message}
     timeout_seconds: float | None = None  # explicit values are >0
     retry_policy: RetryPolicy = none
     namespace: str = ""  # empty → Host fills plugin.{plugin_id}
@@ -37,10 +35,6 @@ class CommandMetadata(StrictModel):
     permission: PermissionLevel = user
     short_alias: str | None
     timeout_seconds: float = 10
-
-
-class AutomationActionMetadata(ToolMetadata):
-    allowed_origins = {scheduled_automation, system_task}
 
 
 class EventHookMetadata(StrictModel):
@@ -58,7 +52,7 @@ class BackgroundServiceMetadata(StrictModel):
     restart_policy: RestartPolicy = never
 ```
 
-Tool和Automation Action未声明期限时不制造外层超时；作者明确的期限、真实外部请求超时与取消
+Tool 未声明期限时不制造外层超时；作者明确的期限、真实外部请求超时与取消
 仍沿原执行处生效。输入在派发前只解析一次，typed handler收到声明的模型实例；返回的对应
 output实例不再dump后重复解析。TRUSTED/MODERATOR仍是未指派的保留角色，不降成USER执行。
 
@@ -66,7 +60,6 @@ output实例不再dump后重复解析。TRUSTED/MODERATOR仍是未指派的保�
 
 - `ToolRegistration(metadata, input_model, output_model, handler)`
 - `CommandRegistration(metadata, argument_model, handler)`
-- `AutomationActionRegistration(metadata, input_model, output_model, handler)`
 - `EventHookRegistration(metadata, handler)`
 - `AdmissionSignalRegistration(name, provider)`
 - `BackgroundServiceRegistration(metadata, runner)`

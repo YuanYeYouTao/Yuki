@@ -20,7 +20,6 @@ from yuki_plugin_sdk.models import (
     RetryPolicy,
     RiskClass,
     StrictModel,
-    TurnOrigin,
 )
 from yuki_plugin_sdk.namespace import (
     is_reserved_plugin_namespace,
@@ -30,7 +29,6 @@ from yuki_plugin_sdk.results import CommandResult, ToolResult
 
 ToolHandler = Callable[[BaseModel], Awaitable[ToolResult | BaseModel]]
 CommandHandler = Callable[[BaseModel], Awaitable[CommandResult]]
-AutomationHandler = Callable[[BaseModel], Awaitable[ToolResult | BaseModel]]
 AdmissionSignalProvider = (
     Callable[[AdmissionSignalContext], Awaitable[AdmissionSignal | None]]
     | Callable[[], Awaitable[AdmissionSignal | None]]
@@ -54,9 +52,6 @@ class ToolMetadata(StrictModel):
     aliases: tuple[str, ...] = Field(default=(), max_length=_MAX_TOOL_LABELS)
     use_when: tuple[str, ...] = Field(default=(), max_length=_MAX_TOOL_LABELS)
     tags: tuple[str, ...] = Field(default=(), max_length=_MAX_TOOL_LABELS)
-    allowed_origins: frozenset[TurnOrigin] = Field(
-        default_factory=lambda: frozenset({TurnOrigin.USER_MESSAGE})
-    )
     timeout_seconds: float | None = Field(default=None, gt=0)
     retry_policy: RetryPolicy = RetryPolicy.NONE
 
@@ -98,12 +93,6 @@ class CommandMetadata(StrictModel):
     timeout_seconds: float = Field(default=10, gt=0, le=600)
 
 
-class AutomationActionMetadata(ToolMetadata):
-    allowed_origins: frozenset[TurnOrigin] = Field(
-        default_factory=lambda: frozenset({TurnOrigin.SCHEDULED_AUTOMATION, TurnOrigin.SYSTEM_TASK})
-    )
-
-
 class EventHookMetadata(StrictModel):
     id: str = Field(pattern=r"^[a-z][a-z0-9_.-]{0,127}$")
     event: EventName
@@ -132,14 +121,6 @@ class CommandRegistration:
     metadata: CommandMetadata
     argument_model: type[BaseModel]
     handler: CommandHandler
-
-
-@dataclass(frozen=True, slots=True)
-class AutomationActionRegistration:
-    metadata: AutomationActionMetadata
-    input_model: type[BaseModel]
-    output_model: type[BaseModel]
-    handler: AutomationHandler
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,8 +157,6 @@ class PluginRegistrar(Protocol):
     def register_event_hook(self, registration: EventHookRegistration) -> None: ...
 
     def register_prompt_fragment(self, fragment: PromptFragment) -> None: ...
-
-    def register_automation_action(self, registration: AutomationActionRegistration) -> None: ...
 
     def register_admission_signal(self, registration: AdmissionSignalRegistration) -> None: ...
 

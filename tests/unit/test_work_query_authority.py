@@ -39,7 +39,6 @@ async def query_environment(database):
         inbound=inbound,
         gateway=None,
         allow_generic_onebot=False,
-        allow_automation=True,
         runtime_config=config,
         conversation_key="query-test",
     )
@@ -52,7 +51,7 @@ async def test_queries_do_not_require_automation_or_mutation_admission(query_env
     for read_only in (False, True):
         backend = MainAgentBackend(
             chat,
-            replace(runtime, read_only=read_only, allow_automation=False),
+            replace(runtime, read_only=read_only),
             allowed_tools=frozenset(),
         )
         for action in ("get", "list"):
@@ -110,7 +109,7 @@ async def test_self_directory_reads_do_not_require_or_borrow_a_person(query_envi
     )
     with pytest.raises(ValueError, match="invalid_self_tool_actor"):
         replace(actor, user_id="1001")
-    backend = MainAgentBackend(chat, replace(runtime, allow_automation=False))
+    backend = MainAgentBackend(chat, runtime)
     assert backend.work_query_allowed("get")
     assert backend.work_query_allowed("list")
     for invalid in (replace(runtime, initiative_run_id="another-initiative"),):
@@ -156,7 +155,7 @@ async def test_runner_query_gate_refuses_before_domain_read_and_keeps_lifecycle(
             arguments["work_id"] = "original-work"
         call = ToolCall(action, ToolFunction("task_control", json.dumps(arguments)))
         backend = MainAgentBackend(
-            chat, replace(tool_runtime, allow_automation=False, tools_closed=not allowed)
+            chat, replace(tool_runtime, tools_closed=not allowed)
         )
         return await chat.runtime.runner._execute_tool_batch(
             (call,),

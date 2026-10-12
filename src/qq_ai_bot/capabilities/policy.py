@@ -1,6 +1,6 @@
 """Metadata-driven capability visibility policy.
 
-Authority is origin, actor permissions, scene isolation and the memory
+Authority is actor permissions, scene isolation and the memory
 capability view.  Namespace is not a permission and is never used as a hard
 filter here.
 """
@@ -14,7 +14,6 @@ from qq_ai_bot.capabilities.models import (
     AuthorityContext,
     CapabilityDescriptor,
     CapabilityEffect,
-    CapabilityRisk,
 )
 from qq_ai_bot.runtime.contracts import MemoryCapabilityView
 
@@ -59,13 +58,6 @@ class CapabilityPolicyEngine:
         )
         visible: list[CapabilityDescriptor] = []
         for descriptor in descriptors:
-            same_actor_access = (
-                context.origin is TurnOrigin.SCHEDULED_AUTOMATION
-                and context.authority.principal_kind == "person"
-                and TurnOrigin.USER_MESSAGE in descriptor.allowed_origins
-            )
-            if context.origin not in descriptor.allowed_origins and not same_actor_access:
-                continue
             if not descriptor.required_permissions.issubset(granted):
                 continue
             if context.read_only and descriptor.effect not in _READ_EFFECTS:
@@ -73,12 +65,6 @@ class CapabilityPolicyEngine:
             if descriptor.namespace_id in hidden_namespaces:
                 continue
             if descriptor.model_name == "read_tool_artifact" and not context.artifact_available:
-                continue
-            if descriptor.risk is CapabilityRisk.DESTRUCTIVE and context.origin not in {
-                TurnOrigin.USER_MESSAGE,
-                TurnOrigin.AUTONOMOUS_GROUP,
-                TurnOrigin.SCHEDULED_AUTOMATION,
-            }:
                 continue
             visible.append(descriptor)
         return tuple(visible)

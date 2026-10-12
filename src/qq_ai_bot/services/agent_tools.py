@@ -159,7 +159,6 @@ class ToolRuntime:
     allow_generic_onebot: bool
     declaration_only: bool = False
     allow_admin_actions: bool = False
-    allow_automation: bool = False
     conversation_key: str = ""
     trigger_message_id: str = ""
     trigger_event_id: int | None = None
@@ -169,7 +168,6 @@ class ToolRuntime:
     origin: TurnOrigin = TurnOrigin.USER_MESSAGE
     tools_closed: bool = False
     read_only: bool = False
-    allow_work_environment: bool = False
     read_scope: ConversationScope | None = None
     read_target_id: str | None = None
     history_limit: int | None = None
@@ -177,8 +175,6 @@ class ToolRuntime:
     turn_snapshot: ConversationTurnSnapshot | None = None
     visible_event_ids: frozenset[int] = frozenset()
     selection_query: str = ""
-    max_model_requests_override: int | None = None
-    max_tool_calls_override: int | None = None
     sandbox_source: dict[str, Any] | None = None
     execution_id: str = ""
     initiative_run_id: str | None = None
@@ -323,8 +319,7 @@ class ToolRuntime:
             return actor
         if (
             actor is None
-            or actor.origin is not TurnOrigin.SCHEDULED_AUTOMATION
-            or self.origin is not TurnOrigin.SCHEDULED_AUTOMATION
+            or actor.origin is not self.origin
             or not actor.execution_id
             or actor.execution_id != self.execution_id
             or actor.conversation_id != self.effective_conversation_id
@@ -589,9 +584,7 @@ class AgentToolService:
                 ),
             ),
         ]
-        if self._memory_mutations is not None and (
-            runtime.declaration_only or runtime.origin in _MEMORY_CHANGE_ORIGINS
-        ):
+        if self._memory_mutations is not None:
             tools.append(
                 ChatTool(
                     name="memory_change",
@@ -600,7 +593,7 @@ class AgentToolService:
                         "target.scope_type=self 生效；其他目标误填 current_scope 或 global "
                         "会被后端忽略。根据当前用户真实入站消息"
                         "创建、纠正、撤销、恢复、争议、合并、改归属或更新记忆元数据；"
-                        f"主动 SELF 使用原 initiative 的本轮工具回执，只能写自己的记忆；"
+                        f"SELF 使用原执行的本轮工具回执，只能写自己的记忆；"
                         f"不能把 {bot_name} 自己的输出当证据，也不能编造真人事件。"
                         "target.subject_ref 可使用 current_speaker、current_group、"
                         "member_{user_id} 等本轮可验证成员引用，或"
@@ -873,12 +866,7 @@ class AgentToolService:
 
                     invocation = current_invocation.get()
                     if (
-                        (
-                            runtime.origin
-                            not in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}
-                            and not runtime.allow_work_environment
-                        )
-                        or runtime.tools_closed
+                        runtime.tools_closed
                         or (runtime.read_only and name not in READ_TOOLS)
                     ):
                         return self._result(error="permission_denied", detail="本轮未授权沙箱操作")
@@ -909,7 +897,6 @@ class AgentToolService:
                             "conversation_id": runtime.effective_conversation_id,
                             "origin": runtime.origin.value,
                             "allow_admin_actions": runtime.allow_admin_actions,
-                            "allow_automation": runtime.allow_automation,
                             "actor_is_superuser": runtime.actor_is_superuser,
                             "actor_user_id": runtime.actor_user_id,
                             "bot_user_id": runtime.effective_bot_user_id,
@@ -918,6 +905,7 @@ class AgentToolService:
                             if runtime.turn_snapshot
                             else None,
                             "trigger_event_id": runtime.effective_trigger_event_id,
+                            "parent_execution_id": runtime.effective_execution_id,
                         }
                         if name in EXECUTION_TOOLS
                         else None,
@@ -935,13 +923,7 @@ class AgentToolService:
                     from qq_ai_bot.workspace.store import WorkspaceError
 
                     if (
-                        (
-                            name != "inspect_conversation_attachment"
-                            and runtime.origin
-                            not in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}
-                            and not runtime.allow_work_environment
-                        )
-                        or (runtime.read_only and name not in WORKSPACE_READ_TOOLS)
+                        (runtime.read_only and name not in WORKSPACE_READ_TOOLS)
                         or runtime.tools_closed
                     ):
                         return self._result(
@@ -2031,7 +2013,7 @@ class AgentToolService:
         runtime: ToolRuntime,
     ) -> ToolExecutionResult:
         service = self._memory_mutations
-        if service is None or runtime.origin not in _MEMORY_CHANGE_ORIGINS:
+        if service is None:
             return self._result(error="memory_change_unavailable", detail="当前轮不能变更记忆")
         normalized_arguments = {key: value for key, value in arguments.items() if value is not None}
         try:
@@ -2048,7 +2030,8 @@ class AgentToolService:
                 error="invalid_memory_change",
                 detail=(f"记忆变更参数无效：{location}:{first.get('type', 'validation_error')}"),
             )
-        if runtime.origin is TurnOrigin.SELF_INITIATIVE:
+        actor = runtime.require_actor()
+        if actor.principal_kind == "self":
             context = MemoryMutationContext(
                 event=None,
                 conversation_key=runtime.conversation_key,
@@ -2063,7 +2046,6 @@ class AgentToolService:
             )
             result = await service.mutate(request, context)
             return self._memory_change_result(result)
-        actor = runtime.require_actor()
         trigger_event_id = request.evidence_event_id or runtime.effective_trigger_event_id
         event = await self._ledger.get_event(trigger_event_id) if trigger_event_id else None
         if event is None:

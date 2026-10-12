@@ -126,9 +126,15 @@ class DeepSeekSearchBridge:
             "tool_choice": {"type": "auto"},
         }
         control = current_work_control.get()
+        headers = dict(self.headers)
         if control is not None:
             await control.validate()
             await control.reserve_request(auxiliary=True)
+            work_id = control.current["id"] if control.current else control.lease.work_id
+            headers["x-session-id"] = (
+                f"yuki:{control.lease.conversation_id}:g{control.lease.generation}:"
+                + (f"work:{work_id}" if work_id else "main")
+            )
         else:
             await check_model_dispatch()
         try:
@@ -136,7 +142,7 @@ class DeepSeekSearchBridge:
             async with self.client.stream(
                 "POST",
                 "https://api.deepseek.com/anthropic/v1/messages",
-                headers=self.headers,
+                headers=headers,
                 json=payload,
             ) as response:
                 if response.status_code != 200:

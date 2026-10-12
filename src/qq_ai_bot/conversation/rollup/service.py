@@ -221,6 +221,11 @@ class ConversationRollupService:
             else ""
         )
         return ChatRequest(
+            provider_session_id=(
+                f"yuki:{candidate.conversation_id}:g{candidate.generation}:main"
+                if candidate.conversation_id is not None
+                else None
+            ),
             messages=(
                 ChatMessage(
                     role="system",

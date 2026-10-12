@@ -45,6 +45,9 @@ class InvocationContextFactory:
             before_model_request=source.before_model_request,
             observation_boundary=source.observation_boundary,
             canonical_conversation_id=source.effective_conversation_id,
+            conversation_generation=source.turn_snapshot.generation
+            if source.turn_snapshot is not None
+            else None,
             execution_id=source.effective_execution_id,
             source_event_id=source.effective_trigger_event_id,
             visible_event_ids=source.visible_event_ids,

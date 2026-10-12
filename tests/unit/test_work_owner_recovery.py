@@ -18,7 +18,7 @@ from qq_ai_bot.control_plane.principal import ControlPrincipal, PrincipalSource
 from qq_ai_bot.domain.control import DecisionContext
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.identity import PrincipalId, RequestId
-from qq_ai_bot.domain.messages import ChatMessage, ToolCall, ToolFunction
+from qq_ai_bot.domain.messages import ChatMessage, ChatResponse, ToolCall, ToolFunction
 from qq_ai_bot.llm.base import LLMUnavailableError
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.persistence.control_command import ControlCommandAdapter
@@ -606,8 +606,21 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
 
     def respond(request):
         if len(case.provider.requests) == 1:
-            return _tool(
-                "task_control", {"action": "derive", "goal": "original automation child"}, "derive"
+            return ChatResponse(
+                "",
+                0,
+                tool_calls=(
+                    ToolCall(
+                        "accept",
+                        ToolFunction("task_control", '{"action":"accept","goal":"原始完整任务"}'),
+                    ),
+                    ToolCall(
+                        "derive",
+                        ToolFunction(
+                            "task_control", '{"action":"derive","goal":"original automation child"}'
+                        ),
+                    ),
+                ),
             )
         if wait_for_timer and len(case.provider.requests) == 3:
             return _tool(
@@ -618,7 +631,8 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
         return _tool("task_control", {"action": "complete", "result": "done"}, "finish")
 
     case.provider._responder = respond
-    result = await case.executor.execute(case.row, case.run)
+    case.clock.advance(61 if wait_for_timer else 2)
+    result = await case.dispatch()
     assert result.status is RunStatus.SUCCEEDED
     repository = WorkRepository(database)
     async with database.sessions() as reader:
@@ -627,18 +641,6 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
     child = next(dict(row) for row in rows if row["parent_work_id"] == parent["id"])
     assert parent["state"] == "completed" and child["state"] == "queued"
     assert child["source_json"] == parent["source_json"]
-    assert await case.repository.finish_run(
-        case.run.id,
-        status=RunStatus.SUCCEEDED,
-        steps_completed=result.steps_completed,
-        llm_calls=result.llm_calls,
-        tool_calls=result.tool_calls,
-        messages_sent=result.messages_sent,
-        error_category=None,
-        summary=result.summary,
-        finished_at=case.clock.now(),
-    )
-    handlers = case.executor._registry.require("yuki.agent").handler.__self__
     if promoted:
         from uuid import uuid4
 
@@ -646,9 +648,9 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
         from qq_ai_bot.automation.control_context import resolve_execution_identity
         from qq_ai_bot.identity.db_models import IdentityBindingModel
 
-        assert "9000" in case.executor._settings.superusers
-        case.executor._settings.superusers_csv = "9000,9001"
-        del case.executor._settings.__dict__["superusers"]
+        assert "9000" in case.settings.superusers
+        case.settings.superusers_csv = "9000,9001"
+        del case.settings.__dict__["superusers"]
         await case.env.router.cas_takeover_person(case.env.person)
         now = case.clock.now()
         async with database.immediate_session() as writer:
@@ -667,17 +669,15 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
             )
         async with database.sessions() as reader:
             actor, permission = await resolve_execution_identity(
-                reader, case.executor._settings, owner_id=case.env.person
+                reader, case.settings, owner_id=case.env.person
             )
         assert actor == "10001" and permission is PermissionLevel.SUPERUSER
-    original_agent = handlers.agent
-    resumed_authorities = []
+    resumed_actors = []
 
-    async def capture_agent(arguments, context, **kwargs):
-        resumed_authorities.append(context.authority)
-        return await original_agent(arguments, context, **kwargs)
+    async def capture_main(**kwargs):
+        resumed_actors.append(kwargs["source_runtime"])
+        return await case.chat.generate_origin_turn(**kwargs)
 
-    monkeypatch.setattr(handlers, "agent", capture_agent)
     resumer = make_work_resumer(
         repository,
         ledger=case.chat._ledger,
@@ -688,16 +688,10 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
         generate_self=case.chat.generate_self_initiative,
         generate_wakeup=case.chat.generate_main_agent_wakeup,
         bindings=case.chat.runtime.bindings,
+        settings=case.settings,
+        generate_origin=capture_main,
     )
 
-    async def resume_automation(item, source):
-        await handlers.resume_work(database, item, source)
-
-    resumer.services = replace(
-        resumer.services,
-        settings=case.executor._settings,
-        resume_automation=resume_automation,
-    )
     identity = ConversationScope.group("80001", "20001")
     scene = await case.chat._conversation_scopes.get(identity)
     resolve = case.env.router.resolve_presence
@@ -732,7 +726,7 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
         claimed = await case.repository.claim_due(
             worker_id="independent-original-owner",
             now=next_due,
-            lease_seconds=case.executor._settings.automation_lease_seconds,
+            lease_seconds=case.settings.automation_lease_seconds,
         )
         assert len(claimed) == 1 and claimed[0].id == case.row.id
         async with database.sessions() as reader:
@@ -772,9 +766,9 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
     assert final["parent_work_id"] == parent["id"] and final["source_json"] == child["source_json"]
     assert len(case.provider.requests) == requests_before + (2 if wait_for_timer else 1)
     assert not sent(case.env)
-    assert len(resumed_authorities) == (2 if wait_for_timer else 1)
-    assert all(not authority.actor_is_superuser for authority in resumed_authorities)
-    assert resumed_authorities[0].principal_kind == principal
+    assert len(resumed_actors) == (2 if wait_for_timer else 1)
+    assert all(runtime.actor_is_superuser == promoted for runtime in resumed_actors)
+    assert resumed_actors[0].require_actor().principal_kind == principal
     assert (await repository.get(parent["id"]))["state"] == "completed"
     async with database.sessions() as reader:
         runs = list(await reader.scalars(select(AutomationRunModel)))
@@ -818,7 +812,7 @@ async def test_derived_sdk_plugin_work_resumes_original_id_and_permissions(
         entrypoint="fixture:Plugin",
         plugin_api=PLUGIN_API_VERSION,
         yuki_requires=">=3.8",
-        permissions=(PluginPermission.AUTOMATION_ACTION_REGISTER, PluginPermission.AGENT_RUN),
+        permissions=(PluginPermission.AGENT_RUN,),
     )
     host = HostPluginContext(
         plugin_id="test.derived-sdk",
@@ -881,20 +875,7 @@ async def test_derived_sdk_plugin_work_resumes_original_id_and_permissions(
         event_ids = set(await reader.scalars(select(ChatEventModel.id)))
     assert child["state"] == "queued" and child["source_json"] == parent["source_json"]
     if authority in {"original", "suspended"}:
-        from pydantic import BaseModel, ConfigDict, Field, field_validator
-
-        from qq_ai_bot.automation.executor import AutomationExecutor
-        from qq_ai_bot.automation.models import AutomationScript, RunStatus
-        from qq_ai_bot.automation.registry import build_capability_registry
-        from qq_ai_bot.automation.repository import AutomationRepository
-        from qq_ai_bot.automation.service import AutomationService
-        from qq_ai_bot.automation.work_cursor import load
-        from qq_ai_bot.domain.tool_actor import ToolActor
-        from qq_ai_bot.plugin_host.automation_adapter import PluginAutomationAdapter
-        from qq_ai_bot.plugin_host.extension_registry import ExtensionRegistry
         from qq_ai_bot.services.context_assembler import ConversationCoverageError
-        from yuki_plugin_sdk.registrar import AutomationActionMetadata, AutomationActionRegistration
-        from yuki_plugin_sdk.results import PluginResult
 
         if authority == "suspended":
             lease = await repository.acquire(parent["conversation_id"], parent["generation"])
@@ -907,120 +888,13 @@ async def test_derived_sdk_plugin_work_resumes_original_id_and_permissions(
             )
             await repository.release(lease)
             parent = await repository.get(parent["id"])
-        native_parses = []
-        action_reads = []
-
-        class ReadArguments(BaseModel):
-            model_config = ConfigDict(extra="forbid")
-            work_id: str = Field(alias="original_work")
-
-            @field_validator("work_id")
-            @classmethod
-            def observed(cls, value):
-                native_parses.append(value)
-                return value
-
-        payload = {
-            "state": "cancelled",
-            "pending": True,
-            "work_id": parent["id"],
-            "model_requests": -4,
-            "tool_calls_used": -3,
-            "uncertain": True,
-        }
-
-        async def ordinary(arguments):
-            assert isinstance(arguments, ReadArguments)
-            return PluginResult(data=payload)
-
-        async def read_owned(arguments):
-            assert isinstance(arguments, ReadArguments)
-            action_reads.append(arguments.work_id)
-            return await host.agent.result(arguments.work_id)
-
-        extensions = ExtensionRegistry()
-        registrar = extensions.registrar(
-            host.plugin_id,
-            manifest.permissions,
-            approval_revision=host._services.approval_revision,
-        )
-        for name, callback in (("ordinary", ordinary), ("read_owned", read_owned)):
-            registrar.register_automation_action(
-                AutomationActionRegistration(
-                    AutomationActionMetadata(name=name, description="read original result"),
-                    ReadArguments,
-                    PluginResult,
-                    callback,
-                )
-            )
-        registry = build_capability_registry()
-        adapter = PluginAutomationAdapter(
-            extensions=extensions,
-            automation=registry,
-            invocation_scope=lambda plugin_id, invocation: host.bind(invocation),
-        )
-        adapter.activate(manifest)
-        automations = AutomationRepository(database)
-        service = AutomationService(
-            settings=chat._settings,
-            repository=automations,
-            registry=registry,
-            time_service=chat._time,
-        )
-        script = AutomationScript.model_validate(
-            {
-                "version": 1,
-                "name": "read existing owned SDK result",
-                "schedule": {"type": "after", "seconds": 1},
-                "context": {"scene": "current_group"},
-                "steps": [
-                    {
-                        "id": "ordinary",
-                        "call": f"plugin.{host.plugin_id}.ordinary",
-                        "arguments": {"original_work": parent["id"]},
-                    },
-                    *[
-                        {
-                            "id": step_id,
-                            "call": f"plugin.{host.plugin_id}.read_owned",
-                            "arguments": {"original_work": parent["id"]},
-                        }
-                        for step_id in ("read", "read_again")
-                    ],
-                ],
-            }
-        )
-        monkeypatch.setattr(chat._settings, "automation_enabled", True)
-        automation = await service.create(
-            script,
-            actor=ToolActor.from_inbound(inbound),
-            conversation_key=inbound.legacy_conversation_key,
-        )
-        run = await automations.create_run(
-            automation.id,
-            scheduled_for=automation.next_run_at,
-            actual_started_at=chat._time.clock.now(),
-        )
-        executor = AutomationExecutor(
-            settings=chat._settings,
-            registry=registry,
-            repository=automations,
-            time_service=chat._time,
-        )
-        handoff = await executor.execute(automation, run)
-        assert handoff.status is RunStatus.RUNNING and handoff.llm_calls == 0
-        assert handoff.tool_calls == 2 and handoff.summary["pending_work_id"] == parent["id"]
-        assert (await load(database, run.id, automation.script_hash))[1]["outputs"][
-            "ordinary"
-        ] == payload
-        assert native_parses == [parent["id"]] * 2 and action_reads == [parent["id"]]
         parent_before = await repository.get(parent["id"])
-        repeated_read = await executor.execute(automation, run)
-        assert repeated_read.status is RunStatus.RUNNING and repeated_read.tool_calls == 2
-        assert repeated_read.llm_calls == 0 and calls == 2
-        assert (
-            action_reads == [parent["id"]] and await repository.get(parent["id"]) == parent_before
-        )
+        async with host.bind(invocation):
+            waiting_result = await host.agent.result(parent["id"])
+            repeated_result = await host.agent.result(parent["id"])
+        assert waiting_result.data == repeated_result.data
+        assert waiting_result.data["state"] == parent["state"]
+        assert calls == 2 and await repository.get(parent["id"]) == parent_before
 
         with pytest.raises(ConversationCoverageError, match="explicit compaction"):
             await assemble_plugin(**{**prepared_context, "capacity_budget": 0})
@@ -1048,14 +922,10 @@ async def test_derived_sdk_plugin_work_resumes_original_id_and_permissions(
         assert result.ok and result.data["state"] == "completed", result
         parent = await repository.get(parent["id"])
         assert calls == 3
-        resumed_action = await executor.execute(automation, run)
-        assert resumed_action.status is RunStatus.SUCCEEDED and resumed_action.llm_calls == 0
-        assert resumed_action.tool_calls == 3 and len(action_reads) == 2
+        async with host.bind(invocation):
+            stored_result = await host.agent.result(parent["id"])
+        assert stored_result.data["text"] == final_text
         assert (await repository.get(parent["id"]))["source_json"] == parent["source_json"]
-        _, cursor = await load(database, run.id, automation.script_hash)
-        assert cursor["outputs"]["read"] == cursor["outputs"]["read_again"]
-        assert cursor["outputs"]["read"]["text"] == final_text
-        assert set(cursor["outputs"]["read"]) == set(result.data)
         with monkeypatch.context() as constrained:
             constrained.setattr(chat, "_history_input_budget", lambda *args, **kwargs: 0)
             constrained.setattr(chat._settings, "runtime_work_enabled", False)
@@ -1119,7 +989,7 @@ async def test_derived_sdk_plugin_work_resumes_original_id_and_permissions(
     )
     assert final["parent_work_id"] == parent["id"] and final["source_json"] == child["source_json"]
     assert calls == (2 if revoked else 4 if authority in {"original", "suspended"} else 3)
-    assert resumed_authorities == ([] if revoked else [False])
+    assert resumed_authorities == ([] if revoked else [authority == "promoted"])
     assert (await repository.get(parent["id"]))["state"] == "completed"
     if not revoked:
         assert (await host.agent.result(child["id"])).data["text"] == final_text

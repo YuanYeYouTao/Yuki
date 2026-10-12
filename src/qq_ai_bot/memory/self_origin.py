@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Select, and_, case, or_, select
+from sqlalchemy import Select, and_, case, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.autonomy_db_models import InitiativeRunModel
@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class SelfMemoryOrigin:
-    initiative_run_id: str
+    initiative_run_id: str | None
     canonical_conversation_id: str
     space_id: str
     presence_id: str
@@ -38,44 +38,98 @@ class SelfMemoryOrigin:
     bot_user_id: str
     partition: str
     occurred_at: datetime
+    generation: int
+
+
+def self_execution_origin_sql(execution_id: str) -> str:
+    """Resolve an exact saved execution or Work, using its original task version.
+
+    The expression is a bound parameter or a caller-owned static SQL column.
+    No transport identity or newer automation definition reconstructs this source.
+    """
+    return (
+        "SELECT ic.id AS conversation_id, av.canonical_target_space_id AS space_id, "
+        "av.canonical_presence_id AS presence_id, ip.external_account_id AS bot_user_id, "
+        "json_extract(av.authority_snapshot_json,'$.current_group_id') AS group_id, "
+        "ar.created_at AS occurred_at, COALESCE(w.generation,ic.generation) AS generation "
+        "FROM automation_runs ar JOIN automation_versions av ON av.id=ar.version_id "
+        "JOIN automations a ON a.id=ar.automation_id AND a.id=av.automation_id "
+        "JOIN canonical_conversations ic ON "
+        "ic.id=json_extract(av.authority_snapshot_json,'$.canonical_conversation_id') "
+        "JOIN presences ip ON ip.id=av.canonical_presence_id "
+        "JOIN spaces isp ON isp.id=av.canonical_target_space_id "
+        f"LEFT JOIN runtime_work w ON w.id={execution_id} "
+        "AND w.conversation_id=ic.id "
+        "AND json_extract(w.source_json,'$.parent_execution_id')="
+        "CASE WHEN json_extract(w.source_json,'$.step_id') IS NULL "
+        "THEN printf('automation:%d:%s',ar.id,av.script_hash) "
+        "ELSE printf('automation:%d:%s:%s',ar.id,"
+        "json_extract(w.source_json,'$.step_id'),av.script_hash) END "
+        "WHERE a.creator_kind='self' "
+        "AND ic.kind='space' AND ic.space_id=av.canonical_target_space_id "
+        f"AND ({execution_id}=printf('automation:%d:%s',ar.id,av.script_hash) OR w.id IS NOT NULL)"
+    )
 
 
 async def resolve_self_origin(
     session: AsyncSession,
     *,
-    initiative_run_id: str,
+    initiative_run_id: str | None = None,
+    execution_id: str | None = None,
     canonical_conversation_id: str | None = None,
     group_id: str | None = None,
     require_live: bool = True,
     require_group_projection: bool = True,
 ) -> SelfMemoryOrigin:
-    run = await session.get(InitiativeRunModel, initiative_run_id)
-    if run is None or (
-        canonical_conversation_id and run.conversation_id != canonical_conversation_id
-    ):
-        raise MemoryPartitionResolutionError("initiative_source_missing")
-    conversation = await session.get(CanonicalConversationModel, run.conversation_id)
-    presence = await session.get(PresenceModel, run.presence_id)
-    space = await session.get(CanonicalSpaceModel, run.space_id)
+    if initiative_run_id is not None:
+        run = await session.get(InitiativeRunModel, initiative_run_id)
+        if run is None:
+            raise MemoryPartitionResolutionError("initiative_source_missing")
+        conversation_id, space_id, presence_id = run.conversation_id, run.space_id, run.presence_id
+        generation, at = run.generation, run.created_at
+    else:
+        saved = (
+            (
+                await session.execute(
+                    text(self_execution_origin_sql(":execution_id")), {"execution_id": execution_id}
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if saved is None:
+            raise MemoryPartitionResolutionError("self_execution_source_missing")
+        conversation_id, space_id, presence_id = (
+            saved["conversation_id"],
+            saved["space_id"],
+            saved["presence_id"],
+        )
+        generation = saved["generation"]
+        at = datetime.fromisoformat(saved["occurred_at"])
+        group_id = group_id or saved["group_id"]
+    if canonical_conversation_id and conversation_id != canonical_conversation_id:
+        raise MemoryPartitionResolutionError("initiative_source_mismatch")
+    conversation = await session.get(CanonicalConversationModel, conversation_id)
+    presence = await session.get(PresenceModel, presence_id)
+    space = await session.get(CanonicalSpaceModel, space_id)
     if (
         conversation is None
         or conversation.kind != "space"
-        or conversation.space_id != run.space_id
+        or conversation.space_id != space_id
         or conversation.person_id is not None
         or presence is None
-        or presence.platform != "qq"
         or space is None
     ):
         raise MemoryPartitionResolutionError("initiative_source_mismatch")
     if require_live and (
-        conversation.generation != run.generation or not presence.enabled or not space.enabled
+        conversation.generation != generation or not presence.enabled or not space.enabled
     ):
         raise MemoryPartitionResolutionError("initiative_source_inactive")
     bindings = (
         list(
             await session.scalars(
                 select(SpaceBindingModel).where(
-                    SpaceBindingModel.space_id == run.space_id,
+                    SpaceBindingModel.space_id == space_id,
                     SpaceBindingModel.platform == presence.platform,
                     SpaceBindingModel.status == "active",
                     *([SpaceBindingModel.external_space_id == group_id] if group_id else []),
@@ -87,16 +141,16 @@ async def resolve_self_origin(
     )
     if require_group_projection and len(bindings) != 1:
         raise MemoryPartitionResolutionError("initiative_group_binding_ambiguous")
-    at = run.created_at
     return SelfMemoryOrigin(
-        run.id,
-        run.conversation_id,
-        run.space_id,
-        run.presence_id,
+        initiative_run_id,
+        conversation_id,
+        space_id,
+        presence_id,
         bindings[0].external_space_id if bindings else "",
         presence.external_account_id,
-        format_canonical_memory_partition(space_id=run.space_id),
+        format_canonical_memory_partition(space_id=space_id),
         at.replace(tzinfo=UTC) if at.tzinfo is None else at,
+        generation,
     )
 
 
@@ -108,22 +162,21 @@ async def receipt_evidence_readable(
     receipt: MemoryToolReceiptModel,
 ) -> bool:
     """Historical run evidence remains valid without resurrecting its execution authority."""
-    if receipt.initiative_run_id is None or receipt.trigger_event_id is not None:
+    if receipt.trigger_event_id is not None:
         return False
-    run = await session.get(InitiativeRunModel, receipt.initiative_run_id)
-    if run is None:
+    try:
+        source = await resolve_self_origin(
+            session,
+            initiative_run_id=receipt.initiative_run_id,
+            execution_id=receipt.execution_id,
+            require_live=False,
+            require_group_projection=False,
+        )
+    except MemoryPartitionResolutionError:
         return False
-    conversation = await session.get(CanonicalConversationModel, run.conversation_id)
-    presence = await session.get(PresenceModel, run.presence_id)
     return bool(
-        conversation is not None
-        and conversation.kind == "space"
-        and conversation.space_id == run.space_id
-        and conversation.person_id is None
-        and presence is not None
-        and presence.platform == "qq"
-        and presence.external_account_id == receipt.bot_user_id
-        and receipt.canonical_space_id == run.space_id
+        source.bot_user_id == receipt.bot_user_id
+        and receipt.canonical_space_id == source.space_id
         and receipt.canonical_person_id is None
         and fact.scope_type == "self"
         and fact.canonical_subject_person_id is None
@@ -133,7 +186,7 @@ async def receipt_evidence_readable(
             (fact.visibility_type == "global" and fact.canonical_visibility_space_id is None)
             or (
                 fact.visibility_type == "group"
-                and fact.canonical_visibility_space_id == run.space_id
+                and fact.canonical_visibility_space_id == source.space_id
             )
         )
         and evidence.event_id is None
@@ -160,7 +213,7 @@ def sql_self_receipt_evidence_predicate(
         "8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288)"
     )
     return (
-        f"({t}.initiative_run_id IS NOT NULL AND {t}.trigger_event_id IS NULL "
+        f"({t}.trigger_event_id IS NULL "
         f"AND {e}.event_id IS NULL AND {f}.scope_type='self' "
         f"AND {f}.canonical_subject_person_id IS NULL "
         f"AND {f}.canonical_subject_space_id IS NULL "
@@ -168,15 +221,21 @@ def sql_self_receipt_evidence_predicate(
         f"AND {e}.relation='agent_reflection' AND {e}.authority='agent_reflection' "
         f"AND {e}.source_speaker_user_id={t}.bot_user_id "
         f"AND trim({e}.excerpt,{whitespace})!='' AND instr({t}.result_excerpt,{e}.excerpt)>0 "
-        "AND EXISTS (SELECT 1 FROM autonomy_initiative_runs ir "
+        "AND (EXISTS (SELECT 1 FROM autonomy_initiative_runs ir "
         "JOIN canonical_conversations ic ON ic.id=ir.conversation_id "
         "JOIN presences ip ON ip.id=ir.presence_id "
         f"WHERE ir.id={t}.initiative_run_id "
         "AND ic.kind='space' AND ic.space_id=ir.space_id AND ic.person_id IS NULL "
-        f"AND ip.platform='qq' AND ip.external_account_id={t}.bot_user_id "
+        f"AND ip.external_account_id={t}.bot_user_id "
         f"AND {t}.canonical_space_id=ir.space_id AND {t}.canonical_person_id IS NULL "
         f"AND (({f}.visibility_type='global' AND {f}.canonical_visibility_space_id IS NULL) "
-        f"OR ({f}.visibility_type='group' AND {f}.canonical_visibility_space_id=ir.space_id))))"
+        f"OR ({f}.visibility_type='group' AND {f}.canonical_visibility_space_id=ir.space_id))) "
+        f"OR ({t}.initiative_run_id IS NULL AND EXISTS ("
+        + self_execution_origin_sql(f"{t}.execution_id")
+        + f" AND {t}.canonical_space_id=ic.space_id AND {t}.canonical_person_id IS NULL "
+        f"AND {t}.bot_user_id=ip.external_account_id "
+        f"AND (({f}.visibility_type='global' AND {f}.canonical_visibility_space_id IS NULL) "
+        f"OR ({f}.visibility_type='group' AND {f}.canonical_visibility_space_id=ic.space_id))))))"
     )
 
 

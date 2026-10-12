@@ -2,23 +2,20 @@
 
 All Yuki Main Agent entrypoints share a sorted function-tool manifest, frozen after
 plugin startup and before background turns for the running deployment. Normal/private/group turns, plugin wakeups,
-plugin generation, scheduled generation and scheduled Agent runs use the same
+plugin generation and scheduled turns use the same
 schemas for their model requests. Core and installed plugin definitions are collected without an event identity;
 work control and short-state definitions are added by the same Main Agent contract. Execution still
-checks the real origin, target, current permission and delegated grant. Scheduled Main Agent calls use the ordinary social/workspace/sandbox tool names;
-explicit DSL capability names are not appended to that manifest.
+checks the real origin, target, current permission and delegated grant. Scheduled Main Agent calls use the ordinary social/workspace/sandbox tool names.
 Direct mode declares the complete frozen deployment manifest; authority is checked at execution. Optional Code Mode exposes its fixed direct tools and invokes the remaining tools through Code Mode; execution checks current authority and availability.
 Restart Bot after changing installed tool definitions to start a new manifest.
 
 ## Global short-term state
 
-`update_short_state(slot, text, expected_revision)` stores up to three small records
+`update_short_state(slot, text)` stores up to three small records
 in a separate `short_state` table in `WORKSPACE_DIRECTORY/manifest.sqlite3`. Records
 have no person/group partition or access control. They survive Bot restarts, expire
 24 hours after a write, and are separate from artifact files and long-term memory.
-Reads do not extend expiry. Empty text deletes a record. Optimistic versions prevent
-concurrent turns from silently overwriting one another; conflicts return current
-records. Expired/deleted slots retain versions, so reuse may first return a conflict.
+Reads do not extend expiry. Empty text clears the slot; a write returns that slot's actual content.
 
 Each record is limited to 300 characters; there is no additional 512-byte envelope gate. Oversized record writes are rejected atomically.
 A turn loads one snapshot after history, in the current input envelope immediately
@@ -114,9 +111,9 @@ reconnections during commit; the already claimed receipt becomes `uncertain` and
 replay only reads it. Neither check selects a replacement connection.
 Immediate replies and recall retain their original
 Presence rules; no reachability cache or automatic resend is introduced.
-Scheduled SELF effects recheck the owner's original frozen canonical conversation,
-generation, Space and Presence in the claim transaction. A reset during route
-preparation invalidates the effect; it does not rebase the task onto the new generation.
+Each scheduled SELF occurrence uses the current generation of its original canonical
+Conversation. Accepted Work keeps that generation and its original Space and Presence;
+a reset during execution invalidates the old Work.
 Ordinary message sends require a nonempty scalar OneBot message ID. Empty, boolean,
 or object-valued IDs after dispatch produce a durable `uncertain` receipt; replay
 reads that result instead of sending again. File uploads retain their separate
@@ -152,13 +149,9 @@ change social send permissions or automatically expose files in model prompts.
 
 ## Automation
 
-Explicit DSL capabilities use names such as `social.<tool>`, `workspace.<operation>`
-and `sandbox.<tool>`; scripts can pass recorded results to later steps. These names
-are not extra Main Agent declarations. Scheduled Main Agent work instead uses the
-same fixed tools and the creator's current authority as ordinary chat. Restricted
-DSL delegation still checks its bound target and grant; registration cannot expand
-that grant. A scheduled Agent call has its own invocation identity, not the enclosing
-DSL step's identity.
+Each due occurrence activates the shared Main Agent with its complete task requirements
+and original run identity. It uses the same fixed tools and current owner authority as
+ordinary chat. Accepted Work uses the existing scheduler, recovery and original receipts.
 Sandbox jobs can outlive the five-second synchronous wait: query `get_code_run` and
 use only successful returned artifacts. Polling never reruns code.
 
@@ -185,9 +178,7 @@ may try another accessible connection to that same group without changing any pi
 `find_contacts` includes active QQ binding IDs. Group pokes and mentions resolve an
 explicit `binding_id`, or the account behind an inbound `subject_ref`, or a unique
 active binding. Ambiguous bindings are rejected. Private pokes use the binding of
-the resolved private route and reject conflicting selectors. Explicit restricted
-DSL group-poke delegation may target known members only inside
-its bound group; private and other-group overrides remain forbidden for that grant.
+the resolved private route and reject conflicting selectors.
 Creator-owned scheduled Main Agent calls use current chat-equivalent authority.
 
 `send_message.mentions` is an array of person selectors with optional
@@ -199,7 +190,7 @@ between chat and delegated automation within this deployment.
 
 中文：撤回绑定原消息 Presence；成员查询依据真实群连接，不受主动发送路由暂停影响。
 多 QQ Binding 有歧义时拒绝，须明确选择；当前事件引用保留具体 QQ 账号。
-显式受限 DSL 群戳人委托只允许绑定群内目标；定时主 Agent 使用创建者当前聊天权限，不能混同两条授权路径。
+定时主 Agent 使用原主体的当前权限，目标选择沿共同 Social 实现处理。
 群消息的 `mentions` 生成真实 `at` 段，图片及文件说明均保留结构化 @ 和独立回执。
 
 Social receipts originated in migration 0052; current deployments must apply the
