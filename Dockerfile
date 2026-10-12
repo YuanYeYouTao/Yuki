@@ -31,7 +31,7 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_PYTHON_DOWNLOADS=never
 WORKDIR /app
 COPY --from=uv /uv /uvx /bin/
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml uv.lock README.md LICENSE ./
 RUN uv sync --frozen --no-dev --no-install-project
 COPY src ./src
 COPY --from=webui /app/src/qq_ai_bot/webui/assets ./src/qq_ai_bot/webui/assets
@@ -53,6 +53,7 @@ RUN apt-get update \
     && useradd --uid 10001 --gid bot --home-dir /app --no-create-home bot
 WORKDIR /app
 COPY --from=builder --chown=bot:bot /app/.venv /app/.venv
+COPY --chown=bot:bot LICENSE ./
 COPY --chown=bot:bot alembic.ini ./
 COPY --chown=bot:bot migrations ./migrations
 COPY --chown=bot:bot scripts ./scripts
@@ -63,7 +64,7 @@ ARG YUKI_VERSION=dev
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.title="Yuki QQ Bot" \
       org.opencontainers.image.source="https://github.com/YuanYeYouTao/Yuki-QQbot" \
-      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
       org.opencontainers.image.version="${YUKI_VERSION}" \
       org.opencontainers.image.revision="${VCS_REF}"
 EXPOSE 8080

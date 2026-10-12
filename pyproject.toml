@@ -3,6 +3,8 @@ name = "qq-ai-bot"
 version = "3.9.0"
 description = "运行在 QQ 对话中的开源社会化 AI Agent，具有持续身份、长期记忆与自主参与能力"
 readme = "README.md"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "aiosqlite>=0.20,<1",

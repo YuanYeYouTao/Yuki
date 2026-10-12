@@ -1,6 +1,7 @@
 # Third-party notices for optional Code Mode
 
-Yuki's original [LICENSE](LICENSE) is retained. This record covers third-party
+Yuki is licensed under [AGPL-3.0-only](LICENSE). Third-party components retain
+their respective licenses. This record covers third-party
 components used by the Code Mode distribution. Design references are documented
 separately in [the architecture record](docs/architecture/pi-port-provenance.md).
 

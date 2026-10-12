@@ -15,7 +15,7 @@
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
   <a href="https://github.com/YuanYeYouTao/Yuki/actions/workflows/quality.yml"><img src="https://github.com/YuanYeYouTao/Yuki/actions/workflows/quality.yml/badge.svg" alt="Quality"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow" alt="MIT License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0--only-blue" alt="AGPL-3.0-only License"></a>
 </p>
 
 [下载正式版 3.8.4](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.4) · [3.8.4 发布说明](docs/releases/v3.8.4.md) · [3.8.4 升级指南](docs/upgrade-3.8.4.md) · [使用帮助](docs/help.md)
@@ -194,4 +194,4 @@ uv run pytest
 
 ## License
 
-[MIT](LICENSE)
+Yuki 采用 [AGPL-3.0-only](LICENSE)（GNU Affero General Public License 第 3 版，仅限该版本）。
