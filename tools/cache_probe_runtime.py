@@ -19,7 +19,6 @@ from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ChatResponse, ToolCall
 from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence, ensure_space
 from qq_ai_bot.model_runtime.models import ModelExecutionPriority
-from qq_ai_bot.model_runtime.structured import tool_free_structured_output_mode
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.runtime.work_activation import current_work_control
 from qq_ai_bot.runtime.work_control import WorkControl
@@ -85,8 +84,6 @@ class WorkDriver:
                 source_key=key,
                 source=source,
                 goal=f"比较合成文档方案 W{index + 1}，保留依据与未知事项。",
-                output_kind="answer",
-                reporting="quiet",
             )
             self.controls.append(control)
         self.evidence["original_work_ids"] = [control.current["id"] for control in self.controls]
@@ -289,7 +286,7 @@ class WorkDriver:
             "old_chain_id": previous,
             "new_chain_id": compacted.chain_id,
             "explicit_boundary": previous != compacted.chain_id,
-            "source": "real Runner._compact_work, actual paid summary calls",
+            "source": "real Runner._compact_work and TaskModelExecutor summary calls",
         }
 
     async def close(self) -> None:
@@ -367,7 +364,7 @@ class OrdinaryDriver:
             self.prefix,
             self.transcript,
             main_request=request,
-            structured_mode=tool_free_structured_output_mode(executor, ModelTask.CHAT_AGENT),
+            structured_mode=executor.structured_output_mode(ModelTask.CHAT_AGENT),
             summary_budget=capacity.input_budget(524288),
             input_budget=capacity.input_budget(524288),
             output_tokens=capacity.output_tokens,
@@ -381,7 +378,7 @@ class OrdinaryDriver:
             "old_chain_id": previous,
             "new_chain_id": self.transcript.chain_id,
             "explicit_boundary": previous != self.transcript.chain_id,
-            "source": "real compact_ordinary, actual paid summary calls",
+            "source": "real compact_ordinary and TaskModelExecutor summary calls",
         }
 
     async def close(self) -> None:

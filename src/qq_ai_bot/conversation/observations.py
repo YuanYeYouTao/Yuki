@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import and_, or_, select, text
+from sqlalchemy import func, or_, select, text, true
 from sqlalchemy.engine import Row, RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -186,8 +186,14 @@ class ContextObservationRepository:
         actor_id: str,
         read_scope: str,
         view_key: str | None = None,
+        frozen_sources: tuple[tuple[str, int], ...] | None = None,
     ) -> tuple[ContextObservation, ...]:
-        """Select only sources inside the caller's independently verified grant."""
+        """Read real notes and adopted summaries, never automatic material text.
+
+        Hot callers provide their actual frozen roots, including an empty tuple.
+        Only bootstrap consults public selection proofs for summary roots.
+        Source legality is independent of this display set.
+        """
         async with self.database.sessions() as session:
             await session.execute(text("BEGIN"))
             privacy = await privacy_generation(session)
@@ -203,133 +209,166 @@ class ContextObservationRepository:
                     ContextObservationModel.summary_view_key == view_key,
                 ),
             )
-            rows: list[Row[tuple[str, int, str, str, datetime]]] = []
-            cursor: tuple[datetime, str] | None = None
-            while True:
-                query = (
-                    select(
-                        ContextObservationModel.id,
-                        ContextObservationModel.version,
-                        ContextObservationModel.source_key,
-                        ContextObservationModel.parent_sources_json,
-                        ContextObservationModel.created_at,
+            query = select(ContextObservationModel).join(
+                CanonicalConversationModel,
+                ContextObservationModel.conversation_id == CanonicalConversationModel.id,
+            )
+            notes = list(
+                await session.scalars(
+                    query.where(
+                        *conditions,
+                        ContextObservationModel.source_key.startswith("work-note:"),
                     )
+                )
+            )
+            summaries = []
+            if frozen_sources is None and view_key is not None:
+                proof = func.json_each(ContextSelectionModel.observation_sources_json).table_valued(
+                    "value"
+                )
+                selected = (
+                    select(1)
+                    .select_from(ContextSelectionModel)
+                    .join(proof, true())
+                    .where(
+                        ContextSelectionModel.view_key == view_key,
+                        ContextSelectionModel.conversation_id == conversation_id,
+                        ContextSelectionModel.generation == generation,
+                        ContextSelectionModel.actor_id == actor_id,
+                        ContextSelectionModel.read_scope == read_scope,
+                        func.json_extract(proof.c.value, "$[0]") == ContextObservationModel.id,
+                        func.json_extract(proof.c.value, "$[1]") == ContextObservationModel.version,
+                    )
+                    .exists()
+                )
+                summaries = list(
+                    await session.scalars(
+                        query.where(
+                            *conditions,
+                            ContextObservationModel.source_key.startswith("scope-summary:"),
+                            selected,
+                        )
+                    )
+                )
+            elif frozen_sources:
+                expected = dict(frozen_sources)
+                identities = tuple(expected)
+                for offset in range(0, len(identities), 256):
+                    summaries.extend(
+                        row
+                        for row in await session.scalars(
+                            query.where(
+                                *conditions,
+                                ContextObservationModel.source_key.startswith("scope-summary:"),
+                                ContextObservationModel.id.in_(identities[offset : offset + 256]),
+                            )
+                        )
+                        if row.version == expected[row.id]
+                    )
+            adopted = []
+            for row in summaries:
+                if await validate_observations(
+                    session,
+                    conversation_id,
+                    generation,
+                    actor_id,
+                    read_scope,
+                    ((row.id, row.version),),
+                    snapshot_privacy_generation=privacy,
+                ):
+                    adopted.append(row)
+            covered: set[str] = set()
+            pending = list(adopted)
+            inspected: set[str] = set()
+            while pending:
+                sources: dict[str, int] = {}
+                for row in pending:
+                    if row.id in inspected:
+                        continue
+                    inspected.add(row.id)
+                    refs = summary_coverage(row.payload_json)
+                    covered.update(refs)
+                    sources.update(
+                        (identity, int(version))
+                        for identity, version in json.loads(row.parent_sources_json)
+                        if identity in refs and identity not in inspected
+                    )
+                pending = []
+                identities = tuple(sources)
+                for offset in range(0, len(identities), 256):
+                    pending.extend(
+                        await session.scalars(
+                            query.where(
+                                *conditions,
+                                ContextObservationModel.source_key.startswith("scope-summary:"),
+                                ContextObservationModel.id.in_(identities[offset : offset + 256]),
+                            )
+                        )
+                    )
+            rows = sorted(
+                (row for row in (*notes, *adopted) if row.id not in covered),
+                key=lambda row: (row.created_at, row.id),
+            )
+            return tuple(
+                ContextObservation(
+                    row.id,
+                    row.version,
+                    row.payload_json,
+                    tuple(
+                        (identity, int(version))
+                        for identity, version in json.loads(row.parent_sources_json)
+                    ),
+                )
+                for row in rows
+            )
+
+    async def sources_by_ids(
+        self,
+        conversation_id: str,
+        generation: int,
+        actor_id: str,
+        read_scope: str,
+        sources: tuple[tuple[str, int], ...],
+    ) -> tuple[ContextObservation, ...]:
+        """Hydrate exact authorized roots; parent payloads are never loaded."""
+        if not sources:
+            return ()
+        async with self.database.sessions() as session:
+            await session.execute(text("BEGIN"))
+            privacy = await privacy_generation(session)
+            identities = tuple(dict.fromkeys(identity for identity, _ in sources))
+            rows: dict[str, ContextObservationModel] = {}
+            for offset in range(0, len(identities), 256):
+                loaded = await session.scalars(
+                    select(ContextObservationModel)
                     .join(
                         CanonicalConversationModel,
                         ContextObservationModel.conversation_id == CanonicalConversationModel.id,
                     )
-                    .where(*conditions)
-                    .order_by(ContextObservationModel.created_at, ContextObservationModel.id)
-                    .limit(256)
-                )
-                if cursor is not None:
-                    query = query.where(
-                        or_(
-                            ContextObservationModel.created_at > cursor[0],
-                            and_(
-                                ContextObservationModel.created_at == cursor[0],
-                                ContextObservationModel.id > cursor[1],
-                            ),
-                        )
-                    )
-                page = (await session.execute(query)).all()
-                if not page:
-                    break
-                rows.extend(page)
-                cursor = page[-1].created_at, page[-1].id
-            selected_versions: dict[str, set[int]] = {}
-            if view_key is not None:
-                after = 0
-                while True:
-                    selection_page = (
-                        await session.execute(
-                            select(
-                                ContextSelectionModel.id,
-                                ContextSelectionModel.observation_sources_json,
-                            )
-                            .where(
-                                ContextSelectionModel.view_key == view_key,
-                                ContextSelectionModel.conversation_id == conversation_id,
-                                ContextSelectionModel.generation == generation,
-                                ContextSelectionModel.actor_id == actor_id,
-                                ContextSelectionModel.read_scope == read_scope,
-                                ContextSelectionModel.id > after,
-                            )
-                            .order_by(ContextSelectionModel.id)
-                            .limit(256)
-                        )
-                    ).all()
-                    if not selection_page:
-                        break
-                    for row in selection_page:
-                        for identity, version in json.loads(row.observation_sources_json):
-                            selected_versions.setdefault(identity, set()).add(version)
-                    after = selection_page[-1].id
-            parents_by_id = {
-                row.id: tuple(
-                    (str(identity), int(version))
-                    for identity, version in json.loads(row.parent_sources_json)
-                )
-                for row in rows
-            }
-            versions = {row.id: row.version for row in rows}
-            valid: dict[str, bool] = {}
-            selected_ids = {
-                identity
-                for identity, expected in selected_versions.items()
-                if expected == {versions.get(identity)}
-                and _valid_observation_root(identity, versions, parents_by_id, valid)
-            }
-            unselected_snapshots = {
-                row.id
-                for row in rows
-                if row.source_key.startswith("snapshot:") and row.id not in selected_ids
-            }
-            payloads: dict[str, str] = {}
-            pending = set(selected_ids)
-            covered: set[str] = set()
-            inspected: set[str] = set()
-            while pending:
-                summaries = sorted(
-                    identity
-                    for identity in pending
-                    if parents_by_id.get(identity) and identity not in inspected
-                )
-                pending = set()
-                for offset in range(0, len(summaries), 256):
-                    loaded = await session.execute(
-                        select(
-                            ContextObservationModel.id, ContextObservationModel.payload_json
-                        ).where(ContextObservationModel.id.in_(summaries[offset : offset + 256]))
-                    )
-                    payloads.update((identity, payload) for identity, payload in loaded.all())
-                for identity in summaries:
-                    inspected.add(identity)
-                    # The complete parent DAG above validates every source/version;
-                    # only actual summary refs establish replacement coverage.
-                    refs = summary_coverage(payloads[identity])
-                    covered.update(refs)
-                    pending.update(refs - inspected)
-            needed = [
-                row
-                for row in rows
-                if row.id not in covered
-                and row.id not in unselected_snapshots
-                and (not parents_by_id[row.id] or row.id in selected_ids)
-            ]
-            missing_payloads = [row.id for row in needed if row.id not in payloads]
-            for offset in range(0, len(missing_payloads), 256):
-                loaded = await session.execute(
-                    select(ContextObservationModel.id, ContextObservationModel.payload_json).where(
-                        ContextObservationModel.id.in_(missing_payloads[offset : offset + 256])
+                    .where(
+                        ContextObservationModel.id.in_(identities[offset : offset + 256]),
+                        ContextObservationModel.conversation_id == conversation_id,
+                        ContextObservationModel.generation == generation,
+                        CanonicalConversationModel.generation == generation,
+                        ContextObservationModel.actor_id == actor_id,
+                        ContextObservationModel.read_scope == read_scope,
+                        ContextObservationModel.privacy_generation == privacy,
                     )
                 )
-                payloads.update((identity, payload) for identity, payload in loaded.all())
-            # Unselected work notes have no parents and remain valid new inputs.
-            # Unselected snapshots/paid summary candidates do not establish coverage.
+                rows.update((row.id, row) for row in loaded)
+            if {(row.id, row.version) for row in rows.values()} != set(sources):
+                raise ProjectionConflict("projection observation source changed")
             return tuple(
-                ContextObservation(row.id, row.version, payloads[row.id], parents_by_id[row.id])
-                for row in needed
+                ContextObservation(
+                    rows[identity].id,
+                    rows[identity].version,
+                    rows[identity].payload_json,
+                    tuple(
+                        (parent, int(version))
+                        for parent, version in json.loads(rows[identity].parent_sources_json)
+                    ),
+                )
+                for identity in identities
             )
 
     async def prepared_summary(
@@ -479,7 +518,6 @@ class ContextObservationRepository:
         actor_id: str,
         read_scope: str,
         visible_event_ids: frozenset[int] | None = None,
-        allowed_observation_ids: frozenset[str] | None = None,
     ) -> list[dict[str, Any]]:
         async with self.database.sessions() as session:
             await session.execute(text("BEGIN"))
@@ -491,7 +529,6 @@ class ContextObservationRepository:
                         select(
                             ContextSelectionModel.id,
                             ContextSelectionModel.event_ids_json,
-                            ContextSelectionModel.observation_sources_json,
                         )
                         .where(
                             ContextSelectionModel.view_key == view_key,
@@ -513,25 +550,23 @@ class ContextObservationRepository:
                         and not set(json.loads(row.event_ids_json)) <= visible_event_ids
                     ):
                         continue
-                    if (
-                        allowed_observation_ids is not None
-                        and not {
-                            identity for identity, _ in json.loads(row.observation_sources_json)
-                        }
-                        <= allowed_observation_ids
-                    ):
-                        continue
                     needed.append(row.id)
                 after = page[-1].id
-            payloads: dict[int, str] = {}
+            payloads: dict[int, dict[str, Any]] = {}
             for offset in range(0, len(needed), 256):
                 loaded = await session.execute(
-                    select(ContextSelectionModel.id, ContextSelectionModel.payload_json).where(
-                        ContextSelectionModel.id.in_(needed[offset : offset + 256])
-                    )
+                    select(
+                        ContextSelectionModel.id,
+                        ContextSelectionModel.source_key,
+                        ContextSelectionModel.payload_json,
+                    ).where(ContextSelectionModel.id.in_(needed[offset : offset + 256]))
                 )
-                payloads.update((identity, payload) for identity, payload in loaded.all())
-            return [json.loads(payloads[identity]) for identity in needed]
+                for identity, source_key, payload in loaded:
+                    item = json.loads(payload)
+                    if not item["event_ids"]:
+                        item["selection_key"] = source_key
+                    payloads[identity] = item
+            return [payloads[identity] for identity in needed]
 
 
 def _valid_observation_root(

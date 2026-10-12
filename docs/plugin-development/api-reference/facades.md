@@ -80,7 +80,6 @@ agent_sessions.close(session_id: UUID) -> AgentSession
 web.search(query) -> PluginResult
 web.read(url, question="") -> PluginResult
 http.request(method, url, *, headers=None, body=None, auth_secret=None) -> PluginResult
-vision.get_current_observation() -> Mapping | None
 vision.analyze_current_media(question="") -> PluginResult
 media.get_current() -> tuple[Mapping, ...]
 media.create_artifact(*, data, content_type, filename, ttl_seconds=86400) -> MediaArtifactHandle

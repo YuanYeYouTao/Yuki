@@ -20,7 +20,6 @@ from qq_ai_bot.conversation.projections import (
     ProjectionCapacityError,
     PromptProjectionRepository,
 )
-from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ChatResponse, InboundMessage
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
 from qq_ai_bot.execution_trace.phases import collect_phase_metrics
@@ -45,7 +44,6 @@ from qq_ai_bot.services.turn_transcript import (
     dispatch_request,
     validating_request,
 )
-from qq_ai_bot.vision.models import VisualObservation
 
 
 def _same_request_input(left: object, right: object) -> bool:
@@ -119,9 +117,6 @@ class MainAgentTurnService:
         inbound: InboundMessage | None,
         context: AssembledContext,
         runtime: RuntimeConfigSnapshot,
-        visual_observation: VisualObservation | None,
-        visual_failure: bool,
-        scope_type: ScopeType | None = None,
         include_plugin_context: bool = True,
         read_scope: str | None = None,
         allowed_capabilities: frozenset[str] = frozenset(),
@@ -141,16 +136,17 @@ class MainAgentTurnService:
                 await publish_pending_note(active)
             contract = self._runner.main_contract
             state = await asyncio.to_thread(contract.state.snapshot) if contract else None
-            composition = self._composer.compose(
-                inbound=inbound,
-                context=context,
-                runtime=runtime,
-                visual_observation=visual_observation,
-                visual_failure=visual_failure,
-                scope_type=scope_type,
-                include_plugin_context=include_plugin_context,
-                short_state=state,
-            )
+
+            def compose_context(candidate: AssembledContext) -> PromptComposition:
+                return self._composer.compose(
+                    inbound=inbound,
+                    context=candidate,
+                    runtime=runtime,
+                    include_plugin_context=include_plugin_context,
+                    short_state=state,
+                )
+
+            composition = compose_context(context)
             if getattr(context, "recovery_protocol", False):
                 return composition
             if (
@@ -259,15 +255,6 @@ class MainAgentTurnService:
                 )
                 - 4096,
             )
-            # PromptCompiler emits system, optional rollup, raw history, current.
-            # Verify the actual history slot before substituting frozen entries.
-            history_end = len(composition.messages) - 1
-            history_start = history_end - len(context.history_messages)
-            if composition.messages[history_start:history_end] != context.history_messages:
-                raise ValueError("compiled history slot does not match assembled history")
-            compiled_prefix = composition.messages[:history_start]
-            base_prefix = compiled_prefix[:-1] if context.rollup_text.strip() else compiled_prefix
-            compiled_current = composition.messages[-1:]
             prepared_request = self._runner._capacity_request(
                 ChatRequest(
                     messages=composition.messages,
@@ -286,7 +273,10 @@ class MainAgentTurnService:
             # The maintenance target may choose an already prepared summary;
             # it cannot require a foreground model while the original fits.
             fixed_request = replace(
-                prepared_request, messages=(*compiled_prefix, *compiled_current)
+                prepared_request,
+                messages=compose_context(
+                    replace(context, history_messages=(), rollup_text="")
+                ).messages,
             )
             fixed_tokens = (
                 fresh_tokens
@@ -314,34 +304,19 @@ class MainAgentTurnService:
                 return estimated_tokens
 
             def history_fits(history: tuple[ChatMessage, ...]) -> bool:
-                # Reuse the already compiled system/rollup and current envelope.
-                # Trying to compile an oversized old epoch first can hit the
-                # compiler's character limit before the capacity rebase occurs.
-                request = replace(
-                    prepared_request,
-                    messages=(*compiled_prefix, *history, *compiled_current),
-                )
-                return fresh_tokens > input_budget or request_tokens(request) <= input_budget
+                return context_hard_fits(replace(context, history_messages=history))
 
             def context_fits(candidate: AssembledContext) -> bool:
                 request = replace(
                     prepared_request,
-                    messages=(
-                        *base_prefix,
-                        *self._composer._conversation_history(candidate),
-                        *compiled_current,
-                    ),
+                    messages=compose_context(candidate).messages,
                 )
                 return request_tokens(request) <= maintenance_budget
 
             def context_hard_fits(candidate: AssembledContext) -> bool:
                 request = replace(
                     prepared_request,
-                    messages=(
-                        *base_prefix,
-                        *self._composer._conversation_history(candidate),
-                        *compiled_current,
-                    ),
+                    messages=compose_context(candidate).messages,
                 )
                 return request_tokens(request) <= input_budget
 
@@ -437,7 +412,7 @@ class MainAgentTurnService:
                 actor_id=actor_id,
                 read_scope=read_scope,
             )
-            composition = self._composer.with_history(composition, context, prepared.context)
+            composition = compose_context(prepared.context)
             work_wakeup = context.projection_scope == "main" and context.current_event_id is None
             fragments = (
                 prepared.fragments
@@ -489,6 +464,11 @@ class MainAgentTurnService:
                     publication = await prepared.prepare_commit(
                         submitted,
                         current_snapshot=None if work_wakeup else composition.current_snapshot,
+                        visible_material=(
+                            prepared.context.visible_material
+                            if work_wakeup
+                            else composition.visible_material
+                        ),
                     )
                     control = current_work_control.get()
                     work_session = control.session if control is not None else None
@@ -599,7 +579,7 @@ class MainAgentTurnService:
                 # Individual event fragments preserve arrival order when directed
                 # inputs and ordinary group observations interleave.
                 delta = tuple(
-                    (ids, message)
+                    (ids, replace(message, role="user"))
                     for row in fresh
                     for _, ids, message in renderer.main_agent_history((row,))
                 )
@@ -657,6 +637,7 @@ class MainAgentTurnService:
                         selected_summary_coverage=previous.selected_summary_coverage,
                         selected_summary_kind=previous.selected_summary_kind,
                         selected_summary_renderer=previous.selected_summary_renderer,
+                        visible_material=json.loads(previous.visible_material_json),
                     )
                     original_guard = guard.snapshot() if guard is not None else None
                     snapshot = None

@@ -1433,6 +1433,8 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
         await tools.execute("search_memory", json.dumps({"query": "喜欢天文"}), runtime)
     ).model_payload()
     assert global_search["ok"], global_search
+    assert "memory_grounding_policy" not in global_search
+    assert global_search["evidence_state"]
     assert global_search["data"]["result_scope"] == "authorized_maximum"
     assert global_search["data"]["partial_reason"] == "semantic_not_configured"
     explicit_missing = (
@@ -1460,12 +1462,14 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
         )
     ).model_payload()
     assert [row["fact_id"] for row in top_one["data"]["memories"]] == [late_high_rank_fact.id]
+    assert "memory_grounding_policy" not in top_one
     historical_search = (
         await tools.execute("search_memory", json.dumps({"query": "昆虫标本"}), runtime)
     ).model_payload()
     historical_ids = {row["fact_id"] for row in historical_search["data"]["memories"]}
     assert historical_fact.id in historical_ids
     assert inaccessible_fact.id not in historical_ids
+    assert "memory_grounding_policy" not in historical_search
     # A historical canonical owner remains searchable after its transport Binding ends.
     from qq_ai_bot.identity.db_models import IdentityBindingModel
 

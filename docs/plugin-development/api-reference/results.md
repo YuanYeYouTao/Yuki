@@ -81,7 +81,7 @@ class AgentSession(StrictModel):
 
 class AgentSessionRunResult(StrictModel):
     session: AgentSession
-    text: str  # <=24000
+    text: str
     tool_calls_used: int = 0
     model_requests: int = 1
 ```
@@ -90,4 +90,4 @@ class AgentSessionRunResult(StrictModel):
 
 ## AdmissionSignal / PromptFragment
 
-`AdmissionSignal.score_delta` 为 `-10..10`、`confidence` 为 `0..1`；`PromptFragment.content` 最多 16000 字符，但最终还受更小 Host/Manifest 预算限制。详细规则见 [AdmissionSignal](../admission-signals.md) 与 [Prompt](../prompts.md)。
+`AdmissionSignal.score_delta` 为 `-10..10`、`confidence` 为 `0..1`；`PromptFragment.content` 保留完整内容，最终模型请求沿原容量检查。详细规则见 [AdmissionSignal](../admission-signals.md) 与 [Prompt](../prompts.md)。

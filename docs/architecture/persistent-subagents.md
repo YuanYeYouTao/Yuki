@@ -85,6 +85,7 @@ child Work ID、父子归属和通知 revision 读取对应 checkpoint；恢复�
 ## 提示词与缓存
 
 固定提示词、完整工具顺序/schema 和 Provider 设置在资料包之前。
+工作者的固定提示词包含与主 Agent 相同的 Memory 使用规则，新的记忆查询回执不重复附带该规则。
 工作者不注入变化的时间、short_state 或目录列表到旧历史前部。
 每条链保存实际协议 continuation；普通唤醒只追加，合同或 Provider 改变时建立新链。
 图片按内容哈希单独保存，恢复时还原原始协议内容，不能因内联图片丢掉整条链。

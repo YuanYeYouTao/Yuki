@@ -72,7 +72,7 @@ class AgentSession(StrictModel):
 
 class AgentSessionRunResult(StrictModel):
     session: AgentSession
-    text: str = Field(max_length=24_000)
+    text: str
     tool_calls_used: int = Field(default=0, ge=0)
     model_requests: int = Field(default=1, ge=1)
 

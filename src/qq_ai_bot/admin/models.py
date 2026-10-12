@@ -215,9 +215,6 @@ class PluginRuntimeConfig:
     """Hot plugin limits that never include credentials or installation paths."""
 
     hook_timeout_seconds: float
-    max_prompt_fragment_characters: int
-    max_prompt_characters_per_plugin: int
-    max_total_prompt_characters: int
 
 
 @dataclass(frozen=True, slots=True)

@@ -124,7 +124,6 @@ from qq_ai_bot.services.turn_coordinator import (
     TurnToken,
 )
 from qq_ai_bot.time.service import TimeContextService
-from qq_ai_bot.vision.models import VisualObservation
 from qq_ai_bot.web.models import WebMode
 from qq_ai_bot.web.native_sources import recover_native_web_response
 from yuki_plugin_sdk.events import EventName
@@ -357,9 +356,6 @@ class ChatService:
         )
         self._event_publisher = event_publisher
         self.observe_main_response: Callable[..., Awaitable[None]] | None = None
-        self.participation_context: Callable[[int], Awaitable[dict[str, object] | None]] | None = (
-            None
-        )
 
     def set_admin_tools(self, service: AdminToolService) -> None:
         """Attach privileged tools to this same Agent loop without a second router."""
@@ -690,11 +686,6 @@ class ChatService:
             )
         return registry
 
-    def configure_runtime_controls(self, runtime: RuntimeConfigSnapshot) -> None:
-        """Apply HOT controls shared by the Agent prompt pipeline."""
-
-        self._prompt_composer.configure_plugin_limits(runtime)
-
     def set_event_publisher(self, publisher: LifecycleEventPublisher) -> None:
         """Attach the host notification bus without changing reply control flow."""
 
@@ -825,11 +816,9 @@ class ChatService:
         *,
         autonomous: bool = False,
         runtime_snapshot: RuntimeConfigSnapshot | None = None,
-        visual_observation: VisualObservation | None = None,
         visual_input_present: bool = False,
         native_images: tuple[ChatImage, ...] = (),
         attachment_text: str = "",
-        visual_failure: bool = False,
         turn_token: TurnToken | None = None,
         turn_snapshot: ConversationTurnSnapshot | None = None,
     ) -> int:
@@ -844,11 +833,9 @@ class ChatService:
             arguments: dict[str, Any] = dict(
                 autonomous=autonomous,
                 runtime_snapshot=runtime_snapshot,
-                visual_observation=visual_observation,
                 visual_input_present=visual_input_present,
                 native_images=native_images,
                 attachment_text=attachment_text,
-                visual_failure=visual_failure,
                 turn_token=turn_token,
                 turn_snapshot=turn_snapshot,
             )
@@ -927,11 +914,9 @@ class ChatService:
         *,
         autonomous: bool = False,
         runtime_snapshot: RuntimeConfigSnapshot | None = None,
-        visual_observation: VisualObservation | None = None,
         visual_input_present: bool = False,
         native_images: tuple[ChatImage, ...] = (),
         attachment_text: str = "",
-        visual_failure: bool = False,
         turn_token: TurnToken | None = None,
         turn_snapshot: ConversationTurnSnapshot | None = None,
     ) -> int:
@@ -1098,10 +1083,8 @@ class ChatService:
                     profile,
                     content,
                     runtime_config,
-                    visual_observation=visual_observation,
                     native_images=native_images,
                     attachment_text=attachment_text,
-                    visual_failure=visual_failure,
                     turn_origin=turn_origin,
                     memory_session=memory_session,
                     turn_snapshot=turn_snapshot,
@@ -1260,8 +1243,6 @@ class ChatService:
         content: str,
         runtime: RuntimeConfigSnapshot,
         *,
-        visual_observation: VisualObservation | None = None,
-        visual_failure: bool = False,
         turn_origin: TurnOrigin = TurnOrigin.USER_MESSAGE,
         native_images: tuple[ChatImage, ...] = (),
         attachment_text: str = "",
@@ -1292,15 +1273,6 @@ class ChatService:
                 current_work_control.get(),
                 recovery_contract=await self.runtime.main_turns.recovery_contract(runtime),
             )
-        if (
-            self.participation_context is not None
-            and turn_origin is TurnOrigin.USER_MESSAGE
-            and not context.recovery_protocol
-            and turn_snapshot.trigger_event_id is not None
-        ):
-            participation = await self.participation_context(turn_snapshot.trigger_event_id)
-            if participation:
-                context = replace(context, participation_context=participation)
         current = context.current_message
         if attachment_text:
             current = replace(
@@ -1343,8 +1315,6 @@ class ChatService:
                 inbound=inbound,
                 context=replace(context, current_message=current),
                 runtime=runtime,
-                visual_observation=visual_observation,
-                visual_failure=visual_failure,
                 allowed_capabilities=self.web_capabilities(runtime),
                 before_preparation=validate_preparation,
             )
@@ -1619,9 +1589,6 @@ class ChatService:
                     inbound=None,
                     context=context,
                     runtime=runtime,
-                    visual_observation=None,
-                    visual_failure=False,
-                    scope_type=ScopeType.GROUP,
                     allowed_capabilities=self.web_capabilities(runtime),
                     before_preparation=validate,
                 )
@@ -1703,9 +1670,6 @@ class ChatService:
                 inbound=None,
                 context=context,
                 runtime=runtime,
-                visual_observation=None,
-                visual_failure=False,
-                scope_type=event.scope_type,
                 allowed_capabilities=self.web_capabilities(runtime),
                 before_preparation=before_model_request,
             )

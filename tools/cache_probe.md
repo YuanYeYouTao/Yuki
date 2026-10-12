@@ -46,7 +46,7 @@ C03 使用合成公共前缀直接驱动仓库和 session，不能代替完整 M
 或请求失败会保留原结果，不能换样本只选最好一次。
 
 报告不含请求正文、模型正文、签名、headers、凭证。它逐次记录 HTTP 物理请求，
-Work 辅助页另存合成的 section/允许引用与来源类别；非标准引用仅存散列，分类原因只记是否非空。
+Work 辅助页另存合成的 section/允许引用与来源类别；非标准引用仅存散列。
 包括配置重试、错误响应、无响应与辅助摘要；与 model_invocations 的计数交叉核对。
 Gemini input 已含 cached，已知输入加权比例是 `sum(cached)/sum(input)`。
 显式零、缺字段和不合法计数分开；缺 cache write 不造零。冷、热、对照和摘要各自汇总，
@@ -59,3 +59,36 @@ Gemini input 已含 cached，已知输入加权比例是 `sum(cached)/sum(input)
 相邻物理请求与同场景主/摘要各自序列分别比较，避免把无工具摘要链的设置当成主链变化。
 经上游代理时，这只证明 Yuki 发往配置 endpoint 的 wire，不证明最终上游完全相同，也不证明账单。
 本实验是受控合成流量，不能当自然群聊平均值或设置固定命中率门槛。
+
+`tools/cache_probe_materials.py` 另提供首份/差量方案的实际 Main A/B/C 重放。
+A 从显式提供并核验为 24da979 的源码导入；B/C 共用冻结的候选源码、0107
+合成 seed、一致静态合同和工具清单。B/C 执行实际 0108 清退，B 只在隔离进程中
+改为整份提供剩余有效资料。原工具 schema/静态规则的部署变化另列。
+
+```powershell
+.venv/Scripts/python.exe tools/cache_probe_materials.py `
+  --baseline-root ignored-original-24da979 `
+  --output .cache/materials-offline
+```
+
+默认使用固定回包和 MockTransport，实际经过 Processor/Main/serializer；每个物理
+请求、最终 fragment/map、原 wire 字节及结构体积保存在输出目录。空值、稳定值、
+变化、恢复 A、清空、过期、不同主体、cache 行回收及旧 snapshot/摘要/真实 note
+各自留样。行回收不是进程重启，合成资料不代替生产样本；mock usage/cache/费用未知。
+
+真实输入重放显式加 `--live --route-stdin --replay .cache/materials-offline`，
+并指定新的 `--output`。`--order ABC,CBA` 平衡组序，`--warmups` 为每组每块的
+预热份数，`--limit` 限定每组每块正式请求数；全部尝试与预热均保留。
+私有 pipe 使用上述 profile/key 格式；`wire_options` 只序列化显式字段，不能把
+跨协议默认字段展开成实际配置。数字缺字段和 HTTP/non-JSON 失败保持未知。
+
+加 `--closed-loop` 使用四步真实 Main 只读任务，调用 `get_my_capabilities(mode=summary)`
+后在内部答复当前线索、变化和原 note 证据。实验 controller 只把本组模型实际内部答案
+引用到下一条合成 user 入站；每次原生工具续轮和 opaque 保持在本组原 Main 链上。
+它不制造 QQ 发送或公众回复，不启动真实 Bot、网关、自动化或插件；不同组不共享签名。
+该模式没有额外预热，使用 `--warmups 0` 明确记录。离线固定工具回包只核本地链路，
+真实 Provider 是否接受续轮、实际模型是否选择工具及保留事实，仍由付费实验核对；
+失败和未选工具均保留，不能替换样本称通过。它不代替自然 QQ 行为验收。
+付费闭环使用既有 trace codec 保存去 opaque 的诊断副本及原 body 字节/hash，
+完整签名不写实验报告；该副本不能作为签名重放输入。实际上游账号、最后一跳、
+缓存热度、搜索/存储费和完整账单缺样时标未知，SSH relay 等实际网络路径单列。

@@ -1,6 +1,6 @@
 # Yuki 使用与运维帮助
 
-当前源码为未发布的 Yuki 3.9.0，Alembic head 为 `0104`，Plugin API 为 `3.4`，只支持 canonical runtime。永久 Yuki、
+当前源码为未发布的 Yuki 3.9.0，Alembic head 为 `0108`，Plugin API 为 `3.4`，只支持 canonical runtime。永久 Yuki、
 Person、Binding、Space、Presence 和 canonical Conversation 的关系见
 [当前架构](architecture/canonical-runtime.md)。
 
@@ -110,7 +110,9 @@ docker compose logs --tail 200 bot
 
 - 私聊 Conversation 属于 Person；同一 Person 的多个 QQ Binding 共用会话。
 - 群聊 Conversation 属于 Space；更换 Yuki Presence 不会产生新的群会话。
-- `/ai new` 是改变 Conversation generation 的显式操作。
+- `/ai new` 重置当前 canonical Conversation 的上下文并取消其未结束的 Work。群内影响全部参与者，
+  仅超级管理员可用；私聊重置本人的会话。原始聊天、长期 Memory 与全局 short_state 保留。
+  它不会停止运行资料的 producer，也不会重置其他会话。
 - 群 ingest 路由决定哪个 Presence 处理某个外部群。路由暂停或不匹配时，消息在 Agent 和 Memory
   之前失败关闭。
 - 切换账号时，不在当前账号群列表中的旧群只是暂时不可达，不应删除群设置或按共同群交集关闭。
@@ -220,7 +222,7 @@ Web、Memory read 和 history read 仍可使用。
 
 ## 数据与升级
 
-当前完整迁移链至 `0104`。`0098` 退役 MCP 状态，`0099` 冻结已提交摘要表示；`0100` 关联插件后台任务的原 Work，`0101` 将旧效果结果归一为明确 outcome 并保留原正文；`0102` 移除同 memory_key 单 active 的唯一索引，同 key 的独立事实可以共存。`0103`移除旧人物评分存储；`0104`删除无消费者的检查点配额记账、投递死字段及主动轮唯一占用；原媒体和效果回执保留。历史 `0048` bridge 的来源限制仍有效，不能用版本号或
+当前完整迁移链至 `0108`。`0098` 退役 MCP 状态，`0099` 冻结已提交摘要表示；`0100` 关联插件后台任务的原 Work，`0101` 将旧效果结果归一为明确 outcome 并保留原正文；`0102` 移除同 memory_key 单 active 的唯一索引，同 key 的独立事实可以共存。`0103`移除旧人物评分存储；`0104`删除无消费者的检查点配额记账、投递死字段及主动轮唯一占用；`0105`统一 Work 父子树并退役旧完成门槛；`0106`保留自动化的完整指令与原 run 恢复版本；`0107`增加实际查询索引；`0108`承接运行资料差量的派生缓存并清退旧公共自动包装，原 Memory、Work、媒体和效果回执保留。历史 `0048` bridge 的来源限制仍有效，不能用版本号或
 手工 stamp 跳过来源校验。`0097` 退役四张 Genie 表及固定配置键，执行前必须核原
 Work/发送回执及被引用 WAV，保全专属事实；不能把生成表当作纯缓存。
 

@@ -167,40 +167,6 @@ async def on_ordinary_admitted(
             await service._save(item)
 
 
-async def context_for_event(
-    service: SemanticParticipationService, event_id: int
-) -> dict[str, object] | None:
-    """Project meaningful state of the original admitted unit into this new tail."""
-    async with service._lock, event_scope(service, event_id) as found:
-        if found is None:
-            return None
-        _, item, _ = found
-        admission = await service.ordinary.current(
-            event_id,
-            conversation_id=item.scene.conversation_id,
-            generation=item.scene.generation,
-        )
-        binding = admission_unit_binding(admission) if admission is not None else None
-        if binding is None or not all(
-            (await service._sources_current(item, binding.basis)).values()
-        ):
-            return None
-        unit = next(
-            (u for u in item.controller.participating_units(time.time()) if u.unit == binding.unit),
-            None,
-        )
-        if unit is None or (unit.engage is None and not unit.expressed and not unit.closed):
-            return None
-        data: dict[str, object] = {"thread": binding.unit.thread, "person_id": binding.actor}
-        if unit.engage is not None:
-            data["engage"] = unit.engage
-        if unit.expressed:
-            data["expressed"] = True
-        if unit.closed:
-            data["closed"] = True
-        return data
-
-
 async def observe_main_response(
     service: SemanticParticipationService,
     runtime: ToolRuntime,

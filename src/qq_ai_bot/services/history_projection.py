@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
@@ -45,9 +46,14 @@ class PreparedHistory:
     committed: ProjectionSnapshot | None = None
     committed_input: list[dict[str, Any]] | None = None
     previous_item_count: int | None = None
+    replace_event_id: int | None = None
 
     async def prepare_commit(
-        self, fragments: FrozenFragments, *, current_snapshot: dict[str, Any] | None = None
+        self,
+        fragments: FrozenFragments,
+        *,
+        current_snapshot: dict[str, Any] | None = None,
+        visible_material: dict[str, Any] | None = None,
     ) -> ProjectionPublication:
         version = self.context.read_version
         if version is None or version.conversation_id is None:
@@ -86,10 +92,18 @@ class PreparedHistory:
                 if self.committed is not None
                 else self.previous_item_count
             ),
+            visible_material=(
+                visible_material if visible_material is not None else self.context.visible_material
+            ),
+            replace_event_id=self.replace_event_id if self.committed is None else None,
         )
 
     async def commit(
-        self, fragments: FrozenFragments, *, current_snapshot: dict[str, Any] | None = None
+        self,
+        fragments: FrozenFragments,
+        *,
+        current_snapshot: dict[str, Any] | None = None,
+        visible_material: dict[str, Any] | None = None,
     ) -> ProjectionSnapshot:
         """Call after authority/source validation, immediately before model dispatch.
 
@@ -99,7 +113,9 @@ class PreparedHistory:
         if self.committed is not None:
             if self.committed_input == list(fragments.items):
                 return self.committed
-        publication = await self.prepare_commit(fragments, current_snapshot=current_snapshot)
+        publication = await self.prepare_commit(
+            fragments, current_snapshot=current_snapshot, visible_material=visible_material
+        )
         async with self.repository.database.immediate_session() as writer:
             self.committed = await publication(writer)
         self.committed_input = list(fragments.items)
@@ -138,6 +154,7 @@ async def prepare_history(
     if context.read_version is None or context.read_version.conversation_id is None:
         raise ValueError("projection requires a canonical read version")
     previous = await repository.read(view_key)
+    previous_fragments = FrozenFragments.load(previous.items()) if previous is not None else None
     version = context.read_version
     conversation_id = version.conversation_id
     if conversation_id is None:
@@ -150,6 +167,7 @@ async def prepare_history(
             actor_id=actor_id,
             read_scope=read_scope,
             view_key=view_key,
+            frozen_sources=previous_fragments.observation_sources if previous_fragments else None,
         )
         if actor_id and read_scope
         else ()
@@ -157,6 +175,7 @@ async def prepare_history(
     reason = None
     invalidated_reason = None
     previous_item_count = None
+    replace_event_id = None
     frozen = FrozenFragments.load([])
     frozen_event_ids: frozenset[int] = frozenset()
     if previous is None:
@@ -174,14 +193,13 @@ async def prepare_history(
     elif previous.context_key != context_key:
         reason = "read_scope_changed"
     else:
-        previous_items = previous.items()
-        previous_item_count = len(previous_items)
-        frozen = FrozenFragments.load(previous_items)
-        del previous_items
+        assert previous_fragments is not None
+        frozen = previous_fragments
+        previous_item_count = len(frozen.items)
         frozen_event_ids = frozen.event_ids
-        if not {identity for identity, _ in frozen.observation_sources} <= {
-            row.id for row in observations
-        }:
+        if not await sources.validate_sources(
+            conversation_id, version.generation, actor_id, read_scope, frozen.observation_sources
+        ):
             reason = "source_changed"
             frozen = FrozenFragments.load([])
             frozen_event_ids = frozenset()
@@ -196,6 +214,7 @@ async def prepare_history(
             # A deliberate repeat of an event is a new attempt, not an append of
             # the same trigger. Preserve that distinction in the epoch reason.
             reason = "source_changed"
+            replace_event_id = context.current_event_id
             frozen = FrozenFragments.load([])
             frozen_event_ids = frozenset()
     if (
@@ -213,15 +232,26 @@ async def prepare_history(
             actor_id=actor_id,
             read_scope=read_scope,
             visible_event_ids=context.visible_event_ids,
-            allowed_observation_ids=frozenset(row.id for row in observations),
         )
-        allowed_observations = {row.id for row in observations}
         selected = [
             item
             for item in selected
             if (not item["event_ids"] or set(item["event_ids"]) <= context.visible_event_ids)
-            and ("observation_id" not in item or item["observation_id"] in allowed_observations)
         ]
+        if not await sources.validate_sources(
+            conversation_id,
+            version.generation,
+            actor_id,
+            read_scope,
+            tuple(
+                dict.fromkeys(
+                    (item["observation_id"], item["observation_version"])
+                    for item in selected
+                    if "observation_id" in item
+                )
+            ),
+        ):
+            selected = []
         if any(context.current_event_id in item["event_ids"] for item in selected):
             # A contract/capacity rebuild can recover this trigger's older
             # representation from selection provenance, after the repeat check
@@ -233,6 +263,7 @@ async def prepare_history(
             # for publication CAS; that invalidation is already a new boundary.
             if invalidated_reason is None:
                 reason = "source_changed"
+            replace_event_id = context.current_event_id
             selected = [
                 item for item in selected if context.current_event_id not in item["event_ids"]
             ]
@@ -311,6 +342,33 @@ async def prepare_history(
     )
     observation_messages = tuple((row.id, row.version, row.message()) for row in observations)
     extended = extended.append_observations(observation_messages)
+
+    async def adopt(
+        candidate: AssembledContext, fragments: FrozenFragments, *, inherit: bool = False
+    ) -> AssembledContext:
+        if inherit and previous is not None:
+            material = json.loads(previous.visible_material_json)
+        else:
+            from qq_ai_bot.services.prompt_composer import apply_material_delta
+
+            roots = await sources.sources_by_ids(
+                conversation_id=conversation_id,
+                generation=version.generation,
+                actor_id=actor_id,
+                read_scope=read_scope,
+                sources=fragments.observation_sources,
+            )
+            payloads = {row.id: json.loads(row.payload_json) for row in roots}
+            material = {}
+            for item in fragments.items:
+                if "observation_id" not in item:
+                    continue
+                payload = payloads.get(item["observation_id"])
+                if payload is not None and payload.get("kind") == "dynamic_snapshot":
+                    material = apply_material_delta(material, payload["contributions"])
+        return replace(candidate, history_messages=fragments.messages(), visible_material=material)
+
+    selected_context = await adopt(selected_context, extended, inherit=reason is None)
     collect_phase_metrics(candidate_count=1)
     extended_messages = extended.messages()
     fits = (
@@ -332,9 +390,16 @@ async def prepare_history(
         and context.metrics.rollup_mode != "emergency"
     )
     if not hard_fits or (not fits and ready_rollup):
-        fresh = FrozenFragments.load([]).extend_history(
-            context.history_fragments, context.history_event_fragments
-        )
+        candidate_events = {
+            identity for ids, _message in context.history_fragments for identity in ids
+        }
+        fresh = FrozenFragments.load(
+            [
+                item
+                for item in frozen.items
+                if item["event_ids"] and set(item["event_ids"]) <= candidate_events
+            ]
+        ).extend_history(context.history_fragments, context.history_event_fragments)
         # Canonical event coverage never proves private clues were summarized.
         fresh = fresh.append_observations(observation_messages)
         collect_phase_metrics(candidate_count=1)
@@ -342,7 +407,7 @@ async def prepare_history(
             # A new activation may adopt the already published summary.
             reason = "capacity" if not hard_fits else "rollup_ready"
             extended = fresh
-            selected_context = context
+            selected_context = await adopt(context, fresh)
             extended_messages = extended.messages()
             fits = (
                 context_fits(replace(selected_context, history_messages=extended_messages))
@@ -391,50 +456,9 @@ async def prepare_history(
 
             covered = summary_coverage(summary.payload_json)
             candidate_items: list[dict[str, Any]] = []
-            # A compiled A can own both a chat event and its dynamic snapshot.
-            # Summarizing the snapshot cannot silently cover the original chat.
-            snapshot_events = {
-                identity
-                for item in extended.items
-                if item.get("observation_id") in covered
-                for identity in item["event_ids"]
-                if identity > selected_context.prompt_effective_coverage
-            }
-            ledger = EventLedgerRepository(repository.database)
-            raw_events = []
-            for identity in sorted(snapshot_events):
-                event = await ledger.get_event(identity)
-                if event is None or event.canonical_conversation_id != conversation_id:
-                    from qq_ai_bot.conversation.projections import ProjectionConflict
-
-                    raise ProjectionConflict("snapshot chat source changed")
-                raw_events.append(event)
-            renderer = ChatEventPromptRenderer(
-                raw_events,
-                bot_display_name=context.history_bot_display_name,
-                timezone=context.history_timezone,
-                yuki_account_ids=context.history_yuki_account_ids,
-            )
-            raw_fragments = {
-                event.id: FrozenFragments.load([])
-                .extend_history(
-                    tuple(
-                        (ids, message) for _, ids, message in renderer.main_agent_history((event,))
-                    ),
-                    (),
-                )
-                .items[0]
-                for event in raw_events
-            }
             for item in extended.items:
                 if item.get("observation_id") not in covered:
                     candidate_items.append(item)
-                else:
-                    candidate_items.extend(
-                        raw_fragments[identity]
-                        for identity in item["event_ids"]
-                        if identity in raw_fragments
-                    )
             candidate = FrozenFragments.load(candidate_items).append_observation(
                 summary.id, summary.version, summary.message()
             )
@@ -455,6 +479,7 @@ async def prepare_history(
         if summary is not None and candidate_fits:
             extended, reason = candidate, "capacity"
             extended_messages = candidate_messages
+            selected_context = await adopt(selected_context, candidate)
         elif context_hard_fits is not None and context_hard_fits(
             replace(original_context, history_messages=original_messages)
         ):
@@ -495,4 +520,5 @@ async def prepare_history(
         actor_id=actor_id,
         read_scope=read_scope,
         previous_item_count=previous_item_count,
+        replace_event_id=replace_event_id,
     )

@@ -440,7 +440,10 @@ _BASE_SELF_SERVICE_CAPABILITIES = (
         kind=CapabilityKind.COMMAND,
         category="chat",
         display_name="新建当前上下文",
-        description="通过确定性 /ai new 命令写入当前用户和当前场景的上下文切点。",
+        description=(
+            "通过确定性 /ai new 重置当前 Conversation；"
+            "群内影响全部参与者且仅限超级管理员，私聊重置本人的会话。"
+        ),
         minimum_level=PermissionLevel.USER,
         mutating=True,
         target_scopes=("current_conversation",),

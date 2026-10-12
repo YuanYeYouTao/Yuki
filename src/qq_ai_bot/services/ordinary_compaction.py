@@ -58,6 +58,9 @@ async def compact_ordinary(
     records = []
     record_values: list[dict[str, Any]] = []
     call_records: dict[str, set[int]] = {}
+    portable_calls: dict[str, dict[str, Any]] = {}
+    portable_assistants: dict[str, ChatMessage] = {}
+    portable_results: dict[str, Any] = {}
     media: list[ChatImage] = []
     for index, item in enumerate(tail):
         value = asdict(item)
@@ -70,15 +73,54 @@ async def compact_ordinary(
                 media.extend(item.images)
         record_values.append(value)
         call_ids = {call.id for call in getattr(item, "tool_calls", ())}
+        if isinstance(item, ChatMessage):
+            for call in item.tool_calls:
+                portable_calls[call.id] = asdict(call)
+                portable_assistants[call.id] = item
         result_id = getattr(item, "tool_call_id", None) or getattr(item, "call_id", None)
         if result_id:
             call_ids.add(result_id)
+            portable_results[result_id] = value.get("content", value.get("output"))
         for call_id in call_ids:
             call_records.setdefault(call_id, set()).add(index)
         records.append((f"record:{index}", json.dumps(value, ensure_ascii=False)))
-    for index, observation in enumerate(model_observations or ()):
-        # ChatResponse's public mirror retains native assistant/call/citation
-        # facts. Opaque provider checkpoints never enter the summary source.
+    observations = []
+    for index, original in enumerate(model_observations or ()):
+        # A call's original identity ties its mirror to the actual portable
+        # record. Native checkpoints can have results without a portable
+        # assistant/call: those unique fields must remain summary sources.
+        observation = dict(original)
+        calls = original.get("tool_calls", [])
+        mirrored_assistants = [portable_assistants.get(call["id"]) for call in calls]
+        if (
+            mirrored_assistants
+            and mirrored_assistants[0] is not None
+            and all(item is mirrored_assistants[0] for item in mirrored_assistants)
+            and (mirrored_assistants[0].content or "") == original.get("content")
+        ):
+            observation.pop("content", None)
+        observation["tool_calls"] = [
+            call for call in calls if call != portable_calls.get(call["id"])
+        ]
+        if "results" in original:
+            results = []
+            for original_result in original["results"]:
+                mirrored_result = dict(original_result)
+                call_id = mirrored_result["call_id"]
+                portable_call = portable_calls.get(call_id)
+                if (
+                    portable_call is not None
+                    and portable_call["function"]["name"] == mirrored_result.get("name")
+                    and portable_call["function"]["arguments"] == mirrored_result.get("arguments")
+                ):
+                    mirrored_result.pop("arguments", None)
+                if call_id in portable_results and portable_results[call_id] == mirrored_result.get(
+                    "output"
+                ):
+                    mirrored_result.pop("output", None)
+                results.append(mirrored_result)
+            observation["results"] = results
+        observations.append(observation)
         records.append((f"observation:{index}", json.dumps(observation, ensure_ascii=False)))
     summary = await summarize_records(
         records,
@@ -105,7 +147,7 @@ async def compact_ordinary(
     ]
     leftover_observations = [
         value
-        for index, value in enumerate(model_observations or ())
+        for index, value in enumerate(observations)
         if f"observation:{index}" not in referenced
     ]
     result = TurnTranscript((*initial, *retained_public))

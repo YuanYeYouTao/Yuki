@@ -237,11 +237,6 @@ class SemanticParticipationService:
 
         return await binding_for_event(self, event_id, continuation_only=True)
 
-    async def context_for_event(self, event_id: int) -> dict[str, object] | None:
-        from qq_ai_bot.services.participation_ordinary import context_for_event
-
-        return await context_for_event(self, event_id)
-
     async def on_ordinary_admitted(
         self, binding: OrdinaryParticipationBinding | None, admission: OrdinaryAdmission
     ) -> None:

@@ -96,7 +96,6 @@ class PersonPromptMetadata:
     """Display-only metadata frozen for one preparation, never an authority grant."""
 
     person_id: str
-    aliases: tuple[str, ...]
     timezone: str
 
 
@@ -438,25 +437,16 @@ class PeopleRepository:
         default_timezone: str,
         expected_person_id: str | None = None,
     ) -> PersonPromptMetadata:
-        """Resolve a live actor once and read aliases/timezone in one WAL snapshot."""
+        """Resolve a live actor once and read timezone in one WAL snapshot."""
 
         async with self._database.sessions() as session, session.begin():
             await session.execute(text("BEGIN"))
             person_id = await resolve_live_person_id(session, user_id)
             if expected_person_id is not None and person_id != expected_person_id:
                 raise CanonicalIdentityError("canonical_owner_mismatch")
-            aliases = (
-                await session.scalars(
-                    select(PersonAliasModel.alias)
-                    .where(PersonAliasModel.canonical_person_id == person_id)
-                    .order_by(PersonAliasModel.last_seen_at.desc(), PersonAliasModel.id.desc())
-                    .limit(20)
-                )
-            ).all()
             timezone = await session.get(PersonTimeSettingModel, person_id)
             return PersonPromptMetadata(
                 person_id=person_id,
-                aliases=tuple(dict.fromkeys(str(value) for value in aliases)),
                 timezone=timezone.timezone if timezone is not None else default_timezone,
             )
 

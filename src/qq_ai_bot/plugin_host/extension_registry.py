@@ -11,7 +11,7 @@ from enum import StrEnum
 from pydantic import BaseModel
 
 from yuki_plugin_sdk.errors import PluginPermissionError, RegistrationError
-from yuki_plugin_sdk.models import PromptFragment, PromptStage, PromptTarget, TrustedLevel
+from yuki_plugin_sdk.models import PromptFragment, PromptStage, TrustedLevel
 from yuki_plugin_sdk.permissions import PluginPermission
 from yuki_plugin_sdk.registrar import (
     AdmissionSignalRegistration,
@@ -217,8 +217,6 @@ class BoundPluginRegistrar(PluginRegistrar):
             raise RegistrationError(
                 "third-party plugins may only register plugin_context or tool_guidance"
             )
-        if fragment.target not in {PromptTarget.AGENT, PromptTarget.PLUGIN_SESSION}:
-            raise RegistrationError("third-party plugins may only target agent or plugin_session")
         if fragment.plugin_id not in {None, self._plugin_id}:
             raise RegistrationError("prompt fragment plugin_id does not match registrar")
         normalized = fragment.model_copy(

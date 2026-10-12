@@ -31,7 +31,6 @@ class PluginPermission(StrEnum):
     WEB_READ = "web.read"
     NETWORK_HTTP_ALLOWLISTED = "network.http.allowlisted"
     NETWORK_HTTP_UNRESTRICTED = "network.http.unrestricted"
-    VISION_CURRENT_READ = "vision.current.read"
     VISION_ANALYZE = "vision.analyze"
     MEDIA_CURRENT_READ = "media.current.read"
     MEDIA_ARTIFACT_CREATE = "media.artifact.create"

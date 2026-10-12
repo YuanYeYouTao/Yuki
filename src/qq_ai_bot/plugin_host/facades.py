@@ -277,7 +277,6 @@ class PluginInvocation:
     delegated_authority: DelegatedAuthority | None = field(default=None, repr=False)
     allowed_capabilities: frozenset[str] = field(default_factory=frozenset)
     source_event_id: int | None = None
-    visual_observation: VisualObservation | None = field(default=None, repr=False)
     web_was_used: bool = False
     legacy_conversation_key: str | None = None
     person_id: str | None = None
@@ -1763,11 +1762,6 @@ class _HttpFacade:
 class _VisionFacade:
     def __init__(self, host: HostPluginContext) -> None:
         self._host = host
-
-    async def get_current_observation(self) -> Mapping[str, JsonValue] | None:
-        invocation = self._host._require(PluginPermission.VISION_CURRENT_READ)
-        assert invocation is not None
-        return _visual_observation(invocation.visual_observation)
 
     async def analyze_current_media(self, question: str = "") -> PluginResult:
         invocation = self._host._require(PluginPermission.VISION_ANALYZE)

@@ -16,7 +16,7 @@ Plugin API `2.0` 是破坏性升级。Host 在导入插件代码前校验 `plugi
 | `register_planner_signal(...)` | `register_admission_signal(...)` |
 | `planner.signal.register` | `admission.signal.register` |
 | `ctx.features.has("planner.signal.v1")` | `ctx.features.has("admission.signal.v1")` |
-| `PromptTarget.PLANNER` / `BOTH` | `PromptTarget.AGENT` 或 `PLUGIN_SESSION` |
+| `PromptTarget.PLANNER` / `BOTH` / `PLUGIN_SESSION` | `PromptTarget.AGENT`；独立插件会话继续使用 `agent_sessions` |
 | `PromptStage.PLANNER_PLAN` | 删除；第三方只能注册 `plugin_context` / `tool_guidance` |
 | 本地工具名作为全局身份 | `ToolMetadata.namespace`（可留空，Host 填 `plugin.{plugin_id}`）以及可选 `aliases` / `use_when` / `tags` |
 | `planner.necessity_evaluated` / `planner.silent` | `turn.rejected` / `turn.autonomous_declined` |
@@ -66,7 +66,7 @@ ToolMetadata(
 1. 把 `plugin.toml` 的 `plugin_api` 改为 `"2.0"`，权限字符串改成 2.0 目录。
 2. 删除 `register_planner_signal` 及相关 1.x 类型。
 3. 需要自主群提示时改为 `register_admission_signal`。
-4. Prompt `target` 只保留 `agent` 或 `plugin_session`。
+4. Prompt `target` 只保留 `agent`；独立插件会话仍使用 `agent_sessions`。
 5. 为工具补 namespace/aliases/use_when/tags（可选，但名称冲突由 Host 拒绝）。
 6. `uv run qq-ai-bot-cli plugin validate <path>`，再 `plugin test`。
 7. 部署后重新 `discover` / 审阅 / `approve` / `enable`，或通过 Guided Setup 的 pending 一次应用。

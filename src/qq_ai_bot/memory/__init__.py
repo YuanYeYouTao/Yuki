@@ -21,7 +21,6 @@ from qq_ai_bot.memory.enums import (
 from qq_ai_bot.memory.errors import MemoryRetrievalError
 from qq_ai_bot.memory.models import (
     MemoryConsistencyHealth,
-    MemoryContextBlock,
     MemoryEvidence,
     MemoryEvidenceCreate,
     MemoryFact,
@@ -39,7 +38,6 @@ __all__ = [
     "MemoryClaimOperation",
     "MemoryConflictState",
     "MemoryConsistencyHealth",
-    "MemoryContextBlock",
     "MemoryContextMode",
     "MemoryEvidence",
     "MemoryEvidenceCreate",

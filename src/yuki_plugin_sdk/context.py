@@ -146,8 +146,6 @@ class HttpFacade(Protocol):
 
 
 class VisionFacade(Protocol):
-    async def get_current_observation(self) -> Mapping[str, JsonValue] | None: ...
-
     async def analyze_current_media(self, question: str = "") -> PluginResult: ...
 
 

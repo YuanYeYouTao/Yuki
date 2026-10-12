@@ -1343,15 +1343,6 @@ class RuntimeConfigService:
                 hook_timeout_seconds=float(
                     cast(float | int, value("plugins.hook_timeout_seconds"))
                 ),
-                max_prompt_fragment_characters=int(
-                    cast(int, value("plugins.max_prompt_fragment_characters"))
-                ),
-                max_prompt_characters_per_plugin=int(
-                    cast(int, value("plugins.max_prompt_characters_per_plugin"))
-                ),
-                max_total_prompt_characters=int(
-                    cast(int, value("plugins.max_total_prompt_characters"))
-                ),
             ),
             context=ContextRuntimeConfig(
                 local_event_limit=int(cast(int, value("context.local_event_limit"))),

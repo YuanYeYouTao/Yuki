@@ -314,9 +314,6 @@ class FakeVisionFacade:
     def __init__(self) -> None:
         self.observation: dict[str, JsonValue] | None = None
 
-    async def get_current_observation(self) -> Mapping[str, JsonValue] | None:
-        return self.observation
-
     async def analyze_current_media(self, question: str = "") -> PluginResult:
         return PluginResult(data=self.observation or {})
 

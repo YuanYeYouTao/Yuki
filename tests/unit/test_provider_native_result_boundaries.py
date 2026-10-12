@@ -224,9 +224,7 @@ async def test_confirmed_send_native_empty_tail_stops_without_failure_or_paid_re
                 "call_id": "original-send",
                 "name": "update_short_state" if work_mode == "write" else "send_message",
                 "arguments": json.dumps(
-                    {"slot": 1, "text": "write survived", "expected_revision": 0}
-                    if work_mode == "write"
-                    else send_args
+                    {"slot": 1, "text": "write survived"} if work_mode == "write" else send_args
                 ),
             }
         )

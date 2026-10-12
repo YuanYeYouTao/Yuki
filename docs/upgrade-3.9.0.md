@@ -1,6 +1,6 @@
 # Yuki 3.9.0 配置与升级草案（未发布）
 
-<!-- release-baseline: version=3.9.0 schema=0107 -->
+<!-- release-baseline: version=3.9.0 schema=0108 -->
 
 本指南随当前开发源码更新；PR列表的历史截止基线为 main `0ddd7eee`（2026-10-09）。**3.9.0 尚未正式发布**，正式下载仍为 [3.8.4 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.4)。源码版本号不代表已有 `:3.9.0` 正式镜像；历史109个已合并PR、后续修改及各自交付状态见[发布说明](releases/v3.9.0.md)。
 
@@ -12,7 +12,7 @@
 
 | 项目 | 3.8.4 正式包 | 当前 3.9.0 源码 |
 | --- | --- | --- |
-| 数据库 head | `0072` | 单一 head `0107` |
+| 数据库 head | `0072` | 当前开发单一 head `0108` |
 | Plugin API | 3.0 | 3.4，需适配并重新批准 |
 | 管理 WebUI | 不包含 | 默认关闭，共用控制面 |
 | MCP / Genie 输出 | 旧实现 / 可选组件 | 专属入口、配置和服务退役；共享回执、媒体与 ASR 保留 |
@@ -38,6 +38,7 @@
 | `0105` | 父子关系迁入 Work.parent_work_id，删除旧root_id、产出分类字段、汇报水位及未派发暂停通报；保留原ID、来源、预算、未知效果与journal |
 | `0106` | 新自动化Run引用原version唯一ID，version保存原委托与canonical目标；删除旧迟到字段，保留原Run、cursor、累计预算和效果回执 |
 | `0107` | 清理退役的记忆引用人数配置，索引本次名字、等待与到期扫描；保留原历史、来源、执行和回执 |
+| `0108` | 原投影增加可丢的最后可见资料缓存；清退公共选取中的旧自动资料包装及无实际引用的自动来源，沿新 epoch 重建输入；有用笔记、聊天与真实 Work/协议/产物引用保留 |
 
 历史主线的 `0096` 曾删除 MCP 派生表；当前同号保存调用索引，`0098` 按实际形状汇合。编号相同不能证明 schema 相同。其他旧实验数据库需先核生产者与完整形状，不能强行 stamp 或重建数据绕过冲突。
 
@@ -50,6 +51,7 @@
 - **模型文件**：使用 `webui-config/model_profiles.toml` 及同目录密钥 sidecar；旧路径按[迁移说明](operations/model-profile-path-migration.md)处理。保留有效连接、模型、密钥引用与 routes，仅移除退役的 `automation_text_generation`、`memory_consolidation`、`memory_attribution`、`relationship_evaluation` 路由和 `gemini_schema_format` wire option。使用目标版本 parser 校验，不用模板重建整份配置。现行 `memory_extraction`、`memory_self_reflection`、`memory_dream` 可独立绑定；Rebuild 复用提取，Embedding 独立配置。
 - **结构化输出与思考**：任务沿 Profile 的 `function_tool`、`text_json` 或 `json_schema`；Gemini JSON Schema 使用 `responseJsonSchema`。旧 `responseSchema` projector 与降级开关退役。思考沿显式设置，不再强制开启或抬档；正文 DSML 不再转工具，Claude 适配器不隐式追加付费续跑。核对端点实际协议响应，不能靠配置名证明可用。
 - **Memory 策略**：删除仅服务自动注入、归因/强化/意图评分、治理、容量腾位与经验过时的旧设置，对照当前 `.env.example`。`valid_until`、用户显式变更和真实权限仍有效。同 key 不是唯一槽位，管理修改和删除沿 fact ID；不要把多条旧事实压成一个值。
+- **本轮资料配置**：撤去 `CONTEXT_METADATA_BUDGET_RATIO`、`PLUGIN_MAX_PROMPT_FRAGMENT_CHARACTERS`、`PLUGIN_MAX_PROMPT_CHARACTERS_PER_PLUGIN` 和 `PLUGIN_MAX_TOTAL_PROMPT_CHARACTERS`；0108 清退三项插件字符配置对应的 override，不以其他字符阈值替代。完整模型请求仍沿原容量检查。
 - **联网**：新安装未设联网开关时默认 native，显式 disabled 与既有搜索连接保持有效。原生搜索、Gemini 搜索桥及外部后端按[Provider 合同](architecture/model-providers.md)配置；默认开启不能补出模型缺少的能力。
 - **持久环境 / WebUI**：保留原 Manager、共享 volume 和执行回执；普通包不会安装新 Manager 或 gVisor。WebUI 默认关闭，认证与管理授权见[WebUI 合同](architecture/webui-console.md)。
 
@@ -87,19 +89,26 @@ token、用户配置与插件，不能默认删除；Git/镜像 ignore 暂时保
 
 更新插件 manifest 与代码，移除 `ctx.mcp`、`ctx.speech` 和专属权限/事件/TTS 注册，通过现有批准流程重新核对权限，保持原启用意图。迁移范围见 [API 3.1](plugin-development/api-3.1-migration.md)、[API 3.2](plugin-development/api-3.2-migration.md) 和 [API 3.4](plugin-development/api-3.4-migration.md)。宿主挂载的插件代码不会随镜像自动更新。
 
+本轮资料删减同时移除 `limits.prompt_characters`、`PromptFragment.max_characters/cache_key`、
+无人消费的 `PromptTarget.PLUGIN_SESSION`，以及恒空的 `get_current_observation` 与
+`vision.current.read`。插件仍可显式调用 `analyze_current_media`，私有 agent_sessions 仍可
+使用原会话合同。资料片段保持结构化身份与正文，不再叠加 fragment/插件/总字符门槛；
+私有会话历史和结果也不再按固定字符数截取。完整请求沿原容量检查，初始超容量不承诺
+自动私有 Rollup。manifest 真正变更时沿原批准流程处理，不增加新的批准门槛。
+
 ## 迁移与启动
 
 1. 固定目标提交和镜像，核随包 head、配置与插件版本；正式发行时再核 `v3.9.0` 资产。
 2. 在独立数据库和文件副本演练迁移及启动，核原身份、Work、预算、协议和发送回执；不启动第二个主动 Bot 写生产库或向 QQ 发消息。
 3. 停止旧 Bot 及需停写的相关 Manager，保存一致数据库、配置、插件、媒体、工具正文、协议对象和持久环境回执。QQ 网关可保持运行。
-4. 完成配置、授权和语音保全后，沿原 Compose 参数用目标镜像执行 `qq-ai-bot-cli init-db`，核 head `0107`。来自正式 3.8.3/3.8.4 的旧投递计划先在停写副本运行 `work import-legacy-deliveries --dry-run` 再导入；原计划、未知效果和预算保留。
+4. 完成配置、授权和语音保全后，沿原 Compose 参数用目标镜像执行 `qq-ai-bot-cli init-db`，核 head `0108`。来自正式 3.8.3/3.8.4 的旧投递计划先在停写副本运行 `work import-legacy-deliveries --dry-run` 再导入；原计划、未知效果和预算保留。
 5. 启动一个 Bot，核真实 revision、数据库、QQ 连接、工具合同、模型路由与 worker。启动健康、真实 API、自然聊天和长任务交付分别验收。
 
 ## 回退与已知问题
 
 应用核对随包 schema head；完成新迁移后不能仅换旧镜像。先保全升级后产生的消息、文件与回执，在副本验证兼容 reader 或向前修补。`0097` 无事实重建型 downgrade，重建空表也不会恢复语音事实；不回灌旧备份覆盖新数据。
 
-10-09 临时 SELF 排空暴露旧代次重试阻塞，新队列已通过隔离失效窗口恢复，但领取源码尚未修复；禁用语义空间的旧 owner 调度也仍待处理。见[残留核查](operations/documentation-residual-audit-20261009.md)。保留历史失效批次、检查点和效果，不以清空历史失败数冒充升级成功。
+10-09 的 SELF 旧代次领取问题与当时处理记录保留在[残留核查](operations/documentation-residual-audit-20261009.md)；后续源码处理见[Work 与 Memory 审查 C21](architecture/Yuki-Work与Memory多余约束删除审查-2026-10-10.md)。部署状态按对应交付证据读取，不能把历史报告中的待修项当作当前源码结论。保留历史失效批次、检查点和效果，不以清空历史失败数冒充升级成功。
 
 ## 旧人物评分关系系统退役
 
@@ -107,7 +116,7 @@ token、用户配置与插件，不能默认删除；Git/镜像 ignore 暂时保
 
 `0103`清退三张评分表、专属索引、七项评分override，并移除automations/automation_versions的 `context.include_relationship`、按已有算法重算hash。默认false也改变hash；尚未结束的原run须按原ID明确收尾，不能改cursor为新hash或清预算重跑。0102→0103的实际升级记录见关系系统任务书；新安装不再创建旧评分表。
 
-本次运维另获授权清退全部旧Work及子任务，关联plugin Job、自动化run、外部执行和待投递记录必须一并处理；不删除原聊天、Memory或共享产物。具体范围及实际执行状态见 [R23与交付记录](architecture/Yuki-旧关系好感度系统彻底删除任务书-2026-10-09.md#123-全部旧work清退r23用户新增授权)。这是本次实例的明确授权，不是以后升级默认清Work的行为。
+10月9日关系系统退役时，另获授权清退当时的旧Work及子任务，并处理关联plugin Job、自动化run、外部执行和待投递记录；原聊天、Memory及共享产物保留。该次范围及执行状态见 [R23与交付记录](architecture/Yuki-旧关系好感度系统彻底删除任务书-2026-10-09.md#123-全部旧work清退r23用户新增授权)。这项历史授权不适用于后续升级；0108保留原Work和私有协议。
 
 迁移成功后旧0102镜像无法识别0103。故障恢复保留新数据库与上线后的消息/效果，采用支持新schema的代码版本或前向修复，不降stamp、不恢复旧数据库冒充代码回退。SnowLuma与QQ登录资料不在本次更新范围。
 
@@ -130,3 +139,17 @@ token、用户配置与插件，不能默认删除；Git/镜像 ignore 暂时保
 删除 `.env` 和实际Bot环境中的 `MEMORY_MAX_REFERENCED_TARGETS`；0107按真实键删除global/user/group的对应override，其余配置不变。迁移添加nickname、Work等待扫描及两条Rollup到期表达式索引，不重写事件、证据、Run版本、预算或效果回执。四索引需要真实迁移，不能只改head标记。
 
 沿现用Compose文件仅更新Bot，默认direct构建；停写副本先演练0106→0107、完整性/FK与原执行记录保全，再迁移生产并确认数据库和OneBot连接。此次不更新SnowLuma。实施与各阶段验收见[任务书§11](architecture/Yuki-资料与数据库查询删减优化任务书-2026-10-12.md#11-2026-10-12-执行与证据)。
+
+## 0108 本轮资料差量冻结
+
+新输入只提交必要资料的首份和实际变化，未变化不重复注入；短记录清空、到期及资料退出
+展示追加一次移除差量。`short_state` 工具只接收 slot/text，不再要求 expected_revision，
+回执只返回本次槽位。工具合同变更在合法新 epoch 使用，真实执行回执与旧私有协议不改写。
+
+0108 为原 `prompt_projections` 添加最后可见资料 JSON 缓存，清退旧公共选取中的自动资料
+包装并使旧 compiled 缓存失效。实际选取的聊天和有用任务笔记保留；无真实依赖的自动
+snapshot/纯自动资料摘要来源可删除，仍被 Work、协议、产物或有用笔记引用的来源原件
+继续保留，但不以此恢复整包默认注入。迁移不清 Conversation、不推进 generation，
+不修改 Work 私有 Host 布局、预算或真实回执。缓存淘汰后从实际保留的选取来源重建。
+
+当前开发 head 为0108，实施、迁移演练、CI 与实际部署状态分别见[任务书](architecture/Yuki-本轮资料差量冻结与上下文删减任务书-2026-10-12.md)。此草案更新不表示生产已经迁移。

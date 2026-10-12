@@ -27,7 +27,6 @@ allowed_hosts = ["api.weather.example"]
 background_tasks = 2
 http_concurrency = 4
 storage_mb = 50
-prompt_characters = 2000
 ```
 
 ## 顶层字段
@@ -56,7 +55,6 @@ prompt_characters = 2000
 | `background_tasks` | `0` | 0–64 |
 | `http_concurrency` | `1` | 1–64 |
 | `storage_mb` | `10` | 1–10240 |
-| `prompt_characters` | `2000` | 0–16000 |
 
 Host 还会使用部署级全局上限取更小值；Manifest 不能扩大 Host 配置。
 

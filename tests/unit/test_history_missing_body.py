@@ -96,7 +96,6 @@ async def scene(database, count):
         metadata_payload={},
         history_messages=tuple(message for _, message in parts),
         current_message=ChatMessage("user", "current"),
-        recent_delivery=(),
         current_time=TimeContext(now, now, "UTC"),
         metrics=ContextMetrics(0, 0, 0, 0, False),
         read_version=version,

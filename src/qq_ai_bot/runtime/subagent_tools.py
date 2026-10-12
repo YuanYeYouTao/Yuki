@@ -8,6 +8,7 @@ from typing import Any
 from qq_ai_bot.codemode.contract import EXECUTE_CODE_NAME
 from qq_ai_bot.codemode.tool_visibility import TOOL_LOOKUP_NAME
 from qq_ai_bot.domain.messages import ChatTool
+from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE
 from qq_ai_bot.prompting.contracts import tool_mode_policy
 from qq_ai_bot.runtime.subagent_repository import SubagentRepository
 from qq_ai_bot.sandbox.environment_tools import SANDBOX_TOOLS, tool
@@ -32,7 +33,13 @@ _WORKER_BASE = (
 
 
 def worker_prompt(*, code_enabled: bool) -> str:
-    return _WORKER_BASE + "\n\n" + tool_mode_policy(code_enabled=code_enabled)
+    return (
+        _WORKER_BASE
+        + "\n\n"
+        + MEMORY_GROUNDING_RULE
+        + "\n\n"
+        + tool_mode_policy(code_enabled=code_enabled)
+    )
 
 
 WORKER_PROMPT = worker_prompt(code_enabled=False)

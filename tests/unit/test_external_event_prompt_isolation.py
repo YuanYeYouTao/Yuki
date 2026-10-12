@@ -17,19 +17,13 @@ from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, InboundMessage, SenderIdentity
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
-from qq_ai_bot.event_prompt import (
-    EXTERNAL_EVENT_CONTENT_TRUST,
-    ChatEventPromptRenderer,
-    external_event_digest_appended_growth,
-    external_event_digest_encoded_characters,
-)
+from qq_ai_bot.event_prompt import ChatEventPromptRenderer
 from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.model_runtime.executor import provider_cache_shape_diagnostics
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.people_repository import PersonPromptMetadata
 from qq_ai_bot.persistence.repository_records import EventRecord
-from qq_ai_bot.prompting import ContextBudgeter
 from qq_ai_bot.runtime.trigger import ExternalEventTurnTrigger
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.context_assembler import (
@@ -125,7 +119,6 @@ def _assembled(
         metadata_payload=metadata or {},
         history_messages=history,
         current_message=current,
-        recent_delivery=(),
         current_time=_time(),
         metrics=ContextMetrics(
             metadata_characters=0,
@@ -296,7 +289,6 @@ async def _assemble_wakeup(
             nickname="Ada",
         )
     )
-    assembler._people.aliases = AsyncMock(return_value=())
     assembler._time.current = AsyncMock(return_value=_time())
     assembler._time.current_default = MagicMock(return_value=_time())
     identity = current.scope
@@ -404,7 +396,6 @@ async def test_wakeup_never_attaches_external_digest_or_payload() -> None:
     metadata = json.dumps(context.metadata_payload, ensure_ascii=False, default=str)
     history = "\n".join(item.content or "" for item in context.history_messages)
     current_text = context.current_message.content or ""
-    assert context.external_events == ()
     assert "recent_external_events" not in metadata
     for blob in (metadata, history, current_text):
         assert "secret-" not in blob
@@ -416,29 +407,6 @@ async def test_wakeup_never_attaches_external_digest_or_payload() -> None:
     assert current_text.count("current trigger") == 1
     assert "current trigger" not in history + metadata
     assert all(item.role != "system" for item in context.history_messages)
-
-
-def test_digest_items_are_required_contributions_within_budget() -> None:
-    assembler = _assembler()
-    events = (
-        {
-            "source": "github",
-            "source_plugin_id": "github-monitor",
-            "event_type": "PushEvent",
-            "occurred_at": "2026-08-26T20:00:00+08:00",
-            "summary": "bounded",
-            "content_trust": EXTERNAL_EVENT_CONTENT_TRUST,
-        },
-    )
-    contributions = assembler._context_contributions(
-        {"scene": {"type": "private"}, "recent_external_events": list(events)}
-    )
-    digest_items = tuple(item for item in contributions if item.id == "recent_external_events")
-    assert len(digest_items) == 1
-    assert digest_items[0].required
-    assert digest_items[0].cost == external_event_digest_appended_growth(events)
-    selected = ContextBudgeter().select(contributions, character_budget=4_000)
-    assert any(item.id == "recent_external_events" for item in selected.selected)
 
 
 @pytest.mark.asyncio
@@ -479,7 +447,7 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     )
     ordinary._ledger.get_event = AsyncMock(return_value=ordinary_event)
     ordinary._people.prompt_metadata = AsyncMock(
-        return_value=PersonPromptMetadata("synthetic-person", (), _time().timezone)
+        return_value=PersonPromptMetadata("synthetic-person", _time().timezone)
     )
     ordinary._time.default_timezone = _time().timezone
     ordinary._time.current_in_timezone = MagicMock(return_value=_time())
@@ -528,7 +496,6 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
             nickname="Ada",
         )
     )
-    wakeup._people.aliases = AsyncMock(return_value=())
     wakeup._time.current = AsyncMock(return_value=_time())
     wakeup_context = await wakeup.assemble(
         inbound=None,
@@ -548,7 +515,6 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     )
 
     assert wakeup_context.history_messages == ordinary_context.history_messages
-    assert ordinary_context.external_events == wakeup_context.external_events == ()
     assert "recent_external_events" not in json.dumps(ordinary_context.metadata_payload)
     assert "recent_external_events" not in json.dumps(wakeup_context.metadata_payload)
     assert early_marker in "\n".join(
@@ -592,36 +558,15 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
     context = _assembled(
         history=history,
         current=current,
-        metadata={
-            "items": [
-                {
-                    "id": "recent_external_events",
-                    "data": {
-                        "events": [
-                            {
-                                "source": "github",
-                                "source_plugin_id": "github-monitor",
-                                "event_type": "PushEvent",
-                                "summary": "untrusted digest",
-                                "content_trust": EXTERNAL_EVENT_CONTENT_TRUST,
-                            }
-                        ]
-                    },
-                }
-            ]
-        },
+        metadata={"items": [{"id": "scene", "data": {"type": "private"}}]},
     )
     runtime = MagicMock()
     runtime.context.window_tokens = 96_000
     runtime.context.compaction_window_tokens = 90_000
-    runtime.plugins.max_total_prompt_characters = 8_000
     composed = composer.compose(
         inbound=None,
         context=context,
         runtime=runtime,
-        visual_observation=None,
-        visual_failure=False,
-        scope_type=ScopeType.PRIVATE,
     )
     ordinary = composer.compose(
         inbound=InboundMessage(
@@ -634,8 +579,6 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
         ),
         context=context,
         runtime=runtime,
-        visual_observation=None,
-        visual_failure=False,
     )
     system_text = "\n".join(
         item.content or "" for item in composed.messages if item.role == "system"
@@ -661,9 +604,6 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
         inbound=None,
         context=context,
         runtime=runtime,
-        visual_observation=None,
-        visual_failure=False,
-        scope_type=ScopeType.PRIVATE,
     )
     assert tuple((item.role, item.content) for item in repeat.messages) == tuple(
         (item.role, item.content) for item in composed.messages
@@ -1010,51 +950,6 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     assert tools._ledger.search.await_args.kwargs["group_id"] == "group-100"
     assert tools._ledger.search.await_args.kwargs["user_id"] is None
     assert "memory_change" not in {tool.name for tool in tools.definitions(group_runtime)}
-
-
-def _digest_item_with_encoded_size(target: int) -> dict[str, object]:
-    item: dict[str, object] = {
-        "source": "github",
-        "source_plugin_id": "github-monitor",
-        "event_type": "PushEvent",
-        "occurred_at": "2026-08-26T20:00:00+08:00",
-        "summary": "",
-        "content_trust": EXTERNAL_EVENT_CONTENT_TRUST,
-    }
-    padding = target - external_event_digest_encoded_characters((item,))
-    assert padding > 0
-    item["summary"] = "x" * padding
-    assert external_event_digest_encoded_characters((item,)) == target
-    return item
-
-
-def test_digest_parent_comma_stays_within_contribution_cost() -> None:
-    cap = 400
-    assembler = _assembler()
-    context: dict[str, object] = {
-        "scene": {"type": "private", "group_id": None},
-        "current_person": {"user_id": "1001", "nickname": "Ada", "display_name": "Ada"},
-    }
-    parent = assembler._fit_metadata(context, 4_000)
-    items = parent["items"]
-    assert isinstance(items, list)
-    assert items
-    exact = (_digest_item_with_encoded_size(cap - 1),)
-    assert external_event_digest_appended_growth(exact) == cap
-    with_digest = {**context, "recent_external_events": list(exact)}
-    contributions = assembler._context_contributions(with_digest)
-    digest_item = next(item for item in contributions if item.id == "recent_external_events")
-    assert digest_item.required
-    assert digest_item.cost == external_event_digest_appended_growth(exact)
-    # The real metadata fit appends exactly the costed growth, comma included.
-    payload = assembler._fit_metadata(with_digest, 8_000)
-    before = json.dumps(parent, ensure_ascii=False, separators=(",", ":"), default=str)
-    after = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
-    assert len(after) - len(before) == digest_item.cost == cap
-    assert payload["items"][-1] == {  # type: ignore[index]
-        "id": "recent_external_events",
-        "data": {"events": list(exact), "content_trust": EXTERNAL_EVENT_CONTENT_TRUST},
-    }
 
 
 def _covered_external_turn(

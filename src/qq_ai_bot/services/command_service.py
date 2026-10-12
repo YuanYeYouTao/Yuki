@@ -351,7 +351,7 @@ class CommandService:
             else:
                 deleted = await self._people.delete_person(message.sender.user_id)
                 text = (
-                    "已彻底删除与你 QQ 号关联的人物、关系分数、记忆、成员关系和可归属聊天事件。"
+                    "已彻底删除与你 QQ 号关联的人物、记忆、成员关系和可归属聊天事件。"
                     if deleted
                     else "没有找到与你 QQ 号关联的数据。"
                 )
@@ -448,6 +448,7 @@ class CommandService:
         return (
             "QQ AI 助手命令：\n"
             "/ai help | new | status | stop | ping | whoami | forgetme\n"
+            "/ai new 重置当前 Conversation；群内影响全部参与者，仅超级管理员可用。\n"
             "/ai memory list|add|update|delete|evidence\n"
             "自然语言也可查历史共同群友/旧群的结构记忆，支持昵称和群名；同名需澄清。\n"
             "共同群可读 Person（含私聊来源事实），不开放原始私聊/他人证据；写入权限不变。\n"

@@ -88,6 +88,8 @@ await ctx.messages.send_text(turn.text)
 - `DURABLE` 可跨 Host 重启；`EPHEMERAL` 仅当前 Host 生命周期有效。
 - 默认 `context_profile=none`，不注入 QQ、群、主聊天、人物记忆或关系。
 - 只持久化用户/助手可见正文；不返回也不存储隐藏推理。
+- 在原历史消息查询范围内保留完整正文，模型返回的可见正文完整保存并返回。
+  不按固定字符数截取消息后缀或输出；完整请求仍由原模型容量检查负责，初始历史超容量时明确失败。
 - `allowed_capabilities` 仍取批准交集；当前 v1 初始运行层可以把工具集收窄为 `none`。
 - `reset()` 只清空该会话历史；`close()` 关闭后不能继续运行。
 - 会话 UUID 是不透明标识，不能用来跨插件或跨真实场景访问。

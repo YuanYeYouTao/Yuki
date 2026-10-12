@@ -88,7 +88,6 @@ async def test_plugin_wakeup_send_receipt_only_requires_actor_for_actual_archive
     event = await harness.ledger.get_event(external.event.id)
     state = await harness.conversation_scopes.get(scope)
     config = await chat._runtime_config.snapshot(group_id="20001")
-    chat.configure_runtime_controls(config)
     actor_checks = []
     original = ToolRuntime.require_actor
 

@@ -351,13 +351,6 @@ class MemoryJob(_MemoryModel):
     event: EventRecord
 
 
-class MemoryContextBlock(_MemoryModel):
-    entity: MemoryScopeType
-    subject_user_id: str | None = None
-    group_id: str | None = None
-    facts: tuple[MemoryFact, ...] = ()
-
-
 class MemoryEntityTarget(_MemoryModel):
     role: MemoryTargetRole
     scope_type: MemoryScopeType

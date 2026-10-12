@@ -7,7 +7,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.schema import MetaData
 
-from qq_ai_bot.conversation.observation_schema import PROJECTION_TRIGGERS_0089
+from qq_ai_bot.conversation.projection_material_schema import PROJECTION_TRIGGERS_0108
 from qq_ai_bot.persistence.models import Base
 
 
@@ -31,6 +31,9 @@ class PromptProjectionModel(Base):
     rebuild_reason: Mapped[str] = mapped_column(String(32), nullable=False)
     invalidated_reason: Mapped[str | None] = mapped_column(String(32))
     payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    visible_material_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}", server_default="{}"
+    )
     byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     selected_summary_text: Mapped[str | None] = mapped_column(Text)
@@ -46,7 +49,7 @@ def install_projection_triggers(
     metadata: MetaData, connection: Connection, **kwargs: object
 ) -> None:
     if connection.dialect.name == "sqlite" and inspect(connection).has_table("prompt_projections"):
-        for statement in PROJECTION_TRIGGERS_0089.values():
+        for statement in PROJECTION_TRIGGERS_0108.values():
             connection.exec_driver_sql(
                 statement.replace("CREATE TRIGGER", "CREATE TRIGGER IF NOT EXISTS", 1)
             )

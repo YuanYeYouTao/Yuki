@@ -335,9 +335,6 @@ async def _execute_plugin_main_turn(
                     inbound=inbound,
                     context=context,
                     runtime=runtime.runtime_config,
-                    visual_observation=None,
-                    visual_failure=False,
-                    scope_type=inbound.scope_type,
                     include_plugin_context=False,
                     allowed_capabilities=runtime.allowed_capabilities,
                     read_scope=access_from_runtime(

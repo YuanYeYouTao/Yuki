@@ -69,7 +69,6 @@ class PromptStage(StrEnum):
 
 class PromptTarget(StrEnum):
     AGENT = "agent"
-    PLUGIN_SESSION = "plugin_session"
 
 
 class TrustedLevel(StrEnum):
@@ -79,18 +78,16 @@ class TrustedLevel(StrEnum):
 
 
 class PromptFragment(StrictModel):
-    """One bounded prompt contribution; third-party text remains untrusted."""
+    """One prompt contribution; third-party text remains untrusted."""
 
     id: str = Field(pattern=r"^[a-z][a-z0-9_.-]{0,127}$")
     plugin_id: str | None = None
     stage: PromptStage
     priority: int = Field(default=0, ge=-10_000, le=10_000)
-    content: str = Field(min_length=1, max_length=16_000)
+    content: str = Field(min_length=1)
     trusted_level: TrustedLevel = TrustedLevel.PLUGIN_UNTRUSTED
-    max_characters: int = Field(default=2_000, ge=1, le=16_000)
     target: PromptTarget = PromptTarget.AGENT
     source: str = Field(default="plugin", min_length=1, max_length=128)
-    cache_key: str | None = Field(default=None, max_length=256)
 
 
 class AdmissionSignal(StrictModel):
@@ -159,7 +156,6 @@ class PluginResourceLimits(StrictModel):
     background_tasks: int = Field(default=0, ge=0, le=64)
     http_concurrency: int = Field(default=1, ge=1, le=64)
     storage_mb: int = Field(default=10, ge=1, le=10_240)
-    prompt_characters: int = Field(default=2_000, ge=0, le=16_000)
 
 
 class NotificationTarget(StrictModel):

@@ -1327,6 +1327,8 @@ class TurnExecution:
                 not _was_executed,
             )
             self.state.transcript.append_result(call.id, result)
+            # The paired send receipt already carries these exact ledger events.
+            self.state.observed_event_ids.update(fact.get("observed_event_ids", ()))
         self.state.transcript.append_tool_media(
             tuple((call.id, result) for call, result, _ in batch)
         )

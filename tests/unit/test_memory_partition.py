@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import select, text
 from tests.conftest import make_settings
 from tests.support.user_profiles_helpers import inbound, observe_members
 
@@ -15,7 +15,6 @@ from qq_ai_bot.conversation.canonical_db_models import (
     ConversationLegacyAliasModel,
 )
 from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.identity.canonical_repository import IDENTITY_PLATFORM, ensure_person, ensure_space
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
@@ -284,23 +283,15 @@ async def test_targets_keep_sixth_mention_and_reply_after_five_people(database: 
 
 
 @pytest.mark.asyncio
-async def test_event_refs_keep_reply_role_for_another_binding_of_a_mentioned_person(
+async def test_targets_share_one_canonical_person_across_mention_and_reply_binding(
     database: Database,
-    monkeypatch,
 ) -> None:
     from dataclasses import replace
-
-    from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
-    from qq_ai_bot.conversation.rollup.repository import ConversationRollupRepository
-    from qq_ai_bot.conversation.rollup.service import ConversationRollupService
-    from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-    from qq_ai_bot.services.context_assembler import ContextAssembler
-    from qq_ai_bot.time.service import TimeContextService
 
     user_ids = tuple(str(62021 + index) for index in range(7))
     people = await observe_members(database, ("1001", *user_ids[:6]))
     async with database.immediate_session() as session:
-        person_id = await ensure_person(session, user_ids[-1], now=_NOW)
+        await ensure_person(session, user_ids[-1], now=_NOW)
         binding = await session.scalar(
             select(IdentityBindingModel).where(
                 IdentityBindingModel.external_account_id == user_ids[0]
@@ -320,72 +311,16 @@ async def test_event_refs_keep_reply_role_for_another_binding_of_a_mentioned_per
                 updated_at=_NOW,
             )
         )
-    settings = make_settings(database.url)
-    config = RollupPolicyConfig()
-    assembler = ContextAssembler(
-        settings=settings,
-        ledger=EventLedgerRepository(database),
-        people=people,
-        time_service=TimeContextService(database),
-        rollup_repository=ConversationRollupRepository(database, config),
-        rollup_service=ConversationRollupService(models=None, config=config, timeout_seconds=1),
-    )
     message = replace(
         inbound("refs", message_id="bound-refs", group_id="2001", mentioned_user_ids=user_ids),
         reply_sender_user_id="62999",
     )
-    current = UserProfileSnapshot(
-        user_id="1001",
-        scope_type=ScopeType.GROUP,
-        group_id="2001",
-        nickname="event name",
-        group_card="event card",
-    )
-    get_many = people.get_many
-    changed = False
-
-    async def forget_after_owner_projection(*args, **kwargs):
-        nonlocal changed
-        if not changed:
-            changed = True
-            async with database.immediate_session() as writer:
-                first = await writer.scalar(
-                    select(IdentityBindingModel.person_id).where(
-                        IdentityBindingModel.external_account_id == user_ids[0]
-                    )
-                )
-                forgotten = await writer.scalar(
-                    select(IdentityBindingModel.person_id).where(
-                        IdentityBindingModel.external_account_id == user_ids[2]
-                    )
-                )
-                await writer.execute(
-                    update(MembershipModel)
-                    .where(MembershipModel.canonical_person_id == first)
-                    .values(group_card="changed after projection")
-                )
-                await writer.execute(
-                    delete(MembershipModel).where(MembershipModel.canonical_person_id == forgotten)
-                )
-        return await get_many(*args, **kwargs)
-
-    monkeypatch.setattr(people, "get_many", forget_after_owner_projection)
-    subjects = await assembler._event_bound_memory_refs(message, current)
-    members = tuple(item for item in subjects if item["subject_ref"].startswith("member_"))
-    assert tuple(item["user_id"] for item in members) == user_ids[:6]
-    reply = next(item for item in subjects if item["subject_ref"] == "replied_message_author")
-    assert reply["user_id"] == user_ids[0]
-    assert reply["display_name"] == f"card-{user_ids[0]}" and changed
-    assert subjects[0]["display_name"] == "event card"
-    assert person_id not in {item.get("user_id") for item in subjects}
-    refreshed = await assembler._event_bound_memory_refs(message, current)
-    assert not any(item.get("user_id") == user_ids[2] for item in refreshed)
-    assert (
-        next(item for item in refreshed if item["subject_ref"] == "replied_message_author")[
-            "display_name"
-        ]
-        == "changed after projection"
-    )
+    targets = await MemoryTargetResolver(people).resolve(message)
+    for scope in (MemoryScopeType.PERSON, MemoryScopeType.PERSON_GROUP):
+        assert tuple(
+            target.subject_user_id for target in targets if target.scope_type is scope
+        ) == ("1001", *user_ids[:6])
+    assert not any(target.subject_user_id in {"62999", user_ids[-1]} for target in targets)
 
 
 @pytest.mark.asyncio

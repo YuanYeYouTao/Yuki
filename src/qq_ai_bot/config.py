@@ -178,7 +178,6 @@ class Settings(BaseSettings):
     work_compaction_target_ratio: float = Field(default=0.50, gt=0, lt=1)
     conversation_rollup_trigger_ratio: float = Field(default=0.90, gt=0, lt=1)
     conversation_rollup_target_ratio: float = Field(default=0.60, gt=0, lt=1)
-    context_metadata_budget_ratio: float = Field(default=0.04, gt=0, lt=1)
 
     global_llm_concurrency: int = 4
     per_user_requests_per_minute: int = 10
@@ -336,9 +335,6 @@ class Settings(BaseSettings):
     plugin_hook_timeout_seconds: float = 3.0
     plugin_start_timeout_seconds: float = 10.0
     plugin_stop_timeout_seconds: float = 10.0
-    plugin_max_prompt_fragment_characters: int = 2000
-    plugin_max_prompt_characters_per_plugin: int = 4000
-    plugin_max_total_prompt_characters: int = 8000
     plugin_background_task_limit: int = 4
     plugin_failure_disable_threshold: int = 3
     plugin_http_max_response_bytes: int = 2_097_152

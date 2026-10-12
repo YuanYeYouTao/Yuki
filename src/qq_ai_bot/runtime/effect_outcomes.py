@@ -53,6 +53,7 @@ def execution_evidence(
     if isinstance(body.get("progress"), dict):
         body = body["progress"]
     artifacts: list[str] = []
+    observed_event_ids: list[int] = []
 
     # Typed external payloads can be deep or reuse containers. Walk iteratively
     # so presentation failures cannot also break the durable receipt projection.
@@ -66,6 +67,12 @@ def execution_evidence(
             if isinstance(item, dict):
                 if isinstance(item.get("artifact_id"), str):
                     artifacts.append(item["artifact_id"])
+                if (
+                    tool == "send_message"
+                    and item.get("status") == "succeeded"
+                    and type(item.get("event_id")) is int
+                ):
+                    observed_event_ids.append(item["event_id"])
                 stack.extend(reversed(tuple(item.values())))
             else:
                 stack.extend(reversed(item))
@@ -137,6 +144,11 @@ def execution_evidence(
             else {}
         ),
         "executed": body.get("executed", True),
+        **(
+            {"observed_event_ids": list(dict.fromkeys(observed_event_ids))}
+            if observed_event_ids
+            else {}
+        ),
         **({"process": process} if process else {}),
     }
 

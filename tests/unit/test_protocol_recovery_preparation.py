@@ -439,8 +439,6 @@ async def test_response_paid_stage_prepares_current_main_history_before_retiring
             inbound=inbound,
             context=first_context,
             runtime=config,
-            visual_observation=None,
-            visual_failure=False,
         )
         definitions = await runner.main_contract.definitions()
         session.contract = runner.work_contract(config, first.messages, definitions)
@@ -503,8 +501,6 @@ async def test_response_paid_stage_prepares_current_main_history_before_retiring
             inbound=inbound,
             context=context,
             runtime=config,
-            visual_observation=None,
-            visual_failure=False,
         )
         runtime = replace(
             runtime,

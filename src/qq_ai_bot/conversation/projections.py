@@ -66,6 +66,7 @@ class ProjectionSnapshot:
 
     selected_summary_kind: str | None = None
     selected_summary_renderer: int | None = None
+    visible_material_json: str = "{}"
 
     def items(self) -> list[dict[str, Any]]:
         # Each consumer gets a copy; changing it cannot mutate the committed view.
@@ -149,6 +150,8 @@ class PromptProjectionRepository:
         current_snapshot: dict[str, Any] | None = None,
         snapshot_event_id: int | None = None,
         snapshot_fragment_index: int | None = None,
+        visible_material: dict[str, Any] | None = None,
+        replace_event_id: int | None = None,
     ) -> ProjectionSnapshot:
         publication = await self.prepare_commit(
             view_key=view_key,
@@ -171,6 +174,8 @@ class PromptProjectionRepository:
             current_snapshot=current_snapshot,
             snapshot_event_id=snapshot_event_id,
             snapshot_fragment_index=snapshot_fragment_index,
+            visible_material=visible_material,
+            replace_event_id=replace_event_id,
         )
         async with self.database.immediate_session() as session:
             return await publication(session)
@@ -200,6 +205,8 @@ class PromptProjectionRepository:
         snapshot_fragment_index: int | None = None,
         previous_snapshot: ProjectionSnapshot | None = None,
         previous_item_count: int | None = None,
+        visible_material: dict[str, Any] | None = None,
+        replace_event_id: int | None = None,
     ) -> ProjectionPublication:
         """Append exact items, or explicitly replace an epoch under a compare-and-swap.
 
@@ -259,10 +266,14 @@ class PromptProjectionRepository:
                 if item["event_ids"] or "observation_id" in item:
                     raise ProjectionConflict("snapshot fragment is not a fresh envelope")
                 item["observation_id"], item["observation_version"] = snapshot_id, 1
+        for position, item in enumerate(items):
+            if not item["event_ids"] and "selection_key" not in item:
+                item["selection_key"] = _selection_key(item, position)
         if len(items) > 262_144 or not all(isinstance(item, dict) for item in items):
             raise ProjectionCapacityError("projection item limit exceeded")
         payload = json.dumps(items, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-        size = len(payload.encode("utf-8"))
+        material_payload = _encode_item(visible_material or {})
+        size = len(payload.encode("utf-8")) + len(material_payload.encode("utf-8"))
         collect_phase_metrics(item_count=len(items), payload_bytes=size)
         if size > self.view_bytes:
             raise ProjectionCapacityError("projection view budget exceeded")
@@ -287,6 +298,7 @@ class PromptProjectionRepository:
 
         fragments = FrozenFragments.load(items) if actor_id and read_scope else None
         prepared_sources = []
+        replaced_selection_ids: list[int] = []
         summary_parents: dict[str, tuple[str, ...]] = {}
 
         if prepared_snapshot is not None:
@@ -370,8 +382,8 @@ class PromptProjectionRepository:
                     raise ProjectionConflict("projection source revision changed")
                 if fragments is not None:
                     candidates: dict[str, dict[str, Any]] = {}
-                    for item in items:
-                        key = _selection_key(item)
+                    for position, item in enumerate(items):
+                        key = _selection_key(item, position)
                         previous_item = candidates.get(key)
                         if previous_item is not None:
                             if _encode_item(previous_item) != _encode_item(item):
@@ -381,6 +393,23 @@ class PromptProjectionRepository:
                             continue
                         candidates[key] = item
                     existing: dict[str, Any] = {}
+                    if replace_event_id is not None:
+                        replaced_selection_ids = list(
+                            await source_reader.scalars(
+                                select(ContextSelectionModel.id)
+                                .where(
+                                    ContextSelectionModel.view_key == view_key,
+                                    ContextSelectionModel.conversation_id == conversation_id,
+                                    ContextSelectionModel.generation == generation,
+                                    text(
+                                        "EXISTS (SELECT 1 FROM json_each("
+                                        "model_context_selections.event_ids_json) "
+                                        "WHERE value = :replace_event_id)"
+                                    ),
+                                )
+                                .params(replace_event_id=replace_event_id)
+                            )
+                        )
                     keys = list(candidates)
                     for offset in range(0, len(keys), 256):
                         rows = await source_reader.execute(
@@ -398,6 +427,11 @@ class PromptProjectionRepository:
                             )
                         )
                         existing.update((row.source_key, row) for row in rows)
+                    existing = {
+                        key: row
+                        for key, row in existing.items()
+                        if row.id not in replaced_selection_ids
+                    }
                     frozen_keys = prepared_prefix[2] if prepared_prefix is not None else frozenset()
                     inspect_ids = []
                     for key, row in existing.items():
@@ -582,14 +616,15 @@ class PromptProjectionRepository:
                                 )
                             )
                         continue
-                    used -= victim.byte_size - 2
+                    used -= victim.byte_size - 4
                     count -= 1
                     await session.execute(
                         update(PromptProjectionModel)
                         .where(PromptProjectionModel.view_key == victim.view_key)
                         .values(
                             payload_json="[]",
-                            byte_size=2,
+                            visible_material_json="{}",
+                            byte_size=4,
                             invalidated_reason="capacity",
                             revision=PromptProjectionModel.revision + 1,
                             updated_at=datetime.now(UTC),
@@ -643,12 +678,19 @@ class PromptProjectionRepository:
             row.rebuild_reason = rebuild_reason or row.rebuild_reason
             row.invalidated_reason = None
             row.payload_json, row.byte_size = payload, size
+            row.visible_material_json = material_payload
             row.selected_summary_text = selected_summary_text
             row.selected_summary_coverage = selected_summary_coverage
             row.selected_summary_kind = selected_summary_kind
             row.selected_summary_renderer = selected_summary_renderer
             row.updated_at = datetime.now(UTC)
             session.add(row)
+            if replaced_selection_ids:
+                await session.execute(
+                    delete(ContextSelectionModel).where(
+                        ContextSelectionModel.id.in_(replaced_selection_ids)
+                    )
+                )
             if prepared_sources:
                 from sqlalchemy.dialects.sqlite import insert
 
@@ -743,7 +785,7 @@ class PromptProjectionRepository:
             prefix_items, ensure_ascii=False, separators=(",", ":"), allow_nan=False
         )
         keys = (
-            frozenset(_selection_key(item) for item in prefix_items)
+            frozenset(_selection_key(item, position) for position, item in enumerate(prefix_items))
             if all("event_ids" in item for item in prefix_items)
             else frozenset()
         )
@@ -772,7 +814,8 @@ class PromptProjectionRepository:
                 )
                 .values(
                     payload_json="[]",
-                    byte_size=2,
+                    visible_material_json="{}",
+                    byte_size=4,
                     invalidated_reason=reason,
                     revision=PromptProjectionModel.revision + 1,
                     updated_at=datetime.now(UTC),
@@ -784,10 +827,16 @@ def _encode_item(item: dict[str, Any]) -> str:
     return json.dumps(item, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
 
-def _selection_key(item: dict[str, Any]) -> str:
+def _selection_key(item: dict[str, Any], position: int = 0) -> str:
     # Chat identity is the original event group; data-only envelopes use their
     # immutable wire bytes. This is an identity key, never an authorization proof.
-    value = json.dumps(item["event_ids"]) if item["event_ids"] else _encode_item(item)
+    if not item["event_ids"] and "selection_key" in item:
+        return str(item["selection_key"])
+    value = (
+        json.dumps(item["event_ids"])
+        if item["event_ids"]
+        else _encode_item({"position": position, "fragment": item})
+    )
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
@@ -825,4 +874,5 @@ def _snapshot(row: PromptProjectionModel) -> ProjectionSnapshot:
         (row.view_key, row.payload_json, stamp),
         selected_summary_kind=row.selected_summary_kind,
         selected_summary_renderer=row.selected_summary_renderer,
+        visible_material_json=row.visible_material_json,
     )

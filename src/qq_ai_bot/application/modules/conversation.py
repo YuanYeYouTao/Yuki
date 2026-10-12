@@ -98,11 +98,7 @@ class ConversationModule:
         settings = self._settings
         persistence = self._persistence
         models = self._model_runtime.executor
-        prompt_registry = PromptRegistry(
-            max_fragment_characters=settings.plugin_max_prompt_fragment_characters,
-            max_characters_per_plugin=settings.plugin_max_prompt_characters_per_plugin,
-            max_total_plugin_characters=settings.plugin_max_total_prompt_characters,
-        )
+        prompt_registry = PromptRegistry()
         admission_features = AdmissionFeatureBuilder(
             ledger=persistence.ledger,
         )

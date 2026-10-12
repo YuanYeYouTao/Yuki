@@ -28,4 +28,3 @@ allowed_hosts = ["api.github.com"]
 background_tasks = 1
 http_concurrency = 4
 storage_mb = 100
-prompt_characters = 0

@@ -46,7 +46,7 @@ async def _scene(database, tmp_path, provider, *, request_limit=24, code_enabled
     )
     chat = harness.processor._chat
     state = ShortState(WorkspaceStore(tmp_path / "state"))
-    state.update({"slot": 1, "text": "original-snapshot", "expected_revision": 0})
+    state.update({"slot": 1, "text": "original-snapshot"})
     chat.runtime.runner.main_contract = MainAgentContract(chat, state, code_enabled=code_enabled)
     chat.runtime.runner.code_mode_settings = harness.settings
     chat._tools.short_state = state
@@ -89,7 +89,7 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
         if number == 2:
             return _tool(
                 "update_short_state",
-                {"slot": 1, "text": "private-work-result", "expected_revision": 1},
+                {"slot": 1, "text": "private-work-result"},
                 "update",
             )
         if number == 3:
@@ -102,9 +102,7 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
                         "resumed-write",
                         ToolFunction(
                             "update_short_state",
-                            json.dumps(
-                                {"slot": 1, "text": "resumed-work-result", "expected_revision": 3}
-                            ),
+                            json.dumps({"slot": 1, "text": "resumed-work-result"}),
                         ),
                     ),
                 ),
@@ -133,7 +131,7 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
     item = await repository.get(identity)
     assert item["state"] == "queued" and item["model_requests"] == 2
     assert state.snapshot()[0]["text"] == "private-work-result"
-    state.update({"slot": 1, "text": "new-unsubmitted-state", "expected_revision": 2})
+    state.update({"slot": 1, "text": "new-unsubmitted-state"})
 
     # A safe paired root resumes current history and task material, retaining
     # original execution facts while retiring the previous private tool tail.
@@ -320,7 +318,7 @@ async def test_same_actor_new_turn_honors_snapshot_boundaries(
                 ChatEventModel.platform_message_id == message.message_id
             )
         )
-    state.update({"slot": 1, "text": "current-safe-snapshot", "expected_revision": 1})
+    state.update({"slot": 1, "text": "current-safe-snapshot"})
     if boundary == "deleted":
         async with database.sessions() as writer, writer.begin():
             await writer.delete(await writer.get(ChatEventModel, original_event))

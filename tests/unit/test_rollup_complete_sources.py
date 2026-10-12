@@ -606,3 +606,107 @@ async def test_rollup_format_defaults_preserve_raw_history_through_commit_and_re
         )
         assert "Uncovered source records" in prompt.content
     assert len(model.sources) == 1
+
+
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("mirror_changed", [False, True])
+async def test_ordinary_compaction_removes_only_actual_portable_mirror_fields(
+    native, mirror_changed
+):
+    from copy import deepcopy
+    from dataclasses import asdict
+
+    from qq_ai_bot.domain.messages import (
+        ChatMessage,
+        ChatRequest,
+        ProviderContinuation,
+        ToolCall,
+        ToolFunction,
+    )
+    from qq_ai_bot.services.ordinary_compaction import compact_ordinary
+    from qq_ai_bot.services.turn_transcript import TurnTranscript
+
+    initial = (ChatMessage("system", "fixed"), ChatMessage("user", "current request"))
+    transcript = TurnTranscript(initial)
+    call = ToolCall("original-call", ToolFunction("read_probe", '{"query":"original"}'))
+    content = "original assistant explanation"
+    output = '{"ok":true,"data":"original complete tool result"}'
+    if native:
+        transcript.accept(ProviderContinuation("gemini", "generate_content", {"opaque": True}))
+    else:
+        transcript.append(ChatMessage("assistant", content, tool_calls=(call,)))
+    transcript.append_result(call.id, output)
+    mirror_call = asdict(call)
+    mirror_content, mirror_output = content, output
+    if mirror_changed:
+        mirror_call["function"]["arguments"] = '{"query":"unique mirror argument"}'
+        mirror_content = "unique mirror assistant explanation"
+        mirror_output = '{"ok":false,"data":"unique mirror result"}'
+    observation = {
+        "sequence": 1,
+        "content": mirror_content,
+        "tool_calls": [mirror_call],
+        "results": [
+            {
+                "call_id": call.id,
+                "name": call.function.name,
+                "arguments": mirror_call["function"]["arguments"],
+                "output": mirror_output,
+                "executed": False,
+            }
+        ],
+        "citations": [{"url": "https://original.invalid/evidence", "title": "real citation"}],
+        "native_tool_events": [{"type": "search", "status": "completed"}],
+        "status": "incomplete",
+    }
+    original = deepcopy(observation)
+    transcript_before = transcript.request()
+    requests = []
+
+    async def execute(request):
+        requests.append(request)
+        # No source is covered: the reduced mirror must also be the one retained
+        # in the new tail, while actual portable pairs remain intact.
+        return ChatResponse("{}", 0)
+
+    evidence = [{"call_id": call.id, "executed": False, "mutation_committed": False}]
+    candidate = await compact_ordinary(
+        initial,
+        transcript,
+        main_request=ChatRequest(messages=transcript_before.messages),
+        structured_mode=StructuredOutputMode.TEXT_JSON,
+        summary_budget=128000,
+        input_budget=128000,
+        output_tokens=8192,
+        prepare=lambda request: request,
+        execute=execute,
+        evidence=evidence,
+        model_observations=[observation],
+    )
+    source = json.loads(requests[0].messages[-1].content)
+    records = {item["ref"]: json.loads(item["text"]) for item in source["records"]}
+    reduced = records["observation:0"]
+    if native or mirror_changed:
+        assert reduced["content"] == mirror_content
+        assert reduced["tool_calls"] == [mirror_call]
+        assert reduced["results"][0]["arguments"] == mirror_call["function"]["arguments"]
+    else:
+        assert "content" not in reduced
+        assert reduced["tool_calls"] == []
+        assert "arguments" not in reduced["results"][0]
+    if mirror_changed:
+        assert reduced["results"][0]["output"] == mirror_output
+    else:
+        assert "output" not in reduced["results"][0]
+    assert reduced["results"][0]["executed"] is False
+    for key in ("citations", "native_tool_events", "status"):
+        assert reduced[key] == original[key]
+    capsule = json.loads(candidate.request().messages[-1].content)
+    assert capsule["uncovered_observations"] == [reduced]
+    assert capsule["execution_evidence"] == evidence
+    assert output in {
+        item["record"].get("content", item["record"].get("output"))
+        for item in capsule["uncovered_records"]
+    }
+    assert transcript.request() == transcript_before
+    assert observation == original

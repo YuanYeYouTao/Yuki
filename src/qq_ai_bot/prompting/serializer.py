@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import replace
 
 from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.prompting.models import PromptContribution
@@ -45,19 +44,6 @@ def strip_dynamic_prefix(content: str) -> str:
     return body if separator else content
 
 
-def serialized_characters(contribution: PromptContribution) -> int:
-    """Return deterministic selection cost for one contribution."""
-
-    return len(
-        json.dumps(
-            contribution.payload if contribution.payload is not None else contribution.content,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            default=str,
-        )
-    )
-
-
 def serialized_messages_hash(messages: tuple[ChatMessage, ...]) -> str:
     """Hash the actual canonical bytes of a provider-neutral message prefix."""
 
@@ -83,37 +69,3 @@ def serialized_messages_hash(messages: tuple[ChatMessage, ...]) -> str:
     ]
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
-def append_dynamic_item(
-    messages: tuple[ChatMessage, ...], item: dict[str, object]
-) -> tuple[ChatMessage, ...]:
-    """Add Host data to the current compiled input, never to historical/system turns."""
-    index = next((i for i in range(len(messages) - 1, -1, -1) if messages[i].role == "user"), None)
-    if index is None:
-        messages = (*messages, ChatMessage(role="user", content=""))
-        index = len(messages) - 1
-    content = messages[index].content or ""
-    items: list[dict[str, object]] = []
-    suffix = "\n\n" + content if content else ""
-    if content.startswith(DYNAMIC_ENVELOPE_HEADER):
-        items, end = json.JSONDecoder().raw_decode(content[len(DYNAMIC_ENVELOPE_HEADER) :])
-        if not isinstance(items, list) or not all(isinstance(value, dict) for value in items):
-            raise ValueError("invalid compiled dynamic envelope")
-        suffix = content[len(DYNAMIC_ENVELOPE_HEADER) + end :]
-    if any(value.get("id") == item["id"] for value in items):
-        raise ValueError("duplicate dynamic contribution")
-    position = next(
-        (i for i, value in enumerate(items) if value.get("id") == "runtime.time"), len(items)
-    )
-    items.insert(position, item)
-    updated = list(messages)
-    updated[index] = replace(
-        messages[index],
-        content=(
-            DYNAMIC_ENVELOPE_HEADER
-            + json.dumps(items, ensure_ascii=False, separators=(",", ":"))
-            + suffix
-        ),
-    )
-    return tuple(updated)

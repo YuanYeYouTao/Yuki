@@ -21,7 +21,7 @@ from qq_ai_bot.prompting.serializer import (
 
 
 class PromptCompiler:
-    """Deduplicate, budget, order, and serialize a prompt program."""
+    """Order and serialize a prompt program with unique contribution identities."""
 
     def compile(
         self,
@@ -29,7 +29,6 @@ class PromptCompiler:
         *,
         history: tuple[ChatMessage, ...] = (),
         current_message: ChatMessage | None = None,
-        dynamic_character_budget: int | None = None,
     ) -> CompiledPrompt:
         by_id: dict[str, PromptContribution] = {}
         for contribution in program.contributions:
@@ -48,7 +47,7 @@ class PromptCompiler:
         )
         static = tuple(item for item in ordered if item.stability is PromptStability.STATIC)
         dynamic = tuple(item for item in ordered if item.stability is PromptStability.TURN)
-        selected_dynamic = self._select(dynamic, dynamic_character_budget)
+        selected_dynamic = dynamic
         stable_text = "\n\n".join(item.content or "" for item in static)
         dynamic_text = serialize_dynamic(selected_dynamic)
         messages: list[ChatMessage] = []
@@ -85,29 +84,6 @@ class PromptCompiler:
                 conversation_prefix_hash=conversation_prefix_hash,
             ),
         )
-
-    @staticmethod
-    def _select(
-        contributions: tuple[PromptContribution, ...],
-        budget: int | None,
-    ) -> tuple[PromptContribution, ...]:
-        if budget is None:
-            return contributions
-        if budget < 0:
-            raise ValueError("dynamic prompt budget must not be negative")
-        required = tuple(item for item in contributions if item.required)
-        # Character budgets only trim optional contributions. The complete
-        # ChatRequest (tools, media and settings included) owns hard capacity.
-        selected = list(required)
-        for item in contributions:
-            if item.required:
-                continue
-            cost = len(serialize_dynamic((*selected, item)))
-            if cost <= budget:
-                selected.append(item)
-        selected_ids = {item.id for item in selected}
-        return tuple(item for item in contributions if item.id in selected_ids)
-
 
 def _stability_rank(stability: PromptStability) -> int:
     if stability is PromptStability.STATIC:

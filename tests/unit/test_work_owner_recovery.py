@@ -87,7 +87,7 @@ def original_responses(provider):
         if count == 2:
             return _tool(
                 "update_short_state",
-                {"slot": 1, "text": "committed-original", "expected_revision": 1},
+                {"slot": 1, "text": "committed-original"},
                 "original-mutation",
             )
         if count == 3:
@@ -147,7 +147,7 @@ async def test_expired_original_work_recovers_from_original_dispatch_facts(
             "original-mutation",
             ToolFunction(
                 "update_short_state",
-                json.dumps({"slot": 1, "text": "committed-original", "expected_revision": 1}),
+                json.dumps({"slot": 1, "text": "committed-original"}),
             ),
         )
         if "lost-response" in action:
@@ -195,7 +195,7 @@ async def test_expired_original_work_recovers_from_original_dispatch_facts(
             ready=False,
         )
         assert await repository.prepare_input(input_id, {"text": "late-authorized-business"})
-        state.update({"slot": 1, "text": "unsubmitted-fresh-state", "expected_revision": 1})
+        state.update({"slot": 1, "text": "unsubmitted-fresh-state"})
 
         def fresh_response(request):
             serialized = json.dumps([item.content for item in request.messages], ensure_ascii=False)
@@ -362,7 +362,7 @@ async def test_exact_33rd_input_is_selected_after_32_paused_works(database, tmp_
         if count == 34:
             return _tool(
                 "update_short_state",
-                {"slot": 1, "text": "selected-original-33", "expected_revision": 1},
+                {"slot": 1, "text": "selected-original-33"},
                 "commit-33",
             )
         return _tool("task_control", {"action": "complete"}, "finish-33")

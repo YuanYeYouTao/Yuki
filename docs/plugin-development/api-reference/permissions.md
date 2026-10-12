@@ -46,7 +46,6 @@
 | `web.read` | 使用 Yuki 网页读取服务 |
 | `network.http.allowlisted` | 请求 Manifest 精确白名单公共主机 |
 | `network.http.unrestricted` | 更宽网络请求；高风险且仍受 Host 底线保护 |
-| `vision.current.read` | 读取当前已有视觉观察 |
 | `vision.analyze` | 请求分析当前真实媒体 |
 | `media.current.read` | 读取当前媒体段投影 |
 | `media.artifact.create` | 创建 Host 托管、带配额和 TTL 的媒体产物 |

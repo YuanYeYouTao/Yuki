@@ -20,7 +20,7 @@ MemoryPartitionKey 使用 SELF、PERSON、GROUP 或 PERSON_GROUP owner，不得�
 协议恢复单独使用只含身份的 scope state 读取；准备后的 read-version/source/privacy 与
 实际 dispatch CAS 继续独立执行。不能以先前展示资料快照替代授权或取消末端围栏。
 
-普通 Person 的 alias 与 timezone 在本次准备中只解析一次 live canonical owner，返回
+普通 Person 的 timezone 在本次准备中只解析一次 live canonical owner，返回
 不含 ORM/session 的 immutable 展示 DTO。Runner 复用本轮 timezone 并重新取 clock，
 下一轮重新读取偏好；SELF 与 actorless 不借用该 DTO。不新增展示资料的统一 revision 或变更重试协议。
 
@@ -160,8 +160,8 @@ Provider 输入顺序固定为：
 ```text
 TRUSTED STATIC INSTRUCTIONS
 UNTRUSTED ROLLUP SUMMARY INPUT
-FROZEN AUTHORIZED CHAT AND SCOPED OBSERVATIONS
-CURRENT ACTOR DYNAMIC ENVELOPE
+FROZEN AUTHORIZED CHAT, MATERIAL BASELINES/CHANGES AND USEFUL NOTES
+CURRENT MATERIAL CHANGES
 CURRENT MESSAGE
 ```
 
@@ -170,20 +170,29 @@ CURRENT MESSAGE
 renderer 的旧记录按当前获准来源进行 `rollup` 显式重建并记录新 epoch；不猜旧语义。
 重启、fit/soft/hard 容量及隐私/来源复核仍走原合同。
 
-Rollup 永不进入 system instructions。冻结历史保留所选聊天与观察的原顺序，新事件在安全点追加。
-昵称、群名片和正文来自落账时事件；当前 Actor 的
-权限和必要场景资料只进入当前 envelope。长期记忆由 Main Agent 按需调用记忆检索工具，
+Rollup 永不进入 system instructions。冻结历史保留所选聊天、资料差量与有用观察的原顺序，
+新事件在安全点追加。昵称、群名片和正文来自落账时事件；必要人物与场景资料首次展示后
+冻结，未变化不重复注入，变化只追加实际字段差量。授权在执行处核验，不常驻权限证明包装。
+长期记忆由 Main Agent 按需调用记忆检索工具，
 不在每轮自动预取或注入。
 
-普通输入派发前冻结获准聊天和当时必要资料；旧昵称及状态快照保留当时值，
-后来的更正追加而不重写旧块。开启 Work runtime 但尚未 accept 的普通轮仍提交该投影，
-已采用的动态资料作为有来源的作用域观察冻结；运行状态属于临时执行材料，不追加到
-公共历史。当前 Work 的目标、工具/steer 尾部及不透明签名
+普通输入派发前冻结获准聊天和实际采用的资料首份/差量；后来的变化或移除追加而不重写
+旧块。初始空短记录不展示，已展示槽位的清空或到期以一次空 text 差量退出。自动
+`dynamic_snapshot` 只保存实际已选资料的结构化来源，不作为整包观察再注入；有用的
+context_note/work-note 继续按原授权与依赖读取。开启 Work runtime 但尚未 accept 的普通轮
+仍提交该投影。当前 Work 的目标、工具/steer 尾部及不透明签名
 继续属于原执行的私有 journal，不并入共享普通历史。
 派发明确标识新 composition 或恢复 journal 的来源；恢复、合同/来源改变及旧检查点
 缺失后的恢复路径，不能调用另一份新 composition 的提交闭包。批准 suffix 必须与实际
 请求的对应位置完全一致，CAS、actor/read-scope、容量及隐私围栏继续生效。
 投影证明准备和派发边界的输入，不证明模型响应或消息送达。
+
+原 `prompt_projections` 行内的最后可见资料 JSON 是可丢缓存，与实际选取及原 projection
+CAS 同事务提交，计入缓存字节容量；失败不推进基线。正常轮只比较这个小视图，缓存
+淘汰或合法 epoch 重建时按实际保留的选取及其结构化来源顺序重建一次。新 Rollup 前缀
+只计算真正保留的资料，不复用已退出输入的旧基线。它不改变 Conversation generation，
+不新增业务状态表、hash 注册表或另一套来源 revision。Work 的一次 Host 私有初始化布局
+和真实协议检查点沿原合同，本轮不改。
 
 普通投影在派发前按完整初始 composition 与固定函数工具，使用 Runner 同一请求估算器
 核对真实容量；压缩比例及 4096 token 余量仅用于安排整理，不能成为另一层硬容量。
@@ -196,7 +205,8 @@ Rollup 永不进入 system instructions。冻结历史保留所选聊天与观�
 原因一次采用新摘要及覆盖点之后的全部聊天，之后继续稳定追加。后台尚未完成而原输入能 fit，
 仍保留原输入先回复；当前激活中的工具往返不会因此切换前缀。没有可回收旧材料、或 fresh
 本身已超真实容量时不制造容量 epoch，交最终预检准确停止。
-Rollup 只整理公共聊天来源，不能证明私有观察线索已被覆盖。线索优先复用已准备的作用域摘要；
+Rollup 只整理公共聊天来源，不能证明有用观察线索已被覆盖。自动资料来源不加入付费观察
+摘要输入；有用线索优先复用已准备的作用域摘要；
 没有就绪摘要而原请求 fit 时保留线索继续，真正超限才沿原 scope-summary 边界整理。
 普通工具尾部的显式纯摘要继续保留回执、内部 ID 和预算，不自动 accept 或重发。
 私有工具回合与签名仍归原执行，不共享到群史。不因重启或容量上界上调清空合法冻结前缀。

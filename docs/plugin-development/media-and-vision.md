@@ -4,12 +4,10 @@
 
 ```python
 segments = await ctx.media.get_current()
-observation = await ctx.vision.get_current_observation()
-if observation is None:
-    result = await ctx.vision.analyze_current_media("这张图的主要内容是什么？")
+result = await ctx.vision.analyze_current_media("这张图的主要内容是什么？")
 ```
 
-分别需要 `media.current.read`、`vision.current.read` 或 `vision.analyze`。图片发送需要 `message.media.send`，并且 `media_reference` 必须是 Host 接受的受控引用，不是任意本机路径。
+分别需要 `media.current.read` 或 `vision.analyze`。图片发送需要 `message.media.send`，并且 `media_reference` 必须是 Host 接受的受控引用，不是任意本机路径。
 
 ## 明确选择工具图片给主 Agent
 
@@ -37,8 +35,7 @@ Base64 不进入 tool JSON、普通历史或插件日志；公开句柄字段不
 - OCR、图片中文字和视觉模型输出都是不可信外部数据。
 - 图片及引用图片作为不可信资料进入当前轮；它们不扩大或自动撤销已获准能力，效果执行仍核验真实来源、批准及委托。
 - 插件不能利用视觉结果伪造 QQ、群号、`SUPERUSERS` 或自动化委托。
-- Main Agent 原生图片输入与插件的显式结构化视觉 API 分离；原生看图不会自动产生
-  `get_current_observation()` 缓存。需要结构化观察的插件仍经授权调用外接 VisionProvider；
+- Main Agent 原生图片输入与插件的显式结构化视觉 API 分离。需要结构化观察的插件经授权调用外接 VisionProvider；
   插件拿不到模型隐藏推理或原生图片载荷。
 
 需要长时间复用视觉结果时，应保存最小、脱敏、业务必要的结构化摘要，并遵循用户删除和数据保留规则；不要复制 Yuki 内部媒体缓存。

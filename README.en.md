@@ -1,4 +1,4 @@
-<!-- release-baseline: version=3.9.0 schema=0106 -->
+<!-- release-baseline: version=3.9.0 schema=0108 -->
 
 [简体中文](README.md) · English
 
@@ -35,9 +35,10 @@ Yuki is an open-source, self-hosted social AI agent exploring what a persistent 
 - **Recoverable long tasks:** Work retains its original goal, cumulative budget, protocol checkpoints, and delivery receipts. Context is condensed against actual request capacity, and research material is read on demand. Terminal waits, subtasks, and additional user requirements continue the original task; restarts do not repeat confirmed effects.
 - **Simpler memory policy:** Independent facts can share a key; changes and deletion use fact IDs. Attribution/reinforcement scoring, automatic promotion, and capacity-driven eviction are removed. Extraction, SELF, and Dream can use separate model profiles, with partial and unresolved results retained.
 - **Agent-directed retrieval:** The agent uses `search_memory` when past facts are needed instead of injecting them every turn. Current, quoted, historical, workspace, and authorized tool images enter the original main model's native multimodal input.
+- **Material changes without repeated packages:** Necessary material is frozen on first display, unchanged values are omitted, and later changes are appended as deltas. Empty notes, duplicate person data, and unused runtime wrappers leave the default input. Automatic snapshots supply selected material sources without being replayed as full history; useful notes and real receipts remain.
 - **Web access and protocol feedback:** New installations enable model search by default while respecting explicit disablement and connection capabilities. Adapters do not manufacture tool calls from text or silently add paid continuations. Real errors and known usage are retained; dispatched or unknown effects require reconciliation with their original receipts.
 - **Less database waiting before replies:** History reads, context preparation, and optional diagnostic writes are moved out of critical write transactions. Background maintenance uses indexes, bounded pages, and short transactions. Actual latency still depends on model responses, tool requests, and host resources.
-- **Legacy MCP removal:** Connections, tool discovery, management pages, SDK capabilities, and automation entry points are retired together. Shared tool results, media, and receipts remain. Plugin API is now **3.4**, the database head is **0106**, and old plugins require adaptation and renewed approval.
+- **Legacy MCP removal:** Connections, tool discovery, management pages, SDK capabilities, and automation entry points are retired together. Shared tool results, media, and receipts remain. Plugin API is now **3.4**, the current development database head is **0108**, and old plugins require adaptation and renewed approval.
 - **Speech output retirement:** Genie synthesis, voice profiles/preferences, tool parameters, SDK/management features, the Worker and release dependencies are removed. Incoming/quoted ASR, historical audio and original receipts remain. Reconcile old executions and verify a cold backup of speech facts and referenced files before migrating the dedicated tables; no automatic resend or conversion to text occurs.
 
 These describe the current source. Real provider API behavior, natural-chat latency, and long-task outcomes require their respective acceptance evidence. Optional Code Mode isolation checks do not establish production capacity or long-term memory behavior.
@@ -73,7 +74,7 @@ This is an **optional, separately deployed capability** requiring a Linux host, 
 
 Long-term memory stores stable facts, preferences, and meaningful experiences. Routine extraction aggregates messages; explicit requests to remember, correct, or delete are handled immediately. The main agent decides when to call `search_memory` instead of automatically searching every turn or injecting all long-term facts. Retrieval respects the current actor's visible scope and work budget, and reports truncation or incomplete results. Keys are labels rather than unique slots; facts retain their IDs and evidence. Extraction, SELF reflection, and Dream can each select a model connection. Rollup condenses long conversation history, while raw history remains independently searchable.
 
-`short_state` is a shared, bounded, expiring area for temporary cross-conversation notes. It is distinct from long-term memory and workspace files. Group and private chats are not automatically combined into one complete history.
+`short_state` is a shared, bounded, expiring area for temporary cross-conversation notes. Writes need only slot/text; empty text clears the slot. Only effective content and subsequent changes are shown to the model. It is distinct from long-term memory and workspace files. Group and private chats are not automatically combined into one complete history.
 
 Memory reads have a specific privacy boundary: a past shared-group relationship can expose structured facts about a person, **including facts sourced from private chat**, but not another person's raw private messages or private evidence. Read [Memory scope and permissions](docs/architecture/memory-v2.md) before deployment. Model extraction and recall can be wrong; verify important claims against their sources.
 
@@ -132,7 +133,7 @@ The Bot image is `ghcr.io/yuanyeyoutao/yuki-qqbot:3.8.4`; historical 3.8.4 TTS W
 
 ## Upgrading and maintenance
 
-The 3.9.0 source uses Plugin API **3.4** and database head **0106**; the official 3.8.4 package has head **0072**. Follow the migrations bundled with the actual target image. An application version does not replace a schema check, and `stamp` must not skip migrations. Plugins must remove MCP dependencies, adapt to API 3.4, and receive renewed approval. Legacy `llm.generate` / `agent.run` calls now use the unified main entry point.
+The 3.9.0 source uses Plugin API **3.4** and current development database head **0108**; the official 3.8.4 package has head **0072**. Follow the migrations bundled with the actual target image. An application version does not replace a schema check, and `stamp` must not skip migrations. Plugins must remove MCP dependencies, adapt to API 3.4, and receive renewed approval. Legacy `llm.generate` / `agent.run` calls now use the unified main entry point.
 
 Before deploying a 3.9.0 development commit, use the [draft upgrade guide](docs/upgrade-3.9.0.md) to check old MCP mounts, environment settings, and operator grants. Retired operator capabilities fail strict validation. After committing the new database head, an image-only rollback is insufficient; an old backup must not overwrite new messages or receipts.
 

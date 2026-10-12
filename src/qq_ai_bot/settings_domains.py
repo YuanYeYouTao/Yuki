@@ -106,7 +106,6 @@ class ConversationSettings(DomainSettings):
     conversation_rollup_trigger_ratio: float = Field(default=0.90, gt=0, lt=1)
     conversation_rollup_target_ratio: float = Field(default=0.60, gt=0, lt=1)
     processed_event_cleanup_seconds: int = Field(gt=0)
-    context_metadata_budget_ratio: float = Field(gt=0, lt=1)
     per_user_requests_per_minute: int = Field(gt=0)
     per_group_requests_per_minute: int = Field(gt=0)
     max_input_characters: int = Field(gt=0)
@@ -155,9 +154,6 @@ class PluginSettings(DomainSettings):
     plugin_hook_timeout_seconds: float = Field(gt=0)
     plugin_start_timeout_seconds: float = Field(gt=0)
     plugin_stop_timeout_seconds: float = Field(gt=0)
-    plugin_max_prompt_fragment_characters: int = Field(gt=0)
-    plugin_max_prompt_characters_per_plugin: int = Field(gt=0)
-    plugin_max_total_prompt_characters: int = Field(gt=0)
     plugin_background_task_limit: int = Field(gt=0)
     plugin_failure_disable_threshold: int = Field(gt=0)
     plugin_http_max_response_bytes: int = Field(gt=0)
@@ -171,17 +167,6 @@ class PluginSettings(DomainSettings):
     @classmethod
     def _direct_command_bindings(cls, value: dict[str, str]) -> dict[str, str]:
         return validate_direct_command_bindings(value)
-
-    @model_validator(mode="after")
-    def _prompt_budgets(self) -> PluginSettings:
-        if self.plugin_max_total_prompt_characters <= self.plugin_max_prompt_fragment_characters:
-            raise ValueError("total plugin prompt budget must exceed one fragment budget")
-        if (
-            self.plugin_max_prompt_characters_per_plugin
-            < self.plugin_max_prompt_fragment_characters
-        ):
-            raise ValueError("per-plugin prompt budget must cover one fragment")
-        return self
 
 
 class MemorySettings(DomainSettings):

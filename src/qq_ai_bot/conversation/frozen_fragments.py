@@ -48,6 +48,7 @@ class FrozenFragments:
                 "message",
                 "observation_id",
                 "observation_version",
+                "selection_key",
             }:
                 raise ProjectionConflict("unsupported frozen fragment schema")
             if ("observation_id" in item) != ("observation_version" in item) or (

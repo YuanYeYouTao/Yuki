@@ -6,11 +6,9 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC
 from typing import Any
-
-from sqlalchemy import text
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.registry import CapabilityExecutionContext
@@ -27,11 +25,7 @@ from qq_ai_bot.conversation.scope import (
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
-from qq_ai_bot.event_prompt import (
-    ChatEventPromptRenderer,
-    external_event_digest_appended_growth,
-    external_event_digest_data,
-)
+from qq_ai_bot.event_prompt import ChatEventPromptRenderer
 from qq_ai_bot.execution_trace.phases import collect_phase_metrics
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.model_runtime.capacity import estimate_text_tokens
@@ -41,7 +35,6 @@ from qq_ai_bot.persistence.repositories import (
     EventRecord,
     PeopleRepository,
 )
-from qq_ai_bot.prompting import ContextBudgeter, ContextContribution
 from qq_ai_bot.runtime.trigger import (
     ExternalEventTurnTrigger,
     SandboxTaskTurnTrigger,
@@ -49,7 +42,6 @@ from qq_ai_bot.runtime.trigger import (
     WorkResumeTrigger,
 )
 from qq_ai_bot.services.rollup_wakeup import rollup_wakeup_history, rollup_wakeup_watermark
-from qq_ai_bot.time.formatting import local_iso
 from qq_ai_bot.time.models import TimeContext
 from qq_ai_bot.time.service import TimeContextService
 
@@ -77,11 +69,10 @@ class AssembledContext:
     metadata_payload: dict[str, Any]
     history_messages: tuple[ChatMessage, ...]
     current_message: ChatMessage
-    recent_delivery: tuple[dict[str, object], ...]
     current_time: TimeContext
     metrics: ContextMetrics
+    visible_material: dict[str, Any] = field(default_factory=dict)
     visible_event_ids: frozenset[int] = frozenset()
-    external_events: tuple[dict[str, object], ...] = ()
     history_anchor_event_id: int | None = None
     rollup_text: str = ""
     prompt_conversation_id: str = ""
@@ -99,7 +90,6 @@ class AssembledContext:
     history_timezone: str = "Asia/Shanghai"
     history_yuki_account_ids: frozenset[str] = frozenset()
     recovery_protocol: bool = False
-    participation_context: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,7 +198,6 @@ class ContextAssembler:
             metadata_payload={},
             history_messages=(),
             current_message=ChatMessage(role="user", content=""),
-            recent_delivery=(),
             current_time=self._time.current_default(),
             metrics=ContextMetrics(0, 0, 0, 0, False),
             visible_event_ids=frozenset(original.visible_event_ids),
@@ -238,17 +227,7 @@ class ContextAssembler:
                 "current_actor": "SELF",
             },
         }
-        metadata = self._fit_metadata(
-            data,
-            max(
-                1,
-                int(
-                    self._history_token_budget(runtime)
-                    * self._settings.context_metadata_budget_ratio
-                ),
-            ),
-            capacity_limit=self._history_capacity_token_budget(runtime),
-        )
+        metadata = {"items": [{"id": key, "data": value} for key, value in data.items()]}
         current = ChatMessage(
             role="user",
             content=json.dumps(
@@ -305,7 +284,6 @@ class ContextAssembler:
             metadata_payload=metadata,
             history_messages=bounded.history_messages,
             current_message=current,
-            recent_delivery=self._recent_delivery(recent, self._settings.default_timezone),
             current_time=self._time.current_default(),
             metrics=ContextMetrics(
                 len(json.dumps(metadata, ensure_ascii=False)),
@@ -318,7 +296,6 @@ class ContextAssembler:
                 covered_to=snapshot.coverage_end or None,
             ),
             visible_event_ids=bounded.visible_event_ids,
-            external_events=(),
             history_anchor_event_id=bounded.history_anchor_event_id,
             rollup_text=rollup,
             prompt_conversation_id=turn.conversation_id,
@@ -408,7 +385,6 @@ class ContextAssembler:
             metadata_payload=metadata,
             history_messages=history,
             current_message=ChatMessage(role="user", content=content),
-            recent_delivery=(),
             current_time=current_time,
             metrics=ContextMetrics(
                 metadata_size,
@@ -533,7 +509,6 @@ class ContextAssembler:
             metadata_payload=data,
             history_messages=history,
             current_message=ChatMessage(role="user", content=content),
-            recent_delivery=(),
             current_time=current_time,
             metrics=ContextMetrics(
                 metadata_characters=metadata_size,
@@ -621,7 +596,6 @@ class ContextAssembler:
             default_timezone=self._time.default_timezone,
             expected_person_id=inbound.person_id,
         )
-        aliases = metadata.aliases
         current_time = self._time.current_in_timezone(metadata.timezone)
 
         context: dict[str, Any] = {
@@ -633,7 +607,6 @@ class ContextAssembler:
                 )
                 or profile.nickname
                 or profile.user_id,
-                "aliases": list(aliases),
             },
             "scene": {
                 "type": inbound.scope_type.value,
@@ -641,21 +614,8 @@ class ContextAssembler:
                 "group_card": profile.group_card,
             },
         }
-        context["event_bound_memory_refs"] = await self._event_bound_memory_refs(
-            inbound,
-            profile,
-        )
-
         total_budget = self._history_token_budget(runtime)
-        metadata_budget = max(
-            1,
-            int(total_budget * self._settings.context_metadata_budget_ratio),
-        )
-        metadata_payload = self._fit_metadata(
-            context,
-            metadata_budget,
-            capacity_limit=self._history_capacity_token_budget(runtime),
-        )
+        metadata_payload = {"items": [{"id": key, "data": value} for key, value in context.items()]}
         metadata_json = json.dumps(
             metadata_payload,
             ensure_ascii=False,
@@ -738,11 +698,9 @@ class ContextAssembler:
             metadata_payload=metadata_payload,
             history_messages=history_messages,
             current_message=current_message,
-            recent_delivery=self._recent_delivery(recent, self._settings.default_timezone),
             current_time=current_time,
             metrics=metrics,
             visible_event_ids=bounded_messages.visible_event_ids,
-            external_events=(),
             history_anchor_event_id=bounded_messages.history_anchor_event_id,
             rollup_text=rollup_text,
             prompt_conversation_id=turn.conversation_id,
@@ -810,7 +768,6 @@ class ContextAssembler:
             profile = await self._people.get(user_id=trigger.target_id)
             if profile is None:
                 raise ConversationCoverageError("external private target profile is unavailable")
-            aliases = await self._people.aliases(trigger.target_id)
             context["conversation_target_person"] = {
                 "user_id": trigger.target_id,
                 "nickname": profile.nickname,
@@ -819,20 +776,9 @@ class ContextAssembler:
                 )
                 or profile.nickname
                 or profile.user_id,
-                "aliases": list(aliases),
                 "not_current_speaker": True,
             }
-        metadata_payload = self._fit_metadata(
-            context,
-            max(
-                1,
-                int(
-                    self._history_token_budget(runtime)
-                    * self._settings.context_metadata_budget_ratio
-                ),
-            ),
-            capacity_limit=self._history_capacity_token_budget(runtime),
-        )
+        metadata_payload = {"items": [{"id": key, "data": value} for key, value in context.items()]}
         metadata_json = json.dumps(metadata_payload, ensure_ascii=False, separators=(",", ":"))
         remainder = max(
             0, self._history_token_budget(runtime) - estimate_text_tokens(metadata_json)
@@ -878,7 +824,6 @@ class ContextAssembler:
             metadata_payload=metadata_payload,
             history_messages=history,
             current_message=current_message,
-            recent_delivery=self._recent_delivery(recent, self._settings.default_timezone),
             current_time=current_time,
             metrics=ContextMetrics(
                 metadata_characters=len(metadata_json),
@@ -891,7 +836,6 @@ class ContextAssembler:
                 covered_to=snapshot.coverage_end or None,
             ),
             visible_event_ids=bounded_messages.visible_event_ids,
-            external_events=(),
             history_anchor_event_id=bounded_messages.history_anchor_event_id,
             rollup_text=rollup_text,
             prompt_conversation_id=turn.conversation_id,
@@ -944,283 +888,6 @@ class ContextAssembler:
                 + json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
             ),
         )
-
-    @staticmethod
-    def _recent_delivery(
-        recent: tuple[EventRecord, ...],
-        timezone: str = "Asia/Shanghai",
-    ) -> tuple[dict[str, object], ...]:
-        """Project confirmed outbound delivery metadata for the exact conversation."""
-
-        delivered: list[dict[str, object]] = []
-        for row in reversed(recent):
-            if row.direction != "outbound" or not row.platform_message_id.strip():
-                continue
-            # Historical synthetic ids predate strict transport receipts and
-            # cannot prove that a platform accepted the message.
-            if row.platform_message_id.startswith(("out-", "agent-out-", "plugin-out-")):
-                continue
-            media_kinds: list[str] = []
-            has_text = False
-            for segment in row.segments:
-                segment_type = str(segment.get("type", ""))
-                data = segment.get("data")
-                if segment_type == "text":
-                    has_text = has_text or bool(
-                        isinstance(data, dict) and str(data.get("text", "")).strip()
-                    )
-                elif segment_type == "record":
-                    if "voice" not in media_kinds:
-                        media_kinds.append("voice")
-                elif segment_type == "image":
-                    kind = (
-                        "emoji_image"
-                        if isinstance(data, dict) and bool(str(data.get("emoji_id", "")).strip())
-                        else "image"
-                    )
-                    if kind not in media_kinds:
-                        media_kinds.append(kind)
-            delivered.append(
-                {
-                    "platform_message_id": row.platform_message_id,
-                    "sent_at": local_iso(row.occurred_at, timezone),
-                    "has_text": has_text,
-                    "media_kinds": media_kinds,
-                }
-            )
-            if len(delivered) >= 3:
-                break
-        delivered.reverse()
-        return tuple(delivered)
-
-    async def _event_bound_memory_refs(
-        self,
-        inbound: InboundMessage,
-        current_profile: UserProfileSnapshot,
-    ) -> list[dict[str, str]]:
-        """Expose only backend-verifiable refs that memory tools can consume this turn."""
-
-        subjects = [
-            {
-                "subject_ref": "current_speaker",
-                "display_name": (
-                    current_profile.group_card
-                    if current_profile.scope_type is ScopeType.GROUP
-                    else ""
-                )
-                or current_profile.nickname
-                or inbound.sender.user_id,
-                "user_id": inbound.sender.user_id,
-            }
-        ]
-        if self._settings.self_memory_enabled:
-            subjects.append(
-                {"subject_ref": "self", "display_name": self._settings.bot_display_name}
-            )
-        group_id = inbound.group_id
-        if group_id is None:
-            return subjects
-
-        reply_user_id = inbound.reply_sender_user_id
-        references = (
-            *inbound.mentioned_user_ids,
-            *((reply_user_id,) if reply_user_id else ()),
-        )
-        if not references:
-            return subjects
-        async with self._people.database.sessions() as session, session.begin():
-            await session.execute(text("BEGIN"))
-            owners = await self._people.person_reference_map(
-                references,
-                speaker_user_id=inbound.sender.user_id,
-                bot_user_id=inbound.bot_user_id,
-                session=session,
-            )
-            representatives: dict[str, str] = {}
-            for user_id, person_id in owners.items():
-                representatives.setdefault(person_id, user_id)
-            targets = tuple(representatives.values())
-            profiles = await self._people.get_many(
-                targets,
-                group_id=group_id,
-                person_ids=owners,
-                members_only=True,
-                session=session,
-            )
-        members = frozenset(profiles)
-        mentioned_ids = set(inbound.mentioned_user_ids)
-        mentioned = tuple(user_id for user_id in targets if user_id in mentioned_ids)
-
-        for user_id in mentioned:
-            if user_id not in members:
-                continue
-            person = profiles.get(user_id)
-            subjects.append(
-                {
-                    "subject_ref": f"member_{user_id}",
-                    "user_id": user_id,
-                    "display_name": (person.group_card or person.nickname or user_id)
-                    if person
-                    else user_id,
-                }
-            )
-        reply_person_id = owners.get(reply_user_id.strip()) if reply_user_id else None
-        reply_rep = representatives.get(reply_person_id) if reply_person_id else None
-        if reply_rep is not None and reply_rep in members:
-            person = profiles.get(reply_rep)
-            subjects.append(
-                {
-                    "subject_ref": "replied_message_author",
-                    "user_id": reply_rep,
-                    "display_name": (person.group_card or person.nickname or reply_rep)
-                    if person
-                    else reply_rep,
-                }
-            )
-        return subjects
-
-    @classmethod
-    def _fit_metadata(
-        cls,
-        context: dict[str, Any],
-        limit: int,
-        *,
-        capacity_limit: int | None = None,
-    ) -> dict[str, object]:
-        """Select contributions and enforce the serialized metadata budget."""
-
-        contributions = cls._context_contributions(context)
-        # Required metadata belongs to the final full-request capacity check.
-        # Preserve it even when this optional-contribution character target is low.
-        required = tuple(item for item in contributions if item.required)
-        required_payload = cls._render_metadata_selection(required)
-        required_cost = sum(item.cost for item in required)
-        required_size = len(
-            json.dumps(required_payload, ensure_ascii=False, separators=(",", ":"), default=str)
-        )
-        if max(required_size, required_cost) >= limit:
-            ContextBudgeter().select(contributions, character_budget=required_cost)
-            return required_payload
-        selection_budget = limit
-        while True:
-            selection = ContextBudgeter().select(
-                contributions,
-                character_budget=selection_budget,
-            )
-            payload = cls._render_metadata_selection(selection.selected)
-            rendered_size = len(
-                json.dumps(
-                    payload,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                    default=str,
-                )
-            )
-            if rendered_size <= limit:
-                return payload
-            # Contribution costs intentionally describe standalone items. Reduce the
-            # selection budget by the exact container/aggregation overshoot and retry.
-            selection_budget -= max(1, rendered_size - limit)
-            if selection_budget < required_cost:
-                return required_payload
-
-    @staticmethod
-    def _render_metadata_selection(
-        selection: tuple[ContextContribution, ...],
-    ) -> dict[str, object]:
-        return {
-            "items": [
-                {"id": item.id, "data": ContextAssembler._public_context_payload(item.payload)}
-                for item in selection
-            ]
-        }
-
-    @staticmethod
-    def _public_context_payload(payload: Any) -> Any:
-        if isinstance(payload, dict):
-            return {
-                key: ContextAssembler._public_context_payload(value)
-                for key, value in payload.items()
-                if not str(key).startswith("_")
-            }
-        if isinstance(payload, list):
-            return [ContextAssembler._public_context_payload(item) for item in payload]
-        if isinstance(payload, tuple):
-            return tuple(ContextAssembler._public_context_payload(item) for item in payload)
-        return payload
-
-    @staticmethod
-    def _context_contributions(
-        context: dict[str, Any],
-    ) -> tuple[ContextContribution, ...]:
-        items: list[ContextContribution] = []
-
-        def add(
-            item_id: str,
-            payload: Any,
-            *,
-            priority: int,
-            relevance: float,
-            required: bool = False,
-        ) -> None:
-            cost = len(
-                json.dumps(
-                    {"id": item_id, "data": payload},
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                    default=str,
-                )
-            )
-            items.append(
-                ContextContribution(
-                    id=item_id,
-                    priority=priority,
-                    relevance=relevance,
-                    cost=cost,
-                    payload=payload,
-                    required=required,
-                )
-            )
-
-        current = context.get("current_person")
-        if isinstance(current, dict):
-            base = {key: value for key, value in current.items() if key not in {"aliases", "facts"}}
-            add("current_person", base, priority=100, relevance=1, required=True)
-            for index, alias in enumerate(current.get("aliases", ())):
-                add(f"current_alias.{index}", alias, priority=45, relevance=0.7)
-        target_person = context.get("conversation_target_person")
-        if isinstance(target_person, dict):
-            base = {
-                key: value
-                for key, value in target_person.items()
-                if key not in {"aliases", "facts"}
-            }
-            add("conversation_target_person", base, priority=100, relevance=1, required=True)
-            for index, alias in enumerate(target_person.get("aliases", ())):
-                add(f"conversation_target_alias.{index}", alias, priority=45, relevance=0.7)
-        add("scene", context.get("scene", {}), priority=100, relevance=1, required=True)
-        memory_subjects = context.get("event_bound_memory_refs")
-        if isinstance(memory_subjects, list) and memory_subjects:
-            add(
-                "event_bound_memory_refs",
-                memory_subjects,
-                priority=100,
-                relevance=1,
-            )
-        events = context.get("recent_external_events")
-        if isinstance(events, (list, tuple)) and events:
-            payload = external_event_digest_data(events)
-            items.append(
-                ContextContribution(
-                    id="recent_external_events",
-                    priority=75,
-                    relevance=0.9,
-                    cost=external_event_digest_appended_growth(events),
-                    payload=payload,
-                    required=True,
-                )
-            )
-        return tuple(items)
 
     @staticmethod
     def _uncovered_tokens(view: _UncoveredPromptView, rollup_text: str) -> int:

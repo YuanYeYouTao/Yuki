@@ -20,4 +20,3 @@ permissions = [
 background_tasks = 0
 http_concurrency = 1
 storage_mb = 32
-prompt_characters = 0

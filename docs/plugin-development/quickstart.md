@@ -26,7 +26,6 @@ permissions = ["command.register"]
 background_tasks = 0
 http_concurrency = 1
 storage_mb = 10
-prompt_characters = 0
 ```
 
 ## 3. 写插件

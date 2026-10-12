@@ -572,7 +572,6 @@ class ApplicationContainer:
 
         self.semantic_participation = SemanticParticipationService(self, traces=self.models.traces)
         self.chat.observe_main_response = self.semantic_participation.observe_main_response
-        self.chat.participation_context = self.semantic_participation.context_for_event
         self.autonomous_groups = AutonomousGroupService(
             chat=self.chat,
             runtime_config=self.runtime_config,
@@ -857,10 +856,7 @@ class ApplicationContainer:
         )
 
     def _activate_plugin_extensions(self, manifest: PluginManifest) -> None:
-        self.plugin_prompts.activate(
-            manifest.id,
-            max_characters=manifest.limits.prompt_characters,
-        )
+        self.plugin_prompts.activate(manifest.id)
         self.plugin_automation.activate(manifest)
 
     def _deactivate_plugin_extensions(self, plugin_id: str) -> None:

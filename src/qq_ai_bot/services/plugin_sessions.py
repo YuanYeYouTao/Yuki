@@ -22,8 +22,6 @@ from qq_ai_bot.time.models import TimeContext
 _AGENT_SESSION_PERMISSION = "agent.session"
 _CURRENT_USER_PERMISSION = "person.current.read"
 _CURRENT_GROUP_PERMISSION = "group.current.read"
-_MAX_HISTORY_CHARACTERS = 120_000
-_MAX_RESULT_CHARACTERS = 24_000
 
 
 class PluginSessionPermissionError(PermissionError):
@@ -209,7 +207,7 @@ class PluginAgentSessionService:
                 ),
                 tools=None,
             )
-            visible_text = result.text.strip()[:_MAX_RESULT_CHARACTERS]
+            visible_text = result.text
             await self._repository.append_message(
                 plugin_id=authority.plugin_id,
                 session_id=session_id,
@@ -350,21 +348,11 @@ class PluginAgentSessionService:
         context = self._trusted_context(authority, session.context_profile)
         if context:
             messages.append(ChatMessage(role="system", content=context))
-        selected: list[ChatMessage] = []
-        used = 0
-        for item in reversed(history):
-            role = item.role
-            content = item.content
-            if role not in {"user", "assistant"}:
-                continue
-            remaining = _MAX_HISTORY_CHARACTERS - used
-            if remaining <= 0:
-                break
-            bounded = content[-remaining:]
-            selected.append(ChatMessage(role=role, content=bounded))
-            used += len(bounded)
-        selected.reverse()
-        messages.extend(selected)
+        messages.extend(
+            ChatMessage(role=item.role, content=item.content)
+            for item in history
+            if item.role in {"user", "assistant"}
+        )
         return tuple(messages)
 
     def _trusted_context(

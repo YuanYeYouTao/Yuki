@@ -29,7 +29,7 @@ from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import ChatTool, InboundMessage, PromptRequestDiagnostics
 from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.memory.authorized_scope import AuthorizedMemoryScope
-from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE, MemoryContextService
+from qq_ai_bot.memory.context import MemoryContextService
 from qq_ai_bot.memory.enums import (
     MemoryScopeType,
     MemoryTargetRole,
@@ -1862,28 +1862,15 @@ class AgentToolService:
         while True:
             wire = {"ok": True, "data": payload}
             wire["evidence_state"] = evidence_state(wire, "memory_tool")
-            if remaining:
-                # _capture_memory_tool_result appends this after rendering.
-                wire["memory_grounding_policy"] = MEMORY_GROUNDING_RULE
-            # Account for the normalized envelope as well as the service payload.
-            # Otherwise preserving the grounding rule can overflow downstream and
-            # turn complete facts into an artifact/summary after this prefix fits.
             model_wire = ToolExecutionResult(
                 ok=True,
                 data=payload,
                 mutation_committed=False,
                 evidence_state=cast(dict[str, Any], wire["evidence_state"]),
-                memory_grounding_policy=MEMORY_GROUNDING_RULE if remaining else None,
                 provider_id="core",
                 tool_name=_MEMORY_READ_TOOL.get() or "search_memory",
             ).model_payload()
-            if (
-                max(
-                    len(json.dumps(wire, ensure_ascii=False, default=str)),
-                    len(json.dumps(model_wire, ensure_ascii=False, default=str)),
-                )
-                <= limit
-            ):
+            if len(json.dumps(model_wire, ensure_ascii=False, default=str)) <= limit:
                 return self._result(data=payload)
             if len(remaining) <= 1:
                 return self._result(
@@ -2395,8 +2382,6 @@ class AgentToolService:
         else:
             outcome = "unavailable"
         payload["evidence_state"] = evidence_state(payload, "memory_tool")
-        if unique_ids:
-            payload["memory_grounding_policy"] = MEMORY_GROUNDING_RULE
         rendered = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         if len(rendered) > self._runtime().agent.tool_result_max_characters:
             await self._record_memory_tool_outcome(runtime, "unavailable", result_count=0)
@@ -2405,7 +2390,6 @@ class AgentToolService:
         return replace(
             result,
             evidence_state=payload["evidence_state"],
-            memory_grounding_policy=payload.get("memory_grounding_policy"),
         )
 
     async def _record_memory_tool_outcome(

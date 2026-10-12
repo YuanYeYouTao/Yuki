@@ -352,7 +352,6 @@ class PluginBackgroundTurnWorker:
             user_id=context.person_id,
             group_id=context.space_id,
         )
-        self._chat.configure_runtime_controls(runtime)
         self._turns.configure_policy(
             interrupt_autonomous_on_new_message=(
                 runtime.conversation_policy().interrupt_autonomous_on_new_message

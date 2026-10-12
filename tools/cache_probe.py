@@ -26,7 +26,6 @@ from uuid import uuid4
 import httpx
 from pydantic import ValidationError
 from sqlalchemy import select
-from tools.cache_probe_runtime import OrdinaryDriver, WorkDriver
 
 from qq_ai_bot.config import Settings
 from qq_ai_bot.container import ApplicationContainer
@@ -103,9 +102,6 @@ def summary_shape(content: str, *, ordinary: bool = False) -> dict[str, Any]:
         allowed = set(schema.model_fields) | {
             "text",
             "refs",
-            "input_ref",
-            "kind",
-            "reason",
             "directive_id",
         }
         shape["validation_errors"] = [
@@ -168,16 +164,6 @@ def summary_reference_shape(content: str, source: dict[str, Any]) -> dict[str, A
         rows["schema_valid"] = False
         return rows
     rows["schema_valid"] = True
-    rows["input_dispositions"] = [
-        {
-            "input_ref": safe(item["input_ref"]),
-            "kind": item["kind"],
-            "reason_nonempty": bool(item["reason"].strip()),
-            "supplied_task_input": item["input_ref"]
-            in {f"input:{row['input_id']}" for row in source.get("task_inputs", ())},
-        }
-        for item in value["input_dispositions"]
-    ]
     rows["sections"] = {
         section: [[safe(ref) for ref in item["refs"]] for item in value[section]]
         for section in (
@@ -536,6 +522,8 @@ async def run_experiment(
     prefix_control: bool = True,
     compaction_mode: str = "ordinary",
 ) -> dict[str, Any]:
+    from tools.cache_probe_runtime import OrdinaryDriver, WorkDriver
+
     if not (
         (profile.protocol is ModelProtocol.GEMINI and profile.provider == "gemini")
         or (
@@ -1085,7 +1073,7 @@ def main() -> None:
     original_origin = endpoint_origin(profile.base_url)
     original_protocol = profile.protocol.value
     if args.protocol:
-        data = profile.model_dump(mode="json")
+        data = profile.model_dump(mode="json", exclude_unset=True)
         data["protocol"] = args.protocol
         if args.protocol == "responses":
             data["wire_options"] = None
