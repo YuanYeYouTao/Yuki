@@ -53,7 +53,6 @@ async def test_short_state_cannot_write_under_obsolete_or_closed_execution(
         bot_user_id=actor.bot_user_id,
         gateway=None,
         runtime_config=tools.runtime_config,
-        current_time=chat._time.current_default(),
         allowed_capabilities=frozenset(),
         max_tool_calls=None,
         max_model_requests=None,
