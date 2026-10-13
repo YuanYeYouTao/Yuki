@@ -297,7 +297,7 @@ async def test_self_schedule_sdk_read_records_its_actual_call_and_original_sourc
     case.provider._responder = respond
 
     try:
-        with host.invocation_scope(host.plugin_id, sources[0], web_was_used=False):
+        with host.invocation_scope(host.plugin_id, sources[0]):
             sdk_result = await host.agent.run(
                 "Read published workspace artifacts through the approved SDK tool"
             )
@@ -530,7 +530,7 @@ async def test_self_scheduled_work_memory_keeps_original_version_after_task_upda
     before = len(case.provider.requests)
     await resumer.resume(await case.works.get(child["id"]))
     assert len(case.provider.requests) == before and not sent(case.env)
-    original_source = (await case.works.get(child["id"]))["source_json"]
+    original_child = await case.works.get(child["id"])
     lease = await case.works.acquire(child["conversation_id"], child["generation"])
     for index in range(130):
         recent = await case.works.accept(
@@ -538,14 +538,13 @@ async def test_self_scheduled_work_memory_keeps_original_version_after_task_upda
         )
         await case.works.transition(lease, recent["id"], recent["revision"], "completed")
     await case.works.release(lease)
-    await case.works.reclaim_terminal()
-    await case.works.reclaim_terminal()
+    await case.works.reclaim_unreferenced_media()
+    await case.works.reclaim_unreferenced_media()
     retained = await case.works.get(child["id"])
-    assert json.loads(retained["checkpoint_json"])["archived"] is True
+    assert retained == original_child
     assert (
         json.loads(retained["source_json"])["parent_execution_id"] == source["parent_execution_id"]
     )
-    assert json.loads(original_source)["parent_execution_id"] == source["parent_execution_id"]
     visible = await facts.repository.get_active_authorized(
         AuthorizedMemoryScope(
             current_space_id=case.env.space,

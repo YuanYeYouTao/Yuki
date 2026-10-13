@@ -48,14 +48,9 @@ async def query_environment(database):
 @pytest.mark.asyncio
 async def test_queries_do_not_require_automation_or_mutation_admission(query_environment):
     chat, runtime = query_environment
-    for read_only in (False, True):
-        backend = MainAgentBackend(
-            chat,
-            replace(runtime, read_only=read_only),
-            allowed_tools=frozenset(),
-        )
-        for action in ("get", "list"):
-            assert backend.work_query_allowed(action)
+    backend = MainAgentBackend(chat, runtime, allowed_tools=frozenset())
+    for action in ("get", "list"):
+        assert backend.work_query_allowed(action)
 
 
 @pytest.mark.asyncio

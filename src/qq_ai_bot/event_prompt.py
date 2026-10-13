@@ -12,7 +12,7 @@ from qq_ai_bot.adapters.onebot.normalizer import (
     SegmentProjectionError,
     project_serialized_segments,
 )
-from qq_ai_bot.domain.messages import ChatMessage, InboundMessage, sanitize_display_name
+from qq_ai_bot.domain.messages import ChatMessage, sanitize_display_name
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.services.renderer import strip_internal_history_markers
 from qq_ai_bot.time.formatting import local_datetime, local_iso, stored_utc
@@ -301,61 +301,6 @@ class ChatEventPromptRenderer:
         if proactive_label is not None:
             envelope = proactive_label
         return f"{envelope}\n{'|'.join(fields)}>{content}"
-
-    def render_inbound(self, inbound: InboundMessage, content: str) -> str:
-        """Render an inbound message that has not been recovered from the ledger."""
-
-        content = self._mention_content(content, inbound.mentioned_user_ids, inbound.bot_user_id)
-        display_name = self._display_name(
-            user_id=inbound.sender.user_id,
-            bot_user_id=inbound.bot_user_id,
-            nickname=inbound.sender.nickname,
-            group_card=inbound.sender.group_card,
-        )
-        fields = [
-            f"发送者:{display_name}",
-            f"QQ:{inbound.sender.user_id}",
-            f"消息:{inbound.message_id}",
-        ]
-        if inbound.reply_to_event_id is not None:
-            target = self._events_by_id.get(inbound.reply_to_event_id)
-            if (
-                target is None
-                or target.canonical_conversation_id is None
-                or target.canonical_conversation_id != inbound.conversation_id
-                or target.event_kind != "message"
-                or target.suppression_status not in (None, "keeper")
-            ):
-                target = None
-            fields.append(
-                f"回复:#{inbound.reply_to_event_id}/"
-                + (
-                    self._identity_label(target.sender_user_id, bot_user_id=inbound.bot_user_id)
-                    if target is not None
-                    else "内容不可用"
-                )
-            )
-        elif inbound.reply_to_message_id:
-            fields.append("回复:引用不可用")
-        mention_field = self._mention_field(
-            inbound.mentioned_user_ids,
-            bot_user_id=inbound.bot_user_id,
-        )
-        if mention_field:
-            fields.append(mention_field)
-        return f"[{'|'.join(fields)}] {content}"
-
-    def render_reference_inbound(self, inbound: InboundMessage, content: str) -> str:
-        """Render the rare unpersisted current input without inventing an event id."""
-
-        content = self._mention_content(content, inbound.mentioned_user_ids, inbound.bot_user_id)
-        display_name = self._display_name(
-            user_id=inbound.sender.user_id,
-            bot_user_id=inbound.bot_user_id,
-            nickname=inbound.sender.nickname,
-            group_card=inbound.sender.group_card,
-        )
-        return f"[{display_name}|QQ:{inbound.sender.user_id}]\n{content}"
 
     def _mention_content(self, content: str, targets: tuple[str, ...], bot_user_id: str) -> str:
         for target in targets:

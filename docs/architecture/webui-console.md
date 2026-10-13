@@ -13,7 +13,8 @@ React + TypeScript + Vite 的正式前端位于 `frontend/`，构建产物进入
 `/api/control/` 调用正在运行的 `ApplicationContainer.control_plane`。
 没有第二个 Bot、独立数据库、前端业务执行器或通用工具 RPC。
 
-复用经确认的 crescent-grove 手帐布局、五种主题、CSS 和 SVG；许可证随静态资源
+复用经确认的 crescent-grove 手帐布局、五种主题及实际使用的 CSS 和 SVG；未使用的模板
+选择器、动画和素材已清除，保留素材的许可证随静态资源
 进入 wheel 和容器。旧预览脚本和示例业务数据没有进入正式前端。
 服务器数据不通过外部 CDN、浏览器存储或第三方脚本分发。
 
@@ -83,7 +84,7 @@ Manager 控制链执行。二进制预览最多 32 MiB，按内容识别图片�
 | 模型/用量 | 按供应商、协议、API 地址、模型与用途配置；API Key 单独保存在私有文件且不回显。实际调用按时间、模型、用途和连接统计 tokens 与可计算的缓存命中率；缺失的上游缓存报告单独计数。元数据不显示地址/环境变量引用，文件正文单独授权；密钥与请求头始终不显示 |
 | Work/自动化 | 原 Work 预算、等待、子工作、输入、效果/投递意图、检查点与恢复元数据、轨迹；定时安排、完整要求、到期发生及旧步骤审计分页；创建、编辑、暂停/恢复、取消、run_now |
 | 自主参与 | 当前控制器状态、已接纳轮次/全部反馈分页、Jev/Host 决策诊断时间线、完整数学参数表单与原热更新文件；查询不 tick、不重算、不调用 Jev |
-| Memory | 按原主体/内部证据筛选 fact 与证据、原版本确认/隔离、关系与自省、rebuild 原候选审核/暂停/续跑/提交/重试及 dream/maintain；展示运行中 Embedding 配置和覆盖状态，可保存全局向量检索开关（重启生效） |
+| Memory | 按原主体/内部证据筛选 fact 与证据、原版本确认/隔离、自省、rebuild 原候选审核/暂停/续跑/提交/重试及 dream/maintain；展示运行中 Embedding 配置和覆盖状态，可保存全局向量检索开关（重启生效） |
 | 插件 | 原 schema 配置、GitHub queue/cursor/诊断、通知 outbox；原 manifest/权限复选授权、Manager 启停/doctor、background turn 分页 |
 | 身份/配置 | canonical Person/Space/Presence、Binding 与三种原路由的详情/注册/编辑/暂停/恢复；Registry schema、作用域有效配置、保存/删除覆盖 |
 | 工作区/素材 | 共享 artifact 上传/版本编辑/删除、文本预览、授权下载、原 Linux 文件与终端；表情目录及原管理动作 |
@@ -241,11 +242,11 @@ accepted/committed cursor、轮询/成功时间、暂停、失败、限流、pen
 结果 unknown/uncertain、已发送、预算耗尽或缺少原 canonical owner 不进入 live 队列。
 历史缺少归属返回持久 `state_mismatch`，不按平台目标重新寻找主人。
 
-## Memory、关系、自省与维护
+## Memory、自省与维护
 
 事实/证据按 canonical Person/Space、scope、kind、status、原 event/tool receipt/fact ID
 筛选并进行 keyset 分页。游标绑定全部筛选及正文授权范围；无正文能力的 SQL 不读取
-内容、证据原文或旧平台身份。关系编辑沿原 Person 行/revision，共用原关系写算法及审计。
+内容、证据原文或旧平台身份。
 自省统计取原 run/cycle/request/result，不补造未记录的 usage，不触发处理或模型调用。
 
 维护详情仅投影原水位、计数、版本和经过原类型校验的计划统计；不暴露私有 selection。

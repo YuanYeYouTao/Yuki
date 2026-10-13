@@ -1,7 +1,6 @@
 """Stable repository imports grouped behind domain-specific implementations."""
 
 from qq_ai_bot.persistence.event_repository import (
-    AgentActionRepository,
     EventLedgerRepository,
 )
 from qq_ai_bot.persistence.media_repository import (
@@ -23,7 +22,6 @@ from qq_ai_bot.persistence.repository_records import (
 from qq_ai_bot.persistence.web_repository import WebSearchSourceRepository
 
 __all__ = [
-    "AgentActionRepository",
     "EmojiDescriptionRecord",
     "EmojiDescriptionRepository",
     "EventLedgerRepository",

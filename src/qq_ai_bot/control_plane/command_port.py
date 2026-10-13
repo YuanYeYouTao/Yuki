@@ -132,13 +132,6 @@ class ControlCommandPort(Protocol):
         command: ControlCommand,
     ) -> ControlResult: ...
 
-    async def rollback_config(
-        self,
-        principal: ControlPrincipal,
-        target: object,
-        command: ControlCommand,
-    ) -> ControlResult: ...
-
     async def mutate_memory(
         self,
         principal: ControlPrincipal,
@@ -186,13 +179,6 @@ class ControlCommandPort(Protocol):
     ) -> ControlResult: ...
 
     async def mutate_emoji(
-        self,
-        principal: ControlPrincipal,
-        target: object,
-        command: ControlCommand,
-    ) -> ControlResult: ...
-
-    async def cancel_operation(
         self,
         principal: ControlPrincipal,
         target: object,

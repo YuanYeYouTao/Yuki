@@ -17,10 +17,6 @@ class RollupSourceChangedError(ConversationRollupError):
     """Candidate inputs changed while summary text was being generated."""
 
 
-class ScopeGenerationSupersededError(ConversationRollupError):
-    """A turn or worker references an obsolete scope generation."""
-
-
 def model_failure_error_category(exc: BaseException) -> str:
     name = type(exc).__name__
     if isinstance(exc, TimeoutError) or name == "LLMTimeoutError":
@@ -40,7 +36,6 @@ def model_failure_error_category(exc: BaseException) -> str:
         return "model_preempted"
     if isinstance(exc, ValueError):
         reasons = {
-            "rollup_summary_too_long": "model_summary_too_long",
             "rollup_carry_exceeds_input_capacity": "model_input_capacity",
             "rollup_source_exceeds_input_capacity": "model_input_capacity",
             "rollup_empty_source": "model_empty_source",

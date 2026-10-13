@@ -85,14 +85,12 @@ class PromptProjectionRepository:
         max_view_bytes: int = 8 * 1024 * 1024,
         total_bytes: int = 16 * 1024 * 1024,
         maximum_views: int = 128,
-        reclaim: bool = False,
     ) -> None:
         if min(max_view_bytes, total_bytes, maximum_views) <= 0:
             raise ValueError("invalid projection budget")
         self.database = database
         self.view_bytes = min(max_view_bytes, total_bytes)
         self.total_bytes, self.maximum_views = total_bytes, maximum_views
-        self.reclaim = reclaim
 
     async def read(self, view_key: str) -> ProjectionSnapshot | None:
         async with self.database.sessions() as session:
@@ -122,43 +120,6 @@ class PromptProjectionRepository:
                 )
             )
 
-    async def commit(
-        self,
-        *,
-        view_key: str,
-        conversation_id: str,
-        generation: int,
-        expected_source_revision: int,
-        starts_after_event_id: int,
-        context_key: str,
-        items: list[dict[str, Any]],
-        expected_epoch: str | None = None,
-        expected_revision: int = 0,
-        rebuild_reason: str | None = None,
-        selected_summary_text: str | None = None,
-        selected_summary_coverage: int = 0,
-        selected_summary_kind: str | None = None,
-        selected_summary_renderer: int | None = None,
-    ) -> ProjectionSnapshot:
-        publication = await self.prepare_commit(
-            view_key=view_key,
-            conversation_id=conversation_id,
-            generation=generation,
-            expected_source_revision=expected_source_revision,
-            starts_after_event_id=starts_after_event_id,
-            context_key=context_key,
-            items=items,
-            expected_epoch=expected_epoch,
-            expected_revision=expected_revision,
-            rebuild_reason=rebuild_reason,
-            selected_summary_text=selected_summary_text,
-            selected_summary_coverage=selected_summary_coverage,
-            selected_summary_kind=selected_summary_kind,
-            selected_summary_renderer=selected_summary_renderer,
-        )
-        async with self.database.immediate_session() as session:
-            return await publication(session)
-
     async def prepare_commit(
         self,
         *,
@@ -187,7 +148,7 @@ class PromptProjectionRepository:
         if rebuild_reason is not None and rebuild_reason not in REBUILD_REASONS:
             raise ValueError("invalid projection rebuild reason")
         items = deepcopy(items)
-        if len(items) > 262_144 or not all(isinstance(item, dict) for item in items):
+        if not all(isinstance(item, dict) for item in items):
             raise ProjectionCapacityError("projection item limit exceeded")
         payload = json.dumps(items, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
         size = len(payload.encode("utf-8"))
@@ -212,25 +173,19 @@ class PromptProjectionRepository:
         FrozenFragments.load(items)
         prepared_sources = []
 
-        async with self.database.sessions() as prepared_session:
-            prepared_privacy = await privacy_generation(prepared_session)
-
         # Read canonical source facts before taking the writer. Source mutation
         # and privacy are rechecked by the publication CAS.
         with model_detail("projection_sources_read"):
             async with self.database.sessions() as source_reader:
                 await source_reader.execute(text("BEGIN"))
-                snapshot_privacy = await privacy_generation(source_reader)
+                prepared_privacy = await privacy_generation(source_reader)
                 owner = await source_reader.get(CanonicalConversationModel, conversation_id)
                 if owner is None or (owner.generation, owner.starts_after_event_id) != (
                     generation,
                     starts_after_event_id,
                 ):
                     raise ProjectionConflict("projection source generation changed")
-                if (
-                    owner.prompt_source_revision != expected_source_revision
-                    or snapshot_privacy != prepared_privacy
-                ):
+                if owner.prompt_source_revision != expected_source_revision:
                     raise ProjectionConflict("projection source revision changed")
                 candidates: dict[str, dict[str, Any]] = {}
                 for item in items:
@@ -272,8 +227,8 @@ class PromptProjectionRepository:
                     ):
                         raise ProjectionConflict("selected representation owner changed")
                     # Existing frozen prefix bytes were already verified against
-                    # the previous projection. Explicit epochs may instead adopt
-                    # raw chat after summarizing a snapshot; retain first-selection
+                    # the previous projection. Explicit epochs may select raw
+                    # canonical history again; retain its original selection
                     # provenance rather than rewriting it or rejecting that boundary.
                     if rebuild_reason is None and key not in frozen_keys:
                         inspect_ids.append(row.id)
@@ -361,80 +316,74 @@ class PromptProjectionRepository:
                 await session.execute(
                     select(
                         func.coalesce(func.sum(PromptProjectionModel.byte_size), 0),
-                        func.count().filter(PromptProjectionModel.invalidated_reason.is_(None))
-                        if self.reclaim
-                        else func.count(),
+                        func.count().filter(PromptProjectionModel.invalidated_reason.is_(None)),
                     ).where(PromptProjectionModel.view_key != view_key)
                 )
             ).one()
-            if self.reclaim:
-                # Capacity decisions need metadata, never another view's payload.
-                others = (
-                    (
-                        await session.execute(
-                            select(
-                                PromptProjectionModel.view_key,
-                                PromptProjectionModel.byte_size,
-                                PromptProjectionModel.invalidated_reason,
-                            )
-                            .where(PromptProjectionModel.view_key != view_key)
-                            .order_by(
-                                PromptProjectionModel.updated_at, PromptProjectionModel.view_key
-                            )
-                        )
-                    ).all()
-                    if used + size > self.total_bytes or count >= self.maximum_views
-                    else []
-                )
-                for victim in others:
-                    if used + size <= self.total_bytes and count < self.maximum_views:
-                        break
-                    if victim.invalidated_reason is not None:
-                        if used + size > self.total_bytes:
-                            used -= victim.byte_size
-                            await session.execute(
-                                delete(PromptProjectionModel).where(
-                                    PromptProjectionModel.view_key == victim.view_key
-                                )
-                            )
-                        continue
-                    used -= victim.byte_size - 2
-                    count -= 1
+            others = (
+                (
                     await session.execute(
-                        update(PromptProjectionModel)
-                        .where(PromptProjectionModel.view_key == victim.view_key)
-                        .values(
-                            payload_json="[]",
-                            byte_size=2,
-                            invalidated_reason="capacity",
-                            revision=PromptProjectionModel.revision + 1,
-                            updated_at=datetime.now(UTC),
+                        select(
+                            PromptProjectionModel.view_key,
+                            PromptProjectionModel.byte_size,
+                            PromptProjectionModel.invalidated_reason,
                         )
+                        .where(PromptProjectionModel.view_key != view_key)
+                        .order_by(PromptProjectionModel.updated_at, PromptProjectionModel.view_key)
                     )
-                await session.flush()
-                markers = list(
-                    (
+                ).all()
+                if used + size > self.total_bytes or count >= self.maximum_views
+                else []
+            )
+            for victim in others:
+                if used + size <= self.total_bytes and count < self.maximum_views:
+                    break
+                if victim.invalidated_reason is not None:
+                    if used + size > self.total_bytes:
+                        used -= victim.byte_size
                         await session.execute(
-                            select(PromptProjectionModel.view_key, PromptProjectionModel.byte_size)
-                            .where(
-                                PromptProjectionModel.view_key != view_key,
-                                PromptProjectionModel.invalidated_reason.is_not(None),
+                            delete(PromptProjectionModel).where(
+                                PromptProjectionModel.view_key == victim.view_key
                             )
-                            .order_by(
-                                PromptProjectionModel.updated_at.desc(),
-                                PromptProjectionModel.view_key,
-                            )
-                            .offset(self.maximum_views)
                         )
-                    ).all()
-                )
-                for marker in markers:
-                    used -= marker.byte_size
-                    await session.execute(
-                        delete(PromptProjectionModel).where(
-                            PromptProjectionModel.view_key == marker.view_key
-                        )
+                    continue
+                used -= victim.byte_size - 2
+                count -= 1
+                await session.execute(
+                    update(PromptProjectionModel)
+                    .where(PromptProjectionModel.view_key == victim.view_key)
+                    .values(
+                        payload_json="[]",
+                        byte_size=2,
+                        invalidated_reason="capacity",
+                        revision=PromptProjectionModel.revision + 1,
+                        updated_at=datetime.now(UTC),
                     )
+                )
+            await session.flush()
+            markers = list(
+                (
+                    await session.execute(
+                        select(PromptProjectionModel.view_key, PromptProjectionModel.byte_size)
+                        .where(
+                            PromptProjectionModel.view_key != view_key,
+                            PromptProjectionModel.invalidated_reason.is_not(None),
+                        )
+                        .order_by(
+                            PromptProjectionModel.updated_at.desc(),
+                            PromptProjectionModel.view_key,
+                        )
+                        .offset(self.maximum_views)
+                    )
+                ).all()
+            )
+            for marker in markers:
+                used -= marker.byte_size
+                await session.execute(
+                    delete(PromptProjectionModel).where(
+                        PromptProjectionModel.view_key == marker.view_key
+                    )
+                )
             if used + size > self.total_bytes or count >= self.maximum_views:
                 raise ProjectionCapacityError("projection global budget exceeded")
             if old is not None and not rebuild_reason and old.selected_summary_text is not None:
@@ -586,16 +535,6 @@ class PromptProjectionRepository:
             else frozenset()
         )
         return stamp, prefix == old_payload, keys
-
-    async def invalidate(self, conversation_id: str) -> None:
-        """Remove model-input copies when a source is deleted/reset; leave the ledger intact."""
-        async with self.database.sessions() as session:
-            await session.execute(
-                delete(PromptProjectionModel).where(
-                    PromptProjectionModel.conversation_id == conversation_id,
-                )
-            )
-            await session.commit()
 
     async def invalidate_view(self, view_key: str, *, reason: str) -> None:
         """Retire an input representation while keeping its next-epoch reason."""

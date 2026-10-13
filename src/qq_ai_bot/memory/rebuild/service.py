@@ -21,7 +21,6 @@ from qq_ai_bot.memory.claim_processor import (
 )
 from qq_ai_bot.memory.eligibility import MemoryEventEligibilityPolicy
 from qq_ai_bot.memory.enums import (
-    MemoryProcessingSource,
     MemoryRebuildCommitStatus,
     MemoryRebuildExpiredClaimPolicy,
     MemoryRebuildItemStatus,
@@ -39,7 +38,6 @@ from qq_ai_bot.memory.extraction import (
     MemoryClaim,
     source_event_fingerprint,
 )
-from qq_ai_bot.memory.rebuild.metrics import MemoryRebuildMetrics
 from qq_ai_bot.memory.rebuild.models import (
     MemoryRebuildPlanStatistics,
     MemoryRebuildReviewEntry,
@@ -265,7 +263,6 @@ class MemoryRebuildService:
         extractor: MemoryEventExtractor,
         processor: MemoryClaimProcessor,
         eligibility: MemoryEventEligibilityPolicy | None = None,
-        metrics: MemoryRebuildMetrics | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
@@ -273,7 +270,6 @@ class MemoryRebuildService:
         self.extractor = extractor
         self.processor = processor
         self.eligibility = eligibility or MemoryEventEligibilityPolicy()
-        self.metrics = metrics or MemoryRebuildMetrics()
         self._active_in_flight_calls = 0
         self._in_flight_tasks: dict[str, set[asyncio.Task[Any]]] = {}
         self._cancelled_tasks: WeakSet[asyncio.Task[Any]] = WeakSet()
@@ -306,9 +302,6 @@ class MemoryRebuildService:
             selection,
             snapshot_max_event_id=snapshot,
         )
-        self.metrics.increment("rebuild_runs_planned")
-        self.metrics.increment("rebuild_events_matched", statistics.matched_events)
-        self.metrics.increment("rebuild_events_eligible", statistics.eligible_events)
         selection_json = canonical_json(selection)
         return await self.repository.create_run(
             selection=selection,
@@ -359,7 +352,6 @@ class MemoryRebuildService:
         )
         if not changed:
             raise ValueError("run is not in planned state")
-        self.metrics.increment("rebuild_runs_started")
         return await self._require(run_id, session=session)
 
     async def pause(self, run_id: str, *, actor_user_id: str) -> MemoryRebuildRun:
@@ -411,7 +403,6 @@ class MemoryRebuildService:
         for task in tuple(self._in_flight_tasks.get(run_id, ())):
             self._cancelled_tasks.add(task)
             task.cancel()
-        self.metrics.increment("rebuild_runs_cancelled")
         return await self._require(run_id, session=session)
 
     async def review(
@@ -494,10 +485,6 @@ class MemoryRebuildService:
             if approved
             else MemoryRebuildReviewStatus.REJECTED,
             actor_user_id=actor_user_id,
-        )
-        self.metrics.increment(
-            "rebuild_proposals_approved" if approved else "rebuild_proposals_rejected",
-            changed,
         )
         return changed
 
@@ -624,14 +611,6 @@ class MemoryRebuildService:
                             tasks.discard(task)
                             if not tasks:
                                 self._in_flight_tasks.pop(run.public_id, None)
-                self.metrics.increment("rebuild_extraction_requests")
-                if extracted.input_tokens is not None:
-                    self.metrics.increment("rebuild_input_tokens", extracted.input_tokens)
-                if extracted.output_tokens is not None:
-                    self.metrics.increment("rebuild_output_tokens", extracted.output_tokens)
-                self.metrics.increment(
-                    "rebuild_latency", max(0, round(extracted.latency_seconds * 1000))
-                )
                 await self.repository.record_model_usage(
                     run.public_id,
                     extraction_requests=1,
@@ -670,12 +649,7 @@ class MemoryRebuildService:
                     type(exc).__name__,
                     retry_initial_seconds=self.settings.memory_rebuild_retry_initial_seconds,
                 )
-                self.metrics.increment("rebuild_events_failed")
                 return "deferred"
-            self.metrics.increment("rebuild_events_scanned")
-            self.metrics.increment("rebuild_proposals_staged", len(staged))
-            if not staged:
-                self.metrics.increment("rebuild_events_no_claims")
             return "processed"
 
     async def process_commit_once(self, run: MemoryRebuildRun) -> int:
@@ -725,7 +699,6 @@ class MemoryRebuildService:
                     action="noop",
                     reason_code=reason,
                 )
-                self.metrics.increment("rebuild_events_skipped_processed")
                 processed += 1
                 continue
             if not self.eligibility.is_eligible(event):
@@ -777,13 +750,10 @@ class MemoryRebuildService:
                 processed += 1
                 continue
             try:
-                resolution = await self.processor.resolve(
+                resolution = self.processor.resolve(
                     validated,
                     MemoryProcessingContext(
-                        source=MemoryProcessingSource.REBUILD,
                         event=event,
-                        rebuild_run_id=run.public_id,
-                        proposal_id=proposal.id,
                         force_expired_invalidated=expired,
                     ),
                 )
@@ -826,7 +796,7 @@ class MemoryRebuildService:
                     return result
 
                 try:
-                    result = await self.processor._facts.repository.apply_evidence_write(commit)
+                    await self.processor._facts.repository.apply_evidence_write(commit)
                 except Exception:
                     # The proposal is atomic with the fact. Read it before
                     # classifying failure; an unknown outcome does not grant replay authority.
@@ -841,11 +811,6 @@ class MemoryRebuildService:
                             or commit_receipt.actual_reason_code is None
                         ):
                             raise RuntimeError("committed_proposal_receipt_incomplete") from None
-                        result = MemoryClaimProcessResult(
-                            commit_receipt.actual_fact_id,
-                            MemoryResolutionAction(commit_receipt.actual_action),
-                            commit_receipt.actual_reason_code,
-                        )
                     else:
                         raise
             except asyncio.CancelledError:
@@ -856,21 +821,7 @@ class MemoryRebuildService:
                     type(exc).__name__,
                     retry_initial_seconds=self.settings.memory_rebuild_retry_initial_seconds,
                 )
-                self.metrics.increment("rebuild_proposals_failed")
                 continue
-            self.metrics.increment("rebuild_proposals_committed")
-            if result.action.value == "create":
-                self.metrics.increment("rebuild_facts_created")
-            elif result.action.value == "merge_evidence":
-                self.metrics.increment("rebuild_evidence_merged")
-            elif result.action.value == "supersede":
-                self.metrics.increment("rebuild_facts_superseded")
-            elif result.action.value == "contest":
-                self.metrics.increment("rebuild_facts_contested")
-            elif result.action.value == "invalidate":
-                self.metrics.increment("rebuild_facts_invalidated")
-            elif result.action.value == "noop":
-                self.metrics.increment("rebuild_noops")
             processed += 1
         await self.repository.complete_item_receipts(
             run.public_id,
@@ -903,11 +854,9 @@ class MemoryRebuildService:
                 target = MemoryRebuildRunStatus.EXTRACTION_PAUSED
             else:
                 target = MemoryRebuildRunStatus.COMPLETED
-            completed = await self.repository.transition(
+            await self.repository.transition(
                 run.public_id, expected={MemoryRebuildRunStatus.COMMITTING}, status=target
             )
-            if completed and target is MemoryRebuildRunStatus.COMPLETED:
-                self.metrics.increment("rebuild_runs_completed")
         return processed
 
     async def _adapt_event(self, event: Any, mode: MemoryRebuildThirdPartyMode) -> Any:

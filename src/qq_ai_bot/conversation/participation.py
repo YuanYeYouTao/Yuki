@@ -1,9 +1,8 @@
 """Local autonomous participation scoring (R4).
 
-This is the production ``AutonomousParticipationPolicy``.  Direct private / @ /
-reply-to-bot turns never call it.  The 3.5.3 scorer forced those turns through
-the threshold while still recording ``necessity_score``; R4 does not score them
-at all.
+Direct private / @ / reply-to-bot turns never call this scorer. The 3.5.3
+scorer forced those turns through the threshold while recording
+``necessity_score``; R4 does not score them.
 """
 
 from __future__ import annotations
@@ -13,7 +12,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
-from qq_ai_bot.conversation.admission import AutonomousAdmissionScore, AutonomousCandidate
 from qq_ai_bot.domain.conversations import ScopeType
 
 _LOW_VALUE_REACTIONS = frozenset(
@@ -109,13 +107,6 @@ class AdmissionScoreSnapshot:
     average_human_interval_seconds: float = 0.0
     idle_seconds: float = 0.0
 
-    def as_admission_score(self) -> AutonomousAdmissionScore:
-        return AutonomousAdmissionScore(
-            score=float(self.score),
-            threshold=float(self.threshold),
-            reasons=self.reasons,
-        )
-
 
 class LocalAutonomousParticipationPolicy:
     """Compute a stable 0..100 gate score without invoking a model."""
@@ -134,20 +125,6 @@ class LocalAutonomousParticipationPolicy:
     @property
     def threshold(self) -> int:
         return self._threshold
-
-    async def score_candidate(self, candidate: AutonomousCandidate) -> AutonomousAdmissionScore:
-        """Protocol-shaped scorer for one autonomous candidate."""
-
-        features = AdmissionFeatures(
-            scope_type=candidate.scope_type,
-            text=candidate.latest_content.text,
-            reply_target_is_bot=candidate.replies_to_bot,
-            mentions_bot=candidate.mentions_bot,
-            pending_message_count=candidate.pending_message_count,
-            recent_bot_messages=1 if candidate.bot_recently_active else 0,
-            media_only=candidate.latest_content.source == "media_only",
-        )
-        return self.evaluate(features).as_admission_score()
 
     def evaluate(self, features: AdmissionFeatures) -> AdmissionScoreSnapshot:
         """Return the deterministic snapshot for one real-message batch."""

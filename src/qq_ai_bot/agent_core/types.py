@@ -6,11 +6,10 @@ continuations are never rewritten into another JSON shape.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
-from typing import Literal
 
-from qq_ai_bot.domain.messages import ChatMessage, ChatResponse, ModelResponseStatus, ToolCall
+from qq_ai_bot.domain.messages import ChatResponse, ModelResponseStatus, ToolCall
 
 
 class StopReason(StrEnum):
@@ -67,31 +66,3 @@ class End:
 
 
 TurnDecision = Continue | End
-
-
-@dataclass(frozen=True, slots=True)
-class AgentEvent:
-    """One frozen record per Yuki execution transition.
-
-    Payloads are snapshots (tuples of frozen messages) so a listener can never
-    observe a later mutation of loop state; see ``events.EventStream``.
-    """
-
-    type: Literal[
-        "agent_start",
-        "agent_end",
-        "turn_start",
-        "turn_end",
-        "message_start",
-        "message_end",
-        "tool_execution_start",
-        "tool_execution_end",
-    ]
-    index: int = 0
-    message: ChatMessage | None = None
-    response: ChatResponse | None = None
-    call: ToolCall | None = None
-    result: str | None = None
-    executed: bool | None = None
-    outcomes: tuple[ToolCallOutcome, ...] = field(default=())
-    stop_reason: StopReason | None = None

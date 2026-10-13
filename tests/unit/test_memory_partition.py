@@ -430,7 +430,7 @@ async def test_exact_tool_ambiguity_reports_all_authorized_people_and_groups(
 ) -> None:
     from qq_ai_bot.memory.repository import MemoryFactRepository
     from qq_ai_bot.memory.service import MemoryFactService
-    from qq_ai_bot.persistence.repositories import AgentActionRepository, EventLedgerRepository
+    from qq_ai_bot.persistence.repositories import EventLedgerRepository
     from qq_ai_bot.services.agent_tools import AgentToolService, ToolRuntime, _ToolFailure
 
     user_ids = tuple(str(62081 + index) for index in range(8))
@@ -453,7 +453,6 @@ async def test_exact_tool_ambiguity_reports_all_authorized_people_and_groups(
         settings=make_settings(database.url),
         ledger=EventLedgerRepository(database),
         memories=MemoryFactService(MemoryFactRepository(database)),
-        actions=AgentActionRepository(database),
     )
     runtime = ToolRuntime(
         inbound=inbound("choose target", message_id="ambiguity", group_id="2001"),

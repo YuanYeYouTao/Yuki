@@ -9,7 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.domain.messages import AttachmentKind, InboundMessage, OutboundMedia, OutboundMessage
+from qq_ai_bot.domain.messages import AttachmentKind, OutboundMedia, OutboundMessage
 from qq_ai_bot.emoji.models import (
     EmojiDeliveryRequest,
     EmojiLifecycleStatus,
@@ -226,7 +226,9 @@ class EmojiDeliveryService:
         self,
         message: OutboundMessage,
         *,
-        inbound: InboundMessage,
+        private_peer_user_id: str | None,
+        group_id: str | None,
+        trigger_message_id: str,
         source: str,
         ledger_recorded: bool,
     ) -> None:
@@ -236,16 +238,19 @@ class EmojiDeliveryService:
                 try:
                     await self._repository.mark_used(
                         media.emoji_id,
-                        actor_user_id=inbound.sender.user_id,
-                        group_id=inbound.group_id,
-                        trigger_message_id=inbound.message_id,
+                        actor_user_id=private_peer_user_id,
+                        group_id=group_id,
+                        trigger_message_id=trigger_message_id,
                         source=source,
                     )
                     usage_recorded = True
                     await publish_notification(
                         self._event_publisher,
                         EventName.EMOJI_USAGE_RECORDED,
-                        {"source": source, "scope_type": inbound.scope_type.value},
+                        {
+                            "source": source,
+                            "scope_type": "group" if group_id is not None else "private",
+                        },
                     )
                 except asyncio.CancelledError:
                     raise
@@ -263,20 +268,12 @@ class EmojiDeliveryService:
                     self._event_publisher,
                     EventName.EMOJI_SENT,
                     {
-                        "scope_type": inbound.scope_type.value,
+                        "scope_type": "group" if group_id is not None else "private",
                         "source": source,
                         "delivered": True,
                         "recorded": ledger_recorded and usage_recorded,
                     },
                 )
-
-    async def record_send_attempted(self, message: OutboundMessage, *, source: str) -> None:
-        if any(media.emoji_id for media in message.media):
-            await publish_notification(
-                self._event_publisher,
-                EventName.EMOJI_SEND_ATTEMPTED,
-                {"source": source},
-            )
 
     async def record_send_accepted(self, message: OutboundMessage, *, source: str) -> None:
         if any(media.emoji_id for media in message.media):
@@ -285,12 +282,3 @@ class EmojiDeliveryService:
                 EventName.EMOJI_SEND_ACCEPTED,
                 {"source": source},
             )
-
-    async def record_failure(self, message: OutboundMessage, *, source: str) -> None:
-        for media in message.media:
-            if media.emoji_id:
-                await publish_notification(
-                    self._event_publisher,
-                    EventName.EMOJI_SEND_FAILED,
-                    {"emoji_id": media.emoji_id, "source": source},
-                )

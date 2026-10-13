@@ -9,31 +9,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities.models import (
     AuthorityContext,
     CapabilityDescriptor,
-    CapabilityEffect,
 )
 from qq_ai_bot.runtime.contracts import MemoryCapabilityView
-
-_READ_EFFECTS = frozenset(
-    {
-        CapabilityEffect.READ_STATE,
-        CapabilityEffect.EXTERNAL_READ,
-    }
-)
 
 
 @dataclass(frozen=True, slots=True)
 class CapabilityPolicyContext:
     authority: AuthorityContext
-    origin: TurnOrigin
-    contains_images: bool = False
-    web_was_used: bool = False
     conversation_open: bool = True
     tools_closed: bool = False
-    read_only: bool = False
     memory_view: MemoryCapabilityView | None = None
     artifact_available: bool = False
 
@@ -59,8 +46,6 @@ class CapabilityPolicyEngine:
         visible: list[CapabilityDescriptor] = []
         for descriptor in descriptors:
             if not descriptor.required_permissions.issubset(granted):
-                continue
-            if context.read_only and descriptor.effect not in _READ_EFFECTS:
                 continue
             if descriptor.namespace_id in hidden_namespaces:
                 continue

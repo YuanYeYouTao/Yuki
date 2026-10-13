@@ -118,7 +118,6 @@ async def reflection_scene(database, memory_scene):
                 pending_events=12,
                 pending_characters=100,
                 pending_since=now - timedelta(hours=2),
-                has_yuki_reply=True,
                 updated_at=now,
             )
         )

@@ -114,7 +114,6 @@ class MemoryMaintenanceWorker:
             return await self._invalidate_candidates(rows, now=now, session=owned)
 
         changed = await self._facts.repository.apply_evidence_write(invalidate)
-        self.metrics.increment("maintenance_expired", changed)
         self.metrics.record_maintenance_success(now)
         return changed
 

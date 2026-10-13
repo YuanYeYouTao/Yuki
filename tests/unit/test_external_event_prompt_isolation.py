@@ -530,7 +530,8 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
     assert "github-monitor" not in system_text
     assert "PushEvent" not in system_text
     assert "【资料与查证】" in system_text
-    assert "不代表长期记忆不存在" in system_text
+    assert "当前请求不自动附带旧记忆" in system_text
+    assert "短记录是与人和群无关的全局短期资料" in system_text
     assert tuple(item.content for item in composed.messages if item.role == "system") == tuple(
         item.content for item in ordinary.messages if item.role == "system"
     )
@@ -607,12 +608,10 @@ async def test_external_wakeup_and_ordinary_turn_send_the_same_provider_shape(
     shared = {
         "gateway": None,
         "allow_generic_onebot": False,
-        "allow_admin_actions": False,
         "conversation_key": "canonical:conv-stable:generation:1",
         "actor_is_superuser": False,
         "runtime_config": runtime_config,
         "tools_closed": False,
-        "read_only": False,
         "visible_event_ids": frozenset({1, 2}),
         "selection_query": "same capability-neutral query",
         "scope_type": ScopeType.PRIVATE,
@@ -749,7 +748,6 @@ async def test_plugin_wakeup_can_end_without_creating_a_fake_reply(
         inbound=None,
         gateway=None,
         allow_generic_onebot=False,
-        allow_admin_actions=False,
         conversation_key="canonical:conv-stable:generation:1",
         trigger_message_id="external-current",
         trigger_event_id=2,

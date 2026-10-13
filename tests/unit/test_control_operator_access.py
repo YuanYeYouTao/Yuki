@@ -80,9 +80,6 @@ async def test_unconfigured_disabled_and_unproven_person_fail_closed(
         "secret.read",
         "database.sql",
         "control.fake.read",
-        "control.mcp.read",
-        "control.mcp.mutate",
-        "mcp.web_search",
     ],
 )
 def test_server_config_cannot_grant_unreviewed_or_intrinsic_dangerous_capabilities(
@@ -100,7 +97,6 @@ async def test_shipped_operator_template_loads_only_current_explicit_grants(data
     for declaration in declarations:
         capabilities = tuple(declaration["capabilities"])
         assert capabilities and all(is_protocol_capability(item) for item in capabilities)
-        assert not any(item.startswith(("control.mcp.", "mcp.")) for item in capabilities)
         credential = "synthetic-template-credential-" + "a" * 32
         monkeypatch.setenv(declaration["token_env"], credential)
         principal = await access.authenticate(credential, source=PrincipalSource.CLI)

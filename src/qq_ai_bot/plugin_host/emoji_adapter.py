@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import cast
 
 from qq_ai_bot.emoji.models import EmojiSelectionRequest
@@ -14,6 +15,8 @@ from yuki_plugin_sdk.models import (
     EmojiSelectionSignalContext,
 )
 from yuki_plugin_sdk.registrar import EmojiSelectionSignalRegistration
+
+logger = logging.getLogger(__name__)
 
 
 class PluginEmojiSelectionSignalAdapter:
@@ -77,4 +80,5 @@ class PluginEmojiSelectionSignalAdapter:
             async with asyncio.timeout(self._timeout):
                 return await registration.provider(context)
         except Exception:
+            logger.debug("plugin emoji selection signal failed", exc_info=True)
             return None

@@ -30,10 +30,6 @@ from qq_ai_bot.conversation.rollup.service import ConversationRollupService
 logger = logging.getLogger(__name__)
 
 
-def _model_failure_error_category(exc: BaseException) -> str:
-    return model_failure_error_category(exc)
-
-
 class ConversationRollupWorker:
     """Claim jobs with owner+token leases and never create terminal failures."""
 
@@ -194,7 +190,7 @@ class ConversationRollupWorker:
                 await asyncio.gather(heartbeat, return_exceptions=True)
                 self._service._settlements.pop(settlement_key, None)
                 settled.set()
-                if self.on_finished is not None and claim.conversation_id is not None:
+                if self.on_finished is not None:
                     self.on_finished(claim.conversation_id)
 
     async def _summarize_or_emergency_overlay(
@@ -234,22 +230,12 @@ class ConversationRollupWorker:
                 claim,
                 candidate,
                 summary,
-                error_category=_model_failure_error_category(exc),
+                error_category=model_failure_error_category(exc),
                 disposition=EmergencyOverlayDisposition.MODEL_FAILURE,
                 source_emergency=False,
                 retry_max_seconds=self._retry_max_seconds,
             )
             return summary, RollupKind.EMERGENCY
-        if kind is RollupKind.EMERGENCY:
-            await self._repository.commit_emergency_overlay(
-                claim,
-                candidate,
-                summary,
-                error_category=LLM_ORIGIN_INELIGIBLE,
-                disposition=EmergencyOverlayDisposition.POLICY,
-                source_emergency=False,
-                retry_max_seconds=self._retry_max_seconds,
-            )
         return summary, kind
 
     @staticmethod

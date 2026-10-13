@@ -30,7 +30,6 @@ from qq_ai_bot.admin.models import ControlAuditRef, RuntimeConfigSnapshot
 from qq_ai_bot.automation.authority import DelegatedAuthority
 from qq_ai_bot.automation.models import AutomationRecord, TurnOrigin
 from qq_ai_bot.automation.service import AutomationService
-from qq_ai_bot.control_plane.principal import ControlPrincipal
 from qq_ai_bot.conversation.scope import runtime_conversation_key
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import ChatImage, InboundMessage
@@ -244,7 +243,6 @@ def _owned_work_result(row: Mapping[str, Any], source: Mapping[str, Any]) -> _Ho
             text=checkpoint.get("sync_result") or "",
             tool_calls_used=0,
             model_requests=0,
-            web_was_used=False,
             work_id=row["id"],
             work_state=row["state"],
         ),
@@ -278,7 +276,6 @@ class PluginInvocation:
     delegated_authority: DelegatedAuthority | None = field(default=None, repr=False)
     allowed_capabilities: frozenset[str] = field(default_factory=frozenset)
     source_event_id: int | None = None
-    web_was_used: bool = False
     legacy_conversation_key: str | None = None
     person_id: str | None = None
     space_id: str | None = None
@@ -626,11 +623,7 @@ class HostPluginContext:
         await self._scheduler.stop()
 
     def invocation_scope(
-        self,
-        plugin_id: str,
-        runtime: ToolRuntimeProjection,
-        *,
-        web_was_used: bool,
+        self, plugin_id: str, runtime: ToolRuntimeProjection
     ) -> _InvocationBinding:
         """Adapter helper accepting the existing ToolRuntime without importing it."""
 
@@ -663,7 +656,6 @@ class HostPluginContext:
             allowed_capabilities=frozenset(
                 cast(Iterable[str], getattr(runtime, "allowed_capabilities", ()))
             ),
-            web_was_used=web_was_used,
         )
         return self.bind(invocation)
 
@@ -800,14 +792,6 @@ class HostPluginContext:
         if people is None:
             raise PluginPermissionError("control principal cannot be resolved")
         return ControlAccess(people._database, superuser_ids=self._superuser_ids)
-
-    async def _control_principal(
-        self, invocation: PluginInvocation
-    ) -> tuple[ControlPrincipal, ControlAuditRef]:
-        return (
-            await self._control_access().principal_for_qq(invocation.actor_user_id),
-            _control_audit_ref(invocation),
-        )
 
     def _require_user_scope(
         self,
@@ -1521,7 +1505,6 @@ class _AgentFacade:
                     text="",
                     tool_calls_used=0,
                     model_requests=0,
-                    web_was_used=False,
                     work_id=work_id,
                     work_state="cancelled",
                 ),

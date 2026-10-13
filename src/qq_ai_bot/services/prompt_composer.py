@@ -99,7 +99,6 @@ class PromptComposer:
                     trust=PromptTrust.UNTRUSTED,
                     priority=-9_999,
                     payload=state,
-                    required=True,
                 )
             )
         if context.metadata_payload:
@@ -110,7 +109,6 @@ class PromptComposer:
                     trust=PromptTrust.UNTRUSTED,
                     priority=85,
                     payload=context.metadata_payload,
-                    required=True,
                 )
             )
         plugin_context = (

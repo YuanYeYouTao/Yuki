@@ -18,7 +18,7 @@ from qq_ai_bot.services.media_resolver import OneBotMediaGateway
 
 
 class EmojiAdminService:
-    """Share one business service between commands and model-admin actions."""
+    """Share one business service between control-plane commands."""
 
     def __init__(
         self,
@@ -64,102 +64,6 @@ class EmojiAdminService:
     async def cleanup_expired(self) -> int:
         deleted, _temporary = await self._cleanup_counts()
         return deleted
-
-    async def execute_action(
-        self,
-        action: str,
-        arguments: dict[str, Any],
-        actor: AdminActor,
-    ) -> dict[str, Any]:
-        """Execute a model-issued admin action through the same lifecycle service."""
-
-        operation = action.removeprefix("emoji.")
-        if operation == "list":
-            raw_status = arguments.get("status")
-            status = EmojiLifecycleStatus(str(raw_status)) if raw_status else None
-            rows = await self._repository.list_assets(status=status, limit=30)
-            return {"assets": [self._asset_json(row) for row in rows]}
-        if operation == "stats":
-            return {"counts": await self._repository.counts()}
-        if operation == "cleanup":
-            return {"message": await self._cleanup()}
-        if operation == "doctor":
-            return {"message": await self._doctor()}
-        emoji_id = arguments.get("emoji_id")
-        if not isinstance(emoji_id, str):
-            raise ValueError("emoji_id 必须是字符串")
-        asset = await self._target([emoji_id])
-        if operation == "show":
-            return self._asset_json(asset)
-        if operation in {"adopt", "unadopt"}:
-            scope_type = str(arguments.get("scope_type") or "global").casefold()
-            if scope_type not in {"global", "group"}:
-                raise ValueError("scope_type 必须是 global 或 group")
-            if scope_type == "global":
-                scope_id = ""
-            else:
-                raw_scope = str(arguments.get("scope_id") or "current_group")
-                if raw_scope in {"current", "current_group", "本群"}:
-                    scope_id = actor.current_group_id or ""
-                else:
-                    scope_id = raw_scope
-                    if scope_id not in actor.current_message_text:
-                        raise ValueError("显式群号必须真实出现在当前消息正文中")
-                if not scope_id:
-                    raise ValueError("当前消息不在群聊中，请提供群号")
-            if operation == "adopt":
-                runtime = (await self._config.snapshot(group_id=scope_id or None)).emoji
-                await self._lifecycle.adopt(
-                    asset.id,
-                    scope_type=scope_type,  # type: ignore[arg-type]
-                    scope_id=scope_id,
-                    runtime=runtime,
-                )
-                return {
-                    "emoji_id": asset.id,
-                    "adopted": True,
-                    "scope": scope_type,
-                    "scope_id": scope_id,
-                }
-            removed = await self._lifecycle.unadopt(
-                asset.id,
-                scope_type=scope_type,  # type: ignore[arg-type]
-                scope_id=scope_id,
-            )
-            return {"emoji_id": asset.id, "adopted": False, "removed": removed}
-        if operation == "pin":
-            enabled = arguments.get("enabled")
-            if not isinstance(enabled, bool):
-                raise ValueError("enabled 必须是布尔值")
-            updated = await self._repository.set_pinned(asset.id, enabled)
-            return self._asset_json(updated)
-        if operation == "reanalyze":
-            await self._repository.enqueue(asset.id, "reanalyze")
-            if self._worker is not None:
-                self._worker.wake()
-            return {"emoji_id": asset.id, "queued": True}
-        if operation in {"enable_for_group", "disable_for_group"}:
-            group_id = str(arguments.get("group_id") or actor.current_group_id or "")
-            if not group_id:
-                raise ValueError("请在群聊中调用或明确提供群号")
-            if group_id != actor.current_group_id and group_id not in actor.current_message_text:
-                raise ValueError("显式群号必须真实出现在当前消息正文中")
-            enabled = operation == "enable_for_group"
-            await self._repository.set_group_enabled(
-                asset.id,
-                group_id=group_id,
-                enabled=enabled,
-            )
-            return {"emoji_id": asset.id, "group_id": group_id, "enabled": enabled}
-        target = {
-            "reject": EmojiLifecycleStatus.REJECTED,
-            "ban": EmojiLifecycleStatus.BANNED,
-            "unban": EmojiLifecycleStatus.RECOGNIZED,
-        }.get(operation)
-        if target is None:
-            raise KeyError(f"未实现表情 action：{action}")
-        updated = await self._lifecycle.transition(asset.id, target)
-        return self._asset_json(updated)
 
     async def _execute(
         self,

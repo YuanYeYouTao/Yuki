@@ -66,7 +66,7 @@ class MainAgentContract:
                 declaration_only=True,
                 runtime_config=config,
             )
-            registry = self.chat._build_tool_registry(declaration, web_was_used=False)
+            registry = self.chat._build_tool_registry(declaration)
             tools = [
                 entry.descriptor.as_chat_tool(description=entry.descriptor.description)
                 for entry in registry.catalog(declaration).entries

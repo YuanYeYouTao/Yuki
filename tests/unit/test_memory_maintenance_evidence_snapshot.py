@@ -230,7 +230,6 @@ async def test_maintenance_reprepares_four_native_busy_rollbacks_with_original_b
     }
     assert all(cutoff is scans[0]["now"] for _, cutoff, _ in attempts)
     assert len({id(session) for _, _, session in attempts}) == 5
-    assert worker.metrics.count("maintenance_expired") == 2
     assert worker.metrics.maintenance_last_success_at is scans[0]["now"]
     async with database.sessions() as session:
         expired = list(
@@ -275,7 +274,6 @@ async def test_cancel_exits_maintenance_busy_repreparation_without_replacing_bat
     assert all(cutoff is attempts[0][1] for _, cutoff, _ in attempts)
     assert (await facts.get_fact(rows[0].id)).status.value == "active"
     assert worker.metrics.maintenance_last_success_at is None
-    assert worker.metrics.count("maintenance_expired") == 0
     async with database.immediate_session() as writer:
         assert (
             await writer.scalar(
@@ -318,7 +316,6 @@ async def test_close_cancels_running_maintenance_under_continuous_real_writer_bu
     assert all(cutoff is attempts[0][1] for _, cutoff, _ in attempts)
     assert (await facts.get_fact(rows[0].id)).status.value == "active"
     assert worker.metrics.maintenance_last_success_at is None
-    assert worker.metrics.count("maintenance_expired") == 0
     # The writer owned by the canceled maintenance attempt has been released.
     async with database.immediate_session() as writer:
         assert (
@@ -397,7 +394,6 @@ async def test_maintenance_unknown_acknowledgement_never_retries_or_reports_succ
             event.remove(database.engine.sync_engine, "handle_error", record)
     assert caught.value is uncertainty and calls == 1
     assert worker.metrics.maintenance_last_success_at is None
-    assert worker.metrics.count("maintenance_expired") == 0
     assert (await facts.get_fact(rows[0].id)).status.value == (
         "invalidated" if phase == "commit" else "active"
     )

@@ -44,7 +44,6 @@ class PromptContribution(BaseModel):
     content: str | None = None
     payload: Any | None = None
     source: str = "core"
-    required: bool = False
 
     @model_validator(mode="after")
     def _validate_body(self) -> PromptContribution:

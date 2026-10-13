@@ -20,8 +20,7 @@ from qq_ai_bot.identity.db_models import (
 )
 from qq_ai_bot.memory.authorized_scope import AuthorizedMemoryScope
 from qq_ai_bot.memory.enums import MemoryScopeType, MemoryTargetRole
-from qq_ai_bot.memory.models import MemoryEntityTarget, MemoryFact
-from qq_ai_bot.memory.partition import canonical_fact_owner_complete
+from qq_ai_bot.memory.models import MemoryEntityTarget
 from qq_ai_bot.memory.runtime.query_plane import ResolvedReadScope
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import MembershipModel, PersonAliasModel
@@ -425,25 +424,6 @@ class MemoryReadScopeResolver:
                     and not disabled_spaces
                 ),
             )
-
-    async def allows_fact(self, requester: str, fact: MemoryFact) -> bool:
-        if not canonical_fact_owner_complete(fact) or fact.scope_type is MemoryScopeType.SELF:
-            return False  # SELF has its separate current-conversation policy.
-        async with self._database.sessions() as session:
-            requester_id = await self._person(session, requester)
-            if requester_id is None:
-                return False
-            groups = await self._groups(session, requester_id)
-            if fact.scope_type is MemoryScopeType.GROUP:
-                return fact.canonical_subject_space_id in groups
-            target = fact.canonical_subject_person_id
-            if fact.scope_type is MemoryScopeType.PERSON:
-                return requester_id == target or bool(groups & await self._groups(session, target))
-            if fact.scope_type is MemoryScopeType.PERSON_GROUP:
-                return fact.canonical_subject_space_id in (
-                    groups & await self._groups(session, target)
-                )
-            return False
 
     async def people_named(self, requester: str, name: str) -> tuple[str, ...]:
         """Complete exact-name candidates inside authorized relationships."""

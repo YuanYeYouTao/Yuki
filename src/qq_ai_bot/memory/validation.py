@@ -199,7 +199,6 @@ class MemoryClaimValidator:
             valid_until=temporal.valid_until,
         )
         relation = self._evidence_relation(
-            operation=claim.operation,
             authority=authority,
             source_type=source_type,
         )
@@ -212,7 +211,7 @@ class MemoryClaimValidator:
             excerpt=quote,
         )
         return ValidatedMemoryClaim(
-            operation=claim.operation,
+            operation=MemoryClaimOperation.ASSERT,
             fact=fact,
             evidence=evidence,
             subject_is_speaker=subject_is_speaker,
@@ -222,16 +221,9 @@ class MemoryClaimValidator:
     @staticmethod
     def _evidence_relation(
         *,
-        operation: MemoryClaimOperation,
         authority: MemoryAuthority,
         source_type: MemorySourceType,
     ) -> MemoryEvidenceRelation:
-        if operation is MemoryClaimOperation.RETRACT:
-            return MemoryEvidenceRelation.RETRACTION
-        if operation is MemoryClaimOperation.CORRECT:
-            return MemoryEvidenceRelation.CORRECTION
-        if operation is MemoryClaimOperation.CONFIRM:
-            return MemoryEvidenceRelation.CONFIRMATION
         if source_type is MemorySourceType.REBUILD:
             return MemoryEvidenceRelation.REBUILD
         if source_type is MemorySourceType.EXPLICIT:

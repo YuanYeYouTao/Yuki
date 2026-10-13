@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import time
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractContextManager, nullcontext
 from contextvars import ContextVar
@@ -61,12 +60,11 @@ from qq_ai_bot.memory.targets import MemoryTargetResolver
 from qq_ai_bot.memory.tool_intent import effective_query_summary, parse_memory_tool_intent
 from qq_ai_bot.persistence.people_repository import PeopleRepository
 from qq_ai_bot.persistence.repositories import (
-    AgentActionRepository,
     EventLedgerRepository,
     WebSearchSourceRepository,
 )
 from qq_ai_bot.runtime.errors import InvalidTurnContextError
-from qq_ai_bot.sandbox.environment_tools import EXECUTION_TOOLS, READ_TOOLS, SANDBOX_TOOLS
+from qq_ai_bot.sandbox.environment_tools import EXECUTION_TOOLS, SANDBOX_TOOLS
 from qq_ai_bot.services.context_boundary import ContextBoundaryReader
 from qq_ai_bot.services.evidence_state import evidence_state
 from qq_ai_bot.services.turn_coordinator import TurnToken
@@ -79,7 +77,7 @@ from qq_ai_bot.web.models import (
     WebSearchTimeRange,
     WebSearchTopic,
 )
-from qq_ai_bot.workspace.tools import WORKSPACE_READ_TOOLS, WORKSPACE_TOOLS
+from qq_ai_bot.workspace.tools import WORKSPACE_TOOLS
 
 _URL_IN_TEXT = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
 _CQ_CODE = re.compile(r"\[CQ:([a-zA-Z0-9_-]+)(?:,[^\]]*)?\]", re.IGNORECASE)
@@ -158,7 +156,6 @@ class ToolRuntime:
     gateway: OneBotToolGateway | None
     allow_generic_onebot: bool
     declaration_only: bool = False
-    allow_admin_actions: bool = False
     conversation_key: str = ""
     trigger_message_id: str = ""
     trigger_event_id: int | None = None
@@ -167,10 +164,8 @@ class ToolRuntime:
     runtime_config: RuntimeConfigSnapshot | None = None
     origin: TurnOrigin = TurnOrigin.USER_MESSAGE
     tools_closed: bool = False
-    read_only: bool = False
     read_scope: ConversationScope | None = None
     read_target_id: str | None = None
-    history_limit: int | None = None
     turn_token: TurnToken | None = None
     turn_snapshot: ConversationTurnSnapshot | None = None
     visible_event_ids: frozenset[int] = frozenset()
@@ -270,12 +265,6 @@ class ToolRuntime:
     def effective_presence_id(self) -> str | None:
         return self.inbound.presence_id if self.inbound is not None else self.presence_id
 
-    @property
-    def image_present(self) -> bool:
-        return bool(
-            self.inbound is not None
-            and (self.inbound.attachments or self.inbound.reply_attachments)
-        )
 
     def require_actor(self) -> ToolActor:
         if self.inbound is not None:
@@ -408,7 +397,6 @@ class AgentToolService:
         memories: MemoryFactService,
         memory_context: MemoryContextService | None = None,
         memory_mutations: MemoryMutationService | None = None,
-        actions: AgentActionRepository,
         web_provider: WebSearchProvider | None = None,
         web_sources: WebSearchSourceRepository | None = None,
         runtime_config: RuntimeConfigService | None = None,
@@ -431,7 +419,6 @@ class AgentToolService:
             )
         self._memory_context = memory_context
         self._memory_mutations = memory_mutations
-        self._actions = actions
         self._web_provider = web_provider
         self._web_sources = web_sources
         self._runtime_config = runtime_config or RuntimeConfigService(
@@ -863,10 +850,7 @@ class AgentToolService:
                     from qq_ai_bot.capabilities.invocation import current_invocation
 
                     invocation = current_invocation.get()
-                    if (
-                        runtime.tools_closed
-                        or (runtime.read_only and name not in READ_TOOLS)
-                    ):
+                    if runtime.tools_closed:
                         return self._result(error="permission_denied", detail="本轮未授权沙箱操作")
                     if self.sandbox_client is None or invocation is None:
                         return self._result(error="sandbox_unavailable", detail="沙箱未连接")
@@ -894,7 +878,6 @@ class AgentToolService:
                             **self._work_source(),
                             "conversation_id": runtime.effective_conversation_id,
                             "origin": runtime.origin.value,
-                            "allow_admin_actions": runtime.allow_admin_actions,
                             "actor_is_superuser": runtime.actor_is_superuser,
                             "actor_user_id": runtime.actor_user_id,
                             "bot_user_id": runtime.effective_bot_user_id,
@@ -908,22 +891,21 @@ class AgentToolService:
                         if name in EXECUTION_TOOLS
                         else None,
                     )
-                    if result.get("error") == "sandbox_submission_unknown":
+                    if result.get("error"):
                         return self._result(
                             data=result,
-                            error="sandbox_submission_unknown",
-                            detail="沙箱提交结果未确认；核对原执行回执，不能重新提交。",
-                            uncertain=True,
+                            error=str(result["error"]),
+                            detail="沙箱提交结果未确认；核对原执行回执，不能重新提交。"
+                            if result.get("uncertain")
+                            else "沙箱操作未完成",
+                            uncertain=bool(result.get("uncertain")),
                         )
                     return self._result(data=result)
 
                 if name in WORKSPACE_TOOLS:
                     from qq_ai_bot.workspace.store import WorkspaceError
 
-                    if (
-                        (runtime.read_only and name not in WORKSPACE_READ_TOOLS)
-                        or runtime.tools_closed
-                    ):
+                    if runtime.tools_closed:
                         return self._result(
                             error="permission_denied", detail="本轮未授权工作区操作"
                         )
@@ -939,7 +921,13 @@ class AgentToolService:
                             runtime=runtime,
                             request_id=invocation.call_id if invocation is not None else None,
                         )
-                        return self._result(data=workspace_result)
+                        return self._result(
+                            data=workspace_result,
+                            error=str(workspace_result["error"])
+                            if workspace_result.get("error")
+                            else None,
+                            uncertain=bool(workspace_result.get("uncertain")),
+                        )
                     except (WorkspaceError, ValueError, OSError) as exc:
                         category = (
                             str(exc) if isinstance(exc, WorkspaceError) else type(exc).__name__
@@ -1150,7 +1138,7 @@ class AgentToolService:
     async def _recent_history(self, runtime: ToolRuntime) -> ToolExecutionResult:
         rows = await self._ledger.list_scope_recent(
             runtime.conversation_scope(),
-            limit=min(runtime.history_limit or 20, self._settings.recent_history_tool_limit),
+            limit=self._settings.recent_history_tool_limit,
             message_only=True,
         )
         return self._result(
@@ -2387,7 +2375,6 @@ class AgentToolService:
             outcome,
             result_count,
         )
-        self._memory_context.metrics.record_read_outcome(outcome)
 
     async def _call_onebot(
         self, arguments: dict[str, Any], runtime: ToolRuntime
@@ -2403,24 +2390,7 @@ class AgentToolService:
             return self._result(
                 error="invalid_arguments", detail="action 必须是字符串且 params 必须是对象"
             )
-        started = time.perf_counter()
-        try:
-            result = await runtime.gateway.call_api(action, params)
-        except (OSError, RuntimeError) as exc:
-            await self._actions.record(
-                actor_user_id=runtime.actor_user_id,
-                action=action,
-                success=False,
-                duration_seconds=time.perf_counter() - started,
-                error_category=type(exc).__name__,
-            )
-            raise
-        await self._actions.record(
-            actor_user_id=runtime.actor_user_id,
-            action=action,
-            success=True,
-            duration_seconds=time.perf_counter() - started,
-        )
+        result = await runtime.gateway.call_api(action, params)
         await self._record_onebot_send(action, params, result, actor)
         return self._result(data={"action": action, "result": result})
 

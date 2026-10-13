@@ -280,7 +280,6 @@ async def test_changed_legacy_delivery_uses_current_context_without_replaying_pl
         initial,
         runtime,
         StubAgentBackend(
-            definitions=lambda *_args, **_kwargs: (),
             execute_call=execute,
             finalize=lambda content, _runtime: content,
         ),

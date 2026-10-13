@@ -15,7 +15,7 @@ from qq_ai_bot.capabilities.invocation import (
 from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.services.invocation_service import InvocationService
 
-__all__ = ["WorkSession", "invoke_tool", "observe_fixture_result"]
+__all__ = ["WorkSession", "invoke_tool"]
 
 
 async def invoke_tool(
@@ -67,18 +67,3 @@ async def invoke_tool(
         )
     finally:
         control.session = previous
-
-
-def observe_fixture_result(control, name, result, executed, *, side_effecting=True, arguments="{}"):
-    from qq_ai_bot.capabilities.results import normalize_legacy_result
-    from qq_ai_bot.runtime.effect_outcomes import execution_evidence
-
-    if executed:
-        control.observe_evidence(
-            execution_evidence(
-                normalize_legacy_result(result, provider_id="fixture", tool_name=name),
-                tool=name,
-                side_effecting=side_effecting,
-                arguments=arguments,
-            )
-        )

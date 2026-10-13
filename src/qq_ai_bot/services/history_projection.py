@@ -14,7 +14,6 @@ from qq_ai_bot.conversation.projections import (
     ProjectionSnapshot,
     PromptProjectionRepository,
 )
-from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
 from qq_ai_bot.execution_trace.phases import collect_phase_metrics
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
@@ -67,32 +66,6 @@ class PreparedHistory:
             ),
         )
 
-    async def commit(
-        self,
-        fragments: FrozenFragments,
-    ) -> ProjectionSnapshot:
-        """Call after authority/source validation, immediately before model dispatch.
-
-        Retries reuse this immutable preparation; no model output is interpreted
-        as a platform send, and concurrent preparations cannot replace each other.
-        """
-        if self.committed is not None:
-            if self.committed_input == list(fragments.items):
-                return self.committed
-        publication = await self.prepare_commit(fragments)
-        async with self.repository.database.immediate_session() as writer:
-            self.committed = await publication(writer)
-        self.committed_input = list(fragments.items)
-        logger.info(
-            "prompt_projection_committed view=%s epoch=%s revision=%d reason=%s items=%d",
-            self.view_key,
-            self.committed.epoch_id,
-            self.committed.revision,
-            self.committed.rebuild_reason,
-            len(fragments.items),
-        )
-        return self.committed
-
 
 async def prepare_history(
     repository: PromptProjectionRepository,
@@ -100,9 +73,8 @@ async def prepare_history(
     *,
     view_key: str,
     context_key: str,
-    history_fits: Callable[[tuple[ChatMessage, ...]], bool],
-    context_fits: Callable[[AssembledContext], bool] | None = None,
-    context_hard_fits: Callable[[AssembledContext], bool] | None = None,
+    context_fits: Callable[[AssembledContext], bool],
+    context_hard_fits: Callable[[AssembledContext], bool],
 ) -> PreparedHistory:
     """Append canonical public history in the Conversation's existing epoch."""
     if context.read_version is None or context.read_version.conversation_id is None:
@@ -226,16 +198,8 @@ async def prepare_history(
     selected_context = replace(selected_context, history_messages=extended.messages())
     collect_phase_metrics(candidate_count=1)
     extended_messages = extended.messages()
-    fits = (
-        context_fits(replace(selected_context, history_messages=extended_messages))
-        if context_fits is not None
-        else history_fits(extended_messages)
-    )
-    hard_fits = (
-        context_hard_fits(replace(selected_context, history_messages=extended_messages))
-        if context_hard_fits is not None
-        else fits
-    )
+    fits = context_fits(replace(selected_context, history_messages=extended_messages))
+    hard_fits = context_hard_fits(replace(selected_context, history_messages=extended_messages))
     ready_rollup = (
         previous is not None
         and context.prompt_effective_coverage > previous.selected_summary_coverage
@@ -260,15 +224,9 @@ async def prepare_history(
             extended = fresh
             selected_context = replace(context, history_messages=fresh.messages())
             extended_messages = extended.messages()
-            fits = (
-                context_fits(replace(selected_context, history_messages=extended_messages))
-                if context_fits is not None
-                else history_fits(extended_messages)
-            )
-            hard_fits = (
-                context_hard_fits(replace(selected_context, history_messages=extended_messages))
-                if context_hard_fits is not None
-                else fits
+            fits = context_fits(replace(selected_context, history_messages=extended_messages))
+            hard_fits = context_hard_fits(
+                replace(selected_context, history_messages=extended_messages)
             )
     # The original assembler has already selected a bounded history. Its rollup
     # is compiled separately, before these event fragments, in every epoch.

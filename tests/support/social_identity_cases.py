@@ -16,7 +16,6 @@ from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
 from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence, ensure_space
 from qq_ai_bot.identity.db_models import IdentityBindingModel, PresenceModel, SpaceBindingModel
 from qq_ai_bot.identity.routing import PresenceRouter, RouteSendError
-from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from qq_ai_bot.social.models import SocialError
@@ -291,37 +290,24 @@ async def test_real_mentions_preserve_segments_and_replay(social_env, attachment
 
 
 async def current_speaker_mention(env):
+    from tests.support.commands_and_chat_helpers import inbound
+
     from qq_ai_bot.capabilities.invocation import ToolInvocationContext, current_invocation
-    from qq_ai_bot.domain.tool_actor import ToolActor
-    from qq_ai_bot.runtime.origin import TurnOrigin
+    from qq_ai_bot.services.agent_tools import ToolRuntime
     from qq_ai_bot.social.agent_adapter import invoke_social
 
     async with env.db.sessions() as session:
         event_id = await session.scalar(select(ChatEventModel.id))
-    actor = ToolActor(
-        user_id="10001",
+    message = replace(
+        inbound("test", message_id="inbound", user_id="10001", group_id="20001"),
         bot_user_id="80001",
-        group_id="20001",
-        origin=TurnOrigin.USER_MESSAGE,
-        instruction="test",
-        event_id=event_id,
-    )
-    runtime = SimpleNamespace(
-        require_actor=lambda: actor,
-        origin=TurnOrigin.USER_MESSAGE,
-        read_only=False,
-        tools_closed=False,
-        inbound=SimpleNamespace(
-            sender=SimpleNamespace(user_id="10001"),
-            scope_type="group",
-            message_id="inbound",
-            presence_id=env.presence,
-        ),
-        mentioned_user_ids=(),
-        effective_conversation_id=env.context.conversation_id,
-        trigger_message_id="inbound",
+        source_event_id=event_id,
+        conversation_id=env.context.conversation_id,
+        person_id=env.person,
         space_id=env.space,
+        presence_id=env.presence,
     )
+    runtime = ToolRuntime(inbound=message, gateway=None, allow_generic_onebot=False)
     token = current_invocation.set(ToolInvocationContext(runtime=runtime, call_id="mention-me"))
     try:
         result = await invoke_social(
@@ -356,50 +342,3 @@ async def test_mentions_reject_ambiguous_or_nonmember_accounts(social_env):
             env.context,
         )
     assert not any(action == "send_group_msg" for action, _ in env.bot.calls)
-
-
-async def run_identity_scenarios(tmp_path):
-    """Run the social identity safety scenarios."""
-    from tests.support.social_history_cases import (
-        history_agent_loop,
-        history_receipt,
-        history_targets_and_delegation,
-    )
-
-    scenarios = [
-        (history_agent_loop, ()),
-        (history_receipt, ()),
-        (history_targets_and_delegation, ()),
-        (current_speaker_mention, ()),
-        *[
-            (test_recall_uses_original_presence, (state,))
-            for state in ("paused", "switched", "deleted")
-        ],
-        (test_members_ignore_send_pause_and_try_accessible_connections, ()),
-        (test_multiple_space_bindings_require_explicit_selection, ()),
-        (test_disabled_presence_cannot_read_or_recall, ()),
-        (test_private_poke_uses_pinned_binding_and_rejects_conflict, ()),
-        *[
-            (test_group_poke_resolves_binding_without_first_item, (selector,))
-            for selector in ("explicit", "subject", "ambiguous", "foreign")
-        ],
-        *[
-            (test_real_mentions_preserve_segments_and_replay, (attachment,))
-            for attachment in (None, "image", "file")
-        ],
-        (test_mentions_reject_ambiguous_or_nonmember_accounts, ()),
-    ]
-    with pytest.MonkeyPatch.context() as monkeypatch:
-        scenarios.append((test_recall_rechecks_connection_before_claim, (monkeypatch,)))
-        for index, (scenario, arguments) in enumerate(scenarios):
-            directory = tmp_path / f"identity-{index}"
-            database = Database(f"sqlite+aiosqlite:///{directory / 'test.db'}")
-            try:
-                await database.create_schema()
-                env = await social_env(database, directory)
-                await scenario(env, *arguments)
-            except Exception as exc:
-                exc.add_note(f"Social identity scenario: {scenario.__name__} {arguments}")
-                raise
-            finally:
-                await database.close()

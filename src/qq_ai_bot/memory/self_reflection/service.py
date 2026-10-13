@@ -24,7 +24,6 @@ from qq_ai_bot.memory.enums import (
     MemoryScopeType,
     SelfMemoryVisibility,
 )
-from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFact
 from qq_ai_bot.memory.mutation.models import (
     MemoryDecisionActorType,
@@ -152,14 +151,12 @@ class SelfReflectionService:
         facts: MemoryFactService,
         mutations: MemoryMutationService,
         models: ModelExecutor,
-        metrics: MemoryLifecycleMetrics,
     ) -> None:
         self._settings = settings
         self._repository = repository
         self._facts = facts
         self._mutations = mutations
         self._structured = StructuredTaskRunner(models)
-        self._metrics = metrics
         self._candidates = MemoryClaimCandidateRepository(facts.repository.database)
 
     async def reflect(self, batch: SelfReflectionBatch) -> tuple[int, int]:
@@ -281,11 +278,9 @@ class SelfReflectionService:
                 committed += int(changed)
             except Exception as exc:
                 raise SelfReflectionMutationError("proposal_commit", proposal_index, exc) from exc
-        episode_committed = 0
         for index, episode in enumerate(output.episodes, start=1):
             if ("episode", index) in already_committed:
                 committed += 1
-                episode_committed += 1
                 continue
             try:
                 changed = await self._apply_episode(
@@ -298,12 +293,7 @@ class SelfReflectionService:
                 )
             except Exception as exc:
                 raise SelfReflectionMutationError("episode_commit", index, exc) from exc
-            episode_committed += int(changed)
             committed += int(changed)
-        if not output.proposals and not output.episodes:
-            self._metrics.increment("self_reflection_noop")
-        self._metrics.increment("self_reflection_episode_committed", episode_committed)
-        self._metrics.increment("self_reflection_committed", committed)
         counts = (len(output.proposals) + len(output.episodes), committed)
         await self._repository.save_checkpoint(
             batch.run_id,

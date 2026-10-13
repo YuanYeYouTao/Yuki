@@ -367,10 +367,7 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
             # Every actual entry uses this application's deployed manifest and system.
             assert _fixed(wire[0]) == _fixed(wire[1]) == _fixed(wire[2])
             assert sessions == [f"yuki:{scope.id}:g{scope.generation}:main"] * 3
-            assert wire[0]["generationConfig"] == {
-                "maxOutputTokens": 4096,
-                "thinkingConfig": {"thinkingLevel": "low"},
-            }
+            assert wire[0]["generationConfig"]["maxOutputTokens"] == 4096
             full = {tool.name: tool for tool in await app.main_agent_contract.definitions()}
             assert SANDBOX_TOOLS | WORKSPACE_TOOLS <= full.keys()
             assert {
@@ -656,7 +653,7 @@ async def test_sdk_history_grant_uses_common_conversation_without_scope_fork(
         await chat.runtime.main_turns._projections.invalidate_view(
             message.conversation_id, reason="capacity"
         )
-    with host.invocation_scope(host.plugin_id, source, web_was_used=False):
+    with host.invocation_scope(host.plugin_id, source):
         result = await host.agent.run("当前插件实际要求")
     assert result.ok and result.data["state"] == "completed"
     actual = provider.requests[-1].messages

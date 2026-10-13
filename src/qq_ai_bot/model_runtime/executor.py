@@ -8,7 +8,6 @@ import json
 import logging
 import time
 import weakref
-from collections import OrderedDict
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
 from contextvars import ContextVar
@@ -328,9 +327,6 @@ class TaskModelExecutor:
         self._background_provider_task: asyncio.Task[ChatResponse] | None = None
         self._maintenance_slot = asyncio.Lock()
         self._maintenance_provider_task: asyncio.Task[ChatResponse] | None = None
-        self._prompt_shapes: OrderedDict[str, tuple[str, str]] = OrderedDict()
-        self._prefix_shape_match_total = 0
-        self._prefix_shape_split_total = 0
 
     @property
     def router(self) -> ModelRouter:
@@ -566,10 +562,6 @@ class TaskModelExecutor:
                 protocol=profile.protocol.value,
             )
         if normalized.conversation_prefix_hash:
-            self._observe_prompt_shape(
-                normalized,
-                provider_shape_hash=provider_cache_shape.provider_shape_hash,
-            )
             logger.info(
                 "prompt_request_diagnostics stage=normalized_projection task=%s "
                 "conversation_prefix_hash=%s "
@@ -760,34 +752,6 @@ class TaskModelExecutor:
                 values["success"],
                 self._invocation_record_failures,
             )
-
-    def prompt_shape_metrics(self) -> dict[str, int]:
-        return {
-            "conversation_prefix_shape_match_total": self._prefix_shape_match_total,
-            "conversation_prefix_shape_split_total": self._prefix_shape_split_total,
-        }
-
-    def _observe_prompt_shape(
-        self,
-        request: ChatRequest,
-        *,
-        provider_shape_hash: str,
-    ) -> None:
-        fingerprint = request.prompt_snapshot_fingerprint
-        if not fingerprint:
-            return
-        observed = (request.conversation_prefix_hash, provider_shape_hash)
-        previous = self._prompt_shapes.get(fingerprint)
-        if previous is not None:
-            if previous == observed:
-                self._prefix_shape_match_total += 1
-            elif previous[0] == observed[0]:
-                self._prefix_shape_split_total += 1
-            self._prompt_shapes.move_to_end(fingerprint)
-            return
-        self._prompt_shapes[fingerprint] = observed
-        if len(self._prompt_shapes) > 1024:
-            self._prompt_shapes.popitem(last=False)
 
     async def _execute_provider(
         self,

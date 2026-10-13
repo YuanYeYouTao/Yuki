@@ -142,7 +142,6 @@ _PROMPT_SCENARIOS = (
     "direct-text",
     "group-mention",
     "autonomous-group",
-    "admin",
     "web",
     "vision",
     "emoji",
@@ -168,9 +167,6 @@ def _add_diagnostics_parsers(
     runtime = subparsers.add_parser("runtime", help="只读 Runtime / Capability / Memory 诊断")
     runtime_commands = runtime.add_subparsers(dest="runtime_command", required=True)
     runtime_commands.add_parser("snapshot")
-    search = runtime_commands.add_parser("capability-search")
-    search.add_argument("query")
-    search.add_argument("--limit", type=int, default=8)
     runtime_commands.add_parser("memory-session")
 
 
@@ -255,8 +251,6 @@ def _prompt_diagnostic(settings: Settings, scenario: str) -> dict[str, object]:
         "time": {"timezone": "Asia/Shanghai", "local": "2000-01-01T12:00:00+08:00"},
         "scene": {"kind": "group" if "group" in scenario else "private"},
     }
-    if scenario == "admin":
-        dynamic_payloads["authority"] = {"role": "superuser", "source": "real_event"}
     if scenario == "vision":
         dynamic_payloads["vision"] = {"observations": ["synthetic visual observation"]}
     if scenario == "plugin":
@@ -271,7 +265,6 @@ def _prompt_diagnostic(settings: Settings, scenario: str) -> dict[str, object]:
             priority=100,
             stability=PromptStability.STATIC,
             content=settings.system_prompt,
-            required=True,
         ),
         PromptContribution(
             id="core.contract",
@@ -280,7 +273,6 @@ def _prompt_diagnostic(settings: Settings, scenario: str) -> dict[str, object]:
             priority=90,
             stability=PromptStability.STATIC,
             content=CORE_CONTRACT,
-            required=True,
         ),
     ]
     contributions.extend(
@@ -290,7 +282,6 @@ def _prompt_diagnostic(settings: Settings, scenario: str) -> dict[str, object]:
             trust=PromptTrust.TRUSTED,
             priority=50,
             payload=value,
-            required=key in {"time", "scene"},
         )
         for key, value in dynamic_payloads.items()
     )
@@ -330,7 +321,6 @@ def _scenario_tools(scenario: str) -> tuple[tuple[ChatTool, ...], dict[str, str]
         "direct-text": ("search_memory",),
         "group-mention": ("search_memory",),
         "autonomous-group": (),
-        "admin": ("admin_execute_action", "admin_set_config", "call_onebot_api"),
         "web": ("web_search", "read_webpage"),
         "vision": ("search_memory",),
         "emoji": (),
@@ -338,8 +328,6 @@ def _scenario_tools(scenario: str) -> tuple[tuple[ChatTool, ...], dict[str, str]
     }[scenario]
     group_by_name = {
         "search_memory": "memory",
-        "admin_execute_action": "admin",
-        "admin_set_config": "config",
         "call_onebot_api": "onebot",
         "web_search": "web",
         "read_webpage": "web",
@@ -376,7 +364,6 @@ def _prompt_comparison(settings: Settings) -> dict[str, object]:
         "direct-text": {"total_characters": 22413, "estimated_tokens": 5604},
         "group-mention": {"total_characters": 22422, "estimated_tokens": 5606},
         "autonomous-group": {"total_characters": 4509, "estimated_tokens": 1128},
-        "admin": {"total_characters": 27451, "estimated_tokens": 6863},
         "web": {"total_characters": 22413, "estimated_tokens": 5604},
         "vision": {"total_characters": 22886, "estimated_tokens": 5722},
         "emoji": {"total_characters": 22413, "estimated_tokens": 5604},
@@ -411,39 +398,6 @@ def _prompt_comparison(settings: Settings) -> dict[str, object]:
     }
 
 
-def _capability_search_hits(query: str, *, limit: int) -> list[dict[str, object]]:
-    from qq_ai_bot.capabilities.models import CapabilityTrustSource
-    from qq_ai_bot.capabilities.provider import _CORE_METADATA, _CORE_SEARCH_TAGS, _CORE_USE_WHEN
-    from qq_ai_bot.capabilities.search_document import CapabilitySearchDocument
-    from qq_ai_bot.capabilities.search_index import FtsCapabilitySearchIndex
-
-    documents = tuple(
-        CapabilitySearchDocument(
-            capability_id=name,
-            model_name=name,
-            canonical_name=name,
-            namespace_id=namespace,
-            description=(_CORE_USE_WHEN.get(name) or (name,))[0],
-            aliases=_CORE_SEARCH_TAGS.get(name, ()),
-            use_when=_CORE_USE_WHEN.get(name, ()),
-            trust_source=CapabilityTrustSource.CORE,
-            effect=effect,
-            risk=risk,
-        )
-        for name, (namespace, effect, risk) in _CORE_METADATA.items()
-    )
-    index = FtsCapabilitySearchIndex()
-    index.rebuild(revision="cli-core", documents=documents)
-    return [
-        {
-            "capability_id": hit.capability_id,
-            "namespace_id": hit.namespace_id,
-            "score": hit.score,
-        }
-        for hit in index.search(query, limit=limit)
-    ]
-
-
 async def _runtime_diagnostics(settings: Settings, args: argparse.Namespace) -> int:
     database = Database(settings.database_url)
     try:
@@ -451,15 +405,10 @@ async def _runtime_diagnostics(settings: Settings, args: argparse.Namespace) -> 
         command = str(args.runtime_command)
         if command == "snapshot":
             payload: dict[str, object] = asdict(snapshot)
-        elif command == "memory-session":
+        else:
             payload = {
                 "memory": asdict(snapshot.memory),
                 "conversation": asdict(snapshot.conversation),
-            }
-        else:
-            payload = {
-                "query": str(args.query),
-                "hits": _capability_search_hits(str(args.query), limit=int(args.limit)),
             }
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0

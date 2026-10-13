@@ -4,11 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from qq_ai_bot.admin.action_service import ActionRegistry, AdminActionService
 from qq_ai_bot.admin.audit import AdminAuditService
-from qq_ai_bot.admin.capabilities import AdminCapabilityService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.admin.permission_catalog import PermissionCatalogService
 from qq_ai_bot.config import Settings
 from qq_ai_bot.emoji.admin import EmojiAdminService
 from qq_ai_bot.emoji.collector import EmojiCollector
@@ -23,7 +20,6 @@ from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
 from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
-from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
 from qq_ai_bot.memory.self_reflection.worker import SelfReflectionWorker
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
@@ -48,8 +44,6 @@ class AdminBundle:
     private_access: PrivateAccessAdminService
     config: ConfigAdminService
     emoji: EmojiAdminService
-    actions: AdminActionService
-    capabilities: AdminCapabilityService
 
 
 class AdminModule:
@@ -59,8 +53,6 @@ class AdminModule:
         settings: Settings,
         database: Database,
         runtime_config: RuntimeConfigService,
-        action_registry: ActionRegistry,
-        permission_catalog: PermissionCatalogService,
         memories: MemoryFactService,
         memory_context: MemoryContextService,
         memory_index: SQLiteMemoryFTSIndex,
@@ -74,7 +66,6 @@ class AdminModule:
         emoji_storage: EmojiStorage,
         emoji_collector: EmojiCollector,
         emoji_worker: EmojiWorker | None,
-        memory_rebuild: MemoryRebuildService,
         memory_mutations: MemoryMutationService,
         ledger: EventLedgerRepository,
         memory_self_reflection: SelfReflectionWorker,
@@ -83,8 +74,6 @@ class AdminModule:
         self._settings = settings
         self._database = database
         self._runtime_config = runtime_config
-        self._action_registry = action_registry
-        self._permission_catalog = permission_catalog
         self._memories = memories
         self._memory_context = memory_context
         self._memory_index = memory_index
@@ -98,7 +87,6 @@ class AdminModule:
         self._emoji_storage = emoji_storage
         self._emoji_collector = emoji_collector
         self._emoji_worker = emoji_worker
-        self._memory_rebuild = memory_rebuild
         self._memory_mutations = memory_mutations
         self._ledger = ledger
         self._memory_self_reflection = memory_self_reflection
@@ -128,7 +116,6 @@ class AdminModule:
         )
         groups = GroupAdminService(
             groups=self._groups,
-            runtime_config=self._runtime_config,
             audit=audit,
         )
         private_access = PrivateAccessAdminService(
@@ -144,23 +131,6 @@ class AdminModule:
             config=config,
             worker=self._emoji_worker,
         )
-        actions = AdminActionService(
-            settings=self._settings,
-            database=self._database,
-            memories=memories,
-            preferences=preferences,
-            groups=groups,
-            private_access=private_access,
-            emoji=emoji,
-            registry=self._action_registry,
-        )
-        capabilities = AdminCapabilityService(
-            settings=self._settings,
-            runtime_config=self._runtime_config,
-            actions=actions,
-            audit=audit,
-            memory_rebuild=self._memory_rebuild,
-        )
         return AdminBundle(
             audit,
             memories,
@@ -169,6 +139,4 @@ class AdminModule:
             private_access,
             config,
             emoji,
-            actions,
-            capabilities,
         )

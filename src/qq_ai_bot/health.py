@@ -52,8 +52,6 @@ class HealthPayload(TypedDict):
     memory_dream: dict[str, object]
     conversation_rollup: dict[str, object]
     conversation_generation_superseded_effects: int
-    conversation_prefix_shape_match_total: int
-    conversation_prefix_shape_split_total: int
     uptime_seconds: int
 
 
@@ -74,7 +72,6 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
     self_reflection_health = await container.memory_self_reflection_worker.health()
     dream_health = await container.memory_dream_worker.health()
     rollup_health = await container.conversation_rollup_worker.health()
-    prompt_shape_metrics = container.models.prompt_shape_metrics()
     return HealthPayload(
         status="ok" if database_ok and background_health["running"] else "degraded",
         version=__version__,
@@ -130,11 +127,5 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
         conversation_generation_superseded_effects=(
             container.conversation_effect_gate.superseded_rejections
         ),
-        conversation_prefix_shape_match_total=prompt_shape_metrics[
-            "conversation_prefix_shape_match_total"
-        ],
-        conversation_prefix_shape_split_total=prompt_shape_metrics[
-            "conversation_prefix_shape_split_total"
-        ],
         uptime_seconds=max(0, int(time.monotonic() - container.started_at)),
     )

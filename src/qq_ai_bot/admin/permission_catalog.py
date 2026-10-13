@@ -6,7 +6,6 @@ from dataclasses import dataclass, replace
 from enum import IntEnum, StrEnum
 from typing import Literal
 
-from qq_ai_bot.admin.action_service import ActionRegistry, ActionSpec
 from qq_ai_bot.admin.config_registry import ConfigRegistry
 from qq_ai_bot.admin.models import ConfigSpec
 from qq_ai_bot.config import Settings
@@ -28,7 +27,6 @@ class CapabilityKind(StrEnum):
 
     COMMAND = "command"
     CONFIGURATION = "configuration"
-    ACTION = "action"
     ONEBOT = "onebot"
 
 
@@ -95,17 +93,6 @@ class CapabilityReport:
         )
 
     @property
-    def business_action_count(self) -> int:
-        return sum(descriptor.kind is CapabilityKind.ACTION for descriptor in self.capabilities)
-
-    @property
-    def mutating_action_count(self) -> int:
-        return sum(
-            descriptor.kind is CapabilityKind.ACTION and descriptor.mutating
-            for descriptor in self.capabilities
-        )
-
-    @property
     def self_service_operation_count(self) -> int:
         return sum(descriptor.kind is CapabilityKind.COMMAND for descriptor in self.capabilities)
 
@@ -155,8 +142,6 @@ class CapabilityReport:
                 "total": len(self.capabilities),
                 "mutable_configurations": self.mutable_config_count,
                 "protected_configurations": self.protected_config_count,
-                "business_actions": self.business_action_count,
-                "mutating_business_actions": self.mutating_action_count,
                 "self_service_operations": self.self_service_operation_count,
                 "self_service_mutations": self.self_service_mutation_count,
                 "onebot_api_gateways": self.onebot_gateway_count,
@@ -244,7 +229,6 @@ class CapabilityReport:
                     "total": 0,
                     "commands": 0,
                     "configurations": 0,
-                    "actions": 0,
                     "onebot_gateways": 0,
                     "mutating": 0,
                 },
@@ -254,7 +238,6 @@ class CapabilityReport:
                 {
                     CapabilityKind.COMMAND: "commands",
                     CapabilityKind.CONFIGURATION: "configurations",
-                    CapabilityKind.ACTION: "actions",
                     CapabilityKind.ONEBOT: "onebot_gateways",
                 }[descriptor.kind]
             ] += 1
@@ -316,10 +299,6 @@ class CapabilityReport:
             f"当前权限：{role_name}（来源：{self.permission_source}）",
             f"可修改运行时配置参数：{self.mutable_config_count} 项",
             (
-                "管理员业务接口："
-                f"{self.business_action_count} 项，其中修改型 {self.mutating_action_count} 项"
-            ),
-            (
                 "本人确定性自助接口："
                 f"{self.self_service_operation_count} 项，其中修改型 "
                 f"{self.self_service_mutation_count} 项"
@@ -337,15 +316,12 @@ class CapabilityReport:
             for item in self.capabilities
             if item.kind is CapabilityKind.CONFIGURATION and not item.mutating
         )
-        actions = tuple(item for item in self.capabilities if item.kind is CapabilityKind.ACTION)
         self_service = tuple(
             item for item in self.capabilities if item.kind is CapabilityKind.COMMAND
         )
         onebot = tuple(item for item in self.capabilities if item.kind is CapabilityKind.ONEBOT)
         if configurations:
             lines.extend(self._group_lines("可修改配置", configurations, id_prefix="config:"))
-        if actions:
-            lines.extend(self._group_lines("管理员业务接口", actions, id_prefix="action:"))
         if self_service:
             lines.extend(self._group_lines("本人自助接口", self_service, id_prefix="command:"))
         if onebot:
@@ -359,9 +335,7 @@ class CapabilityReport:
             lines.append(
                 "- 权限说明：超级管理员在当前真实消息触发的普通聊天轮中，可通过 "
                 "call_onebot_api(action, params) 调用当前 QQ/OneBot Provider 提供的全部公开 "
-                "action，无 action 白名单或 denylist，也不需要二次确认；这不是只限于上面的 "
-                f"{self.business_action_count} 项应用业务接口。自主群聊轮不开放；本轮使用联网"
-                "工具后会撤销该网关。"
+                "action，无 action 白名单或 denylist，也不需要二次确认。"
             )
         if protected:
             lines.extend(
@@ -657,19 +631,17 @@ _MEMORY_LIFECYCLE_CAPABILITIES = (
 
 
 class PermissionCatalogService:
-    """Build capability reports from the two existing allowlist registries."""
+    """Describe deterministic commands, configuration and real gateway authority."""
 
     def __init__(
         self,
         *,
         settings: Settings,
         config_registry: ConfigRegistry | None = None,
-        action_registry: ActionRegistry | None = None,
     ) -> None:
         self._resolver = PermissionResolver(settings)
         self._bot_display_name = settings.bot_display_name
         self._config_registry = config_registry or ConfigRegistry()
-        self._action_registry = action_registry or ActionRegistry()
         self._descriptors = self._build_descriptors()
         ids = [descriptor.id for descriptor in self._descriptors]
         if len(ids) != len(set(ids)):
@@ -746,7 +718,6 @@ class PermissionCatalogService:
         descriptors.extend(
             self._configuration_descriptor(spec) for spec in self._config_registry.list()
         )
-        descriptors.extend(self._action_descriptor(spec) for spec in self._action_registry.list())
         descriptors.append(
             CapabilityDescriptor(
                 id="onebot:call_onebot_api:any_public_action",
@@ -774,28 +745,28 @@ class PermissionCatalogService:
             )
         )
 
-    def _self_service_descriptors(self) -> tuple[CapabilityDescriptor, ...]:
+    @staticmethod
+    def _self_service_descriptors() -> tuple[CapabilityDescriptor, ...]:
         return tuple(
             CapabilityDescriptor(
-                id=f"command:{spec.name}:self",
+                id=f"command:{name}:self",
                 kind=CapabilityKind.COMMAND,
-                category=spec.name.partition(".")[0],
-                display_name=spec.display_name,
-                description=(
-                    f"{spec.description} "
-                    + (
-                        "可通过确定性 /ai 命令全局查询已认识人物；"
-                        if "global_person" in spec.self_service_scopes
-                        else "仅可通过确定性 /ai 命令操作发送者本人；"
-                    )
-                    + "不表示普通聊天 Agent 获得管理员工具。"
-                ),
+                category=name.partition(".")[0],
+                display_name=display_name,
+                description=f"{description} 可通过确定性 /ai 命令操作发送者本人。",
                 minimum_level=PermissionLevel.USER,
-                mutating=spec.mutating,
-                target_scopes=spec.self_service_scopes,
+                mutating=mutating,
+                target_scopes=scopes,
             )
-            for spec in self._action_registry.list()
-            if spec.self_service
+            for name, display_name, description, mutating, scopes in (
+                ("memory.list", "查看人物记忆", "列出人物显式与自动记忆。", False, ("self",)),
+                ("memory.add", "添加人物记忆", "添加一条显式人物记忆。", True, ("self",)),
+                ("memory.update", "修改人物记忆", "修改指定记忆 ID。", True, ("self",)),
+                ("memory.delete", "删除人物记忆", "删除指定记忆 ID。", True, ("self",)),
+                ("preference.list", "查看偏好", "列出人物交互偏好。", False, ("self",)),
+                ("preference.set", "设置偏好", "设置人物交互偏好键值。", True, ("self",)),
+                ("preference.delete", "删除偏好", "删除人物指定交互偏好。", True, ("self",)),
+            )
         )
 
     @staticmethod
@@ -815,24 +786,6 @@ class PermissionCatalogService:
             maximum=spec.maximum,
             choices=spec.choices,
             search_terms=spec.aliases,
-        )
-
-    @staticmethod
-    def _action_descriptor(spec: ActionSpec) -> CapabilityDescriptor:
-        target_scopes = (
-            ("self", "mentioned_user", "explicit_user_id")
-            if spec.target_kind == "user"
-            else ("current_group", "explicit_group_id")
-        )
-        return CapabilityDescriptor(
-            id=f"action:{spec.name}:any_{spec.target_kind}",
-            kind=CapabilityKind.ACTION,
-            category=spec.name.partition(".")[0],
-            display_name=spec.display_name,
-            description=spec.description,
-            minimum_level=PermissionLevel.SUPERUSER,
-            mutating=spec.mutating,
-            target_scopes=target_scopes,
         )
 
 

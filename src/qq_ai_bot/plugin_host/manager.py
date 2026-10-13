@@ -500,7 +500,9 @@ class PluginManager:
             return False
         try:
             approved = frozenset(
-                PluginPermission(permission) for permission in record.approved_permissions
+                PluginPermission(permission)
+                for permission in record.approved_permissions
+                if permission not in {"runtime.config.read", "runtime.config.write"}
             )
         except ValueError:
             await self._record_start_failure(plugin_id, "invalid_approved_permission")

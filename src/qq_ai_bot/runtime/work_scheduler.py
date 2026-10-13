@@ -219,7 +219,7 @@ class WorkScheduler:
             self._last_reclaim = time.monotonic()
             self._last_maintenance_error = None
             for phase, maintain in (
-                ("reclaim", self.repository.reclaim_terminal),
+                ("reclaim", self.repository.reclaim_unreferenced_media),
                 ("protocol_cleanup", ProtocolStore(self.repository.database).cleanup),
             ):
                 try:

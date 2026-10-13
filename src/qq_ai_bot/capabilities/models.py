@@ -29,7 +29,6 @@ class CapabilityRisk(StrEnum):
 
 class CapabilityTrustSource(StrEnum):
     CORE = "core"
-    ADMIN = "admin"
     AUTOMATION = "automation"
     PLUGIN = "plugin"
 

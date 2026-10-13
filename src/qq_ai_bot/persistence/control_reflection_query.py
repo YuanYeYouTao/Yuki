@@ -153,11 +153,6 @@ class ControlReflectionQueryAdapter:
                 "pending_events",
                 "pending_characters",
                 "pending_since",
-                "has_yuki_reply",
-                "has_tool_result",
-                "high_value_signal",
-                "last_policy_reason",
-                "last_policy_event_id",
                 "updated_at",
             )
             stmt = select(*(getattr(State, name) for name in names))

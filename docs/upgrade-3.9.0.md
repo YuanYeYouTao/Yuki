@@ -1,6 +1,6 @@
 # Yuki 3.9.0 配置与升级草案（未发布）
 
-<!-- release-baseline: version=3.9.0 schema=0113 -->
+<!-- release-baseline: version=3.9.0 schema=0117 -->
 
 本指南随当前开发源码更新；PR列表的历史截止基线为 main `0ddd7eee`（2026-10-09）。**3.9.0 尚未正式发布**，正式下载仍为 [3.8.4 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.4)。源码版本号不代表已有 `:3.9.0` 正式镜像；历史109个已合并PR、后续修改及各自交付状态见[发布说明](releases/v3.9.0.md)。
 
@@ -12,8 +12,8 @@
 
 | 项目 | 3.8.4 正式包 | 当前 3.9.0 源码 |
 | --- | --- | --- |
-| 数据库 head | `0072` | 当前开发单一 head `0113` |
-| Plugin API | 3.0 | 3.4，需适配并重新批准 |
+| 数据库 head | `0072` | 当前开发单一 head `0117` |
+| Plugin API | 3.0 | 3.5，需适配并重新批准 |
 | 管理 WebUI | 不包含 | 默认关闭，共用控制面 |
 | MCP / Genie 输出 | 旧实现 / 可选组件 | 专属入口、配置和服务退役；共享回执、媒体与 ASR 保留 |
 | 长期记忆 | 旧策略 | fact ID 为身份，同 key 独立事实可共存 |
@@ -44,6 +44,10 @@
 | `0111` | 删除 Memory 回执只接受 event/initiative 的封闭来源检查；无真人事件的 SELF 定时执行沿原 occurrence、版本与 execution 记账，事实、证据、回执及原 Work 不重建 |
 | `0112` | 一个 Conversation 共用公共原事件历史；清退旧 projections/selections，删除公共个人范围、自动观察来源与请求合同列，并退役个人/SELF时区表；原 Work、版本/hash、ContextObservation/DAG、协议和 artifact 引用保全 |
 | `0113` | 删除 generation/reset 时清除原 ContextObservation/DAG 的旧触发器；清公共历史和取消旧 Work 继续沿既有语义，原来源、私有回执与文件不删 |
+| `0114` | 退役管理员聊天工具；旧群自主参与停用标记转入 `conversation.autonomous_enabled=false` 群配置并重置旧列，原覆写历史、审计和工具回执保留 |
+| `0115` | 删除 SELF state 未使用的回复/工具/价值信号与旧策略诊断列；原 owner、水位、run、请求和 mutation 回执保留 |
+| `0116` | 旧 detached sandbox continuation 的 claimed 状态一次性改为 blocked；保留原 request/run、次数和执行回执，启动不再重复清理 |
+| `0117` | 删除无人读取的通用 OneBot 诊断表 agent_actions；原工具授权、Work effect 与发送执行回执保留 |
 
 历史主线的 `0096` 曾删除 MCP 派生表；当前同号保存调用索引，`0098` 按实际形状汇合。编号相同不能证明 schema 相同。其他旧实验数据库需先核生产者与完整形状，不能强行 stamp 或重建数据绕过冲突。
 
@@ -90,9 +94,9 @@ token、用户配置与插件，不能默认删除；Git/镜像 ignore 暂时保
 
 停写冷备需包含 `speech_generations` 真实执行事实、通用回执和被引用 WAV，保留原路径、内部 ID 与校验和。专属表终态不等于 QQ 已送达。服务器文件按实际归属和引用清理，不直接删除整个 data、共享 artifact 或有效备份。范围见[Work 证据备份](operations/work-evidence-backup.md)。
 
-### Plugin API 3.4
+### Plugin API 3.5
 
-更新插件 manifest 与代码，移除 `ctx.mcp`、`ctx.speech` 和专属权限/事件/TTS 注册，通过现有批准流程重新核对权限，保持原启用意图。迁移范围见 [API 3.1](plugin-development/api-3.1-migration.md)、[API 3.2](plugin-development/api-3.2-migration.md) 和 [API 3.4](plugin-development/api-3.4-migration.md)。宿主挂载的插件代码不会随镜像自动更新。
+更新插件 manifest 与代码，移除 `ctx.mcp`、`ctx.speech` 和专属权限/事件/TTS 注册，通过现有批准流程重新核对权限，保持原启用意图。迁移范围见 [API 3.1](plugin-development/api-3.1-migration.md)、[API 3.2](plugin-development/api-3.2-migration.md)、[API 3.4](plugin-development/api-3.4-migration.md) 和 [API 3.5](plugin-development/api-3.5-migration.md)。宿主挂载的插件代码不会随镜像自动更新。
 
 本轮资料删减同时移除 `limits.prompt_characters`、`PromptFragment.max_characters/cache_key`、
 无人消费的 `PromptTarget.PLUGIN_SESSION`，以及恒空的 `get_current_observation` 与
@@ -106,7 +110,7 @@ token、用户配置与插件，不能默认删除；Git/镜像 ignore 暂时保
 1. 固定目标提交和镜像，核随包 head、配置与插件版本；正式发行时再核 `v3.9.0` 资产。
 2. 在独立数据库和文件副本演练迁移及启动，核原身份、Work、预算、协议和发送回执；不启动第二个主动 Bot 写生产库或向 QQ 发消息。
 3. 停止旧 Bot 及需停写的相关 Manager，保存一致数据库、配置、插件、媒体、工具正文、协议对象和持久环境回执。QQ 网关可保持运行。
-4. 完成配置、授权和语音保全后，沿原 Compose 参数用目标镜像执行 `qq-ai-bot-cli init-db`，核 head `0113`。来自正式 3.8.3/3.8.4 的旧投递计划先在停写副本运行 `work import-legacy-deliveries --dry-run` 再导入；原计划、未知效果和预算保留。
+4. 完成配置、授权和语音保全后，沿原 Compose 参数用目标镜像执行 `qq-ai-bot-cli init-db`，核 head `0117`。来自正式 3.8.3/3.8.4 的旧投递计划先在停写副本运行 `work import-legacy-deliveries --dry-run` 再导入；原计划、未知效果和预算保留。
 5. 启动一个 Bot，核真实 revision、数据库、QQ 连接、工具合同、模型路由与 worker。启动健康、真实 API、自然聊天和长任务交付分别验收。
 
 ## 回退与已知问题
@@ -166,3 +170,5 @@ token、用户配置与插件，不能默认删除；Git/镜像 ignore 暂时保
 0113 随后删除 generation/reset 时清除原观察和 DAG 的旧触发器。部署升完整 head 后再执行批量 `/ai new`，只清公共历史并取消旧来源的新执行，保留原来源、私有回执、原聊天、Memory 与引用文件。
 
 迁移前保存一份当前停写冷备，迁移后逐值核对私有表、旧版本、全部 observation/DAG 和 artifact 引用，沿原文件校验器核实际被引用文件。不能将升级前的旧候选镜像直接换回读取新 schema，也不能覆盖上线后的新事实；使用兼容新 schema 的代码或向前修补。
+
+管理操作使用 WebUI、CLI 或 `/ai`。`admin_*` 不再属于主 Agent 工具清单；原 Work 的历史调用与效果回执保留，尚未执行的退役调用返回工具不可用。迁移 `0114` 在升级库中保留旧群停用状态，之后可通过现有群配置编辑。

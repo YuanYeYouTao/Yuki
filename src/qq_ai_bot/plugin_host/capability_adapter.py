@@ -34,13 +34,7 @@ from yuki_plugin_sdk.results import PluginResult
 
 
 class InvocationScope(Protocol):
-    def __call__(
-        self,
-        plugin_id: str,
-        runtime: ToolRuntime,
-        *,
-        web_was_used: bool,
-    ) -> object: ...
+    def __call__(self, plugin_id: str, runtime: ToolRuntime) -> object: ...
 
 
 class PluginCapabilityAdapter:
@@ -61,12 +55,7 @@ class PluginCapabilityAdapter:
         self._invocation_scope = invocation_scope
         self._is_running = is_running or (lambda _plugin_id: True)
 
-    def definitions(
-        self,
-        runtime: ToolRuntime,
-        *,
-        web_was_used: bool,
-    ) -> tuple[ChatTool, ...]:
+    def definitions(self, runtime: ToolRuntime) -> tuple[ChatTool, ...]:
         result: list[ChatTool] = []
         for item in self._registry.list(kind=ExtensionKind.TOOL):
             registration = cast(ToolRegistration, item.registration)
@@ -75,7 +64,6 @@ class PluginCapabilityAdapter:
                 and not self._allowed_for_turn(
                     registration,
                     runtime,
-                    web_was_used,
                 )
             ):
                 continue
@@ -158,7 +146,6 @@ class PluginCapabilityAdapter:
         arguments_json: str,
         runtime: ToolRuntime,
         *,
-        web_was_used: bool,
         expected_contract: str | None = None,
     ) -> ToolExecutionResult:
         item = self._registry.resolve_model_name(name)
@@ -169,7 +156,7 @@ class PluginCapabilityAdapter:
             return _error(
                 "plugin_tool_contract_changed", "插件执行合同已变更；旧声明不能执行，需重启运行时。"
             )
-        if not await self._available(item, registration, runtime, web_was_used):
+        if not await self._available(item, registration, runtime):
             return _error("plugin_tool_denied", "当前真实事件不能调用该插件工具")
         try:
             raw = json.loads(arguments_json)
@@ -189,16 +176,12 @@ class PluginCapabilityAdapter:
             dispatched = False
             try:
                 async with asyncio.timeout(registration.metadata.timeout_seconds):
-                    async with self._scope(
-                        item.plugin_id, runtime, web_was_used=web_was_used
-                    ) as context:
+                    async with self._scope(item.plugin_id, runtime) as context:
                         # Entering a scope may wait. Approval/lifecycle and the
                         # registered handler must still be current at dispatch.
                         if self._registry.resolve_model_name(
                             name
-                        ) is not item or not await self._available(
-                            item, registration, runtime, web_was_used
-                        ):
+                        ) is not item or not await self._available(item, registration, runtime):
                             return _error("plugin_tool_denied", "当前真实事件不能调用该插件工具")
                         if (
                             expected_contract is not None
@@ -214,9 +197,7 @@ class PluginCapabilityAdapter:
                         images: tuple[ChatImage, ...] = ()
                         if result.ok and result.media_artifacts:
                             try:
-                                await self._media_available(
-                                    item, registration, runtime, web_was_used, context
-                                )
+                                await self._media_available(item, registration, runtime, context)
                                 assert isinstance(context, HostPluginContext)
                                 assert item.model_name is not None
                                 images = await context._prepare_selected_media(
@@ -262,9 +243,7 @@ class PluginCapabilityAdapter:
                 return _error("plugin_tool_failed", type(exc).__name__)
         raise AssertionError("plugin tool retry loop must terminate")
 
-    async def validate_images(
-        self, images: tuple[ChatImage, ...], runtime: ToolRuntime, *, web_was_used: bool
-    ) -> None:
+    async def validate_images(self, images: tuple[ChatImage, ...], runtime: ToolRuntime) -> None:
         """Reauthorize original plugin selection before every actual model dispatch."""
         groups: dict[tuple[str, str], list[ChatImage]] = {}
         for image in images:
@@ -276,8 +255,8 @@ class PluginCapabilityAdapter:
             if item is None or item.kind is not ExtensionKind.TOOL or item.plugin_id != plugin_id:
                 raise PluginPermissionError("selected media tool is missing or foreign")
             registration = cast(ToolRegistration, item.registration)
-            async with self._scope(plugin_id, runtime, web_was_used=web_was_used) as context:
-                await self._media_available(item, registration, runtime, web_was_used, context)
+            async with self._scope(plugin_id, runtime) as context:
+                await self._media_available(item, registration, runtime, context)
                 assert isinstance(context, HostPluginContext)
                 await context._validate_selected_media(tuple(selected))
 
@@ -286,14 +265,13 @@ class PluginCapabilityAdapter:
         item: RegisteredExtension,
         registration: ToolRegistration,
         runtime: ToolRuntime,
-        web_was_used: bool,
         context: object,
     ) -> None:
         installation = await self._installations.get(item.plugin_id)
         if (
             not isinstance(context, HostPluginContext)
             or installation is None
-            or not await self._available(item, registration, runtime, web_was_used)
+            or not await self._available(item, registration, runtime)
             or PluginPermission.TOOL_REGISTER.value not in installation.approved_permissions
             or PluginPermission.MEDIA_ARTIFACT_CREATE.value not in installation.approved_permissions
             or installation.manifest_hash != context._services.approval_revision
@@ -307,7 +285,6 @@ class PluginCapabilityAdapter:
         item: RegisteredExtension,
         registration: ToolRegistration,
         runtime: ToolRuntime,
-        web_was_used: bool,
     ) -> bool:
         installation = await self._installations.get(item.plugin_id)
         # The current Host owns the authoritative process-local lifecycle.
@@ -317,38 +294,28 @@ class PluginCapabilityAdapter:
         # same in-memory predicate; execution must not disagree with discovery.
         if installation is None or not installation.enabled or not self._is_running(item.plugin_id):
             return False
-        return self._allowed_for_turn(registration, runtime, web_was_used)
+        return self._allowed_for_turn(registration, runtime)
 
     @staticmethod
     def _allowed_for_turn(
         registration: ToolRegistration,
         runtime: ToolRuntime,
-        web_was_used: bool,
     ) -> bool:
         metadata = registration.metadata
         if not _permission_level_allowed(metadata.permission, runtime.actor_is_superuser):
             return False
         if runtime.tools_closed:
             return False
-        if runtime.read_only and metadata.risk is not RiskClass.READ:
-            return False
         return True
 
     @asynccontextmanager
-    async def _scope(
-        self,
-        plugin_id: str,
-        runtime: ToolRuntime,
-        *,
-        web_was_used: bool,
-    ) -> AsyncIterator[object]:
+    async def _scope(self, plugin_id: str, runtime: ToolRuntime) -> AsyncIterator[object]:
         if self._invocation_scope is None:
             yield None
             return
         scope = self._invocation_scope(
             plugin_id,
             runtime,
-            web_was_used=web_was_used,
         )
         enter = getattr(scope, "__aenter__", None)
         leave = getattr(scope, "__aexit__", None)

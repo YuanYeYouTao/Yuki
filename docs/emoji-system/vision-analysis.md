@@ -12,4 +12,6 @@
 
 结构化结果字段：`is_emoji`、`description`、`emotion_tags`、`usage_scenarios`、`ocr_text`、`intensity`、`confidence`、`animated`、`analysis_version`。缺少 `is_emoji` 或描述时任务明确失败并按持久任务策略重试，不伪装成“没有候选”。OCR 和图片文字始终是不可信数据，不能执行命令、写记忆、改变关系或扩大权限。
 
+`VISION_MAX_RETRIES` 为失败后的额外请求次数，0 禁用重试；Provider 使用配置值，不再强制至少一次或静默截为一次。默认仍为 1。
+
 本版本没有内容审核服务，也不会为同一图片追加审核模型调用。

@@ -120,8 +120,7 @@ item 回执都已收尾，run 才能进入 completed。
 只有 completed/cancelled/failed run 可 purge。purge 只删除 staging；已提交事实、证据和事件
 receipt 保留。cancel 只停止后续处理，不回滚已提交事实。
 
-Tool Kernel 的 `admin_memory_rebuild_*` 工具共用同一服务和真实事件权限绑定，不能
-跳过 review。插件是否可见仍由当前 SDK 和 capability 清单决定，不能借管理工作流绕过真实授权。
+重建通过 `/ai memory rebuild` 和 WebUI 调用同一领域服务，按真实授权操作并保留 review。
 
 ## 配置
 

@@ -37,7 +37,7 @@ const navigation = [
   ["files", "folder", "工作区", "read_environment"],
   ["identity", "cat", "身份与连接", "list_persons"],
   ["settings", "fountain-pen", "配置", "list_effective_configs"],
-  ["assets", "flower", "表情与语音", "list_emoji_assets"],
+  ["assets", "flower", "表情素材", "list_emoji_assets"],
   ["audit", "scroll", "轨迹与审计", "list_execution_trace"],
 ];
 

@@ -1,3 +1,4 @@
+import { flatten } from "./table-format";
 import { lazy, Suspense, useState } from "react";
 import type { Row } from "./api";
 import { useQuery } from "./hooks";
@@ -13,7 +14,6 @@ const InteractiveTerminal = lazy(() =>
   })),
 );
 
-const flatten = (row: Row): Row => ({ ...row, ...((row.fields as Row) || {}) });
 const imageName = (name: unknown) =>
   /\.(?:png|jpe?g|gif|webp|bmp|avif)$/i.test(String(name || ""));
 

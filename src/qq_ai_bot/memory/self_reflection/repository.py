@@ -44,7 +44,6 @@ from qq_ai_bot.persistence.models import (
     MemoryToolReceiptModel,
 )
 from qq_ai_bot.persistence.repository_helpers import _event_record, keeper_event_clause
-from qq_ai_bot.persistence.repository_records import event_author_is_yuki
 
 
 class SelfReflectionRepository:
@@ -255,7 +254,6 @@ class SelfReflectionRepository:
         )
         pending_events = pending_characters = 0
         pending_since = None
-        has_yuki_reply = False
         async for item in remaining:
             content = item.evidence_content
             if content.strip():
@@ -263,29 +261,10 @@ class SelfReflectionRepository:
                 pending_characters += len(content)
                 if pending_since is None:
                     pending_since = item.occurred_at
-            has_yuki_reply = has_yuki_reply or (
-                item.direction == "outbound" and event_author_is_yuki(author_kind=item.author_kind)
-            )
-        receipt_filter = self._owner_receipt_filter(
-            state.canonical_person_id, state.canonical_space_id
-        )
-        has_tool = bool(
-            await session.scalar(
-                select(MemoryToolReceiptModel.id).where(
-                    receipt_filter,
-                    MemoryToolReceiptModel.trigger_event_id > processed_last_event_id,
-                    MemoryToolReceiptModel.trigger_event_id <= state.latest_event_id,
-                    MemoryToolReceiptModel.expires_at > now,
-                )
-            )
-        )
         state.last_event_id = processed_last_event_id
         state.pending_events = pending_events
         state.pending_characters = pending_characters
         state.pending_since = pending_since
-        state.has_yuki_reply = has_yuki_reply
-        state.has_tool_result = has_tool
-        state.high_value_signal = False
         state.updated_at = now
 
     async def _reconcile_generation_boundary(
@@ -436,9 +415,6 @@ class SelfReflectionRepository:
                         pending_events=0,
                         pending_characters=0,
                         pending_since=row.occurred_at,
-                        has_yuki_reply=False,
-                        has_tool_result=False,
-                        high_value_signal=False,
                         updated_at=now,
                     )
                     session.add(state)
@@ -448,13 +424,7 @@ class SelfReflectionRepository:
                     state.pending_events += 1
                     state.pending_characters += len(content)
                     state.pending_since = state.pending_since or row.occurred_at
-                state.last_policy_reason = None
                 state.latest_event_id = row.id
-                state.has_yuki_reply = state.has_yuki_reply or (
-                    row.direction == "outbound"
-                    and event_author_is_yuki(author_kind=row.author_kind)
-                )
-                state.high_value_signal = False
                 state.updated_at = now
             if rows:
                 runtime.last_scanned_event_id = rows[-1].id
@@ -469,50 +439,34 @@ class SelfReflectionRepository:
         self,
         *,
         scheduled_slot: str,
-        local_date: str,
         event_threshold: int,
         character_threshold: int,
         max_wait_seconds: float,
-        max_sessions: int,
-        max_daily_calls: int,
         max_events: int,
         max_characters: int,
         context_events: int = 4,
         force: bool = False,
-        excluded_conversation_keys: frozenset[str] = frozenset(),
         cycle_id: str | None = None,
         bot_display_name: str = "Yuki",
         timezone: str = "Asia/Shanghai",
     ) -> tuple[SelfReflectionBatch, ...]:
-        if max_sessions > 0 and max_daily_calls > 0:
-            from qq_ai_bot.memory.self_reflection.initiative import claim_initiative
+        from qq_ai_bot.memory.self_reflection.initiative import claim_initiative
 
-            initiatives = await claim_initiative(
-                self._database,
-                max_characters=max_characters,
-                excluded_conversation_keys=excluded_conversation_keys,
-                cycle_id=cycle_id,
-            )
-            if initiatives:
-                return initiatives
+        initiatives = await claim_initiative(
+            self._database,
+            max_characters=max_characters,
+            cycle_id=cycle_id,
+        )
+        if initiatives:
+            return initiatives
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
             session.autoflush = False
-            used = 0
-            available = min(1, max_sessions, max(0, max_daily_calls - used))
-            if available <= 0:
-                return ()
             waited_before = now - timedelta(seconds=max_wait_seconds)
             state_query = select(MemorySelfReflectionStateModel).where(
                 MemorySelfReflectionStateModel.pending_events > 0,
                 self._xor_owner_state_clause(),
             )
-            if excluded_conversation_keys:
-                state_query = state_query.where(
-                    MemorySelfReflectionStateModel.conversation_key_hash.not_in(
-                        excluded_conversation_keys
-                    )
-                )
             if not force:
                 state_query = state_query.where(
                     or_(
@@ -596,18 +550,6 @@ class SelfReflectionRepository:
                 )
                 if row.pending_events <= 0:
                     continue
-                receipt_filter = self._owner_receipt_filter(
-                    row.canonical_person_id, row.canonical_space_id
-                )
-                has_tool = bool(
-                    await session.scalar(
-                        select(MemoryToolReceiptModel.id).where(
-                            receipt_filter,
-                            MemoryToolReceiptModel.trigger_event_id > row.last_event_id,
-                            MemoryToolReceiptModel.expires_at > now,
-                        )
-                    )
-                )
                 outstanding = [
                     owned
                     for owned in runs_by_scope.get(row.conversation_key_hash, ())
@@ -723,7 +665,7 @@ class SelfReflectionRepository:
                 )
                 run_person_id = row.canonical_person_id
                 run_space_id = row.canonical_space_id
-                projected_state = await self._state(session, row, has_tool=has_tool)
+                projected_state = await self._state(session, row)
                 if projected_state is None:
                     continue
                 fingerprint = hashlib.sha256(
@@ -807,7 +749,7 @@ class SelfReflectionRepository:
                         max_input_characters=max_characters,
                     )
                 )
-                if len(claimed) >= available:
+                if len(claimed) >= 1:
                     break
             return tuple(claimed)
 
@@ -1203,8 +1145,6 @@ class SelfReflectionRepository:
     async def _state(
         session: AsyncSession,
         row: MemorySelfReflectionStateModel,
-        *,
-        has_tool: bool,
     ) -> SelfReflectionState | None:
         person_id, space_id = require_xor_memory_owner(
             row.canonical_person_id,
@@ -1233,9 +1173,6 @@ class SelfReflectionRepository:
             pending_events=row.pending_events,
             pending_characters=row.pending_characters,
             pending_since=row.pending_since,
-            has_yuki_reply=row.has_yuki_reply,
-            has_tool_result=row.has_tool_result or has_tool,
-            high_value_signal=False,
         )
 
 

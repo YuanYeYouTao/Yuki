@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import Select, and_, case, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,12 +19,10 @@ from qq_ai_bot.memory.partition import (
 from qq_ai_bot.persistence.unit_of_work import optional_session
 
 if TYPE_CHECKING:
-    from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFact
+    from qq_ai_bot.memory.models import MemoryFact
     from qq_ai_bot.persistence.database import Database
     from qq_ai_bot.persistence.models import (
-        MemoryEvidenceModel,
         MemoryFactModel,
-        MemoryToolReceiptModel,
     )
 
 
@@ -170,61 +168,17 @@ async def resolve_self_origin(
     )
 
 
-async def receipt_evidence_readable(
-    session: AsyncSession,
-    *,
-    fact: MemoryFactModel,
-    evidence: MemoryEvidenceModel | MemoryEvidenceCreate,
-    receipt: MemoryToolReceiptModel,
-) -> bool:
-    """Historical run evidence remains valid without resurrecting its execution authority."""
-    if receipt.trigger_event_id is not None:
-        return False
-    try:
-        source = await resolve_self_origin(
-            session,
-            initiative_run_id=receipt.initiative_run_id,
-            execution_id=receipt.execution_id,
-            require_live=False,
-            require_group_projection=False,
-        )
-    except MemoryPartitionResolutionError:
-        return False
-    return bool(
-        source.bot_user_id == receipt.bot_user_id
-        and receipt.canonical_space_id == source.space_id
-        and receipt.canonical_person_id is None
-        and fact.scope_type == "self"
-        and fact.canonical_subject_person_id is None
-        and fact.canonical_subject_space_id is None
-        and fact.canonical_visibility_person_id is None
-        and (
-            (fact.visibility_type == "global" and fact.canonical_visibility_space_id is None)
-            or (
-                fact.visibility_type == "group"
-                and fact.canonical_visibility_space_id == source.space_id
-            )
-        )
-        and evidence.event_id is None
-        and evidence.relation == "agent_reflection"
-        and evidence.authority == "agent_reflection"
-        and evidence.source_speaker_user_id == receipt.bot_user_id
-        and bool(evidence.excerpt and evidence.excerpt.strip())
-        and evidence.excerpt in receipt.result_excerpt
-    )
-
-
 def sql_self_receipt_evidence_predicate(
     *, fact: str = "f", evidence: str = "e", receipt: str = "t"
 ) -> str:
-    """SQL equivalent of receipt_evidence_readable, using caller-owned SQL aliases.
+    """Canonical SELF receipt readability, using caller-owned SQL aliases.
 
     The aliases must be static query identifiers, never user input. The correlated
     EXISTS needs no event join: a silent SELF run has no human event to borrow.
     """
     f, e, t = fact, evidence, receipt
     # SQLite's default trim removes only ASCII spaces; match the Python
-    # readability guard's str.strip() whitespace set (runtime Python 3.12).
+    # source excerpt's str.strip() whitespace set (runtime Python 3.12).
     whitespace = "char(9,10,11,12,13,28,29,30,31,32,133,160,5760," + (
         "8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288)"
     )
@@ -267,7 +221,10 @@ async def _seed_space_id(session: AsyncSession, conversation_id: str) -> str | N
     return conversation.space_id
 
 
-def _seed_query(space_id: str, *, now: datetime | None = None) -> Select[tuple[MemoryFactModel]]:
+def _seed_query(
+    space_id: str, *, now: datetime | None = None
+) -> Select[tuple[MemoryFactModel, Any]]:
+    from qq_ai_bot.memory.repository import readable_evidence_count_expression
     from qq_ai_bot.persistence.models import MemoryFactModel as f
 
     now = now or datetime.now(UTC)
@@ -286,34 +243,13 @@ def _seed_query(space_id: str, *, now: datetime | None = None) -> Select[tuple[M
             and_(f.visibility_type == "group", f.canonical_visibility_space_id == space_id),
         ),
     )
-    return select(f).where(
+    return select(f, readable_evidence_count_expression()).where(
         f.status == "active",
         f.review_state == "verified",
         or_(current_group, visible_self),
         or_(f.valid_from.is_(None), f.valid_from <= now),
         or_(f.valid_until.is_(None), f.valid_until > now),
     )
-
-
-async def _readable_seed(
-    database: Database,
-    session: AsyncSession,
-    row: MemoryFactModel,
-) -> MemoryFact | None:
-    from qq_ai_bot.identity.memory_guard import v2_evidence_row_readable
-    from qq_ai_bot.memory.repository import MemoryFactRepository
-    from qq_ai_bot.persistence.models import MemoryEvidenceModel
-
-    evidence = await session.scalars(
-        select(MemoryEvidenceModel)
-        .where(MemoryEvidenceModel.fact_id == row.id)
-        .order_by(MemoryEvidenceModel.created_at.desc(), MemoryEvidenceModel.id.desc())
-        .limit(32)
-    )
-    for item in evidence:
-        if await v2_evidence_row_readable(session, row, item):
-            return await MemoryFactRepository(database).get_fact(row.id, session=session)
-    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,10 +267,10 @@ async def read_self_seed_page(
     limit: int = 4,
     scan_limit: int = 32,
 ) -> SelfSeedPage:
-    """Forward-only change stream over authorized facts, with bounded lineage inspection.
+    """Forward-only change stream over authorized facts, with SQL lineage checks.
 
-    The Host persists ``next_cursor`` even for empty pages. At most 128 facts and
-    32 evidence rows per inspected fact are read. The UTC (change_time, id) cursor
+    The Host persists ``next_cursor`` even for empty pages. The requested scan limit
+    bounds each page; SQL checks all source evidence. The UTC (change_time, id) cursor
     never wraps, where change_time=max(updated_at, valid_from). Thus previously
     future-dated facts are discovered when they become valid, without replaying
     unchanged old facts. This call's fixed now is the scan ceiling; concurrent
@@ -349,8 +285,8 @@ async def read_self_seed_page(
     cursor_at = cursor_at.astimezone(UTC)
     cursor = (cursor_at.isoformat(), cursor[1])
     ceiling = datetime.now(UTC)
-    bound = max(1, min(32, limit))
-    scan_bound = max(1, min(128, scan_limit))
+    bound = max(1, limit)
+    scan_bound = max(1, scan_limit)
     change_time = case((f.valid_from > f.updated_at, f.valid_from), else_=f.updated_at)
     async with database.sessions() as session:
         space_id = await _seed_space_id(session, canonical_conversation_id)
@@ -365,10 +301,10 @@ async def read_self_seed_page(
             .order_by(change_time, f.id)
             .limit(scan_bound)
         )
-        rows = list(await session.scalars(query))
-        selected: list[MemoryFact] = []
+        rows = (await session.execute(query)).all()
+        selected: list[tuple[MemoryFactModel, Any]] = []
         scanned = 0
-        for row in rows:
+        for row, evidence_count in rows:
             updated_at = row.updated_at
             if updated_at.tzinfo is None:
                 updated_at = updated_at.replace(tzinfo=UTC)
@@ -379,12 +315,13 @@ async def read_self_seed_page(
                 updated_at = max(updated_at, valid_from)
             cursor = (updated_at.astimezone(UTC).isoformat(), row.id)
             scanned += 1
-            fact = await _readable_seed(database, session, row)
-            if fact is not None:
-                selected.append(fact)
+            if evidence_count:
+                selected.append((row, evidence_count))
             if len(selected) >= bound:
                 break
-        return SelfSeedPage(tuple(selected), cursor, scanned)
+        from qq_ai_bot.memory.projections import project_memory_fact_rows
+
+        return SelfSeedPage(await project_memory_fact_rows(session, selected), cursor, scanned)
 
 
 async def read_self_seed_candidates(
@@ -403,24 +340,34 @@ async def read_self_seed_candidates(
     """
     from qq_ai_bot.persistence.models import MemoryFactModel as f
 
-    bound = max(1, min(32, limit))
+    bound = max(1, limit)
     async with optional_session(database, session, write=False) as session:
         space_id = await _seed_space_id(session, canonical_conversation_id)
         if space_id is None:
             return ()
         query = _seed_query(space_id)
         if fact_ids is not None:
-            if not fact_ids or len(fact_ids) > 32:
+            if not fact_ids:
                 return ()
             query = query.where(f.id.in_(fact_ids))
-        rows = await session.scalars(
-            query.order_by(f.importance.desc(), f.updated_at.desc(), f.id.desc()).limit(bound * 4)
+        from sqlalchemy import literal
+
+        from qq_ai_bot.memory.projections import project_memory_fact_rows
+        from qq_ai_bot.memory.repository import readable_evidence_predicate
+        from qq_ai_bot.persistence.models import MemoryEvidenceModel as e
+
+        readable = (
+            select(literal(1))
+            .select_from(e)
+            .where(e.fact_id == f.id, readable_evidence_predicate())
+            .correlate(f)
+            .exists()
         )
-        selected: list[MemoryFact] = []
-        for row in rows:
-            fact = await _readable_seed(database, session, row)
-            if fact is not None:
-                selected.append(fact)
-            if len(selected) == bound:
-                break
-        return tuple(selected)
+        rows = (
+            await session.execute(
+                query.where(readable)
+                .order_by(f.importance.desc(), f.updated_at.desc(), f.id.desc())
+                .limit(bound)
+            )
+        ).all()
+        return await project_memory_fact_rows(session, rows)

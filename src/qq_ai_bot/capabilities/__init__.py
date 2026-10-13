@@ -4,10 +4,8 @@ from qq_ai_bot.capabilities.binding import InProcessToolBinding, ToolBinding
 from qq_ai_bot.capabilities.catalog import (
     ToolProvider,
     ToolProviderRegistry,
-    ToolScopeSummary,
     UnifiedToolCatalog,
     UnifiedToolCatalogEntry,
-    estimate_chat_tool_tokens,
     safe_model_tool_name,
 )
 from qq_ai_bot.capabilities.coordinator import (
@@ -15,7 +13,6 @@ from qq_ai_bot.capabilities.coordinator import (
     ToolInvocationCoordinator,
 )
 from qq_ai_bot.capabilities.invocation import ToolInvocationContext
-from qq_ai_bot.capabilities.metrics import ToolKernelMetrics
 from qq_ai_bot.capabilities.models import (
     AuthorityContext,
     CapabilityDescriptor,
@@ -58,14 +55,11 @@ __all__ = [
     "ToolExecutionResult",
     "ToolInvocationContext",
     "ToolInvocationCoordinator",
-    "ToolKernelMetrics",
     "ToolProvider",
     "ToolProviderRegistry",
     "ToolResultBudgeter",
-    "ToolScopeSummary",
     "UnifiedToolCatalog",
     "UnifiedToolCatalogEntry",
-    "estimate_chat_tool_tokens",
     "resolve_mutation_commit",
     "safe_model_tool_name",
 ]

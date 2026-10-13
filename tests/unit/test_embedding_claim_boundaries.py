@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import event, insert, select, update
+from sqlalchemy.exc import OperationalError
 
 from qq_ai_bot.identity.canonical_repository import ensure_person
 from qq_ai_bot.memory.authorized_scope import AuthorizedMemoryScope
@@ -330,6 +332,44 @@ async def test_retryable_embedding_failure_recovers_original_job_past_old_attemp
         assert len(tuple(await reader.scalars(select(MemoryEmbeddingModel)))) == 1
     assert provider.document_requests == 7
     assert await worker.process_once() == 0
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_embedding_loop_database_failure_and_cancellation(database, monkeypatch, cancelled):
+    jobs = await _jobs(database)
+    await jobs.reconcile()
+    provider = FakeEmbeddingProvider(dimensions=2)
+    worker = MemoryEmbeddingWorker(
+        provider=provider,
+        jobs=jobs,
+        interval_seconds=0.001,
+        claim_limit=1,
+        retry_initial_seconds=0,
+    )
+    claim = jobs.claim
+    attempts = 0
+
+    async def interrupted_claim(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            if cancelled:
+                raise asyncio.CancelledError
+            raise OperationalError("claim", {}, RuntimeError("database unavailable"))
+        worker._stop.set()
+        return await claim(**kwargs)
+
+    monkeypatch.setattr(jobs, "claim", interrupted_claim)
+    if cancelled:
+        with pytest.raises(asyncio.CancelledError):
+            await worker._run()
+        assert provider.document_requests == 0
+    else:
+        await asyncio.wait_for(worker._run(), timeout=2)
+        assert attempts == 2 and provider.document_requests == 1
+        async with database.sessions() as reader:
+            stored = await reader.get(MemoryEmbeddingJobModel, 1)
+            assert stored.status == "done"
 
 
 async def test_input_mutation_after_prepare_requeues_original_claim_without_old_vector(

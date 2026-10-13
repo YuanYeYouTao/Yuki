@@ -17,11 +17,6 @@ class RollupKind(StrEnum):
     EMERGENCY = "emergency"
 
 
-class RollupJobStatus(StrEnum):
-    PENDING = "pending"
-    PROCESSING = "processing"
-
-
 class EmergencyOverlayDisposition(StrEnum):
     """How to release the job after an overlay write. No schema change."""
 
@@ -59,8 +54,6 @@ class RollupPolicyConfig:
         )
         if any(value < 1 for value in positive):
             raise ValueError("positive rollup settings must be at least one")
-        if not self.llm_origins:
-            object.__setattr__(self, "llm_origins", frozenset({"user_message"}))
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,8 +103,6 @@ class RollupCandidate:
     source_rollup_revision: int
     previous_summary: str
     events: tuple[EventRecord, ...]
-    event_count: int
-    projection_characters: int
     fingerprint: str
     policy: RollupPolicyConfig | None = None
 

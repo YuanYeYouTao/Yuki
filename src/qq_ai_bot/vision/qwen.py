@@ -179,7 +179,7 @@ class QwenVisionProvider:
         self._api_key = api_key
         self._model = model
         self._timeout_seconds = timeout_seconds
-        self._max_retries = min(max(0, max_retries), 1)
+        self._max_retries = max_retries
         self._max_output_tokens = max_output_tokens
         self._semaphore = asyncio.Semaphore(global_concurrency)
         self._sleep = sleep

@@ -13,7 +13,6 @@ from qq_ai_bot.memory.eligibility import (
     sql_fact_tool_evidence_predicate,
     sql_human_evidence_predicate,
 )
-from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.quality.event_evidence import audit_event_evidence
 from qq_ai_bot.memory.quality.models import ProductionAuditIssue, ProductionAuditReport
 from qq_ai_bot.persistence.database import Database
@@ -27,11 +26,8 @@ class MemoryProductionQualityAudit:
     def __init__(
         self,
         database: Database,
-        *,
-        metrics: MemoryLifecycleMetrics | None = None,
     ) -> None:
         self._database = database
-        self._metrics = metrics
 
     async def run(self) -> ProductionAuditReport:
         checks = self._checks()
@@ -72,8 +68,6 @@ class MemoryProductionQualityAudit:
             database_fingerprint=hashlib.sha256(self._database.url.encode("utf-8")).hexdigest(),
             issues=tuple(issues),
         )
-        if self._metrics is not None:
-            self._metrics.increment("audit_issue_count", sum(item.count for item in issues))
         return report
 
     @staticmethod

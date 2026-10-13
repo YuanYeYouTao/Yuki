@@ -88,7 +88,7 @@ class QwenASRProvider:
             if choice.get("finish_reason") != "stop":
                 raise ASRError("incomplete_transcript")
             result = choice["message"]["content"]
-            if not isinstance(result, str) or len(result) > 12000:
+            if not isinstance(result, str):
                 raise ASRError("invalid_response")
             result = "".join(c for c in result if c.isprintable() or c in "\n\t").strip()
             if not result:

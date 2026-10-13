@@ -51,10 +51,3 @@ def reset_identity_write_settings() -> None:
 
     global _SNAPSHOT
     _SNAPSHOT = None
-
-
-def identity_write_settings_from_app(settings: Settings) -> IdentityWriteSettings:
-    return IdentityWriteSettings(
-        superusers=settings.superusers,
-        ignored_bot_users=settings.ignored_bot_users,
-    )

@@ -1,3 +1,4 @@
+import { flatten } from "./table-format";
 import { useState } from "react";
 import type { Row } from "./api";
 import type { PageProps } from "./pages";
@@ -14,7 +15,6 @@ import type { Column } from "./components";
 import { stamp } from "./format";
 import { OwnerPicker } from "./owner-picker";
 
-const flatten = (row: Row): Row => ({ ...row, ...((row.fields as Row) || {}) });
 const columns: Record<string, Column[]> = {
   states: [
     ["canonical_person_id", "Person"],
@@ -23,7 +23,6 @@ const columns: Record<string, Column[]> = {
     ["latest_event_id", "最新事件"],
     ["pending_events", "待处理事件"],
     ["pending_since", "最早等待", stamp],
-    ["last_policy_reason", "策略原因"],
   ],
   runs: [
     ["id", "批次"],

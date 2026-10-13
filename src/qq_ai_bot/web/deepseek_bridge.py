@@ -77,8 +77,6 @@ class DeepSeekSearchBridge:
         self.state = BridgeState(state_path)
         self.fallback = fallback
         self.extract_max_results = extract_max_results
-        # Collapse concurrent repeated queries without retaining per-query locks.
-        self.slot = asyncio.Lock()
 
     async def search(self, request: WebSearchRequest) -> WebSearchResponse:
         query = " ".join(request.query.split())
@@ -88,22 +86,21 @@ class DeepSeekSearchBridge:
             self._cache_namespace
             + json.dumps(asdict(request), sort_keys=True, default=str).encode()
         ).hexdigest()
-        async with self.slot:
-            cached = await asyncio.to_thread(self.state.access, key)
-            if isinstance(cached, WebSearchResponse) and cached.provider == self.name:
-                return cached
-            try:
-                result = await self._search(replace(request, query=query))
-            except WebSearchError as exc:
-                if self.fallback is None:
-                    raise
-                logger.info("deepseek_search_fallback category=%s", exc.code)
-                # A fallback must not pin later queries to the fallback provider.
-                # Ignore legacy fallback cache entries above and retry the primary
-                # on the next invocation, even for an identical query.
-                return await self.fallback.search(request)
-            await asyncio.to_thread(self.state.access, key, result)
-            return result
+        cached = await asyncio.to_thread(self.state.access, key)
+        if isinstance(cached, WebSearchResponse) and cached.provider == self.name:
+            return cached
+        try:
+            result = await self._search(replace(request, query=query))
+        except WebSearchError as exc:
+            if self.fallback is None:
+                raise
+            logger.info("deepseek_search_fallback category=%s", exc.code)
+            # A fallback must not pin later queries to the fallback provider.
+            # Ignore legacy fallback cache entries above and retry the primary
+            # on the next invocation, even for an identical query.
+            return await self.fallback.search(request)
+        await asyncio.to_thread(self.state.access, key, result)
+        return result
 
     async def _search(self, request: WebSearchRequest) -> WebSearchResponse:
         started = time.monotonic()
@@ -267,22 +264,21 @@ class DeepSeekSearchBridge:
     async def extract(self, url: str, query: str) -> WebSearchSource:
         normalized = normalize_public_url(url)
         key = hashlib.sha256(f"page:{normalized}:{query}".encode()).hexdigest()
-        async with self.slot:
-            cached = await asyncio.to_thread(self.state.access, key)
-            if isinstance(cached, WebSearchResponse) and cached.provider == "direct_http":
-                return cached.sources[0]
-            try:
-                source = await self._extract(normalized, query)
-            except WebSearchError:
-                if self.fallback is None:
-                    raise
-                return await self.fallback.extract(normalized, query)
-            await asyncio.to_thread(
-                self.state.access,
-                key,
-                WebSearchResponse(query, (source,), None, 0, provider=source.provider),
-            )
-            return source
+        cached = await asyncio.to_thread(self.state.access, key)
+        if isinstance(cached, WebSearchResponse) and cached.provider == "direct_http":
+            return cached.sources[0]
+        try:
+            source = await self._extract(normalized, query)
+        except WebSearchError:
+            if self.fallback is None:
+                raise
+            return await self.fallback.extract(normalized, query)
+        await asyncio.to_thread(
+            self.state.access,
+            key,
+            WebSearchResponse(query, (source,), None, 0, provider=source.provider),
+        )
+        return source
 
     async def close(self) -> None:
         errors: list[BaseException] = []

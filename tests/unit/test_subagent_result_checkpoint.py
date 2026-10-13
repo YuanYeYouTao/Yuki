@@ -1,5 +1,6 @@
 """Completion summaries do not duplicate the original Work checkpoint."""
 
+import asyncio
 import json
 import time
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from sqlalchemy import select, update
 from tests.support.runtime_work_helpers import _persisted_tool_receipt
 from tests.support.subagents_helpers import stack
 
+from qq_ai_bot.runtime.subagent_scheduler import SubagentScheduler
 from qq_ai_bot.runtime.subagent_schema import children
 from qq_ai_bot.runtime.subagent_tools import execute_subagent, subagent_tools
 from qq_ai_bot.runtime.work_budget_schema import budgets
@@ -128,11 +130,14 @@ async def test_archive_rechecks_new_active_descendant_after_discovery(
     assert after["archived_at"] is None and after["result_json"] == original_receipt["result_json"]
     assert (await workers.related(identity, descendant))["archived_at"] is None
     async with database.sessions() as reader:
-        assert dict(
-            (await reader.execute(select(budgets).where(budgets.c.root_id == root["id"])))
-            .mappings()
-            .one()
-        ) == original_budget
+        assert (
+            dict(
+                (await reader.execute(select(budgets).where(budgets.c.root_id == root["id"])))
+                .mappings()
+                .one()
+            )
+            == original_budget
+        )
 
 
 async def test_large_note_completion_notifies_and_result_reads_original_checkpoint(
@@ -222,10 +227,7 @@ async def test_stale_child_owner_cannot_replace_completed_result(database, tmp_p
     await repo.release(parent.lease)
 
 
-async def test_children_queue_without_admission_quota_and_keep_execution_concurrency(
-    database, tmp_path
-):
-    database.subagent_concurrency = 1
+async def test_children_queue_without_admission_quota(database, tmp_path):
     database.subagents_enabled = True
     repo, workers, lease, parent, first = await stack(database, tmp_path)
     parent_control = SimpleNamespace(repository=repo, lease=lease, current=parent, source={})
@@ -261,7 +263,6 @@ async def test_children_queue_without_admission_quota_and_keep_execution_concurr
     await workers.message(lease, parent["id"], first, "detailed-message", text)
     pending = await repo.pending(first_lease, work_id=first)
     assert json.loads(json.loads(pending[0]["payload_json"])["text"])["text"] == text
-    assert await workers.acquire(identities[1]) is None
     assert (await repo.get(identities[1]))["state"] == "queued"
     await repo.release(first_lease)
     next_lease = await workers.acquire(identities[1])
@@ -270,11 +271,67 @@ async def test_children_queue_without_admission_quota_and_keep_execution_concurr
     await repo.release(lease)
 
 
-@pytest.mark.parametrize("repair_barrier", ["obsolete_generation", "execution_capacity"])
+async def test_scheduler_counts_execution_without_reconcile_lease(database, tmp_path):
+    repo, workers, parent_lease, parent, first = await stack(database, tmp_path)
+    second = await workers.start(parent_lease, parent["id"], "second", {"goal": "second"})
+    parked = await workers.start(parent_lease, parent["id"], "parked", {"goal": "parked"})
+    async with database.immediate_session() as session:
+        await session.execute(update(work).where(work.c.id == parked).values(state="waiting_user"))
+    reconcile = await workers.acquire(parked, reconcile=True)
+    assert reconcile is not None
+    started = asyncio.Queue()
+    release = asyncio.Event()
+
+    class Executor:
+        definitions = ()
+
+        async def prepare(self, *, admission_enabled):
+            pass
+
+        async def cancel_commands(self):
+            pass
+
+        async def run(self, identity):
+            lease = await workers.acquire(identity)
+            assert lease is not None
+            await started.put(identity)
+            try:
+                await release.wait()
+                await repo.accept_control(
+                    lease,
+                    identity,
+                    {
+                        "action": "complete",
+                        "call_key": identity,
+                        "result": "done",
+                    },
+                )
+                row = await repo.get(identity)
+                await repo.transition(lease, identity, row["revision"], "completed")
+            finally:
+                await repo.release(lease)
+
+    scheduler = SubagentScheduler(
+        repo, workers, Executor(), admission_enabled=True, max_concurrency=1
+    )
+    try:
+        await scheduler.start()
+        assert await asyncio.wait_for(started.get(), 3) == first
+        assert len(scheduler.running) == 1 and started.empty()
+        assert (await repo.get(second))["state"] == "queued"
+        release.set()
+        assert await asyncio.wait_for(started.get(), 3) == second
+        assert len(scheduler.running) == 1
+    finally:
+        await scheduler.close()
+        await repo.release(reconcile)
+        await repo.release(parent_lease)
+
+
+@pytest.mark.parametrize("repair_barrier", ["obsolete_generation", "active_worker"])
 async def test_verified_mutation_child_completes_without_extra_result_prose(
     database, tmp_path, repair_barrier
 ):
-    database.subagent_concurrency = 1
     repo, workers, parent_lease, parent, initial = await stack(database, tmp_path)
     obsolete = []
     if repair_barrier == "obsolete_generation":
@@ -349,7 +406,7 @@ async def test_verified_mutation_child_completes_without_extra_result_prose(
     original = await repo.get(identity)
     await repo.release(lease)
     active_lease = None
-    if repair_barrier == "execution_capacity":
+    if repair_barrier == "active_worker":
         unrelated = await repo.accept(
             parent_lease, source_key="unrelated-parent", source={}, goal="unrelated work"
         )
@@ -358,10 +415,6 @@ async def test_verified_mutation_child_completes_without_extra_result_prose(
         )
         active_lease = await workers.acquire(active)
         assert active_lease is not None
-        queued = await workers.start(
-            parent_lease, unrelated["id"], "queued-worker", {"goal": "unrelated queued work"}
-        )
-        assert await workers.acquire(queued) is None
     async with database.sessions() as reader:
         original_budget = dict(
             (await reader.execute(select(budgets).where(budgets.c.root_id == parent["id"])))
@@ -413,7 +466,6 @@ async def test_verified_mutation_child_completes_without_extra_result_prose(
     )
     if active_lease is not None:
         assert await repo.valid(active_lease)
-        assert await workers.acquire(queued) is None
         await repo.release(active_lease)
     await repo.release(parent_lease)
 
@@ -471,6 +523,65 @@ async def test_retained_child_resumes_without_reopening_ancestors_or_resetting_b
             parent, "subagent_control", {"action": "resume", "child_id": identity}, "archived"
         )
     await repo.release(parent.lease)
+
+
+async def test_neutral_resume_cannot_borrow_another_persons_child(database, tmp_path):
+    from qq_ai_bot.identity.canonical_repository import ensure_person
+    from qq_ai_bot.runtime.work_queries import WorkQueries
+    from qq_ai_bot.runtime.work_schema_v1 import inputs
+
+    repo, workers, parent_lease, parent, identity = await stack(database, tmp_path)
+    child_lease = await workers.acquire(identity)
+    child = await repo.get(identity)
+    await repo.transition(child_lease, identity, child["revision"], "waiting_user")
+    await repo.release(child_lease)
+    child = await repo.get(identity)
+    async with database.immediate_session() as writer:
+        owner = await ensure_person(writer, "10001")
+        other = await ensure_person(writer, "10002")
+        source = {"actor_person_id": owner, "principal_kind": "person", "origin": "user_message"}
+        for row in (parent, child):
+            original = json.loads(row["source_json"])
+            await writer.execute(
+                update(work)
+                .where(work.c.id == row["id"])
+                .values(source_json=json.dumps({**original, **source}))
+            )
+    control = SimpleNamespace(
+        repository=repo,
+        lease=parent_lease,
+        current=None,
+        source={**source, "actor_person_id": other},
+    )
+    # The shared directory intentionally exposes safe metadata, not authority.
+    assert await WorkQueries(repo).get(parent_lease, control.source, identity) is not None
+    before = await repo.get(identity)
+    root_before = await repo.get(parent["id"])
+    async with database.sessions() as reader:
+        original_inputs = list((await reader.execute(select(inputs))).mappings())
+    with pytest.raises(ValueError, match="subagent_archived_or_unknown"):
+        await execute_subagent(
+            control,
+            "subagent_control",
+            {"action": "resume", "child_id": identity, "instruction": "replace original goal"},
+            "borrowed-child",
+        )
+    assert await repo.get(identity) == before
+    assert await repo.get(parent["id"]) == root_before
+    async with database.sessions() as reader:
+        assert list((await reader.execute(select(inputs))).mappings()) == original_inputs
+    control.source = {**source, "actor_user_id": "new-account-for-the-same-person"}
+    resumed = await execute_subagent(
+        control,
+        "subagent_control",
+        {"action": "resume", "child_id": identity},
+        "original-owner",
+    )
+    assert resumed["children"][0]["state"] == "queued"
+    after = await repo.get(identity)
+    assert after["goal"] == before["goal"] and after["source_json"] == before["source_json"]
+    assert await repo.get(parent["id"]) == root_before
+    await repo.release(parent_lease)
 
 
 @pytest.mark.parametrize("state", ["suspended", "waiting_user", "failed"])
@@ -907,6 +1018,9 @@ async def test_paused_descendant_retains_terminal_ancestors_and_resumes_without_
     before = await repo.get(leaf_id)
     await workers.maintain()
     assert (await workers.related(archived_root["id"], archived_child))["archived_at"] is not None
+    original_roots = {
+        item["id"]: await repo.get(item["id"]) for item in (branch, root, archived_root)
+    }
     plugin_id = "test.legacy-background-gc"
     notifications = await approve_background_plugin(
         database,
@@ -991,6 +1105,11 @@ async def test_paused_descendant_retains_terminal_ancestors_and_resumes_without_
             update(work).where(work.c.id == caller["id"]).values(updated=time.time() - 10 * 86400)
         )
     original_caller = await repo.get(caller["id"])
+    original_plain = await repo.get(plain["id"])
+    async with database.sessions() as reader:
+        original_legacy = list(
+            (await reader.execute(select(work).where(work.c.id.in_(legacy.values())))).mappings()
+        )
     for index in range(130):
         newer = await repo.accept(
             parent_lease, source_key=f"newer-terminal:{index}", source={}, goal="finished receipt"
@@ -999,9 +1118,9 @@ async def test_paused_descendant_retains_terminal_ancestors_and_resumes_without_
             parent_lease, newer["id"], {"action": "complete", "call_key": f"newer-done:{index}"}
         )
         await repo.transition(parent_lease, newer["id"], newer["revision"], "completed")
-    await repo.reclaim_terminal()
-    await repo.reclaim_terminal()
-    assert await repo.get(plain["id"]) is None
+    await repo.reclaim_unreferenced_media()
+    await repo.reclaim_unreferenced_media()
+    assert await repo.get(plain["id"]) == original_plain
     assert await repo.get(caller["id"]) == original_caller
     assert (
         json.loads(original_caller["checkpoint_json"])["sync_result"]
@@ -1012,24 +1131,18 @@ async def test_paused_descendant_retains_terminal_ancestors_and_resumes_without_
             list((await reader.execute(select(PluginBackgroundTurnJobModel.__table__))).mappings())
             == jobs_before
         )
-        archived_legacy = (
+        retained_legacy = (
             (await reader.execute(select(work).where(work.c.id.in_(legacy.values()))))
             .mappings()
             .all()
         )
-    assert {item["id"] for item in archived_legacy} == set(legacy.values())
-    for item in archived_legacy:
-        assert json.loads(item["checkpoint_json"]) == {"archived": True}
-        source = json.loads(item["source_json"])
-        assert source["owner"] == "plugin_background" and source["plugin_id"] == plugin_id
-        assert legacy[source["trigger_event_id"]] == item["id"]
-        assert "instruction" not in source and "context_data" not in source
+    assert retained_legacy == original_legacy
     retained = await workers.related(branch["id"], leaf_id)
     assert retained["archived_at"] is None
     assert (await repo.get(leaf_id))["checkpoint_json"] == before["checkpoint_json"]
     assert (await repo.get(leaf_id))["source_json"] == before["source_json"]
-    for item in (branch, root, archived_root):
-        assert json.loads((await repo.get(item["id"]))["checkpoint_json"]) == {"archived": True}
+    for identity, original in original_roots.items():
+        assert await repo.get(identity) == original
     from qq_ai_bot.runtime.work_tree import ancestor_work_ids, budget_root_id
 
     async with database.sessions() as reader:
@@ -1329,3 +1442,36 @@ async def test_child_cancellation_retires_accepted_control_and_retains_real_rece
         ]
     assert after == before and before[0]["state"] == "accepted"
     await repo.release(parent_lease)
+
+
+async def test_retired_generation_notification_maintenance_stays_read_only(
+    database, tmp_path, monkeypatch
+):
+    from contextlib import asynccontextmanager
+
+    from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+
+    repository, workers, parent, lease, identity, _ = await _completed_child(database, tmp_path)
+    await repository.release(lease)
+    await repository.release(parent.lease)
+    original = await repository.get(identity)
+    async with database.immediate_session() as writer:
+        await writer.execute(
+            update(children).where(children.c.work_id == identity).values(notified_revision=0)
+        )
+        await writer.execute(
+            update(CanonicalConversationModel)
+            .where(CanonicalConversationModel.id == original["conversation_id"])
+            .values(generation=CanonicalConversationModel.generation + 1)
+        )
+
+    @asynccontextmanager
+    async def unexpected_writer():
+        raise AssertionError("retired generation must not acquire an empty writer")
+        yield
+
+    monkeypatch.setattr(database, "immediate_session", unexpected_writer)
+    await workers.maintain()
+    await workers.maintain()
+    assert await repository.get(identity) == original
+    assert (await workers.related(parent.current["id"], identity))["archived_at"] is None

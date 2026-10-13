@@ -182,12 +182,6 @@ class EmojiReplyPlan(_FrozenModel):
     goal: str = Field(default="", max_length=300, description="希望表情表达的聊天语义。")
     emotion: str = Field(default="", max_length=100, description="希望表情表达的情绪。")
 
-    @property
-    def is_exclusive(self) -> bool:
-        """Return whether the emoji is the complete user-visible reply."""
-
-        return self.mode is EmojiReplyMode.EMOJI_ONLY or self.placement is EmojiPlacement.ONLY
-
 
 class EmojiDeliveryRequest(_FrozenModel):
     """One explicit Agent request for backend-selected emoji media."""

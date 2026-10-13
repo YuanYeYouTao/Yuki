@@ -21,10 +21,8 @@ class NativeToolBinder:
         capabilities: frozenset[ModelCapability],
         allowed_capabilities: frozenset[str],
         web_mode: WebMode,
-        web_was_used: bool,
         search_mode: ModelSearchMode | None = None,
     ) -> tuple[NativeToolDefinition, ...]:
-        del web_was_used
         web_approved = bool({"web", "web_search"}.intersection(allowed_capabilities))
         if not web_approved or web_mode is WebMode.DISABLED:
             return ()
@@ -83,7 +81,6 @@ class NativeToolBinder:
             capabilities=capabilities,
             allowed_capabilities=allowed_capabilities,
             web_mode=web_mode,
-            web_was_used=False,
             search_mode=search_mode,
         ):
             return frozenset({"web_search"})

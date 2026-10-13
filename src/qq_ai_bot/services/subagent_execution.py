@@ -321,8 +321,8 @@ class SubagentExecution:
                             InvocationContextFactory.from_tools(
                                 tool_runtime,
                                 allowed_capabilities=self.services.web_capabilities(config),
-                                max_tool_calls=32,
-                                max_model_requests=24,
+                                max_tool_calls=None,
+                                max_model_requests=None,
                             ),
                             before_model_request=validate,
                             dynamic_context_prepared=True,

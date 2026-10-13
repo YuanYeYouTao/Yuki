@@ -32,7 +32,6 @@ def _utcnow() -> datetime:
 async def signal_canonical_rollup_if_needed(
     session: AsyncSession,
     conversation: CanonicalConversationModel,
-    config: RollupPolicyConfig,
     *,
     force_existing: bool,
 ) -> bool:

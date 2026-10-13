@@ -325,3 +325,28 @@ async def test_invalid_or_unbound_ordinary_send_cannot_invent_unit_mapping(
         assert not item.controller.state.proposals and not item.controller.state.feedback
     finally:
         await host._store.close()
+
+
+async def test_ordinary_long_binding_metadata_preserves_original_source(database):
+    from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+    from qq_ai_bot.conversation.ordinary_admission import OrdinaryAdmissionConflict
+    from qq_ai_bot.persistence.repositories import EventLedgerRepository
+
+    event = await _event_and_route(database, EventLedgerRepository(database))
+    async with database.sessions() as reader:
+        conversation = await reader.get(CanonicalConversationModel, event.canonical_conversation_id)
+        generation = conversation.generation
+    repository = OrdinaryAdmissionRepository(database)
+    binding = OrdinaryParticipationBinding(
+        event.canonical_conversation_id,
+        generation,
+        event.id,
+        str(source_revision(event)),
+        "原讨论单元" * 100,
+        "当前讨论目标" * 100,
+    )
+    prepared = repository.prepare(event, generation, 1, binding)
+    assert await repository.commit(prepared)
+    assert (await repository.get(event.id)).binding == binding
+    with pytest.raises(OrdinaryAdmissionConflict, match="ordinary_binding_source_changed"):
+        repository.prepare(event, generation, 1, replace(binding, event_id=event.id + 1))

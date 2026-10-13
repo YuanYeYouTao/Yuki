@@ -56,8 +56,9 @@ async def test_forget_redacts_numeric_json_and_keeps_other_person_event(database
         assert json.loads(audit.before_json) == {"owner": "[已删除用户]", "keep": True}
 
 
+@pytest.mark.parametrize("races", [1, 4])
 async def test_forget_reprepares_changed_rebuild_selection_before_atomic_write(
-    database, monkeypatch
+    database, monkeypatch, races
 ):
     seeded = await _seed(database, 1, proposals=True)
     rebuilds = MemoryRebuildRepository(database)
@@ -68,24 +69,25 @@ async def test_forget_reprepares_changed_rebuild_selection_before_atomic_write(
         nonlocal attempts
         plan = await prepare(aliases)
         attempts += 1
-        if attempts == 1:
+        if attempts <= races:
             async with database.immediate_session() as writer:
                 await writer.execute(
                     update(MemoryRebuildRunModel)
                     .where(
                         MemoryRebuildRunModel.id == seeded.run_id,
                     )
-                    .values(**_selection(sender_user_ids=("1001", "10011")))
+                    .values(**_selection(sender_user_ids=("1001", "10011", str(10012 + attempts))))
                 )
         return plan
 
     monkeypatch.setattr(rebuilds, "prepare_forget_people", race)
     assert await PeopleRepository(database, memory_rebuilds=rebuilds).delete_person("1001")
-    assert attempts == 2
+    assert attempts == races + 1
     async with database.sessions() as reader:
         run = await reader.get(MemoryRebuildRunModel, seeded.run_id)
         assert MemoryRebuildSelection.model_validate_json(run.selection_json).sender_user_ids == (
             "10011",
+            str(10012 + races),
         )
 
 

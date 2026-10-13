@@ -252,24 +252,6 @@ async def resolve_memory_partition_from_scope(
     )
 
 
-async def resolve_optional_active_person_id(
-    session: AsyncSession,
-    user_id: str | None,
-) -> str | None:
-    if user_id is None or not str(user_id).strip():
-        return None
-    return await resolve_active_person_id(session, user_id)
-
-
-async def resolve_optional_active_space_id(
-    session: AsyncSession,
-    group_id: str | None,
-) -> str | None:
-    if group_id is None or not str(group_id).strip():
-        return None
-    return await resolve_active_space_id(session, group_id)
-
-
 async def resolve_fact_canonical_owners(
     session: AsyncSession,
     fact: Any,

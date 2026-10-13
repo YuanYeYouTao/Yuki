@@ -73,7 +73,7 @@ class MemoryEmbeddingWorker:
                 await self.process_once()
             except asyncio.CancelledError:
                 raise
-            except (OSError, RuntimeError, ValueError) as exc:
+            except Exception as exc:
                 logger.error(
                     "memory_embedding_worker_iteration_failed error_category=%s",
                     type(exc).__name__,

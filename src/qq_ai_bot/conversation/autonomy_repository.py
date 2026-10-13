@@ -462,22 +462,6 @@ class AutonomyRepository:
             )
             return (row.outcome, json.loads(row.payload_json), row.created_at) if row else None
 
-    async def list_bindings(self) -> tuple[AutonomyBinding, ...]:
-        async with self._database.sessions() as session:
-            rows = (
-                await session.scalars(
-                    select(AutonomyBindingModel)
-                    .join(
-                        CanonicalConversationModel,
-                        CanonicalConversationModel.id == AutonomyBindingModel.conversation_id,
-                    )
-                    .where(CanonicalConversationModel.generation == AutonomyBindingModel.generation)
-                    .order_by(AutonomyBindingModel.updated_at.desc())
-                    .limit(128)
-                )
-            ).all()
-            return tuple(_binding(row) for row in rows)
-
     async def list_current_autonomous_scopes(self) -> tuple[tuple[str, int], ...]:
         """Find current group generations, including those missing a selector row."""
         async with self._database.sessions() as session:

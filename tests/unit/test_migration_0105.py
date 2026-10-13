@@ -9,7 +9,7 @@ from uuid import uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import select, text
+from sqlalchemy import Column, Integer, MetaData, Table, select, text
 from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.automation.authority import DelegatedAuthority, PermissionLevel
@@ -21,11 +21,22 @@ from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import AutomationVersionModel, RuntimeConfigOverrideModel
 from qq_ai_bot.runtime.subagent_repository import SubagentRepository
 from qq_ai_bot.runtime.subagent_schema import children
-from qq_ai_bot.runtime.work_budget_schema import automation_budgets, budgets
+from qq_ai_bot.runtime.work_budget_schema import budgets
 from qq_ai_bot.runtime.work_recovery_schema import invocations
 from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import effects, journal, work
 from qq_ai_bot.runtime.work_tree import budget_root_id
+
+# Historical 0087 schema belongs to this upgrade fixture, not live runtime metadata.
+automation_budgets = Table(
+    "runtime_automation_budgets",
+    MetaData(),
+    Column("run_id", Integer, primary_key=True),
+    Column("models", Integer, nullable=False),
+    Column("tools", Integer, nullable=False),
+    Column("model_limit", Integer),
+    Column("tool_limit", Integer),
+)
 
 
 def test_0106_query_migration_removes_retired_overrides_without_removing_other_config(

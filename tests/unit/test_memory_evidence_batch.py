@@ -8,14 +8,12 @@ from sqlalchemy import insert, select
 from tests.support.self_initiative_memory_quality_helpers import reflection_fact
 from tests.unit.test_memory_v2 import _append_event
 
-from qq_ai_bot.identity.memory_guard import v2_evidence_row_readable
 from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
     MemoryEvidenceModel,
-    MemoryFactModel,
     MemoryToolReceiptModel,
 )
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
@@ -80,7 +78,7 @@ async def test_evidence_order_limit_and_counts_are_preserved(database, size):
     assert (await facts.get_fact(fact.id)).evidence_count == size
 
 
-async def test_all_owner_shapes_and_chat_tool_sources_match_reference_guards(database):
+async def test_all_owner_shapes_only_expose_authorized_chat_and_tool_sources(database):
     ledger = EventLedgerRepository(database)
     sources = [
         await _append_event(
@@ -162,9 +160,9 @@ async def test_all_owner_shapes_and_chat_tool_sources_match_reference_guards(dat
                 for kind in ("event", "tool")
             ]
         )
-    for fact in saved:
+    allowed_sources = ((0, 2, 3), (2,), (2,), (0, 1, 2, 3, 5), (0,), (2,))
+    for fact, allowed in zip(saved, allowed_sources, strict=True):
         async with database.sessions() as session:
-            owner = await session.get(MemoryFactModel, fact.id)
             candidates = list(
                 await session.scalars(
                     select(MemoryEvidenceModel)
@@ -172,8 +170,12 @@ async def test_all_owner_shapes_and_chat_tool_sources_match_reference_guards(dat
                     .order_by(MemoryEvidenceModel.created_at.desc(), MemoryEvidenceModel.id.desc())
                 )
             )
+            event_ids = {sources[i].id for i in allowed}
+            receipt_ids = {receipts[i].id for i in allowed}
             expected = [
-                row.id for row in candidates if await v2_evidence_row_readable(session, owner, row)
+                row.id
+                for row in candidates
+                if row.event_id in event_ids or row.tool_receipt_id in receipt_ids
             ]
         actual = await facts.list_evidence(fact.id)
         assert [row.id for row in actual] == expected
@@ -209,18 +211,36 @@ async def test_all_owner_shapes_and_chat_tool_sources_match_reference_guards(dat
 async def test_self_initiative_sources_share_sql_readability_and_do_not_borrow_events(database):
     facts, _source, _run_id, batch, fact_id = await reflection_fact(database)
     async with database.sessions() as session:
-        owner = await session.get(MemoryFactModel, fact_id)
         candidates = list(
             await session.scalars(
                 select(MemoryEvidenceModel).where(MemoryEvidenceModel.fact_id == fact_id)
             )
         )
-        expected = [
-            row.id for row in candidates if await v2_evidence_row_readable(session, owner, row)
-        ]
+        expected = [row.id for row in candidates]
     assert [row.id for row in await facts.list_evidence(fact_id)] == expected
     async with database.sessions() as session, session.begin():
         receipt = await session.get(MemoryToolReceiptModel, batch.first_receipt_id)
         receipt.result_excerpt = "source was erased"
     assert await facts.list_evidence(fact_id) == ()
     assert (await facts.get_fact(fact_id)).evidence_count == 0
+
+
+async def test_initiative_receipt_cannot_borrow_a_chat_event_source(database):
+    facts, source, _run, batch, fact_id = await reflection_fact(database)
+    async with database.immediate_session() as writer:
+        receipt = await writer.get(MemoryToolReceiptModel, batch.last_receipt_id)
+        receipt.trigger_event_id = source.id
+        await writer.flush()
+        before = await facts.repository.list_evidence(fact_id, session=writer)
+        assert not await facts.repository.add_evidence(
+            fact_id,
+            MemoryEvidenceCreate(
+                tool_receipt_id=receipt.id,
+                source_speaker_user_id="8000",
+                relation="agent_reflection",
+                authority="agent_reflection",
+                excerpt="已生成并校验曲线绘图",
+            ),
+            session=writer,
+        )
+        assert await facts.repository.list_evidence(fact_id, session=writer) == before

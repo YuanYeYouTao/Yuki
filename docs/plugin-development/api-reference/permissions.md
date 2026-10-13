@@ -58,8 +58,6 @@
 | `automation.manage_self` | 创建/暂停/恢复/取消当前所有者任务 |
 | `plugin.config.read` | 读取本插件配置 |
 | `plugin.config.write` | 写入本插件配置 |
-| `runtime.config.read` | 读取允许公开的 Yuki 运行时配置 |
-| `runtime.config.write` | 修改允许公开的 Yuki 运行时配置；高风险 |
 | `storage.private` | 使用本插件隔离 KV |
 
 ## OneBot 与注册能力
@@ -79,5 +77,5 @@
 | `notification.agent` | 请求已授权外部事件进入主会话 Agent；高风险 |
 | `admission.signal.register` | 注册有界 AdmissionSignal |
 
-`HIGH_RISK_PERMISSIONS` 当前包含：`memory.delete`、`runtime.config.write`、`network.http.unrestricted`、`onebot.mutate`、`agent.run`、`agent.session`、`notification.agent` 等管理型能力。
+`HIGH_RISK_PERMISSIONS` 当前包含：`memory.delete`、`network.http.unrestricted`、`onebot.mutate`、`agent.run`、`agent.session`、`notification.agent` 等管理型能力。
 

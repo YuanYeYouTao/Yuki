@@ -315,34 +315,6 @@ class PluginNotificationRepository:
                 await require_grant_readable(session, row)
             return tuple(_grant_view(row) for row in rows)
 
-    async def grant_creator(
-        self, *, plugin_id: str, target_type: str, target_id: str
-    ) -> str | None:
-        async with self._database.sessions() as session:
-            try:
-                person_id, space_id = await resolve_grant_target_owners(
-                    session, target_type=target_type, target_id=target_id
-                )
-                row = await find_grant_lineage(
-                    session,
-                    plugin_id=plugin_id,
-                    target_type=target_type,
-                    person_id=person_id,
-                    space_id=space_id,
-                )
-            except PluginOwnershipError:
-                return None
-            if row is None or not row.enabled:
-                return None
-            installation = await session.get(PluginInstallationModel, plugin_id)
-            if installation is None or not installation.enabled or installation.status != "running":
-                return None
-            try:
-                await require_grant_readable(session, row)
-            except PluginOwnershipError:
-                return None
-            return row.created_by_user_id
-
     async def publish(
         self,
         *,
@@ -1214,47 +1186,6 @@ class PluginNotificationRepository:
                 )
             except CanonicalIdentityError as exc:
                 raise plugin_ownership_error(exc) from None
-
-    async def conversation_watermark(self, conversation_id: str) -> tuple[int, str] | None:
-        """Return frozen (generation, primary alias) for one queued Conversation."""
-
-        from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-        from qq_ai_bot.conversation.hydrate import require_primary_alias_for_conversation
-
-        if not conversation_id:
-            return None
-        async with self._database.sessions() as session:
-            conversation = await session.get(CanonicalConversationModel, conversation_id)
-            if conversation is None:
-                return None
-            try:
-                primary = await require_primary_alias_for_conversation(session, conversation.id)
-            except CanonicalIdentityError:
-                return None
-            return int(conversation.generation), primary
-
-
-def inherit_queued_canonicals(
-    child: Any,
-    *,
-    parent: object,
-    event: ChatEventModel | None = None,
-) -> None:
-    """Copy persisted job/event canonicals. Never recompute from raw target/bot keys."""
-
-    person_id = getattr(parent, "canonical_target_person_id", None)
-    space_id = getattr(parent, "canonical_target_space_id", None)
-    conversation_id = getattr(parent, "canonical_conversation_id", None)
-    presence_id = getattr(parent, "canonical_presence_id", None)
-    if event is not None:
-        if not conversation_id:
-            conversation_id = event.canonical_conversation_id
-        if not presence_id:
-            presence_id = event.ingress_presence_id
-    child.canonical_target_person_id = person_id
-    child.canonical_target_space_id = space_id
-    child.canonical_conversation_id = conversation_id
-    child.canonical_presence_id = presence_id
 
 
 def queued_work_error_category(exc: PluginOwnershipError, row: object) -> str:

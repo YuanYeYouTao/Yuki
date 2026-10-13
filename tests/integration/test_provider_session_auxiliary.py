@@ -159,8 +159,6 @@ async def test_auxiliary_session_header_keeps_original_body(database, tmp_path, 
                         source_rollup_revision=0,
                         previous_summary="",
                         events=events,
-                        event_count=len(events),
-                        projection_characters=0,
                         fingerprint="actual-source-fixture",
                     )
                     service = ConversationRollupService(

@@ -35,7 +35,6 @@ from qq_ai_bot.persistence.models import (
 )
 
 logger = logging.getLogger(__name__)
-_BATCH_TIMEOUT_SECONDS = 120.0
 
 
 class EvidenceCompactionService:
@@ -654,10 +653,6 @@ class EvidenceCompactionWorker:
         self._service = service
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
-        self.waiting_for_lock = False
-        self.holding_lock = False
-        self.last_success_at: datetime | None = None
-        self.last_error_category: str | None = None
 
     @property
     def running(self) -> bool:
@@ -681,26 +676,15 @@ class EvidenceCompactionWorker:
     async def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                async with asyncio.timeout(_BATCH_TIMEOUT_SECONDS):
-                    self.waiting_for_lock = False
-                    self.holding_lock = True
-                    try:
-                        processed = await self._service.run_batch()
-                        self.last_success_at = datetime.now(UTC)
-                        self.last_error_category = None
-                    finally:
-                        self.holding_lock = False
+                processed = await self._service.run_batch()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self.last_error_category = type(exc).__name__
                 logger.warning(
                     "memory_evidence_compaction_loop_failed error_category=%s",
                     type(exc).__name__,
                 )
                 processed = 0
-            finally:
-                self.waiting_for_lock = False
             try:
                 await asyncio.wait_for(
                     self._stop.wait(),

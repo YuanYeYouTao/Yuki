@@ -30,10 +30,6 @@ class BoundStorageFacade:
         approved_permissions: Iterable[PluginPermission],
         storage_mb: int = 10,
     ) -> None:
-        if isinstance(storage_mb, bool) or not isinstance(storage_mb, int):
-            raise ValueError("plugin storage limit must be an integer from 1 to 10240 MB")
-        if not 1 <= storage_mb <= 10_240:
-            raise ValueError("plugin storage limit must be an integer from 1 to 10240 MB")
         self._repository = repository
         self._plugin_id = plugin_id
         self._permissions = frozenset(approved_permissions)

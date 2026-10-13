@@ -36,10 +36,6 @@ OwnerPair = tuple[str | None, str | None]
 DreamShape = tuple[str | None, str | None, str | None, str | None]
 
 
-def reset_owner_unresolved_log_for_tests() -> None:
-    _last_unresolved_log.clear()
-
-
 def log_owner_unresolved(reason: str) -> None:
     """Emit only a stable category and rate limit repeated topology gaps."""
 

@@ -277,7 +277,7 @@ class CanonicalIngressUnitOfWork:
             from qq_ai_bot.conversation.canonical_rollup import signal_canonical_rollup_if_needed
 
             signalled = await signal_canonical_rollup_if_needed(
-                session, conversation, self._config, force_existing=True
+                session, conversation, force_existing=True
             )
             trip("after_canonical_append")
             state = await hydrate_scope_state_from_canonical(session, scope, conversation)

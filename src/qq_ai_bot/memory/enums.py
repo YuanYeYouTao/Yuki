@@ -113,16 +113,6 @@ class MemoryTemporalMode(StrEnum):
     EPISODE = "episode"
 
 
-class MemorySemanticRelation(StrEnum):
-    SAME_CLAIM = "same_claim"
-    CONFIRMS = "confirms"
-    SUPERSEDES = "supersedes"
-    CONTRADICTS = "contradicts"
-    COEXISTS = "coexists"
-    UNRELATED = "unrelated"
-    RETRACTS = "retracts"
-
-
 class MemoryResolutionAction(StrEnum):
     CREATE = "create"
     MERGE_EVIDENCE = "merge_evidence"

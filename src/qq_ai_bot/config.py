@@ -148,7 +148,7 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.7
     llm_max_output_tokens: int = 8192
     llm_thinking_enabled: bool | None = True
-    llm_reasoning_effort: ReasoningEffort | None = ReasoningEffort.LOW
+    llm_reasoning_effort: ReasoningEffort | None = None
 
     llm_flash_base_url: str = ""
     llm_flash_api_key: str = Field(default="", repr=False)
@@ -321,7 +321,6 @@ class Settings(BaseSettings):
     conversation_rollup_lease_heartbeat_seconds: float = Field(default=60.0, gt=0)
     conversation_rollup_llm_origins: str = "user_message"
     conversation_rollup_prompt_version: str = "conversation-rollup-v2"
-    conversation_rollup_foreground_max_batches: int = Field(default=5, ge=1)
     conversation_effect_gate_timeout_seconds: float = Field(default=30.0, gt=0)
     conversation_history_around_before: int = Field(default=6, ge=0)
     conversation_history_around_after: int = Field(default=6, ge=0)

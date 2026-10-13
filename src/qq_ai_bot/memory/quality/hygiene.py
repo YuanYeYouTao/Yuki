@@ -14,7 +14,6 @@ from qq_ai_bot.memory.eligibility import sql_fact_tool_evidence_predicate
 from qq_ai_bot.memory.embedding.jobs import MemoryEmbeddingJobRepository
 from qq_ai_bot.memory.embedding.models import EmbeddingProviderProfile, MemoryEmbeddingProfileRecord
 from qq_ai_bot.memory.embedding.text import EmbeddingDocumentBuilder
-from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.quality.audit import MemoryProductionQualityAudit
 from qq_ai_bot.memory.quality.event_evidence import facts_with_valid_event_evidence
 from qq_ai_bot.memory.quality.models import HygienePlan
@@ -28,11 +27,8 @@ class MemoryProvenanceHygiene:
     def __init__(
         self,
         database: Database,
-        *,
-        metrics: MemoryLifecycleMetrics | None = None,
     ) -> None:
         self._database = database
-        self._metrics = metrics
 
     async def scan(self) -> HygienePlan:
         audit = await MemoryProductionQualityAudit(self._database).run()
@@ -139,11 +135,8 @@ class MemoryProvenanceHygiene:
         current = await self.scan()
         if current.fingerprint != fingerprint:
             raise RuntimeError("memory hygiene fingerprint changed; run scan again")
-        invalidated = 0
         for offset in range(0, len(current.invalid_fact_ids), 128):
-            invalidated += await self._invalidate_page(
-                current.invalid_fact_ids[offset : offset + 128]
-            )
+            await self._invalidate_page(current.invalid_fact_ids[offset : offset + 128])
         async with self._database.sessions() as reader:
             profile = await reader.scalar(
                 select(MemoryEmbeddingProfileModel)
@@ -176,8 +169,6 @@ class MemoryProvenanceHygiene:
             )
         for offset in range(0, len(current.purge_terminal_rebuild_run_ids), 128):
             await self._purge_page(current.purge_terminal_rebuild_run_ids[offset : offset + 128])
-        if self._metrics is not None and invalidated:
-            self._metrics.increment("hygiene_invalidated_count", invalidated)
         # FTS work remains visible in the returned plan and has its own explicit window.
         return current
 

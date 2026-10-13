@@ -190,9 +190,8 @@ async def test_process_commit_acknowledgement_loss_preserves_actual_operations(
     monkeypatch.setattr(facts.repository, "transaction", lost_confirmation)
     monkeypatch.setattr(worker, "_schedule_if_due", no_schedule)
     if category == "OperationalError":
-        worker._task = asyncio.create_task(worker._run())
         with pytest.raises(OperationalError) as caught:
-            await worker._task
+            await worker._drain_active()
         assert caught.value is failure
     else:
         await worker._drain_active()
@@ -206,7 +205,18 @@ async def test_process_commit_acknowledgement_loss_preserves_actual_operations(
         )
         assert await reader.scalar(select(func.count()).select_from(MemoryDreamOperationModel)) == 2
     assert (await dreams.get_run(run.public_id)).model_calls == 1
-    assert not (await worker.health()).running
+    await worker._drain_active()
+    assert len(calls) == 1
+    if category == "OperationalError":
+        # Live polling keeps an unknown execution intact. Actual restart recovery
+        # derives completion from original operations without running the model.
+        assert await dreams.reset_processing_after_restart() == 1
+        await worker._drain_active()
+    async with database.sessions() as reader:
+        current = await reader.get(MemoryDreamClusterModel, cluster.id)
+        assert (current.status, current.model_calls, current.operation_count) == ("completed", 1, 2)
+        assert await reader.scalar(select(func.count()).select_from(MemoryDreamOperationModel)) == 2
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("code", [5, 517])

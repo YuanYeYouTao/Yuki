@@ -1,3 +1,4 @@
+import { flatten, renderBadge as status } from "./table-format";
 import { useState } from "react";
 import { AutomationHistory } from "./automation-history";
 import { AutomationEditor } from "./automation-editor";
@@ -7,7 +8,6 @@ import { useQuery } from "./hooks";
 import { stamp, text } from "./format";
 import { useDisplayNames } from "./names";
 import {
-  Badge,
   type Column,
   Empty,
   ErrorNote,
@@ -15,8 +15,6 @@ import {
   QueryList,
   Section,
 } from "./components";
-const flatten = (row: Row): Row => ({ ...row, ...((row.fields as Row) || {}) });
-const status = (value: unknown) => <Badge value={value} />;
 
 function WorkActions({
   workId,

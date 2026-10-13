@@ -6,7 +6,6 @@ from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.memory.authorized_scope import AuthorizedMemoryScope
 from qq_ai_bot.memory.enums import MemoryRetrievalMode
-from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.models import (
     MemoryEntityTarget,
     MemoryQueryIntent,
@@ -43,12 +42,10 @@ class MemoryContextService:
         query_builder: MemoryQueryBuilder,
         retriever: MemoryRetriever,
         facts: MemoryFactService,
-        metrics: MemoryLifecycleMetrics | None = None,
     ) -> None:
         self._queries = query_builder
         self._retriever = retriever
         self._facts = facts
-        self.metrics = metrics or MemoryLifecycleMetrics()
 
     @property
     def retriever(self) -> MemoryRetriever:

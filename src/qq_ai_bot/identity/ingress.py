@@ -468,16 +468,6 @@ async def require_existing_presence(session: AsyncSession, bot_user_id: str) -> 
     return presence.id
 
 
-async def ensure_v2_presence(session: AsyncSession, bot_user_id: str) -> str:
-    """v2 never auto-registers Presence. Control/preconfig must already exist."""
-
-    return await require_existing_presence(session, bot_user_id)
-
-
-async def ensure_v2_space(session: AsyncSession, group_id: str) -> str:
-    return await sync_space_v2(session, group_id)
-
-
 async def sync_space_v2(session: AsyncSession, group_id: str) -> str:
     """Require an existing SpaceBinding. Unknown groups fail closed."""
 

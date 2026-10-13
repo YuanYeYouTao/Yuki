@@ -199,9 +199,6 @@ class SelfReflectionState:
     pending_events: int
     pending_characters: int
     pending_since: datetime | None
-    has_yuki_reply: bool
-    has_tool_result: bool
-    high_value_signal: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,27 +240,3 @@ class SelfReflectionHealth(_Contract):
     calls_today: int = Field(ge=0)
     last_run_status: str | None = None
     last_run_completed_at: datetime | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class SelfReflectionCycleResult:
-    """Content-free outcome of one bounded worker cycle."""
-
-    attempted_batches: int = 0
-    completed_batches: int = 0
-    failed_batches: int = 0
-    proposal_count: int = 0
-    committed_count: int = 0
-
-
-@dataclass(frozen=True, slots=True)
-class SelfReflectionManualRun:
-    """Content-free result returned by the explicit administrator command."""
-
-    attempted_batches: int
-    completed_batches: int
-    failed_batches: int
-    proposal_count: int
-    committed_count: int
-    health: SelfReflectionHealth
-    max_daily_calls: int

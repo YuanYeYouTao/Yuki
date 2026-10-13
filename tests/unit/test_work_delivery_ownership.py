@@ -30,6 +30,10 @@ from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.services.agent_runner import AgentRuntime
 from qq_ai_bot.social.tools import social_tool_definitions
 
+DELIVERY_TOOLS = tuple(
+    sorted((*work_control_tools(), *social_tool_definitions()), key=lambda tool: tool.name)
+)
+
 
 def call(name, args, identity):
     return ChatResponse(
@@ -41,11 +45,6 @@ class DeliveryBackend(StubAgentBackend):
     def __init__(self, env):
         self.env = env
         self.owners = []
-
-    def definitions(self, runtime, **kwargs):
-        return tuple(
-            sorted((*work_control_tools(), *social_tool_definitions()), key=lambda t: t.name)
-        )
 
     def parallel_safe(self, *args):
         return False
@@ -149,6 +148,7 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
         allowed_capabilities=frozenset(),
         max_tool_calls=8,
         max_model_requests=8,
+        fixed_tools=DELIVERY_TOOLS,
     )
 
     async def validate():
@@ -523,10 +523,13 @@ async def test_direct_memory_and_send_follow_original_order_without_work_admissi
     test_case = await case(
         database, tmp_path, [ChatResponse("", 0, tool_calls=calls), ChatResponse("", 0)]
     )
-    test_case.backend.definitions = lambda *_args, **_kwargs: (
-        *work_control_tools(),
-        *social_tool_definitions(),
-        ChatTool("memory_change", "remember", {"type": "object"}),
+    test_case.runtime = replace(
+        test_case.runtime,
+        fixed_tools=(
+            *work_control_tools(),
+            *social_tool_definitions(),
+            ChatTool("memory_change", "remember", {"type": "object"}),
+        ),
     )
     if mode == "neutral":
         test_case.control.current = None
@@ -547,10 +550,12 @@ async def test_mixed_code_resource_yield_stops_later_calls_in_original_batch(
         tool("send_message", {"text": "not reached"}, "later-send"),
     )
     test_case = await case(database, tmp_path, [ChatResponse("", 0, tool_calls=calls)])
-    original_definitions = test_case.backend.definitions
-    test_case.backend.definitions = lambda *args, **kwargs: (
-        *original_definitions(*args, **kwargs),
-        ChatTool("execute_code", "compose", {"type": "object"}),
+    test_case.runtime = replace(
+        test_case.runtime,
+        fixed_tools=(
+            *test_case.runtime.fixed_tools,
+            ChatTool("execute_code", "compose", {"type": "object"}),
+        ),
     )
 
     async def yield_original(*_args, **_kwargs):

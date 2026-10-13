@@ -210,7 +210,7 @@ async def run(*, native_child=False):
             adapter._invocation_scope = original_scope
             assert waited["ok"] is False and not ctx.effect_file.exists()
             assert contract.health()["restart_required"] is True
-            backend.refresh_catalog(ar, web_was_used=False)
+            backend.refresh_catalog(ar)
             out["after_risk_change"] = {
                 "running": manager.running_plugin_ids,
                 "parallel": backend.parallel_safe(name, ar),
@@ -266,9 +266,7 @@ async def run(*, native_child=False):
                 "revision_same": contract.revision == original_revision,
                 "frozen_parameters": next(t.parameters for t in after if t.name == name),
                 "current_parameters": next(
-                    t.parameters
-                    for t in adapter.definitions(tr, web_was_used=False)
-                    if t.name == name
+                    t.parameters for t in adapter.definitions(tr) if t.name == name
                 ),
                 "old_arguments_fresh_backend": await execute(fresh, {"value": "fixture"}, 3),
                 "new_arguments_fresh_backend": await execute(fresh, {"replacement": "fixture"}, 4),

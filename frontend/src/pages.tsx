@@ -1,3 +1,4 @@
+import { flatten, renderBadge as status } from "./table-format";
 import type { CommandMethod } from "./control-methods";
 import { stamp, text } from "./format";
 import { useQuery } from "./hooks";
@@ -29,8 +30,6 @@ export interface PageProps {
   conversation: string;
   chatContent?: boolean;
 }
-const flatten = (row: Row): Row => ({ ...row, ...((row.fields as Row) || {}) });
-const status = (value: unknown) => <Badge value={value} />;
 
 export function Health({
   refresh,

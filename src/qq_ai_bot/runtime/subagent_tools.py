@@ -42,8 +42,6 @@ def worker_prompt(*, code_enabled: bool) -> str:
     )
 
 
-WORKER_PROMPT = worker_prompt(code_enabled=False)
-
 # Shared implementations, but a separate stable allowlist, never selected from task text.
 WORKER_NAMES = (
     SANDBOX_TOOLS
@@ -131,7 +129,11 @@ async def execute_subagent(
             and args.get("action") == "resume"
             and isinstance(args.get("child_id"), str)
         ):
-            child = await control.repository.get(args["child_id"])
+            from qq_ai_bot.runtime.work_queries import WorkQueries
+
+            child = await WorkQueries(control.repository).get(
+                control.lease, control.source, args["child_id"], local=True
+            )
             if child is None or child["parent_work_id"] is None:
                 raise ValueError("subagent_archived_or_unknown")
             parent_id = child["parent_work_id"]

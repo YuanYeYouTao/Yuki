@@ -15,7 +15,7 @@ from tests.unit.test_memory_mutation import _context, _event, _service
 from tests.unit.test_memory_v2 import _claim
 
 from qq_ai_bot.memory.claim_processor import MemoryProcessingContext
-from qq_ai_bot.memory.enums import MemoryProcessingSource, MemoryScopeType
+from qq_ai_bot.memory.enums import MemoryScopeType
 from qq_ai_bot.memory.mutation import service as mutation_service
 from qq_ai_bot.memory.mutation.models import (
     MemoryMutationOperation,
@@ -58,9 +58,9 @@ async def test_mutation_unknown_transaction_ack_uses_original_receipt_without_re
         if read_snapshot:
             raise acknowledgement
 
-    async def resolve_once(*args, **kwargs):
+    def resolve_once(*args, **kwargs):
         resolutions.append(True)
-        return await resolve(*args, **kwargs)
+        return resolve(*args, **kwargs)
 
     async def reserve_once(**kwargs):
         mutation_ids.append(kwargs["mutation_id"])
@@ -99,7 +99,7 @@ async def test_mutation_unknown_transaction_ack_uses_original_receipt_without_re
         (job,) = await jobs.claim()
         invocation = mutations.mutate_validated_claim(
             claim,
-            MemoryProcessingContext(source=MemoryProcessingSource.LIVE, event=source),
+            MemoryProcessingContext(event=source),
             conversation_key="private:1001",
             job=job,
         )
@@ -142,10 +142,10 @@ async def test_four_busy_rollbacks_reprepare_without_repeating_resolution(
     errors = []
     fourth = asyncio.Event()
 
-    async def resolve(*args, **kwargs):
+    def resolve(*args, **kwargs):
         nonlocal resolve_calls
         resolve_calls += 1
-        return await original_resolve(*args, **kwargs)
+        return original_resolve(*args, **kwargs)
 
     async def prepare(*args, **kwargs):
         nonlocal preparations
@@ -214,7 +214,7 @@ async def test_four_busy_rollbacks_reprepare_without_repeating_resolution(
         (job,) = await jobs.claim()
         invocation = mutations.mutate_validated_claim(
             claim,
-            MemoryProcessingContext(source=MemoryProcessingSource.LIVE, event=source),
+            MemoryProcessingContext(event=source),
             conversation_key="private:1001",
             job=job,
         )
@@ -274,10 +274,10 @@ async def test_retry_rejects_changed_claim_identity_or_source(database, monkeypa
             getattr(exception_context.original_exception, "sqlite_errorcode", None)
         )
 
-    async def resolve(*args, **kwargs):
+    def resolve(*args, **kwargs):
         nonlocal resolve_calls
         resolve_calls += 1
-        return await original_resolve(*args, **kwargs)
+        return original_resolve(*args, **kwargs)
 
     async def prepare(*args, **kwargs):
         nonlocal changed
@@ -327,7 +327,7 @@ async def test_retry_rejects_changed_claim_identity_or_source(database, monkeypa
         (job,) = await jobs.claim()
         operation = mutations.mutate_validated_claim(
             claim,
-            MemoryProcessingContext(source=MemoryProcessingSource.LIVE, event=source),
+            MemoryProcessingContext(event=source),
             conversation_key="private:1001",
             job=job,
         )

@@ -66,7 +66,7 @@ async def test_close_during_real_busy_preserves_original_owner_and_committed_tru
             facts=facts,
             ledger=ledger,
             model_executor=InjectedModelExecutor(provider),
-            concurrency=ConcurrencyManager(1),
+            concurrency=ConcurrencyManager(),
         )
         assert await worker.enqueue(source.id, "private:1001")
         async with database.immediate_session() as session:

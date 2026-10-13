@@ -34,7 +34,7 @@ registrar.register_admission_signal(
 ## 硬限制
 
 - 单个信号 `score_delta` 只能在 `-10..10`。
-- `confidence` 为 `0..1`；`summary` 最多 500 字符，Host 还可能再截断。
+- `confidence` 为 `0..1`；`summary` 最多 500 字符，Host 保留 SDK 已验证的完整摘要。
 - `reason_code` 匹配 `[a-z][a-z0-9_.-]{0,63}`。
 - Host 会覆盖 `source_plugin_id` 为真实插件 id，并丢弃过期信号。
 - 同一插件多条信号先按加权分合并，再裁剪到 `±10`；全部插件合计再裁剪到 `±15`。

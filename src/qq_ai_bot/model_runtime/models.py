@@ -96,7 +96,7 @@ class ModelProfile(_FrozenModel):
     max_input_tokens: int | None = Field(default=None, gt=0)
     context_window_tokens: int | None = Field(default=None, gt=0)
     thinking_enabled: bool | None = True
-    reasoning_effort: ReasoningEffort | None = ReasoningEffort.LOW
+    reasoning_effort: ReasoningEffort | None = ReasoningEffort.MEDIUM
     structured_output_mode: StructuredOutputMode = StructuredOutputMode.FUNCTION_TOOL
     search_mode: ModelSearchMode | None = None
     capabilities: frozenset[ModelCapability] = frozenset()

@@ -271,16 +271,15 @@ async def test_recovery_origin_still_checks_source_authority(database, tmp_path,
     commit.assert_not_awaited()
 
 
-async def test_declared_public_suffix_must_exist_in_actual_dispatch(database, tmp_path):
+async def test_projection_rejects_changed_actual_dispatch(database, tmp_path):
     _, composition = await _pending_composition(database, tmp_path)
     async with database.sessions() as reader:
         before = (await reader.scalars(select(PromptProjectionModel))).one()
         original = (before.epoch_id, before.revision, before.payload_json)
     sequence = TranscriptRequest(
-        messages=composition.messages,
+        messages=(*composition.messages[:-1], ChatMessage(role="user", content="changed dispatch")),
         continuation=None,
         items=(),
-        public_initial_suffix=(ChatMessage(role="user", content="not actually dispatched"),),
     )
     with validating_request(sequence):
         await composition.commit_projection()
@@ -288,7 +287,7 @@ async def test_declared_public_suffix_must_exist_in_actual_dispatch(database, tm
         saved = (await session.scalars(select(PromptProjectionModel))).one()
         assert saved.invalidated_reason is None
         assert (saved.epoch_id, saved.revision, saved.payload_json) == original
-        assert "not actually dispatched" not in saved.payload_json
+        assert "changed dispatch" not in saved.payload_json
 
 
 @pytest.mark.parametrize("boundary", ["plugin_permission", "deleted", "profile", "contract"])
@@ -372,3 +371,35 @@ async def test_same_actor_new_turn_honors_snapshot_boundaries(
         assert provider.requests[2].tools != provider.requests[0].tools
     elif boundary == "profile":
         assert provider.requests[2].tools == provider.requests[0].tools
+
+
+async def test_recent_history_uses_configured_window_above_old_twenty_cap(database, tmp_path):
+    from tests.unit.test_tool_effect_audit import active_work
+
+    from qq_ai_bot.domain.conversations import ConversationScope
+
+    env, owner, runtime = await active_work(database, tmp_path)
+    scope = ConversationScope.group("80001", "20001")
+    for index in range(30):
+        await env.service.writer.append(
+            scope=scope,
+            platform_message_id=f"history-{index}",
+            sender_user_id="10001",
+            direction="inbound",
+            content=f"source {index}",
+        )
+    chat = build_harness(
+        database, make_settings(database.url, recent_history_tool_limit=25)
+    ).processor._chat
+    runtime = replace(
+        runtime,
+        read_scope=scope,
+        scope_type=ScopeType.GROUP,
+        runtime_config=await chat._runtime_config.snapshot(),
+    )
+    result = (await chat._tools.execute("get_recent_chat_history", "{}", runtime)).model_payload()
+    assert result["ok"], result
+    rows = result["data"]["events"]
+    assert len(rows) == 25
+    assert {row["content"] for row in rows} == {f"source {index}" for index in range(5, 30)}
+    await owner.control.repository.release(owner.control.lease)

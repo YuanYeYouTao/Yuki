@@ -34,7 +34,6 @@ export const queryMethods = [
   "list_chat_events",
   "list_social_receipts",
   "read_system",
-  "read_yuki",
   "read_display_names",
   "read_health",
   "list_persons",
@@ -51,7 +50,6 @@ export const queryMethods = [
   "list_operations",
   "read_operation",
   "list_effective_configs",
-  "list_config_overrides",
   "read_self_reflection_health",
   "list_self_reflection_history",
   "list_memory_facts",
@@ -90,7 +88,6 @@ export const commandMethods = [
   "resume_route",
   "set_config",
   "unset_config",
-  "rollback_config",
   "mutate_memory",
   "rebuild_memory",
   "dream_memory",
@@ -98,7 +95,6 @@ export const commandMethods = [
   "mutate_automation",
   "mutate_plugin",
   "mutate_emoji",
-  "cancel_operation",
   "retry_operation",
 ] as const;
 export type QueryMethod = (typeof queryMethods)[number];

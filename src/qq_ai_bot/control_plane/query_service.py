@@ -15,7 +15,6 @@ from qq_ai_bot.control_plane.query_types import (
     AutomationView,
     ChatEventView,
     ChatHistoryFilter,
-    ConfigOverrideView,
     ConfigQueryScope,
     ConfigSpecView,
     ControlQueryError,
@@ -44,7 +43,6 @@ from qq_ai_bot.control_plane.query_types import (
     SpaceBindingView,
     SpaceView,
     SystemSnapshot,
-    YukiSummaryView,
 )
 from qq_ai_bot.control_plane.surface import ControlSurfaceView, describe_surface, method_capability
 from qq_ai_bot.domain.control import DecisionContext
@@ -445,11 +443,6 @@ class ControlQueryService:
         _require_capability(authorized, method_capability("read_system"))
         return await self._port.read_system()
 
-    async def read_yuki(self, context: object) -> YukiSummaryView:
-        authorized = _require_context(context)
-        _require_capability(authorized, method_capability("read_yuki"))
-        return await self._port.read_yuki()
-
     async def read_health(self, context: object) -> ManagementHealthView:
         authorized = _require_context(context)
         _require_capability(authorized, method_capability("read_health"))
@@ -550,15 +543,6 @@ class ControlQueryService:
         authorized = _require_context(context)
         _require_capability(authorized, method_capability("list_effective_configs"))
         return await self._port.list_effective_configs(request, scope=scope)
-
-    async def list_config_overrides(
-        self, context: object, request: PageRequest
-    ) -> Page[ConfigOverrideView]:
-        authorized = _require_context(context)
-        _require_capability(authorized, method_capability("list_config_overrides"))
-        return await self._port.list_config_overrides(
-            request, reveal_external=_reveal_external(authorized)
-        )
 
     async def read_self_reflection_health(self, context: object) -> ActivityView:
         authorized = _require_context(context)

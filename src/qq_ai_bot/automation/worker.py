@@ -10,7 +10,7 @@ from datetime import timedelta
 from typing import Any
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.automation.context import bind_automation_conversation
+from qq_ai_bot.automation.context import AutomationBindError, bind_automation_conversation
 from qq_ai_bot.automation.control_context import resolve_execution_identity
 from qq_ai_bot.automation.gateway import OneBotAutomationGateway
 from qq_ai_bot.automation.models import AutomationRecord, RunStatus
@@ -142,27 +142,52 @@ class AutomationWorker:
             await self._repository.release_claim(automation.id, worker_id=worker_id)
 
     async def _process(self, automation: AutomationRecord) -> None:
-        async with self._repository._database.sessions() as session:
-            key, conversation_id = await bind_automation_conversation(session, automation)
-            actor_user_id = ""
-            if automation.creator_kind != "self":
-                assert automation.canonical_creator_person_id is not None
-                actor_user_id, _ = await resolve_execution_identity(
-                    session, self._settings, owner_id=automation.canonical_creator_person_id
+        try:
+            async with self._repository._database.sessions() as session:
+                key, conversation_id = await bind_automation_conversation(session, automation)
+                actor_user_id = ""
+                if automation.creator_kind != "self":
+                    assert automation.canonical_creator_person_id is not None
+                    actor_user_id, _ = await resolve_execution_identity(
+                        session, self._settings, owner_id=automation.canonical_creator_person_id
+                    )
+            group_id = (
+                automation.authority_snapshot["current_group_id"]
+                if automation.canonical_target_space_id
+                else None
+            )
+            identity = (
+                ConversationScope.group(automation.bot_user_id, group_id)
+                if group_id
+                else ConversationScope.private(automation.bot_user_id, actor_user_id)
+            )
+            state = await self._scopes.get(identity)
+            if state is None or state.id != conversation_id:
+                raise ValueError("automation_conversation_changed")
+        except (AutomationBindError, PermissionError, ValueError) as exc:
+            assert automation.next_run_at is not None
+            run = await self._repository.create_run(
+                automation.id,
+                scheduled_for=automation.next_run_at,
+                actual_started_at=self._time.clock.now(),
+                worker_id=automation.claimed_by,
+                version_id=automation.version_id,
+            )
+            if run is not None:
+                category = exc.category if isinstance(exc, AutomationBindError) else str(exc)
+                await self._repository.finish_run(
+                    run.id,
+                    status=RunStatus.BLOCKED,
+                    steps_completed=0,
+                    llm_calls=0,
+                    tool_calls=0,
+                    messages_sent=0,
+                    error_category=category,
+                    summary={"error": category},
+                    finished_at=self._time.clock.now(),
+                    worker_id=automation.claimed_by,
                 )
-        group_id = (
-            automation.authority_snapshot["current_group_id"]
-            if automation.canonical_target_space_id
-            else None
-        )
-        identity = (
-            ConversationScope.group(automation.bot_user_id, group_id)
-            if group_id
-            else ConversationScope.private(automation.bot_user_id, automation.creator_user_id)
-        )
-        state = await self._scopes.get(identity)
-        if state is None or state.id != conversation_id:
-            raise ValueError("automation_conversation_changed")
+            return
         async with self._turns.background_turn(
             key, origin=TurnOrigin.SCHEDULED_AUTOMATION
         ) as token:
@@ -265,7 +290,6 @@ class AutomationWorker:
                             ),
                             actor_is_superuser=recovered.actor_is_superuser,
                             allow_generic_onebot=recovered.actor_is_superuser,
-                            allow_admin_actions=recovered.actor_is_superuser,
                             conversation_key=key,
                             execution_id=execution_id,
                             origin=TurnOrigin.SCHEDULED_AUTOMATION,

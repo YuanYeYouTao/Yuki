@@ -8,7 +8,6 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -89,10 +88,6 @@ class ObservedIngestRoute:
     revision: int
     ingest_presence_id: str
     paused: bool
-
-
-class PresenceReader(Protocol):
-    async def get(self, presence_id: str) -> PresenceModel | None: ...
 
 
 async def default_membership_probe(bot: object, group_id: str, user_id: str) -> bool:
@@ -297,20 +292,14 @@ class PresenceRouter:
             )
             if binding_id is not None:
                 binding_query = binding_query.where(SpaceBindingModel.id == binding_id)
-            bindings = list(
-                await session.scalars(binding_query)
-            )
+            bindings = list(await session.scalars(binding_query))
             presence_query = select(PresenceModel).where(
                 PresenceModel.platform == "qq",
                 PresenceModel.enabled.is_(True),
             )
             if presence_id is not None:
                 presence_query = presence_query.where(PresenceModel.id == presence_id)
-            presences = list(
-                await session.scalars(
-                    presence_query.order_by(PresenceModel.id)
-                )
-            )
+            presences = list(await session.scalars(presence_query.order_by(PresenceModel.id)))
         if len(bindings) != 1:
             raise RouteSendError("binding_ambiguous" if bindings else "binding_unavailable")
         binding = bindings[0]

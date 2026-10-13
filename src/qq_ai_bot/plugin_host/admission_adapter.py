@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, AbstractContextManager, asynccontextmanager
 from datetime import UTC, datetime
@@ -29,6 +30,8 @@ InvocationScope = Callable[
     [str, InboundMessage, TurnOrigin, RuntimeConfigSnapshot],
     AbstractContextManager[object] | AbstractAsyncContextManager[object],
 ]
+
+logger = logging.getLogger(__name__)
 
 
 class PluginAdmissionSignalAdapter:
@@ -111,6 +114,7 @@ class PluginAdmissionSignalAdapter:
                 async with self._scope(plugin_id, message, origin, runtime):
                     signal = await _invoke_provider(registration.provider, signal_context)
         except Exception:
+            logger.debug("plugin admission signal failed: plugin_id=%s", plugin_id, exc_info=True)
             return None
         if signal is None:
             return None
@@ -119,13 +123,7 @@ class PluginAdmissionSignalAdapter:
             normalized = expires.replace(tzinfo=UTC) if expires.tzinfo is None else expires
             if normalized <= datetime.now(UTC):
                 return None
-        return signal.model_copy(
-            update={
-                "source_plugin_id": plugin_id,
-                "score_delta": max(-10, min(10, int(signal.score_delta))),
-                "summary": signal.summary[:300],
-            }
-        )
+        return signal.model_copy(update={"source_plugin_id": plugin_id})
 
     @asynccontextmanager
     async def _scope(

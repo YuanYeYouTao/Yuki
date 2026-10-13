@@ -93,9 +93,6 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
     "runtime_protocol_objects": frozenset({"sha256", "byte_size", "prepared_at", "deleting"}),
     "runtime_protocol_refs": frozenset({"work_id", "sha256"}),
     "runtime_protocol_usage": frozenset({"id", "byte_size"}),
-    "runtime_automation_budgets": frozenset(
-        {"run_id", "models", "tools", "model_limit", "tool_limit"}
-    ),
     "tool_artifacts": frozenset(
         {"handle_id", "work_id", "effect_key", "deleting", "sha256", "access_json"}
     ),
@@ -323,7 +320,7 @@ async def require_canonical_schema(database_url: str) -> None:
                 columns = {str(row[1]) for row in column_info}
                 if not required.issubset(columns):
                     raise CanonicalSchemaError("database canonical schema is incomplete")
-                if table in {"runtime_work_budgets", "runtime_automation_budgets"}:
+                if table == "runtime_work_budgets":
                     if any(
                         row[3] for row in column_info if row[1] in {"model_limit", "tool_limit"}
                     ):

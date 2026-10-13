@@ -14,13 +14,16 @@ from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatRequest, ChatResponse
 from qq_ai_bot.llm.base import LLMProvider
 from qq_ai_bot.memory.enums import (
+    MemoryClaimOperation,
     MemoryEvidenceRelation,
     MemoryKind,
     MemoryScopeType,
     MemorySourceType,
 )
 from qq_ai_bot.memory.extraction import (
+    BatchMemoryExtractionOutput,
     ExtractedMemoryClaim,
+    MemoryExtractionOutput,
 )
 from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
 from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepository
@@ -82,6 +85,20 @@ def test_validator_owns_event_and_speaker_identity() -> None:
     assert fact.group_id is None
     assert evidence.event_id == 42
     assert evidence.source_speaker_user_id == "1001"
+
+
+@pytest.mark.parametrize("operation", ["confirm", "correct", "retract"])
+def test_extraction_schema_only_creates_asserted_facts(operation):
+    for output in (MemoryExtractionOutput, BatchMemoryExtractionOutput):
+        schema = output.model_json_schema()
+        assert all(
+            "operation" not in definition.get("properties", {})
+            for definition in schema["$defs"].values()
+        )
+    validated = MemoryClaimValidator().validate_claim_result(_claim(operation=operation), _event())
+    assert validated.ok
+    assert validated.claim.operation is MemoryClaimOperation.ASSERT
+    assert validated.claim.evidence.relation is MemoryEvidenceRelation.SELF_STATEMENT
 
 
 def test_validator_rejects_unknown_subject_and_private_group_claims() -> None:
@@ -220,7 +237,7 @@ async def test_worker_propagates_cancellation(database: Database) -> None:
         facts=MemoryFactService(MemoryFactRepository(database)),
         ledger=ledger,
         model_executor=InjectedModelExecutor(_CancelledProvider()),
-        concurrency=ConcurrencyManager(1),
+        concurrency=ConcurrencyManager(),
     )
     with pytest.raises(asyncio.CancelledError):
         await worker.process_once()

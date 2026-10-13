@@ -43,8 +43,6 @@ class PluginPermission(StrEnum):
     AUTOMATION_MANAGE_SELF = "automation.manage_self"
     PLUGIN_CONFIG_READ = "plugin.config.read"
     PLUGIN_CONFIG_WRITE = "plugin.config.write"
-    RUNTIME_CONFIG_READ = "runtime.config.read"
-    RUNTIME_CONFIG_WRITE = "runtime.config.write"
     ONEBOT_READ = "onebot.read"
     ONEBOT_SEND = "onebot.send"
     ONEBOT_MUTATE = "onebot.mutate"
@@ -63,7 +61,6 @@ class PluginPermission(StrEnum):
 HIGH_RISK_PERMISSIONS: frozenset[PluginPermission] = frozenset(
     {
         PluginPermission.MEMORY_DELETE,
-        PluginPermission.RUNTIME_CONFIG_WRITE,
         PluginPermission.NETWORK_HTTP_UNRESTRICTED,
         PluginPermission.ONEBOT_MUTATE,
         PluginPermission.AGENT_RUN,

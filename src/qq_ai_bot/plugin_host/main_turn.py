@@ -21,6 +21,7 @@ from qq_ai_bot.runtime.activation_outcome import ContextBoundaryChanged
 from qq_ai_bot.runtime.context_preparation import prepare_context
 from qq_ai_bot.services.agent_runner import AgentRunResult, AgentRuntime, AgentToolBackend
 from qq_ai_bot.services.agent_tools import OneBotToolGateway, ToolRuntime
+from qq_ai_bot.services.durable_invocations import project_committed_result
 from qq_ai_bot.services.invocation_context import InvocationContextFactory
 from qq_ai_bot.services.main_agent_backend import MainAgentBackend
 from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
@@ -118,7 +119,6 @@ async def run_plugin_main_turn(
                     text="",
                     tool_calls_used=0,
                     model_requests=0,
-                    web_was_used=False,
                     work_id=row["id"],
                     work_state=row["state"],
                     suppress_delivery=True,
@@ -134,7 +134,6 @@ async def run_plugin_main_turn(
                     text="",
                     tool_calls_used=0,
                     model_requests=0,
-                    web_was_used=False,
                     work_id=row["id"],
                     work_state=row["state"],
                     suppress_delivery=True,
@@ -390,7 +389,6 @@ async def _execute_plugin_main_turn(
                     text="",
                     tool_calls_used=0,
                     model_requests=0,
-                    web_was_used=False,
                     work_id=cast(dict[str, Any], active.current)["id"],
                     work_state="waiting_external",
                     suppress_delivery=True,
@@ -408,7 +406,6 @@ async def _execute_plugin_main_turn(
                 ),
                 gateway=cast(OneBotToolGateway | None, runtime.gateway),
                 allow_generic_onebot=False,
-                allow_admin_actions=False,
                 conversation_key=invocation.conversation_key,
                 execution_id=execution_id,
                 read_scope=scope,
@@ -494,15 +491,7 @@ async def _execute_plugin_main_turn(
         if owned is not None and result.work_id is not None:
             settled = await repository.get(result.work_id)
             if settled is not None:
-                stored = json.loads(settled["checkpoint_json"]).get("sync_result")
-                result = replace(
-                    result,
-                    work_state=settled["state"],
-                    text=stored
-                    if settled["state"] == "completed" and isinstance(stored, str)
-                    else "",
-                    suppress_delivery=settled["state"] != "completed",
-                )
+                result = project_committed_result(result, settled)
             result = replace(result, outcome=owned.outcome)
         return result
 
@@ -528,8 +517,6 @@ async def resume_plugin_work(
     if source.get("approval_revision") != host._services.approval_revision:
         raise PluginPermissionError("plugin approved version changed")
     permission = PluginPermission(source["permission"])
-    if permission not in host._approved_permissions:
-        raise PluginPermissionError("plugin work permission was revoked")
     allowed = frozenset(source["allowed_tools"])
     if not allowed <= host._services.agent_capabilities:
         raise PluginPermissionError("plugin work capabilities changed")

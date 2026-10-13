@@ -22,7 +22,7 @@ class RequestCancelledError(RuntimeError):
 class ConcurrencyManager:
     """Serialize conversations; the model executor owns provider admission."""
 
-    def __init__(self, global_limit: int) -> None:
+    def __init__(self) -> None:
         # Holders and waiters keep strong references; idle conversations need none.
         self._locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
         self._locks_guard = asyncio.Lock()

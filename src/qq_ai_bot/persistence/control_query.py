@@ -44,7 +44,6 @@ from qq_ai_bot.control_plane.query_types import (
     ChatEventView,
     ChatHistoryFilter,
     ComponentHealthView,
-    ConfigOverrideView,
     ConfigOwnerKind,
     ConfigQueryScope,
     ConfigSpecView,
@@ -83,7 +82,6 @@ from qq_ai_bot.control_plane.query_types import (
     SpaceBindingView,
     SpaceView,
     SystemSnapshot,
-    YukiSummaryView,
     classify_route_reference,
     mask_external_id,
     sanitize_projected_display,
@@ -238,21 +236,6 @@ def _spec_is_configured(
         return False
 
 
-def _safe_config_value(value_json: str) -> str | int | float | bool | None:
-    try:
-        decoded = json.loads(value_json)
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return None
-    if type(decoded) is str:
-        return None if len(decoded) > 256 else decoded
-    if type(decoded) is bool or type(decoded) is int or type(decoded) is float:
-        return decoded
-    return None
-
-
-_CONFIG_OVERRIDE_CURSOR_PREFIX = "ovr:"
-
-
 def _try_person_id(value: object) -> PersonId | None:
     if type(value) is not str or not value:
         return None
@@ -269,99 +252,6 @@ def _try_space_id(value: object) -> SpaceId | None:
         return SpaceId.parse(value)
     except (TypeError, ValueError):
         return None
-
-
-def _unavailable_config_owner() -> tuple[
-    ConfigOwnerKind, PersonId | None, SpaceId | None, IdentityResolution
-]:
-    return (
-        ConfigOwnerKind.UNAVAILABLE,
-        None,
-        None,
-        IdentityResolution.UNRESOLVED,
-    )
-
-
-def _config_owner_projection(
-    row: RuntimeConfigOverrideModel,
-) -> tuple[ConfigOwnerKind, PersonId | None, SpaceId | None, IdentityResolution]:
-    scope = str(row.scope_type)
-    person = _try_person_id(row.canonical_person_id)
-    space = _try_space_id(row.canonical_space_id)
-    if person is not None and space is not None:
-        return _unavailable_config_owner()
-    if scope == "global":
-        if person is not None or space is not None:
-            return _unavailable_config_owner()
-        return (
-            ConfigOwnerKind.GLOBAL,
-            None,
-            None,
-            IdentityResolution.CANONICAL,
-        )
-    if scope == "user":
-        if space is not None:
-            return _unavailable_config_owner()
-        if person is not None:
-            return (
-                ConfigOwnerKind.PERSON,
-                person,
-                None,
-                IdentityResolution.CANONICAL,
-            )
-        return _unavailable_config_owner()
-    if scope == "group":
-        if person is not None:
-            return _unavailable_config_owner()
-        if space is not None:
-            return (
-                ConfigOwnerKind.SPACE,
-                None,
-                space,
-                IdentityResolution.CANONICAL,
-            )
-        return _unavailable_config_owner()
-    return _unavailable_config_owner()
-
-
-def _config_override_is_secret(spec: object | None) -> bool:
-    if spec is None:
-        return True
-    apply_mode = getattr(getattr(spec, "apply_mode", None), "value", "")
-    return apply_mode == "secret" or bool(getattr(spec, "sensitive", False))
-
-
-def _project_config_override(
-    row: RuntimeConfigOverrideModel,
-    *,
-    spec: object | None,
-) -> ConfigOverrideView:
-    owner_kind, person_id, space_id, resolution = _config_owner_projection(row)
-    secret = _config_override_is_secret(spec)
-    spec_mode = getattr(getattr(spec, "apply_mode", None), "value", "")
-    apply_mode = "secret" if secret else str(spec_mode or row.apply_mode)
-    return ConfigOverrideView(
-        override_id=int(row.id),
-        key=str(row.config_key),
-        scope_type=str(row.scope_type),
-        owner_kind=owner_kind,
-        person_id=person_id,
-        space_id=space_id,
-        resolution=resolution,
-        apply_mode=apply_mode,
-        configured=True,
-        version=int(row.version),
-        value=None if secret else _safe_config_value(row.value_json),
-    )
-
-
-def _decode_config_override_cursor(key: str | None) -> int:
-    if key is None:
-        return 0
-    prefix = _CONFIG_OVERRIDE_CURSOR_PREFIX
-    if not key.startswith(prefix):
-        raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
-    return decode_integer_cursor_key(key[len(prefix) :], minimum=1)
 
 
 def _project_emoji_space_enablement(
@@ -1052,16 +942,6 @@ class ControlQueryAdapter:
                 conversations=counts["conversations"],
                 queue=await self._queue(session),
                 pending_restart=await self._pending_restart(session),
-            )
-
-    async def read_yuki(self) -> YukiSummaryView:
-        async with self._reader() as session:
-            epoch, _revision = await self._runtime(session)
-            presence_count = await self._count(
-                session, select(func.count()).select_from(PresenceModel)
-            )
-            return YukiSummaryView(
-                yuki_count=1, presence_count=presence_count, identity_state=epoch
             )
 
     async def read_health(self) -> ManagementHealthView:
@@ -1926,61 +1806,6 @@ class ControlQueryAdapter:
             total=total,
             number=request.number,
         )
-
-    async def list_config_overrides(
-        self,
-        request: PageRequest,
-        *,
-        reveal_external: bool,
-    ) -> Page[ConfigOverrideView]:
-        del reveal_external
-        snapshot_at = _now()
-        specs = {item.key: item for item in self._registry.list()}
-        async with self._reader() as session:
-            epoch, _revision = await self._runtime(session)
-            _phase, key = self._cursor_state(request, QueryResourceKind.CONFIG, epoch=epoch)
-            after = _decode_config_override_cursor(key)
-            stmt = select(RuntimeConfigOverrideModel)
-            if after:
-                stmt = stmt.where(RuntimeConfigOverrideModel.id > after)
-            stmt = stmt.order_by(RuntimeConfigOverrideModel.id.asc()).limit(request.limit + 1)
-            rows = list(
-                await session.scalars(
-                    (
-                        sql_window := await numbered_statement(
-                            session,
-                            stmt,
-                            request,
-                            order=(
-                                RuntimeConfigOverrideModel.updated_at.desc(),
-                                RuntimeConfigOverrideModel.id.desc(),
-                            ),
-                        )
-                    ).statement
-                )
-            )
-            more = len(rows) == request.limit + 1
-            if more:
-                rows = rows[:-1]
-            items = [
-                _project_config_override(
-                    row,
-                    spec=specs.get(str(row.config_key)),
-                )
-                for row in rows
-            ]
-            next_key = None
-            if more and rows:
-                next_key = f"{_CONFIG_OVERRIDE_CURSOR_PREFIX}{rows[-1].id}"
-            return self._page(
-                items,
-                kind=QueryResourceKind.CONFIG,
-                phase=QueryCursorPhase.CANONICAL,
-                next_key=next_key,
-                snapshot_at=snapshot_at,
-                total=sql_window.total,
-                number=request.number,
-            )
 
     async def read_self_reflection_health(self) -> ActivityView:
         return await self._reflection_details.read_self_reflection_health()

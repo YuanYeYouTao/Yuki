@@ -18,7 +18,6 @@ from qq_ai_bot.capabilities.models import (
     CapabilityTrustSource,
 )
 from qq_ai_bot.capabilities.results import ToolExecutionResult
-from qq_ai_bot.capabilities.search_aliases import merge_search_terms
 from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.sandbox.environment_tools import READ_TOOLS, SANDBOX_TOOLS
 from qq_ai_bot.workspace.tools import WORKSPACE_READ_TOOLS, WORKSPACE_TOOLS
@@ -152,24 +151,6 @@ _CORE_USE_WHEN: dict[str, tuple[str, ...]] = {
     "read_tool_artifact": ("读取工具结果", "artifact"),
 }
 
-_ADMIN_NAMESPACES: dict[str, str] = {
-    "admin_get_config": "admin.config.read",
-    "admin_set_config": "admin.config.write",
-    "admin_delete_config_override": "admin.config.write",
-    "admin_execute_action": "admin.action.write",
-    "admin_get_history": "admin.history.read",
-    "admin_rollback_change": "admin.config.write",
-    "admin_memory_rebuild_plan": "admin.memory.rebuild",
-    "admin_memory_rebuild_start": "admin.memory.rebuild",
-    "admin_memory_rebuild_status": "admin.memory.rebuild",
-    "admin_memory_rebuild_pause": "admin.memory.rebuild",
-    "admin_memory_rebuild_resume": "admin.memory.rebuild",
-    "admin_memory_rebuild_cancel": "admin.memory.rebuild",
-    "admin_memory_rebuild_review": "admin.memory.rebuild",
-    "admin_memory_rebuild_approve": "admin.memory.rebuild",
-    "admin_memory_rebuild_reject": "admin.memory.rebuild",
-    "admin_memory_rebuild_commit": "admin.memory.rebuild",
-}
 
 _AUTOMATION_READ = frozenset(
     {
@@ -248,8 +229,6 @@ _CORE_SEARCH_TAGS: dict[str, tuple[str, ...]] = {
     "send_message": ("发消息", "回复", "表情", "来张图"),
 }
 
-_ADMIN_READ = frozenset({"admin_get_config", "admin_get_history"})
-
 
 class CapabilityProvider(Protocol):
     def descriptors(self) -> tuple[CapabilityDescriptor, ...]: ...
@@ -282,18 +261,9 @@ class ChatToolCapabilityProvider:
         if metadata is None:
             return None
         namespace, effect, risk = metadata
-        permissions = (
-            frozenset({"superuser"})
-            if self._source is CapabilityTrustSource.ADMIN or namespace.startswith("qq.")
-            else frozenset()
-        )
+        permissions = frozenset({"superuser"}) if namespace.startswith("qq.") else frozenset()
         aliases = tool.aliases or _CORE_SEARCH_TAGS.get(tool.name, ())
         use_when = tool.use_when or _CORE_USE_WHEN.get(tool.name, ())
-        aliases, use_when = merge_search_terms(
-            aliases=tuple(aliases),
-            use_when=tuple(use_when),
-            tool_name=tool.name,
-        )
         tags = tool.tags or (namespace.split(".")[0], self._source.value)
         return CapabilityDescriptor(
             canonical_name=f"{self._source.value}.{tool.name}",
@@ -331,14 +301,6 @@ class ChatToolCapabilityProvider:
             if mapped is None:
                 return None
             return mapped
-        if self._source is CapabilityTrustSource.ADMIN:
-            namespace = _ADMIN_NAMESPACES.get(
-                tool.name,
-                "admin.config.write" if "config" in tool.name else "admin.action.write",
-            )
-            if tool.name in _ADMIN_READ:
-                return namespace, CapabilityEffect.READ_STATE, CapabilityRisk.READ
-            return namespace, CapabilityEffect.WRITE_STATE, CapabilityRisk.MUTATE
         if self._source is CapabilityTrustSource.AUTOMATION:
             if tool.name in _AUTOMATION_READ:
                 return "automation.read", CapabilityEffect.READ_STATE, CapabilityRisk.READ

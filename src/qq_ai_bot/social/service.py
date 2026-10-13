@@ -405,7 +405,6 @@ class SocialService:
         self,
         target: SocialTarget,
         *,
-        sending: bool = False,
         session: AsyncSession | None = None,
         known_event_id: int | None = None,
     ) -> int | None:
@@ -425,7 +424,7 @@ class SocialService:
                 return int(known)
             else:
                 space = await session.get(CanonicalSpaceModel, str(target.id))
-                if space is None or not space.enabled or (sending and not space.autonomous_enabled):
+                if space is None or not space.enabled:
                     raise SocialError("space_not_allowed")
                 return None
 
@@ -963,19 +962,7 @@ class SocialService:
                     route_target = SocialTarget.model_validate({"kind": "space", "id": space_id})
                 except ValueError:
                     raise SocialError("invalid_space_id") from None
-        current_group_grant = (
-            name == "send_message"
-            and target.kind == "space"
-            and str(target.id) == context.space_id
-            and (
-                context.trigger_event_id is not None
-                or (
-                    context.origin == "plugin_background" and context.caused_by_event_id is not None
-                )
-                or _self_scene(context)
-            )
-        )
-        await self.check_target(route_target, sending=not current_group_grant)
+        await self.check_target(route_target)
         route = await self.send_route(route_target, context)
         params: dict[str, Any]
         if name == "poke_person":
@@ -1177,13 +1164,18 @@ class SocialService:
                     await self.emoji_delivery.record_send_accepted(
                         outbound, source="agent_delivery"
                     )
-                    if context.inbound is not None:
-                        await self.emoji_delivery.record_success(
-                            outbound,
-                            inbound=context.inbound,
-                            source="agent",
-                            ledger_recorded=True,
-                        )
+                    await self.emoji_delivery.record_success(
+                        outbound,
+                        private_peer_user_id=route.external_target_id
+                        if target.kind == "person"
+                        else None,
+                        group_id=route.external_target_id if target.kind == "space" else None,
+                        trigger_message_id=context.inbound.message_id
+                        if context.inbound is not None
+                        else "",
+                        source="agent",
+                        ledger_recorded=True,
+                    )
                 except Exception:
                     # A post-send metric must never turn a durable success into
                     # an apparent failure that tempts the model to resend.
@@ -1217,7 +1209,6 @@ class SocialService:
         caption: str = "",
         caption_segments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        await self._validate_self_context(context)
         from qq_ai_bot.runtime.effect_outcomes import current_result_capture
 
         capture = current_result_capture.get()
@@ -1239,25 +1230,10 @@ class SocialService:
                 if caption or caption_segments
                 else await self._receipt_result(receipt, context)
             )
-        await self._validate_self_context(context)
-        current_group_grant = (
-            name in {"send_message", "send_file_caption"}
-            and target.kind == "space"
-            and str(target.id) == context.space_id
-            and (
-                context.trigger_event_id is not None
-                or (
-                    context.origin == "plugin_background" and context.caused_by_event_id is not None
-                )
-                or _self_scene(context)
-            )
-        )
-        known_event_id = await self.check_target(
-            target, sending=name.startswith("send_") and not current_group_grant
-        )
+        known_event_id = await self.check_target(target)
         route_known_event_id = None
         if route_target is not None and route_target != target:
-            route_known_event_id = await self.check_target(route_target, sending=True)
+            route_known_event_id = await self.check_target(route_target)
         fresh = (
             await self.router.resolve_presence(route.presence_id)
             if name == "recall_own_message"
@@ -1332,14 +1308,12 @@ class SocialService:
             await self._validate_self_context(context, session=session)
             await self.check_target(
                 target,
-                sending=name.startswith("send_") and not current_group_grant,
                 session=session,
                 known_event_id=known_event_id,
             )
             if route_target is not None and route_target != target:
                 await self.check_target(
                     route_target,
-                    sending=True,
                     session=session,
                     known_event_id=route_known_event_id,
                 )

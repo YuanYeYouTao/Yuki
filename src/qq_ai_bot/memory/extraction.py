@@ -10,7 +10,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.memory.enums import (
-    MemoryClaimOperation,
     MemoryKind,
     MemoryScopeType,
     MemorySourceType,
@@ -18,11 +17,11 @@ from qq_ai_bot.memory.enums import (
 )
 from qq_ai_bot.persistence.repository_records import EventRecord
 
-EXTRACTION_PROMPT_VERSION = "memory-v2-extraction-v4"
-EXTRACTION_SCHEMA_VERSION = "4"
+EXTRACTION_PROMPT_VERSION = "memory-v2-extraction-v5"
+EXTRACTION_SCHEMA_VERSION = "5"
 SOURCE_ADAPTATION_VERSION = "3"
-BATCH_EXTRACTION_PROMPT_VERSION = "memory-v2-batch-extraction-v3"
-BATCH_EXTRACTION_SCHEMA_VERSION = "3"
+BATCH_EXTRACTION_PROMPT_VERSION = "memory-v2-batch-extraction-v4"
+BATCH_EXTRACTION_SCHEMA_VERSION = "4"
 
 
 class _ExtractionModel(BaseModel):
@@ -54,7 +53,6 @@ class MemoryExtractionInput(_ExtractionModel):
 
 
 class MemoryClaim(_ExtractionModel):
-    operation: MemoryClaimOperation = MemoryClaimOperation.ASSERT
     subject_ref: str = Field(min_length=1)
     subject_name: str | None = Field(default=None, min_length=1)
     scope_type: MemoryScopeType

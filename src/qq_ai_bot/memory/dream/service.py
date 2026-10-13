@@ -291,7 +291,7 @@ class DreamService:
             await self._repository.stale_previews(cluster.id)
         if (
             len(facts) != len(cluster.fact_ids)
-            or self._cluster_fingerprint(facts) != cluster.fingerprint
+            or current_fingerprint != cluster.fingerprint
         ):
             raise RuntimeError("Dream 候选簇快照已经变化，请重新 plan")
         payload, _ref_map, input_fingerprint = await self._input(facts)
@@ -329,11 +329,9 @@ class DreamService:
 
         facts = await self._repository.cluster_facts(cluster)
         current_fingerprint = self._cluster_fingerprint(facts) if facts else ""
-        if current_fingerprint != cluster.fingerprint:
-            await self._repository.stale_previews(cluster.id)
         if (
             len(facts) != len(cluster.fact_ids)
-            or self._cluster_fingerprint(facts) != cluster.fingerprint
+            or current_fingerprint != cluster.fingerprint
         ):
             await self._repository.stale_previews(cluster.id)
             return 0, 0, False

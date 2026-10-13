@@ -347,4 +347,4 @@ html[data-theme="journal"] body {
    テクスチャはパネル側（dashboard.css の .panel::before、linen-tile.png）に集約 */
 
 /* 押し花・ポラロイドの机装飾（body::after）はパネルに隠れて見えないため撤去
-   （画像は images/themes/journal/ に残置。復活させる場合は git 履歴参照） */
+   （未使用の画像は削除済み。原本は git 履歴参照） */

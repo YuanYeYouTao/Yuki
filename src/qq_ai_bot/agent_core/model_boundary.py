@@ -28,9 +28,6 @@ class LoopSignal:
         return f"<{self.name}>"
 
 
-# The boundary consumed this request index without a model response to act on
-# (for example a bounded empty-response retry): advance to the next index.
-RETRY = LoopSignal("retry")
 # Request budget or segment limit reached: settle as exhausted.
 STOP = LoopSignal("stop")
 

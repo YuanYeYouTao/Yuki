@@ -552,7 +552,6 @@ async def test_actual_worker_tool_continues_after_nested_result_arrives(
     from qq_ai_bot.workspace.service import WorkspaceService
     from qq_ai_bot.workspace.store import WorkspaceStore
 
-    database.subagent_concurrency = 2
     source, _admissions, _binding = await self_source(database)
     repository = WorkRepository(database)
     workers = SubagentRepository(repository)
@@ -643,12 +642,9 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
     database, tmp_path, monkeypatch
 ):
     import time
-    from types import SimpleNamespace
 
     from tests.support.runtime_execution import make_work_resumer
 
-    from qq_ai_bot.admin.action_service import ActionRegistry
-    from qq_ai_bot.admin.capabilities import AdminCapabilityService
     from qq_ai_bot.automation.authority import PermissionLevel
     from qq_ai_bot.automation.control_context import resolve_execution_identity
     from qq_ai_bot.runtime.work_budget_schema import budgets
@@ -676,14 +672,6 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
                 updated_at=case.clock.now(),
             )
         )
-    case.chat.set_admin_tools(
-        AdminCapabilityService(
-            settings=settings,
-            runtime_config=case.chat._runtime_config,
-            actions=SimpleNamespace(registry=ActionRegistry()),
-        )
-    )
-    original_value = (await case.chat._runtime_config.get_effective("agent.max_tool_calls")).value
 
     def respond(_request):
         if len(case.provider.requests) == 1:
@@ -707,13 +695,8 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
             )
         elif len(case.provider.requests) == 3:
             name, args = (
-                "admin_set_config",
-                {
-                    "key": "agent.max_tool_calls",
-                    "scope_type": "global",
-                    "scope_id": "",
-                    "value": 17,
-                },
+                "call_onebot_api",
+                {"action": "get_status", "params": {}},
             )
         else:
             name, args = "task_control", {"action": "complete", "result": "checked"}
@@ -748,7 +731,7 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
     first = await case.dispatch()
     assert first.status is RunStatus.SUCCEEDED
     assert len(case.provider.requests) == 2
-    assert "admin_set_config" in {tool.name for tool in case.provider.requests[0].tools}
+    assert "call_onebot_api" in {tool.name for tool in case.provider.requests[0].tools}
     repository = WorkRepository(database)
     async with database.sessions() as reader:
         rows = list((await reader.execute(select(work))).mappings())
@@ -783,9 +766,7 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
     scheduler._last_reclaim = time.monotonic()
     await scheduler.drain_once()
     assert resumed_runtime[0].actor_is_superuser
-    assert (
-        await case.chat._runtime_config.get_effective("agent.max_tool_calls")
-    ).value == original_value
+    assert not any(action == "get_status" for action, _ in case.env.bot.calls)
     final = await repository.get(child["id"])
     assert final["state"] == "failed" and final["model_requests"] == 1
     assert len(case.provider.requests) == 3

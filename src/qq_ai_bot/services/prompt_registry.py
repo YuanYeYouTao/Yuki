@@ -7,18 +7,8 @@ from enum import StrEnum
 
 
 class PromptStage(StrEnum):
-    CORE_IDENTITY = "core_identity"
-    CORE_SECURITY = "core_security"
-    CORE_BEHAVIOR = "core_behavior"
-    TRUSTED_TIME = "trusted_time"
-    TRUSTED_AUTHORITY = "trusted_authority"
-    SCENE = "scene"
-    MEMORY = "memory"
-    VISUAL_CONTEXT = "visual_context"
-    WEB_POLICY = "web_policy"
     PLUGIN_CONTEXT = "plugin_context"
     TOOL_GUIDANCE = "tool_guidance"
-    FINAL_CONSTRAINTS = "final_constraints"
 
 
 class PromptTarget(StrEnum):
@@ -26,8 +16,6 @@ class PromptTarget(StrEnum):
 
 
 class TrustedLevel(StrEnum):
-    CORE = "core"
-    TRUSTED = "trusted"
     UNTRUSTED = "untrusted"
 
 
@@ -42,7 +30,7 @@ class PromptFragment:
     content: str
     plugin_id: str | None = None
     priority: int = 0
-    trusted_level: TrustedLevel = TrustedLevel.TRUSTED
+    trusted_level: TrustedLevel = TrustedLevel.UNTRUSTED
     target: PromptTarget = PromptTarget.AGENT
     source: str = "core"
 

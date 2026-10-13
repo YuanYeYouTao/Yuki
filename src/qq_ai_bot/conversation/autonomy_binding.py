@@ -160,7 +160,3 @@ class AcceptedInitiative:
             raise ValueError("initiative_thread_key_invalid")
         if self.owner not in {AutonomyOwner.LEGACY, AutonomyOwner.SEMANTIC}:
             raise ValueError("initiative_requires_controller_owner")
-
-    def belongs_to(self, conversation_id: str, generation: int) -> bool:
-        # Deliberately no controller epoch: changing the proposer must not cancel work.
-        return self.conversation_id == conversation_id and self.generation == generation

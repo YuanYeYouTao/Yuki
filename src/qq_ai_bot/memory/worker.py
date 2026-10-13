@@ -12,14 +12,12 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.memory.claim_candidates import MemoryClaimCandidateRepository
 from qq_ai_bot.memory.claim_processor import MemoryClaimProcessor, MemoryProcessingContext
 from qq_ai_bot.memory.enums import (
-    MemoryProcessingSource,
     MemoryRebuildJobOutcome,
     MemorySourceType,
 )
 from qq_ai_bot.memory.event_extractor import MemoryEventExtractor
 from qq_ai_bot.memory.extraction import MemoryClaim
 from qq_ai_bot.memory.job_claims import MemoryJobClaimLost
-from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.models import MemoryJob
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.repository import MemoryJobRepository
@@ -72,7 +70,6 @@ class MemoryWorker:
         model_executor: ModelExecutor,
         concurrency: ConcurrencyManager,
         validator: MemoryClaimValidator | None = None,
-        metrics: MemoryLifecycleMetrics | None = None,
         extractor: MemoryEventExtractor | None = None,
         processor: MemoryClaimProcessor | None = None,
         mutations: MemoryMutationService | None = None,
@@ -85,7 +82,6 @@ class MemoryWorker:
         models = model_executor
 
         self._concurrency = concurrency
-        self.metrics = metrics or MemoryLifecycleMetrics()
         self.extractor = extractor or MemoryEventExtractor(
             models,
             concurrency,
@@ -97,7 +93,6 @@ class MemoryWorker:
             settings=settings,
             facts=facts,
             validator=validator,
-            metrics=self.metrics,
         )
         self.mutations = mutations or MemoryMutationService(
             settings=settings,
@@ -178,8 +173,6 @@ class MemoryWorker:
         oldest = min(job.created_at for job in jobs)
         age = max(0, int((datetime.now(UTC) - oldest.replace(tzinfo=UTC)).total_seconds()))
         trigger = jobs[0].batch_trigger or "manual"
-        self.metrics.increment("memory_extraction_batches")
-        self.metrics.increment("memory_extraction_events", len(jobs))
         logger.info(
             "memory_extraction_batch_started batch_id=%s trigger=%s events=%d characters=%d "
             "oldest_age_seconds=%d",
@@ -222,7 +215,6 @@ class MemoryWorker:
         for anchored in extracted.output.claims:
             if anchored.source_event_id not in known_event_ids:
                 unknown_claims += 1
-                self.metrics.increment("claims_rejected_unknown_source_event")
                 continue
             claims_by_event[anchored.source_event_id].append(anchored.claim)
         if unknown_claims:
@@ -322,7 +314,6 @@ class MemoryWorker:
         validated_count = 0
         rejection_reasons: Counter[str] = Counter()
         for claim in claims:
-            self.metrics.increment("claims_extracted")
             claim = claim.model_copy(update={"source_type": MemorySourceType.AUTOMATIC})
             validation = self.processor.validate_result(
                 claim,
@@ -339,20 +330,14 @@ class MemoryWorker:
                         job=job,
                     )
                     candidates += 1
-                    self.metrics.increment("claims_candidate")
                     continue
                 else:
                     rejection_reasons[validation.reason_code] += 1
-                    self.metrics.increment(f"claims_rejected_{validation.reason_code}")
                     continue
             validated_count += 1
-            self.metrics.increment(f"claims_{claim.operation.value}ed")
-            if validated.fact.authority.value == "third_party":
-                self.metrics.increment("claims_third_party")
             result = await self.mutations.mutate_validated_claim(
                 validated,
                 MemoryProcessingContext(
-                    source=MemoryProcessingSource.LIVE,
                     event=job.event,
                 ),
                 conversation_key=job.conversation_key,
@@ -363,7 +348,6 @@ class MemoryWorker:
                 continue
             reason_code = result.reason_code or result.outcome.value
             rejection_reasons[reason_code] += 1
-            self.metrics.increment(f"claims_rejected_{reason_code}")
         outcome = (
             MemoryRebuildJobOutcome.CLAIMS_APPLIED
             if applied

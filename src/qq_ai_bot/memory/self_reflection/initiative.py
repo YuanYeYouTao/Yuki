@@ -61,7 +61,6 @@ async def claim_initiative(
     database: Database,
     *,
     max_characters: int,
-    excluded_conversation_keys: frozenset[str],
     cycle_id: str | None,
 ) -> tuple[SelfReflectionBatch, ...]:
     now = datetime.now(UTC)
@@ -93,7 +92,6 @@ async def claim_initiative(
                 )
                 .group_by(InitiativeRunModel.id)
                 .order_by(func.min(MemoryToolReceiptModel.id))
-                .limit(100)
             )
         )
         run_ids = tuple(initiative.id for initiative in runs)
@@ -141,8 +139,6 @@ async def claim_initiative(
             except MemoryPartitionResolutionError:
                 continue
             partition_hash = hashlib.sha256(source.partition.encode()).hexdigest()
-            if partition_hash in excluded_conversation_keys:
-                continue
             cursor = cursors.get(initiative.id)
             last = cursor.last_receipt_id if cursor else 0
             window = windows.get(initiative.id)
@@ -172,17 +168,18 @@ async def claim_initiative(
             else:
                 query = query.where(MemoryToolReceiptModel.expires_at > now)
             query = query.order_by(MemoryToolReceiptModel.id)
-            if window is None:
-                query = query.limit(8)
-            rows = list(await session.scalars(query))
+            rows = await session.stream_scalars(query)
             selected: list[MemoryToolReceiptModel] = []
             characters = 0
-            for receipt in rows:
-                size = len(receipt.result_excerpt)
-                if window is None and selected and characters + size > max_characters:
-                    break
-                selected.append(receipt)
-                characters += size
+            try:
+                async for receipt in rows:
+                    size = len(receipt.result_excerpt)
+                    if window is None and selected and characters + size > max_characters:
+                        break
+                    selected.append(receipt)
+                    characters += size
+            finally:
+                await rows.close()
             if not selected:
                 continue
             fingerprint = hashlib.sha256(
@@ -265,9 +262,6 @@ async def claim_initiative(
                 pending_events=0,
                 pending_characters=characters,
                 pending_since=source.occurred_at,
-                has_yuki_reply=False,
-                has_tool_result=True,
-                high_value_signal=False,
             )
             return (
                 SelfReflectionBatch(

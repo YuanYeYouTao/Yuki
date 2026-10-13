@@ -699,7 +699,6 @@ async def test_work_changes_from_deepseek_to_gemini_without_replaying_old_effect
             capabilities=models.capabilities(ModelTask.CHAT_AGENT),
             allowed_capabilities=frozenset({"web"}),
             web_mode=WebMode.NATIVE,
-            web_was_used=False,
             search_mode=models.search_mode(ModelTask.CHAT_AGENT),
         )
         assert [tool.name for tool in tools] == ["workspace_read"]
@@ -860,9 +859,6 @@ async def test_runner_resumes_gemini_work_on_deepseek_without_old_send_or_native
         reads = 0
 
         class Backend(StubAgentBackend):
-            def definitions(self, runtime, **kwargs):
-                return common_tools
-
             def parallel_safe(self, *args):
                 return False
 
@@ -1232,7 +1228,6 @@ async def test_journal_without_task_anchor_resumes_and_soft_compaction_does_not_
         initial,
         runtime,
         StubAgentBackend(
-            definitions=lambda *_args, **_kwargs: (),
             finalize=lambda content, _runtime: content,
         ),
     )
@@ -1340,7 +1335,7 @@ async def test_responses_journal_replays_identical_http_bytes(database, tmp_path
 @pytest.mark.asyncio
 async def test_main_entry_captures_current_task_before_work_status(database, tmp_path):
     control = await _control(database, tmp_path)
-    runner = SimpleNamespace(run=AsyncMock(return_value=AgentRunResult("", 0, 0, False)))
+    runner = SimpleNamespace(run=AsyncMock(return_value=AgentRunResult("", 0, 0)))
     turns = MainAgentTurnService(
         SimpleNamespace(_settings=SimpleNamespace(runtime_work_enabled=False)), runner
     )

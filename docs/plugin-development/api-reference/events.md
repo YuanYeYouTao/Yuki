@@ -9,66 +9,45 @@ SDK `ctx.events.publish()` 仍等待 Hook；事件名中的 `before`、`collecti
 
 ## 应用
 
-- `application.starting`
 - `application.started`
 - `application.stopping`
 
 ## 消息
 
 - `message.normalized`
-- `message.recorded`
-- `message.observed`
 - `message.triggered`
 
-## 回合与能力
+## 回合
 
 - `turn.admitted`
 - `turn.rejected`
 - `turn.autonomous_declined`
 - `turn.closed`
 
-## 上下文与 Prompt
-
-- `context.assembled`
-- `prompt.collecting`
-- `prompt.composed`
-
-## Agent
-
-- `agent.starting`
-- `agent.tool_called`
-- `agent.tool_completed`
-- `agent.finished`
-- `agent.interrupted`
-
 ## 回复
 
-- `reply.planned`
-- `reply.generated`
-- `reply.sending`
 - `reply.sent`
-- `reply.cancelled`
-- `reply.failed`
 
-## 业务数据
+## 表情
 
-- `memory.created`
-- `memory.updated`
-- `memory.deleted`
-
-## 视觉与联网
-
-- `vision.completed`
-- `vision.failed`
-- `web.search_completed`
-- `web.read_completed`
-
-## 自动化
-
-- `automation.created`
-- `automation.started`
-- `automation.completed`
-- `automation.failed`
+- `emoji.adopted`
+- `emoji.rejected`
+- `emoji.banned`
+- `emoji.sent`
+- `emoji.collected`
+- `emoji.analyzed`
+- `emoji.unadopted`
+- `emoji.before_select`
+- `emoji.after_select`
+- `emoji.queued`
+- `emoji.prepare_ready`
+- `emoji.prepare_no_candidate`
+- `emoji.prepare_failed`
+- `emoji.send_accepted`
+- `emoji.usage_recorded`
+- `emoji.usage_record_failed`
+- `emoji.missing`
+- `emoji.restored`
 
 ```python
 class EventEnvelope(StrictModel):

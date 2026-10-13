@@ -8,10 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from qq_ai_bot.runtime.work_schema_v1 import work
 
 
-def direct_children(work_id: str) -> Select[Any]:
-    return select(work.c.id).where(work.c.parent_work_id == work_id)
-
-
 def descendants(work_id: str, *, include_self: bool = False) -> Select[Any]:
     tree = select(work.c.id).where(work.c.id == work_id).cte("work_descendants", recursive=True)
     child = work.alias("child_work")

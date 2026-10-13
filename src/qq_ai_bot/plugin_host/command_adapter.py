@@ -187,7 +187,6 @@ class PluginCommandAdapter:
             inbound=message,
             gateway=None,
             allow_generic_onebot=False,
-            allow_admin_actions=False,
             conversation_key=plugin_conversation_key(message, identity),
             trigger_message_id=message.message_id,
             trigger_event_id=message.source_event_id,
@@ -218,7 +217,7 @@ class PluginCommandAdapter:
         if self._invocation_scope is None:
             yield
             return
-        scope = self._invocation_scope(plugin_id, runtime, web_was_used=False)
+        scope = self._invocation_scope(plugin_id, runtime)
         enter = getattr(scope, "__aenter__", None)
         leave = getattr(scope, "__aexit__", None)
         if not callable(enter) or not callable(leave):

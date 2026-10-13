@@ -13,7 +13,6 @@ from qq_ai_bot.automation.models import DailySchedule, OnceSchedule, RunStatus
 from qq_ai_bot.automation.task_spec import TaskSpec, canonical_task_hash
 from qq_ai_bot.llm.gemini import GeminiProvider
 from qq_ai_bot.persistence.models import AutomationModel, AutomationVersionModel
-from qq_ai_bot.runtime.work_budget_schema import automation_budgets
 from qq_ai_bot.runtime.work_schema_v1 import work
 from qq_ai_bot.time.schedules import _resolve_local, initial_run_at, next_run_at
 
@@ -97,7 +96,6 @@ async def test_long_task_persists_and_reaches_original_main_agent(
         assert json.loads(stored.script_json) == json.loads(saved.script_json) == updated.script
         assert saved.script_hash == canonical_task_hash(TaskSpec.model_validate(updated.script))
         assert not list(await reader.scalars(select(work.c.id)))
-        assert not list(await reader.execute(select(automation_budgets)))
     assert not [action for action, _ in case.env.bot.calls if action.startswith("send_")]
     assert await case.dispatch() == result
     assert len(requests) == 1

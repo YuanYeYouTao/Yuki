@@ -128,7 +128,7 @@ Responses 不使用此配置表；Claude 接受 reasoning/budget，Gemini 另接
 Gemini 原生 Schema 直接使用 responseJsonSchema，不再投影另一套 responseSchema。
 思考开关和强度沿显式请求或 Profile；省略时使用 Profile 默认，不强制开启、不设置 low 下限。
 显式 false 省略启用参数，不再被后台改成 true；供应商未收到参数后的默认行为由该 Provider 决定，不保证所有协议在物理上关闭思考。
-Profile 未配置 effort 时也不补 low；显式预算不依赖 effort。
+Profile 的默认 effort 为 medium；全局 LLM_REASONING_EFFORT 只作显式覆盖，未配置时保留 Profile 的选择。显式空值不补档位，显式预算不依赖 effort。
 供应商名称选择现有参数预设，明确的 protocol 选择适配器；自定义名称沿同一协议并保留其续跑归属。
 `thinking` 可用 `send_reasoning_effort=true` 表明该型号同时支持 effort。
 `builtin` 只适用于已经验证、始终思考且不接受思考控制参数的模型，不能用来接入无思考模型。
@@ -152,7 +152,7 @@ WebUI 查询不会回传密钥；客户端不跨供应商或密钥来源共享�
 新增供应商示例见 [多供应商配置](../../config/model_profiles.providers.example.toml)。
 Gemini 3.8 Flash 的官方模型 ID 是 `gemini-3.8-flash`。WebUI 的 Google Gemini 预设使用
 `https://generativelanguage.googleapis.com/v1beta` 与原生 GenerateContent，预填该 ID、
-`low` 思考强度及文字、图片、工具、结构化输出能力。Gemini 3.8 的 Yuki 连接使用
+`medium` 思考强度及文字、图片、工具、结构化输出能力。Gemini 3.8 的 Yuki 连接使用
 所选思考参数；不按型号名称前缀提前禁止显式预算。代理转发仍需另行核对，不能把
 代理改写误认为 Yuki 请求。适配器保留工具回合的 thought signature，
 按上游 `cachedContentTokenCount` 统计缓存。Google 搜索桥须在此连接明确选择；旧连接保留

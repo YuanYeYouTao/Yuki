@@ -8,15 +8,11 @@ from qq_ai_bot.control_plane.capabilities import (
     DENIED_CAPABILITY_ID,
     CapabilityFamily,
     CapabilitySensitivity,
-    CatalogCapabilityView,
-    CatalogSourceKind,
     ControlCapabilityDescriptor,
     control_capability_descriptor,
     is_forbidden_control_capability,
     is_protocol_capability,
     normalize_capability_id,
-    project_catalog_capabilities,
-    project_source_capability_id,
 )
 from qq_ai_bot.control_plane.command_port import ControlCommandPort
 from qq_ai_bot.control_plane.command_service import ControlCommandService
@@ -86,7 +82,6 @@ from qq_ai_bot.control_plane.query_types import (
     SpaceBindingView,
     SpaceView,
     SystemSnapshot,
-    YukiSummaryView,
     classify_route_reference,
     mask_external_id,
     sanitize_projected_display,
@@ -105,8 +100,6 @@ __all__ = [
     "AutomationView",
     "CapabilityFamily",
     "CapabilitySensitivity",
-    "CatalogCapabilityView",
-    "CatalogSourceKind",
     "ChatEventView",
     "CommandOperation",
     "ComponentHealthView",
@@ -174,7 +167,6 @@ __all__ = [
     "StateEpoch",
     "SystemSnapshot",
     "YukiControlTarget",
-    "YukiSummaryView",
     "bind_command_hash",
     "classify_route_reference",
     "control_capability_descriptor",
@@ -184,7 +176,5 @@ __all__ = [
     "mask_external_id",
     "normalize_capability_id",
     "paginate",
-    "project_catalog_capabilities",
-    "project_source_capability_id",
     "sanitize_projected_display",
 ]

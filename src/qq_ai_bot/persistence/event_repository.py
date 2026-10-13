@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, cast
 
 from sqlalchemy import and_, func, or_, select, text
@@ -18,7 +18,6 @@ from qq_ai_bot.memory.rebuild.models import (
 )
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
-    AgentActionModel,
     ChatEventModel,
     MemoryJobModel,
 )
@@ -916,31 +915,3 @@ class EventLedgerRepository:
         self, event_id: int, transcript: str, *, generation: int
     ) -> bool:
         return await self._writer.set_audio_transcript(event_id, transcript, generation=generation)
-
-
-class AgentActionRepository:
-    """Record safe metadata for generic OneBot actions."""
-
-    def __init__(self, database: Database) -> None:
-        self._database = database
-
-    async def record(
-        self,
-        *,
-        actor_user_id: str | None,
-        action: str,
-        success: bool,
-        duration_seconds: float,
-        error_category: str | None = None,
-    ) -> None:
-        async with self._database.sessions() as session, session.begin():
-            session.add(
-                AgentActionModel(
-                    actor_user_id=actor_user_id,
-                    action=action[:128],
-                    success=success,
-                    duration_seconds=duration_seconds,
-                    error_category=error_category[:64] if error_category else None,
-                    created_at=datetime.now(UTC),
-                )
-            )

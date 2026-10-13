@@ -64,3 +64,37 @@ async def test_restart_recovers_only_committed_direct_work(database, tmp_path):
             )
     finally:
         await restarted.close()
+
+
+async def test_dispatch_binding_changed_after_validation_records_terminal_feedback(
+    database, tmp_path, monkeypatch
+):
+    from tests.unit.test_self_initiative_runtime import self_source
+
+    from qq_ai_bot.identity.db_models import SpaceBindingModel
+    from qq_ai_bot.services import semantic_participation
+
+    source, admissions, _ = await self_source(database)
+    host, _ = await _host(database, tmp_path, observer=False)
+    run = await admissions.get_run(source["initiative_run_id"])
+    original = semantic_participation.validate_self_initiative
+
+    async def binding_changed(*args, **kwargs):
+        await original(*args, **kwargs)
+        async with database.immediate_session() as writer:
+            await writer.execute(
+                update(SpaceBindingModel)
+                .where(SpaceBindingModel.space_id == run.space_id)
+                .values(status="disabled")
+            )
+
+    monkeypatch.setattr(semantic_participation, "validate_self_initiative", binding_changed)
+    try:
+        await host._dispatch(run)
+        settled = await admissions.get_run(run.run_id)
+        assert settled.state == "interrupted" and settled.feedback_sequence == 1
+        assert await host.work.by_source(f"initiative:{run.run_id}") is None
+        # The terminal record no longer supplies a pending dispatch candidate.
+        assert all(item.run_id != run.run_id for item in await admissions.list_active())
+    finally:
+        await host.close()

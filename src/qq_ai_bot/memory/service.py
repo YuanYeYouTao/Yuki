@@ -24,7 +24,6 @@ from qq_ai_bot.memory.enums import (
     MemoryStateAction,
     MemoryStatus,
 )
-from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.models import (
     MemoryCandidate,
     MemoryEvidence,
@@ -67,11 +66,9 @@ class MemoryFactService:
         repository: MemoryFactRepository,
         *,
         embedding_scheduler: MemoryEmbeddingScheduler | None = None,
-        metrics: MemoryLifecycleMetrics | None = None,
     ) -> None:
         self._repository = repository
         self._embedding_scheduler = embedding_scheduler
-        self.metrics = metrics or MemoryLifecycleMetrics()
 
     def set_embedding_scheduler(self, scheduler: MemoryEmbeddingScheduler | None) -> None:
         self._embedding_scheduler = scheduler
@@ -83,7 +80,7 @@ class MemoryFactService:
             await self._embedding_scheduler.schedule(
                 fact_id,
             )
-        except (OSError, RuntimeError, ValueError) as exc:
+        except Exception as exc:
             logger.warning(
                 "memory_embedding_schedule_failed fact_id=%d error_category=%s",
                 fact_id,
@@ -208,9 +205,7 @@ class MemoryFactService:
             session=session,
         )
         if evidence is not None:
-            added = await self._repository.add_evidence(created.id, evidence, session=session)
-            if added:
-                self.metrics.increment("evidence_added")
+            await self._repository.add_evidence(created.id, evidence, session=session)
             await self._refresh_evidence(
                 created.id, confirmed_at=datetime.now(UTC), session=session
             )
@@ -225,7 +220,6 @@ class MemoryFactService:
         )
         projected = await self._repository.get_fact(created.id, session=session)
         assert projected is not None
-        self.metrics.increment("facts_created")
         return projected
 
     async def apply_claim(
@@ -247,7 +241,7 @@ class MemoryFactService:
                     session=owned,
                 )
             )
-            if result is not None and result.status is MemoryStatus.ACTIVE and plan.create_new_fact:
+            if result is not None and plan.create_new_fact:
                 await self.schedule_embedding(result.id)
             return result
         await self.prepare_evidence_write(
@@ -273,7 +267,6 @@ class MemoryFactService:
                 actor_user_id=evidence.source_speaker_user_id,
                 session=session,
             )
-            self.metrics.increment("conflicts_open")
 
         if not plan.create_new_fact:
             return (
@@ -293,8 +286,7 @@ class MemoryFactService:
             recorded_at=claim.occurred_at,
             session=session,
         )
-        if await self._repository.add_evidence(row.id, evidence, session=session):
-            self.metrics.increment("evidence_added")
+        await self._repository.add_evidence(row.id, evidence, session=session)
         await self._refresh_evidence(row.id, confirmed_at=claim.occurred_at, session=session)
         await self._repository.record_created(
             row.id,
@@ -315,9 +307,6 @@ class MemoryFactService:
                     source_event_id=evidence.event_id,
                     session=session,
                 )
-        self.metrics.increment(
-            "facts_contested" if status is MemoryStatus.CONTESTED else "facts_created"
-        )
         return await self._repository.get_fact(row.id, session=session)
 
     async def _refresh_evidence(
@@ -437,24 +426,6 @@ class MemoryFactService:
     ) -> tuple[MemoryFact, ...]:
         return await self._repository.list_facts(
             MemoryFactQuery(scope_type=MemoryScopeType.GROUP, group_id=group_id),
-            limit=limit,
-            session=session,
-        )
-
-    async def list_person_group(
-        self,
-        user_id: str,
-        group_id: str,
-        *,
-        limit: int = 50,
-        session: AsyncSession | None = None,
-    ) -> tuple[MemoryFact, ...]:
-        return await self._repository.list_facts(
-            MemoryFactQuery(
-                scope_type=MemoryScopeType.PERSON_GROUP,
-                subject_user_id=user_id,
-                group_id=group_id,
-            ),
             limit=limit,
             session=session,
         )
@@ -585,7 +556,6 @@ class MemoryFactService:
             session=session,
         )
         if changed:
-            self.metrics.increment("facts_invalidated")
             await self._clear_resolved_related_conflicts(fact_id, session=session)
         return changed
 
@@ -617,8 +587,6 @@ class MemoryFactService:
             return None
         added = await self._repository.add_evidence(fact_id, evidence, session=session)
         if added:
-            self.metrics.increment("evidence_added")
-            self.metrics.increment("facts_confirmed")
             await self._refresh_evidence(
                 fact_id,
                 confirmed_at=confirmed_at or datetime.now(UTC),
@@ -652,7 +620,6 @@ class MemoryFactService:
         for item in evidence:
             added += int(await self._repository.add_evidence(fact_id, item, session=session))
         if added:
-            self.metrics.increment("evidence_added", added)
             await self._refresh_evidence(
                 fact_id,
                 confirmed_at=confirmed_at,
@@ -758,8 +725,6 @@ class MemoryFactService:
             session=session,
         )
         result = await self._repository.get_fact(created.id, session=session)
-        self.metrics.increment("facts_superseded")
-        self.metrics.increment("facts_created")
         return result
 
     async def version_fact(
@@ -791,7 +756,7 @@ class MemoryFactService:
                     session=owned,
                 )
             )
-            if result is not None and result.status is MemoryStatus.ACTIVE:
+            if result is not None:
                 await self.schedule_embedding(result.id)
             return result
         await self.prepare_evidence_write((fact_id,), session=session, targets=(replacement,))
@@ -849,8 +814,6 @@ class MemoryFactService:
             actor_user_id=actor_user_id,
             session=session,
         )
-        self.metrics.increment("facts_superseded")
-        self.metrics.increment("facts_created")
         return await self._repository.get_fact(created.id, session=session)
 
     async def invalidate_fact(
@@ -902,18 +865,8 @@ class MemoryFactService:
             current=current,
         )
         if changed:
-            self.metrics.increment("facts_invalidated")
             await self._clear_resolved_related_conflicts(fact_id, session=session)
         return changed
-
-    async def retract_fact(self, fact_id: int, *, actor_user_id: str) -> bool:
-        """Retract a fact without deleting its version, evidence, or audit history."""
-
-        return await self.invalidate_fact(
-            fact_id,
-            reason=MemoryInvalidationReason.USER_RETRACTED,
-            actor_user_id=actor_user_id,
-        )
 
     async def contest_fact(
         self,
@@ -951,9 +904,6 @@ class MemoryFactService:
             actor_user_id=actor_user_id,
             session=session,
         )
-        if changed:
-            self.metrics.increment("facts_contested")
-            self.metrics.increment("conflicts_open")
         return changed
 
     async def _clear_conflict_in_session(
@@ -1002,8 +952,6 @@ class MemoryFactService:
             session=session,
             current=current,
         )
-        if changed:
-            self.metrics.increment("conflicts_cleared")
         return changed
 
     async def _clear_resolved_related_conflicts(
@@ -1117,7 +1065,6 @@ class MemoryFactService:
             actor_user_id=actor_user_id,
             session=session,
         )
-        self.metrics.increment("facts_restored")
         return await self._repository.get_fact(fact_id, session=session)
 
     async def merge_facts(
@@ -1200,7 +1147,6 @@ class MemoryFactService:
             actor_user_id=actor_user_id,
             session=session,
         )
-        self.metrics.increment("facts_merged")
         return await self._repository.get_fact(target_fact_id, session=session)
 
     async def resolve_conflicts(
@@ -1277,9 +1223,6 @@ class MemoryFactService:
                     session=session,
                 )
                 promoted = preferred.status is MemoryStatus.CONTESTED
-            if changed:
-                self.metrics.increment("facts_invalidated", changed)
-            self.metrics.increment("conflicts_cleared")
         if promoted:
             await self.schedule_embedding(preferred_fact_id)
         return changed
@@ -1350,49 +1293,6 @@ class MemoryFactService:
             actor_user_id=user_id,
             session=session,
         )
-        if changed:
-            self.metrics.increment("facts_invalidated")
-        return changed
-
-    async def prune_person_memories(
-        self,
-        *,
-        user_id: str,
-        max_importance: int,
-        older_than: datetime,
-        session: AsyncSession,
-    ) -> int:
-        rows = await self._repository.list_facts(
-            MemoryFactQuery(
-                scope_type=MemoryScopeType.PERSON,
-                subject_user_id=user_id,
-            ),
-            limit=None,
-            session=session,
-        )
-        candidates = tuple(
-            row
-            for row in rows
-            if row.source_type is not MemorySourceType.EXPLICIT
-            and row.importance <= max_importance
-            and row.updated_at < older_than
-        )
-        changed = 0
-        for row in candidates:
-            if await self._repository.transition(
-                row.id,
-                status=MemoryStatus.INVALIDATED,
-                conflict_state=MemoryConflictState.CLEAR,
-                invalidated_reason=MemoryInvalidationReason.STALE,
-                action=MemoryStateAction.STALE_INVALIDATED,
-                reason_code="manual_prune",
-                source_event_id=None,
-                actor_user_id=user_id,
-                session=session,
-            ):
-                changed += 1
-        if changed:
-            self.metrics.increment("facts_invalidated", changed)
         return changed
 
     async def list_evidence(self, fact_id: int, *, limit: int = 100) -> tuple[MemoryEvidence, ...]:

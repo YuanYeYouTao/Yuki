@@ -22,7 +22,6 @@ from qq_ai_bot.memory.enums import (
     MemoryRetrievalMode,
     MemoryReviewState,
     MemoryScopeType,
-    MemorySemanticRelation,
     MemorySourceType,
     MemoryStateAction,
     MemoryStatus,
@@ -255,18 +254,6 @@ class MemoryCandidate(_MemoryModel):
     candidate_ref: str = Field(pattern=r"^candidate_[1-9][0-9]*$")
     fact: MemoryFact
     exact_key: bool = False
-    exact_content: bool = False
-    relevance: float = 0
-
-
-class CandidateRelation(_MemoryModel):
-    candidate_ref: str = Field(pattern=r"^candidate_[1-9][0-9]*$")
-    relation: MemorySemanticRelation
-    confidence: float = Field(ge=0, le=1)
-
-
-class MemoryRelationClassification(_MemoryModel):
-    relations: tuple[CandidateRelation, ...] = ()
 
 
 class MemoryResolutionPlan(_MemoryModel):
@@ -274,11 +261,8 @@ class MemoryResolutionPlan(_MemoryModel):
     existing_fact_id: int | None = Field(default=None, gt=0)
     new_fact_status: MemoryStatus | None = None
     new_conflict_state: MemoryConflictState | None = None
-    existing_status: MemoryStatus | None = None
-    existing_conflict_state: MemoryConflictState | None = None
     relation_types: tuple[MemoryFactRelationType, ...] = ()
     reason_code: str
-    append_evidence: bool = True
     create_new_fact: bool = False
 
 

@@ -62,13 +62,5 @@ class PluginApprovalService:
         await self._store.save(record)
         return record
 
-    async def valid_approval(self, manifest: PluginManifest) -> PluginApprovalRecord | None:
-        record = await self._store.get(manifest.id)
-        if record is None or record.manifest_hash != manifest.manifest_hash:
-            return None
-        if not set(record.approved_permissions).issubset(manifest.permissions):
-            return None
-        return record
-
     async def revoke(self, plugin_id: str) -> bool:
         return await self._store.delete(plugin_id)

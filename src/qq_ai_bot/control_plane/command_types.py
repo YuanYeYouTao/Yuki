@@ -497,15 +497,6 @@ class ConfigWritePayload:
 
 @final
 @dataclass(frozen=True, slots=True)
-class ConfigRollbackPayload:
-    change_id: int
-
-    def material(self) -> dict[str, JsonValue]:
-        return {"change_id": self.change_id}
-
-
-@final
-@dataclass(frozen=True, slots=True)
 class ManagementActionPayload:
     action: str
     resource_id: str
@@ -559,17 +550,6 @@ def parse_config_write(payload: object, *, require_value: bool) -> ConfigWritePa
         scope_id=scope_id,
         value=None if not require_value else mapping["value"],
     )
-
-
-def parse_config_rollback(payload: object) -> ConfigRollbackPayload:
-    mapping = _require_object(payload)
-    _reject_unknown(mapping, frozenset({"change_id"}))
-    if "change_id" not in mapping:
-        raise _invalid()
-    change_id = mapping["change_id"]
-    if type(change_id) is bool or type(change_id) is not int or change_id < 1:
-        raise _invalid()
-    return ConfigRollbackPayload(change_id=change_id)
 
 
 def parse_management_action(payload: object) -> ManagementActionPayload:

@@ -639,22 +639,6 @@ async def project_space_external_id(session: AsyncSession, space_id: str | None)
     return rows[0].external_space_id
 
 
-async def project_target_external_id(
-    session: AsyncSession,
-    *,
-    target_type: str,
-    person_id: str | None,
-    space_id: str | None,
-) -> str:
-    """Project a canonical notification target at the DTO boundary."""
-
-    if target_type == "private" and person_id and not space_id:
-        return await project_person_external_id(session, person_id)
-    if target_type == "group" and space_id and not person_id:
-        return await project_space_external_id(session, space_id)
-    raise PluginOwnershipError(STATE_MISMATCH)
-
-
 async def require_grant_readable(
     session: AsyncSession, row: PluginBackgroundTargetGrantModel
 ) -> None:

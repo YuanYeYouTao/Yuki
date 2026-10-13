@@ -1,5 +1,6 @@
 """Returned search evidence remains complete until the existing result budgeter."""
 
+import asyncio
 import json
 
 import httpx
@@ -11,7 +12,7 @@ from qq_ai_bot.model_runtime.models import ModelProfile
 from qq_ai_bot.web.bridge_state import BridgeState
 from qq_ai_bot.web.deepseek_bridge import DeepSeekSearchBridge
 from qq_ai_bot.web.gemini_bridge import GeminiSearchBridge
-from qq_ai_bot.web.models import WebSearchRequest
+from qq_ai_bot.web.models import WebSearchRequest, WebSearchResponse, WebSearchSource
 from qq_ai_bot.web.tavily import TavilyWebSearchProvider
 
 
@@ -221,3 +222,72 @@ async def test_main_history_search_archives_original_requested_page(
     assert original["data"]["truncated"] is False
     assert [row["content"] for row in original["data"]["events"]] == originals
     assert not [action for action, _ in case.env.bot.calls if action.startswith("send_")]
+
+
+@pytest.mark.parametrize("kind", ["deepseek", "gemini", "deepseek-extract"])
+async def test_search_bridge_independent_requests_do_not_queue(tmp_path, monkeypatch, kind):
+    if kind.startswith("deepseek"):
+        bridge = DeepSeekSearchBridge(api_key="synthetic", state_path=tmp_path / "cache.sqlite3")
+    else:
+        bridge = GeminiSearchBridge(
+            profile=ModelProfile(
+                id="fake",
+                provider="fake",
+                model="fake",
+                timeout_seconds=1,
+                max_retries=0,
+                default_temperature=0.5,
+                default_max_output_tokens=4096,
+            ),
+            credential="synthetic",
+            provider=FakeLLMProvider(),
+            state=BridgeState(tmp_path / "cache.sqlite3"),
+        )
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = []
+    source = WebSearchSource(
+        "S1",
+        "source",
+        "https://example.com/page",
+        "example.com",
+        "snippet",
+        "content",
+        provider="direct_http",
+    )
+
+    async def search(request):
+        calls.append(request.query)
+        if len(calls) == 2:
+            entered.set()
+        await release.wait()
+        return WebSearchResponse(request.query, (source,), None, 0, provider=bridge.name)
+
+    async def extract(url, query):
+        calls.append(url)
+        if len(calls) == 2:
+            entered.set()
+        await release.wait()
+        return source
+
+    monkeypatch.setattr(bridge, "_search", search)
+    if kind == "deepseek-extract":
+        monkeypatch.setattr(bridge, "_extract", extract)
+        other = bridge.extract(source.url, "page")
+    else:
+        other = bridge.search(WebSearchRequest("second"))
+    tasks = [
+        asyncio.create_task(bridge.search(WebSearchRequest("first"))),
+        asyncio.create_task(other),
+    ]
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        assert all(not task.done() for task in tasks)
+        release.set()
+        results = await asyncio.gather(*tasks)
+        assert results[0].query == "first"
+        assert (await bridge.search(WebSearchRequest("first"))).query == "first"
+        assert len(calls) == 2
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await bridge.close()

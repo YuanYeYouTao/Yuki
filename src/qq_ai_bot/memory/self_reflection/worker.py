@@ -11,7 +11,6 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from qq_ai_bot.config import Settings
-from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.self_reflection.control import (
     ReflectionControlRepository,
     ReflectionDailyLimit,
@@ -34,13 +33,11 @@ class SelfReflectionWorker:
         settings: Settings,
         repository: SelfReflectionRepository,
         service: SelfReflectionService,
-        metrics: MemoryLifecycleMetrics,
     ) -> None:
-        self._settings, self._repository, self._service, self._metrics = (
+        self._settings, self._repository, self._service = (
             settings,
             repository,
             service,
-            metrics,
         )
         self.control = ReflectionControlRepository(repository.database, settings)
         self._hours = frozenset(
@@ -122,12 +119,9 @@ class SelfReflectionWorker:
                 break
             batches = await self._repository.claim_due(
                 scheduled_slot=f"{local.date().isoformat()}:{cycle['id'][3:15]}:{attempted}",
-                local_date=local.date().isoformat(),
                 event_threshold=self._settings.memory_self_reflection_event_threshold,
                 character_threshold=self._settings.memory_self_reflection_character_threshold,
                 max_wait_seconds=self._settings.memory_self_reflection_max_wait_seconds,
-                max_sessions=1,
-                max_daily_calls=self._settings.memory_self_reflection_max_daily_calls,
                 max_events=self._settings.memory_self_reflection_max_events,
                 max_characters=self._settings.memory_self_reflection_max_characters,
                 force=cycle["trigger"] == "manual",
@@ -142,14 +136,12 @@ class SelfReflectionWorker:
             try:
                 proposals, committed = await self._service.reflect(batch)
                 await self._repository.complete(batch, proposals=proposals, committed=committed)
-                self._metrics.increment("self_reflection_processed_events_total", len(batch.events))
             except asyncio.CancelledError:
                 await self._repository.recover_interrupted(batch.run_id, "interrupted")
                 raise
             except Exception as exc:
                 category = _error_category(exc)
                 await self._repository.recover_interrupted(batch.run_id, category)
-                self._metrics.increment(f"self_reflection_error_{category}")
                 logger.warning(
                     "memory_self_reflection_failed run_id=%d error_category=%s",
                     batch.run_id,

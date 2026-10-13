@@ -24,5 +24,4 @@ def static_text(
         priority=priority,
         stability=PromptStability.STATIC,
         content=content,
-        required=True,
     )

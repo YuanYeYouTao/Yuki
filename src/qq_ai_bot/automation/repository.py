@@ -1030,7 +1030,11 @@ class AutomationRepository:
             )
             if row.status in {AutomationStatus.CANCELLED.value, AutomationStatus.COMPLETED.value}:
                 return True
-            if row.max_runs is not None and row.run_count >= row.max_runs:
+            if (
+                status is not RunStatus.BLOCKED
+                and row.max_runs is not None
+                and row.run_count >= row.max_runs
+            ):
                 row.status = AutomationStatus.COMPLETED.value
                 row.next_run_at = None
                 return True

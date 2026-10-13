@@ -185,13 +185,6 @@ class ControlCommandService:
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
-    async def rollback_config(self, context: object, command: object) -> ControlResult:
-        authorized = _require_context(context)
-        _require_capability(authorized, method_capability("rollback_config"))
-        return await self._port.rollback_config(
-            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
-        )
-
     async def mutate_memory(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
         _require_capability(authorized, method_capability("mutate_memory"))
@@ -245,13 +238,6 @@ class ControlCommandService:
         authorized = _require_context(context)
         _require_capability(authorized, method_capability("mutate_emoji"))
         return await self._port.mutate_emoji(
-            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
-        )
-
-    async def cancel_operation(self, context: object, command: object) -> ControlResult:
-        authorized = _require_context(context)
-        _require_capability(authorized, method_capability("cancel_operation"))
-        return await self._port.cancel_operation(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 

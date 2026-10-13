@@ -130,7 +130,7 @@ async def test_self_sdk_media_music_and_schedule_use_true_actor_without_inbound(
     actor = await self_actor(database, env)
     source = runtime(actor, env)
     media = await environment(database, tmp_path)
-    selected = await media.adapter.execute(media.name, "{}", source, web_was_used=False)
+    selected = await media.adapter.execute(media.name, "{}", source)
     assert selected.ok and selected.images
     automation = SimpleNamespace(
         create_task=AsyncMock(
@@ -159,7 +159,7 @@ async def test_self_sdk_media_music_and_schedule_use_true_actor_without_inbound(
         ToolInvocationContext(runtime=source, call_id="original-plugin-call")
     )
     try:
-        with host.invocation_scope("example.plugin", source, web_was_used=False):
+        with host.invocation_scope("example.plugin", source):
             invocation = host._invocation()
             assert invocation.inbound is None and invocation.actor is actor
             assert invocation.origin.value == SdkTurnOrigin.SELF_INITIATIVE.value
@@ -260,7 +260,7 @@ async def test_self_sdk_main_reads_original_result_and_keeps_real_sources_distin
 
     monkeypatch.setattr(main_turn, "MainAgentBackend", backend)
     instruction = "使用相同 Main 完成插件工作" + "x" * 12_001
-    with host.invocation_scope(host.plugin_id, source, web_was_used=False):
+    with host.invocation_scope(host.plugin_id, source):
         first = await host.agent.run(instruction)
         original = await WorkRepository(database).get(first.data["work_id"])
         repeated = await host.agent.run(instruction)
@@ -276,7 +276,7 @@ async def test_self_sdk_main_reads_original_result_and_keeps_real_sources_distin
     assert saved["trigger_event_id"] is None and not saved["actor_is_superuser"]
     another = await self_actor(database, env, proposal_id="another-sdk-source")
     source = replace(source, actor_context=another, initiative_run_id=another.initiative_run_id)
-    with host.invocation_scope(host.plugin_id, source, web_was_used=False):
+    with host.invocation_scope(host.plugin_id, source):
         second = await host.agent.run(instruction)
     assert second.ok and second.data["work_id"] != first.data["work_id"]
     assert second.data["text"] == "SDK result 2" and len(provider.requests) == 2
@@ -338,7 +338,7 @@ async def test_self_sdk_main_isolates_existing_work_and_reports_actual_scope_lea
     async with activate_work(
         repository, private.event.canonical_conversation_id, 1, "independent-caller", {}, validate
     ) as outer:
-        with host.invocation_scope(host.plugin_id, source, web_was_used=False):
+        with host.invocation_scope(host.plugin_id, source):
             result = await host.agent.run("合法独立来源")
         assert result.ok and result.data["state"] == "completed"
         assert current_work_control.get() is outer and outer.current is None
@@ -346,7 +346,7 @@ async def test_self_sdk_main_isolates_existing_work_and_reports_actual_scope_lea
     async with activate_work(
         repository, actor.conversation_id, 1, actor.source_key, {}, validate
     ) as occupied:
-        with host.invocation_scope(host.plugin_id, source, web_was_used=False):
+        with host.invocation_scope(host.plugin_id, source):
             with pytest.raises(WorkConflict, match="conversation_activation_busy"):
                 await host.agent.run("已有租约的会话")
         assert current_work_control.get() is occupied and occupied.current is None
@@ -387,7 +387,7 @@ async def test_self_sdk_main_context_rollup_wait_returns_original_durable_work(
         raise ContextRollupRequired(version, max((event.id for event in events), default=0), 60)
 
     monkeypatch.setattr(chat._context_assembler, "assemble_plugin", prepare)
-    with host.invocation_scope(host.plugin_id, source, web_was_used=False):
+    with host.invocation_scope(host.plugin_id, source):
         first = await host.agent.run("沿原工作等待上下文准备")
         original = await WorkRepository(database).get(first.data["work_id"])
         repeated = await host.agent.run("沿原工作等待上下文准备")
@@ -427,7 +427,7 @@ async def test_self_sdk_main_resume_keeps_original_actor_source_and_work(databas
     )
     actor = await self_actor(database, env)
     source = replace(runtime(actor, env), runtime_config=await chat._runtime_config.snapshot())
-    with host.invocation_scope(host.plugin_id, source, web_was_used=False):
+    with host.invocation_scope(host.plugin_id, source):
         first = await host.agent.run("按原真实来源继续")
     assert first.ok and first.data["state"] == "waiting_external"
     repository = WorkRepository(database)

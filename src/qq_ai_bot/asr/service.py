@@ -118,8 +118,8 @@ class ASRService:
             for a in (*message.attachments, *message.reply_attachments)
             if a.kind is AttachmentKind.AUDIO
         ]
-        error = "audio_limit" if len(attachments) > 3 else ""
-        for attachment in attachments[:3]:
+        error = ""
+        for attachment in attachments:
             try:
                 if (
                     attachment.file_size is not None
@@ -140,7 +140,7 @@ class ASRService:
                     max_duration_seconds=self._settings.asr_max_duration_seconds,
                 )
                 text = await self._provider.transcribe(audio)
-                if not text.strip() or len(text) > 12000:
+                if not text.strip():
                     raise ASRError("no_speech")
                 # This is user/media data. It never re-enters deterministic command parsing.
                 parts.append(

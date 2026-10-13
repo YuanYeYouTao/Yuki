@@ -11,7 +11,6 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from qq_ai_bot.conversation.rollup.renderer import (
-    rollup_source_projection,
     serialize_compaction_source_events,
 )
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
@@ -43,25 +42,6 @@ def is_prompt_visible_message(
         timezone=timezone,
     )
     return bool(renderer.render_reference_event(event).strip())
-
-
-def prompt_visible_events(
-    events: Iterable[EventRecord],
-    *,
-    bot_display_name: str = DEFAULT_BOT_DISPLAY_NAME,
-    timezone: str = DEFAULT_TIMEZONE,
-) -> tuple[EventRecord, ...]:
-    """Return keepers that project into ordinary main-agent history."""
-
-    return tuple(
-        event
-        for event in events
-        if is_prompt_visible_message(
-            event,
-            bot_display_name=bot_display_name,
-            timezone=timezone,
-        )
-    )
 
 
 def prompt_visible_event_count(
@@ -148,38 +128,6 @@ def durable_uncovered_characters(
         )
         for event in events
     )
-
-
-def prompt_accounting_event_characters(
-    event: EventRecord,
-    *,
-    events: Iterable[EventRecord] = (),
-    bot_display_name: str = DEFAULT_BOT_DISPLAY_NAME,
-    timezone: str = DEFAULT_TIMEZONE,
-) -> int:
-    """Return the durable character increment for one appended keeper.
-
-    ``events`` is ignored so neighbors cannot change the stored watermark.
-    External source rows are diagnostic keepers only: the increment is zero and
-    must not force-wake an existing rollup job.
-    """
-
-    del events
-    return durable_uncovered_event_characters(
-        event,
-        bot_display_name=bot_display_name,
-        timezone=timezone,
-    )
-
-
-def source_accounting_event_characters(
-    event: EventRecord,
-    *,
-    timezone: str = DEFAULT_TIMEZONE,
-) -> int:
-    """Return unbounded compression-source characters for one keeper."""
-
-    return len(rollup_source_projection(event, timezone=timezone))
 
 
 def source_accounting_characters(

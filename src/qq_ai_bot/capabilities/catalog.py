@@ -3,66 +3,13 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from qq_ai_bot.capabilities.models import CapabilityDescriptor
-from qq_ai_bot.domain.messages import ChatTool
 
 _MODEL_NAME = re.compile(r"[^a-zA-Z0-9_-]+")
-
-
-def descriptor_content_fingerprint(descriptor: CapabilityDescriptor) -> str:
-    """Hash the full discovery+policy surface so index caches stay coherent."""
-
-    payload = {
-        "canonical_name": descriptor.canonical_name,
-        "model_name": descriptor.model_name,
-        "namespace": descriptor.namespace_id,
-        "aliases": list(descriptor.aliases),
-        "use_when": list(descriptor.use_when),
-        "tags": list(descriptor.tags),
-        "description": descriptor.description,
-        "compact_description": descriptor.compact_description,
-        "input_schema": descriptor.input_schema,
-        "output_schema": descriptor.output_schema,
-        "effect": descriptor.effect.value,
-        "exposure": descriptor.exposure.value,
-        "risk": descriptor.risk.value,
-        "trust_source": descriptor.trust_source.value,
-        "required_permissions": sorted(descriptor.required_permissions),
-        "schema_version": descriptor.schema_version,
-        "generation": descriptor.generation,
-        "provider_id": descriptor.provider_id,
-        "provider_tool_name": descriptor.provider_tool_name,
-        "finalize_after_commit": descriptor.finalize_after_commit,
-        "additional_scopes": list(descriptor.additional_scopes),
-        "bundle_scopes": list(descriptor.bundle_scopes),
-    }
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
-def estimate_chat_tool_tokens(tool: ChatTool) -> int:
-    """Estimate the complete function-calling envelope with one stable heuristic."""
-
-    envelope = {
-        "type": "function",
-        "function": {
-            "name": tool.name,
-            "description": tool.description,
-            "parameters": tool.parameters,
-        },
-    }
-    encoded = json.dumps(
-        envelope,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return max(1, (len(encoded) + 3) // 4)
 
 
 def safe_model_tool_name(*parts: str, maximum: int = 64) -> str:
@@ -90,33 +37,11 @@ class ToolProvider(Protocol):
 @dataclass(frozen=True, slots=True)
 class UnifiedToolCatalogEntry:
     descriptor: CapabilityDescriptor
-    provider_id: str
-    scope_ids: tuple[str, ...]
-    compact_description: str
-    tags: tuple[str, ...]
-    searchable_text: str
-    estimated_schema_tokens: int
-    available: bool
-    revision: str
-    bundle_scope_ids: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class ToolScopeSummary:
-    scope_id: str
-    parent: str | None
-    display_name: str
-    description: str
-    tool_count: int
-    provider_ids: tuple[str, ...]
-    tags: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class UnifiedToolCatalog:
     entries: tuple[UnifiedToolCatalogEntry, ...]
-    scopes: tuple[ToolScopeSummary, ...]
-    revision: str
 
     def by_model_name(self, name: str) -> UnifiedToolCatalogEntry | None:
         return next((item for item in self.entries if item.descriptor.model_name == name), None)
@@ -124,17 +49,9 @@ class UnifiedToolCatalog:
 
 @dataclass(frozen=True, slots=True)
 class DescriptorRegistrySnapshot:
-    """Context-free catalog used to cache the search index.
-
-    ``revision`` is the full-content hash.  It must not include per-user
-    authority projections.
-    """
+    """Context-free catalog before per-turn authority projection."""
 
     catalog: UnifiedToolCatalog
-
-    @property
-    def revision(self) -> str:
-        return self.catalog.revision
 
     def entry(self, capability_id: str) -> UnifiedToolCatalogEntry | None:
         return self.catalog.by_model_name(capability_id)
@@ -142,9 +59,8 @@ class DescriptorRegistrySnapshot:
 
 @dataclass(frozen=True, slots=True)
 class AuthorizedCatalogSnapshot:
-    """Per-turn authority/availability projection of one registry revision."""
+    """Per-turn execution grants over the complete catalog."""
 
-    registry_revision: str
     catalog: UnifiedToolCatalog
     requestable_ids: frozenset[str]
     hidden_ids: frozenset[str] = frozenset()
@@ -195,60 +111,9 @@ class ToolProviderRegistry:
                     raise ValueError(f"duplicate canonical capability: {descriptor.canonical_name}")
                 names.add(descriptor.model_name)
                 canonical_names.add(descriptor.canonical_name)
-                description = descriptor.compact_description or descriptor.description
-                searchable = " ".join(
-                    (
-                        descriptor.model_name,
-                        descriptor.canonical_name,
-                        descriptor.namespace_id,
-                        *descriptor.aliases,
-                        *descriptor.use_when,
-                        *descriptor.scope_ids,
-                        description,
-                        *descriptor.tags,
-                    )
-                ).casefold()
-                entries.append(
-                    UnifiedToolCatalogEntry(
-                        descriptor=descriptor,
-                        provider_id=descriptor.provider_id or provider.provider_id,
-                        scope_ids=descriptor.scope_ids,
-                        compact_description=description,
-                        tags=descriptor.tags,
-                        searchable_text=searchable,
-                        estimated_schema_tokens=estimate_chat_tool_tokens(
-                            descriptor.as_chat_tool()
-                        ),
-                        available=True,
-                        revision=descriptor_content_fingerprint(descriptor),
-                        bundle_scope_ids=descriptor.bundle_scopes,
-                    )
-                )
-        entries.sort(key=lambda item: (item.scope_ids, item.descriptor.model_name))
-        scopes: list[ToolScopeSummary] = []
-        for scope_id in sorted({scope for entry in entries for scope in entry.scope_ids}):
-            selected = [entry for entry in entries if scope_id in entry.scope_ids]
-            summaries = dict(
-                pair for entry in selected for pair in entry.descriptor.scope_summaries
-            )
-            scopes.append(
-                ToolScopeSummary(
-                    scope_id=scope_id,
-                    parent=scope_id.rpartition(".")[0] or None,
-                    display_name=scope_id,
-                    description=summaries.get(scope_id, f"{scope_id} tools"),
-                    tool_count=len(selected),
-                    provider_ids=tuple(sorted({item.provider_id for item in selected})),
-                    tags=tuple(sorted({tag for item in selected for tag in item.tags})),
-                )
-            )
-        digest = hashlib.sha256(
-            "\n".join(
-                f"{item.provider_id}:{item.descriptor.model_name}:{item.revision}"
-                for item in entries
-            ).encode("utf-8")
-        ).hexdigest()
-        return UnifiedToolCatalog(tuple(entries), tuple(scopes), digest)
+                entries.append(UnifiedToolCatalogEntry(descriptor=descriptor))
+        entries.sort(key=lambda item: item.descriptor.model_name)
+        return UnifiedToolCatalog(tuple(entries))
 
     async def refresh(self, *, force: bool = False) -> None:
         for provider in self._providers.values():

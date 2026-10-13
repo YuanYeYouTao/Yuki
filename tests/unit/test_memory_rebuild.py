@@ -101,7 +101,7 @@ async def _service(
         facts=facts,
         ledger=ledger,
         model_executor=InjectedModelExecutor(provider),
-        concurrency=ConcurrencyManager(2),
+        concurrency=ConcurrencyManager(),
     )
     service = MemoryRebuildService(
         settings=settings,
@@ -456,7 +456,7 @@ async def test_forget_person_removes_staging_and_redacts_selection(database: Dat
 async def test_rebuild_commit_receipt_is_atomic_and_usage_cannot_replay(
     database: Database, monkeypatch, failure: str
 ) -> None:
-    from unittest.mock import AsyncMock
+    from unittest.mock import Mock
 
     _settings, ledger, facts, _provider, service = await _service(database)
     await _event(ledger, message_id="atomic-rebuild")
@@ -467,7 +467,7 @@ async def test_rebuild_commit_receipt_is_atomic_and_usage_cannot_replay(
     await worker.process_once()
     await service.set_review(run.public_id, "all", approved=True, actor_user_id="9000")
     await service.commit(run.public_id, actor_user_id="9000")
-    resolve_spy = AsyncMock(wraps=service.processor.resolve)
+    resolve_spy = Mock(wraps=service.processor.resolve)
     monkeypatch.setattr(service.processor, "resolve", resolve_spy)
     injected = False
     if failure == "receipt":
@@ -495,7 +495,7 @@ async def test_rebuild_commit_receipt_is_atomic_and_usage_cannot_replay(
         monkeypatch.setattr(facts.repository, "apply_evidence_write", uncertain)
     applied = await worker.process_once()
     assert await worker.process_once() == 0
-    assert resolve_spy.await_count == 1
+    assert resolve_spy.call_count == 1
     async with database.sessions() as session:
         proposal = await session.scalar(select(MemoryRebuildProposalModel))
         if failure == "receipt":
@@ -525,7 +525,7 @@ async def test_rebuild_commit_receipt_is_atomic_and_usage_cannot_replay(
 async def test_rebuild_database_failure_retains_proposal_until_recovery_without_repeating_model(
     database, monkeypatch
 ):
-    from unittest.mock import AsyncMock
+    from unittest.mock import AsyncMock, Mock
 
     from sqlalchemy.exc import OperationalError
 
@@ -538,7 +538,7 @@ async def test_rebuild_database_failure_retains_proposal_until_recovery_without_
     await worker.process_once()
     await service.set_review(run.public_id, "all", approved=True, actor_user_id="9000")
     await service.commit(run.public_id, actor_user_id="9000")
-    resolver = AsyncMock(wraps=service.processor.resolve)
+    resolver = Mock(wraps=service.processor.resolve)
     monkeypatch.setattr(service.processor, "resolve", resolver)
     database_write = AsyncMock(side_effect=OperationalError("write", {}, RuntimeError("disk")))
     original_write = facts.repository.apply_evidence_write
@@ -551,7 +551,7 @@ async def test_rebuild_database_failure_retains_proposal_until_recovery_without_
                     next_attempt_at=datetime.now(UTC) - timedelta(seconds=1)
                 )
             )
-    assert resolver.await_count == database_write.await_count == 6
+    assert resolver.call_count == database_write.await_count == 6
     assert await facts.list_person("1001") == ()
     assert (
         await service.repository.get_run(run.public_id)

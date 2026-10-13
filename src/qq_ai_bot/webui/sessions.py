@@ -6,6 +6,7 @@ import hashlib
 import secrets
 import time
 from dataclasses import dataclass
+from typing import cast
 
 from qq_ai_bot.application.control_access import ControlOperatorAccess
 from qq_ai_bot.control_plane.principal import ControlPrincipal, PrincipalSource
@@ -44,12 +45,10 @@ class BrowserSessions:
             raise ControlQueryError(Problem(ProblemCode.OPERATION_UNAVAILABLE))
         attempts.append(now)
         principal = await self.access.authenticate(credential, source=PrincipalSource.FUTURE_WEB)
-        if type(credential) is not str:
-            raise ControlQueryError(Problem(ProblemCode.UNAUTHENTICATED))
         token = secrets.token_urlsafe(32)
         session = BrowserSession(
             principal.principal_id,
-            hashlib.sha256(credential.encode()).digest(),
+            hashlib.sha256(cast(str, credential).encode()).digest(),
             secrets.token_urlsafe(32),
             now + self.lifetime,
         )

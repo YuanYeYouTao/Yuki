@@ -126,7 +126,7 @@ const presetValues = (provider: string): Row => {
     base_url: preset?.url || "",
     model: gemini ? "gemini-3.8-flash" : "",
     api_key_env: "",
-    reasoning_effort: "low",
+    reasoning_effort: "medium",
     search_mode: gemini ? "bridge" : nativeSearch ? "native" : "external",
     capabilities: gemini
       ? [

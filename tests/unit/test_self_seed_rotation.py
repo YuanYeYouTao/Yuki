@@ -203,3 +203,91 @@ async def test_future_valid_from_is_discovered_once_after_prior_high_water(datab
     assert activated.next_cursor == (activation.isoformat(), ids[0])
     ended = await read_self_seed_page(database, cursor=activated.next_cursor, **arguments)
     assert not ended.facts and ended.next_cursor == activated.next_cursor
+
+
+async def test_older_readable_evidence_survives_newer_unreadable_sources(database):
+    from sqlalchemy import insert
+
+    from qq_ai_bot.memory.self_origin import read_self_seed_candidates
+    from qq_ai_bot.persistence.models import MemoryToolReceiptModel
+
+    facts, source, _run, batch, fact_id = await reflection_fact(database)
+    now = datetime.now(UTC)
+    async with database.immediate_session() as writer:
+        receipt = await writer.get(MemoryToolReceiptModel, batch.first_receipt_id)
+        template = {
+            column.name: getattr(receipt, column.name) for column in receipt.__table__.columns
+        }
+        template.pop("id")
+        receipt_ids = list(
+            await writer.scalars(
+                insert(MemoryToolReceiptModel).returning(MemoryToolReceiptModel.id),
+                [
+                    dict(template, source_call_key=f"{i + 1:064x}", tool_call_id=f"unreadable-{i}")
+                    for i in range(40)
+                ],
+            )
+        )
+        await writer.execute(
+            insert(MemoryEvidenceModel),
+            [
+                dict(
+                    fact_id=fact_id,
+                    tool_receipt_id=receipt_id,
+                    relation="agent_reflection",
+                    authority="agent_reflection",
+                    confidence=0.5,
+                    source_speaker_user_id="8000",
+                    excerpt="没有出现在原执行回执的内容",
+                    created_at=now,
+                )
+                for receipt_id in receipt_ids
+            ],
+        )
+    page = await read_self_seed_page(
+        database, canonical_conversation_id=source.canonical_conversation_id
+    )
+    candidates = await read_self_seed_candidates(
+        database, canonical_conversation_id=source.canonical_conversation_id
+    )
+    assert [item.id for item in page.facts] == [fact_id]
+    assert [item.id for item in candidates] == [fact_id]
+    assert (await facts.get_fact(fact_id)).evidence_count == 1
+
+
+async def test_requested_page_and_exact_ids_are_not_capped_by_internal_constants(database):
+    from sqlalchemy import insert
+
+    from qq_ai_bot.memory.self_origin import read_self_seed_candidates
+
+    _facts, source, _run, _batch, fact_id = await reflection_fact(database)
+    async with database.immediate_session() as writer:
+        fact = await writer.get(MemoryFactModel, fact_id)
+        template = {column.name: getattr(fact, column.name) for column in fact.__table__.columns}
+        template.pop("id")
+        evidence = await writer.scalar(
+            select(MemoryEvidenceModel).where(MemoryEvidenceModel.fact_id == fact_id)
+        )
+        evidence_template = {
+            column.name: getattr(evidence, column.name) for column in evidence.__table__.columns
+        }
+        evidence_template.pop("id")
+        ids = list(
+            await writer.scalars(
+                insert(MemoryFactModel).returning(MemoryFactModel.id),
+                [dict(template, memory_key=f"self:requested-page:{i}") for i in range(139)],
+            )
+        )
+        await writer.execute(
+            insert(MemoryEvidenceModel),
+            [dict(evidence_template, fact_id=identity) for identity in ids],
+        )
+    expected = {fact_id, *ids}
+    arguments = dict(
+        canonical_conversation_id=source.canonical_conversation_id, limit=len(expected)
+    )
+    page = await read_self_seed_page(database, scan_limit=len(expected), **arguments)
+    assert {item.id for item in page.facts} == expected
+    assert page.scanned == len(expected)
+    selected = await read_self_seed_candidates(database, fact_ids=tuple(expected), **arguments)
+    assert {item.id for item in selected} == expected

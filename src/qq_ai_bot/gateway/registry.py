@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from typing import Any
 from uuid import uuid4
 
 from qq_ai_bot.gateway.models import (
@@ -302,13 +301,6 @@ class GatewayConnectionRegistry:
                 )
             )
 
-    def has_unique_account(self, platform: str, external_account_id: str) -> bool:
-        try:
-            self.resolve_account(platform, external_account_id)
-        except RegistryClosed:
-            return False
-        return True
-
     def _bind_locked(self, account: tuple[str, str], presence_id: str) -> None:
         previous = self._account_presence.get(account)
         self._account_presence[account] = presence_id
@@ -404,10 +396,6 @@ class GatewayConnectionRegistry:
 def require_capability(resolution: ConnectionResolution, capability: str) -> None:
     if capability not in resolution.snapshot.capabilities:
         raise RegistryClosed("capability")
-
-
-def as_bot(resolution: ConnectionResolution) -> Any:
-    return resolution.bot
 
 
 _PROCESS_REGISTRY: GatewayConnectionRegistry | None = None

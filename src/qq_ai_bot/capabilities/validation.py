@@ -12,7 +12,6 @@ from jsonschema.exceptions import SchemaError, ValidationError
 from jsonschema.validators import validator_for
 
 from qq_ai_bot.capabilities.catalog import UnifiedToolCatalogEntry
-from qq_ai_bot.capabilities.models import CapabilityDescriptor
 
 TOOL_INPUT_VALIDATION_FAILED = "tool_input_validation_failed"
 UNDECLARED_TOOL = "undeclared_tool"
@@ -105,9 +104,6 @@ class JsonSchemaCapabilityValidator:
                 )
             raise
         return CapabilityValidationResult(ok=True)
-
-    def is_quarantined(self, capability_id: str) -> bool:
-        return capability_id in self._quarantined
 
 
 def _validation_detail(error: ValidationError, *, depth: int = 0) -> str:
@@ -215,10 +211,3 @@ def _with_lifted_defs(schema: dict[str, object]) -> dict[str, object]:
         merged.setdefault(key, value)
     lifted["$defs"] = merged
     return lifted
-
-
-def domain_validate_descriptor(
-    descriptor: CapabilityDescriptor, arguments: dict[str, Any]
-) -> CapabilityValidationResult:
-    del descriptor, arguments
-    return CapabilityValidationResult(ok=True)

@@ -612,7 +612,7 @@ class PeopleRepository:
         """Delete all attributable data and redact exact QQ text elsewhere."""
 
         expected_person_id: str | None = None
-        for _attempt in range(3):
+        while True:
             try:
                 async with self._database.sessions() as reader:
                     binding = await find_identity_binding(reader, external_id(user_id))
@@ -649,7 +649,6 @@ class PeopleRepository:
                     "privacy_aliases_changed",
                 }:
                     raise
-        raise ValueError("privacy_preparation_changed")
 
     async def _delete_person_canonical(
         self,

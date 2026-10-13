@@ -59,10 +59,6 @@ def serialize_compaction_source_events(
     )
 
 
-def projection_characters(event: EventRecord) -> int:
-    return len(rollup_source_projection(event))
-
-
 def projection_hash(event: EventRecord) -> str:
     return hashlib.sha256(rollup_source_projection(event).encode("utf-8")).hexdigest()
 
@@ -133,14 +129,6 @@ def render_rollup_message(
     if covered_through_event_id is not None:
         envelope += f"[Source events through internal event_id={covered_through_event_id}]\n"
     return ChatMessage(role="user", content=envelope + summary_text.strip())
-
-
-def render_event_message(event: EventRecord) -> ChatMessage:
-    role = "assistant" if event.direction == "outbound" else "user"
-    content = rollup_source_projection(event)
-    if event.event_kind == "external_event":
-        role = "user"
-    return ChatMessage(role=role, content=content)
 
 
 def _job_age_seconds(value: datetime | None) -> int:

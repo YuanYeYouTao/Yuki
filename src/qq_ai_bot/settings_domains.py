@@ -140,7 +140,6 @@ class ConversationSettings(DomainSettings):
     conversation_rollup_lease_heartbeat_seconds: float = Field(gt=0)
     conversation_rollup_llm_origins: str
     conversation_rollup_prompt_version: str
-    conversation_rollup_foreground_max_batches: int = Field(ge=1)
     conversation_effect_gate_timeout_seconds: float = Field(gt=0)
     conversation_history_around_before: int = Field(ge=0)
     conversation_history_around_after: int = Field(ge=0)
@@ -297,7 +296,7 @@ class VisionSettings(DomainSettings):
     vision_api_key: str
     vision_model: str
     vision_timeout_seconds: float = Field(gt=0)
-    vision_max_retries: int = Field(gt=0)
+    vision_max_retries: int = Field(ge=0)
     vision_global_concurrency: int = Field(gt=0)
     vision_queue_max_pending: int = Field(gt=0)
     vision_queue_timeout_seconds: float = Field(gt=0)

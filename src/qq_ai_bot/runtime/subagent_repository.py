@@ -30,7 +30,6 @@ class SubagentRepository:
     def __init__(self, repository: WorkRepository) -> None:
         self.repository = repository
         self.database = repository.database
-        self.max_concurrency = int(getattr(self.database, "subagent_concurrency", 1))
 
     async def start(self, lease: WorkLease, parent_id: str, key: str, brief: dict[str, Any]) -> str:
         if lease.work_id is not None and lease.work_id != parent_id:
@@ -122,12 +121,6 @@ class SubagentRepository:
                     )
                 )
                 return None
-            if not reconcile:
-                active = await session.scalar(
-                    select(func.count()).select_from(children).where(children.c.lease_until > now)
-                )
-                if int(active or 0) >= self.max_concurrency:
-                    return None
             claimed = (
                 (
                     await session.execute(
@@ -166,7 +159,12 @@ class SubagentRepository:
                 await session.scalars(
                     select(children.c.work_id)
                     .join(work, work.c.id == children.c.work_id)
+                    .join(
+                        CanonicalConversationModel,
+                        CanonicalConversationModel.id == work.c.conversation_id,
+                    )
                     .where(
+                        work.c.generation == CanonicalConversationModel.generation,
                         work.c.state.in_(
                             ("completed", "failed", "cancelled", "suspended", "waiting_user")
                         ),
@@ -565,21 +563,11 @@ class SubagentRepository:
                 "state": row["state"],
                 "text": str(result or ""),
             }
-            saved = await session.scalar(
-                select(journal.c.payload_json).where(journal.c.work_id == lease.work_id)
-            )
-            private_receipt = {
-                **receipt,
-                "cache_samples": json.loads(saved or "{}")
-                .get("metadata", {})
-                .get("progress", {})
-                .get("cache_samples", []),
-            }
             await session.execute(
                 update(children)
                 .where(children.c.work_id == lease.work_id)
                 .values(
-                    result_json=encode_json(private_receipt),
+                    result_json=encode_json(receipt),
                     notified_revision=row["revision"],
                 )
             )

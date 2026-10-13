@@ -1,3 +1,4 @@
+import { flatten, renderBadge as badge } from "./table-format";
 import { useState } from "react";
 import type { Row } from "./api";
 import type { PageProps } from "./pages";
@@ -39,8 +40,6 @@ const labels: Record<string, string> = {
   send_text: "发送文本",
   send_card: "发送卡片",
 };
-const flatten = (row: Row): Row => ({ ...row, ...((row.fields as Row) || {}) });
-const badge = (value: unknown) => <Badge value={value} />;
 
 function ConfigDraft({ fields, props }: { fields: Row; props: PageProps }) {
   const [values, change] = useState(fields.values as Row);

@@ -17,7 +17,7 @@ from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationMode
 from qq_ai_bot.domain.messages import ChatRequest, ChatResponse
 from qq_ai_bot.llm.base import LLMProvider
 from qq_ai_bot.memory.claim_processor import MemoryProcessingContext
-from qq_ai_bot.memory.enums import MemoryProcessingSource, MemoryRebuildJobOutcome
+from qq_ai_bot.memory.enums import MemoryRebuildJobOutcome
 from qq_ai_bot.memory.extraction import BatchMemoryClaim, BatchMemoryExtractionOutput
 from qq_ai_bot.memory.job_claims import MemoryJobClaimLost
 from qq_ai_bot.memory.models import MemoryJob
@@ -151,7 +151,7 @@ async def test_actorless_context_is_rejected_by_queue_mutation_without_writing(
 
     result = await mutations.mutate_validated_claim(
         validated,
-        MemoryProcessingContext(source=MemoryProcessingSource.LIVE, event=None),
+        MemoryProcessingContext(event=None),
         conversation_key=job.conversation_key,
         job=job,
     )
@@ -231,7 +231,7 @@ async def test_reclaim_during_extraction_discards_all_old_worker_results(
         facts=MemoryFactService(MemoryFactRepository(database)),
         ledger=ledger,
         model_executor=InjectedModelExecutor(Provider()),
-        concurrency=ConcurrencyManager(1),
+        concurrency=ConcurrencyManager(),
     )
     assert await worker.enqueue(event.id, "private:1001")
     running = asyncio.create_task(worker.process_once())
@@ -248,7 +248,7 @@ async def test_reclaim_during_extraction_discards_all_old_worker_results(
             assert await session.scalar(select(func.count()).select_from(model)) == 0
 
 
-async def test_reclaim_during_resolution_blocks_fact_and_receipt_without_writer_lock(
+async def test_reclaim_after_extraction_blocks_fact_and_receipt_without_writer_lock(
     database: Database,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -271,19 +271,18 @@ async def test_reclaim_during_resolution_blocks_fact_and_receipt_without_writer_
         facts=MemoryFactService(MemoryFactRepository(database)),
         ledger=ledger,
         model_executor=InjectedModelExecutor(Provider()),
-        concurrency=ConcurrencyManager(1),
+        concurrency=ConcurrencyManager(),
     )
-    original_resolve = worker.processor.resolve
+    original_mutate = worker.mutations.mutate_validated_claim
     current: MemoryJob | None = None
 
-    async def resolve_and_reclaim(*args: Any, **kwargs: Any) -> Any:
+    async def mutate_after_reclaim(*args: Any, **kwargs: Any) -> Any:
         nonlocal current
-        result = await original_resolve(*args, **kwargs)
-        # A separate writer must complete while resolution/model work is running.
+        # Another writer can reclaim the job after paid extraction, before mutation.
         current = await asyncio.wait_for(_reclaim(jobs, monkeypatch), timeout=5)
-        return result
+        return await original_mutate(*args, **kwargs)
 
-    monkeypatch.setattr(worker.processor, "resolve", resolve_and_reclaim)
+    monkeypatch.setattr(worker.mutations, "mutate_validated_claim", mutate_after_reclaim)
     assert await worker.enqueue(event.id, "private:1001")
     assert await worker.process_once() == 0
     assert current is not None

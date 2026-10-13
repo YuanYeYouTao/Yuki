@@ -891,6 +891,38 @@ class PersistentManager:
         }
         async with self.file_lock:
             args = dict(args)
+            digest = hashlib.sha256(json.dumps([method, args], sort_keys=True).encode()).hexdigest()
+            if not read:
+                if not isinstance(request_id, str) or not 1 <= len(request_id) <= 256:
+                    raise ValueError("invalid_request_id")
+                row = self.db.execute(
+                    "SELECT * FROM environment_mutations WHERE request_id=?", (request_id,)
+                ).fetchone()
+                if row:
+                    if row["digest"] != digest and method == "workspace_checkout":
+                        # Old receipts hashed the resolved path. Read those original
+                        # results even when an interrupted write changed file existence.
+                        artifact_id = identifier(args.get("artifact_id"))
+                        name = args.get("name", artifact_id)
+                        legacy_paths = [name, f"imported/{artifact_id}/{name}"]
+                        mapped = self.db.execute(
+                            "SELECT path FROM workspace_migrations WHERE artifact_id=?",
+                            (artifact_id,),
+                        ).fetchone()
+                        if mapped:
+                            legacy_paths.append(mapped[0])
+                        for path in legacy_paths:
+                            legacy_digest = hashlib.sha256(
+                                json.dumps([method, args | {"path": path}], sort_keys=True).encode()
+                            ).hexdigest()
+                            if row["digest"] == legacy_digest:
+                                digest = legacy_digest
+                                break
+                    return (
+                        {**json.loads(row["result"]), "external_untrusted": True}
+                        if row["digest"] == digest
+                        else {"error": "idempotency_conflict"}
+                    )
             if method == "workspace_checkout":
                 artifact_id = identifier(args.get("artifact_id"))
                 mapped = self.db.execute(
@@ -907,19 +939,7 @@ class PersistentManager:
                         args["path"] = name
                     else:
                         args["path"] = f"imported/{artifact_id}/{name}"
-            digest = hashlib.sha256(json.dumps([method, args], sort_keys=True).encode()).hexdigest()
             if not read:
-                if not isinstance(request_id, str) or not 1 <= len(request_id) <= 256:
-                    raise ValueError("invalid_request_id")
-                row = self.db.execute(
-                    "SELECT * FROM environment_mutations WHERE request_id=?", (request_id,)
-                ).fetchone()
-                if row:
-                    return (
-                        {**json.loads(row["result"]), "external_untrusted": True}
-                        if row["digest"] == digest
-                        else {"error": "idempotency_conflict"}
-                    )
                 with self.db:
                     self.db.execute(
                         "INSERT INTO environment_mutations VALUES (?,?,?)",

@@ -8,7 +8,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from qq_ai_bot.domain.messages import ChatTool
-from qq_ai_bot.sandbox.environment_tools import EXECUTION_TOOLS, SANDBOX_TOOLS, environment_tools
+from qq_ai_bot.sandbox.environment_tools import (
+    EXECUTION_TOOLS,
+    READ_TOOLS,
+    SANDBOX_TOOLS,
+    environment_tools,
+)
+from qq_ai_bot.workspace.tools import WORKSPACE_READ_TOOLS, WORKSPACE_TOOLS
 
 MAX_CONTROL_UPLOAD_WIRE = 6 * 1024 * 1024
 
@@ -78,6 +84,7 @@ class SandboxClient:
             )
             if prepared is not None and prepared.status == "completed" and prepared.run_id is None:
                 return cast(dict[str, Any], json.loads(prepared.completion_json or "{}"))
+        submitted = False
         try:
             async with asyncio.timeout(
                 25 if name in {"workspace_upload", "workspace_media_read"} else 7
@@ -90,6 +97,7 @@ class SandboxClient:
                     limit=(28 * 1024 * 1024 if name == "workspace_media_read" else 262144),
                 )
                 try:
+                    submitted = True
                     writer.write(message)
                     await writer.drain()
                     result = json.loads(await reader.readline())
@@ -144,7 +152,17 @@ class SandboxClient:
                     "retryable": False,
                     "request_id": request_id,
                 }
-            return {"error": "sandbox_unavailable", "retryable": False}
+            return {
+                "error": "sandbox_unavailable",
+                "retryable": False,
+                "uncertain": submitted
+                and name
+                in (
+                    (SANDBOX_TOOLS - READ_TOOLS)
+                    | (WORKSPACE_TOOLS - WORKSPACE_READ_TOOLS)
+                    | {"workspace_upload", "workspace_checkout"}
+                ),
+            }
 
     async def _stage_result(self, name: str, request_id: str, result: dict[str, Any]) -> None:
         if self.tasks is None or name not in SANDBOX_TOOLS:

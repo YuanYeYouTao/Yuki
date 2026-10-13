@@ -244,31 +244,6 @@ class ConversationTurnCoordinator:
         state = self._states.get(token.conversation_key)
         return state is not None and state.version == token.version and not state.mutation_started
 
-    async def begin_autonomous(self, token: TurnToken) -> TurnToken | None:
-        """Promote an idle observed-message token to an interruptible autonomous turn.
-
-        The promotion keeps the same input version: it does not invent a message.
-        It only changes the trusted origin after the debounce window, so the next
-        real group message can cancel admission or generation work immediately.  A
-        still-running explicit turn always wins and blocks autonomous work.
-        """
-
-        async with self._guard:
-            state = self._states.get(token.conversation_key)
-            if state is None or state.version != token.version:
-                return None
-            if self._occupied(state):
-                return None
-            state.origin = TurnOrigin.AUTONOMOUS_GROUP
-            state.mutation_started = False
-            state.protected_version = None
-            return TurnToken(
-                token.conversation_key,
-                token.version,
-                TurnOrigin.AUTONOMOUS_GROUP,
-                token.created_at,
-            )
-
     async def promote_observation(
         self, token: TurnToken, *, preserve_active: bool = False
     ) -> TurnToken | None:

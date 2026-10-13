@@ -36,7 +36,6 @@
 SDK 把以下权限标记为高风险：
 
 - `memory.delete`
-- `runtime.config.write`
 - `network.http.unrestricted`
 - `onebot.mutate`
 - `agent.run`

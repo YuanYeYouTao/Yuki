@@ -21,7 +21,6 @@ class SandboxContinuationWorker:
 
     async def start(self) -> None:
         if self._worker is None or self._worker.done():
-            await self.repository.retire_legacy()
             self._worker = asyncio.create_task(self._loop(), name="sandbox-continuations")
 
     async def close(self) -> None:

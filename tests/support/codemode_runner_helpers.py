@@ -20,6 +20,12 @@ from qq_ai_bot.services.agent_runner import AgentRuntime
 from qq_ai_bot.tool_results.access import ArtifactAccess
 
 pytestmark = requires_worker
+FIXED_TOOLS = tuple(
+    sorted(
+        {tool.name: tool for tool in (*work_control_tools(), *TOOLS)}.values(),
+        key=lambda tool: tool.name,
+    )
+)
 
 
 def call(name, args, identity):
@@ -33,10 +39,6 @@ class Backend(StubAgentBackend):
 
     def __init__(self):
         self.log = []
-
-    def definitions(self, runtime, **kwargs):
-        merged = {tool.name: tool for tool in (*work_control_tools(), *TOOLS)}
-        return tuple(sorted(merged.values(), key=lambda tool: tool.name))
 
     def parallel_safe(self, name, runtime):
         return name in {"lookup", "search_chat_history"}
@@ -100,7 +102,7 @@ async def runner_env(database, tmp_path, responses, *, max_tool_calls=8):
         max_tool_calls=max_tool_calls,
         max_model_requests=8,
         work_control=control,
-        fixed_tools=Backend().definitions(None),
+        fixed_tools=FIXED_TOOLS,
     )
     return chat, provider, control, runtime, repo
 

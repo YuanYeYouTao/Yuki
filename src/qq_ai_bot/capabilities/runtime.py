@@ -21,12 +21,11 @@ from qq_ai_bot.capabilities.validation import (
     CapabilityValidationResult,
     JsonSchemaCapabilityValidator,
 )
-from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.runtime.contracts import MemoryCapabilityView
 
 
 class TurnCapabilityRuntime:
-    """Owns one turn's authorized catalog revision, exposure and callable set."""
+    """Owns one turn's authorized catalog, exposure and callable set."""
 
     def __init__(
         self,
@@ -50,10 +49,6 @@ class TurnCapabilityRuntime:
             )
 
     @property
-    def registry_revision(self) -> str:
-        return self._registry.revision
-
-    @property
     def authorized_catalog(self) -> UnifiedToolCatalog:
         return self._authorized.catalog
 
@@ -75,14 +70,6 @@ class TurnCapabilityRuntime:
 
     def callable_capability_ids(self) -> frozenset[str]:
         return self._authorized.requestable_ids if self._opened else frozenset()
-
-    def definitions(self) -> tuple[ChatTool, ...]:
-        return tuple(
-            sorted(
-                (entry.descriptor.as_chat_tool() for entry in self._authorized.catalog.entries),
-                key=lambda item: item.name,
-            )
-        )
 
     def initial_exposure(self) -> None:
         """Open the authorized grants of the complete stable catalog."""
@@ -120,11 +107,8 @@ class TurnCapabilityRuntime:
         visible_names = frozenset(item.model_name for item in visible) - self._quarantined
         catalog = UnifiedToolCatalog(
             entries=entries,
-            scopes=self._registry.catalog.scopes,
-            revision=self._registry.revision,
         )
         return AuthorizedCatalogSnapshot(
-            registry_revision=self._registry.revision,
             catalog=catalog,
             requestable_ids=visible_names,
         )

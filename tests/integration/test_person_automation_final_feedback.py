@@ -10,7 +10,6 @@ from qq_ai_bot.automation.models import RunStatus
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
 from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.work_budget_schema import automation_budgets
 from qq_ai_bot.runtime.work_schema_v1 import work
 from qq_ai_bot.social.db_models import SocialOperationModel
 
@@ -72,7 +71,6 @@ async def test_person_notification_uses_real_target_and_only_explicit_send(
             assert source["actor_person_id"] == case.env.person
             assert "context_profile" not in source and "step_id" not in source
             assert rows[0]["state"] == "completed"
-        assert not list(await reader.execute(select(automation_budgets)))
         receipts = (await reader.scalars(select(SocialOperationModel))).all()
         assert len(receipts) == 1 and receipts[0].status == "succeeded"
         receipt = {
@@ -102,7 +100,6 @@ async def test_quiet_internal_completion_needs_no_work_or_transport(
     assert not sent(case.env)
     async with database.sessions() as reader:
         assert not list(await reader.execute(select(work)))
-        assert not list(await reader.execute(select(automation_budgets)))
 
 
 @pytest.mark.parametrize("principal", ["person", "self"])

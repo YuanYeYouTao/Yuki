@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import select
 from tests.conftest import build_harness, make_settings
 from tests.support.background_authority import approve_background_plugin
+from tests.support.fixed_contract_fixture import bind_main_contract
 from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.capabilities.results import ToolExecutionResult, ToolResultBudgeter
@@ -82,6 +83,7 @@ async def test_plugin_wakeup_send_receipt_only_requires_actor_for_actual_archive
         provider,
     )
     chat = harness.processor._chat
+    bind_main_contract(harness, tmp_path)
     chat._tools.social_service = env.service
     store = ToolArtifactRepository(database, tmp_path / "tool-artifacts", retention_seconds=60)
     chat._tool_artifacts = store
@@ -283,35 +285,24 @@ async def test_scheduled_main_reads_complete_original_memory_fact_on_demand(
 
 
 @pytest.mark.parametrize("promoted", [False, True])
-async def test_scheduled_main_uses_current_permission_for_real_config_operation(
+async def test_scheduled_main_uses_current_permission_for_onebot_operation(
     database, tmp_path, promoted
 ):
     from tests.support.automation_unified_delivery_helpers import setup_run
 
     from qq_ai_bot.automation.models import RunStatus
-    from qq_ai_bot.persistence.models import RuntimeConfigOverrideModel
 
     case = await setup_run(database, tmp_path, delivery="none", mode="silent", superusers_csv="")
     if promoted:
         case.settings.superusers_csv = "10001"
         del case.settings.__dict__["superusers"]
-    from qq_ai_bot.admin.action_service import ActionRegistry
-    from qq_ai_bot.admin.capabilities import AdminCapabilityService
-
-    case.chat.set_admin_tools(
-        AdminCapabilityService(
-            settings=case.settings,
-            runtime_config=case.chat._runtime_config,
-            actions=SimpleNamespace(registry=ActionRegistry()),
-        )
-    )
-    args = {"key": "automation.enabled", "value": False, "scope_type": "global", "scope_id": ""}
+    args = {"action": "get_status", "params": {}}
     case.provider._responder = lambda _: (
         ChatResponse(
             "",
             0,
             tool_calls=(
-                ToolCall("original-config", ToolFunction("admin_set_config", json.dumps(args))),
+                ToolCall("original-config", ToolFunction("call_onebot_api", json.dumps(args))),
             ),
         )
         if len(case.provider.requests) == 1
@@ -323,10 +314,5 @@ async def test_scheduled_main_uses_current_permission_for_real_config_operation(
     reply = next(m for m in case.provider.requests[1].messages if m.role == "tool")
     rendered = json.loads(reply.content)
     assert rendered["ok"] == promoted, rendered
-    async with database.sessions() as reader:
-        overrides = (await reader.scalars(select(RuntimeConfigOverrideModel))).all()
-        assert len(overrides) == int(promoted)
-        if promoted:
-            assert overrides[0].config_key == "automation.enabled"
-            assert json.loads(overrides[0].value_json) is False
+    assert sum(action == "get_status" for action, _ in case.env.bot.calls) == int(promoted)
     assert await case.dispatch() == result and len(case.provider.requests) == 2

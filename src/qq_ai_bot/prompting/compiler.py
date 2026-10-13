@@ -47,9 +47,8 @@ class PromptCompiler:
         )
         static = tuple(item for item in ordered if item.stability is PromptStability.STATIC)
         dynamic = tuple(item for item in ordered if item.stability is PromptStability.TURN)
-        selected_dynamic = dynamic
         stable_text = "\n\n".join(item.content or "" for item in static)
-        dynamic_text = serialize_dynamic(selected_dynamic)
+        dynamic_text = serialize_dynamic(dynamic)
         messages: list[ChatMessage] = []
         if stable_text:
             messages.append(ChatMessage(role="system", content=stable_text))
@@ -70,7 +69,7 @@ class PromptCompiler:
         total_characters = sum(len(message.content or "") for message in messages)
         return CompiledPrompt(
             messages=tuple(messages),
-            selected=static + selected_dynamic,
+            selected=static + dynamic,
             metrics=PromptMetrics(
                 static_characters=len(stable_text),
                 dynamic_characters=len(dynamic_text),
@@ -78,7 +77,7 @@ class PromptCompiler:
                 current_message_characters=current_message_characters,
                 total_characters=total_characters,
                 estimated_tokens=math.ceil(total_characters / 4),
-                contribution_count=len(static) + len(selected_dynamic),
+                contribution_count=len(static) + len(dynamic),
                 message_count=len(messages),
                 stable_prefix_hash=stable_hash,
                 conversation_prefix_hash=conversation_prefix_hash,

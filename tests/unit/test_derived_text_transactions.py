@@ -116,7 +116,7 @@ async def test_conditional_recount_never_scans_history_in_writer(database, late_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["append", "coverage", "generation"])
+@pytest.mark.parametrize("change", ["append", "append_many", "coverage", "generation"])
 async def test_late_audio_rechecks_snapshot_before_reset_or_counter_commit(database, change):
     scope, policy, uow, result = await _source(database)
     await _cover(database, result)
@@ -127,12 +127,12 @@ async def test_late_audio_rechecks_snapshot_before_reset_or_counter_commit(datab
         nonlocal preparations
         prepared = await original(*args, **kwargs)
         preparations += 1
-        if preparations == 1:
-            if change == "append":
+        if preparations == 1 or (change == "append_many" and preparations <= 5):
+            if change in {"append", "append_many"}:
                 # A separate real writer remains free while source work is prepared.
                 await uow.append(
                     scope=scope,
-                    platform_message_id="new-source",
+                    platform_message_id=f"new-source-{preparations}",
                     sender_user_id="1001",
                     direction="inbound",
                     content="new concurrent keeper",
@@ -174,7 +174,7 @@ async def test_late_audio_rechecks_snapshot_before_reset_or_counter_commit(datab
         if change == "generation":
             assert conversation.generation == 2 and not source.audio_transcript
             return
-        assert preparations == 2
+        assert preparations == (6 if change == "append_many" else 2)
         rows = tuple(
             await session.scalars(
                 select(ChatEventModel).where(

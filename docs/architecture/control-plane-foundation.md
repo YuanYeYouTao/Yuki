@@ -52,9 +52,12 @@
 - keyset cursor 绑定资源和查询范围；schema、有效配置、保存覆盖、fact/evidence 及各类 operation
   不能混用。Page.snapshot_at 是本次读取时刻，不是跨页锁定快照或 CAS revision。
 
-配置修改、删除和回滚定位 canonical Person/Space 对应的覆盖项，核验各项 schema。
+控制面通过 `list_effective_configs` 展示当前值和保存后的期望值，修改、删除定位 canonical
+Person/Space 对应的覆盖项并核验 schema；配置回滚使用已有 `/ai config rollback` 领域入口。
 直接领域入口自己开启短写事务，控制面复用调用方的短写事务；读取、校验、写入和领域审计
-使用同一事务，不再与进程配置锁交错。普通校验拒绝发生在写入前；写入或审计后的异常
+使用同一事务，不再与进程配置锁交错。Memory 控制修改复用 Memory 仓库的纯数据库写入单元：
+只在确认整个操作回滚后重备原请求，不设次数封口；提交／清理确认丢失不重跑。
+普通校验拒绝发生在写入前；写入或审计后的异常
 退出整个事务，不能被吞成失败结果后继续提交配置或控制回执。运行中的热配置从已提交数据库读取。
 
 组件健康区分 enabled、running、healthy 和 checked_at。未知项为 null，running 不冒充健康。
@@ -116,7 +119,7 @@ Run终态与计划推进共享一次短writer，以原RUNNING→terminal成功�
 
 ## 公开协议与发现
 
-`queries.describe` 只投影已经实现的 Query/Command 方法、其现有能力、敏感度与当前主体是否有权。
+`queries.describe` 只投影已经实现且有当前入口消费的 Query/Command 方法、其现有能力、敏感度与当前主体是否有权。
 它不授权、不调度，不把全部声明能力误报成已实现功能。
 
 `control_plane.wire` 提供纯协议转换：`control.v1`、原 request_id、data/problem、canonical UUID、

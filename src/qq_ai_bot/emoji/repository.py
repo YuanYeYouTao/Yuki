@@ -638,46 +638,6 @@ class EmojiRepository:
                 )
             return bool(await session.scalar(statement))
 
-    async def enabled_in_scope(self, emoji_id: str, *, group_id: str | None) -> bool:
-        async with self._database.sessions() as session:
-            space_id = None
-            if group_id is not None:
-                space_id = await resolve_live_space_id(session, group_id)
-            scope_filter: ColumnElement[bool] = (EmojiScopeStateModel.scope_type == "global") & (
-                EmojiScopeStateModel.canonical_space_id.is_(None)
-            )
-            if space_id is not None:
-                scope_filter = or_(
-                    scope_filter,
-                    (EmojiScopeStateModel.scope_type == "group")
-                    & (EmojiScopeStateModel.canonical_space_id == space_id),
-                )
-            statement = (
-                select(func.count())
-                .select_from(EmojiScopeStateModel)
-                .join(EmojiAssetModel, EmojiAssetModel.id == EmojiScopeStateModel.emoji_id)
-                .where(
-                    EmojiScopeStateModel.emoji_id == emoji_id,
-                    EmojiScopeStateModel.enabled.is_(True),
-                    EmojiAssetModel.status == EmojiLifecycleStatus.ADOPTED.value,
-                    scope_filter,
-                )
-            )
-            if space_id is not None:
-                disabled = await session.scalar(
-                    select(func.count())
-                    .select_from(EmojiScopeStateModel)
-                    .where(
-                        EmojiScopeStateModel.emoji_id == emoji_id,
-                        EmojiScopeStateModel.scope_type == "group",
-                        EmojiScopeStateModel.canonical_space_id == space_id,
-                        EmojiScopeStateModel.enabled.is_(False),
-                    )
-                )
-                if disabled:
-                    return False
-            return bool(await session.scalar(statement))
-
     async def set_group_enabled(self, emoji_id: str, *, group_id: str, enabled: bool) -> None:
         if not group_id:
             raise ValueError("group_id is required")
@@ -896,11 +856,12 @@ class EmojiRepository:
         source: str,
     ) -> None:
         now = datetime.now(UTC)
-        async with self._database.immediate_session() as session:
+        async with self._database.sessions() as session:
             person_id = (
                 await resolve_live_person_id(session, actor_user_id) if actor_user_id else None
             )
             space_id = await resolve_live_space_id(session, group_id) if group_id else None
+        async with self._database.immediate_session() as session:
             await session.execute(
                 update(EmojiAssetModel)
                 .where(EmojiAssetModel.id == emoji_id)

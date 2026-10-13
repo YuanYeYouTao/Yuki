@@ -82,10 +82,9 @@ class TurnState:
 
     transcript: TurnTranscript
     evidence_observation: EvidenceObservation
-    fixed_definitions: tuple[ChatTool, ...] | None = None
+    fixed_definitions: tuple[ChatTool, ...] = ()
     staged_evidence_results: int = 0
     calls_used: int = 0
-    web_was_used: bool = False
     native_events: list[NativeToolEvent] = field(default_factory=list)
     citations: list[ResponseCitation] = field(default_factory=list)
     response_status: ModelResponseStatus = ModelResponseStatus.COMPLETED
@@ -157,8 +156,6 @@ class _OrdinarySummaryDispatch:
                 await self.runtime.before_model_request()
         if self.control is not None:
             await self.control.reserve_request(auxiliary=True)
-        elif self.runtime.admit_model_request is not None:
-            await self.runtime.admit_model_request()
         self.runtime.auxiliary_requests[0] += 1
         self.runner._record_failure_usage(
             self.tools,
@@ -255,8 +252,6 @@ class _PrimaryDispatch:
                 if work_session is not None:
                     work_session.public_event_ids.update(self.selected_boundary.event_ids)
         else:
-            if self.runtime.admit_model_request is not None:
-                await self.runtime.admit_model_request()
             if self.selected_boundary is not None:
                 await self.selected_boundary.commit()
                 self.observed_event_ids.update(self.selected_boundary.event_ids)
@@ -337,7 +332,6 @@ class TurnExecution:
                         text="",
                         tool_calls_used=0,
                         model_requests=0,
-                        web_was_used=False,
                         suppress_delivery=True,
                         work_state="queued",
                     )
@@ -362,7 +356,6 @@ class TurnExecution:
                     text="",
                     tool_calls_used=0,
                     model_requests=0,
-                    web_was_used=False,
                     suppress_delivery=True,
                     work_state="suspended",
                 )
@@ -372,7 +365,6 @@ class TurnExecution:
                     text="",
                     tool_calls_used=0,
                     model_requests=0,
-                    web_was_used=False,
                     suppress_delivery=True,
                 )
 
@@ -404,7 +396,6 @@ class TurnExecution:
                 work_state="waiting_external",
                 tool_calls_used=self.state.calls_used,
                 model_requests=request_index,
-                web_was_used=self.state.web_was_used,
             )
         # Queued Work input may be prepared by a newer ingress catalog
         # while this activation is still pinned to the old provider.
@@ -525,16 +516,9 @@ class TurnExecution:
 
     async def request(self, request_index: int) -> ChatResponse | End | LoopSignal:
 
-        if self.state.fixed_definitions is not None:
-            if self.tools is not None:
-                self.tools.refresh_catalog(self.runtime, web_was_used=self.state.web_was_used)
-            self.state.definitions = self.state.fixed_definitions
-        else:
-            self.state.definitions = (
-                self.tools.definitions(self.runtime, web_was_used=self.state.web_was_used)
-                if self.tools is not None
-                else ()
-            )
+        if self.tools is not None:
+            self.tools.refresh_catalog(self.runtime)
+        self.state.definitions = self.state.fixed_definitions
         web_config = self.runtime.runtime_config.web
         try:
             web_mode = WebMode(web_config.mode)
@@ -544,7 +528,6 @@ class TurnExecution:
             self.state.definitions,
             runtime_config=self.runtime.runtime_config,
             allowed_capabilities=self.runtime.allowed_capabilities,
-            web_was_used=self.state.web_was_used,
         )
         if self.state.transcript.continuation is not None:
             # Responses continuations are one cumulative request chain.
@@ -1105,10 +1088,6 @@ class TurnExecution:
             )
         self.state.response_status = response.status
         self.state.continuation_native_tools = native_definitions
-        if response.native_tool_events:
-            self.state.web_was_used = True
-            if self.tools is not None:
-                self.tools.mark_native_web_used()
         if self.tools is not None:
             await self.tools.observe_response(response, self.runtime)
         if response.continuation is not None:
@@ -1128,24 +1107,6 @@ class TurnExecution:
                 self.state.control.session.progress["provider_pause_replay"] = True
             else:
                 self.state.control.session.progress.pop("provider_pause_replay", None)
-            if self.state.control.lease.work_id:
-                last_tokens = self.state.control.session.progress.get("context_tokens", 0)
-                samples = self.state.control.session.progress.setdefault("cache_samples", [])
-                samples.append(
-                    {
-                        "sequence": self.state.control.session.sequence,
-                        "chain_id": self.state.transcript.chain_id,
-                        "kind": "compaction"
-                        if compacting
-                        else ("resume" if request_index == 0 and last_tokens else "execution"),
-                        "input": response.prompt_tokens,
-                        "cached": response.cached_prompt_tokens,
-                        "warm_candidate": bool(
-                            response.prompt_tokens and last_tokens >= response.prompt_tokens * 0.95
-                        ),
-                    }
-                )
-                del samples[:-32]
             if response.prompt_tokens is not None:
                 self.state.control.session.progress["context_tokens"] = response.prompt_tokens
             observations = self.state.control.session.progress.setdefault("model_observations", [])
@@ -1236,7 +1197,6 @@ class TurnExecution:
                 text=content,
                 tool_calls_used=self.state.calls_used,
                 model_requests=request_index + 1,
-                web_was_used=self.state.web_was_used,
                 native_tool_events=tuple(self.state.native_events),
                 citations=tuple(self.state.citations),
                 response_status=self.state.response_status,
@@ -1387,7 +1347,6 @@ class TurnExecution:
                         text="",
                         tool_calls_used=self.state.calls_used,
                         model_requests=request_index + 1,
-                        web_was_used=self.state.web_was_used,
                         suppress_delivery=True,
                         work_state="suspended",
                     )
@@ -1406,7 +1365,6 @@ class TurnExecution:
                         text="",
                         tool_calls_used=self.state.calls_used,
                         model_requests=request_index + 1,
-                        web_was_used=self.state.web_was_used,
                         suppress_delivery=True,
                         work_state=self.runtime.work_control.ending,
                     )
@@ -1417,8 +1375,6 @@ class TurnExecution:
                 self.state.coordinated.reused_count,
                 self.state.calls_used,
             )
-        if self.tools is not None and self.tools.did_use_web():
-            self.state.web_was_used = True
         # begin() bounds the segment handoff to one admitted model request.
         return Continue()
 
@@ -1432,7 +1388,6 @@ class TurnExecution:
             text="",
             tool_calls_used=self.state.calls_used,
             model_requests=model_requests,
-            web_was_used=self.state.web_was_used,
             suppress_delivery=True,
             work_state="queued",
         )
@@ -1446,7 +1401,6 @@ class TurnExecution:
             text=result if isinstance(result, str) else "",
             tool_calls_used=self.state.calls_used,
             model_requests=model_requests,
-            web_was_used=self.state.web_was_used,
             # The internal result returns to its owner; it is never sent by itself.
             suppress_delivery=True,
             work_state=control.accepted_ending(),
@@ -1467,7 +1421,6 @@ class TurnExecution:
                 text="",
                 tool_calls_used=self.state.calls_used,
                 model_requests=self.runtime.work_control.requests_started,
-                web_was_used=self.state.web_was_used,
                 suppress_delivery=True,
                 work_state="queued",
             )

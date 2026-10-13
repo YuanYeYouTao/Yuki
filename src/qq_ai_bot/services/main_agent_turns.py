@@ -6,9 +6,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Awaitable, Callable
-from copy import deepcopy
-from dataclasses import fields, is_dataclass, replace
-from enum import Enum
+from dataclasses import replace
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,7 +19,7 @@ from qq_ai_bot.conversation.projections import (
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, InboundMessage
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
 from qq_ai_bot.execution_trace.phases import collect_phase_metrics
-from qq_ai_bot.model_runtime.capacity import ModelCapacity, estimate_request_tokens
+from qq_ai_bot.model_runtime.capacity import estimate_request_tokens
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.runtime.activation_tasks import ActivationTasks
@@ -40,39 +38,7 @@ from qq_ai_bot.services.prompt_composer import PromptComposer, PromptComposition
 from qq_ai_bot.services.turn_transcript import (
     DispatchOrigin,
     dispatch_request,
-    validating_request,
 )
-
-
-def _same_request_input(left: object, right: object) -> bool:
-    """Conservative type-sensitive equality for one preparation's estimate.
-
-    Python considers True, 1 and 1.0 equal; their serialized token costs differ.
-    Unknown opaque objects are re-estimated instead of trusting their __eq__.
-    """
-    if type(left) is not type(right):
-        return False
-    if is_dataclass(left) and not isinstance(left, type):
-        return all(
-            _same_request_input(getattr(left, item.name), getattr(right, item.name))
-            for item in fields(left)
-        )
-    if isinstance(left, dict) and isinstance(right, dict):
-        return len(left) == len(right) and all(
-            _same_request_input(a, b) and _same_request_input(left[a], right[b])
-            for a, b in zip(left, right, strict=True)
-        )
-    if isinstance(left, (list, tuple)) and isinstance(right, (list, tuple)):
-        return len(left) == len(right) and all(
-            _same_request_input(a, b) for a, b in zip(left, right, strict=True)
-        )
-    if type(left) is float:
-        return repr(left) == repr(right)  # JSON distinguishes 0.0 and -0.0.
-    if left is None or type(left) in {str, int, bool, bytes}:
-        return left == right
-    if isinstance(left, Enum) and isinstance(right, Enum):
-        return _same_request_input(left.value, right.value)
-    return False
 
 
 class MainAgentTurnService:
@@ -95,7 +61,6 @@ class MainAgentTurnService:
         self._projections = (
             PromptProjectionRepository(
                 database,
-                reclaim=True,
             )
             if database is not None
             else None
@@ -155,12 +120,7 @@ class MainAgentTurnService:
             assert conversation_id is not None
             repository = self._projections
             view_key = conversation_id
-            capacity_getter = getattr(self._runner._models, "capacity", None)
-            capacity = (
-                capacity_getter(self._runner._task)
-                if callable(capacity_getter)
-                else ModelCapacity()
-            )
+            capacity = self._runner._models.capacity(self._runner._task)
             input_budget = capacity.input_budget(
                 runtime.context.window_tokens, output_tokens=runtime.llm.max_output_tokens
             )
@@ -201,9 +161,6 @@ class MainAgentTurnService:
                     native_tools=native_definitions,
                 )
             )
-            fresh_tokens = estimate_request_tokens(prepared_request)
-            fresh_request = deepcopy(prepared_request)
-            collect_phase_metrics(estimate_count=1)
             # The maintenance target may choose an already prepared summary;
             # it cannot require a foreground model while the original fits.
             fixed_request = replace(
@@ -212,33 +169,13 @@ class MainAgentTurnService:
                     replace(context, history_messages=(), rollup_text="")
                 ).messages,
             )
-            fixed_tokens = (
-                fresh_tokens
-                if _same_request_input(fixed_request, fresh_request)
-                else estimate_request_tokens(fixed_request)
-            )
-            collect_phase_metrics(
-                estimate_count=int(not _same_request_input(fixed_request, fresh_request))
-            )
+            fixed_tokens = estimate_request_tokens(fixed_request)
+            collect_phase_metrics(estimate_count=1)
             maintenance_budget = max(planning_budget, fixed_tokens)
-            estimated_request: ChatRequest | None = None
-            estimated_tokens = 0
 
             def request_tokens(request: ChatRequest) -> int:
-                nonlocal estimated_request, estimated_tokens
-                if _same_request_input(request, fresh_request):
-                    return fresh_tokens
-                # One preparation-local complete request, including media,
-                # native declarations, opaque state and settings. Keep a copy
-                # so mutation of a schema/payload cannot reuse a stale estimate.
-                if not _same_request_input(estimated_request, request):
-                    estimated_tokens = estimate_request_tokens(request)
-                    collect_phase_metrics(estimate_count=1)
-                    estimated_request = deepcopy(request)
-                return estimated_tokens
-
-            def history_fits(history: tuple[ChatMessage, ...]) -> bool:
-                return context_hard_fits(replace(context, history_messages=history))
+                collect_phase_metrics(estimate_count=1)
+                return estimate_request_tokens(request)
 
             def context_fits(candidate: AssembledContext) -> bool:
                 request = replace(
@@ -259,7 +196,6 @@ class MainAgentTurnService:
                 context,
                 view_key=view_key,
                 context_key=_hash([version.conversation_id, version.generation]),
-                history_fits=history_fits,
                 context_fits=context_fits,
                 context_hard_fits=context_hard_fits,
             )
@@ -286,10 +222,7 @@ class MainAgentTurnService:
                     or projection_closed
                 ):
                     return
-                approved_initial = (
-                    *composition.messages,
-                    *(sequence.public_initial_suffix or ()),
-                )
+                approved_initial = composition.messages
                 if sequence.layout_public_initial is not None:
                     valid_layout = sequence.layout_public_initial == composition.messages
                     expected = (
@@ -604,20 +537,6 @@ class MainAgentTurnService:
         control = runtime.work_control
         if control is not None:
             control.current_message = messages[-1] if messages else None
-        public_suffix = ()
-        validate = runtime.before_model_request
-
-        async def validate_prepared() -> None:
-            if validate is None:
-                return
-            sequence = dispatch_request()
-            if sequence is None:
-                await validate()
-                return
-            with validating_request(replace(sequence, public_initial_suffix=public_suffix)):
-                await validate()
-
-        runtime = replace(runtime, before_model_request=validate_prepared)
         result = await self._runner.run(
             messages,
             replace(

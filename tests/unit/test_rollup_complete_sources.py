@@ -89,7 +89,7 @@ class RecordingModel:
 def candidate() -> RollupCandidate:
     events = (replace(event(), content="new-source " * 100 + "LAST_CONSTRAINT", segments=()),)
     return RollupCandidate(
-        "11111111-1111-4111-8111-111111111111", 1, 0, 0, "", events, 1, 100, "source-fingerprint"
+        "11111111-1111-4111-8111-111111111111", 1, 0, 0, "", events, "source-fingerprint"
     )
 
 
@@ -160,7 +160,7 @@ async def test_incomplete_provider_label_uses_actual_rollup_json_and_source(payl
 
 @pytest.mark.parametrize("mode", list(StructuredOutputMode))
 @pytest.mark.parametrize("complete_json", [False, True])
-async def test_structured_runner_decodes_incomplete_label_without_extra_model_calls(
+async def test_structured_runner_rejects_incomplete_output_without_repair_calls(
     mode, complete_json
 ):
     from pydantic import BaseModel
@@ -192,16 +192,13 @@ async def test_structured_runner_decodes_incomplete_label_without_extra_model_ca
         structured_input={"value": 1},
         output_model=Result,
         mode=mode,
+        validation_retries=1,
     )
-    if complete_json:
-        result, original = await runner.run_with_response(**arguments)
-        assert result.value == 1
-        assert original is response
-    else:
-        with pytest.raises(StructuredTaskError) as failed:
-            await runner.run_with_response(**arguments)
-        assert failed.value.reason_code == "json_decode"
-        assert failed.value.response is response
+    with pytest.raises(StructuredTaskError) as failed:
+        await runner.run_with_response(**arguments)
+    assert failed.value.reason_code == "output_budget_exhausted"
+    assert failed.value.response is response
+    assert failed.value.attempts == 1
     assert len(provider.requests) == 1
 
 
@@ -303,7 +300,9 @@ async def test_candidate_carries_its_hot_output_policy() -> None:
     assert model.output_budgets and set(model.output_budgets) == {1234}
 
 
-async def _seed_private(database, *, peer: str, count: int, policy: RollupPolicyConfig):
+async def _seed_private(
+    database, *, peer: str, count: int, policy: RollupPolicyConfig, content: str = "tiny fact"
+):
     from qq_ai_bot.domain.conversations import ConversationScope
     from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence
     from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
@@ -319,10 +318,128 @@ async def _seed_private(database, *, peer: str, count: int, policy: RollupPolicy
             platform_message_id=f"{peer}-{index}",
             sender_user_id=peer,
             direction="inbound",
-            content="tiny fact",
+            content=content,
             occurred_at=datetime(2026, 10, 1, tzinfo=UTC),
         )
     return scope
+
+
+@pytest.mark.asyncio
+async def test_foreground_rollup_can_finish_more_than_five_batches(database) -> None:
+    from tests.conftest import make_settings
+
+    from qq_ai_bot.conversation.rollup.repository import ConversationRollupRepository
+    from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
+    from qq_ai_bot.domain.messages import ChatMessage
+    from qq_ai_bot.persistence.repositories import EventLedgerRepository
+    from qq_ai_bot.services.context_assembler import ContextAssembler
+    from qq_ai_bot.time.service import TimeContextService
+
+    policy = RollupPolicyConfig(batch_max_events=1)
+    scope = await _seed_private(
+        database, peer="1014", count=20, policy=policy, content="source event " * 80
+    )
+    repository = ConversationRollupRepository(database, policy)
+    original = await repository.load_prompt_snapshot(scope)
+    turn = ConversationTurnSnapshot(
+        conversation_id=original.scope.id,
+        scope_key=original.scope.runtime_scope_key,
+        generation=original.scope.generation,
+        trigger_event_id=original.raw_events[-1].id,
+        coordinator_version=1,
+    )
+    model = RecordingModel()
+    assembler = ContextAssembler(
+        settings=make_settings(
+            "sqlite+aiosqlite:///:memory:", conversation_rollup_model_timeout_seconds=30
+        ),
+        ledger=EventLedgerRepository(database),
+        time_service=TimeContextService(),
+        rollup_repository=repository,
+        rollup_service=ConversationRollupService(models=model, config=policy, timeout_seconds=30),
+    )
+    snapshot = await assembler._load_history_snapshot(
+        scope, turn=turn, before_event_id=None, token_budget=1024
+    )
+    completed, _, _, advanced = await assembler._ensure_uncovered_fits_budget(
+        snapshot=snapshot,
+        recent=snapshot.recent,
+        current_event_id=None,
+        content="now",
+        yuki_account_ids=frozenset({"8000"}),
+        current_message_override=ChatMessage("user", "now"),
+        remainder=1024,
+        identity=scope,
+        turn=turn,
+    )
+    assert len(model.sources) > 5
+    assert advanced and completed.raw_complete
+    assert completed.uncovered_view is not None
+    assert assembler._uncovered_tokens(completed.uncovered_view, completed.rollup_text) <= 1024
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["policy", "empty_policy", "unknown_policy", "model_failure"])
+async def test_worker_retains_policy_and_model_failure_overlays(database, failure):
+    from sqlalchemy import select
+
+    from qq_ai_bot.conversation.canonical_db_models import (
+        CanonicalConversationRollupEmergencyOverlayModel,
+        CanonicalConversationRollupModel,
+    )
+    from qq_ai_bot.conversation.rollup.origins import parse_rollup_llm_origins
+    from qq_ai_bot.conversation.rollup.repository import ConversationRollupRepository
+    from qq_ai_bot.conversation.rollup.worker import ConversationRollupWorker
+
+    policy = RollupPolicyConfig(
+        context_token_budget=512,
+        batch_max_events=1,
+        llm_origins=parse_rollup_llm_origins(
+            {
+                "policy": "scheduled_automation",
+                "empty_policy": "",
+                "unknown_policy": "future_origin",
+                "model_failure": "user_message",
+            }[failure]
+        ),
+    )
+    scope = await _seed_private(
+        database, peer="1015", count=20, policy=policy, content="source event " * 80
+    )
+    repository = ConversationRollupRepository(database, policy)
+    model = RecordingModel(fail_at=1)
+    service = ConversationRollupService(models=model, config=policy, timeout_seconds=2)
+    worker = ConversationRollupWorker(
+        repository=repository,
+        service=service,
+        enabled=True,
+        concurrency=1,
+        poll_seconds=60,
+        lease_seconds=30,
+        heartbeat_seconds=5,
+        retry_max_seconds=30,
+        max_batches_per_claim=1,
+    )
+    finished = asyncio.Event()
+    worker.on_finished = lambda _: finished.set()
+    await worker.start()
+    try:
+        await asyncio.wait_for(finished.wait(), timeout=10)
+    finally:
+        await worker.close()
+    state, effective, job = await repository.status(scope)
+    assert effective.summary_kind.value == "emergency" and state.uncovered_event_count == 20
+    assert job["last_error_category"] == (
+        "RuntimeError" if failure == "model_failure" else "llm_origin_ineligible"
+    )
+    assert job["status"] == "pending"
+    assert len(model.sources) == (1 if failure == "model_failure" else 0)
+    async with database.sessions() as reader:
+        assert await reader.scalar(select(CanonicalConversationRollupModel)) is None
+        overlay = await reader.scalar(select(CanonicalConversationRollupEmergencyOverlayModel))
+        assert overlay.conversation_id == state.id
+        assert overlay.covered_through_event_id > state.starts_after_event_id
+        assert overlay.summary_text
 
 
 @pytest.mark.asyncio

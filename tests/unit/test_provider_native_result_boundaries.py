@@ -134,12 +134,13 @@ async def test_local_truncation_pairs_unexecuted_call_and_continues_original_wor
     provider = FakeLLMProvider(respond)
     initial = (ChatMessage("system", "fixed contract"), ChatMessage("user", "finish the work"))
     runner, runtime = await _runtime(database, control, initial, provider)
-    runtime = replace(runtime, max_model_requests=segment_requests)
+    runtime = replace(
+        runtime,
+        max_model_requests=segment_requests,
+        fixed_tools=(ChatTool("fixture_mutation", "mutate", {"type": "object"}),),
+    )
     execute = AsyncMock(side_effect=AssertionError("truncated arguments must not execute"))
     backend = StubAgentBackend(
-        definitions=lambda *_args, **_kwargs: (
-            ChatTool("fixture_mutation", "mutate", {"type": "object"}),
-        ),
         execute_call=execute,
         finalize=lambda content, _runtime: content,
     )
@@ -939,7 +940,6 @@ async def test_runner_preserves_paid_native_boundary_without_requeue_or_local_ex
         # Retain native guard assertions with the experiment's typed Invocations.
         # with a complete inert backend instead of main's legacy execute fixture.
         backend = StubAgentBackend()
-        backend.definitions = lambda *args, **kwargs: fixed
         backend.execute_call = AsyncMock(
             side_effect=AssertionError("ambiguous calls must not execute")
         )
@@ -1128,7 +1128,6 @@ async def test_native_transport_unknown_fails_original_activation_without_automa
         # Retain native guard assertions with the experiment's typed Invocations.
         # with a complete inert backend instead of main's legacy execute fixture.
         backend = StubAgentBackend()
-        backend.definitions = lambda *_args, **_kwargs: fixed
         backend.execute_call = AsyncMock(side_effect=AssertionError("no tool execution"))
         before = (
             AsyncMock(

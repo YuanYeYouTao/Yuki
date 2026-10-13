@@ -30,7 +30,7 @@ async def test_private_session_keeps_long_history_and_complete_sdk_result(
         plugin_id=plugin_id,
         name="Integrity",
         version="1.0.0",
-        plugin_api="3.4",
+        plugin_api="3.5",
         yuki_requires=">=3.0.0,<4.0",
         manifest_hash="ab" * 32,
         entrypoint="plugin:Integrity",
@@ -50,7 +50,7 @@ async def test_private_session_keeps_long_history_and_complete_sdk_result(
 
     service = PluginAgentSessionService(
         model_executor=Models(provider),
-        concurrency=ConcurrencyManager(1),
+        concurrency=ConcurrencyManager(),
         runtime_config=RuntimeConfigService(
             database=database, settings=make_settings(database.url)
         ),

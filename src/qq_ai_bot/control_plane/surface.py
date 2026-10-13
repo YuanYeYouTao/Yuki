@@ -315,9 +315,6 @@ _METHODS = (
         simple=True,
     ),
     ControlMethod(
-        "query", "read_yuki", "control.system.read", lambda service: service.read_yuki, simple=True
-    ),
-    ControlMethod(
         "query",
         "read_display_names",
         "control.system.read",
@@ -428,13 +425,6 @@ _METHODS = (
         "control.config.read",
         lambda service: service.list_effective_configs,
         simple=False,
-    ),
-    ControlMethod(
-        "query",
-        "list_config_overrides",
-        "control.config.read",
-        lambda service: service.list_config_overrides,
-        simple=True,
     ),
     ControlMethod(
         "query",
@@ -654,13 +644,6 @@ _METHODS = (
     ),
     ControlMethod(
         "command",
-        "rollback_config",
-        "control.config.mutate",
-        lambda service: service.rollback_config,
-        simple=False,
-    ),
-    ControlMethod(
-        "command",
         "mutate_memory",
         "control.memory.mutate",
         lambda service: service.mutate_memory,
@@ -706,13 +689,6 @@ _METHODS = (
         "mutate_emoji",
         "control.emoji.mutate",
         lambda service: service.mutate_emoji,
-        simple=False,
-    ),
-    ControlMethod(
-        "command",
-        "cancel_operation",
-        "control.operation.cancel",
-        lambda service: service.cancel_operation,
         simple=False,
     ),
     ControlMethod(

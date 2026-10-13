@@ -2,7 +2,6 @@
 
 import json
 
-import pytest
 from tests.conftest import make_settings
 
 from qq_ai_bot.capabilities.results import normalize_legacy_result
@@ -13,13 +12,12 @@ from qq_ai_bot.memory.enums import MemoryEvidenceRelation, MemoryScopeType, Memo
 from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.persistence.repositories import AgentActionRepository, EventLedgerRepository
+from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.runtime.subagent_tools import worker_prompt
 from qq_ai_bot.services.agent_tools import AgentToolService, ToolRuntime
 
 
-@pytest.mark.parametrize("worker", [False, True])
-async def test_memory_read_result_keeps_complete_fact_and_evidence_without_policy(database, worker):
+async def test_memory_read_result_keeps_complete_fact_and_evidence_without_policy(database):
     settings = make_settings(database.url, agent_tool_result_max_characters=2400)
     ledger = EventLedgerRepository(database)
     content = ("observatory history " * 45).strip()
@@ -53,7 +51,6 @@ async def test_memory_read_result_keeps_complete_fact_and_evidence_without_polic
         settings=settings,
         ledger=ledger,
         memories=facts,
-        actions=AgentActionRepository(database),
     )
     runtime = ToolRuntime(
         inbound=InboundMessage(
@@ -66,7 +63,6 @@ async def test_memory_read_result_keeps_complete_fact_and_evidence_without_polic
         ),
         gateway=None,
         allow_generic_onebot=False,
-        read_only=worker,
         trigger_event_id=event.id,
     )
     search = await tools.execute("search_memory", '{"query":"observatory"}', runtime)
@@ -88,11 +84,10 @@ async def test_memory_read_result_keeps_complete_fact_and_evidence_without_polic
         else:
             assert payload["data"]["fact_id"] == fact.id
             assert payload["data"]["evidence"][0]["relation"] == "self_statement"
-    if worker:
-        # Use the deployed builder in either tool mode; no frozen policy prose
-        # or new per-result teaching mechanism is introduced.
-        for code_enabled in (False, True):
-            assert worker_prompt(code_enabled=code_enabled).count(MEMORY_GROUNDING_RULE) == 1
+    # Use the deployed builder in either tool mode; no frozen policy prose
+    # or new per-result teaching mechanism is introduced.
+    for code_enabled in (False, True):
+        assert worker_prompt(code_enabled=code_enabled).count(MEMORY_GROUNDING_RULE) == 1
 
 
 def test_original_memory_receipt_policy_and_evidence_still_decode():

@@ -228,8 +228,6 @@ class OrdinaryAdmissionRepository:
         ):
             raise OrdinaryAdmissionConflict("ordinary_binding_source_changed")
         basis_json = json.dumps(binding.basis if binding else (), separators=(",", ":"))
-        if binding and (len(binding.unit_key) > 256 or len(binding.target_hint) > 256):
-            raise OrdinaryAdmissionConflict("ordinary_binding_capacity")
         return PreparedOrdinaryAdmission(
             OrdinaryAdmission(
                 event.id,

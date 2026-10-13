@@ -1142,6 +1142,9 @@ class SemanticParticipationService:
                 )
             ).all()
         if presence is None or len(bindings) != 1:
+            await self.repository.record_feedback(
+                run.run_id, sequence=run.feedback_sequence + 1, outcome="interrupted"
+            )
             return
         group_id, bot_user_id = bindings[0].external_space_id, presence.external_account_id
         packet: list[dict[str, object]] = []
@@ -1187,7 +1190,7 @@ class SemanticParticipationService:
             + "可以主动开启话题、接续讨论、提出问题、分享有根据的想法，"
             "也可以查询或推进自己的工作。想发言就用 send_message；"
             "确实没有自然的切入点时才用 NO_REPLY。"
-            "来源编号如下，详情可按需查询："
+            "来源引用如下，详情可按需查询："
             + json.dumps(packet, ensure_ascii=False, separators=(",", ":"))
         )
         source = {

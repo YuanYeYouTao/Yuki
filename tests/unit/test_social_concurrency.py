@@ -18,6 +18,27 @@ from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.social.models import SocialError, SocialTarget
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_explicit_group_send_does_not_require_autonomous_participation(
+    database, tmp_path, enabled
+):
+    env = await social_env(database, tmp_path)
+    async with database.immediate_session() as writer:
+        await writer.execute(
+            update(CanonicalSpaceModel)
+            .where(CanonicalSpaceModel.id == env.space)
+            .values(autonomous_enabled=False, enabled=enabled)
+        )
+    if not enabled:
+        with pytest.raises(SocialError, match="space_not_allowed"):
+            await env.service.execute("send_message", {"text": "explicit report"}, env.context)
+        assert not any(action == "send_group_msg" for action, _ in env.bot.calls)
+    else:
+        result = await env.service.execute("send_message", {"text": "explicit report"}, env.context)
+        assert result["status"] == "succeeded"
+        assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
+
+
 @pytest.mark.asyncio
 async def test_slow_cross_space_probe_does_not_block_current_group_reply(
     database: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

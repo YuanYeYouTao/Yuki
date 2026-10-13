@@ -1,10 +1,10 @@
+import { flatten, renderBadge as status } from "./table-format";
 import { useState } from "react";
 import { useQuery } from "./hooks";
 import type { Row } from "./api";
 import type { PageProps } from "./pages";
 import { ConfigFile, taskNames } from "./config-files";
 import {
-  Badge,
   Empty,
   ErrorNote,
   QueryList,
@@ -12,8 +12,6 @@ import {
   Table,
 } from "./components";
 import { stamp } from "./format";
-const flatten = (row: Row): Row => ({ ...row, ...((row.fields as Row) || {}) });
-const status = (value: unknown) => <Badge value={value} />;
 const count = (value: unknown) => Number(value || 0).toLocaleString("zh-CN");
 const knownCount = (value: unknown) => (value == null ? "—" : count(value));
 const amount = (row: Row, key: string) => Math.max(0, Number(row[key] || 0));

@@ -2011,41 +2011,13 @@ class WorkRepository:
                     )
                 )
 
-    async def reclaim_terminal(self) -> None:
-        """Keep the latest 128 terminal work receipts; never evict an active work."""
-        from qq_ai_bot.persistence.models import MemoryEvidenceModel, MemoryToolReceiptModel
+    async def reclaim_unreferenced_media(self) -> None:
+        """Collect unreferenced transient media without deleting execution receipts."""
         from qq_ai_bot.runtime.subagent_schema import media, media_refs
 
-        def terminal_query() -> Any:
-            return (
-                select(work.c.id)
-                .where(
-                    work.c.state.in_(TERMINAL),
-                    func.json_extract(work.c.checkpoint_json, "$.archived").is_(None),
-                    # Synchronous callers can return before their work finishes.
-                    # Their original result remains available to the caller.
-                    or_(
-                        func.json_extract(work.c.source_json, "$.delivery_contract")
-                        != "return_to_caller",
-                        func.json_extract(work.c.source_json, "$.delivery_contract").is_(None),
-                    ),
-                    work.c.id.not_in(select(children.c.work_id)),
-                    # A live owner Job closes from its Work first; archive later.
-                    work.c.id.not_in(
-                        select(_OWNER_JOBS.c.work_id).where(
-                            _OWNER_JOBS.c.work_id.is_not(None),
-                            _OWNER_JOBS.c.status.in_(("pending", "processing")),
-                        )
-                    ),
-                )
-                .order_by(work.c.updated.desc())
-                .offset(128)
-                .limit(256)
-            )
-
-        async with self.database.sessions() as session:
+        async with self.database.sessions() as reader:
             orphaned = list(
-                await session.scalars(
+                await reader.scalars(
                     select(media.c.sha256)
                     .where(
                         ~select(media_refs.c.sha256)
@@ -2055,67 +2027,13 @@ class WorkRepository:
                     .limit(64)
                 )
             )
-            terminal_candidate = await session.scalar(terminal_query().limit(1))
-        if not orphaned and terminal_candidate is None:
+        if not orphaned:
             return
-        async with self.database.immediate_session() as session:
-            if orphaned:
-                await session.execute(
-                    delete(media).where(
-                        media.c.sha256.in_(orphaned),
-                        media.c.sha256.not_in(select(media_refs.c.sha256)),
-                    )
-                )
-            selected = list(await session.scalars(terminal_query()))
-            if not selected:
-                return
-            from qq_ai_bot.runtime.protocol_schema import refs as protocol_refs
-
-            await session.execute(
-                delete(protocol_refs).where(protocol_refs.c.work_id.in_(selected))
-            )
-            await session.execute(delete(journal).where(journal.c.work_id.in_(selected)))
-            await session.execute(delete(waits).where(waits.c.work_id.in_(selected)))
-            await session.execute(delete(inputs).where(inputs.c.work_id.in_(selected)))
-            await session.execute(delete(effects).where(effects.c.work_id.in_(selected)))
-            await session.execute(delete(media_refs).where(media_refs.c.work_id.in_(selected)))
-            # Stable invocation identities outlive their detailed result. Keep a
-            # small tombstone so replaying an old callback cannot execute anew.
-            await session.execute(
-                update(work)
-                .where(
-                    work.c.id.in_(selected),
-                    or_(
-                        work.c.id.in_(
-                            select(work.c.parent_work_id).where(work.c.parent_work_id.is_not(None))
-                        ),
-                        work.c.id.in_(select(_OWNER_JOBS.c.work_id)),
-                        work.c.id.in_(
-                            select(MemoryToolReceiptModel.execution_id).join(
-                                MemoryEvidenceModel,
-                                MemoryEvidenceModel.tool_receipt_id == MemoryToolReceiptModel.id,
-                            )
-                        ),
-                    ),
-                )
-                .values(
-                    checkpoint_json='{"archived":true}',
-                    goal=func.substr(work.c.goal, 1, 512),
-                    source_json=func.json_remove(
-                        work.c.source_json,
-                        "$.instruction",
-                        "$.context_data",
-                    ),
-                )
-            )
-            await session.execute(
-                delete(work).where(
-                    work.c.id.in_(selected),
-                    func.json_extract(work.c.checkpoint_json, "$.archived").is_(None),
-                    # A referenced Work keeps its row; never CASCADE/SET NULL a Job.
-                    work.c.id.not_in(
-                        select(_OWNER_JOBS.c.work_id).where(_OWNER_JOBS.c.work_id.is_not(None))
-                    ),
+        async with self.database.immediate_session() as writer:
+            await writer.execute(
+                delete(media).where(
+                    media.c.sha256.in_(orphaned),
+                    media.c.sha256.not_in(select(media_refs.c.sha256)),
                 )
             )
 

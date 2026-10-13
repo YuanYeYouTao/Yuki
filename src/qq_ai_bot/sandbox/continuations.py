@@ -49,16 +49,3 @@ class SandboxContinuationRepository:
                 )
                 .values(updated_at=datetime.now(UTC))
             )
-
-    async def retire_legacy(self) -> None:
-        """Old detached continuations have no authority to resume after upgrade."""
-        async with self.database.sessions() as session, session.begin():
-            await session.execute(
-                update(SandboxTaskContinuationModel)
-                .where(SandboxTaskContinuationModel.state == "claimed")
-                .values(
-                    state="blocked",
-                    reason="legacy_continuation_retired",
-                    updated_at=datetime.now(UTC),
-                )
-            )

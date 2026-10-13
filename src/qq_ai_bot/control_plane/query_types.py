@@ -561,25 +561,6 @@ class SystemSnapshot:
 
 @final
 @dataclass(frozen=True, slots=True)
-class YukiSummaryView:
-    """One database is one Yuki. This is not a persisted subject."""
-
-    yuki_count: Literal[1]
-    presence_count: int
-    identity_state: StateEpoch
-
-    def __post_init__(self) -> None:
-        if self.yuki_count != 1:
-            raise ValueError("a database has exactly one synthetic Yuki")
-        object.__setattr__(
-            self, "presence_count", _require_int(self.presence_count, "presence_count")
-        )
-        if type(self.identity_state) is not StateEpoch:
-            raise TypeError("identity_state must be StateEpoch")
-
-
-@final
-@dataclass(frozen=True, slots=True)
 class ComponentHealthView:
     name: str
     enabled: bool | None
@@ -1071,41 +1052,6 @@ class EffectiveConfigView:
             person_id=self.person_id,
             space_id=self.space_id,
             resolution=self.owner_resolution,
-        )
-
-
-@final
-@dataclass(frozen=True, slots=True)
-class ConfigOverrideView:
-    override_id: int
-    key: str
-    scope_type: str
-    owner_kind: ConfigOwnerKind
-    person_id: PersonId | None
-    space_id: SpaceId | None
-    resolution: IdentityResolution
-    apply_mode: str
-    configured: bool
-    version: int
-    value: str | int | float | bool | None
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self, "override_id", _require_int(self.override_id, "override_id", minimum=1)
-        )
-        require_opaque_token(self.key, name="key", max_length=128)
-        require_opaque_token(self.scope_type, name="scope_type", max_length=16)
-        require_opaque_token(self.apply_mode, name="apply_mode", max_length=32)
-        _require_bool(self.configured, "configured")
-        object.__setattr__(self, "version", _require_int(self.version, "version", minimum=1))
-        if self.apply_mode == "secret" and self.value is not None:
-            raise ValueError("secret config cannot carry a value")
-        _validate_config_owner(
-            owner_kind=self.owner_kind,
-            person_id=self.person_id,
-            space_id=self.space_id,
-            resolution=self.resolution,
-            required=True,
         )
 
 

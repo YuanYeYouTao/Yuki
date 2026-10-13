@@ -135,7 +135,7 @@ async def environment(database, tmp_path, *, permissions=None, handler=None):
 @pytest.mark.asyncio
 async def test_explicit_owned_selection_is_private_and_rechecked(database, tmp_path):
     env = await environment(database, tmp_path)
-    result = await env.adapter.execute(env.name, "{}", env.runtime, web_was_used=False)
+    result = await env.adapter.execute(env.name, "{}", env.runtime)
     assert isinstance(result, ToolExecutionResult)
     assert len(result.images) == 1
     image = result.images[0]
@@ -145,10 +145,10 @@ async def test_explicit_owned_selection_is_private_and_rechecked(database, tmp_p
     assert "data:image" not in json.dumps(
         result.model_payload()
     ) and "media_artifacts" not in json.dumps(result.model_payload())
-    await env.adapter.validate_images(result.images, env.runtime, web_was_used=False)
+    await env.adapter.validate_images(result.images, env.runtime)
     env.installation.approved_permissions = (PluginPermission.TOOL_REGISTER.value,)
     with pytest.raises(PluginPermissionError):
-        await env.adapter.validate_images(result.images, env.runtime, web_was_used=False)
+        await env.adapter.validate_images(result.images, env.runtime)
     assert len(env.calls) == 1
 
 
@@ -157,13 +157,12 @@ async def test_media_selection_requires_explicit_permission_without_losing_resul
     database, tmp_path
 ):
     env = await environment(database, tmp_path, permissions=(PluginPermission.TOOL_REGISTER,))
-    result = await env.adapter.execute(env.name, "{}", env.runtime, web_was_used=False)
+    result = await env.adapter.execute(env.name, "{}", env.runtime)
     payload = result.model_payload()
     assert payload["ok"] is True and payload["data"]["selected"] is True
     assert payload["data"]["media_error"] == "PluginPermissionError"
     assert payload["data"]["media_read"] is False and not result.images
     assert len(env.calls) == 1
-    assert not hasattr(env.context, "mcp")
 
 
 @pytest.mark.asyncio
@@ -174,7 +173,7 @@ async def test_dispatch_hook_refuses_invalid_origin_despite_live_archive(
     from qq_ai_bot.services.main_agent_backend import MainAgentBackend
 
     env = await environment(database, tmp_path)
-    result = await env.adapter.execute(env.name, "{}", env.runtime, web_was_used=False)
+    result = await env.adapter.execute(env.name, "{}", env.runtime)
     original = await env.store.resolve(plugin_id="example.plugin", handle_id=env.handle.handle_id)
     archived = tuple(replace(image, tool_handle="retained-private-copy") for image in result.images)
     archive_validator = AsyncMock()
@@ -210,7 +209,7 @@ async def test_dispatch_hook_refuses_invalid_origin_despite_live_archive(
 )
 async def test_archive_copy_cannot_bypass_original_plugin_source(database, tmp_path, change):
     env = await environment(database, tmp_path)
-    result = await env.adapter.execute(env.name, "{}", env.runtime, web_was_used=False)
+    result = await env.adapter.execute(env.name, "{}", env.runtime)
     # An external-tool archive handle is only a private copy, not a new read grant.
     images = tuple(replace(image, tool_handle="private-archive-copy") for image in result.images)
     if change in {"delete", "expire", "digest"}:
@@ -235,7 +234,7 @@ async def test_archive_copy_cannot_bypass_original_plugin_source(database, tmp_p
     elif change == "closed":
         env.runtime = replace(env.runtime, tools_closed=True)
     with pytest.raises(PluginPermissionError):
-        await env.adapter.validate_images(images, env.runtime, web_was_used=False)
+        await env.adapter.validate_images(images, env.runtime)
     assert len(env.calls) == 1
 
 
@@ -258,7 +257,7 @@ async def test_foreign_owned_handle_and_fake_json_never_grant_read(database, tmp
         return ToolResult(media_artifacts=(foreign_handle,))
 
     env = await environment(database, tmp_path, handler=select_foreign)
-    result = await env.adapter.execute(env.name, "{}", env.runtime, web_was_used=False)
+    result = await env.adapter.execute(env.name, "{}", env.runtime)
     assert not result.images
     assert result.model_payload()["data"]["media_error"] == "PluginPermissionError"
     assert result.model_payload()["data"]["media_read"] is False
@@ -268,7 +267,7 @@ async def test_foreign_owned_handle_and_fake_json_never_grant_read(database, tmp
         return ToolResult(data={"media_artifacts": [foreign_handle.model_dump(mode="json")]})
 
     env = await environment(database, tmp_path, handler=fake_json)
-    assert not (await env.adapter.execute(env.name, "{}", env.runtime, web_was_used=False)).images
+    assert not (await env.adapter.execute(env.name, "{}", env.runtime)).images
 
 
 def test_empty_sdk_result_serialization_stays_compatible():
@@ -300,6 +299,6 @@ async def test_scheduled_media_uses_real_plugin_approval_without_second_menu(dat
         external_target_id=actor.user_id,
         conversation_key="private:scheduled-source",
     )
-    result = await env.adapter.execute(env.name, "{}", source, web_was_used=False)
+    result = await env.adapter.execute(env.name, "{}", source)
     assert result.ok and result.images
     assert len(env.calls) == 1

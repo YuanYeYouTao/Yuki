@@ -80,7 +80,7 @@ async def host_case(database, tmp_path):
         work_control=work.control, origin=TurnOrigin.USER_MESSAGE, delegated_authority=None
     )
     await backend.prepare()
-    backend.definitions(runtime, web_was_used=False)
+    backend.refresh_catalog(runtime)
     return work, tasks, backend, runtime
 
 

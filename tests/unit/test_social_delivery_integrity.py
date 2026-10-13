@@ -204,6 +204,7 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
         select=AsyncMock(return_value=EmojiSelectionResult(emoji_id="emoji"))
     )
     repository = SimpleNamespace(
+        mark_used=AsyncMock(),
         get=AsyncMock(
             return_value=SimpleNamespace(
                 id="emoji",
@@ -212,7 +213,7 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
                 mime_type="image/png",
                 animated=False,
             )
-        )
+        ),
     )
     env.service.emoji_delivery = EmojiDeliveryService(
         selector=selector,
@@ -248,7 +249,6 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
             effective_trigger_event_id=event.event.id,
             effective_conversation_id=conversation_id,
             inbound=None,
-            read_only=False,
             tools_closed=False,
             space_id=env.space if scope.group_id else None,
             person_id=None if scope.group_id else env.person,
@@ -286,6 +286,11 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
                     )
             finally:
                 current_invocation.reset(token)
+        usage = repository.mark_used.await_args.kwargs
+        assert usage["group_id"] == scope.group_id
+        assert usage["actor_user_id"] == scope.private_peer_user_id
+        assert usage["trigger_message_id"] == ""
+        assert repository.mark_used.await_count == (1 if target_kind == "group" else 2)
         request = selector.select.await_args.args[0]
         assert request.group_id == scope.group_id
         assert request.private_peer_user_id == scope.private_peer_user_id
@@ -368,3 +373,137 @@ async def test_work_social_delivery_passes_seventeenth_message_and_split_without
     assert [row.reply_to_event_id for row in sent] == [source_event.event.id, None]
     assert sent[0].reply_to_message_id == source_event.event.platform_message_id
     assert sent[1].reply_to_message_id is None
+
+
+@pytest.mark.parametrize("target_kind", ["space", "person"])
+async def test_emoji_usage_follows_route_instead_of_inbound_scope(database, tmp_path, target_kind):
+    from qq_ai_bot.domain.conversations import ScopeType
+    from qq_ai_bot.domain.messages import (
+        AttachmentKind,
+        InboundMessage,
+        OutboundMedia,
+        OutboundMessage,
+        SenderIdentity,
+    )
+    from qq_ai_bot.emoji.models import EmojiPreparationStatus
+
+    env = await social_env(database, tmp_path)
+    await env.router.cas_takeover_person(env.person)
+    delivered = OutboundMessage(
+        media=(
+            OutboundMedia(
+                AttachmentKind.IMAGE,
+                b"image",
+                "image/png",
+                emoji_id="selected",
+            ),
+        )
+    )
+    delivery = SimpleNamespace(
+        prepare=AsyncMock(
+            return_value=SimpleNamespace(
+                status=EmojiPreparationStatus.READY,
+                message=delivered,
+            )
+        ),
+        record_send_accepted=AsyncMock(),
+        record_success=AsyncMock(),
+    )
+    env.service.emoji_delivery = delivery
+    inbound = InboundMessage(
+        message_id="different-source",
+        event_type="message",
+        scope_type=ScopeType.GROUP,
+        sender=SenderIdentity("1002"),
+        text="send elsewhere",
+        bot_user_id="80001",
+        group_id="3001",
+    )
+    context = replace(
+        env.context,
+        inbound=inbound,
+        runtime_snapshot=SimpleNamespace(emoji=SimpleNamespace(enabled=True)),
+    )
+    result = await env.service.execute(
+        "send_message",
+        {
+            "target": {
+                "kind": target_kind,
+                "target_id": env.space if target_kind == "space" else env.person,
+            },
+            "text": "sent",
+            "emoji": {"goal": "开心"},
+        },
+        context,
+    )
+    assert result["status"] == "succeeded"
+    usage = delivery.record_success.await_args.kwargs
+    assert usage["group_id"] == ("20001" if target_kind == "space" else None)
+    assert usage["private_peer_user_id"] == ("10001" if target_kind == "person" else None)
+    assert usage["trigger_message_id"] == "different-source"
+
+
+async def test_emoji_usage_resolves_canonical_owners_before_writer(database, tmp_path):
+    from sqlalchemy import event
+
+    from qq_ai_bot.emoji.db_models import EmojiAssetModel, EmojiUsageEventModel
+    from qq_ai_bot.emoji.repository import EmojiRepository
+
+    env = await social_env(database, tmp_path)
+    now = datetime.now(UTC)
+    async with database.immediate_session() as writer:
+        writer.add(
+            EmojiAssetModel(
+                id="used",
+                sha256="a" * 64,
+                relative_path="emoji.png",
+                image_format="png",
+                mime_type="image/png",
+                byte_size=1,
+                width=1,
+                height=1,
+                frame_count=1,
+                first_seen_at=now,
+                last_seen_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    in_writer = False
+
+    def observe(_connection, _cursor, statement, *_args):
+        nonlocal in_writer
+        sql = statement.lower()
+        if sql.startswith("begin immediate"):
+            in_writer = True
+        if sql.startswith("select") and any(
+            table in sql for table in ("persons", "spaces", "bindings")
+        ):
+            assert not in_writer, "identity resolution acquired the emoji writer"
+
+    def ended(_connection):
+        nonlocal in_writer
+        in_writer = False
+
+    engine = database.engine.sync_engine
+    event.listen(engine, "before_cursor_execute", observe)
+    event.listen(engine, "commit", ended)
+    event.listen(engine, "rollback", ended)
+    try:
+        repository = EmojiRepository(database)
+        for actor, group in (("10001", None), (None, "20001")):
+            await repository.mark_used(
+                "used", actor_user_id=actor, group_id=group, trigger_message_id="", source="agent"
+            )
+    finally:
+        event.remove(engine, "before_cursor_execute", observe)
+        event.remove(engine, "commit", ended)
+        event.remove(engine, "rollback", ended)
+    async with database.sessions() as reader:
+        usages = list(
+            await reader.scalars(select(EmojiUsageEventModel).order_by(EmojiUsageEventModel.id))
+        )
+        assert [(row.canonical_actor_person_id, row.canonical_space_id) for row in usages] == [
+            (env.person, None),
+            (None, env.space),
+        ]

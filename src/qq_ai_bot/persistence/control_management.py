@@ -19,7 +19,6 @@ from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.config import Settings
 from qq_ai_bot.control_plane.command_types import (
     CommandOperation,
-    ConfigRollbackPayload,
     ConfigWritePayload,
     ManagementActionPayload,
 )
@@ -478,27 +477,6 @@ class ControlManagementGateway:
         revision = max(1, command.expected_revision)
         return ManagementMutation(parsed.key, revision, "removed")
 
-    async def rollback_config(
-        self,
-        session: AsyncSession,
-        principal: ControlPrincipal,
-        command: ControlCommand,
-        parsed: ConfigRollbackPayload,
-    ) -> ManagementMutation:
-        runtime = self._config_service()
-        result = await runtime.rollback(
-            parsed.change_id,
-            actor_user_id=principal.principal_id.text,
-            trigger_message_id="",
-            audit_ref=self._config_actor(principal, command),
-            expected_version=command.expected_revision,
-            session=session,
-        )
-        if not result.success:
-            raise ManagementFailure(_map_config_error(result))
-        revision = result.version if result.version is not None and result.version >= 1 else 1
-        return ManagementMutation(str(parsed.change_id), revision, "rolled_back")
-
     async def mutate_memory(
         self,
         session: AsyncSession,
@@ -927,37 +905,6 @@ class ControlManagementGateway:
             await _persist_revision(session, stored, current.updated_at),
             updated.status.value,
         )
-
-    async def cancel_operation(
-        self,
-        session: AsyncSession,
-        principal: ControlPrincipal,
-        command: ControlCommand,
-        parsed: ManagementActionPayload,
-    ) -> ManagementMutation:
-        kind, _, rest = parsed.resource_id.partition(":")
-        if kind == "rebuild":
-            return await self.rebuild_memory(
-                session,
-                principal,
-                command,
-                ManagementActionPayload(action="cancel", resource_id=rest),
-            )
-        if kind == "dream":
-            return await self.dream_memory(
-                session,
-                principal,
-                command,
-                ManagementActionPayload(action="cancel", resource_id=rest),
-            )
-        if kind == "automation":
-            return await self.mutate_automation(
-                session,
-                principal,
-                command,
-                ManagementActionPayload(action="cancel", resource_id=rest),
-            )
-        raise ManagementFailure(ProblemCode.OPERATION_UNAVAILABLE)
 
     async def retry_operation(
         self,

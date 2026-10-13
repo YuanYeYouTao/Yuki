@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import SQLAlchemyError
 from tests.conftest import make_settings
 
 from qq_ai_bot.admin.audit import AdminAuditService
@@ -22,13 +23,19 @@ from qq_ai_bot.identity.canonical_repository import active_space_id_for, ensure_
 from qq_ai_bot.identity.db_models import CanonicalSpaceModel
 from qq_ai_bot.memory.audit import MemoryAuditService
 from qq_ai_bot.memory.claim_processor import MemoryClaimProcessor, MemoryProcessingContext
+from qq_ai_bot.memory.embedding.fake import FakeEmbeddingProvider
+from qq_ai_bot.memory.embedding.jobs import MemoryEmbeddingJobRepository
+from qq_ai_bot.memory.embedding.models import EmbeddingProviderProfile
+from qq_ai_bot.memory.embedding.repository import MemoryEmbeddingRepository
+from qq_ai_bot.memory.embedding.text import EmbeddingDocumentBuilder
+from qq_ai_bot.memory.embedding.worker import MemoryEmbeddingWorker
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
     MemoryClaimOperation,
     MemoryConflictState,
     MemoryEvidenceRelation,
     MemoryKind,
-    MemoryProcessingSource,
+    MemoryResolutionAction,
     MemoryScopeType,
     MemorySourceType,
     MemoryStatus,
@@ -39,6 +46,7 @@ from qq_ai_bot.memory.models import (
     MemoryEvidenceCreate,
     MemoryFactCreate,
     MemoryFactQuery,
+    MemoryResolutionPlan,
 )
 from qq_ai_bot.memory.mutation.models import (
     MemoryDecisionActorType,
@@ -58,14 +66,15 @@ from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepositor
 from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import ResolvedSubject
+from qq_ai_bot.memory.validation import ValidatedMemoryClaim
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
+    MemoryEmbeddingJobModel,
     MemoryFactModel,
     MemoryMutationReceiptModel,
     MemoryToolReceiptModel,
 )
 from qq_ai_bot.persistence.repositories import (
-    AgentActionRepository,
     EventLedgerRepository,
     PeopleRepository,
 )
@@ -633,7 +642,6 @@ async def test_self_create_is_atomic_receipted_and_deduplicated(database: Databa
         content="本群现在周五晚讨论项目",
     )
     claim = MemoryClaim(
-        operation=MemoryClaimOperation.CORRECT,
         subject_ref="group",
         scope_type=MemoryScopeType.GROUP,
         memory_key="schedule",
@@ -641,13 +649,11 @@ async def test_self_create_is_atomic_receipted_and_deduplicated(database: Databa
         content=group_event.content,
         evidence_quote=group_event.content,
     )
-    corrected = await _processor.process(
-        claim, MemoryProcessingContext(source=MemoryProcessingSource.LIVE, event=group_event)
-    )
+    corrected = await _processor.process(claim, MemoryProcessingContext(event=group_event))
     group_fact = await facts.get_fact(corrected.fact_id)
     group_evidence = (await facts.list_evidence(group_fact.id))[0]
     assert group_fact.scope_type is MemoryScopeType.GROUP and group_fact.group_id == "3001"
-    assert group_evidence.relation is MemoryEvidenceRelation.CORRECTION
+    assert group_evidence.relation is MemoryEvidenceRelation.GROUP_STATEMENT
     assert group_evidence.authority is MemoryAuthority.GROUP_REPORT
     assert (
         group_evidence.event_id == group_event.id and group_evidence.excerpt == group_event.content
@@ -716,7 +722,6 @@ async def test_agent_tool_and_worker_share_one_claim_receipt(
         ledger=ledger,
         memories=facts,
         memory_mutations=service,
-        actions=AgentActionRepository(database),
     )
     inbound = InboundMessage(
         message_id=event.platform_message_id,
@@ -791,7 +796,7 @@ async def test_agent_tool_and_worker_share_one_claim_receipt(
     (job,) = await jobs.claim()
     worker_result = await service.mutate_validated_claim(
         validated,
-        MemoryProcessingContext(source=MemoryProcessingSource.LIVE, event=event),
+        MemoryProcessingContext(event=event),
         conversation_key="private:1001",
         job=job,
     )
@@ -1036,9 +1041,10 @@ async def test_receipt_failure_rolls_back_fact(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("error_type", [RuntimeError, SQLAlchemyError, KeyError])
 async def test_embedding_schedule_failure_keeps_committed_fact(
     database: Database,
-    monkeypatch: pytest.MonkeyPatch,
+    error_type: type[Exception],
 ) -> None:
     service, facts, ledger, _processor = _service(database)
     event = await _event(
@@ -1048,10 +1054,11 @@ async def test_embedding_schedule_failure_keeps_committed_fact(
         content="记住我喜欢绿色",
     )
 
-    async def fail_embedding(_fact_id: int) -> None:
-        raise RuntimeError("embedding unavailable")
+    class FailedScheduler:
+        async def schedule(self, _fact_id: int) -> None:
+            raise error_type("embedding unavailable")
 
-    monkeypatch.setattr(facts, "schedule_embedding", fail_embedding)
+    facts.set_embedding_scheduler(FailedScheduler())
     result = await service.mutate(
         MemoryMutationRequest(
             operation=MemoryMutationOperation.CREATE,
@@ -1069,6 +1076,75 @@ async def test_embedding_schedule_failure_keeps_committed_fact(
 
     assert result.ok and result.new_fact_id is not None
     assert await facts.get_fact(result.new_fact_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_contested_claim_is_enqueued_after_commit(database: Database) -> None:
+    _service_instance, facts, ledger, _processor = _service(database)
+    event = await _event(
+        ledger, message_id="contested-embedding", sender_user_id="1001", content="我喜欢绿色"
+    )
+    profile = await MemoryEmbeddingRepository(database).ensure_profile(
+        EmbeddingProviderProfile(
+            provider_id="fake",
+            model_id="test",
+            dimensions=2,
+            document_template_version=1,
+            endpoint_identity="https://example.invalid/embedding",
+        )
+    )
+    jobs = MemoryEmbeddingJobRepository(
+        database,
+        profile=profile,
+        documents=EmbeddingDocumentBuilder(template_version=1, max_characters=4000),
+    )
+    facts.set_embedding_scheduler(
+        MemoryEmbeddingWorker(
+            provider=FakeEmbeddingProvider(),
+            jobs=jobs,
+            interval_seconds=1,
+            claim_limit=10,
+            retry_initial_seconds=1,
+        )
+    )
+    result = await facts.apply_claim(
+        ValidatedMemoryClaim(
+            operation=MemoryClaimOperation.ASSERT,
+            fact=MemoryFactCreate(
+                scope_type=MemoryScopeType.PERSON,
+                subject_user_id="1001",
+                kind=MemoryKind.PREFERENCE,
+                category="preference",
+                memory_key="color:favorite",
+                content="喜欢绿色",
+                source_type=MemorySourceType.EXPLICIT,
+                authority=MemoryAuthority.EXPLICIT,
+            ),
+            evidence=MemoryEvidenceCreate(
+                event_id=event.id,
+                source_speaker_user_id="1001",
+                relation=MemoryEvidenceRelation.SELF_STATEMENT,
+                authority=MemoryAuthority.EXPLICIT,
+                excerpt="我喜欢绿色",
+            ),
+            subject_is_speaker=True,
+            occurred_at=event.occurred_at,
+        ),
+        candidates=(),
+        plan=MemoryResolutionPlan(
+            action=MemoryResolutionAction.CREATE,
+            create_new_fact=True,
+            new_fact_status=MemoryStatus.CONTESTED,
+            new_conflict_state=MemoryConflictState.CONTESTED,
+            reason_code="test_contested",
+        ),
+    )
+    assert result is not None and result.status is MemoryStatus.CONTESTED
+    async with database.sessions() as session:
+        job = await session.scalar(
+            select(MemoryEmbeddingJobModel).where(MemoryEmbeddingJobModel.fact_id == result.id)
+        )
+        assert job is not None and job.status == "pending"
 
 
 @pytest.mark.asyncio
@@ -1413,7 +1489,6 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
         settings=make_settings("sqlite+aiosqlite:///:memory:"),
         ledger=ledger,
         memories=facts,
-        actions=AgentActionRepository(database),
     )
     runtime = ToolRuntime(
         inbound=inbound,
@@ -1718,7 +1793,6 @@ async def test_deterministic_memory_admin_uses_unified_mutation_receipt(
             trigger_message_id=event.platform_message_id,
             trigger_event_id=event.id,
             conversation_key="private:1001",
-            current_message_text=event.content,
             bot_user_id=event.bot_user_id,
             decision_actor_type="command",
         ),

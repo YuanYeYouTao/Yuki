@@ -6,8 +6,10 @@ from dataclasses import replace
 
 import httpx
 import pytest
+from tests.support.model_profiles import write_fake_profiles
 
 # P10: explicit backend/Invocation fixture; original behavioral assertions retained.
+from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.messages import (
     ChatImage,
     ChatMessage,
@@ -32,8 +34,48 @@ from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
 from qq_ai_bot.llm.openai_responses import OpenAIResponsesProvider
 from qq_ai_bot.model_runtime.models import ModelProfile, ModelProtocol
 from qq_ai_bot.model_runtime.pool import ModelClientPool
+from qq_ai_bot.model_runtime.profiles import model_profile_environment, parse_model_profile_catalog
 from qq_ai_bot.runtime.work_journal import decode_transcript, encode_transcript
 from qq_ai_bot.services.turn_transcript import TurnTranscript
+
+
+@pytest.mark.parametrize("effort", ["low", "high", "none"])
+@pytest.mark.parametrize("settings_slice", [False, True])
+def test_profile_effort_is_not_overridden_by_an_unconfigured_environment(
+    tmp_path, monkeypatch, effort, settings_slice
+):
+    monkeypatch.delenv("LLM_REASONING_EFFORT", raising=False)
+    content = write_fake_profiles(tmp_path / "profiles.toml").read_text(encoding="utf-8")
+    choice = f'reasoning_effort = "{effort}"\n'
+    choice += 'reasoning_effort_env = "LLM_REASONING_EFFORT"\nthinking_mode = "disabled"\n'
+    content = content.replace("[routes]", choice + "[routes]")
+    settings = Settings(_env_file=None)
+    catalog = parse_model_profile_catalog(
+        content,
+        environment=model_profile_environment(
+            settings.model_runtime if settings_slice else settings
+        ),
+    )
+    profile = catalog.profiles["main"]
+    assert profile.reasoning_effort == ReasoningEffort(effort)
+    assert profile.thinking_enabled is False
+
+
+def test_explicit_environment_effort_still_overrides_profile(tmp_path, monkeypatch):
+    monkeypatch.delenv("LLM_REASONING_EFFORT", raising=False)
+    environment_file = tmp_path / ".env"
+    environment_file.write_text("LLM_REASONING_EFFORT=high\n", encoding="utf-8")
+    settings = Settings(_env_file=environment_file)
+    content = write_fake_profiles(tmp_path / "profiles.toml").read_text(encoding="utf-8")
+    content = content.replace(
+        "[routes]",
+        'reasoning_effort = "low"\nreasoning_effort_env = "LLM_REASONING_EFFORT"\n[routes]',
+    )
+    for source in (settings, settings.model_runtime):
+        catalog = parse_model_profile_catalog(
+            content, environment=model_profile_environment(source)
+        )
+        assert catalog.profiles["main"].reasoning_effort is ReasoningEffort.HIGH
 
 
 @pytest.mark.parametrize("protocol", list(ModelProtocol))

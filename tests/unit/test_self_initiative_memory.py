@@ -20,7 +20,6 @@ from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationMode
 from qq_ai_bot.identity.db_models import SpaceBindingModel
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.memory.enums import MemoryKind, MemoryScopeType, MemoryStatus, SelfMemoryVisibility
-from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.models import MemoryFactCreate
 from qq_ai_bot.memory.mutation.models import (
     MemoryDecisionActorType,
@@ -138,12 +137,9 @@ async def finish(database, run_id):
 async def claim(database, cycle="cycle-1", *, max_characters=16000):
     return await SelfReflectionRepository(database).claim_due(
         scheduled_slot="synthetic",
-        local_date="2026-09-22",
         event_threshold=20,
         character_threshold=16000,
         max_wait_seconds=3600,
-        max_sessions=1,
-        max_daily_calls=96,
         max_events=100,
         max_characters=max_characters,
         cycle_id=cycle,
@@ -266,8 +262,6 @@ async def test_reflection_scan_keeps_all_owner_counters_after_unrelated_wal_comm
             assert state.pending_events == len(texts)
             assert state.pending_characters == sum(map(len, texts))
             assert state.pending_since == owner_sources[0].occurred_at
-            assert state.has_yuki_reply == any(row.direction == "outbound" for row in owner_sources)
-            assert not state.has_tool_result
         assert runtime.last_scanned_event_id == events[-1].id
         assert runtime.ingress_events_total == sum(
             bool(row.evidence_content.strip()) for row in sources
@@ -285,12 +279,9 @@ async def test_concurrent_reflection_claims_keep_one_original_run(
     repository = SelfReflectionRepository(database)
     options = dict(
         scheduled_slot="race",
-        local_date="2026-10-12",
         event_threshold=1,
         character_threshold=1,
         max_wait_seconds=0,
-        max_sessions=1,
-        max_daily_calls=96,
         max_events=100,
         max_characters=16000,
         force=True,
@@ -389,7 +380,6 @@ async def test_initiative_claim_keeps_original_paid_window_after_unrelated_wal_c
         facts=facts,
         mutations=mutations,
         models=InjectedModelExecutor(provider),
-        metrics=MemoryLifecycleMetrics(),
     )
     checkpoint = fingerprint = None
     if run_state == "retry":
@@ -459,12 +449,9 @@ async def test_reflection_transition_keeps_original_source_after_unrelated_wal_c
     await repository.scan_new_events()
     options = dict(
         scheduled_slot="wal-transition",
-        local_date="2026-10-12",
         event_threshold=1,
         character_threshold=1,
         max_wait_seconds=0,
-        max_sessions=1,
-        max_daily_calls=96,
         max_events=1,
         max_characters=16000,
         cycle_id="original-cycle",
@@ -512,7 +499,6 @@ async def test_reflection_transition_keeps_original_source_after_unrelated_wal_c
         expected = [first, tail] if operation == "claim" else [tail]
         assert state.pending_events == len(expected)
         assert state.pending_characters == sum(len(item.content) for item in expected)
-        assert not state.has_yuki_reply and not state.has_tool_result
         assert runtime.last_scanned_event_id == tail.id and runtime.ingress_events_total == 2
         assert (await session.get(InitiativeRunModel, initiative_id)).feedback_sequence == 1
     if operation != "claim":
@@ -607,12 +593,9 @@ async def test_reflection_health_uses_original_oldest_recent_cycle_baseline(data
     await repository.scan_new_events()
     (batch,) = await repository.claim_due(
         scheduled_slot="baseline-health",
-        local_date="2026-10-12",
         event_threshold=1,
         character_threshold=1,
         max_wait_seconds=0,
-        max_sessions=1,
-        max_daily_calls=96,
         max_events=1,
         max_characters=16000,
     )
@@ -689,12 +672,9 @@ async def test_mixed_recovery_prepares_full_tail_before_cursor_write_and_sees_st
     monkeypatch.setattr(audio, "transcript_context", transcript_context)
     (ordinary,) = await repository.claim_due(
         scheduled_slot="mixed-ordinary",
-        local_date="2026-10-12",
         event_threshold=1,
         character_threshold=1,
         max_wait_seconds=0,
-        max_sessions=1,
-        max_daily_calls=96,
         max_events=1,
         max_characters=16000,
     )
@@ -854,7 +834,6 @@ async def test_silent_receipt_windows_keep_large_source_complete_and_remaining_s
         facts=facts,
         mutations=mutations,
         models=InjectedModelExecutor(provider),
-        metrics=MemoryLifecycleMetrics(),
     )
     (first,) = await claim(database, "large-first", max_characters=4000)
     assert first.first_receipt_id == first.last_receipt_id
@@ -902,7 +881,6 @@ async def test_silent_original_receipt_window_retries_without_reselecting_new_bu
         facts=facts,
         mutations=mutations,
         models=InjectedModelExecutor(provider),
-        metrics=MemoryLifecycleMetrics(),
     )
     assert await reflection.reflect(retried) == (0, 0)
     payload = json.loads(provider.requests[0].messages[-1].content)
@@ -1050,7 +1028,6 @@ async def test_silent_service_episode_keeps_checkpoint_without_second_model_requ
         facts=facts,
         mutations=mutations,
         models=InjectedModelExecutor(provider),
-        metrics=MemoryLifecycleMetrics(),
     )
     projected, _, _, event_map, _ = await reflection._input(batch)
     assert projected.source_kind == "initiative_tools" and not projected.events and not event_map
@@ -1338,7 +1315,6 @@ async def test_reflection_model_reuses_restore_and_metadata_domain_operations(da
         facts=facts,
         mutations=mutations,
         models=InjectedModelExecutor(provider),
-        metrics=MemoryLifecycleMetrics(),
     )
     assert await reflection.reflect(batch) == (1, 1)
     assert await reflection.reflect(batch) == (1, 1)
@@ -1454,17 +1430,13 @@ async def test_incoming_reflection_keeps_complete_source_without_own_reply(datab
     assert snapshot["actionable"]["events"] == 1
     (batch,) = await repository.claim_due(
         scheduled_slot="incoming",
-        local_date="2026-10-10",
         event_threshold=1,
         character_threshold=100,
         max_wait_seconds=0,
-        max_sessions=1,
-        max_daily_calls=96,
         max_events=100,
         max_characters=100,
         cycle_id="incoming",
     )
-    assert not batch.state.has_yuki_reply and not batch.state.has_tool_result
     assert [item.id for item in batch.events] == [source.id]
     provider = FakeLLMProvider(responder=lambda _: '{"proposals":[],"episodes":[]}')
     reflection = SelfReflectionService(
@@ -1473,7 +1445,6 @@ async def test_incoming_reflection_keeps_complete_source_without_own_reply(datab
         facts=facts,
         mutations=mutations,
         models=InjectedModelExecutor(provider),
-        metrics=MemoryLifecycleMetrics(),
     )
     assert await reflection.reflect(batch) == (0, 0)
     payload = json.loads(provider.requests[0].messages[-1].content)
@@ -1516,12 +1487,9 @@ async def test_reflection_only_live_source_ranges_block_claim_and_cursor(databas
     await repository.scan_new_events()
     options = dict(
         scheduled_slot="source-range",
-        local_date="2026-10-10",
         event_threshold=1,
         character_threshold=100,
         max_wait_seconds=0,
-        max_sessions=1,
-        max_daily_calls=96,
         max_events=100,
         max_characters=16000,
     )
@@ -1569,3 +1537,92 @@ async def test_reflection_only_live_source_ranges_block_claim_and_cursor(databas
             assert state.last_event_id == initial.id
         else:
             assert state.last_event_id == current.id and state.pending_events == 0
+
+
+async def test_isolated_receipt_windows_do_not_starve_later_initiatives(database):
+    from sqlalchemy import insert
+
+    from qq_ai_bot.memory.self_reflection.db_models import InitiativeReflectionWindowModel
+
+    _, _, initial, old_id = await seed(database)
+    await record(database, initial, old_id)
+    await finish(database, old_id)
+    (original,) = await claim(database)
+    async with database.immediate_session() as writer:
+        await writer.execute(
+            update(MemorySelfReflectionRunModel)
+            .where(MemorySelfReflectionRunModel.id == original.run_id)
+            .values(status="failed", retry_state="isolated")
+        )
+        templates = {
+            model: dict((await writer.execute(select(model.__table__))).mappings().one())
+            for model in (InitiativeRunModel, MemoryToolReceiptModel, MemorySelfReflectionRunModel)
+        }
+        for index in range(100):
+            run_id = str(uuid4())
+            await writer.execute(
+                insert(InitiativeRunModel).values(
+                    **{**templates[InitiativeRunModel], "id": run_id, "proposal_id": run_id}
+                )
+            )
+            receipt = {
+                key: value
+                for key, value in templates[MemoryToolReceiptModel].items()
+                if key != "id"
+            }
+            receipt.update(
+                initiative_run_id=run_id,
+                execution_id=run_id,
+                source_call_key=f"isolated-{index}",
+                tool_call_id=f"call-{index}",
+            )
+            receipt_id = await writer.scalar(
+                insert(MemoryToolReceiptModel)
+                .values(**receipt)
+                .returning(MemoryToolReceiptModel.id)
+            )
+            if index < 99:
+                reflection = {
+                    key: value
+                    for key, value in templates[MemorySelfReflectionRunModel].items()
+                    if key != "id"
+                }
+                reflection["scheduled_slot"] = f"isolated-{index}"
+                reflection_id = await writer.scalar(
+                    insert(MemorySelfReflectionRunModel)
+                    .values(**reflection)
+                    .returning(MemorySelfReflectionRunModel.id)
+                )
+                writer.add(
+                    InitiativeReflectionWindowModel(
+                        reflection_run_id=reflection_id,
+                        initiative_run_id=run_id,
+                        first_receipt_id=receipt_id,
+                        last_receipt_id=receipt_id,
+                    )
+                )
+            else:
+                new_id = run_id
+    (selected,) = await claim(database, "next-eligible")
+    assert selected.initiative_run_id == new_id
+    async with database.sessions() as reader:
+        isolated = await reader.scalar(
+            select(func.count())
+            .select_from(MemorySelfReflectionRunModel)
+            .where(MemorySelfReflectionRunModel.retry_state == "isolated")
+        )
+        assert isolated == 100
+        assert await reader.get(InitiativeReflectionCursorModel, old_id) is None
+
+
+async def test_silent_receipt_window_uses_character_budget_without_eight_row_cap(database):
+    _mutations, _facts, event, run_id = await seed(database)
+    excerpts = tuple(f"真实工具结果 {i}" for i in range(13))
+    for index, excerpt in enumerate(excerpts):
+        await record(database, event, run_id, f"many-{index}", result_excerpt=excerpt)
+    await finish(database, run_id)
+    repository = SelfReflectionRepository(database)
+    (batch,) = await claim(database, "all-small-receipts", max_characters=10000)
+    assert tuple(item.result_excerpt for item in await repository.tool_receipts(batch)) == excerpts
+    await repository.complete(batch, proposals=0, committed=0)
+    assert await claim(database, "all-small-receipts-finished", max_characters=10000) == ()

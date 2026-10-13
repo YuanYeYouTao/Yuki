@@ -195,8 +195,8 @@ async def test_sql_execution_clock_rejects_expired_lease_despite_stale_python_ti
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("code,expected", [(517, 3), (5, 1), (6, 1)])
-async def test_snapshot_retry_is_finite_and_specific(database, monkeypatch, code, expected):
+@pytest.mark.parametrize("code", [5, 6])
+async def test_snapshot_retry_only_reprepares_busy_snapshot(database, monkeypatch, code):
     repository, _scope, claim, candidate = await _seed(database)
     error = sqlite3.OperationalError("synthetic database contention")
     error.sqlite_errorcode = code
@@ -204,11 +204,39 @@ async def test_snapshot_retry_is_finite_and_specific(database, monkeypatch, code
     monkeypatch.setattr(repository, "_commit_canonical_candidate", operation)
     with pytest.raises(OperationalError):
         await _publish(repository, claim, candidate, candidate_summary(candidate, "paid"), False)
-    assert operation.await_count == expected
+    assert operation.await_count == 1
     snapshot = await repository.load_prompt_snapshot(
         ConversationScope.private("bot-a", "snapshot-peer")
     )
     assert snapshot.rollup is None
+
+
+@pytest.mark.parametrize("overlay", [False, True])
+async def test_snapshot_contention_retains_paid_summary_past_old_limit(
+    database, monkeypatch, overlay
+):
+    repository, scope, claim, candidate = await _seed(database)
+    method = "_commit_canonical_emergency_overlay" if overlay else "_commit_canonical_candidate"
+    original = getattr(repository, method)
+    error = sqlite3.OperationalError("synthetic database contention")
+    error.sqlite_errorcode = 517
+    attempts = 0
+
+    async def contend(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts <= 5:
+            raise OperationalError("SQL", {}, error)
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(repository, method, contend)
+    paid_model = AsyncMock(return_value=candidate_summary(candidate, "paid once"))
+    summary = await paid_model()
+    await _publish(repository, claim, candidate, summary, overlay)
+    assert attempts == 6
+    paid_model.assert_awaited_once()
+    snapshot = await repository.load_prompt_snapshot(scope)
+    assert (snapshot.overlay if overlay else snapshot.rollup).summary_text == summary
 
 
 @pytest.mark.asyncio

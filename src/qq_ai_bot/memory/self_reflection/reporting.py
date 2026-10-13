@@ -6,6 +6,7 @@ from typing import Any
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.persistence.models import ChatEventModel
+from qq_ai_bot.social.models import SocialError
 from qq_ai_bot.social.service import SocialContext, SocialService
 
 
@@ -71,19 +72,25 @@ async def deliver_report(social: SocialService, cycle: dict[str, Any]) -> dict[s
             or conversation is None
             or event.canonical_conversation_id != conversation.id
         ):
-            raise ValueError("reflection_report_source_missing")
+            return {"status": "failed", "error_category": "reflection_report_source_missing"}
         target = conversation.space_id or conversation.person_id
         target_kind = "space" if conversation.space_id else "person"
-    return await social.execute(
-        "send_message",
-        {
-            "target": {"kind": target_kind, "target_id": target},
-            "text": format_report(cycle),
-        },
-        SocialContext(
-            turn_id=cycle["id"],
-            call_id="final-report",
-            conversation_id=cycle["conversation_id"],
-            space_id=conversation.space_id,
-        ),
-    )
+    try:
+        return await social.execute(
+            "send_message",
+            {
+                "target": {"kind": target_kind, "target_id": target},
+                "text": format_report(cycle),
+            },
+            SocialContext(
+                turn_id=cycle["id"],
+                call_id="final-report",
+                conversation_id=cycle["conversation_id"],
+                space_id=conversation.space_id,
+            ),
+        )
+    except SocialError as exc:
+        receipt = await social.receipts.find(cycle["id"], "final-report")
+        if receipt is not None and receipt.status.value != "prepared":
+            return receipt.model_dump(mode="json")
+        return {"status": "failed", "error_category": str(exc)}

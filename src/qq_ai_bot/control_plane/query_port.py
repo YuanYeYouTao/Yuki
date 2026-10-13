@@ -13,7 +13,6 @@ from qq_ai_bot.control_plane.query_types import (
     AutomationView,
     ChatEventView,
     ChatHistoryFilter,
-    ConfigOverrideView,
     ConfigQueryScope,
     ConfigSpecView,
     ConversationView,
@@ -41,7 +40,6 @@ from qq_ai_bot.control_plane.query_types import (
     SpaceBindingView,
     SpaceView,
     SystemSnapshot,
-    YukiSummaryView,
 )
 from qq_ai_bot.domain.identity import ConversationId, PrincipalId, RequestId
 
@@ -164,8 +162,6 @@ class ControlQueryPort(Protocol):
 
     async def read_system(self) -> SystemSnapshot: ...
 
-    async def read_yuki(self) -> YukiSummaryView: ...
-
     async def read_health(self) -> ManagementHealthView: ...
 
     async def list_persons(self, request: PageRequest) -> Page[PersonView]: ...
@@ -225,13 +221,6 @@ class ControlQueryPort(Protocol):
     async def list_effective_configs(
         self, request: PageRequest, *, scope: ConfigQueryScope | None = None
     ) -> Page[EffectiveConfigView]: ...
-
-    async def list_config_overrides(
-        self,
-        request: PageRequest,
-        *,
-        reveal_external: bool,
-    ) -> Page[ConfigOverrideView]: ...
 
     async def read_self_reflection_health(self) -> ActivityView: ...
     async def list_self_reflection_history(

@@ -875,10 +875,9 @@ class ContextAssembler:
             asyncio.get_running_loop().time()
             + self._settings.conversation_rollup_model_timeout_seconds
         )
-        max_batches = self._settings.conversation_rollup_foreground_max_batches
         view: _UncoveredPromptView | None = None
         view_tokens = 0
-        for _ in range(max_batches):
+        while True:
             view = self._uncovered_prompt_view(
                 recent,
                 current_event_id=current_event_id,

@@ -14,6 +14,7 @@ from qq_ai_bot.domain.messages import (
     ChatRequest,
     ChatResponse,
     ChatTool,
+    ModelResponseStatus,
 )
 from qq_ai_bot.model_runtime.executor import ModelExecutor
 from qq_ai_bot.model_runtime.models import (
@@ -192,6 +193,13 @@ class StructuredTaskRunner:
                 priority=priority,
                 canonical_conversation_id=canonical_conversation_id,
             )
+            if response.status is ModelResponseStatus.INCOMPLETE:
+                raise StructuredTaskError(
+                    "structured task output was truncated",
+                    reason_code="output_budget_exhausted",
+                    attempts=attempt + 1,
+                    response=response,
+                )
             try:
                 decoded = _decode_response(
                     response,

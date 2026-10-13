@@ -7,7 +7,7 @@ from dataclasses import replace
 
 import pytest
 from sqlalchemy import select, update
-from tests.conftest import MemorySender
+from tests.conftest import MemorySender, make_settings
 from tests.support.runtime_execution import make_work_resumer
 from tests.support.work_session import WorkSession
 from tests.unit.test_history_dispatch_ownership import _scene, _tool
@@ -95,6 +95,53 @@ def original_responses(provider):
         raise AssertionError("unexpected additional dispatch")
 
     return respond
+
+
+@pytest.mark.parametrize("current_superuser", [False, True])
+async def test_message_work_recovery_uses_current_superusers(database, tmp_path, current_superuser):
+    provider = FakeLLMProvider()
+    provider._responder = original_responses(provider)
+    env, harness, chat, _, message = await _scene(database, tmp_path, provider, request_limit=1)
+    await harness.processor.handle(message, MemorySender())
+    repository = WorkRepository(database)
+    async with database.sessions() as reader:
+        original = dict((await reader.execute(select(work))).mappings().one())
+    frozen_source = json.loads(original["source_json"])
+    frozen_source["actor_is_superuser"] = not current_superuser
+    async with database.immediate_session() as writer:
+        await writer.execute(
+            update(work)
+            .where(work.c.id == original["id"])
+            .values(source_json=json.dumps(frozen_source))
+        )
+    settings = make_settings(
+        database.url, superusers_csv=message.sender.user_id if current_superuser else ""
+    )
+    authorities = []
+
+    async def capture_wakeup(**kwargs):
+        authorities.append(kwargs["source_runtime"].actor_is_superuser)
+        return await chat.generate_main_agent_wakeup(**kwargs)
+
+    resumer = make_work_resumer(
+        repository,
+        ledger=harness.ledger,
+        scopes=chat._conversation_scopes,
+        turns=chat._turn_coordinator,
+        router=env.router,
+        config=chat._runtime_config,
+        settings=settings,
+        generate_self=chat.generate_self_initiative,
+        generate_wakeup=capture_wakeup,
+        bindings=chat.runtime.bindings,
+    )
+    scheduler = WorkScheduler(repository, resumer.resume, chat_admission_enabled=True)
+    scheduler._last_reclaim = time.monotonic()
+    await scheduler.drain_once()
+    assert authorities == [current_superuser]
+    resumed = await repository.get(original["id"])
+    assert resumed["model_requests"] == original["model_requests"] + 1
+    assert json.loads(resumed["source_json"]) == frozen_source
 
 
 @pytest.mark.parametrize(
@@ -541,7 +588,7 @@ async def test_persistent_maintenance_errors_do_not_block_original_work_selectio
         resumed.append(item["id"])
         return None
 
-    monkeypatch.setattr(repository, "reclaim_terminal", failed_reclaim)
+    monkeypatch.setattr(repository, "reclaim_unreferenced_media", failed_reclaim)
     monkeypatch.setattr(ProtocolStore, "cleanup", failed_cleanup)
     scheduler = WorkScheduler(repository, resume, chat_admission_enabled=True)
     for _ in range(2):

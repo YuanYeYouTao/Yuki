@@ -148,7 +148,7 @@ async def test_memory_worker_recovers_original_job_after_repeated_provider_failu
         facts=MemoryFactService(MemoryFactRepository(database)),
         ledger=EventLedgerRepository(database),
         model_executor=InjectedModelExecutor(provider),
-        concurrency=ConcurrencyManager(1),
+        concurrency=ConcurrencyManager(),
     )
     assert await worker.enqueue(identity, "private:1001")
     for attempts in range(1, 5):

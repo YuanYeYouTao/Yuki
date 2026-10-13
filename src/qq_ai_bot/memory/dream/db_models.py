@@ -19,13 +19,6 @@ from sqlalchemy.orm import Mapped, mapped_column
 from qq_ai_bot.persistence.models import Base
 
 
-class MemoryDreamRuntimeModel(Base):
-    __tablename__ = "memory_dream_runtime"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    initialized_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
 class MemoryDreamRunModel(Base):
     __tablename__ = "memory_dream_runs"
     __table_args__ = (

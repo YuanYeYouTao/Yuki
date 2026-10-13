@@ -310,3 +310,44 @@ def test_gateway_doctor_does_not_require_runtime_settings(
     administrative_cli.main()
 
     assert json.loads(capsys.readouterr().out)["provider_id"] == "snowluma"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "action",
+    [
+        "get_group_list",
+        "send_private_msg",
+        "send_group_msg",
+        "upload_private_file",
+        "upload_group_file",
+        "send_poke",
+        "get_group_member_list",
+        "get_group_member_info",
+        "delete_msg",
+        "get_friend_msg_history",
+        "get_group_msg_history",
+    ],
+)
+async def test_social_gateway_preserves_explicit_action_and_parameters(action):
+    from unittest.mock import AsyncMock
+
+    from qq_ai_bot.gateway.providers.social import OneBotSocialOperations
+
+    bot = AsyncMock()
+    params = {"group_id": "group", "user_id": "person"}
+    result = await OneBotSocialOperations().social_action(bot, action, params)
+    bot.call_api.assert_awaited_once_with(action, **params)
+    assert result is bot.call_api.return_value
+
+
+@pytest.mark.asyncio
+async def test_social_gateway_rejects_actions_outside_its_whitelist():
+    from unittest.mock import AsyncMock
+
+    from qq_ai_bot.gateway.providers.social import OneBotSocialOperations
+
+    bot = AsyncMock()
+    with pytest.raises(ValueError, match="capability_unavailable"):
+        await OneBotSocialOperations().social_action(bot, "set_group_admin", {})
+    bot.call_api.assert_not_awaited()

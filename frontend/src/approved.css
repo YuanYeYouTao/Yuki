@@ -1,4 +1,4 @@
-/* Yuki content adapters; the upstream theme and dashboard sheets are unchanged. */
+/* Yuki content styles; retained theme assets keep their upstream attribution. */
 [hidden] {
   display: none !important;
 }
@@ -59,11 +59,6 @@ textarea:focus-visible {
   border-radius: 50%;
   background: var(--success);
   box-shadow: 0 0 7px var(--success);
-}
-.preview-label {
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin-right: auto;
 }
 .header-right {
   margin-left: auto;
@@ -148,75 +143,25 @@ textarea:focus-visible {
   padding-left: 8px;
 }
 .message,
-.chat-input-area textarea,
-[data-theme="journal"] .message,
-[data-theme="journal"] .chat-input-area textarea {
+[data-theme="journal"] .message {
   font-family: "Microsoft YaHei UI", var(--font-ui);
   font-size: 15px;
   font-weight: 400;
 }
-.system-notice {
-  align-self: center;
-  text-align: center;
-  padding: 5px 22px;
-  font-size: 12px;
-  color: var(--text-secondary);
-  border: 1px dashed var(--border);
-  border-radius: 6px;
-  min-width: 60%;
-}
-.chat-input-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.chat-input-row textarea {
-  flex: 1;
-  min-width: 0;
-  resize: none;
-  height: 46px;
-}
-.chat-input-row .send-button {
-  flex-shrink: 0;
-  width: 42px;
-  height: 42px;
-}
-.chat-input-row .attach-button {
-  flex-shrink: 0;
-}
 .tab-button {
   min-height: 32px;
 }
-.vital-section-title {
-  margin: 7px 2px 6px;
-}
 .vital-card {
   padding: 14px 16px;
-}
-.vital-row-value {
-  min-width: 50px;
-}
-.vital-card-text {
-  line-height: 1.85;
-  font-size: 13px;
 }
 .vital-pair {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
 }
-.vital-pair-item + .vital-pair-item {
-  margin: 0;
-}
 .small {
   font-size: 12px;
   color: var(--text-secondary);
-}
-.note-text {
-  line-height: 1.85;
-}
-.note-text p + p {
-  margin-top: 16px;
 }
 .paper-note {
   background: var(--bg-card);
@@ -233,30 +178,6 @@ textarea:focus-visible {
 .paper-note p + p {
   margin-top: 12px;
 }
-.item-row {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  padding: 14px 3px;
-  border-bottom: 1px dashed var(--border);
-}
-.item-row:last-child {
-  border: 0;
-}
-.item-row .ui-icon {
-  height: 24px;
-  width: 24px;
-  flex-shrink: 0;
-}
-.item-body {
-  flex: 1;
-  min-width: 0;
-}
-.item-body strong {
-  font-weight: 500;
-  display: block;
-  margin-bottom: 5px;
-}
 .badge {
   font-size: 11px;
   white-space: nowrap;
@@ -268,31 +189,6 @@ textarea:focus-visible {
 .badge.good {
   color: var(--tool-color);
   border-color: var(--tool-color);
-}
-.time-label {
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-.log-dock {
-  flex-shrink: 0;
-  border-top: 1px dashed var(--border);
-  background: var(--bg-secondary);
-  font-size: 12px;
-}
-.log-dock summary {
-  padding: 9px 20px;
-  cursor: pointer;
-  color: var(--text-secondary);
-}
-.log-lines {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  padding: 2px 20px 13px;
-  line-height: 1.9;
-  color: var(--text-secondary);
-}
-.log-lines .green {
-  color: var(--tool-color);
 }
 body.has-settings-sidebar {
   height: auto;
@@ -366,11 +262,6 @@ body.has-settings-sidebar {
   font-size: 13px;
   line-height: 1.5;
 }
-.form-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0 24px;
-}
 .section-caption {
   font-size: 12px;
   color: var(--text-secondary);
@@ -432,14 +323,6 @@ td .small {
   font-size: 12px;
   line-height: 1.9;
 }
-.selected-file {
-  background: var(--accent-dim);
-}
-.selected-file button {
-  background: none;
-  border: 0;
-  color: var(--accent-hover);
-}
 .login-wrap {
   display: flex;
   align-items: center;
@@ -489,24 +372,6 @@ td .small {
   margin-bottom: 0 !important;
   text-align: center;
 }
-.login-mark {
-  height: 40px;
-}
-.login-page .header {
-  border: none;
-  background: transparent;
-}
-.login-page .header-status,
-.login-page .preview-label,
-.login-page .nav-link,
-.login-page #drawerToggle,
-.login-page .token-info,
-.login-page .token-bar-container {
-  display: none;
-}
-.login-page .quick-row {
-  display: none;
-}
 #toast {
   position: fixed;
   bottom: 25px;
@@ -533,13 +398,6 @@ td .small {
   .header-right {
     gap: 6px;
     flex-wrap: wrap;
-  }
-  .token-info,
-  .token-bar-container {
-    display: none;
-  }
-  .preview-label {
-    font-size: 11px;
   }
   .header-status {
     font-size: 12px;
@@ -573,17 +431,13 @@ td .small {
     min-height: 560px;
     height: auto;
   }
-  .resizer {
-    display: none !important;
-  }
   .panel-content {
     overflow: visible;
   }
   .chat-block {
     max-width: 96%;
   }
-  .vital-pair,
-  .form-grid {
+  .vital-pair {
     grid-template-columns: 1fr;
   }
   .settings-sidebar {
@@ -629,14 +483,8 @@ td .small {
     padding: 30px;
     max-width: 100%;
   }
-  .chat-input-area {
-    position: static;
-  }
   .tab-content.active {
     min-height: 500px;
-  }
-  .log-dock {
-    margin-top: 12px;
   }
   .login-card::before {
     left: calc(50% - 62px);

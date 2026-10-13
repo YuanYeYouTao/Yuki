@@ -34,7 +34,8 @@ query instruct 等非密钥配置生成。
 - `memory_embedding_jobs`：持久化 pending/running/retry/failed/done 状态、租约、尝试次数与
   无正文错误类别。
 
-事实写入事务提交后才排队。启动时只协调当前 active facts 与当前 profile，不读取聊天历史。
+事实写入事务提交后才排队。排队和启动协调统一选择当前 active、contested 事实，排除隔离和
+过期事实；使用当前 profile，不读取聊天历史。调度故障在事实服务中记录一次，不改变已提交的结果。
 文档内容变化会产生新哈希并重新生成；事实删除通过外键级联删除向量和任务。模型或模板配置
 变化会建立新 profile，旧 profile 数据保持隔离，直到管理员显式清理。
 

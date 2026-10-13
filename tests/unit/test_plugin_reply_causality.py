@@ -5,9 +5,15 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from tests.support.conversation_rollup_370_helpers import _policy
+from tests.unit.rollup_test_helpers import candidate_summary
 
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationRollupModel
-from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
+from qq_ai_bot.conversation.canonical_db_models import (
+    CanonicalConversationModel,
+    CanonicalConversationRollupModel,
+)
+from qq_ai_bot.conversation.rollup.models import RollupKind, RollupPolicyConfig
+from qq_ai_bot.conversation.rollup.prompt_accounting import durable_uncovered_characters
 from qq_ai_bot.conversation.rollup.repository import ConversationRollupRepository
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
@@ -62,6 +68,50 @@ async def test_plugin_outbound_requires_and_projects_same_conversation_cause(
 
     assert result.event.caused_by_event_id == source_event_id
     assert result.event.canonical_conversation_id is not None
+
+
+async def test_rollup_plugin_cause_hydration_preserves_uncovered_counters(database):
+    policy = _policy()
+    writer = ScopedEventLedgerUnitOfWork(database, config=policy)
+    source_event_id = await _external_event(writer)
+    reply = await writer.append(
+        scope=ConversationScope.private("8000", "1001"),
+        platform_message_id="rollup-plugin-reply",
+        sender_user_id="8000",
+        direction="outbound",
+        content="proactive reply " * 50,
+        sender_is_bot=True,
+        origin="plugin_background",
+        caused_by_event_id=source_event_id,
+    )
+    await writer.append(
+        scope=ConversationScope.private("8000", "1001"),
+        platform_message_id="after-plugin-reply",
+        sender_user_id="1001",
+        direction="inbound",
+        content="next user turn",
+    )
+    repository = ConversationRollupRepository(database, policy)
+    claim = await repository.claim_next_job(lease_owner="test", lease_seconds=30)
+    assert claim is not None
+    candidate = await repository.candidate_for_claim(claim)
+    assert candidate is not None
+    assert candidate.events[-1].caused_by_external_source == "fixture"
+    await repository.commit_candidate(
+        claim,
+        candidate,
+        summary_text=candidate_summary(candidate, "plugin result"),
+        summary_kind=RollupKind.MODEL,
+    )
+    async with database.sessions() as reader:
+        conversation = await reader.get(
+            CanonicalConversationModel, reply.event.canonical_conversation_id
+        )
+        snapshot = await repository.load_prompt_snapshot(ConversationScope.private("8000", "1001"))
+        assert conversation.uncovered_event_count == len(snapshot.raw_events)
+        assert conversation.uncovered_character_count == durable_uncovered_characters(
+            snapshot.raw_events, bot_display_name=policy.bot_display_name, timezone=policy.timezone
+        )
 
 
 @pytest.mark.asyncio

@@ -11,13 +11,11 @@ from qq_ai_bot.domain.memory_config import MemoryConfigScope
 from qq_ai_bot.memory.enums import (
     MemoryConflictState,
     MemoryInvalidationReason,
-    MemoryProcessingSource,
     MemoryResolutionAction,
     MemoryStatus,
 )
 from qq_ai_bot.memory.extraction import MemoryClaim
-from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
-from qq_ai_bot.memory.models import MemoryCandidate, MemoryResolutionPlan
+from qq_ai_bot.memory.models import MemoryResolutionPlan
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import SubjectResolutionContext
 from qq_ai_bot.memory.validation import (
@@ -30,11 +28,8 @@ from qq_ai_bot.persistence.repository_records import EventRecord
 
 @dataclass(frozen=True, slots=True)
 class MemoryProcessingContext:
-    source: MemoryProcessingSource
     event: EventRecord | None
     config_scope: MemoryConfigScope | None = None
-    rebuild_run_id: str | None = None
-    proposal_id: int | None = None
     force_expired_invalidated: bool = False
 
 
@@ -50,7 +45,6 @@ class ResolvedMemoryClaim:
     """A fully decided claim that can be persisted without calling a model."""
 
     claim: ValidatedMemoryClaim
-    candidates: tuple[MemoryCandidate, ...]
     plan: MemoryResolutionPlan
     action: MemoryResolutionAction
     reason_code: str
@@ -68,14 +62,12 @@ class MemoryClaimProcessor:
         settings: Settings,
         facts: MemoryFactService,
         validator: MemoryClaimValidator | None = None,
-        metrics: MemoryLifecycleMetrics | None = None,
     ) -> None:
         self._settings = settings
         self._facts = facts
         self._validator = validator or MemoryClaimValidator(
             timezone_name=settings.default_timezone,
         )
-        self.metrics = metrics or MemoryLifecycleMetrics()
 
     def validate(
         self,
@@ -110,10 +102,10 @@ class MemoryClaimProcessor:
         *,
         session: AsyncSession | None = None,
     ) -> MemoryClaimProcessResult:
-        resolution = await self.resolve(claim, context)
+        resolution = self.resolve(claim, context)
         return await self.apply_resolution(resolution, session=session)
 
-    async def resolve(
+    def resolve(
         self,
         claim: MemoryClaim | ValidatedMemoryClaim,
         context: MemoryProcessingContext,
@@ -150,13 +142,11 @@ class MemoryClaimProcessor:
             )
             return ResolvedMemoryClaim(
                 claim=historical,
-                candidates=(),
                 plan=MemoryResolutionPlan(
                     action=MemoryResolutionAction.CREATE,
                     new_fact_status=MemoryStatus.INVALIDATED,
                     new_conflict_state=MemoryConflictState.CLEAR,
                     reason_code="historical_expired",
-                    append_evidence=True,
                     create_new_fact=True,
                 ),
                 action=MemoryResolutionAction.INVALIDATE,
@@ -164,11 +154,9 @@ class MemoryClaimProcessor:
             )
         return ResolvedMemoryClaim(
             claim=validated,
-            candidates=(),
             plan=MemoryResolutionPlan(
                 action=MemoryResolutionAction.CREATE,
                 reason_code="independent_claim",
-                append_evidence=True,
                 create_new_fact=True,
             ),
             action=MemoryResolutionAction.CREATE,
@@ -187,7 +175,7 @@ class MemoryClaimProcessor:
             return resolution
         fact = await self._facts.apply_claim(
             resolution.claim,
-            candidates=resolution.candidates,
+            candidates=(),
             plan=resolution.plan,
             session=session,
         )

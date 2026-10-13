@@ -1,5 +1,6 @@
 """Fence new Host operation identities without merging historical automations."""
 
+import sqlalchemy as sa
 from alembic import op
 
 revision = "0060"
@@ -9,7 +10,19 @@ depends_on = None
 
 
 def upgrade() -> None:
-    from qq_ai_bot.runtime.automation_budget_schema import budgets
+    # Freeze this migration's original schema independently of current runtime models.
+    metadata = sa.MetaData()
+    sa.Table("automation_runs", metadata, sa.Column("id", sa.Integer, primary_key=True))
+    budgets = sa.Table(
+        "runtime_automation_budgets",
+        metadata,
+        sa.Column(
+            "run_id", sa.ForeignKey("automation_runs.id", ondelete="CASCADE"), primary_key=True
+        ),
+        sa.Column("models", sa.Integer, nullable=False, server_default="0"),
+        sa.Column("tools", sa.Integer, nullable=False, server_default="0"),
+        sa.CheckConstraint("models >= 0 AND tools >= 0", name="ck_automation_work_budget"),
+    )
 
     budgets.create(op.get_bind(), checkfirst=True)
     # Existing recorded usage remains charged, including unfinished step work.

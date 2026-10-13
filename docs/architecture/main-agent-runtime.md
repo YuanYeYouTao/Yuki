@@ -525,7 +525,9 @@ AutomationWorker 只扫描未来安排、接纳唯一发生并结算真实结果
 时钟轮询先分页只读观察等待条件、原 Work 终态及 Conversation/Work generation，
 没有变化时不取得 SQLite 写锁。有变化的最多 128 个候选在短写事务中重新核验，
 再更新部分命中、失效状态或向原 Work 投递；所属子 Agent 的状态取自原 Work。
-输入准备修复、终态回收及 Emoji 分析领取也先只读发现候选，空轮询不产生写事务。
+输入准备修复、未引用媒体回收及 Emoji 分析领取也先只读发现候选，空轮询不产生写事务。
+终态 Work 不按全局条数删除原 journal、效果、输入、等待或检查点；原执行 ID 保留，
+自动化结算仍能关联原 Work。工作者显式归档与 canonical 隐私清退沿各自合同处理。
 Emoji 只接管候选中的到期分析租约，不全局清扫过期行。Work 激活的有效期在执行
 数据库语句时核验；等待写锁期间到期的旧租约不能续期或提交状态。
 
@@ -593,6 +595,8 @@ WorkScheduler 沿原循环尝试 repair_inputs/wake_rollups/reclaim/protocol_cle
 尚未接纳工作的普通聊天，Provider、配置、空响应、容量、校验和内部异常保留原日志、
 ProcessResult 原失败原因及 TURN_CLOSED，不因异常自动向 QQ 插入固定报错。
 工具失败仍按原工具结果交回模型；模型请求失败不另外购买一次请求来解释错误。
+旧 detached sandbox continuation 的 claimed 状态由 0116 一次性迁移为 blocked；
+保留原 request/run ID、次数和执行回执，启动不再重复清理。
 没有持久恢复所有者时不自动重放；有 Work 时由原 supervisor 保存真实状态和恢复事实。
 发送或存储未知仍保持未知，不因删除通知改成成功。
 

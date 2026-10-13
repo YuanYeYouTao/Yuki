@@ -14,7 +14,6 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from qq_ai_bot import __version__
 from qq_ai_bot.adapters.onebot.group_recovery import QQGroupRecovery
-from qq_ai_bot.admin.action_service import ActionRegistry
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.admin.permission_catalog import PermissionCatalogService
@@ -125,11 +124,9 @@ class ApplicationContainer:
             max_media_bytes=settings.vision_max_prepared_bytes,
             max_media_frames=settings.vision_max_frames_per_turn,
         )
-        self.admin_action_registry = ActionRegistry()
         self.permission_catalog = PermissionCatalogService(
             settings=settings,
             config_registry=self.runtime_config.registry,
-            action_registry=self.admin_action_registry,
         )
         self.conversation_scopes = persistence.conversation_scopes
         self.conversation_rollups = persistence.conversation_rollups
@@ -154,7 +151,6 @@ class ApplicationContainer:
             facts=self.memories,
             retriever=self.memory_context.retriever,
         )
-        self.agent_actions = persistence.agent_actions
         self.web_sources = persistence.web_sources
         self.media_analyses = persistence.media_analyses
         self.emoji_descriptions = persistence.emoji_descriptions
@@ -173,7 +169,6 @@ class ApplicationContainer:
         self.model_profiles = model_runtime.profiles
         self.model_clients = model_runtime.clients
         self.model_invocations = model_runtime.invocations
-        self.model_router = model_runtime.router
         self.models = model_runtime.executor
         self.provider = model_runtime.chat_provider
         self.web_module = WebModule(
@@ -222,7 +217,7 @@ class ApplicationContainer:
         self.emoji_selector = emoji.selector
         self.emoji_delivery = emoji.delivery
         self.emoji_worker = emoji.worker
-        self.concurrency = ConcurrencyManager(settings.global_llm_concurrency)
+        self.concurrency = ConcurrencyManager()
         self.turn_coordinator = ConversationTurnCoordinator(
             interrupt_autonomous_on_new_message=(
                 settings.conversation_interrupt_autonomous_on_new_message
@@ -357,7 +352,6 @@ class ApplicationContainer:
             chat_admission_enabled=self.settings.runtime_work_enabled,
         )
         self.database.subagents_enabled = self.settings.subagents_enabled
-        self.database.subagent_concurrency = self.settings.subagent_concurrency
         children = SubagentRepository(works)
         self.subagent_execution = SubagentExecution(
             works,
@@ -402,8 +396,6 @@ class ApplicationContainer:
             settings=settings,
             database=self.database,
             runtime_config=self.runtime_config,
-            action_registry=self.admin_action_registry,
-            permission_catalog=self.permission_catalog,
             memories=self.memories,
             memory_context=self.memory_context,
             memory_index=self.memory_index,
@@ -417,7 +409,6 @@ class ApplicationContainer:
             emoji_storage=self.emoji_storage,
             emoji_collector=self.emoji_collector,
             emoji_worker=self.emoji_worker,
-            memory_rebuild=self.memory_rebuild_service,
             memory_mutations=self.memory_mutations,
             ledger=self.ledger,
             memory_self_reflection=self.memory_self_reflection_worker,
@@ -431,9 +422,6 @@ class ApplicationContainer:
         self.private_access_admin = admin.private_access
         self.config_admin = admin.config
         self.emoji_admin = admin.emoji
-        self.admin_actions = admin.actions
-        self.admin_capabilities = admin.capabilities
-        self.chat.set_admin_tools(self.admin_capabilities)
         self.automation_module = AutomationModule(
             settings=settings,
             database=self.database,
@@ -498,10 +486,8 @@ class ApplicationContainer:
         )
         plugins = self.plugin_module.build()
         self.plugins = plugins
-        self.plugin_installations = plugins.installations
         self.plugin_config_values = plugins.config_values
         self.plugin_state = plugins.state
-        self.plugin_audit_repository = plugins.audit_repository
         self.plugin_audit = plugins.audit
         self.plugin_session_repository = plugins.session_repository
         self.plugin_sessions = plugins.sessions
@@ -580,7 +566,6 @@ class ApplicationContainer:
             plugin_commands=self.plugin_commands,
             emoji_admin=self.emoji_admin,
             model_invocations=self.model_invocations,
-            memory_rebuild=self.memory_rebuild_service,
         )
         self.canonical_ingress = CanonicalIngressResolver(
             self.database,
@@ -784,20 +769,13 @@ class ApplicationContainer:
         self.plugin_notification_outbox.wake()
         self.plugin_background_turns.wake()
 
-    def _plugin_invocation_scope(
-        self,
-        plugin_id: str,
-        runtime: ToolRuntimeProjection,
-        *,
-        web_was_used: bool,
-    ) -> object:
+    def _plugin_invocation_scope(self, plugin_id: str, runtime: ToolRuntimeProjection) -> object:
         context = self._plugin_contexts.get(plugin_id)
         if context is None:
             raise RuntimeError("plugin is not running")
         return context.invocation_scope(
             plugin_id,
             runtime,
-            web_was_used=web_was_used,
         )
 
     def _plugin_signal_scope(

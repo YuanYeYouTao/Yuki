@@ -58,7 +58,6 @@ from qq_ai_bot.conversation.rollup.prompt_accounting import (
     durable_uncovered_characters,
     prompt_accounting_characters,
     prompt_visible_event_count,
-    source_accounting_characters,
 )
 from qq_ai_bot.conversation.rollup.renderer import (
     serialize_compaction_source_events,
@@ -152,23 +151,6 @@ async def _reconcile_overlay_with_semantic(
     return True
 
 
-def _valid_same_generation_overlay(
-    overlay: CanonicalConversationRollupEmergencyOverlayModel | None,
-    *,
-    generation: int,
-    starts_after: int,
-    last_event_id: int,
-    semantic_revision: int,
-) -> bool:
-    return valid_same_generation_overlay(
-        overlay,
-        generation=generation,
-        starts_after=starts_after,
-        last_event_id=last_event_id,
-        semantic_revision=semantic_revision,
-    )
-
-
 def _source_checkpoint(
     *,
     emergency: bool,
@@ -179,7 +161,7 @@ def _source_checkpoint(
     last_event_id: int,
 ) -> tuple[int, int, str]:
     semantic_revision = semantic.revision if semantic is not None else 0
-    if emergency and _valid_same_generation_overlay(
+    if emergency and valid_same_generation_overlay(
         overlay,
         generation=generation,
         starts_after=starts_after,
@@ -308,13 +290,11 @@ def _job_state_dict(
 async def _load_prompt_tail_events(
     session: AsyncSession,
     *,
-    scope: ConversationScope,
     coverage: int,
     last_event_id: int,
     conversation_id: str,
     before_event_id: int | None = None,
 ) -> tuple[EventRecord, ...]:
-    del scope
     query = select(ChatEventModel).where(
         ChatEventModel.canonical_conversation_id == conversation_id,
         ChatEventModel.id > coverage,
@@ -448,7 +428,7 @@ async def _compose_detailed_status(
     semantic = _checkpoint_status_from_semantic(semantic_row)
     semantic_revision = semantic_row.revision if semantic_row is not None else 0
     overlay = None
-    if _valid_same_generation_overlay(
+    if valid_same_generation_overlay(
         overlay_row,
         generation=state.generation,
         starts_after=state.starts_after_event_id,
@@ -469,7 +449,6 @@ async def _compose_detailed_status(
     if state.starts_after_event_id <= effective_coverage <= state.last_event_id:
         events = await _load_prompt_tail_events(
             session,
-            scope=state.scope,
             coverage=effective_coverage,
             last_event_id=state.last_event_id,
             conversation_id=conversation_id,
@@ -567,8 +546,6 @@ class ConversationRollupRepository:
         return await self._policy_for_scope(scope) if self._policy_for_scope else self._config
 
     async def _claim_policy(self, claim: RollupJobClaim) -> RollupPolicyConfig:
-        if claim.conversation_id is None:
-            raise RollupLeaseLostError("canonical rollup claim has no conversation")
         from qq_ai_bot.runtime.work_schema_v1 import work
 
         policy = self._config
@@ -607,7 +584,49 @@ class ConversationRollupRepository:
 
         now = _utcnow()
         async with self._database.sessions() as session:
-            return await self._health_snapshot_canonical(session, now)
+            scope_count, max_events, max_characters = (
+                await session.execute(
+                    select(
+                        func.count(CanonicalConversationModel.id),
+                        func.max(CanonicalConversationModel.uncovered_event_count),
+                        func.max(CanonicalConversationModel.uncovered_character_count),
+                    )
+                )
+            ).one()
+            expired_processing = int(
+                await session.scalar(
+                    select(func.count(CanonicalConversationRollupJobModel.conversation_id)).where(
+                        CanonicalConversationRollupJobModel.status == "processing",
+                        CanonicalConversationRollupJobModel.lease_until <= now,
+                    )
+                )
+                or 0
+            )
+            oldest_pending = await session.scalar(
+                select(func.min(CanonicalConversationRollupJobModel.created_at)).where(
+                    CanonicalConversationRollupJobModel.status == "pending"
+                )
+            )
+            recent_error = await session.scalar(
+                select(CanonicalConversationRollupJobModel.last_error_category)
+                .where(CanonicalConversationRollupJobModel.last_error_category.is_not(None))
+                .order_by(CanonicalConversationRollupJobModel.updated_at.desc())
+                .limit(1)
+            )
+            last_extractive = await session.scalar(
+                select(func.max(CanonicalConversationRollupModel.updated_at)).where(
+                    CanonicalConversationRollupModel.summary_kind == RollupKind.EXTRACTIVE.value
+                )
+            )
+            return {
+                "scope_count": int(scope_count or 0),
+                "expired_processing_leases": expired_processing,
+                "oldest_pending_job_age_seconds": _age_seconds(oldest_pending, now),
+                "max_lag_events": int(max_events or 0),
+                "max_lag_characters": int(max_characters or 0),
+                "recent_infrastructure_error_category": recent_error,
+                "last_extractive_at": _as_utc_iso(last_extractive),
+            }
 
     async def status(
         self, scope: ConversationScope
@@ -615,13 +634,56 @@ class ConversationRollupRepository:
         ConversationScopeState | None, ConversationRollupState | None, dict[str, object] | None
     ]:
         async with self._database.sessions() as session:
-            return await self._status_canonical(session, scope)
+            conversation = await self._conversation_for_scope(session, scope)
+            if conversation is None:
+                return None, None, None
+            rollup_row = await session.get(CanonicalConversationRollupModel, conversation.id)
+            overlay_row = await session.get(
+                CanonicalConversationRollupEmergencyOverlayModel, conversation.id
+            )
+            job = await session.get(CanonicalConversationRollupJobModel, conversation.id)
+            semantic_revision = rollup_row.revision if rollup_row is not None else 0
+            effective = (
+                self._canonical_rollup_state(rollup_row)
+                if rollup_row is not None and rollup_row.generation == conversation.generation
+                else None
+            )
+            if valid_same_generation_overlay(
+                overlay_row,
+                generation=conversation.generation,
+                starts_after=conversation.starts_after_event_id,
+                last_event_id=conversation.last_event_id,
+                semantic_revision=semantic_revision,
+            ):
+                assert overlay_row is not None
+                effective = _canonical_overlay_state(overlay_row)
+            return (
+                await hydrate_scope_state_from_canonical(session, scope, conversation),
+                effective,
+                _job_state_dict(job),
+            )
 
     async def detailed_status(self, scope: ConversationScope) -> ConversationRollupDetailedStatus:
         """Metadata-only status. Does not load or return summary text."""
 
         async with self._database.sessions() as session:
-            return await self._detailed_status_canonical(session, scope)
+            conversation = await self._conversation_for_scope(session, scope)
+            if conversation is None:
+                return _empty_detailed_status()
+            rollup_row = await session.get(CanonicalConversationRollupModel, conversation.id)
+            overlay_row = await session.get(
+                CanonicalConversationRollupEmergencyOverlayModel, conversation.id
+            )
+            job = await session.get(CanonicalConversationRollupJobModel, conversation.id)
+            return await _compose_detailed_status(
+                session,
+                state=await hydrate_scope_state_from_canonical(session, scope, conversation),
+                semantic_row=rollup_row,
+                overlay_row=overlay_row,
+                job_row=job,
+                conversation_id=conversation.id,
+                config=self.config,
+            )
 
     async def scope_state(self, scope: ConversationScope) -> ConversationScopeState | None:
         """Read identity metadata only for a protocol recovery fence."""
@@ -648,12 +710,73 @@ class ConversationRollupRepository:
             async with self._database.sessions() as session, session.begin():
                 # sqlite3 legacy mode does not BEGIN on SELECT.
                 await session.execute(text("BEGIN"))
-                return await self._load_prompt_snapshot_canonical(
+                conversation = await self._conversation_for_scope(session, scope)
+                if conversation is None:
+                    raise ConversationCoverageError("conversation scope does not exist")
+                state = await hydrate_scope_state_from_canonical(session, scope, conversation)
+                if expected_turn is not None and not turn_matches_hydrated_scope(
+                    expected_turn,
+                    conversation_id=state.id,
+                    generation=state.generation,
+                    transport_key=scope.key,
+                    runtime_key=state.runtime_scope_key,
+                ):
+                    raise ConversationCoverageError("turn identity changed before prompt snapshot")
+                rollup_row = await session.get(CanonicalConversationRollupModel, conversation.id)
+                if rollup_row is not None and rollup_row.generation != conversation.generation:
+                    raise ConversationCoverageError("rollup generation mismatch")
+                overlay_row = await session.get(
+                    CanonicalConversationRollupEmergencyOverlayModel, conversation.id
+                )
+                semantic_revision = rollup_row.revision if rollup_row is not None else 0
+                overlay_state = None
+                if valid_same_generation_overlay(
+                    overlay_row,
+                    generation=conversation.generation,
+                    starts_after=conversation.starts_after_event_id,
+                    last_event_id=conversation.last_event_id,
+                    semantic_revision=semantic_revision,
+                ):
+                    assert overlay_row is not None
+                    overlay_state = _canonical_overlay_state(overlay_row)
+                coverage = session_effective_coverage(
+                    generation=conversation.generation,
+                    starts_after=conversation.starts_after_event_id,
+                    last_event_id=conversation.last_event_id,
+                    overlay=overlay_row,
+                    semantic=rollup_row,
+                )
+                events, raw_complete = await _load_bounded_prompt_tail(
                     session,
-                    scope,
+                    coverage=coverage,
+                    last_event_id=conversation.last_event_id,
+                    conversation_id=conversation.id,
                     before_event_id=before_event_id,
+                    config=self.config,
                     token_budget=token_budget,
-                    expected_turn=expected_turn,
+                )
+                tail_end = events[-1].id if events else coverage
+                effective = (
+                    overlay_state
+                    if overlay_state is not None
+                    else (
+                        self._canonical_rollup_state(rollup_row) if rollup_row is not None else None
+                    )
+                )
+                return ConversationPromptSnapshot(
+                    scope=state,
+                    rollup=effective,
+                    raw_events=events,
+                    effective_coverage=coverage,
+                    raw_tail_end_event_id=tail_end,
+                    overlay=overlay_state,
+                    rewrite_pending=overlay_state is not None,
+                    prompt_source_revision=conversation.prompt_source_revision,
+                    raw_complete=raw_complete,
+                    rollup_stamp=(
+                        rollup_row.revision if rollup_row is not None else 0,
+                        overlay_row.revision if overlay_row is not None else 0,
+                    ),
                 )
         finally:
             self._active_policy.reset(token)
@@ -678,13 +801,32 @@ class ConversationRollupRepository:
         token = uuid.uuid4().hex
         async with self._database.immediate_session() as session:
             now = _utcnow()
-            return await self._claim_next_canonical_job(
-                session,
-                candidate_id=candidate_id,
+            lease_until = now + timedelta(seconds=lease_seconds)
+            row = await session.scalar(
+                update(CanonicalConversationRollupJobModel)
+                .where(
+                    CanonicalConversationRollupJobModel.conversation_id == candidate_id,
+                    self._claimable_job(),
+                )
+                .values(
+                    status="processing",
+                    lease_owner=lease_owner,
+                    lease_token=token,
+                    lease_until=lease_until,
+                    updated_at=now,
+                )
+                .returning(CanonicalConversationRollupJobModel)
+            )
+            if row is None:
+                return None
+            return RollupJobClaim(
+                generation=row.generation,
+                claimed_signal_revision=row.signal_revision,
+                failure_count=row.failure_count,
                 lease_owner=lease_owner,
-                lease_until=now + timedelta(seconds=lease_seconds),
-                token=token,
-                now=now,
+                lease_token=token,
+                lease_until=lease_until,
+                conversation_id=str(row.conversation_id),
             )
 
     async def has_required_work(self, claim: RollupJobClaim) -> bool:
@@ -723,19 +865,58 @@ class ConversationRollupRepository:
         async with self._database.immediate_session() as session:
             now = _utcnow()
             lease_until = now + timedelta(seconds=lease_seconds)
-            return await self._claim_canonical_scope_for_foreground(
-                session,
-                scope,
+            conversation = await self._conversation_for_scope(session, scope)
+            if conversation is None:
+                return None
+            job = await session.get(CanonicalConversationRollupJobModel, conversation.id)
+            if (
+                not preempt
+                and job is not None
+                and job.generation == conversation.generation
+                and job.status == "processing"
+                and job.lease_until is not None
+                and job.lease_until.replace(tzinfo=UTC) > now
+            ):
+                return None
+            if job is None:
+                job = CanonicalConversationRollupJobModel(
+                    conversation_id=conversation.id,
+                    generation=conversation.generation,
+                    signal_revision=1,
+                    status="pending",
+                    failure_count=0,
+                    lease_owner=None,
+                    lease_token=None,
+                    lease_until=None,
+                    next_attempt_at=now,
+                    last_error_category=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(job)
+                await session.flush()
+            elif job.generation != conversation.generation:
+                job.generation = conversation.generation
+                job.signal_revision += 1
+                job.failure_count = 0
+                job.last_error_category = None
+            job.status = "processing"
+            job.lease_owner = lease_owner
+            job.lease_token = token
+            job.lease_until = lease_until
+            job.next_attempt_at = now
+            job.updated_at = now
+            return RollupJobClaim(
+                generation=conversation.generation,
+                claimed_signal_revision=job.signal_revision,
+                failure_count=job.failure_count,
                 lease_owner=lease_owner,
+                lease_token=token,
                 lease_until=lease_until,
-                token=token,
-                now=now,
-                preempt=preempt,
+                conversation_id=conversation.id,
             )
 
     async def heartbeat(self, claim: RollupJobClaim, *, lease_seconds: int) -> RollupJobClaim:
-        if not claim.conversation_id:
-            raise RollupLeaseLostError("canonical rollup claim has no conversation")
         async with self._database.immediate_session() as session:
             now = _utcnow()
             renewed = now + timedelta(seconds=lease_seconds)
@@ -760,18 +941,87 @@ class ConversationRollupRepository:
         self, claim: RollupJobClaim, *, emergency: bool = False, token_budget: int | None = None
     ) -> RollupCandidate | None:
         now = _utcnow()
-        if not claim.conversation_id:
-            raise RollupLeaseLostError("canonical rollup claim has no conversation")
         policy = await self._claim_policy(claim)
         if token_budget is not None:
             policy = replace(policy, context_token_budget=max(1, token_budget))
         token = self._active_policy.set(policy)
         try:
             async with self._database.sessions() as session, session.begin():
-                candidate = await self._candidate_for_canonical(
-                    session, claim, now=now, emergency=emergency
+                job = await session.get(CanonicalConversationRollupJobModel, claim.conversation_id)
+                if job is None or not self._canonical_lease_matches(job, claim, now=now):
+                    raise RollupLeaseLostError("rollup candidate read lost its lease")
+                conversation = await session.get(CanonicalConversationModel, claim.conversation_id)
+                if conversation is None or conversation.generation != claim.generation:
+                    return None
+                rollup = await session.get(CanonicalConversationRollupModel, claim.conversation_id)
+                if rollup is not None and rollup.generation != claim.generation:
+                    raise ConversationCoverageError("rollup generation mismatch")
+                overlay = await session.get(
+                    CanonicalConversationRollupEmergencyOverlayModel, claim.conversation_id
                 )
-                return replace(candidate, policy=policy) if candidate else None
+                coverage, revision, previous = _source_checkpoint(
+                    emergency=emergency,
+                    overlay=overlay,
+                    semantic=rollup,
+                    generation=claim.generation,
+                    starts_after=conversation.starts_after_event_id,
+                    last_event_id=conversation.last_event_id,
+                )
+                protected_start = await self._protected_suffix_start(
+                    session,
+                    conversation_id=conversation.id,
+                    coverage=coverage,
+                    last_event_id=conversation.last_event_id,
+                )
+                coverage_hold = await self._coverage_holds.earliest_source_event_id(
+                    session,
+                    canonical_conversation_id=conversation.id,
+                )
+                eligible_end = conversation.last_event_id
+                if protected_start is not None:
+                    eligible_end = min(eligible_end, protected_start - 1)
+                if coverage_hold is not None:
+                    eligible_end = min(eligible_end, coverage_hold - 1)
+                rows = tuple(
+                    (
+                        await session.scalars(
+                            select(ChatEventModel)
+                            .where(
+                                ChatEventModel.canonical_conversation_id == conversation.id,
+                                ChatEventModel.id > coverage,
+                                ChatEventModel.id <= eligible_end,
+                                keeper_event_clause(),
+                            )
+                            .order_by(ChatEventModel.id.asc())
+                            .limit(self.config.batch_max_events)
+                        )
+                    ).all()
+                )
+                all_events = await _with_proactive_cause_metadata(
+                    session,
+                    tuple(_event_record(row) for row in rows),
+                )
+                batch = take_batch(all_events, self.config)
+                if not batch:
+                    return None
+                fingerprint = source_fingerprint(
+                    conversation_id=claim.conversation_id,
+                    generation=claim.generation,
+                    source_coverage=coverage,
+                    source_rollup_revision=revision,
+                    previous_summary=previous,
+                    events=batch,
+                )
+                return RollupCandidate(
+                    conversation_id=claim.conversation_id,
+                    generation=claim.generation,
+                    source_coverage=coverage,
+                    source_rollup_revision=revision,
+                    previous_summary=previous,
+                    events=batch,
+                    fingerprint=fingerprint,
+                    policy=policy,
+                )
         finally:
             self._active_policy.reset(token)
 
@@ -779,8 +1029,6 @@ class ConversationRollupRepository:
         """Delete only an unchanged job; otherwise restore it to pending."""
 
         now = _utcnow()
-        if not claim.conversation_id:
-            raise RollupLeaseLostError("canonical rollup claim has no conversation")
         async with self._database.sessions() as session, session.begin():
             coverage_hold = await self._coverage_holds.earliest_source_event_id(
                 session,
@@ -848,8 +1096,6 @@ class ConversationRollupRepository:
             if summary_kind is RollupKind.MODEL
             else set()
         )
-        if not claim.conversation_id:
-            raise RollupLeaseLostError("canonical rollup claim has no conversation")
 
         async def commit(session: AsyncSession) -> RollupCommitResult:
             return await self._commit_canonical_candidate(
@@ -881,8 +1127,6 @@ class ConversationRollupRepository:
         normalized = summary_text.strip()
         if not normalized:
             raise ValueError("summary violates configured output bounds")
-        if not claim.conversation_id:
-            raise RollupLeaseLostError("canonical rollup claim has no conversation")
 
         async def commit(session: AsyncSession) -> RollupCommitResult:
             return await self._commit_canonical_emergency_overlay(
@@ -903,16 +1147,15 @@ class ConversationRollupRepository:
         self, operation: Callable[[AsyncSession], Awaitable[RollupCommitResult]]
     ) -> RollupCommitResult:
         """Reprepare only a rolled-back DB plan, retaining the original paid output."""
-        for attempt in range(3):
+        while True:
             try:
                 async with self._database.sessions() as session, session.begin():
                     # Legacy sqlite3 SELECT does not begin a read transaction.
                     await session.execute(text("BEGIN"))
                     return await operation(session)
             except OperationalError as exc:
-                if getattr(exc.orig, "sqlite_errorcode", None) != 517 or attempt == 2:
+                if getattr(exc.orig, "sqlite_errorcode", None) != 517:
                     raise
-        raise AssertionError("unreachable rollup snapshot retry")
 
     async def retry_infrastructure(
         self,
@@ -921,8 +1164,6 @@ class ConversationRollupRepository:
         error_category: str,
         retry_max_seconds: int,
     ) -> None:
-        if not claim.conversation_id:
-            raise RollupLeaseLostError("canonical rollup claim has no conversation")
         async with self._database.immediate_session() as session:
             now = _utcnow()
             job = await session.scalar(
@@ -971,246 +1212,6 @@ class ConversationRollupRepository:
             )
             return int(cast(CursorResult[object], result).rowcount or 0)
 
-    async def _health_snapshot_canonical(
-        self, session: AsyncSession, now: datetime
-    ) -> dict[str, object]:
-        scope_count, max_events, max_characters = (
-            await session.execute(
-                select(
-                    func.count(CanonicalConversationModel.id),
-                    func.max(CanonicalConversationModel.uncovered_event_count),
-                    func.max(CanonicalConversationModel.uncovered_character_count),
-                )
-            )
-        ).one()
-        expired_processing = int(
-            await session.scalar(
-                select(func.count(CanonicalConversationRollupJobModel.conversation_id)).where(
-                    CanonicalConversationRollupJobModel.status == "processing",
-                    CanonicalConversationRollupJobModel.lease_until <= now,
-                )
-            )
-            or 0
-        )
-        oldest_pending = await session.scalar(
-            select(func.min(CanonicalConversationRollupJobModel.created_at)).where(
-                CanonicalConversationRollupJobModel.status == "pending"
-            )
-        )
-        recent_error = await session.scalar(
-            select(CanonicalConversationRollupJobModel.last_error_category)
-            .where(CanonicalConversationRollupJobModel.last_error_category.is_not(None))
-            .order_by(CanonicalConversationRollupJobModel.updated_at.desc())
-            .limit(1)
-        )
-        last_extractive = await session.scalar(
-            select(func.max(CanonicalConversationRollupModel.updated_at)).where(
-                CanonicalConversationRollupModel.summary_kind == RollupKind.EXTRACTIVE.value
-            )
-        )
-        return {
-            "scope_count": int(scope_count or 0),
-            "expired_processing_leases": expired_processing,
-            "oldest_pending_job_age_seconds": _age_seconds(oldest_pending, now),
-            "max_lag_events": int(max_events or 0),
-            "max_lag_characters": int(max_characters or 0),
-            "recent_infrastructure_error_category": recent_error,
-            "last_extractive_at": _as_utc_iso(last_extractive),
-        }
-
-    async def _claim_canonical_scope_for_foreground(
-        self,
-        session: AsyncSession,
-        scope: ConversationScope,
-        *,
-        lease_owner: str,
-        lease_until: datetime,
-        token: str,
-        now: datetime,
-        preempt: bool = True,
-    ) -> RollupJobClaim | None:
-        conversation = await self._conversation_for_scope(session, scope)
-        if conversation is None:
-            return None
-        job = await session.get(CanonicalConversationRollupJobModel, conversation.id)
-        if (
-            not preempt
-            and job is not None
-            and job.generation == conversation.generation
-            and job.status == "processing"
-            and job.lease_until is not None
-            and job.lease_until.replace(tzinfo=UTC) > now
-        ):
-            return None
-        if job is None:
-            job = CanonicalConversationRollupJobModel(
-                conversation_id=conversation.id,
-                generation=conversation.generation,
-                signal_revision=1,
-                status="pending",
-                failure_count=0,
-                lease_owner=None,
-                lease_token=None,
-                lease_until=None,
-                next_attempt_at=now,
-                last_error_category=None,
-                created_at=now,
-                updated_at=now,
-            )
-            session.add(job)
-            await session.flush()
-        elif job.generation != conversation.generation:
-            job.generation = conversation.generation
-            job.signal_revision += 1
-            job.failure_count = 0
-            job.last_error_category = None
-        job.status = "processing"
-        job.lease_owner = lease_owner
-        job.lease_token = token
-        job.lease_until = lease_until
-        job.next_attempt_at = now
-        job.updated_at = now
-        return RollupJobClaim(
-            generation=conversation.generation,
-            claimed_signal_revision=job.signal_revision,
-            failure_count=job.failure_count,
-            lease_owner=lease_owner,
-            lease_token=token,
-            lease_until=lease_until,
-            conversation_id=conversation.id,
-        )
-
-    async def _status_canonical(
-        self, session: AsyncSession, scope: ConversationScope
-    ) -> tuple[
-        ConversationScopeState | None, ConversationRollupState | None, dict[str, object] | None
-    ]:
-        conversation = await self._conversation_for_scope(session, scope)
-        if conversation is None:
-            return None, None, None
-        rollup_row = await session.get(CanonicalConversationRollupModel, conversation.id)
-        overlay_row = await session.get(
-            CanonicalConversationRollupEmergencyOverlayModel, conversation.id
-        )
-        job = await session.get(CanonicalConversationRollupJobModel, conversation.id)
-        semantic_revision = rollup_row.revision if rollup_row is not None else 0
-        effective = (
-            self._canonical_rollup_state(rollup_row)
-            if rollup_row is not None and rollup_row.generation == conversation.generation
-            else None
-        )
-        if _valid_same_generation_overlay(
-            overlay_row,
-            generation=conversation.generation,
-            starts_after=conversation.starts_after_event_id,
-            last_event_id=conversation.last_event_id,
-            semantic_revision=semantic_revision,
-        ):
-            assert overlay_row is not None
-            effective = _canonical_overlay_state(overlay_row)
-        return (
-            await hydrate_scope_state_from_canonical(session, scope, conversation),
-            effective,
-            _job_state_dict(job),
-        )
-
-    async def _detailed_status_canonical(
-        self, session: AsyncSession, scope: ConversationScope
-    ) -> ConversationRollupDetailedStatus:
-        conversation = await self._conversation_for_scope(session, scope)
-        if conversation is None:
-            return _empty_detailed_status()
-        rollup_row = await session.get(CanonicalConversationRollupModel, conversation.id)
-        overlay_row = await session.get(
-            CanonicalConversationRollupEmergencyOverlayModel, conversation.id
-        )
-        job = await session.get(CanonicalConversationRollupJobModel, conversation.id)
-        return await _compose_detailed_status(
-            session,
-            state=await hydrate_scope_state_from_canonical(session, scope, conversation),
-            semantic_row=rollup_row,
-            overlay_row=overlay_row,
-            job_row=job,
-            conversation_id=conversation.id,
-            config=self.config,
-        )
-
-    async def _load_prompt_snapshot_canonical(
-        self,
-        session: AsyncSession,
-        scope: ConversationScope,
-        *,
-        before_event_id: int | None,
-        token_budget: int | None = None,
-        expected_turn: ConversationTurnSnapshot | None = None,
-    ) -> ConversationPromptSnapshot:
-        conversation = await self._conversation_for_scope(session, scope)
-        if conversation is None:
-            raise ConversationCoverageError("conversation scope does not exist")
-        state = await hydrate_scope_state_from_canonical(session, scope, conversation)
-        if expected_turn is not None and not turn_matches_hydrated_scope(
-            expected_turn,
-            conversation_id=state.id,
-            generation=state.generation,
-            transport_key=scope.key,
-            runtime_key=state.runtime_scope_key,
-        ):
-            raise ConversationCoverageError("turn identity changed before prompt snapshot")
-        rollup_row = await session.get(CanonicalConversationRollupModel, conversation.id)
-        if rollup_row is not None and rollup_row.generation != conversation.generation:
-            raise ConversationCoverageError("rollup generation mismatch")
-        overlay_row = await session.get(
-            CanonicalConversationRollupEmergencyOverlayModel, conversation.id
-        )
-        semantic_revision = rollup_row.revision if rollup_row is not None else 0
-        overlay_state = None
-        if _valid_same_generation_overlay(
-            overlay_row,
-            generation=conversation.generation,
-            starts_after=conversation.starts_after_event_id,
-            last_event_id=conversation.last_event_id,
-            semantic_revision=semantic_revision,
-        ):
-            assert overlay_row is not None
-            overlay_state = _canonical_overlay_state(overlay_row)
-        coverage = session_effective_coverage(
-            generation=conversation.generation,
-            starts_after=conversation.starts_after_event_id,
-            last_event_id=conversation.last_event_id,
-            overlay=overlay_row,
-            semantic=rollup_row,
-        )
-        events, raw_complete = await _load_bounded_prompt_tail(
-            session,
-            coverage=coverage,
-            last_event_id=conversation.last_event_id,
-            conversation_id=conversation.id,
-            before_event_id=before_event_id,
-            config=self.config,
-            token_budget=token_budget,
-        )
-        tail_end = events[-1].id if events else coverage
-        effective = (
-            overlay_state
-            if overlay_state is not None
-            else (self._canonical_rollup_state(rollup_row) if rollup_row is not None else None)
-        )
-        return ConversationPromptSnapshot(
-            scope=state,
-            rollup=effective,
-            raw_events=events,
-            effective_coverage=coverage,
-            raw_tail_end_event_id=tail_end,
-            overlay=overlay_state,
-            rewrite_pending=overlay_state is not None,
-            prompt_source_revision=conversation.prompt_source_revision,
-            raw_complete=raw_complete,
-            rollup_stamp=(
-                rollup_row.revision if rollup_row is not None else 0,
-                overlay_row.revision if overlay_row is not None else 0,
-            ),
-        )
-
     @staticmethod
     def _claimable_job() -> ColumnElement[bool]:
         return or_(
@@ -1224,132 +1225,6 @@ class ConversationRollupRepository:
                 func.julianday(CanonicalConversationRollupJobModel.lease_until)
                 <= func.julianday("now"),
             ),
-        )
-
-    async def _claim_next_canonical_job(
-        self,
-        session: AsyncSession,
-        *,
-        candidate_id: str,
-        lease_owner: str,
-        lease_until: datetime,
-        token: str,
-        now: datetime,
-    ) -> RollupJobClaim | None:
-        row = await session.scalar(
-            update(CanonicalConversationRollupJobModel)
-            .where(
-                CanonicalConversationRollupJobModel.conversation_id == candidate_id,
-                self._claimable_job(),
-            )
-            .values(
-                status="processing",
-                lease_owner=lease_owner,
-                lease_token=token,
-                lease_until=lease_until,
-                updated_at=now,
-            )
-            .returning(CanonicalConversationRollupJobModel)
-        )
-        if row is None:
-            return None
-        return RollupJobClaim(
-            generation=row.generation,
-            claimed_signal_revision=row.signal_revision,
-            failure_count=row.failure_count,
-            lease_owner=lease_owner,
-            lease_token=token,
-            lease_until=lease_until,
-            conversation_id=str(row.conversation_id),
-        )
-
-    async def _candidate_for_canonical(
-        self,
-        session: AsyncSession,
-        claim: RollupJobClaim,
-        *,
-        now: datetime,
-        emergency: bool = False,
-    ) -> RollupCandidate | None:
-        job = await session.get(CanonicalConversationRollupJobModel, claim.conversation_id)
-        if job is None or not self._canonical_lease_matches(job, claim, now=now):
-            raise RollupLeaseLostError("rollup candidate read lost its lease")
-        conversation = await session.get(CanonicalConversationModel, claim.conversation_id)
-        if conversation is None or conversation.generation != claim.generation:
-            return None
-        rollup = await session.get(CanonicalConversationRollupModel, claim.conversation_id)
-        if rollup is not None and rollup.generation != claim.generation:
-            raise ConversationCoverageError("rollup generation mismatch")
-        overlay = await session.get(
-            CanonicalConversationRollupEmergencyOverlayModel, claim.conversation_id
-        )
-        coverage, revision, previous = _source_checkpoint(
-            emergency=emergency,
-            overlay=overlay,
-            semantic=rollup,
-            generation=claim.generation,
-            starts_after=conversation.starts_after_event_id,
-            last_event_id=conversation.last_event_id,
-        )
-        protected_start = await self._protected_suffix_start(
-            session,
-            conversation_id=conversation.id,
-            coverage=coverage,
-            last_event_id=conversation.last_event_id,
-        )
-        coverage_hold = await self._coverage_holds.earliest_source_event_id(
-            session,
-            canonical_conversation_id=conversation.id,
-        )
-        eligible_end = conversation.last_event_id
-        if protected_start is not None:
-            eligible_end = min(eligible_end, protected_start - 1)
-        if coverage_hold is not None:
-            eligible_end = min(eligible_end, coverage_hold - 1)
-        rows = tuple(
-            (
-                await session.scalars(
-                    select(ChatEventModel)
-                    .where(
-                        ChatEventModel.canonical_conversation_id == conversation.id,
-                        ChatEventModel.id > coverage,
-                        ChatEventModel.id <= eligible_end,
-                        keeper_event_clause(),
-                    )
-                    .order_by(ChatEventModel.id.asc())
-                    .limit(self.config.batch_max_events)
-                )
-            ).all()
-        )
-        all_events = await _with_proactive_cause_metadata(
-            session,
-            tuple(_event_record(row) for row in rows),
-        )
-        batch = take_batch(all_events, self.config)
-        if not batch:
-            return None
-        characters = source_accounting_characters(
-            batch,
-            timezone=self.config.timezone,
-        )
-        fingerprint = source_fingerprint(
-            conversation_id=claim.conversation_id,
-            generation=claim.generation,
-            source_coverage=coverage,
-            source_rollup_revision=revision,
-            previous_summary=previous,
-            events=batch,
-        )
-        return RollupCandidate(
-            conversation_id=claim.conversation_id,
-            generation=claim.generation,
-            source_coverage=coverage,
-            source_rollup_revision=revision,
-            previous_summary=previous,
-            events=batch,
-            event_count=len(batch),
-            projection_characters=characters,
-            fingerprint=fingerprint,
         )
 
     async def _protected_suffix_start(
@@ -1473,10 +1348,8 @@ class ConversationRollupRepository:
                 )
             ).all()
         )
-        events = await _with_proactive_cause_metadata(
-            session,
-            tuple(_event_record(row) for row in rows),
-        )
+        raw_events = tuple(_event_record(row) for row in rows)
+        events = await _with_proactive_cause_metadata(session, raw_events)
         fingerprint = source_fingerprint(
             conversation_id=candidate.conversation_id,
             generation=candidate.generation,
@@ -1494,7 +1367,7 @@ class ConversationRollupRepository:
         remaining_count = conversation.uncovered_event_count - len(events)
         remaining_characters = (
             conversation.uncovered_character_count
-            - durable_uncovered_characters(events, **_prompt_kwargs(self.config))
+            - durable_uncovered_characters(raw_events, **_prompt_kwargs(self.config))
         )
         if min(remaining_count, remaining_characters) < 0:
             raise ConversationCoverageError("rollup uncovered counters changed or drifted")
@@ -1662,7 +1535,7 @@ class ConversationRollupRepository:
             raise RollupSourceChangedError("rollup source projection changed")
         covered_through = candidate.events[-1].id
         semantic_revision = current_rollup.revision if current_rollup is not None else 0
-        valid_overlay = _valid_same_generation_overlay(
+        valid_overlay = valid_same_generation_overlay(
             current_overlay,
             generation=candidate.generation,
             starts_after=conversation.starts_after_event_id,

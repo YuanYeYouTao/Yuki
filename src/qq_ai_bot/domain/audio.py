@@ -30,10 +30,8 @@ def serialize_transcripts(items: tuple[AudioTranscript, ...]) -> str:
 def parse_transcripts(value: str) -> tuple[AudioTranscript, ...]:
     if not value:
         return ()
-    if len(value) > 80000:
-        raise ValueError("audio transcript exceeds its bound")
     items = json.loads(value)
-    if not isinstance(items, list) or not 1 <= len(items) <= 3:
+    if not isinstance(items, list) or not items:
         raise ValueError("invalid audio transcript list")
     result = []
     for item in items:
@@ -43,7 +41,7 @@ def parse_transcripts(value: str) -> tuple[AudioTranscript, ...]:
             or not isinstance(item.get("segment_index"), int)
             or item["segment_index"] < 0
             or not isinstance(item.get("text"), str)
-            or not 0 < len(item["text"]) <= 12000
+            or not item["text"]
         ):
             raise ValueError("invalid audio transcript")
         result.append(AudioTranscript(item["source"], item["segment_index"], item["text"]))

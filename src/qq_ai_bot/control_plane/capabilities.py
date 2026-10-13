@@ -1,6 +1,6 @@
-"""Immutable identity/route/control capability descriptors and projection.
+"""Immutable identity/route/control capability descriptors.
 
-Existing PermissionCatalog / ActionRegistry / ConfigRegistry remain the
+Existing PermissionCatalog / ConfigRegistry remain the
 catalog sources. This module is only a descriptor table plus a pure
 projection boundary. It is not a fourth registry.
 """
@@ -8,7 +8,6 @@ projection boundary. It is not a fourth registry.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final, final
@@ -40,7 +39,6 @@ _MANAGEMENT_TOKENS: Final[frozenset[str]] = frozenset(
         "mutate",
     }
 )
-_REVIEWED_CATALOG_NAMESPACES: Final[frozenset[str]] = frozenset({"command", "action", "config"})
 DENIED_CAPABILITY_ID: Final[str] = "control.denied"
 
 
@@ -61,18 +59,6 @@ class CapabilitySensitivity(StrEnum):
     DESTRUCTIVE = "destructive"
 
 
-@final
-class CatalogSourceKind(StrEnum):
-    """Names the three existing catalogs plus plugin/automation metadata."""
-
-    PERMISSION_CATALOG = "permission_catalog"
-    ACTION_CATALOG = "action_registry"
-    CONFIG_CATALOG = "config_registry"
-    PLUGIN_METADATA = "plugin_metadata"
-    AUTOMATION_METADATA = "automation_metadata"
-    FIXED_TOOLSET = "fixed_toolset"
-
-
 _READ_SENSITIVITY: Final[frozenset[CapabilitySensitivity]] = frozenset(
     {
         CapabilitySensitivity.METADATA_READ,
@@ -84,20 +70,6 @@ _WRITE_SENSITIVITY: Final[frozenset[CapabilitySensitivity]] = frozenset(
     {
         CapabilitySensitivity.MUTATE,
         CapabilitySensitivity.DESTRUCTIVE,
-    }
-)
-_SOURCE_NAMESPACES: Final[dict[CatalogSourceKind, frozenset[str]]] = {
-    CatalogSourceKind.PERMISSION_CATALOG: _REVIEWED_CATALOG_NAMESPACES,
-    CatalogSourceKind.ACTION_CATALOG: frozenset({"action"}),
-    CatalogSourceKind.CONFIG_CATALOG: frozenset({"config"}),
-    CatalogSourceKind.PLUGIN_METADATA: frozenset(),
-    CatalogSourceKind.AUTOMATION_METADATA: _REVIEWED_CATALOG_NAMESPACES,
-    CatalogSourceKind.FIXED_TOOLSET: frozenset(),
-}
-_REVIEWED_DESCRIPTOR_SOURCES: Final[frozenset[CatalogSourceKind]] = frozenset(
-    {
-        CatalogSourceKind.PERMISSION_CATALOG,
-        CatalogSourceKind.AUTOMATION_METADATA,
     }
 )
 
@@ -219,20 +191,6 @@ class ControlCapabilityDescriptor:
             raise ValueError("sensitivity mismatch")
         if self.sensitivity in _WRITE_SENSITIVITY and not self.mutating:
             raise ValueError("sensitivity mismatch")
-
-
-@final
-@dataclass(frozen=True, slots=True)
-class CatalogCapabilityView:
-    """One item projected from an existing catalog source."""
-
-    source_kind: CatalogSourceKind
-    source_id: str
-
-    def __post_init__(self) -> None:
-        if type(self.source_kind) is not CatalogSourceKind:
-            raise TypeError("source_kind must be CatalogSourceKind")
-        object.__setattr__(self, "source_id", normalize_capability_id(self.source_id))
 
 
 def _descriptor(
@@ -373,12 +331,6 @@ CONTROL_CAPABILITY_DESCRIPTORS: Final[tuple[ControlCapabilityDescriptor, ...]] =
     ),
     _descriptor(
         "identity.space.disable",
-        CapabilityFamily.IDENTITY,
-        CapabilitySensitivity.MUTATE,
-        mutating=True,
-    ),
-    _descriptor(
-        "identity.space.autonomous",
         CapabilityFamily.IDENTITY,
         CapabilitySensitivity.MUTATE,
         mutating=True,
@@ -632,45 +584,3 @@ if DENIED_CAPABILITY_ID in CONTROL_CAPABILITY_IDS:
 def control_capability_descriptor(capability_id: str) -> ControlCapabilityDescriptor | None:
     token = normalize_capability_id(capability_id)
     return next((item for item in CONTROL_CAPABILITY_DESCRIPTORS if item.id == token), None)
-
-
-def project_source_capability_id(
-    source_id: object,
-    *,
-    source_kind: CatalogSourceKind,
-) -> str | None:
-    """Adapt one catalog/metadata id. Default-deny; source_kind is required."""
-
-    if type(source_kind) is not CatalogSourceKind:
-        raise TypeError("source_kind must be CatalogSourceKind")
-    try:
-        token = normalize_capability_id(source_id)
-    except (TypeError, ValueError):
-        return None
-    if is_forbidden_control_capability(token):
-        return None
-    if token in _LEGAL_FIXED_TOOLS:
-        return token if source_kind is CatalogSourceKind.FIXED_TOOLSET else None
-    if token in CONTROL_CAPABILITY_IDS:
-        return token if source_kind in _REVIEWED_DESCRIPTOR_SOURCES else None
-    parts = capability_segments(token)
-    namespace = parts[0] if parts else ""
-    if namespace in _SOURCE_NAMESPACES[source_kind]:
-        return token
-    return None
-
-
-def project_catalog_capabilities(views: Iterable[CatalogCapabilityView]) -> tuple[str, ...]:
-    """Pure projection of catalog views. Insertion order, unique, no I/O."""
-
-    projected: list[str] = []
-    seen: set[str] = set()
-    for view in views:
-        if type(view) is not CatalogCapabilityView:
-            raise TypeError("view must be CatalogCapabilityView")
-        token = project_source_capability_id(view.source_id, source_kind=view.source_kind)
-        if token is None or token in seen:
-            continue
-        seen.add(token)
-        projected.append(token)
-    return tuple(projected)

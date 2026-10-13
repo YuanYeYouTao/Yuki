@@ -33,15 +33,12 @@ class StubAgentBackend(AgentToolBackend):
     def __init__(
         self,
         *,
-        definitions=None,
         execute_call=None,
         parallel_safe=None,
         is_side_effecting=None,
         finalize=None,
     ):
         # Fixed, test-only injection points replace SimpleNamespace fixtures.
-        if definitions is not None:
-            self.definitions = definitions
         if execute_call is not None:
             self.execute_call = _typed_fixture(execute_call)
         if parallel_safe is not None:

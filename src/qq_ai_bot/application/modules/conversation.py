@@ -114,7 +114,6 @@ class ConversationModule:
             people=persistence.people,
             model_executor=models,
             concurrency=self._concurrency,
-            metrics=persistence.memory_metrics,
         )
         memory_mutations = memory_worker.mutations
         agent_tools = AgentToolService(
@@ -123,7 +122,6 @@ class ConversationModule:
             memories=persistence.memories,
             memory_context=persistence.memory_context,
             memory_mutations=memory_mutations,
-            actions=persistence.agent_actions,
             web_provider=self._web_provider,
             web_sources=persistence.web_sources,
             runtime_config=self._runtime_config,
@@ -133,7 +131,6 @@ class ConversationModule:
             models=models,
             config=persistence.conversation_rollups.config,
             timeout_seconds=settings.conversation_rollup_model_timeout_seconds,
-            max_output_tokens=settings.conversation_rollup_max_output_tokens,
             metrics=persistence.conversation_rollup_metrics,
         )
         conversation_rollup_worker = ConversationRollupWorker(
@@ -198,9 +195,7 @@ class ConversationModule:
                 facts=persistence.memories,
                 mutations=memory_mutations,
                 models=models,
-                metrics=persistence.memory_metrics,
             ),
-            metrics=persistence.memory_metrics,
         )
         memory_dream_repository = DreamRepository(persistence.database)
         memory_evidence_compaction_worker = EvidenceCompactionWorker(

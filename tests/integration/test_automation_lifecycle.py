@@ -26,7 +26,7 @@ from qq_ai_bot.identity.db_models import SpaceBindingModel
 from qq_ai_bot.persistence.models import AutomationModel, AutomationRunModel, AutomationVersionModel
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.work_activation import bind_work_activation
-from qq_ai_bot.runtime.work_budget_schema import automation_budgets, budgets
+from qq_ai_bot.runtime.work_budget_schema import budgets
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_recovery_schema import invocations
 from qq_ai_bot.runtime.work_scheduler import WorkScheduler
@@ -524,7 +524,6 @@ async def test_waiting_occurrence_keeps_original_version_and_current_work_recove
     assert first.status is RunStatus.RUNNING
     async with database.sessions() as reader:
         original = dict((await reader.execute(select(work))).mappings().one())
-        assert not list(await reader.execute(select(automation_budgets)))
     source = json.loads(original["source_json"])
     assert source["automation_run_id"] == first.id
     assert "step_id" not in source and source["script_hash"] == case.row.script_hash
@@ -939,3 +938,111 @@ async def test_equivalent_directory_match_reaches_the_actual_tail(database, tmp_
         == ()
     )
     assert not case.provider.requests and not sent(case.env)
+
+
+@pytest.mark.parametrize("failure", ["binding", "authority", "conversation"])
+@pytest.mark.parametrize("max_runs", [None, 1])
+async def test_automation_preflight_failure_records_one_blocked_occurrence(
+    database, tmp_path, monkeypatch, failure, max_runs
+):
+    from unittest.mock import AsyncMock
+
+    from qq_ai_bot.automation.context import AutomationBindError
+
+    case = await setup_run(database, tmp_path, mode="silent", max_runs=max_runs)
+    category = {
+        "binding": "state_mismatch",
+        "authority": "automation_owner_unavailable",
+        "conversation": "automation_conversation_changed",
+    }[failure]
+    if failure == "binding":
+        monkeypatch.setattr(
+            "qq_ai_bot.automation.worker.bind_automation_conversation",
+            AsyncMock(side_effect=AutomationBindError(category)),
+        )
+    elif failure == "authority":
+        monkeypatch.setattr(
+            "qq_ai_bot.automation.worker.resolve_execution_identity",
+            AsyncMock(side_effect=PermissionError(category)),
+        )
+    else:
+        monkeypatch.setattr(case.worker._scopes, "get", AsyncMock(return_value=None))
+    case.clock.advance(2)
+    result = await case.dispatch()
+    assert result.status is RunStatus.BLOCKED and result.error_category == category
+    assert result.llm_calls == result.tool_calls == result.messages_sent == 0
+    assert (await case.repository.get(case.row.id)).status is AutomationStatus.BLOCKED
+    repeated = await case.dispatch()
+    assert repeated.id == result.id
+    assert len(await case.repository.run_history(case.row.id)) == 1
+    assert not case.provider.requests
+
+
+async def test_private_automation_uses_resolved_account_instead_of_frozen_creator(
+    database, tmp_path
+):
+    case = await setup_run(database, tmp_path, mode="silent", delivery="self_private")
+    async with database.immediate_session() as writer:
+        await writer.execute(
+            update(AutomationModel)
+            .where(AutomationModel.id == case.row.id)
+            .values(creator_user_id="retired-account")
+        )
+    case.clock.advance(2)
+    result = await case.dispatch()
+    assert result.status is RunStatus.SUCCEEDED
+    assert len(case.provider.requests) == 1
+
+
+async def test_terminal_work_survives_maintenance_before_late_occurrence_settlement(
+    database, tmp_path
+):
+    case = await setup_run(database, tmp_path, delivery="none", mode="silent")
+    case.clock.advance(2)
+    claimed = (
+        await case.repository.claim_due(
+            worker_id="late-settlement",
+            now=case.clock.now(),
+            lease_seconds=30,
+            clock=case.clock.now,
+        )
+    )[0]
+    run = await case.repository.create_run(
+        claimed.id,
+        scheduled_for=claimed.next_run_at,
+        actual_started_at=case.clock.now(),
+        worker_id=claimed.claimed_by,
+        version_id=claimed.version_id,
+    )
+    async with database.sessions() as reader:
+        version = await reader.get(AutomationVersionModel, run.version_id)
+        original_hash = version.script_hash
+    lease = await case.works.acquire(case.env.context.conversation_id, 1)
+    original = await case.works.accept(
+        lease,
+        source_key=f"automation:{run.id}:{original_hash}",
+        source={"owner": "automation", "automation_run_id": run.id},
+        goal="retain the original occurrence result",
+    )
+    await case.works.checkpoint(lease, original["id"], {"sync_result": "original result"}, models=1)
+    current = await case.works.get(original["id"])
+    await case.works.transition(lease, original["id"], current["revision"], "completed")
+    original = await case.works.get(original["id"])
+    for index in range(130):
+        newer = await case.works.accept(
+            lease, source_key=f"later-receipt:{index}", source={}, goal="another completed work"
+        )
+        await case.works.transition(lease, newer["id"], newer["revision"], "completed")
+    await case.works.release(lease)
+    await case.works.reclaim_unreferenced_media()
+    assert await case.works.get(original["id"]) == original
+    assert (await case.repository.run_history(claimed.id))[0].status is RunStatus.RUNNING
+    await case.repository.settle_work_occurrences()
+    settled = (await case.repository.run_history(claimed.id))[0]
+    assert settled.status is RunStatus.SUCCEEDED
+    assert settled.result_summary == {"work_id": original["id"], "work_state": "completed"}
+    assert settled.llm_calls == 1
+    await case.repository.settle_work_occurrences()
+    assert (await case.repository.run_history(claimed.id))[0] == settled
+    assert (await case.repository.get(claimed.id)).run_count == 1
+    assert not case.provider.requests

@@ -153,6 +153,5 @@ def test_manifest_requests_no_network_or_host_mutation_permission() -> None:
             "network.http.allowlisted",
             "network.http.unrestricted",
             "onebot.mutate",
-            "runtime.config.write",
         }
     )

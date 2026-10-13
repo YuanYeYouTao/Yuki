@@ -1,12 +1,5 @@
-"""Retired MCP grants no authority; retained result ownership still works.
+"""Original external effect receipts survive without replay or borrowed ownership."""
 
-main PR259 removes MCPManager and its HTTP-specific dispatch policy. The old
-experiment's manager tests cannot execute that removed contract. These tests
-check retirement and retain the original Work no-replay/read-vs-write invariant;
-approved-plugin lifecycle and scope revocation run in dedicated plugin regressions.
-"""
-
-import importlib.util
 import json
 
 import pytest
@@ -15,15 +8,6 @@ from tests.unit.test_tool_effect_audit import active_work
 
 from qq_ai_bot.capabilities.results import ToolExecutionResult
 from qq_ai_bot.domain.messages import ToolCall, ToolFunction
-
-
-def test_retired_manager_and_binding_cannot_supply_code_authority():
-    for name in ("qq_ai_bot.mcp.manager", "qq_ai_bot.mcp.binding", "qq_ai_bot.mcp.fake"):
-        try:
-            spec = importlib.util.find_spec(name)
-        except ModuleNotFoundError:
-            spec = None
-        assert spec is None
 
 
 @pytest.mark.parametrize("read_only", [False, True])

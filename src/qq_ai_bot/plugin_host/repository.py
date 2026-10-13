@@ -321,32 +321,6 @@ class PluginConfigRepository:
             await require_config_readable(session, row)
             return _config_record(row, scope_id=scope_id)
 
-    async def list_scope(
-        self, *, plugin_id: str, scope_type: str, scope_id: str
-    ) -> tuple[PluginConfigValueRecord, ...]:
-        scope_id = _validated_scope(scope_type, scope_id)
-        async with self._database.sessions() as session:
-            from qq_ai_bot.plugin_host.ownership import (
-                require_config_readable,
-                resolve_config_owners,
-            )
-
-            person_id, space_id = await resolve_config_owners(
-                session, scope_type=scope_type, scope_id=scope_id
-            )
-            statement = select(PluginConfigValueModel).where(
-                PluginConfigValueModel.plugin_id == plugin_id,
-                PluginConfigValueModel.scope_type == scope_type,
-            )
-            if scope_type == "user":
-                statement = statement.where(PluginConfigValueModel.canonical_person_id == person_id)
-            elif scope_type == "group":
-                statement = statement.where(PluginConfigValueModel.canonical_space_id == space_id)
-            rows = (await session.scalars(statement.order_by(PluginConfigValueModel.key))).all()
-            for row in rows:
-                await require_config_readable(session, row)
-            return tuple(_config_record(row, scope_id=scope_id) for row in rows)
-
     async def compare_and_set(
         self,
         *,

@@ -17,7 +17,7 @@ from qq_ai_bot.persistence.unit_of_work import state_revision
 
 
 @pytest.mark.parametrize(
-    "action,race", [("confirm", False), ("quarantine", False), ("quarantine", True)]
+    "action,race", [("confirm", 0), ("quarantine", 0), ("quarantine", 1), ("quarantine", 4)]
 )
 async def test_control_memory_prepares_before_writer_and_retries_original_receipt(
     database, monkeypatch, action, race
@@ -47,7 +47,7 @@ async def test_control_memory_prepares_before_writer_and_retries_original_receip
             session.info["test_control_prepared"] = True
             prepared.append(fact_ids)
         await prepare(fact_ids, session=session, targets=targets)
-        if race and first and len(prepared) == 1:
+        if first and len(prepared) <= race:
             # A different WAL writer commits while the command is still reading.
             async with database.immediate_session() as writer:
                 await writer.execute(
@@ -95,9 +95,9 @@ async def test_control_memory_prepares_before_writer_and_retries_original_receip
         event.remove(engine, "commit", reset)
         event.remove(engine, "rollback", reset)
         event.remove(engine, "handle_error", handle_error)
-    assert prepared == [(rows[0].id,)] * (2 if race else 1)
+    assert prepared == [(rows[0].id,)] * (race + 1)
     assert historical_reads_after_write == []
-    assert native_errors == ([517] if race else [])
+    assert native_errors == [517] * race
     async with database.sessions() as session:
         assert await session.scalar(select(func.count(ControlCommandReceiptModel.id))) == 1
         assert await session.scalar(select(func.count(AdminOperationEventModel.id))) == 1
@@ -107,3 +107,56 @@ async def test_control_memory_prepares_before_writer_and_retries_original_receip
         assert current.last_confirmed_at is not None
     else:
         assert current.review_state.value == "quarantined"
+
+
+async def test_control_memory_unknown_commit_acknowledgement_does_not_retry(database, monkeypatch):
+    import sqlite3
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy.exc import OperationalError
+
+    facts = MemoryFactService(MemoryFactRepository(database))
+    fact = await facts.remember(
+        MemoryFactCreate(
+            scope_type="self",
+            visibility_type="global",
+            category="test",
+            memory_key="control:lost-ack",
+            content="retained fact",
+            source_type="explicit",
+        )
+    )
+    transaction = facts.repository.transaction
+    native = sqlite3.OperationalError("commit acknowledgement lost")
+    native.sqlite_errorcode = 517
+    failure = OperationalError("COMMIT", {}, native)
+    writes = 0
+
+    @asynccontextmanager
+    async def lost_confirmation(*, read_snapshot=False):
+        nonlocal writes
+        async with transaction(read_snapshot=read_snapshot) as session:
+            yield session
+            changed = session.info.get("memory_evidence_write_started")
+        if changed:
+            writes += 1
+            raise failure
+
+    commands = ControlCommandService(ControlCommandAdapter(database, memories=facts))
+    ctx = context("control.memory.mutate")
+    command = ControlCommand(
+        request_id=ctx.request_id,
+        expected_revision=state_revision(fact.updated_at),
+        payload={"action": "quarantine", "resource_id": str(fact.id)},
+    )
+    monkeypatch.setattr(facts.repository, "transaction", lost_confirmation)
+    with pytest.raises(OperationalError) as error:
+        await commands.mutate_memory(ctx, command)
+    assert error.value is failure and writes == 1
+    assert (await facts.get_fact(fact.id)).review_state.value == "quarantined"
+    async with database.sessions() as reader:
+        assert await reader.scalar(select(func.count(ControlCommandReceiptModel.id))) == 1
+        assert await reader.scalar(select(func.count(AdminOperationEventModel.id))) == 1
+    monkeypatch.setattr(facts.repository, "transaction", transaction)
+    assert (await commands.mutate_memory(ctx, command)).success
+    assert writes == 1

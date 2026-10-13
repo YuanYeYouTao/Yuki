@@ -31,10 +31,6 @@ class TranscriptRequest:
     continuation: ProviderContinuation | None
     items: tuple[ChatMessage | FunctionCallOutput, ...]
     origin: DispatchOrigin = DispatchOrigin.COMPOSED_INITIAL
-    # None keeps the ordinary, non-Work protocol projection contract. Work
-    # activations explicitly select only their approved initial public suffix;
-    # the remaining tools, inputs and continuation belong to their own journal.
-    public_initial_suffix: tuple[ChatMessage, ...] | None = None
     layout_public_initial: tuple[ChatMessage, ...] | None = None
     layout_host_initial: tuple[ChatMessage, ...] = ()
     layout_current_inputs: tuple[ChatMessage, ...] = ()
