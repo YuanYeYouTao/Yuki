@@ -117,7 +117,9 @@ async def invoke_social(
         if not target_id or invocation is None or runtime.tools_closed:
             raise SocialError("missing_read_scope")
         kind = "space" if scope.group_id else "person"
-        if arguments.get("operation_id") or arguments.get("kind", kind) != kind:
+        if "event_id" not in arguments and (
+            arguments.get("operation_id") or arguments.get("kind", kind) != kind
+        ):
             raise SocialError("history_scope_denied")
         context = SocialContext(
             turn_id=f"{runtime.effective_conversation_id}:{runtime.effective_execution_id}",
@@ -126,6 +128,8 @@ async def invoke_social(
             space_id=target_id if kind == "space" else None,
             person_refs={"current_speaker": target_id} if kind == "person" else {},
         )
+        if name == "read_conversation_history" and "event_id" in arguments:
+            return await service.execute(name, arguments, context)
         selected = dict(arguments)
         if any(selected.get(key) for key in ("target_id", "subject_ref", "display_name")):
             target = await service.target(kind, selected, context)

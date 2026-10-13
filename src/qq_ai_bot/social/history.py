@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -120,6 +121,8 @@ async def resolve_history_target(
 async def read_history(
     service: SocialService, args: dict[str, Any], context: SocialContext
 ) -> dict[str, Any]:
+    if "event_id" in args:
+        return await read_forward_history(service, args, context)
     limit = args.get("limit", 20)
     if type(limit) is not int or not 1 <= limit <= 50:
         raise SocialError("invalid_history_limit")
@@ -217,3 +220,147 @@ async def read_history(
         "window_limited": len(raw) >= limit,
         "messages": messages,
     }
+
+
+def forward_messages(payload: Any) -> list[Any]:
+    """Choose the first actual list in the supported OneBot envelopes."""
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        if payload.get("status") == "failed" or payload.get("retcode", 0) != 0:
+            raise SocialError("history_provider_failed")
+        data = payload.get("data")
+        candidates = [payload.get("messages"), payload.get("message_list"), data]
+        if isinstance(data, dict):
+            candidates.extend([data.get("list"), data.get("messages"), data.get("message_list")])
+        for candidate in candidates:
+            if isinstance(candidate, list):
+                return candidate
+    raise SocialError("invalid_history_result")
+
+
+async def read_forward_history(
+    service: SocialService, args: dict[str, Any], context: SocialContext
+) -> dict[str, Any]:
+    from qq_ai_bot.capabilities.invocation import current_invocation
+    from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
+    from qq_ai_bot.persistence.event_repository import EventLedgerRepository
+    from qq_ai_bot.tool_results.access import access_from_runtime
+
+    event_id = args["event_id"]
+    if type(event_id) is not int or event_id <= 0:
+        raise SocialError("invalid_history_event_id")
+    if "operation_id" in args:
+        raise SocialError("target_selector_conflict")
+    invocation = current_invocation.get()
+    if invocation is None:
+        raise SocialError("missing_call_context")
+    runtime = invocation.runtime
+    try:
+        access = access_from_runtime(runtime)
+    except (ValueError, PermissionError) as exc:
+        raise SocialError("missing_read_scope") from exc
+    if access.conversation_id != context.conversation_id:
+        raise SocialError("history_scope_denied")
+    event = await EventLedgerRepository(service.database).get_reply_event(
+        event_id, conversation_id=access.conversation_id, current_generation_only=True
+    )
+    if event is None:
+        raise SocialError("history_anchor_unavailable")
+    async with service.database.sessions() as reader:
+        conversation = await reader.get(CanonicalConversationModel, access.conversation_id)
+        if conversation is None or conversation.generation != access.generation:
+            raise SocialError("history_source_changed")
+        kind = "space" if conversation.space_id else "person"
+        owner_id = conversation.space_id or conversation.person_id
+        target_id = runtime.read_target_id
+        if target_id is not None and target_id != owner_id:
+            raise SocialError("history_scope_denied")
+        if kind == "space" and context.space_id != owner_id:
+            raise SocialError("history_scope_denied")
+        target = SocialTarget.model_validate({"kind": kind, "id": owner_id})
+        await service.check_target(target, session=reader)
+        privacy = (
+            await reader.scalar(
+                select(ExecutionTraceStateModel.privacy_generation).where(
+                    ExecutionTraceStateModel.id == 1
+                )
+            )
+            or 0
+        )
+    presence_id = (
+        event.ingress_presence_id if event.direction == "inbound" else event.author_presence_id
+    )
+    if not presence_id:
+        raise SocialError("history_presence_unavailable")
+    route = await service.router.resolve_presence(presence_id)
+    if route.sender_account_id != event.bot_user_id:
+        raise SocialError("history_presence_unavailable")
+    segments = [
+        (index, segment)
+        for index, segment in enumerate(event.segments)
+        if isinstance(segment, dict) and segment.get("type") == "forward"
+    ]
+    if not segments:
+        raise SocialError("history_anchor_unavailable")
+
+    async def fetch(locator: str) -> dict[str, Any]:
+        try:
+            raw = await service._call(route, "get_forward_msg", {"id": locator})
+            return {"status": "ok", "messages": forward_messages(raw)}
+        except SocialError as exc:
+            return {"status": "failed", "error": str(exc)}
+        except Exception:
+            return {"status": "failed", "error": "history_provider_failed"}
+
+    locators: list[str] = []
+    groups: list[dict[str, Any]] = []
+    for index, segment in segments:
+        data = segment.get("data")
+        locator = data.get("id") if isinstance(data, dict) else None
+        valid = isinstance(locator, str) and bool(locator.strip())
+        group = {"outer_segment_index": index, "forward_id": locator if valid else None}
+        if isinstance(locator, str) and locator.strip():
+            if locator not in locators:
+                locators.append(locator)
+        else:
+            group.update(status="failed", error="history_anchor_unavailable")
+        groups.append(group)
+    values = await asyncio.gather(*(fetch(locator) for locator in locators))
+    fetched = dict(zip(locators, values, strict=True))
+    for group in groups:
+        if group.get("forward_id") is not None:
+            group.update(fetched[group["forward_id"]])
+    # Publish under the original generation, privacy and owner authorization.
+    # Metadata and temporary account changes do not erase a completed read.
+    async with service.database.sessions() as reader:
+        conversation = await reader.get(CanonicalConversationModel, access.conversation_id)
+        current_privacy = (
+            await reader.scalar(
+                select(ExecutionTraceStateModel.privacy_generation).where(
+                    ExecutionTraceStateModel.id == 1
+                )
+            )
+            or 0
+        )
+        if (
+            conversation is None
+            or conversation.generation != access.generation
+            or current_privacy != privacy
+        ):
+            raise SocialError("history_source_changed")
+        await service.check_target(target, session=reader)
+    successes = [group for group in groups if group["status"] == "ok"]
+    result = {
+        "source": "onebot",
+        "mode": "forward",
+        "outer_event_id": event.id,
+        "presence_id": presence_id,
+        "bot_user_id": route.sender_account_id,
+        "content_trust": "untrusted_data",
+        "complete": len(successes) == len(groups),
+        "forwards": groups,
+    }
+    if not successes:
+        result["error"] = groups[0]["error"]
+    return result

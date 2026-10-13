@@ -55,7 +55,9 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
         ChatTool(
             name="read_conversation_history",
             description=(
-                "从 OneBot 实时读取明确的人或群的最近会话。主动发信后可用发送回执 operation_id "
+                "用当前会话的内部 event_id 显式读取原消息的一层合并转发 raw；"
+                "不自动读取内层引用或媒体。"
+                "也可从 OneBot 实时读取明确的人或群的最近会话。主动发信后可用发送回执 operation_id "
                 "查看原账号上的后续消息；回执本身不表示对方回复。也可用 kind=person/space "
                 "配合 target_id/display_name/subject_ref；"
                 "多 QQ Binding 或多个在线账号必须明确选择。"
@@ -65,6 +67,11 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
                 "type": "object",
                 "properties": {
                     **selector,
+                    "event_id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "当前会话原外层内部事件 ID，与 operation_id 二选一",
+                    },
                     "kind": {"type": "string", "enum": ["person", "space"]},
                     "operation_id": {
                         "type": "string",
@@ -82,6 +89,7 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
                 "additionalProperties": False,
             },
             result_cacheable=False,
+            schema_version="2",
         ),
         tool(
             "find_contacts",

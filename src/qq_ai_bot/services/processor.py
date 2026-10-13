@@ -1573,7 +1573,7 @@ class MessageProcessor:
         runtime: RuntimeConfigSnapshot,
     ) -> VisualTurnState:
         has_video = any(
-            a.kind.value in {"video", "file", "forward"}
+            a.kind.value in {"video", "file"}
             for a in (*message.attachments, *message.reply_attachments)
         )
         if not VisionService.has_visual_input(message) and not (

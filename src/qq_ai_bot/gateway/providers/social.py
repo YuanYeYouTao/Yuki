@@ -19,6 +19,7 @@ class OneBotSocialOperations:
             "delete_msg",
             "get_friend_msg_history",
             "get_group_msg_history",
+            "get_forward_msg",
         }:
             raise ValueError("capability_unavailable")
         return await cast(Any, handle).call_api(action, **params)
