@@ -2,6 +2,7 @@
 
 import json
 from dataclasses import replace
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -297,7 +298,7 @@ async def test_actorless_main_dispatch_keeps_trigger_temporary_and_original_chat
             external_payload={"id": "original-source"},
             external_target_id="20001",
             content=body,
-            occurred_at=chat._time.current_default().utc,
+            occurred_at=datetime.now(UTC),
         )
         trigger = ExternalEventTurnTrigger(
             plugin_id="test.common-external",

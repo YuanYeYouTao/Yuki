@@ -333,7 +333,6 @@ async def test_foreground_rollup_can_finish_more_than_five_batches(database) -> 
     from qq_ai_bot.domain.messages import ChatMessage
     from qq_ai_bot.persistence.repositories import EventLedgerRepository
     from qq_ai_bot.services.context_assembler import ContextAssembler
-    from qq_ai_bot.time.service import TimeContextService
 
     policy = RollupPolicyConfig(batch_max_events=1)
     scope = await _seed_private(
@@ -354,7 +353,6 @@ async def test_foreground_rollup_can_finish_more_than_five_batches(database) -> 
             "sqlite+aiosqlite:///:memory:", conversation_rollup_model_timeout_seconds=30
         ),
         ledger=EventLedgerRepository(database),
-        time_service=TimeContextService(),
         rollup_repository=repository,
         rollup_service=ConversationRollupService(models=model, config=policy, timeout_seconds=30),
     )
@@ -541,7 +539,6 @@ async def test_plugin_capacity_reads_hot_snapshot_and_shared_fixed_contract_rese
     from qq_ai_bot.domain.conversations import ConversationScope
     from qq_ai_bot.persistence.event_repository import ConversationReadVersion
     from qq_ai_bot.services.context_assembler import ContextAssembler
-    from qq_ai_bot.time.models import TimeContext
 
     scope = ConversationScope.private("8000", "1001")
     version = ConversationReadVersion(scope, "canonical", 1, 0, 0, (), (0, 0))
@@ -550,7 +547,6 @@ async def test_plugin_capacity_reads_hot_snapshot_and_shared_fixed_contract_rese
     assembler = ContextAssembler(
         settings=make_settings("sqlite+aiosqlite:///:memory:"),
         ledger=ledger,
-        time_service=MagicMock(),
         rollup_repository=MagicMock(),
         rollup_service=MagicMock(),
         history_budget=lambda runtime: runtime.context.window_tokens - 2048,
@@ -562,11 +558,6 @@ async def test_plugin_capacity_reads_hot_snapshot_and_shared_fixed_contract_rese
         identity=ConversationScope.private("8000", "1001"),
         content="x" * 25_000,
         metadata={},
-        current_time=TimeContext(
-            utc=datetime(2026, 10, 1, tzinfo=UTC),
-            local=datetime(2026, 10, 1, tzinfo=UTC),
-            timezone="UTC",
-        ),
         read_history=False,
         runtime=runtime,
     )

@@ -8,7 +8,6 @@ from qq_ai_bot.services.agent_runner import AgentRuntime
 
 if TYPE_CHECKING:
     from qq_ai_bot.services.agent_tools import ToolRuntime
-    from qq_ai_bot.time.models import TimeContext
 
 
 class InvocationContextFactory:
@@ -18,7 +17,6 @@ class InvocationContextFactory:
     def from_tools(
         source: ToolRuntime,
         *,
-        current_time: TimeContext,
         allowed_capabilities: frozenset[str],
         max_tool_calls: int | None,
         max_model_requests: int | None,
@@ -37,7 +35,6 @@ class InvocationContextFactory:
             bot_user_id=bot,
             gateway=source.gateway,
             runtime_config=config,
-            current_time=current_time,
             allowed_capabilities=allowed_capabilities,
             max_tool_calls=max_tool_calls,
             max_model_requests=max_model_requests,

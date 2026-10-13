@@ -372,7 +372,6 @@ async def _execute_plugin_main_turn(
                         identity=scope,
                         content=content,
                         metadata=payload,
-                        current_time=runtime.current_time,
                         read_history=can_read_history,
                         runtime=runtime.runtime_config,
                         capacity_budget=contract.chat._history_input_budget(
@@ -471,7 +470,6 @@ async def _execute_plugin_main_turn(
                     replace(
                         InvocationContextFactory.from_tools(
                             tool_runtime,
-                            current_time=runtime.current_time,
                             allowed_capabilities=runtime.allowed_capabilities,
                             max_tool_calls=runtime.max_tool_calls
                             if runtime.max_tool_calls is not None

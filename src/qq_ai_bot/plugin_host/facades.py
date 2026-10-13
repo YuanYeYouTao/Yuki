@@ -93,7 +93,6 @@ from qq_ai_bot.services.native_media import NativeMediaPreparer
 from qq_ai_bot.services.renderer import sanitize_model_output
 from qq_ai_bot.services.vision_service import VisionProcessingError, VisionService
 from qq_ai_bot.social.models import OperationStatus, SocialReceipt
-from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.vision.models import VisualObservation
 from qq_ai_bot.web.base import WebSearchError, WebSearchProvider, normalize_public_url
 from qq_ai_bot.web.models import WebSearchRequest
@@ -2569,12 +2568,6 @@ async def _agent_dependencies(
 ) -> tuple[AgentRunner, AgentRuntime]:
     runner = _require_service(host._services.agent_runner, "LLM/Agent")
     runtime = await _runtime_snapshot(host, invocation)
-    contract = runner.main_contract
-    current_time = (
-        contract.chat._time.current_default()
-        if contract is not None
-        else TimeContextService().current_default()
-    )
     return runner, AgentRuntime(
         origin=TurnOrigin.PLUGIN_SESSION,
         actor_user_id=invocation.actor_user_id,
@@ -2585,7 +2578,6 @@ async def _agent_dependencies(
         bot_user_id=invocation.bot_user_id,
         gateway=invocation.gateway,
         runtime_config=runtime,
-        current_time=current_time,
         allowed_capabilities=frozenset(),
         max_tool_calls=runtime.agent.max_tool_calls,
         max_model_requests=runtime.agent.max_model_requests,

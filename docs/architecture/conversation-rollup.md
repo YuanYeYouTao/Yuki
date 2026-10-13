@@ -20,9 +20,9 @@ MemoryPartitionKey 使用 SELF、PERSON、GROUP 或 PERSON_GROUP owner，不得�
 协议恢复单独使用只含身份的 scope state 读取；准备后的 read-version/source/privacy 与
 实际 dispatch CAS 继续独立执行。不能以先前展示资料快照替代授权或取消末端围栏。
 
-所有入口的当前时间与历史显示使用共同默认 UTC+8，不再读取 Person 或 SELF 时区偏好。
-Runner 沿共同时钟取得本轮时间；原已付请求中的 prepared_timezone 仍是原执行事实，
-不追溯改写。不新增展示资料的统一 revision 或变更重试协议。
+`time_get_current` 与历史显示使用共同默认 UTC+8，不再读取 Person 或 SELF 时区偏好。
+时间工具在调用时读取共同时钟，历史保留原事件时间；原已付请求与私有协议对象不追溯改写。
+不新增展示资料的统一 revision 或变更重试协议。
 
 ## 持久状态
 

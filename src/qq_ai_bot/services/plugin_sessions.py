@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.automation.models import TurnOrigin
@@ -17,7 +16,6 @@ from qq_ai_bot.plugin_host.session_repository import (
 )
 from qq_ai_bot.services.agent_runner import AgentRunner, AgentRuntime
 from qq_ai_bot.services.concurrency import ConcurrencyManager
-from qq_ai_bot.time.models import TimeContext
 
 _AGENT_SESSION_PERMISSION = "agent.session"
 _CURRENT_USER_PERMISSION = "person.current.read"
@@ -162,7 +160,6 @@ class PluginAgentSessionService:
                 limit=self._max_history_messages,
             )
             messages = self._compose_messages(authority, session, history)
-            now = datetime.now(UTC)
             # Tools deliberately remain unavailable in the current Plugin API
             # session runtime.  Capability intersections are still persisted
             # and passed through AgentRuntime for a future reviewed backend.
@@ -193,7 +190,6 @@ class PluginAgentSessionService:
                     bot_user_id=self._bot_user_id,
                     gateway=None,
                     runtime_config=runtime,
-                    current_time=TimeContext(utc=now, local=now, timezone="UTC"),
                     allowed_capabilities=frozenset(effective_capabilities),
                     max_tool_calls=0,
                     before_model_request=reserve_parent_request,

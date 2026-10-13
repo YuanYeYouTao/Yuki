@@ -187,8 +187,6 @@ class ToolRuntime:
     memory_read_cache: dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
     context_plugin_id: str | None = None
     context_read_contract: str | None = None
-    # Display metadata from this preparation only; never a source/permission grant.
-    prepared_timezone: str | None = None
 
     def __post_init__(self) -> None:
         if self.inbound is not None:

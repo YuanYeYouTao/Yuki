@@ -234,7 +234,6 @@ class ApplicationContainer:
             concurrency=self.concurrency,
             turns=self.turn_coordinator,
             effect_gate=self.conversation_effect_gate,
-            time_service=self.time_context,
             web_provider=self.web_provider,
             memory_embeddings=self.memory_embeddings,
             tool_artifacts=self.tool_artifacts,

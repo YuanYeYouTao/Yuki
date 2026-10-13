@@ -120,7 +120,6 @@ from qq_ai_bot.services.turn_coordinator import (
     TurnSupersededError,
     TurnToken,
 )
-from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.web.models import WebMode
 from qq_ai_bot.web.native_sources import recover_native_web_response
 from yuki_plugin_sdk.events import EventName
@@ -236,7 +235,6 @@ class ChatService:
         tools: AgentToolService,
         web_sources: WebSearchSourceRepository,
         runtime_config: RuntimeConfigService,
-        time_service: TimeContextService,
         memory_context: MemoryContextService | None = None,
         memory_partition_lookup: MemoryPartitionLookup,
         context_assembler: ContextAssembler | None = None,
@@ -273,7 +271,6 @@ class ChatService:
         self._plugin_tools: PluginToolProvider | None = None
         self._tool_artifacts = tool_artifacts
         self._tool_invocations = tool_invocations
-        self._time = time_service
         if memory_context is None:
             memory_repository = MemoryFactRepository(self._ledger._database)
             memory_context = MemoryContextService(
@@ -293,7 +290,6 @@ class ChatService:
             self._context_assembler = ContextAssembler(
                 settings=settings,
                 ledger=self._ledger,
-                time_service=self._time,
                 rollup_repository=rollup_repository,
                 rollup_service=rollup_service,
                 history_budget=self._history_input_budget,
@@ -979,7 +975,6 @@ class ChatService:
                     read_version,
                     commit_projection,
                     observation_boundary,
-                    prepared_timezone,
                 ) = await self._build_messages(
                     inbound,
                     identity,
@@ -1024,7 +1019,6 @@ class ChatService:
                     prompt_diagnostics=prompt_diagnostics,
                     before_model_request=validate_context,
                     observation_boundary=observation_boundary,
-                    prepared_timezone=prepared_timezone,
                 )
                 if turn_token is not None:
                     async with self._turn_coordinator.track(turn_token, "generation"):
@@ -1146,7 +1140,6 @@ class ChatService:
         ConversationReadVersion | None,
         Callable[[], Awaitable[None]] | None,
         ContextBoundaryReader | None,
-        str | None,
     ]:
         if turn_snapshot is None:
             raise ConversationCoverageError("chat turn requires a conversation snapshot")
@@ -1222,7 +1215,6 @@ class ChatService:
             composition.read_version,
             composition.commit_projection,
             composition.observation_boundary,
-            context.current_time.timezone if not context.recovery_protocol else None,
         )
 
     def _context_validator(
@@ -1318,11 +1310,6 @@ class ChatService:
             )
             runtime = replace(runtime, runtime_config=config)
         runtime = await self._prepare_tool_candidates(runtime)
-        current_time = (
-            self._time.current_in_timezone(runtime.prepared_timezone)
-            if runtime.prepared_timezone is not None
-            else self._time.current_default()
-        )
         backend = MainAgentBackend(self, runtime)
         active_control = current_work_control.get()
         if active_control is not None and (
@@ -1348,7 +1335,6 @@ class ChatService:
             replace(
                 InvocationContextFactory.from_tools(
                     replace(runtime, conversation_key=conversation_key),
-                    current_time=current_time,
                     allowed_capabilities=self.web_capabilities(config),
                     max_tool_calls=config.agent.max_tool_calls,
                     max_model_requests=config.agent.max_model_requests,

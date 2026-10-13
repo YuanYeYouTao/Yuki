@@ -49,7 +49,6 @@ from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
 from qq_ai_bot.services.context_assembler import ContextAssembler
 from qq_ai_bot.services.main_agent_contract import MainAgentContract
 from qq_ai_bot.services.turn_transcript import TurnTranscript
-from qq_ai_bot.time.models import TimeContext
 from qq_ai_bot.workspace.short_state import ShortState
 from qq_ai_bot.workspace.store import WorkspaceStore
 
@@ -100,8 +99,6 @@ async def test_actual_journal_selects_exact_before_assembler_reads_history(datab
     await session.save("delivery" if kind == "delivery" else "paired")
     assembler = ContextAssembler.__new__(ContextAssembler)
     assembler._ledger = EventLedgerRepository(database)
-    now = datetime.now(UTC)
-    assembler._time = SimpleNamespace(current_default=lambda: TimeContext(now, now, "UTC"))
     assembler._rollups = SimpleNamespace(
         load_prompt_snapshot=AsyncMock(side_effect=AssertionError("fresh history must not be read"))
     )
@@ -112,7 +109,6 @@ async def test_actual_journal_selects_exact_before_assembler_reads_history(datab
             identity=scope,
             content="new",
             metadata={},
-            current_time=TimeContext(now, now, "UTC"),
             read_history=True,
             runtime=None,
         )
@@ -430,7 +426,6 @@ async def test_response_paid_stage_prepares_current_main_history_before_retiring
             identity=inbound.scope(),
             content="Continue the current Work.",
             metadata={},
-            current_time=chat._time.current_default(),
             read_history=True,
             runtime=config,
         )

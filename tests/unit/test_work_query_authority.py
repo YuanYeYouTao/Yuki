@@ -137,7 +137,6 @@ async def test_runner_query_gate_refuses_before_domain_read_and_keeps_lifecycle(
         bot_user_id="8001",
         gateway=None,
         runtime_config=tool_runtime.runtime_config,
-        current_time=chat._time.current_default(),
         allowed_capabilities=frozenset(),
         max_tool_calls=8,
         max_model_requests=8,

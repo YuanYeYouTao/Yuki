@@ -18,6 +18,7 @@ from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.services.main_agent_contract import MainAgentContract
+from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.workspace.short_state import ShortState
 
 
@@ -78,8 +79,8 @@ async def setup_run(
     chat.runtime.runner.code_mode_settings = settings
     repository = AutomationRepository(database)
     clock = FakeClock(datetime.now(UTC))
-    chat._time._clock = clock
-    service = AutomationService(settings=settings, repository=repository, time_service=chat._time)
+    time_service = TimeContextService(default_timezone=settings.default_timezone, clock=clock)
+    service = AutomationService(settings=settings, repository=repository, time_service=time_service)
     chat.set_automation_tools(AutomationToolService(service))
     # Freeze after all real Main providers have been bound.
     actor = ToolActor(
@@ -113,7 +114,7 @@ async def setup_run(
     worker = AutomationWorker(
         settings=settings,
         repository=repository,
-        time_service=chat._time,
+        time_service=time_service,
         generate=chat.generate_origin_turn,
         runtime_config=chat._runtime_config,
         conversation_scopes=chat._conversation_scopes,

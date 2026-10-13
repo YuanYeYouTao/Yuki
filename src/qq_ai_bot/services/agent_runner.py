@@ -65,7 +65,6 @@ from qq_ai_bot.services.turn_transcript import (
     TranscriptRequest,
     TurnTranscript,
 )
-from qq_ai_bot.time.models import TimeContext
 from qq_ai_bot.web.models import WebMode
 from qq_ai_bot.web.route_context import web_model_task
 
@@ -118,7 +117,6 @@ class AgentRuntime:
     bot_user_id: str
     gateway: object | None
     runtime_config: RuntimeConfigSnapshot
-    current_time: TimeContext
     allowed_capabilities: frozenset[str]
     max_tool_calls: int | None
     max_model_requests: int | None

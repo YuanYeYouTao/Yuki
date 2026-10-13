@@ -39,7 +39,6 @@ from qq_ai_bot.services.prompt_composer import PromptComposer
 from qq_ai_bot.services.prompt_registry import PromptRegistry
 from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
 from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
-from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.web.base import WebSearchProvider
 
 
@@ -74,7 +73,6 @@ class ConversationModule:
         concurrency: ConcurrencyManager,
         turns: ConversationTurnCoordinator,
         effect_gate: ConversationEffectGate,
-        time_service: TimeContextService,
         web_provider: WebSearchProvider | None,
         memory_embeddings: MemoryEmbeddingRuntime,
         tool_artifacts: ToolArtifactWriter | None = None,
@@ -88,7 +86,6 @@ class ConversationModule:
         self._concurrency = concurrency
         self._turns = turns
         self._effect_gate = effect_gate
-        self._time_service = time_service
         self._web_provider = web_provider
         self._memory_embeddings = memory_embeddings
         self._tool_artifacts = tool_artifacts
@@ -158,7 +155,6 @@ class ConversationModule:
             tools=agent_tools,
             web_sources=persistence.web_sources,
             runtime_config=self._runtime_config,
-            time_service=self._time_service,
             prompt_composer=PromptComposer(settings, prompt_registry),
             turn_coordinator=self._turns,
             tool_artifacts=self._tool_artifacts,
