@@ -3,19 +3,15 @@
 from __future__ import annotations
 
 import json
-import logging
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 from sqlalchemy import select, text
-from sqlalchemy.exc import SQLAlchemyError
 
 from qq_ai_bot.runtime.work_compaction import SourcedFact
 
 if TYPE_CHECKING:
     from qq_ai_bot.runtime.work_control import WorkControl
-
-logger = logging.getLogger(__name__)
 
 
 class ContextNote(BaseModel):
@@ -124,27 +120,6 @@ async def validate_note(
             if not valid:
                 raise ValueError("work_context_note_invalid_reference")
     return note, tuple(handles), source_revision, privacy
-
-
-async def publish_pending_note(control: WorkControl) -> str | None:
-    """Retry only the saved publication intent, without invoking models or effects."""
-    if control.current is None:
-        return None
-    saved = json.loads(control.current["checkpoint_json"]).get("context_note")
-    if not isinstance(saved, dict):
-        return None
-    from qq_ai_bot.conversation.observations import ContextObservationRepository
-    from qq_ai_bot.conversation.projections import ProjectionConflict
-
-    try:
-        if await visible_context_note(control) is None:
-            return None
-        return await ContextObservationRepository(control.repository.database).publish_note(
-            control.current, saved["revision"], saved["payload"], tuple(saved["artifact_handles"])
-        )
-    except (ValueError, ProjectionConflict, SQLAlchemyError) as exc:
-        logger.info("work_context_note_publication_deferred category=%s", type(exc).__name__)
-        return None
 
 
 async def visible_context_note(control: WorkControl) -> dict[str, Any] | None:

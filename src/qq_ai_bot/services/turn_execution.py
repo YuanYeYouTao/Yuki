@@ -763,14 +763,18 @@ class TurnExecution:
         # detection. Opaque/protocol entries can only belong to an old chain.
         if any(message.tool_calls or message.role in {"assistant", "tool"} for message in host):
             return
+        host = tuple(
+            replace(message, content="\n\n" + (message.content or "") + "\n\n") for message in host
+        )
         hosts = (
             (
                 ChatMessage(
                     role="user",
-                    content="当前工作："
+                    content="\n\n当前工作："
                     + json.dumps(
                         await control.runtime_state(), ensure_ascii=False, separators=(",", ":")
-                    ),
+                    )
+                    + "\n\n",
                 ),
                 *host,
             )

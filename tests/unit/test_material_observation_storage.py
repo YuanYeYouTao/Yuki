@@ -9,6 +9,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -17,8 +18,8 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import select, text
-from tests.support.projection_sql_counts import capture_sql
+from sqlalchemy import Column, DateTime, Integer, String, Text, select, text
+from sqlalchemy.orm import declarative_base
 from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.conversation.canonical_db_models import (
@@ -29,11 +30,10 @@ from qq_ai_bot.conversation.canonical_db_models import (
 from qq_ai_bot.conversation.observation_models import ContextObservationModel, ContextSelectionModel
 from qq_ai_bot.conversation.observation_schema import PROJECTION_TRIGGERS_0089
 from qq_ai_bot.conversation.observations import (
-    ContextObservationRepository,
     encode,
     validate_observations,
 )
-from qq_ai_bot.conversation.projection_current_schema import PROJECTION_TRIGGERS_0109
+from qq_ai_bot.conversation.projection_history_schema import PROJECTION_TRIGGERS_0112
 from qq_ai_bot.conversation.projection_models import PromptProjectionModel
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.identity.canonical_repository import ensure_space
@@ -75,7 +75,27 @@ def source(env, identity, key, payload, parents=()):
     )
 
 
-def selected(env, identity, payload, event_ids=()):
+_SeedBase = declarative_base()
+
+
+class SelectionBefore0112(_SeedBase):
+    """The exact retired selection schema used by the 0107/0109 migration fixture."""
+
+    __tablename__ = "model_context_selections"
+    id = Column(Integer, primary_key=True)
+    view_key = Column(String(64), nullable=False)
+    conversation_id = Column(String(36), nullable=False)
+    generation = Column(Integer, nullable=False)
+    actor_id = Column(String(128), nullable=False)
+    read_scope = Column(Text, nullable=False)
+    source_key = Column(String(256), nullable=False)
+    event_ids_json = Column(Text, nullable=False)
+    observation_sources_json = Column(Text, nullable=False)
+    payload_json = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False)
+
+
+def selected_0109(env, identity, payload, event_ids=()):
     item = {
         "kind": "model_input",
         "event_ids": list(event_ids),
@@ -87,7 +107,7 @@ def selected(env, identity, payload, event_ids=()):
     key = hashlib.sha256(
         (json.dumps(list(event_ids)) if event_ids else encoded).encode()
     ).hexdigest()
-    return ContextSelectionModel(
+    return SelectionBefore0112(
         view_key=VIEW,
         conversation_id=env.context.conversation_id,
         generation=1,
@@ -99,60 +119,6 @@ def selected(env, identity, payload, event_ids=()):
         payload_json=encoded,
         created_at=datetime.now(UTC),
     )
-
-
-async def test_hot_reader_uses_real_note_and_actual_summary_roots(database, tmp_path):
-    env = await social_env(database, tmp_path)
-    first, second, summary = str(uuid4()), str(uuid4()), str(uuid4())
-    async with database.immediate_session() as writer:
-        writer.add_all(
-            [
-                source(env, first, "work-note:first:1", note("first", ("goal",))),
-                source(env, second, "work-note:second:1", note("second", ("goal",))),
-                source(
-                    env,
-                    summary,
-                    "scope-summary:real",
-                    note("first condensed", ("observation:" + first,)),
-                    ((first, 1), (second, 1)),
-                ),
-                *(
-                    source(
-                        env,
-                        str(uuid4()),
-                        f"snapshot:retired-{index}",
-                        {"kind": "dynamic_snapshot", "old_style": "retired"},
-                    )
-                    for index in range(800)
-                ),
-            ]
-        )
-        await writer.flush()
-        writer.add(
-            selected(
-                env,
-                summary,
-                "[Observation; derived notes]\n"
-                + encode(note("first condensed", ("observation:" + first,))),
-            )
-        )
-    repository = ContextObservationRepository(database)
-    scope = dict(
-        conversation_id=env.context.conversation_id,
-        generation=1,
-        actor_id=env.person,
-        read_scope="main",
-        view_key=VIEW,
-    )
-    with capture_sql(database) as hot_sql:
-        hot = await repository.read(**scope, frozen_sources=())
-    assert {row.id for row in hot} == {first, second}
-    assert not any("model_context_selections" in sql for sql, _ in hot_sql)
-    adopted = await repository.read(**scope, frozen_sources=((summary, 1),))
-    assert {row.id for row in adopted} == {summary, second}
-    cold = await repository.read(**scope)
-    assert {row.id for row in cold} == {summary, second}
-    assert all("dynamic_snapshot" not in row.payload_json for row in (*hot, *adopted, *cold))
 
 
 async def seed_0107(url, tmp_path, protection, malformed=False, outdated_config=True):
@@ -198,7 +164,7 @@ async def seed_0107(url, tmp_path, protection, malformed=False, outdated_config=
                 "message": {"role": "user", "content": raw_body},
             }
             writer.add(
-                ContextSelectionModel(
+                SelectionBefore0112(
                     view_key="f" * 64,
                     conversation_id=env.context.conversation_id,
                     generation=1,
@@ -225,9 +191,9 @@ async def seed_0107(url, tmp_path, protection, malformed=False, outdated_config=
                 dynamic = HEADER + encode([{"id": "runtime.time", "data": index}])
                 if malformed and index == 0:
                     dynamic = HEADER + "{}"
-                row = selected(env, identity, dynamic + "\n\n" + raw_body, (event_id,))
+                row = selected_0109(env, identity, dynamic + "\n\n" + raw_body, (event_id,))
                 if index:
-                    row = selected(env, identity, dynamic + "\n\nsame real SDK input")
+                    row = selected_0109(env, identity, dynamic + "\n\nsame real SDK input")
                 writer.add(row)
                 await writer.flush()
                 originals.append((row.id, row.payload_json))
@@ -242,7 +208,7 @@ async def seed_0107(url, tmp_path, protection, malformed=False, outdated_config=
             )
             await writer.flush()
             writer.add(
-                selected(
+                selected_0109(
                     env,
                     identities[0],
                     "[Observation; derived notes]\n"
@@ -260,7 +226,7 @@ async def seed_0107(url, tmp_path, protection, malformed=False, outdated_config=
                 )
             )
             writer.add(
-                selected(
+                selected_0109(
                     env,
                     summary,
                     "[Observation; derived notes]\n"
@@ -283,7 +249,7 @@ async def seed_0107(url, tmp_path, protection, malformed=False, outdated_config=
                 )
                 await writer.flush()
                 writer.add(
-                    selected(
+                    selected_0109(
                         env,
                         mixed,
                         "[Observation; derived notes]\n"
@@ -361,7 +327,7 @@ async def seed_0107(url, tmp_path, protection, malformed=False, outdated_config=
             writer.add(source(env, useful_note, "work-note:kept:1", json.loads(useful_payload)))
             await writer.flush()
             writer.add(
-                selected(env, useful_note, "[Observation; derived notes]\n" + useful_payload)
+                selected_0109(env, useful_note, "[Observation; derived notes]\n" + useful_payload)
             )
             await writer.flush()
             owner = await writer.get(CanonicalConversationModel, env.context.conversation_id)
@@ -422,31 +388,33 @@ def test_upgrade_retires_public_packages_without_deleting_real_occurrences_or_pr
     async def verify():
         database = Database(url)
         try:
-            repository = ContextObservationRepository(database)
-            selected_rows = await repository.selected(
-                view_key=VIEW,
-                conversation_id=baseline["conversation"],
-                generation=1,
-                actor_id=baseline["actor"],
-                read_scope="main",
-            )
-            assert [item["message"]["content"] for item in selected_rows] == [
-                baseline["raw_body"],
-                "[Observation; derived notes]\n" + baseline["useful_payload"],
-            ]
-            assert all(
-                item["event_ids"] or item.get("observation_id") == baseline["useful_note"]
-                for item in selected_rows
-            )
-            assert all("observation_id" not in item for item in selected_rows if item["event_ids"])
-            pure_chat = await repository.selected(
-                view_key="f" * 64,
-                conversation_id=baseline["conversation"],
-                generation=1,
-                actor_id=baseline["actor"],
-                read_scope="main",
-            )
-            assert [item["message"]["content"] for item in pure_chat] == [baseline["raw_body"]]
+            async with database.sessions() as reader:
+                selected_rows = [
+                    json.loads(row)
+                    for row in await reader.scalars(
+                        text(
+                            "SELECT payload_json FROM model_context_selections "
+                            "WHERE view_key=:view ORDER BY id"
+                        ),
+                        {"view": VIEW},
+                    )
+                ]
+                assert [item["message"]["content"] for item in selected_rows] == [
+                    baseline["raw_body"],
+                    "[Observation; derived notes]\n" + baseline["useful_payload"],
+                ]
+                pure_chat = list(
+                    await reader.scalars(
+                        text(
+                            "SELECT payload_json FROM model_context_selections "
+                            "WHERE view_key=:view ORDER BY id"
+                        ),
+                        {"view": "f" * 64},
+                    )
+                )
+                assert [json.loads(item)["message"]["content"] for item in pure_chat] == [
+                    baseline["raw_body"]
+                ]
             async with database.sessions() as reader:
                 assert (
                     await reader.scalar(text("SELECT version_num FROM alembic_version")) == "0109"
@@ -524,15 +492,6 @@ def test_upgrade_retires_public_packages_without_deleting_real_occurrences_or_pr
                     )
                     assert "real mixed fact" in mixed.payload_json
                 assert not list(await reader.execute(text("PRAGMA foreign_key_check")))
-            displayed = await repository.read(
-                conversation_id=baseline["conversation"],
-                generation=1,
-                actor_id=baseline["actor"],
-                read_scope="main",
-                view_key=VIEW,
-            )
-            assert all("old style" not in row.payload_json for row in displayed)
-            assert all("dynamic_snapshot" not in row.payload_json for row in displayed)
         finally:
             await database.close()
 
@@ -588,6 +547,66 @@ def test_installed_cli_upgrades_copy_without_repository_pythonpath(tmp_path, mon
         assert not after.execute("PRAGMA foreign_key_check").fetchall()
         for table, rows in original_rows.items():
             assert after.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall() == rows
+
+
+def test_0112_removes_reader_cache_and_timezones_without_changing_private_rows(
+    tmp_path, monkeypatch
+):
+    filename = tmp_path / "common-history.db"
+    url = f"sqlite+aiosqlite:///{filename.as_posix()}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    config = Config("alembic.ini")
+    command.upgrade(config, "0108")
+    baseline = asyncio.run(seed_0107(url, tmp_path, "protocol", outdated_config=False))
+    command.upgrade(config, "0111")
+    retired = {
+        "alembic_version",
+        "prompt_projections",
+        "model_context_selections",
+        "person_time_settings",
+        "self_time_settings",
+    }
+    with sqlite3.connect(filename) as before:
+        before.execute(
+            "INSERT INTO person_time_settings VALUES (?, 'UTC', ?, ?)",
+            (baseline["actor"], "2026-10-13", "2026-10-13"),
+        )
+        before.execute(
+            "INSERT INTO self_time_settings VALUES ('self', 'Europe/Paris', ?, ?)",
+            ("2026-10-13", "2026-10-13"),
+        )
+        before.commit()
+        assert before.execute("SELECT COUNT(*) FROM prompt_projections").fetchone()[0]
+        assert before.execute("SELECT COUNT(*) FROM model_context_selections").fetchone()[0]
+        tables = [
+            row[0]
+            for row in before.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            )
+            if row[0] not in retired
+        ]
+        original = {
+            name: Counter(before.execute(f'SELECT * FROM "{name}"').fetchall()) for name in tables
+        }
+    command.upgrade(config, "0112")
+    with sqlite3.connect(filename) as after:
+        assert after.execute("SELECT version_num FROM alembic_version").fetchone() == ("0112",)
+        for name, rows in original.items():
+            assert Counter(after.execute(f'SELECT * FROM "{name}"').fetchall()) == rows
+        assert after.execute("SELECT COUNT(*) FROM prompt_projections").fetchone() == (0,)
+        assert after.execute("SELECT COUNT(*) FROM model_context_selections").fetchone() == (0,)
+        assert "contract_revision" not in {
+            row[1] for row in after.execute("PRAGMA table_info(prompt_projections)")
+        }
+        assert not {"actor_id", "read_scope", "observation_sources_json"} & {
+            row[1] for row in after.execute("PRAGMA table_info(model_context_selections)")
+        }
+        assert not after.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name IN ('person_time_settings', 'self_time_settings')"
+        ).fetchall()
+        assert after.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert not after.execute("PRAGMA foreign_key_check").fetchall()
 
 
 def test_failed_upgrade_rolls_back_ddl_public_retirement_and_original_triggers(
@@ -651,7 +670,6 @@ async def test_metadata_trigger_invalidates_selected_chat_and_preserves_ordinary
                 starts_after_event_id=0,
                 epoch_id=str(uuid4()),
                 context_key="b" * 64,
-                contract_revision="c" * 64,
                 revision=1,
                 rebuild_reason="bootstrap",
                 payload_json="[]",
@@ -697,7 +715,7 @@ async def test_metadata_trigger_invalidates_selected_chat_and_preserves_ordinary
                 )
             ).all()
         )
-        for name, expected in PROJECTION_TRIGGERS_0109.items():
+        for name, expected in PROJECTION_TRIGGERS_0112.items():
             assert " ".join(installed[name].replace("IF NOT EXISTS ", "").split()) == " ".join(
                 expected.split()
             )
@@ -749,29 +767,22 @@ async def _trigger_sources(database, tmp_path, privacy_update):
             observation.summary_view_key = view
             writer.add(observation)
             await writer.flush()
-            representation = selected(env, identity, "original frozen expression", (event.id,))
-            representation.view_key = view
-            representation.conversation_id = event.canonical_conversation_id
-            writer.add(representation)
-            raw = ContextSelectionModel(
+            representation = ContextSelectionModel(
                 view_key=view,
                 conversation_id=event.canonical_conversation_id,
                 generation=1,
-                actor_id=env.person,
-                read_scope="main",
-                source_key=hashlib.sha256((view + "raw").encode()).hexdigest(),
+                source_key=hashlib.sha256(json.dumps([event.id]).encode()).hexdigest(),
                 event_ids_json=json.dumps([event.id]),
-                observation_sources_json="[]",
                 payload_json=encode(
                     {
                         "kind": "model_input",
                         "event_ids": [event.id],
-                        "message": {"role": "user", "content": "pure real event"},
+                        "message": {"role": "user", "content": "original frozen expression"},
                     }
                 ),
                 created_at=datetime.now(UTC),
             )
-            writer.add(raw)
+            writer.add(representation)
             owner = await writer.get(CanonicalConversationModel, event.canonical_conversation_id)
             body = encode([json.loads(representation.payload_json)])
             writer.add(
@@ -783,7 +794,6 @@ async def _trigger_sources(database, tmp_path, privacy_update):
                     starts_after_event_id=0,
                     epoch_id=str(uuid4()),
                     context_key="b" * 64,
-                    contract_revision="c" * 64,
                     revision=1,
                     rebuild_reason="bootstrap",
                     payload_json=body,
@@ -820,18 +830,18 @@ async def _trigger_sources(database, tmp_path, privacy_update):
 
 
 _TRIGGER_OPERATIONS = (
-    ("prompt_projection_reset", "generation", "reset", 2, 0),
-    ("prompt_projection_event_delete", "event_delete", "deleted_event", 2, 0),
+    ("prompt_projection_reset", "generation", "reset", 1, 0),
+    ("prompt_projection_event_delete", "event_delete", "deleted_event", 1, 0),
     ("prompt_projection_event_update", "event_content", "source_changed", 1, 0),
     ("prompt_projection_audio_update", "audio", "source_changed", 1, 0),
-    ("prompt_projection_owner_update", "owner", "read_scope_changed", 1, 0),
+    ("prompt_projection_owner_update", "owner", "source_changed", 1, 0),
     ("prompt_projection_event_metadata_update", "nickname", "source_changed", 1, 0),
     ("context_selection_source_changed", "source_revision", None, 1, 0),
-    ("context_observation_reset", "cut", "reset", 2, 0),
-    ("context_observation_privacy", "privacy_update", "source_changed", 1, 1),
-    ("context_observation_privacy_initial", "privacy_insert", "source_changed", 1, 1),
-    ("context_observation_delete", "observation_delete", "source_changed", 1, 0),
-    ("context_observation_update", "observation_payload", "source_changed", 1, 0),
+    ("context_observation_reset", "cut", "reset", 1, 0),
+    ("context_observation_privacy", "privacy_update", None, 0, 0),
+    ("context_observation_privacy_initial", "privacy_insert", None, 0, 0),
+    ("context_observation_delete", "observation_delete", None, 0, 0),
+    ("context_observation_update", "observation_payload", None, 0, 0),
     ("context_source_canonical_conversation_rollups_owner", "rollup_owner", "source_changed", 1, 0),
     (
         "context_source_canonical_conversation_rollup_emergency_overlays_owner",
@@ -841,7 +851,7 @@ _TRIGGER_OPERATIONS = (
         0,
     ),
     ("prompt_projection_event_update", "event_move", "source_changed", 1, 1),
-    ("context_observation_update", "observation_move", "source_changed", 1, 1),
+    ("context_observation_update", "observation_move", None, 0, 0),
     ("context_source_canonical_conversation_rollups_owner", "rollup_move", "source_changed", 1, 1),
     (
         "context_source_canonical_conversation_rollup_emergency_overlays_owner",
@@ -861,7 +871,7 @@ _TRIGGER_OPERATIONS = (
 async def test_current_trigger_sql_keeps_material_and_source_boundaries(
     database, tmp_path, trigger, operation, reason, main_increment, other_increment
 ):
-    assert trigger in PROJECTION_TRIGGERS_0109
+    assert trigger in PROJECTION_TRIGGERS_0112
     env, event, other, identities, moved_space = await _trigger_sources(
         database, tmp_path, operation == "privacy_update"
     )
@@ -1004,18 +1014,23 @@ async def test_current_trigger_sql_keeps_material_and_source_boundaries(
                     )
                 )
             )
-            assert len(retained) == 1
-            assert json.loads(retained[0].observation_sources_json) == [[identities[0], 1]]
+            assert not retained
         elif operation in {
             "generation",
             "cut",
             "event_delete",
-            "observation_delete",
-            "privacy_insert",
-            "privacy_update",
         }:
             assert await reader.get(ContextObservationModel, identities[0]) is None
             assert not list(
+                await reader.scalars(
+                    select(ContextSelectionModel.id).where(
+                        ContextSelectionModel.conversation_id == env.context.conversation_id
+                    )
+                )
+            )
+        elif operation in {"observation_delete", "privacy_insert", "privacy_update"}:
+            assert await reader.get(ContextObservationModel, identities[0]) is None
+            assert list(
                 await reader.scalars(
                     select(ContextSelectionModel.id).where(
                         ContextSelectionModel.conversation_id == env.context.conversation_id

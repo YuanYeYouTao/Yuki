@@ -1,6 +1,7 @@
 """Current deployment contracts through real Chat, SELF and due-slot Main calls."""
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import httpx
@@ -19,6 +20,8 @@ from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.domain.tool_actor import ToolActor
+from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
+from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.llm.gemini import GeminiProvider
 from qq_ai_bot.model_runtime.db_models import ModelInvocationModel
 from qq_ai_bot.model_runtime.models import (
@@ -31,6 +34,7 @@ from qq_ai_bot.model_runtime.models import (
 from qq_ai_bot.model_runtime.pool import ModelClientPool
 from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
 from qq_ai_bot.persistence.models import ChatEventModel
+from qq_ai_bot.plugin_host.facades import HostPluginContext, PluginFacadeServices
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.protocol_store import ProtocolStore
 from qq_ai_bot.runtime.trigger import SelfInitiativeTrigger
@@ -40,6 +44,7 @@ from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import effects, journal, work
 from qq_ai_bot.sandbox.environment_tools import SANDBOX_TOOLS
 from qq_ai_bot.workspace.tools import WORKSPACE_TOOLS
+from yuki_plugin_sdk.permissions import PluginPermission
 
 
 def _catalog(profile):
@@ -116,6 +121,104 @@ def _fixed(body):
     return {key: value for key, value in body.items() if key != "contents"}
 
 
+@pytest.mark.parametrize("protocol", ["gemini", "deepseek"])
+async def test_actual_main_http_separates_host_material_before_final_user_body(
+    database, tmp_path, protocol
+):
+    wire = []
+
+    def transport(request):
+        wire.append(json.loads(request.content))
+        if protocol == "gemini":
+            return httpx.Response(
+                200,
+                json={
+                    "candidates": [
+                        {
+                            "finishReason": "STOP",
+                            "content": {"role": "model", "parts": [{"text": "NO_REPLY"}]},
+                        }
+                    ],
+                    "usageMetadata": {
+                        "promptTokenCount": 30,
+                        "candidatesTokenCount": 1,
+                        "totalTokenCount": 31,
+                    },
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "id": "original-layout-response",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "id": "original-layout-message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "NO_REPLY"}],
+                    }
+                ],
+                "usage": {"input_tokens": 30, "output_tokens": 1, "total_tokens": 31},
+            },
+        )
+
+    async with httpx.AsyncClient(
+        base_url="https://wire.invalid/", transport=httpx.MockTransport(transport)
+    ) as client:
+        provider_type = GeminiProvider if protocol == "gemini" else DeepSeekResponsesProvider
+        provider = provider_type(
+            base_url="https://wire.invalid/",
+            api_key="synthetic",
+            timeout_seconds=2,
+            max_retries=0,
+            client=client,
+        )
+        app, _env, message, sender = await _deployment(database, tmp_path, provider)
+        try:
+            if protocol == "deepseek":
+                profile = _profile().model_copy(
+                    update={
+                        "provider": "deepseek",
+                        "protocol": ModelProtocol.RESPONSES,
+                        "model": "deepseek-main",
+                    }
+                )
+                app.models.apply_catalog(
+                    _catalog(profile), ModelClientPool(injected_profiles={"main": provider})
+                )
+            assert (await app.processor.handle(message, sender)).reason == "chat"
+            app.main_agent_contract.state.update({"slot": 1, "text": "CURRENT_MATERIAL_VALUE"})
+            current = replace(
+                message,
+                message_id="layout-second-current",
+                text="FINAL_CURRENT_USER_BODY\nEND_CURRENT_USER_BODY",
+            )
+            assert (await app.processor.handle(current, sender)).reason == "chat"
+            assert len(wire) == 2
+            if protocol == "gemini":
+                assert wire[-1]["contents"][-1]["role"] == "user"
+                texts = [part["text"] for part in wire[-1]["contents"][-1]["parts"]]
+            else:
+                assert wire[-1]["input"][-1]["role"] == "user"
+                texts = [item["content"] for item in wire[-1]["input"]]
+            joined = "".join(texts)
+            host = texts[-2]
+            assert host.startswith("\n\n当前工作：") and host.endswith("\n\n")
+            assert json.loads(host.removeprefix("\n\n当前工作："))["state"] == "no_active_work"
+            assert joined.count("当前工作：") == joined.count("CURRENT_MATERIAL_VALUE") == 1
+            assert joined.index("当前工作：") < joined.index("CURRENT_MATERIAL_VALUE")
+            assert joined.index("CURRENT_MATERIAL_VALUE") < joined.index(current.text)
+            assert joined.endswith(current.text) and texts[-1].endswith(current.text)
+            assert texts[-3] + host + texts[-1] in joined
+            async with database.sessions() as reader:
+                saved = (await reader.scalars(select(PromptProjectionModel))).one()
+                assert "当前工作：" not in saved.payload_json
+                assert "CURRENT_MATERIAL_VALUE" not in saved.payload_json
+        finally:
+            assert not await app.lifecycle._close_entries(app.lifecycle._entries)
+
+
 @pytest.mark.parametrize("code_enabled", [False, True])
 async def test_current_deployment_three_entries_share_full_contract_and_fresh_material(
     database, tmp_path, code_enabled
@@ -161,6 +264,10 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
             state.update({"slot": 1, "text": "CHAT_CURRENT_STATE"})
             assert (await app.processor.handle(message, sender)).reason == "chat"
             assert len(wire) == 1 and "CHAT_CURRENT_STATE" in _text(wire[0])
+            async with database.sessions() as reader:
+                original_public = (await reader.scalars(select(PromptProjectionModel))).one()
+                original_epoch = original_public.epoch_id
+                original_items = json.loads(original_public.payload_json)
 
             identity = ConversationScope.group("80001", "20001")
             scope = await app.conversation_scopes.get(identity)
@@ -203,6 +310,10 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
             assert len(wire) == 2 and "SELF_CURRENT_STATE" in _text(wire[1])
             assert "CHAT_CURRENT_STATE" not in _text(wire[1])
             assert actor.instruction in _text(wire[1])
+            async with database.sessions() as reader:
+                self_public = (await reader.scalars(select(PromptProjectionModel))).one()
+                assert self_public.view_key == scope.id and self_public.epoch_id == original_epoch
+                assert json.loads(self_public.payload_json) == original_items
 
             async with database.sessions() as reader:
                 current = await reader.scalar(
@@ -247,6 +358,11 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
             ].status is RunStatus.SUCCEEDED
             assert len(wire) == 3 and "SCHEDULE_CURRENT_INSTRUCTION" in _text(wire[2])
             assert "SELF_CURRENT_STATE" not in _text(wire[2]) and "短记录" not in _text(wire[2])
+            async with database.sessions() as reader:
+                schedule_public = (await reader.scalars(select(PromptProjectionModel))).one()
+                assert schedule_public.view_key == scope.id
+                assert schedule_public.epoch_id == original_epoch
+                assert json.loads(schedule_public.payload_json) == original_items
 
             # Every actual entry uses this application's deployed manifest and system.
             assert _fixed(wire[0]) == _fixed(wire[1]) == _fixed(wire[2])
@@ -429,6 +545,14 @@ async def test_original_gemini_work_provider_rename_keeps_contract_and_receipts(
             assert "original-paid-" not in json.dumps(wire[2])
             assert "ORIGINAL_SENT_RESULT" in _text(wire[2])
             assert _fixed(wire[1]) == _fixed(wire[2])
+            resumed_parts = wire[2]["contents"][-1]["parts"]
+            assert resumed_parts[-1]["text"] == neutral[2].messages[-1].content
+            materials = [part["text"] for part in resumed_parts if part["text"].startswith("\n\n{")]
+            assert {json.loads(text)["kind"] for text in materials} == {
+                "work_current_material",
+                "work_unobserved_tool_round",
+            }
+            assert all(text.endswith("\n\n") for text in materials)
             main_session = f"yuki:{old_work['conversation_id']}:g{old_work['generation']}"
             assert sessions == [
                 f"{main_session}:main",
@@ -464,3 +588,101 @@ async def test_original_gemini_work_provider_rename_keeps_contract_and_receipts(
             assert await store.hydrate(json.loads(old_journal["payload_json"])) == old_private
         finally:
             assert not await app.lifecycle._close_entries(app.lifecycle._entries)
+
+
+@pytest.mark.parametrize(
+    ("read_history", "source_kind", "evicted"),
+    [
+        (False, "self", False),
+        (True, "self", False),
+        (False, "person", False),
+        (True, "person", False),
+        (True, "person", True),
+    ],
+)
+async def test_sdk_history_grant_uses_common_conversation_without_scope_fork(
+    database, tmp_path, monkeypatch, read_history, source_kind, evicted
+):
+    from tests.unit.test_history_dispatch_ownership import _scene, _tool
+
+    provider = FakeLLMProvider(lambda request: "内部结束")
+    env, harness, chat, _, message = await _scene(database, tmp_path, provider)
+    original_runtime = []
+    run = chat._run_agent
+
+    async def capture_runtime(conversation_key, initial_messages, tool_runtime, **kwargs):
+        original_runtime.append(tool_runtime)
+        return await run(conversation_key, initial_messages, tool_runtime, **kwargs)
+
+    monkeypatch.setattr(chat, "_run_agent", capture_runtime)
+    await harness.processor.handle(message, MemorySender())
+    async with database.sessions() as reader:
+        before = (await reader.scalars(select(PromptProjectionModel))).one()
+        original = (before.epoch_id, before.revision, before.payload_json)
+    if source_kind == "person":
+        source = original_runtime[0]
+        assert source.require_actor().event_id is not None
+    else:
+        actor = await self_actor(database, env)
+        source = replace(runtime(actor, env), runtime_config=await chat._runtime_config.snapshot())
+    from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
+    from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+
+    scoped = ScopedEventLedgerUnitOfWork(database, config=RollupPolicyConfig())
+    added = await scoped.append(
+        scope=ConversationScope.group("80001", "20001"),
+        platform_message_id="new-public-source-before-sdk",
+        sender_user_id="10001",
+        direction="inbound",
+        content="SDK先采用的真实新公共事件",
+        occurred_at=datetime(2026, 10, 12, 23, 11, 12, tzinfo=UTC),
+    )
+    event = added.event
+    host = HostPluginContext(
+        plugin_id="test.common-history",
+        approved_permissions=(PluginPermission.AGENT_RUN,)
+        + ((PluginPermission.MESSAGE_HISTORY_READ,) if read_history else ()),
+        services=PluginFacadeServices(
+            approval_revision="actual-offline-grant",
+            ledger=harness.ledger,
+            agent_runner=chat.runtime.runner,
+            runtime_config=chat._runtime_config,
+        ),
+    )
+    provider._responder = lambda request: _tool(
+        "task_control", {"action": "complete", "result": "SDK original result"}, "complete-sdk"
+    )
+    if evicted:
+        await chat.runtime.main_turns._projections.invalidate_view(
+            message.conversation_id, reason="capacity"
+        )
+    with host.invocation_scope(host.plugin_id, source, web_was_used=False):
+        result = await host.agent.run("当前插件实际要求")
+    assert result.ok and result.data["state"] == "completed"
+    actual = provider.requests[-1].messages
+    public = json.loads(original[2])
+    for item in public:
+        assert (item["message"]["content"] in [m.content for m in actual]) is read_history
+    async with database.sessions() as reader:
+        rows = (await reader.scalars(select(PromptProjectionModel))).all()
+        assert len(rows) == 1 and rows[0].view_key == message.conversation_id
+        if not read_history:
+            assert (rows[0].epoch_id, rows[0].revision, rows[0].payload_json) == original
+        else:
+            latest = json.loads(rows[0].payload_json)
+            assert latest[: len(public)] == public
+            new = [item for item in latest if event.id in item["event_ids"]]
+            assert len(new) == 1 and "[07:11:12" in new[0]["message"]["content"]
+            assert "SDK先采用的真实新公共事件" in "\n".join(m.content or "" for m in actual)
+        adopted = json.loads(rows[0].payload_json)
+        epoch = rows[0].epoch_id
+    provider._responder = lambda request: "内部结束"
+    await harness.processor.handle(
+        replace(message, message_id="ordinary-after-sdk", text="SDK之后的普通当前输入"),
+        MemorySender(),
+    )
+    async with database.sessions() as reader:
+        final = (await reader.scalars(select(PromptProjectionModel))).one()
+        assert final.epoch_id == epoch
+        assert json.loads(final.payload_json)[: len(adopted)] == adopted
+        assert "当前插件实际要求" not in final.payload_json

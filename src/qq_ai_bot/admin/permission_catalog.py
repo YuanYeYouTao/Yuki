@@ -597,26 +597,6 @@ _BASE_SELF_SERVICE_CAPABILITIES = (
         mutating=False,
         target_scopes=("self",),
     ),
-    CapabilityDescriptor(
-        id="command:time.get_timezone:self",
-        kind=CapabilityKind.COMMAND,
-        category="time",
-        display_name="查看本人时区",
-        description="读取当前真实发送者保存的 IANA 时区。",
-        minimum_level=PermissionLevel.USER,
-        mutating=False,
-        target_scopes=("self",),
-    ),
-    CapabilityDescriptor(
-        id="command:time.set_timezone:self",
-        kind=CapabilityKind.COMMAND,
-        category="time",
-        display_name="设置本人时区",
-        description="验证并设置当前真实发送者自己的 IANA 时区。",
-        minimum_level=PermissionLevel.USER,
-        mutating=True,
-        target_scopes=("self",),
-    ),
 )
 
 

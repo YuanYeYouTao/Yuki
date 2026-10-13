@@ -322,7 +322,6 @@ class ChatService:
             self._context_assembler = ContextAssembler(
                 settings=settings,
                 ledger=self._ledger,
-                people=self._people,
                 time_service=self._time,
                 rollup_repository=rollup_repository,
                 rollup_service=rollup_service,
@@ -1424,11 +1423,7 @@ class ChatService:
         current_time = (
             self._time.current_in_timezone(runtime.prepared_timezone)
             if runtime.prepared_timezone is not None
-            else (
-                await self._time.current(runtime.inbound.sender.user_id)
-                if runtime.inbound is not None
-                else self._time.current_default()
-            )
+            else self._time.current_default()
         )
         backend = MainAgentBackend(self, runtime)
         active_control = current_work_control.get()

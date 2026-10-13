@@ -22,7 +22,6 @@ from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.model_runtime.executor import provider_cache_shape_diagnostics
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.people_repository import PersonPromptMetadata
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.runtime.trigger import ExternalEventTurnTrigger
 from qq_ai_bot.services.agent_tools import ToolRuntime
@@ -97,7 +96,6 @@ def _assembler(**overrides: object) -> ContextAssembler:
     return ContextAssembler(
         settings=settings,
         ledger=MagicMock(),
-        people=MagicMock(),
         time_service=MagicMock(),
         rollup_repository=MagicMock(),
         rollup_service=MagicMock(),
@@ -282,14 +280,6 @@ async def _assemble_wakeup(
             rollup_mode="llm",
         )
     )
-    assembler._people.get = AsyncMock(
-        return_value=UserProfileSnapshot(
-            user_id=target_id,
-            scope_type=ScopeType.PRIVATE,
-            nickname="Ada",
-        )
-    )
-    assembler._time.current = AsyncMock(return_value=_time())
     assembler._time.current_default = MagicMock(return_value=_time())
     identity = current.scope
     turn = ConversationTurnSnapshot(
@@ -338,11 +328,8 @@ async def test_private_wakeup_targets_the_person_without_an_actor() -> None:
     # The target is the conversation person, never a fabricated current speaker.
     assert "current_person" not in items
     assert "current_group" not in items
-    target = items["conversation_target_person"]
-    assert isinstance(target, dict)
-    assert target["user_id"] == "1001" and target["not_current_speaker"] is True
-    assembler._people.get.assert_awaited_once_with(user_id="1001")
-    assembler._time.current.assert_awaited_once_with("1001")
+    assert items == {"scene": "私聊"}
+    assembler._time.current_default.assert_called_once_with()
     # Automatic memory recall stays off; the agent must use memory tools explicitly.
 
 
@@ -356,12 +343,13 @@ async def test_group_wakeup_targets_the_group_without_a_person() -> None:
         canonical_conversation_id="conv-group",
     )
 
-    assembler, context = await _assemble_wakeup(current, target_type="group", target_id="group-100")
+    _assembler_value, context = await _assemble_wakeup(
+        current, target_type="group", target_id="group-100"
+    )
 
     items = _metadata_items(context)
     assert items["scene"] == "群聊"
     assert "conversation_target_person" not in items and "current_person" not in items
-    assembler._people.get.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -434,11 +422,7 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
         return_value=snapshot
     )
     ordinary._ledger.get_event = AsyncMock(return_value=ordinary_event)
-    ordinary._people.prompt_metadata = AsyncMock(
-        return_value=PersonPromptMetadata("synthetic-person", _time().timezone)
-    )
-    ordinary._time.default_timezone = _time().timezone
-    ordinary._time.current_in_timezone = MagicMock(return_value=_time())
+    ordinary._time.current_default = MagicMock(return_value=_time())
     ordinary_identity = ordinary_event.scope
     turn = ConversationTurnSnapshot(
         conversation_id="test-conversation-1",
@@ -477,14 +461,7 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     wakeup._load_history_snapshot = AsyncMock(  # type: ignore[method-assign]
         return_value=snapshot
     )
-    wakeup._people.get = AsyncMock(
-        return_value=UserProfileSnapshot(
-            user_id="1001",
-            scope_type=ScopeType.PRIVATE,
-            nickname="Ada",
-        )
-    )
-    wakeup._time.current = AsyncMock(return_value=_time())
+    wakeup._time.current_default = MagicMock(return_value=_time())
     wakeup_context = await wakeup.assemble(
         inbound=None,
         profile=None,
@@ -523,11 +500,7 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     assert wakeup_context.prompt_raw_tail_end_event_id == (
         ordinary_context.prompt_raw_tail_end_event_id
     )
-    assert wakeup_context.metadata_payload["conversation_target_person"] == {
-        "user_id": "1001",
-        "display_name": "Ada",
-        "not_current_speaker": True,
-    }
+    assert wakeup_context.metadata_payload == {"scene": "私聊"}
     assert wakeup_context.current_message != ordinary_context.current_message
     assert "external_event_wakeup" in (wakeup_context.current_message.content or "")
 
@@ -978,7 +951,7 @@ def _covered_external_turn(
         (12, "emergency"),
     ),
 )
-async def test_actorless_main_context_fails_closed_when_current_source_is_covered(
+async def test_actorless_current_source_is_not_cancelled_by_history_rollup_coverage(
     coverage_end: int,
     rollup_mode: str,
 ) -> None:
@@ -988,7 +961,34 @@ async def test_actorless_main_context_fails_closed_when_current_source_is_covere
         rollup_mode=rollup_mode,
         marker=marker,
     )
-    with pytest.raises(ConversationCoverageError) as exc:
+    context = await assembler.assemble(
+        inbound=None,
+        profile=None,
+        identity=event.scope,
+        turn=turn,
+        content=event.content,
+        runtime=runtime,
+        external_event=event,
+        external_trigger=ExternalEventTurnTrigger(
+            plugin_id="github-monitor",
+            source_event_id=event.id,
+            target_type="private",
+            target_id="1001",
+            agent_intent="comment",
+        ),
+    )
+    assert context.current_event_id is None and context.projection_scope == "main"
+    assert marker in context.current_message.content
+    assert context.prompt_effective_coverage == coverage_end
+    assert context.rollup_text == f"rollup already contains {marker}"
+
+
+@pytest.mark.asyncio
+async def test_actorless_current_source_still_obeys_the_canonical_reset_boundary():
+    assembler, event, turn, runtime = _covered_external_turn(
+        coverage_end=12, rollup_mode="emergency", marker="original source", starts_after_event_id=10
+    )
+    with pytest.raises(ConversationCoverageError, match="precedes the reset boundary"):
         await assembler.assemble(
             inbound=None,
             profile=None,
@@ -1002,13 +1002,5 @@ async def test_actorless_main_context_fails_closed_when_current_source_is_covere
                 source_event_id=event.id,
                 target_type="private",
                 target_id="1001",
-                agent_intent="comment",
             ),
         )
-    assert str(exc.value) == "external trigger is already covered"
-    assert marker not in str(exc.value)
-    assert str(event.id) not in str(exc.value)
-    # The covered rollup text and the isolated current carrier would both show
-    # the marker if prompt composition ran. Assemble must not return a prompt.
-    isolated_current = ChatEventPromptRenderer((event,)).render_reference_event(event)
-    assert marker in isolated_current

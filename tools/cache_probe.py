@@ -46,7 +46,7 @@ from qq_ai_bot.services.ordinary_compaction import OrdinarySummary
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
 
-SCENARIOS = tuple(f"C{number:02}" for number in range(1, 9))
+SCENARIOS = ("C01", "C02", "C04", "C05", "C06", "C07", "C08")
 PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jf1sAAAAASUVORK5CYII="
 
 
@@ -730,8 +730,7 @@ async def run_experiment(
                 transcript = TurnTranscript(prefix)
                 driver = (
                     WorkDriver(app, root, namespace, scenario, prefix)
-                    if scenario in {"C03", "C05"}
-                    or (scenario == "C06" and compaction_mode == "work")
+                    if scenario == "C05" or (scenario == "C06" and compaction_mode == "work")
                     else None
                 )
                 if scenario == "C06" and compaction_mode == "ordinary":
@@ -783,12 +782,6 @@ async def run_experiment(
                         text = (
                             f"同一会话第 {index + 1} 轮：继续合成配色讨论，"
                             "给出两句话的新建议；不调用工具。"
-                        )
-                    if scenario == "C03" and index == 0:
-                        text = (
-                            "仅调用 task_control，action=update，context_note="
-                            '{"version":1,"unresolved":[{"text":"合成配色比较尚待核实",'
-                            '"refs":["goal"]}]}。不要修改目标或发送消息。'
                         )
                     if scenario == "C01":
                         current = TurnTranscript(prefix)
@@ -945,8 +938,6 @@ async def run_experiment(
                         entry.update(status="model_did_not_read_raw_result")
                     elif scenario == "C05" and not entry.get("local_raw_read"):
                         entry.update(status="model_did_not_read_before_restart")
-                    elif scenario == "C03" and not driver.evidence.get("selected_observation_ids"):
-                        entry.update(status="model_did_not_publish_context_note")
                 if driver is not None:
                     await driver.close()
                 if scenario == "C01" and prefix_control and entry["status"] == "complete":

@@ -273,6 +273,9 @@ async def test_recovery_origin_still_checks_source_authority(database, tmp_path,
 
 async def test_declared_public_suffix_must_exist_in_actual_dispatch(database, tmp_path):
     _, composition = await _pending_composition(database, tmp_path)
+    async with database.sessions() as reader:
+        before = (await reader.scalars(select(PromptProjectionModel))).one()
+        original = (before.epoch_id, before.revision, before.payload_json)
     sequence = TranscriptRequest(
         messages=composition.messages,
         continuation=None,
@@ -283,13 +286,12 @@ async def test_declared_public_suffix_must_exist_in_actual_dispatch(database, tm
         await composition.commit_projection()
     async with database.sessions() as session:
         saved = (await session.scalars(select(PromptProjectionModel))).one()
-        assert saved.invalidated_reason == "protocol_changed"
+        assert saved.invalidated_reason is None
+        assert (saved.epoch_id, saved.revision, saved.payload_json) == original
         assert "not actually dispatched" not in saved.payload_json
 
 
-@pytest.mark.parametrize(
-    "boundary", ["selected_scope", "plugin_permission", "deleted", "profile", "contract"]
-)
+@pytest.mark.parametrize("boundary", ["plugin_permission", "deleted", "profile", "contract"])
 async def test_same_actor_new_turn_honors_snapshot_boundaries(
     database, tmp_path, monkeypatch, boundary
 ):
@@ -339,22 +341,8 @@ async def test_same_actor_new_turn_honors_snapshot_boundaries(
         compose = chat.runtime.main_turns.compose
 
         async def restricted_compose(**kwargs):
-            if boundary == "plugin_permission":
-                # This flag is the existing caller-owned context permission,
-                # independent of the fixed declaration/execution capability set.
-                kwargs["include_plugin_context"] = False
-            else:
-                # Model the assembler's selected set after narrowing the read
-                # policy/window. Do not invent a wider source or actor grant.
-                context = kwargs["context"]
-                kwargs["context"] = replace(
-                    context,
-                    history_messages=(),
-                    history_fragments=(),
-                    history_event_fragments=(),
-                    visible_event_ids=frozenset({context.current_event_id}),
-                )
-                kwargs["read_scope"] = "restricted-current-event"
+            # Plugin material permission does not change canonical chat history.
+            kwargs["include_plugin_context"] = False
             return await compose(**kwargs)
 
         monkeypatch.setattr(chat.runtime.main_turns, "compose", restricted_compose)
@@ -371,27 +359,15 @@ async def test_same_actor_new_turn_honors_snapshot_boundaries(
         rows = (await reader.scalars(select(PromptProjectionModel))).all()
         active = [row for row in rows if row.invalidated_reason is None]
         current = next(row for row in active if next_message.text in row.payload_json)
-        if boundary == "plugin_permission":
-            assert current.epoch_id == original_epoch
-        else:
+        if boundary == "deleted":
             assert current.epoch_id != original_epoch and current.revision == 1
+        else:
+            assert current.epoch_id == original_epoch
         assert "original-snapshot" not in current.payload_json
         assert "current-safe-snapshot" not in current.payload_json
-        if boundary == "selected_scope":
-            assert current.view_key != original_key
-        elif boundary == "plugin_permission":
-            assert current.view_key == original_key
-        else:
-            assert current.view_key == original_key
-            assert (
-                current.rebuild_reason
-                == {
-                    "selected_scope": "capacity",
-                    "deleted": "deleted_event",
-                    "profile": "contract_changed",
-                    "contract": "contract_changed",
-                }[boundary]
-            )
+        assert current.view_key == original_key
+        if boundary == "deleted":
+            assert current.rebuild_reason == "deleted_event"
     if boundary == "contract":
         assert provider.requests[2].tools != provider.requests[0].tools
     elif boundary == "profile":

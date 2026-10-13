@@ -6,7 +6,7 @@
 ```powershell
 uv run python -m tools.cache_probe --live --profiles private-model-profiles.toml `
   --profile selected-gemini --output .cache/cache-probe.json `
-  --scenarios C01,C02,C03,C04,C05,C06 --warmups 1 --samples 3
+  --scenarios C01,C02,C04,C05,C06 --warmups 1 --samples 3
 ```
 
 直接读取所选 Profile 的供应商名称和显式协议，由正式模型池选择真实适配器；
@@ -33,15 +33,15 @@ uv run python -m tools.cache_probe --live --profiles private-model-profiles.toml
 | --- | --- |
 | C01 | 同一公共前缀更换末尾问题；另发独立命名空间对照，不称缓存关闭 |
 | C02 | 原生模型生成的读取调用、opaque 签名和配对结果继续进入真实 serializer |
-| C03 | 原 WorkRepository/WorkSession 做 W1→W2→W1；账本新聊天、原 context_note 发布与读取 |
 | C04 | 原 ToolArtifactRepository 外存、模型按 handle 回读；显式新请求退出正文与旧签名尾部 |
 | C05 | 第一段后关闭 SQLite pool，重建 repository/session；按原 effect ID 只读对账、预算保留 |
 | C06 | 原 compact_ordinary 的付费分页摘要、新模型链与后续请求；无新增 Work，辅助调用单列 |
 | C08 | 同一个 transcript 保留每次完整 assistant/opaque 输出并追加下一条 user；不混摘要或对照 |
 | C07 | Profile 声明的真实 inline 图片；MCP 已退役；该场景只核查声明的原生图片输入 |
 
-C03 使用合成公共前缀直接驱动仓库和 session，不能代替完整 Main 编排、隐私或真实群聊
-验收。C05 是 SQLite/repository/session 重开，不冒称完整进程重启。C06 默认是普通
+C03 按人选择公共笔记与手写公共前缀的场景已退役，旧报告只作历史记录。统一公共历史
+由实际 Main 装配回归和真实 Provider 边界验收。C05 是 SQLite/repository/session 重开，
+不冒称完整进程重启。C06 默认是普通
 整理；`--compaction-mode work` 可另查原 Work 摘要路径，不改变默认场景。普通两次发送后
 整理另有完整离线 Processor/Runner 回归。模型不选择预期工具、非法摘要
 或请求失败会保留原结果，不能换样本只选最好一次。
@@ -85,7 +85,7 @@ selection 库存不冒充当时实际采用的公共视图，prepared 不冒充�
 保留原数字 usage 和缺字段覆盖，同执行私有前缀、工具/图片/签名载体顺序仅作事实比较；
 原采集已经脱敏的签名不还原，也不发送。
 
-快照装配使用实际群聊事件、原 actor/read_scope 和已有 SELF/定时来源，调用真实
+快照装配使用实际 Conversation 的统一公共聊天历史和已有 SELF/定时来源，调用真实
 ContextAssembler/MainAgentTurnService，再调用 Gemini、Claude、Chat Completions、Responses
 的实际 serializer。固定 system/tools/生成参数取自原采集请求，作为两端共同的实验控制；
 各端本身的部署合同另存 `deployment-contract.json`。重复当前输入和空资料是明确标记的

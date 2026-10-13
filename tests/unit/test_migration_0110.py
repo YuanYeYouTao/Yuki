@@ -126,7 +126,7 @@ def test_legacy_publication_keeps_hash_receipts_and_resumes_original_main_work(
             )
             repo = AutomationRepository(database)
             service = AutomationService(
-                settings=settings, repository=repo, time_service=TimeContextService(database)
+                settings=settings, repository=repo, time_service=TimeContextService()
             )
             records = []
             scripts = []
@@ -327,6 +327,8 @@ def test_legacy_publication_keeps_hash_receipts_and_resumes_original_main_work(
                 )
             harness = build_harness(database, settings, provider)
             chat = harness.processor._chat
+            # The old schema seeds the private paid request, not the current public cache.
+            chat.runtime.main_turns._projections = None
             if paused_read:
                 bind_native_model(chat, provider)
             chat._tools.social_service = env.service
@@ -622,7 +624,7 @@ def test_legacy_publication_keeps_hash_receipts_and_resumes_original_main_work(
                 **({"web_enabled": True, "web_mode": WebMode.NATIVE} if paused_read else {}),
             )
             service = AutomationService(
-                settings=settings, repository=repo, time_service=TimeContextService(database)
+                settings=settings, repository=repo, time_service=TimeContextService()
             )
             for action in ("resume", "run_now"):
                 with pytest.raises(ValidationError):

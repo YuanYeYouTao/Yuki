@@ -907,6 +907,10 @@ async def test_runner_resumes_gemini_work_on_deepseek_without_old_send_or_native
     assert "https://example.org/public" in json.dumps(payload)
     assert "localhost" not in json.dumps(payload)
     assert "delivered_message" in json.dumps(payload)
+    assert payload["input"][-1] == {"role": "user", "content": "wakeup"}
+    new_material = payload["input"][-2]["content"]
+    assert new_material.startswith("\n\n{") and new_material.endswith("\n\n")
+    assert json.loads(new_material)["kind"] == "work_current_material"
     row = await control.repository.get(old_id)
     assert (row["model_requests"], row["tool_calls"]) == (3, 2)
     await control.repository.release(control.lease)
@@ -1524,16 +1528,14 @@ async def test_pending_recovery_uses_original_evidence_not_display(
 
 
 @pytest.mark.asyncio
-async def test_optional_note_publication_conflict_keeps_normal_resume_composition(
-    database, tmp_path, monkeypatch
+async def test_private_note_keeps_normal_resume_without_public_history_publication(
+    database, tmp_path
 ):
     from tests.conftest import MemorySender
     from tests.support.runtime_execution import make_work_resumer
     from tests.unit.test_history_dispatch_ownership import _scene, _tool
 
     from qq_ai_bot.conversation.observation_models import ContextObservationModel
-    from qq_ai_bot.conversation.observations import ContextObservationRepository
-    from qq_ai_bot.conversation.projections import ProjectionConflict
     from qq_ai_bot.runtime.work_schema_v1 import work
 
     provider = FakeLLMProvider()
@@ -1562,8 +1564,6 @@ async def test_optional_note_publication_conflict_keeps_normal_resume_compositio
         return ChatResponse("actual internal result", 0)
 
     provider._responder = respond
-    publication = AsyncMock(side_effect=ProjectionConflict("fixture conflict"))
-    monkeypatch.setattr(ContextObservationRepository, "publish_note", publication)
     env, harness, chat, _state, inbound = await _scene(
         database, tmp_path, provider, request_limit=2
     )
@@ -1589,7 +1589,6 @@ async def test_optional_note_publication_conflict_keeps_normal_resume_compositio
     completed = await repository.get(identity)
     assert completed["state"] == "completed" and len(provider.requests) == 3
     assert json.loads(completed["checkpoint_json"])["context_note"] == saved
-    assert publication.await_count >= 2
     async with database.sessions() as reader:
         observations = (await reader.scalars(select(ContextObservationModel))).all()
     assert not any(observation.source_key.startswith("work-note:") for observation in observations)

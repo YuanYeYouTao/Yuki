@@ -545,7 +545,7 @@ async def test_persistent_maintenance_errors_do_not_block_original_work_selectio
     monkeypatch.setattr(ProtocolStore, "cleanup", failed_cleanup)
     scheduler = WorkScheduler(repository, resume, chat_admission_enabled=True)
     for _ in range(2):
-        scheduler._last_reclaim = 0
+        scheduler._last_reclaim = float("-inf")
         await scheduler.drain_once()
     assert resumed == [row["id"], row["id"]]
     assert attempts == ["reclaim", "cleanup", "reclaim", "cleanup"]

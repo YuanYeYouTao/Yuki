@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from copy import deepcopy
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any
 
 from qq_ai_bot.conversation.projections import ProjectionConflict
-from qq_ai_bot.domain.messages import ChatMessage, ProviderContinuation, ToolCall, ToolFunction
+from qq_ai_bot.domain.messages import ChatMessage
 
 EventFragment = tuple[tuple[int, ...], ChatMessage]
 
@@ -23,18 +22,6 @@ class FrozenFragments:
     def event_ids(self) -> frozenset[int]:
         return frozenset(event_id for item in self.items for event_id in item["event_ids"])
 
-    @property
-    def observation_sources(self) -> tuple[tuple[str, int], ...]:
-        # Multiple prepared envelopes can refer to one immutable source. Keep
-        # its first selection once; conflicting versions still fail validation.
-        return tuple(
-            dict.fromkeys(
-                (item["observation_id"], item["observation_version"])
-                for item in self.items
-                if "observation_id" in item
-            )
-        )
-
     def messages(self) -> tuple[ChatMessage, ...]:
         return tuple(_message(item["message"]) for item in self.items)
 
@@ -46,21 +33,8 @@ class FrozenFragments:
                 "kind",
                 "event_ids",
                 "message",
-                "observation_id",
-                "observation_version",
-                "selection_key",
             }:
                 raise ProjectionConflict("unsupported frozen fragment schema")
-            if ("observation_id" in item) != ("observation_version" in item) or (
-                "observation_id" in item
-                and (
-                    not isinstance(item["observation_id"], str)
-                    or not item["observation_id"]
-                    or type(item["observation_version"]) is not int
-                    or item["observation_version"] < 1
-                )
-            ):
-                raise ProjectionConflict("invalid observation source")
             if item["kind"] != "model_input":
                 raise ProjectionConflict("fragment is not a model input")
             ids = item["event_ids"]
@@ -73,16 +47,11 @@ class FrozenFragments:
             if (
                 not isinstance(message, dict)
                 or not {"role", "content"} <= set(message)
-                or not set(message)
-                <= {"role", "content", "tool_calls", "tool_call_id", "response_item"}
+                or not set(message) <= {"role", "content"}
                 or message["role"] not in {"user", "assistant", "tool", "system"}
                 or (message["content"] is not None and not isinstance(message["content"], str))
             ):
                 raise ProjectionConflict("unsupported frozen message representation")
-            try:
-                _message(message)
-            except (TypeError, ValueError, KeyError) as exc:
-                raise ProjectionConflict("invalid frozen tool message") from exc
         return cls(tuple(deepcopy(items)))
 
     def extend_history(
@@ -115,113 +84,26 @@ class FrozenFragments:
             covered.update(fresh)
         return self.load(result)
 
-    def append_current(self, event_id: int | None, message: ChatMessage) -> FrozenFragments:
+    def append_current(self, event_id: int, message: ChatMessage) -> FrozenFragments:
         """Freeze the adopted event rendering without activation-only material."""
-        if event_id is not None and event_id in self.event_ids:
+        if event_id in self.event_ids:
             raise ProjectionConflict("trigger already exists in frozen input")
         return self.load(
             [
                 *deepcopy(self.items),
-                _input((event_id,) if event_id is not None else (), message),
+                _input((event_id,), message),
             ]
         )
 
-    def append_observation(
-        self, identity: str, version: int, message: ChatMessage
-    ) -> FrozenFragments:
-        return self.append_observations(((identity, version, message),))
-
-    def append_observations(
-        self, observations: tuple[tuple[str, int, ChatMessage], ...]
-    ) -> FrozenFragments:
-        """Keep identity-first selection and freeze one ordered batch once.
-
-        Existing IDs (including a different offered version) remain no-ops,
-        exactly as single append. The first new ID wins within this batch.
-        load owns the final deep copy; none of the input dictionaries escape.
-        """
-        seen = {identity for identity, _ in self.observation_sources}
-        additions = []
-        for identity, version, message in observations:
-            if identity in seen:
-                continue
-            item = _input((), message)
-            item.update(observation_id=identity, observation_version=version)
-            additions.append(item)
-            seen.add(identity)
-        return self.load([*self.items, *additions]) if additions else self
-
-    def append_protocol(self, messages: tuple[ChatMessage, ...]) -> FrozenFragments:
-        return self.load([*deepcopy(self.items), *(_input((), m) for m in messages)])
-
-    def append_responses(self, continuation: ProviderContinuation) -> FrozenFragments:
-        if continuation.protocol != "responses" or not isinstance(continuation.payload, tuple):
-            raise ProjectionConflict("unsupported Responses replay")
-        messages = []
-        for item in continuation.payload:
-            if not isinstance(item, dict) or item.get("type") not in {
-                "function_call",
-                "function_call_output",
-                "message",
-                "web_search_call",
-            }:
-                raise ProjectionConflict("Responses item requires an explicit boundary")
-            content = item.get("content")
-            if isinstance(content, list) and any(
-                not isinstance(part, dict)
-                or part.get("type") not in {"input_text", "output_text", "text"}
-                for part in content
-            ):
-                raise ProjectionConflict("Responses media requires an explicit boundary")
-            messages.append(
-                ChatMessage(
-                    role="user",
-                    # Used for context budgeting and hashing only. The Responses
-                    # serializer emits the tagged original item instead of this text.
-                    content=json.dumps(item, ensure_ascii=False, separators=(",", ":")),
-                    response_item=ProviderContinuation(
-                        provider=continuation.provider,
-                        protocol=continuation.protocol,
-                        profile_id=continuation.profile_id,
-                        payload=(deepcopy(item),),
-                    ),
-                )
-            )
-        return self.append_protocol(tuple(messages))
-
 
 def _input(ids: tuple[int, ...], message: ChatMessage) -> dict[str, Any]:
-    # Ephemeral images and provider reasoning are not silently stripped: callers
-    # must establish an explicit representation boundary before persisting them.
-    if message.images or message.reasoning_content:
-        raise ProjectionConflict("message requires an explicit projection representation")
-    data: dict[str, Any] = {"role": message.role, "content": message.content}
-    if message.tool_calls:
-        data["tool_calls"] = [asdict(call) for call in message.tool_calls]
-    if message.tool_call_id is not None:
-        data["tool_call_id"] = message.tool_call_id
-    if message.response_item is not None:
-        data["response_item"] = asdict(message.response_item)
+    # Public event text/reference is separate from the current request pixels and private protocol.
     return {
         "kind": "model_input",
         "event_ids": list(ids),
-        "message": data,
+        "message": {"role": message.role, "content": message.content},
     }
 
 
 def _message(data: dict[str, Any]) -> ChatMessage:
-    values = deepcopy(data)
-    if "response_item" in values:
-        raw = values["response_item"]
-        values["response_item"] = ProviderContinuation(
-            provider=raw["provider"],
-            protocol=raw["protocol"],
-            profile_id=raw["profile_id"],
-            payload=tuple(raw["payload"]),
-        )
-    if "tool_calls" in values:
-        values["tool_calls"] = tuple(
-            ToolCall(id=call["id"], type=call["type"], function=ToolFunction(**call["function"]))
-            for call in values["tool_calls"]
-        )
-    return ChatMessage(**values)
+    return ChatMessage(**deepcopy(data))

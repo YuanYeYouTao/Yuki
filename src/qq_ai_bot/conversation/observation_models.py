@@ -48,8 +48,8 @@ class ContextObservationModel(Base):
 class ContextSelectionModel(Base):
     """A selected representation, not a second event or delivery ledger.
 
-    payload_json freezes the model representation (including dynamic envelopes),
-    while event_ids_json and observation_sources_json retain its original owners.
+    payload_json freezes the admitted public event rendering; event_ids_json
+    retains its canonical source identity.
     Order is allocated only inside the admitted projection's CAS transaction.
     """
 
@@ -66,10 +66,7 @@ class ContextSelectionModel(Base):
         ForeignKey("canonical_conversations.id", ondelete="CASCADE"), nullable=False
     )
     generation: Mapped[int] = mapped_column(Integer, nullable=False)
-    actor_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    read_scope: Mapped[str] = mapped_column(Text, nullable=False)
     source_key: Mapped[str] = mapped_column(String(256), nullable=False)
     event_ids_json: Mapped[str] = mapped_column(Text, nullable=False)
-    observation_sources_json: Mapped[str] = mapped_column(Text, nullable=False)
     payload_json: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

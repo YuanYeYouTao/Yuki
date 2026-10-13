@@ -160,7 +160,6 @@ class ApplicationContainer:
         self.emoji_descriptions = persistence.emoji_descriptions
         self.emoji_repository = persistence.emoji_repository
         self.time_context = TimeContextService(
-            self.database,
             default_timezone=settings.default_timezone,
         )
         self.turn_observations = persistence.turn_observations

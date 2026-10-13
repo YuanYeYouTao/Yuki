@@ -5,7 +5,7 @@ import hashlib
 import json
 import time
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import event, insert, select, update
@@ -61,6 +61,51 @@ def resumer(case):
         settings=case.settings,
         generate_origin=case.chat.generate_origin_turn,
     )
+
+
+@pytest.mark.parametrize("principal", ["person", "self"])
+async def test_common_main_clock_keeps_explicit_task_timezone_and_original_version(
+    database, tmp_path, principal
+):
+    case = await setup_run(database, tmp_path, principal=principal, mode="silent")
+    async with database.sessions() as reader:
+        old = await reader.get(AutomationVersionModel, case.row.version_id)
+        original = (old.script_json, old.script_hash, old.created_at)
+    task = {**case.row.script, "timezone": "America/New_York"}
+    current = await case.service.update_task(
+        case.row.id, task, actor=case.actor, conversation_key="group:80001:20001"
+    )
+    assert current.timezone == "America/New_York"
+    responses = iter(
+        (
+            ChatResponse(
+                "",
+                0,
+                tool_calls=(ToolCall("common-clock", ToolFunction("time_get_current", "{}")),),
+            ),
+            "完成内部读取",
+        )
+    )
+    case.provider._responder = lambda _: next(responses)
+    case.clock.advance(2)
+    run = await case.dispatch()
+    assert run.status is RunStatus.SUCCEEDED
+    names = {tool.name for tool in case.provider.requests[0].tools}
+    assert "time_get_current" in names
+    assert not {"time_get_timezone", "time_set_timezone"} & names
+    results = [message for message in case.provider.requests[1].messages if message.role == "tool"]
+    result = json.loads(results[0].content)
+    assert result["ok"]
+    clock = result["data"]
+    assert clock["timezone"] == "Asia/Shanghai"
+    assert datetime.fromisoformat(clock["local"]).utcoffset() == timedelta(hours=8)
+    assert datetime.fromisoformat(clock["utc"]) == case.clock.now()
+    assert not sent(case.env)
+    async with database.sessions() as reader:
+        old = await reader.get(AutomationVersionModel, case.row.version_id)
+        assert (old.script_json, old.script_hash, old.created_at) == original
+        actual = await reader.get(AutomationRunModel, run.id)
+        assert actual.version_id == current.version_id
 
 
 @pytest.mark.parametrize(

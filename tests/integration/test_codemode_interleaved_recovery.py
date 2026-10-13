@@ -117,9 +117,7 @@ async def test_pending_code_interleave(database, tmp_path, monkeypatch, kind, pa
                     label=label,
                     projection=[p.payload_json for p in projs],
                     notes=[dict(id=n.id, payload=n.payload_json) for n in notes],
-                    selections=[
-                        dict(id=s.id, observations=s.observation_sources_json) for s in selections
-                    ],
+                    selections=[dict(id=s.id, event_ids=s.event_ids_json) for s in selections],
                     effects=[
                         {
                             k: v

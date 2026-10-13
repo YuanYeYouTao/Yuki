@@ -1,5 +1,6 @@
 """Current identity and overrides share one real SQLite read view, without caching."""
 
+import json
 from datetime import UTC, datetime
 
 import pytest
@@ -18,17 +19,25 @@ from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.persistence.models import RuntimeConfigOverrideModel
 
 
-async def _override(database, owner, value, scope="user"):
+async def _override(
+    database,
+    owner,
+    value,
+    scope="user",
+    *,
+    key="context.compaction_window_tokens",
+    value_type="integer",
+):
     now = datetime.now(UTC)
     async with database.immediate_session() as session:
         session.add(
             RuntimeConfigOverrideModel(
-                config_key="context.compaction_window_tokens",
+                config_key=key,
                 scope_type=scope,
                 canonical_person_id=owner if scope == "user" else None,
                 canonical_space_id=owner if scope == "group" else None,
-                value_json=str(value),
-                value_type="integer",
+                value_json=json.dumps(value),
+                value_type=value_type,
                 apply_mode="hot",
                 version=1,
                 created_at=now,
@@ -36,6 +45,79 @@ async def _override(database, owner, value, scope="user"):
                 updated_by="synthetic-test",
             )
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("group_override", [False, True])
+async def test_group_history_uses_space_config_while_private_history_keeps_person_config(
+    database, group_override
+):
+    settings = make_settings(
+        database.url,
+        context_window_tokens=60000,
+        context_compaction_window_tokens=50000,
+        conversation_rollup_trigger_ratio=0.7,
+        conversation_rollup_target_ratio=0.5,
+    )
+    runtime = RuntimeConfigService(settings=settings, database=database)
+    person_a, space = await runtime._owner_match(user_id="10001", group_id="2001")
+    person_b, _ = await runtime._owner_match(user_id="10002", group_id="2001")
+    values_a = {
+        "window_tokens": 100000,
+        "compaction_window_tokens": 70000,
+        "compaction_trigger_ratio": 0.9,
+        "compaction_target_ratio": 0.65,
+    }
+    values_b = {
+        "window_tokens": 200000,
+        "compaction_window_tokens": 90000,
+        "compaction_trigger_ratio": 0.85,
+        "compaction_target_ratio": 0.6,
+    }
+    space_values = {
+        "window_tokens": 80000,
+        "compaction_window_tokens": 65000,
+        "compaction_trigger_ratio": 0.75,
+        "compaction_target_ratio": 0.55,
+    }
+    for name in values_a:
+        value_type = "number" if name.endswith("ratio") else "integer"
+        for owner, value in ((person_a, values_a[name]), (person_b, values_b[name])):
+            await _override(database, owner, value, key=f"context.{name}", value_type=value_type)
+        if group_override:
+            await _override(
+                database,
+                space,
+                space_values[name],
+                "group",
+                key=f"context.{name}",
+                value_type=value_type,
+            )
+    for owner, temperature in ((person_a, 0.2), (person_b, 0.8)):
+        await _override(database, owner, temperature, key="llm.temperature", value_type="number")
+    group_a = await runtime.snapshot(user_id="10001", group_id="2001")
+    group_b = await runtime.snapshot(user_id="10002", group_id="2001")
+    assert group_a.context == group_b.context
+    expected = (
+        space_values
+        if group_override
+        else {
+            "window_tokens": 60000,
+            "compaction_window_tokens": 50000,
+            "compaction_trigger_ratio": 0.7,
+            "compaction_target_ratio": 0.5,
+        }
+    )
+    for name, value in expected.items():
+        assert getattr(group_a.context, name) == value
+    assert group_a.llm.temperature == 0.2 and group_b.llm.temperature == 0.8
+    canonical = await runtime.snapshot(memory_scope=MemoryConfigScope(person_b, space))
+    assert canonical.context == group_a.context
+    private_a = await runtime.snapshot(user_id="10001")
+    private_b = await runtime.snapshot(user_id="10002")
+    for name in values_a:
+        assert getattr(private_a.context, name) == values_a[name]
+        assert getattr(private_b.context, name) == values_b[name]
 
 
 @pytest.mark.asyncio

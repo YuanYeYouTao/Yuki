@@ -20,9 +20,9 @@ MemoryPartitionKey 使用 SELF、PERSON、GROUP 或 PERSON_GROUP owner，不得�
 协议恢复单独使用只含身份的 scope state 读取；准备后的 read-version/source/privacy 与
 实际 dispatch CAS 继续独立执行。不能以先前展示资料快照替代授权或取消末端围栏。
 
-普通 Person 的 timezone 在本次准备中只解析一次 live canonical owner，返回
-不含 ORM/session 的 immutable 展示 DTO。Runner 复用本轮 timezone 并重新取 clock，
-下一轮重新读取偏好；SELF 与 actorless 不借用该 DTO。不新增展示资料的统一 revision 或变更重试协议。
+所有入口的当前时间与历史显示使用共同默认 UTC+8，不再读取 Person 或 SELF 时区偏好。
+Runner 沿共同时钟取得本轮时间；原已付请求中的 prepared_timezone 仍是原执行事实，
+不追溯改写。不新增展示资料的统一 revision 或变更重试协议。
 
 ## 持久状态
 
@@ -160,8 +160,9 @@ Provider 输入顺序固定为：
 ```text
 TRUSTED STATIC INSTRUCTIONS
 UNTRUSTED ROLLUP SUMMARY INPUT
-FROZEN AUTHORIZED CHAT AND USEFUL NOTES
-CURRENT TRIGGER AND CURRENT ACTIVATION MATERIAL
+FROZEN CONVERSATION CHAT
+CURRENT ACTIVATION MATERIAL AND INITIAL WORK FACTS
+CURRENT TRIGGER
 ORDERED EXECUTION INPUTS AND PAIRED TOOL RESULTS
 ```
 
@@ -170,17 +171,19 @@ ORDERED EXECUTION INPUTS AND PAIRED TOOL RESULTS
 renderer 的旧记录按当前获准来源进行 `rollup` 显式重建并记录新 epoch；不猜旧语义。
 重启、fit/soft/hard 容量及隐私/来源复核仍走原合同。
 
-Rollup 永不进入 system instructions。冻结历史保留所选原聊天与有用观察的原顺序，新事件在安全点追加。昵称、群名片、正文、AT、引用和附件描述来自实际采用的事件渲染，不保存带本轮资料的 compiled 当前消息。长期记忆由 Main Agent 按需调用记忆检索工具，不在每轮自动预取或注入。
+Rollup 永不进入 system instructions。一个 canonical Conversation 只建立一份公共历史，所有获准读取的主入口复用已采用的原事件表示，新事件在安全点追加。昵称、群名片、正文、AT、引用和附件描述来自实际采用的事件渲染，不保存带本轮资料的 compiled 当前消息。长期记忆由 Main Agent 按需调用记忆检索工具，不在每轮自动预取或注入。
 
 短记录只展示当前有内容的 slot/text，清空和到期后下一激活直接不展示；默认场景只用简短的群聊/私聊说明。插件内容保实际来源与不可信标记。当前触发、场景、短记录、插件资料和 Work 状态只属于本次激活，不发布自动 dynamic_snapshot，不进入公共投影、历史观察或摘要。无聊天事件的 SELF、定时及执行唤醒同样不把触发文字登记为公共聊天。
 
-普通输入派发前只冻结获准的原事件渲染与实际选取的有用笔记，后台变化不改写它们。开启 Work runtime 但尚未 accept 的普通轮仍提交原消息投影。当前 Work 的目标、工具/steer 尾部及不透明签名继续属于原执行的私有 journal；新状态从有序输入尾部接入，不插在已经增长的轨迹前面。
+普通输入派发前只冻结获准的原事件渲染，后台变化不改写它们。开启 Work runtime 但尚未 accept 的普通轮仍提交原消息投影。当前 Work 的目标、context_note、工具/steer 尾部及不透明签名继续属于原执行的私有资料和 journal；新状态从有序输入尾部接入，不插在已经增长的轨迹前面。
 派发明确标识新 composition 或恢复 journal 的来源；恢复、合同/来源改变及旧检查点
 缺失后的恢复路径，不能调用另一份新 composition 的提交闭包。批准 suffix 必须与实际
-请求的对应位置完全一致，CAS、actor/read-scope、容量及隐私围栏继续生效。
+请求的对应位置完全一致，原 Conversation/generation、来源 CAS、容量及隐私围栏继续生效。
 投影证明准备和派发边界的输入，不证明模型响应或消息送达。
 
-`prompt_projections` 只缓存已选聊天和有用笔记，淘汰后按实际保留的选取来源恢复，没有最后可见资料 JSON 或资料折叠查询。0109 在一次升级中清退旧公共资料选取及无事件触发，删除展示值字段；有用 note、混合摘要事实、原 Work/journal/protocol 依赖仍保原来源。旧付费私有请求不被改写，其资料也不再被采用为公共历史。
+`prompt_projections` 只缓存已采用的公共事件表示，淘汰后按同一 Conversation 的原选取恢复。公共 view 不含 actor、read_scope、插件、模型或工具合同，群的历史窗口不采用当前 Person 覆盖，所有入口使用共同历史时区。未获准读取群史的 SDK 不读写这份公共缓存。当前图片继续送入本次模型请求，公共历史保存该事件的文本与附件引用，图片不清空整份历史。
+
+0112 一次清退旧公共 projections/selections 并删除其个人范围、自动观察来源与请求合同字段。旧 Work/journal/protocol、ContextObservation 原件及来源 DAG、artifact 和原引用保留；原私有笔记继续由 WorkSession 读取，不自动回读、整理或发布到公共聊天。旧付费私有请求不被改写或重发。
 
 普通投影在派发前按完整初始 composition 与固定函数工具，使用 Runner 同一请求估算器
 核对真实容量；压缩比例及 4096 token 余量仅用于安排整理，不能成为另一层硬容量。
@@ -193,11 +196,11 @@ Rollup 永不进入 system instructions。冻结历史保留所选原聊天与�
 原因一次采用新摘要及覆盖点之后的全部聊天，之后继续稳定追加。后台尚未完成而原输入能 fit，
 仍保留原输入先回复；当前激活中的工具往返不会因此切换前缀。没有可回收旧材料、或 fresh
 本身已超真实容量时不制造容量 epoch，交最终预检准确停止。
-Rollup 只整理公共聊天来源，不能证明有用观察线索已被覆盖。自动资料来源不加入付费观察
-摘要输入；有用线索优先复用已准备的作用域摘要；
-没有就绪摘要而原请求 fit 时保留线索继续，真正超限才沿原 scope-summary 边界整理。
+Rollup 只整理公共聊天来源；公共自动观察、work-note 发布和按 reader 的 scope-summary 链已退出。
 普通工具尾部的显式纯摘要继续保留回执、内部 ID 和预算，不自动 accept 或重发。
 私有工具回合与签名仍归原执行，不共享到群史。不因重启或容量上界上调清空合法冻结前缀。
+
+[10-13实际核查](../operations/public-history-freeze-audit-20261013.md)保留 d75–a3 的按人分叉证据及后续源码、迁移和部署验收。单份片段不改写，不能代替同一会话跨人、SELF、定时和 SDK 的共同历史核验。模型/工具合同只管理实际请求与原私有恢复，不改写公共事件表示。
 
 插件通知以 canonical `external_event` 落账，不作为普通 user/assistant/system history；
 旧外部事件也不再以 `recent_external_events` 摘要自动附在本轮资料中。既有稳定 `CORE_CONTRACT`

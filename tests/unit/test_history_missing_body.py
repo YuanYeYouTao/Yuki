@@ -164,7 +164,6 @@ async def test_full_prepare_equivalence_and_only_missing_body_reads(database, mo
     saved = await repository.commit(
         view_key="a" * 64,
         context_key="b" * 64,
-        contract_revision="c" * 64,
         conversation_id=version.conversation_id,
         generation=version.generation,
         expected_source_revision=version.prompt_source_revision,
@@ -192,7 +191,6 @@ async def test_full_prepare_equivalence_and_only_missing_body_reads(database, mo
     args = dict(
         view_key="a" * 64,
         context_key="b" * 64,
-        contract_revision="c" * 64,
         history_fits=lambda _: True,
     )
     with monkeypatch.context() as patch:
@@ -204,7 +202,6 @@ async def test_full_prepare_equivalence_and_only_missing_body_reads(database, mo
     assert actual.context == baseline.context
     assert actual.fragments.items == baseline.fragments.items
     assert actual.fragments.messages() == baseline.fragments.messages()
-    assert actual.fragments.observation_sources == baseline.fragments.observation_sources
     assert actual.reason == baseline.reason
     assert (await repository.read("a" * 64)).payload_json == saved.payload_json
     if case.isdecimal():
@@ -367,7 +364,6 @@ async def test_history_preparation_version_change_is_source_error(database, monk
     await repository.commit(
         view_key="a" * 64,
         context_key="b" * 64,
-        contract_revision="c" * 64,
         conversation_id=version.conversation_id,
         generation=version.generation,
         expected_source_revision=version.prompt_source_revision,
@@ -395,7 +391,6 @@ async def test_history_preparation_version_change_is_source_error(database, monk
             context,
             view_key="a" * 64,
             context_key="b" * 64,
-            contract_revision="c" * 64,
             history_fits=lambda _: True,
         )
 
@@ -498,7 +493,6 @@ async def test_publication_still_rejects_change_after_missing_history_prepare(da
     await repository.commit(
         view_key="a" * 64,
         context_key="b" * 64,
-        contract_revision="c" * 64,
         conversation_id=version.conversation_id,
         generation=version.generation,
         expected_source_revision=version.prompt_source_revision,
@@ -513,7 +507,6 @@ async def test_publication_still_rejects_change_after_missing_history_prepare(da
         context,
         view_key="a" * 64,
         context_key="b" * 64,
-        contract_revision="c" * 64,
         history_fits=lambda _: True,
     )
     publication = await prepared.prepare_commit(

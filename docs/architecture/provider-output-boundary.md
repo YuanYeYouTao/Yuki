@@ -5,10 +5,10 @@ Responses 的 `reasoning` item 与 `message/output_text` 分别解析；Chat 的
 thoughtSignature 保留独立通道及私有续跑状态，见[模型供应商合同](model-providers.md)。
 文本中的 DSML 不再转换成工具调用；执行只接受真实协议调用。
 
-普通聊天、SELF、模型自动化和插件主入口通过显式 `send_message` 交付。
+普通聊天、SELF、定时安排和插件主入口通过显式 `send_message` 交付。
 模型最终正文是内部结果，不自动投递，也不购买“漏发纠正”请求。存在原 Work 时，
-合法无工具 final（包括空正文）进入与 `task_control.complete` 相同的结束路径；只收拢真正活动的所属执行和真实新输入，不以历史 unknown 或产出分类否决。内部结束不证明 QQ 已回复。静态提醒和管理命令
-继续沿各自真实发送入口及持久回执执行。
+合法无工具 final（包括空正文）进入与 `task_control.complete` 相同的结束路径；只收拢真正活动的所属执行和真实新输入，不以历史 unknown 或产出分类否决。内部结束不证明 QQ 已回复。
+固定文字提醒同样到点激活 Main 后显式发送；管理命令沿原发送入口及持久回执执行。
 
 思考开关、effort 和预算沿显式请求或 Profile，不再强制开启或抬到 low。
 DeepSeek 在关闭思考时省略 reasoning 参数，实际 Provider 的缺省行为另行核验。

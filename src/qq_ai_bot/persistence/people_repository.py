@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from heapq import nsmallest
 
-from sqlalchemy import String, case, cast, delete, func, or_, select, text, update
+from sqlalchemy import String, case, cast, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.sql.elements import ColumnElement
@@ -68,7 +68,6 @@ from qq_ai_bot.persistence.models import (
     MemorySelfReflectionStateModel,
     MemoryToolReceiptModel,
     PersonAliasModel,
-    PersonTimeSettingModel,
     RuntimeConfigOverrideModel,
     RuntimeTurnObservationModel,
     ToolInvocationModel,
@@ -88,15 +87,6 @@ from qq_ai_bot.plugin_host.db_models import (
     PluginStateModel,
 )
 from qq_ai_bot.runtime.observability import hash_conversation_key
-from qq_ai_bot.services.canonical_owners import resolve_live_person_id
-
-
-@dataclass(frozen=True, slots=True)
-class PersonPromptMetadata:
-    """Display-only metadata frozen for one preparation, never an authority grant."""
-
-    person_id: str
-    timezone: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -429,26 +419,6 @@ class PeopleRepository:
     async def aliases(self, user_id: str, *, limit: int = 20) -> tuple[str, ...]:
         async with self._database.sessions() as session:
             return await load_canonical_aliases(session, user_id, limit=limit)
-
-    async def prompt_metadata(
-        self,
-        user_id: str,
-        *,
-        default_timezone: str,
-        expected_person_id: str | None = None,
-    ) -> PersonPromptMetadata:
-        """Resolve a live actor once and read timezone in one WAL snapshot."""
-
-        async with self._database.sessions() as session, session.begin():
-            await session.execute(text("BEGIN"))
-            person_id = await resolve_live_person_id(session, user_id)
-            if expected_person_id is not None and person_id != expected_person_id:
-                raise CanonicalIdentityError("canonical_owner_mismatch")
-            timezone = await session.get(PersonTimeSettingModel, person_id)
-            return PersonPromptMetadata(
-                person_id=person_id,
-                timezone=timezone.timezone if timezone is not None else default_timezone,
-            )
 
     async def membership_count(self, user_id: str) -> int:
         async with self._database.sessions() as session:
@@ -855,11 +825,6 @@ class PeopleRepository:
             .values(
                 canonical_first_seen_person_id=None,
                 first_seen_user_id=None,
-            )
-        )
-        await session.execute(
-            delete(PersonTimeSettingModel).where(
-                PersonTimeSettingModel.canonical_person_id == person_id,
             )
         )
         await session.execute(

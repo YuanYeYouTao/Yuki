@@ -1,4 +1,4 @@
-"""Trusted clock access and persistent per-person timezone preferences."""
+"""Trusted clock access and a shared default timezone."""
 
 from __future__ import annotations
 
@@ -6,9 +6,6 @@ from datetime import UTC, datetime
 from typing import Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import PersonTimeSettingModel, SelfTimeSettingModel
-from qq_ai_bot.services.canonical_owners import resolve_live_person_id
 from qq_ai_bot.time.models import TimeContext
 
 
@@ -38,16 +35,14 @@ def validate_timezone(value: str) -> str:
 
 
 class TimeContextService:
-    """Resolve trusted current time using a persistent user timezone."""
+    """Resolve trusted current time without personal timezone state."""
 
     def __init__(
         self,
-        database: Database,
         *,
         default_timezone: str = "Asia/Shanghai",
         clock: Clock | None = None,
     ) -> None:
-        self._database = database
         self._default_timezone = validate_timezone(default_timezone)
         self._clock = clock or SystemClock()
 
@@ -60,59 +55,12 @@ class TimeContextService:
         return self._default_timezone
 
     def current_in_timezone(self, timezone: str) -> TimeContext:
-        """Refresh the clock using this preparation's already resolved preference."""
+        """Refresh the clock using an explicitly selected timezone."""
 
         return self.at(self._utc_now(), timezone)
 
-    async def timezone_for(self, user_id: str) -> str:
-        async with self._database.sessions() as session:
-            if user_id == "self":
-                self_row = await session.get(SelfTimeSettingModel, "self")
-                return self_row.timezone if self_row is not None else self._default_timezone
-            person_id = await resolve_live_person_id(session, user_id)
-            row = await session.get(PersonTimeSettingModel, person_id)
-        return row.timezone if row is not None else self._default_timezone
-
-    async def set_timezone(self, user_id: str, timezone: str) -> str:
-        normalized = validate_timezone(timezone)
-        now = self._utc_now()
-        async with self._database.sessions() as session, session.begin():
-            if user_id == "self":
-                self_row = await session.get(SelfTimeSettingModel, "self")
-                if self_row is None:
-                    session.add(
-                        SelfTimeSettingModel(
-                            principal_id="self",
-                            timezone=normalized,
-                            created_at=now,
-                            updated_at=now,
-                        )
-                    )
-                else:
-                    self_row.timezone = normalized
-                    self_row.updated_at = now
-                return normalized
-            person_id = await resolve_live_person_id(session, user_id)
-            row = await session.get(PersonTimeSettingModel, person_id)
-            if row is None:
-                session.add(
-                    PersonTimeSettingModel(
-                        canonical_person_id=person_id,
-                        timezone=normalized,
-                        created_at=now,
-                        updated_at=now,
-                    )
-                )
-            else:
-                row.timezone = normalized
-                row.updated_at = now
-        return normalized
-
-    async def current(self, user_id: str) -> TimeContext:
-        return self.at(self._utc_now(), await self.timezone_for(user_id))
-
     def current_default(self) -> TimeContext:
-        """Return trusted current time without attributing a Person preference."""
+        """Return trusted current time in the common default timezone."""
 
         return self.at(self._utc_now(), self._default_timezone)
 

@@ -1327,12 +1327,13 @@ class RuntimeConfigService:
 
         def value(key: str) -> ConfigValue:
             spec = self.registry.get(key)
+            shared_context = spec.category == "context" and space_id is not None
             return self._resolve(
                 spec,
                 records,
-                user_id=user_id,
+                user_id=None if shared_context else user_id,
                 group_id=group_id,
-                person_id=person_id,
+                person_id=None if shared_context else person_id,
                 space_id=space_id,
             ).value
 

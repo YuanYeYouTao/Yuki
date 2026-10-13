@@ -164,8 +164,6 @@ class AutomationToolService:
         "automation_history": frozenset({"automation_id"}),
         "automation_diagnose": frozenset(),
         "time_get_current": frozenset(),
-        "time_get_timezone": frozenset(),
-        "time_set_timezone": frozenset({"timezone"}),
     }
 
     def __init__(self, service: AutomationService) -> None:
@@ -263,21 +261,8 @@ class AutomationToolService:
             ),
             ChatTool(
                 name="time_get_current",
-                description="读取后端可信的当前 UTC、本地时间、日期、星期和时区。",
+                description="读取后端可信的当前 UTC、共同默认时区的本地时间、日期和星期。",
                 parameters=_object_schema({}),
-            ),
-            ChatTool(
-                name="time_get_timezone",
-                description="读取当前执行主体保存的 IANA 时区。",
-                parameters=_object_schema({}),
-            ),
-            ChatTool(
-                name="time_set_timezone",
-                description="设置当前执行主体自己的 IANA 时区。",
-                parameters=_object_schema(
-                    {"timezone": {"type": "string"}},
-                    required=("timezone",),
-                ),
             ),
         )
         return definitions
@@ -368,25 +353,11 @@ class AutomationToolService:
                 completed = await self._service.list_completed(actor.user_id)
                 return _result(
                     data={
-                        "timezone": await self._service.timezone(actor.user_id or "self"),
                         "completed_history": [_record(row) for row in completed[:maximum]],
                     }
                 )
             if name == "time_get_current":
-                return _result(data=await self._service.current_time(actor.user_id or "self"))
-            if name == "time_get_timezone":
-                return _result(
-                    data={"timezone": await self._service.timezone(actor.user_id or "self")}
-                )
-            if name == "time_set_timezone":
-                timezone = await self._service.set_timezone(
-                    actor.user_id or "self", str(arguments.get("timezone") or "")
-                )
-                return _result(
-                    data={"timezone": timezone},
-                    public_message=f"时区已设置为 {timezone}。",
-                    mutation_committed=True,
-                )
+                return _result(data=self._service.current_time())
             if name == "automation_diagnose":
                 return _result(
                     data={

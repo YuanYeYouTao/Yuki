@@ -89,5 +89,5 @@ def _canonical_service(database):
     return AutomationService(
         settings=settings,
         repository=AutomationRepository(database),
-        time_service=TimeContextService(database, clock=clock),
+        time_service=TimeContextService(clock=clock),
     )

@@ -14,7 +14,7 @@ def automation_service(database):
     return AutomationService(
         settings=make_settings(database.url, automation_enabled=True, superusers=("9999",)),
         repository=AutomationRepository(database),
-        time_service=TimeContextService(database, clock=FakeClock(datetime.now(UTC))),
+        time_service=TimeContextService(clock=FakeClock(datetime.now(UTC))),
     )
 
 

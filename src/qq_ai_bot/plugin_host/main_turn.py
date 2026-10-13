@@ -24,7 +24,6 @@ from qq_ai_bot.services.agent_tools import OneBotToolGateway, ToolRuntime
 from qq_ai_bot.services.invocation_context import InvocationContextFactory
 from qq_ai_bot.services.main_agent_backend import MainAgentBackend
 from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
-from qq_ai_bot.tool_results.access import access_from_runtime
 from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.permissions import PluginPermission
 
@@ -371,9 +370,7 @@ async def _execute_plugin_main_turn(
                 context = await prepare_context(
                     partial(
                         contract.chat._context_assembler.assemble_plugin,
-                        inbound=inbound,
                         identity=scope,
-                        source_event_id=actor.event_id,
                         content=content,
                         metadata=payload,
                         current_time=runtime.current_time,
@@ -383,17 +380,6 @@ async def _execute_plugin_main_turn(
                             runtime.runtime_config,
                             maintenance=False,
                             allowed_capabilities=runtime.allowed_capabilities,
-                        ),
-                        projection_scope=json.dumps(
-                            [
-                                "plugin-sdk",
-                                host.plugin_id,
-                                invocation.actor_user_id,
-                                permission.value,
-                                context_profile,
-                                sorted(runtime.allowed_capabilities),
-                            ],
-                            separators=(",", ":"),
                         ),
                     ),
                     current_work_control.get(),
@@ -475,9 +461,6 @@ async def _execute_plugin_main_turn(
                     runtime=runtime.runtime_config,
                     include_plugin_context=False,
                     allowed_capabilities=runtime.allowed_capabilities,
-                    read_scope=access_from_runtime(
-                        tool_runtime, generation=version.generation
-                    ).read_scope,
                     before_preparation=validate,
                 )
 

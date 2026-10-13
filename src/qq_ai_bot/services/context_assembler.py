@@ -1,4 +1,4 @@
-"""Bounded person-centric context assembly for one normal chat Agent."""
+"""Canonical Conversation history and temporary activation input for Main."""
 
 from __future__ import annotations
 
@@ -31,7 +31,6 @@ from qq_ai_bot.persistence.event_repository import ConversationReadVersion
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     EventRecord,
-    PeopleRepository,
 )
 from qq_ai_bot.runtime.trigger import (
     ExternalEventTurnTrigger,
@@ -136,14 +135,13 @@ class _UncoveredPromptView:
 
 
 class ContextAssembler:
-    """Load and bound all person, group, and history context."""
+    """Load and bound the Conversation's history and current input."""
 
     def __init__(
         self,
         *,
         settings: Settings,
         ledger: EventLedgerRepository,
-        people: PeopleRepository,
         time_service: TimeContextService,
         rollup_repository: ConversationRollupRepository,
         rollup_service: ConversationRollupService,
@@ -152,7 +150,6 @@ class ContextAssembler:
     ) -> None:
         self._settings = settings
         self._ledger = ledger
-        self._people = people
         self._time = time_service
         self._rollups = rollup_repository
         self._rollup_service = rollup_service
@@ -279,14 +276,11 @@ class ContextAssembler:
     async def assemble_plugin(
         self,
         *,
-        inbound: InboundMessage | None,
         identity: ConversationScope,
-        source_event_id: int | None = None,
         content: str,
         metadata: dict[str, Any],
         current_time: TimeContext,
         read_history: bool,
-        projection_scope: str,
         runtime: RuntimeConfigSnapshot,
         capacity_budget: int | None = None,
     ) -> AssembledContext:
@@ -319,7 +313,7 @@ class ContextAssembler:
                 )
             if not loaded.raw_complete:
                 raise ConversationCoverageError("plugin context requires explicit compaction")
-            rows = tuple(row for row in loaded.raw_events if row.id != source_event_id)
+            rows = loaded.raw_events
             rollup = loaded.rollup.summary_text if loaded.rollup else ""
             rollup_mode = loaded.rollup.summary_kind.value if loaded.rollup else None
             coverage = loaded.effective_coverage
@@ -335,7 +329,7 @@ class ContextAssembler:
         renderer = ChatEventPromptRenderer(
             rows,
             bot_display_name=self._settings.bot_display_name,
-            timezone=current_time.timezone,
+            timezone=self._settings.default_timezone,
         )
         rendered = renderer.main_agent_history(rows)
         history = tuple(message for _, _, message in rendered)
@@ -367,6 +361,7 @@ class ContextAssembler:
             read_version=version,
             rollup_text=rollup,
             prompt_effective_coverage=coverage,
+            prompt_raw_tail_end_event_id=max((row.id for row in rows), default=coverage),
             visible_event_ids=frozenset(row.id for row in rows),
             history_fragments=tuple((ids, message) for _, ids, message in rendered),
             history_event_fragments=tuple(
@@ -374,7 +369,9 @@ class ContextAssembler:
                 for row in rows
                 for _, ids, message in renderer.main_agent_history((row,))
             ),
-            projection_scope=projection_scope,
+            projection_scope="main" if read_history else "",
+            history_timezone=self._settings.default_timezone,
+            history_bot_display_name=self._settings.bot_display_name,
         )
 
     async def assemble(
@@ -434,12 +431,7 @@ class ContextAssembler:
         ):
             raise ConversationCoverageError("turn trigger event does not match scope snapshot")
         recent = snapshot.recent
-        metadata = await self._people.prompt_metadata(
-            inbound.sender.user_id,
-            default_timezone=self._time.default_timezone,
-            expected_person_id=inbound.person_id,
-        )
-        current_time = self._time.current_in_timezone(metadata.timezone)
+        current_time = self._time.current_default()
 
         total_budget = self._history_token_budget(runtime)
         metadata_payload = {"scene": "群聊" if inbound.group_id else "私聊"}
@@ -554,10 +546,9 @@ class ContextAssembler:
         turn: ConversationTurnSnapshot,
         runtime: RuntimeConfigSnapshot,
     ) -> AssembledContext:
-        """Use the canonical Main-Agent window with actor-neutral memory targets."""
+        """Use common chat history while keeping the execution trigger temporary."""
 
         sandbox = isinstance(trigger, (SandboxTaskTurnTrigger, WorkResumeTrigger))
-        work_resume = isinstance(trigger, WorkResumeTrigger)
         if (
             event.id != trigger.source_event_id
             or event.canonical_conversation_id is None
@@ -576,28 +567,12 @@ class ContextAssembler:
         snapshot = await self._load_history_snapshot(
             identity,
             turn=turn,
-            before_event_id=None if sandbox else event.id,
+            before_event_id=None,
         )
-        if (
-            not sandbox and event.id <= snapshot.coverage_end
-        ) or event.id <= snapshot.starts_after_event_id:
-            raise ConversationCoverageError("external trigger is already covered")
+        if event.id <= snapshot.starts_after_event_id:
+            raise ConversationCoverageError("external trigger precedes the reset boundary")
         recent = snapshot.recent
-        context: dict[str, Any] = {"scene": "群聊" if event.group_id else "私聊"}
-        if event.group_id is None:
-            profile = await self._people.get(user_id=trigger.target_id)
-            if profile is None:
-                raise ConversationCoverageError("external private target profile is unavailable")
-            context["conversation_target_person"] = {
-                "user_id": trigger.target_id,
-                "display_name": (
-                    profile.group_card if profile.scope_type is ScopeType.GROUP else ""
-                )
-                or profile.nickname
-                or profile.user_id,
-                "not_current_speaker": True,
-            }
-        metadata_payload = context
+        metadata_payload = {"scene": "群聊" if event.group_id else "私聊"}
         metadata_json = json.dumps(metadata_payload, ensure_ascii=False, separators=(",", ":"))
         remainder = max(
             0, self._history_token_budget(runtime) - estimate_text_tokens(metadata_json)
@@ -605,7 +580,7 @@ class ContextAssembler:
         snapshot, recent, rollup_text, shifted = await self._ensure_uncovered_fits_budget(
             snapshot=snapshot,
             recent=recent,
-            current_event_id=None if work_resume else event.id,
+            current_event_id=None,
             content=event.content,
             yuki_account_ids=frozenset({event.bot_user_id}),
             current_message_override=self._external_wakeup_message(event, trigger),
@@ -615,17 +590,17 @@ class ContextAssembler:
                 self._history_capacity_token_budget(runtime) - estimate_text_tokens(metadata_json),
             ),
             identity=identity,
-            current_event=None if work_resume else event,
+            current_event=None,
             turn=turn,
         )
         metadata_json = json.dumps(metadata_payload, ensure_ascii=False, separators=(",", ":"))
         bounded_messages = self._bounded_history(
             recent,
-            current_event_id=None if work_resume else event.id,
+            current_event_id=None,
             content=event.content,
             yuki_account_ids=frozenset({event.bot_user_id}),
             current_message_override=self._external_wakeup_message(event, trigger),
-            current_event=None if work_resume else event,
+            current_event=None,
             bot_display_name=self._settings.bot_display_name,
             timezone=self._settings.default_timezone,
             raw_history_window_shifted=shifted,
@@ -633,11 +608,7 @@ class ContextAssembler:
         )
         history = bounded_messages.history_messages
         current_message = bounded_messages.current_message
-        current_time = (
-            await self._time.current(trigger.target_id)
-            if event.group_id is None
-            else self._time.current_default()
-        )
+        current_time = self._time.current_default()
         await self._validate_history_source(snapshot, event)
         return AssembledContext(
             metadata_payload=metadata_payload,
@@ -666,11 +637,11 @@ class ContextAssembler:
             read_version=snapshot.read_version,
             history_fragments=bounded_messages.history_fragments,
             history_event_fragments=bounded_messages.history_event_fragments,
-            current_event_id=None if work_resume else event.id,
+            current_event_id=None,
             history_bot_display_name=self._settings.bot_display_name,
             history_timezone=self._settings.default_timezone,
             history_yuki_account_ids=frozenset({event.bot_user_id}),
-            projection_scope="main" if work_resume else "",
+            projection_scope="main",
         )
 
     @staticmethod
@@ -678,25 +649,25 @@ class ContextAssembler:
         event: EventRecord,
         trigger: ExternalEventTurnTrigger | SandboxTaskTurnTrigger | WorkResumeTrigger,
     ) -> ChatMessage:
-        summary = " ".join(event.content.split())[
-            : (12_000 if isinstance(trigger, SandboxTaskTurnTrigger) else 1_200)
-        ]
-        intent = " ".join(trigger.agent_intent.split())[:1_000]
         payload: dict[str, object] = {
-            "kind": "sandbox_completion"
-            if isinstance(trigger, SandboxTaskTurnTrigger)
-            else "external_event_wakeup",
+            "kind": "external_event_wakeup",
             "trust": "external_untrusted",
             "source": event.external_source or "external",
             "event_type": event.external_event_type or "event",
             "occurred_at": event.occurred_at.isoformat(),
-            "summary": summary,
-            "agent_intent": intent,
+            "summary": event.content,
+            "agent_intent": trigger.agent_intent,
         }
-        if isinstance(trigger, WorkResumeTrigger):
+        if isinstance(trigger, (SandboxTaskTurnTrigger, WorkResumeTrigger)):
             # This is a host execution trigger, not a new utterance. Original
             # user text is already in current history/goal/input sources.
-            payload = {"kind": "work_resume", "source_event_id": event.id, "agent_intent": intent}
+            payload = {
+                "kind": "sandbox_completion"
+                if isinstance(trigger, SandboxTaskTurnTrigger)
+                else "work_resume",
+                "source_event_id": event.id,
+                "agent_intent": trigger.agent_intent,
+            }
         if isinstance(trigger, SandboxTaskTurnTrigger):
             payload["completion"] = trigger.completion_payload
         return ChatMessage(

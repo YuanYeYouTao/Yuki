@@ -578,7 +578,7 @@ class WorkControl:
         call_key: str,
         prepared: tuple[dict[str, Any], tuple[str, ...], int, int] | None = None,
     ) -> None:
-        from qq_ai_bot.runtime.work_context_note import publish_pending_note, validate_note
+        from qq_ai_bot.runtime.work_context_note import validate_note
 
         if self.current is None:
             raise ValueError("no_active_work")
@@ -616,9 +616,6 @@ class WorkControl:
             self.current = await self.repository.patch_context_note(
                 self.lease, refreshed["id"], expected, note
             )
-        # Publication is independently retryable. Its failure does not erase a
-        # saved note or pretend the update/tool had no durable effect.
-        await publish_pending_note(self)
 
     async def _control(self, args: dict[str, Any], call_key: str) -> dict[str, Any]:
         action = args.get("action")

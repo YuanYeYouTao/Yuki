@@ -67,8 +67,6 @@ class ExternalEventTurnTrigger:
             )
         if not self.target_id:
             raise InvalidTurnTriggerError("external event trigger requires a target id")
-        if len(self.agent_intent) > 1_000:
-            raise InvalidTurnTriggerError("external event trigger intent is too long")
 
 
 @dataclass(frozen=True, slots=True)

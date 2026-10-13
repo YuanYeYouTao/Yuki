@@ -44,7 +44,6 @@ DIRECT_TOOL_NAMES = frozenset(
         "workspace_delete",
         "workspace_publish",
         "time_get_current",
-        "time_get_timezone",
         "get_code_run",
         "cancel_code_run",
         "terminal_exec",

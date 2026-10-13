@@ -422,7 +422,6 @@ async def test_plugin_capacity_reads_hot_snapshot_and_shared_fixed_contract_rese
 
     from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
     from qq_ai_bot.domain.conversations import ConversationScope
-    from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
     from qq_ai_bot.persistence.event_repository import ConversationReadVersion
     from qq_ai_bot.services.context_assembler import ContextAssembler
     from qq_ai_bot.time.models import TimeContext
@@ -434,7 +433,6 @@ async def test_plugin_capacity_reads_hot_snapshot_and_shared_fixed_contract_rese
     assembler = ContextAssembler(
         settings=make_settings("sqlite+aiosqlite:///:memory:"),
         ledger=ledger,
-        people=MagicMock(),
         time_service=MagicMock(),
         rollup_repository=MagicMock(),
         rollup_service=MagicMock(),
@@ -444,9 +442,6 @@ async def test_plugin_capacity_reads_hot_snapshot_and_shared_fixed_contract_rese
         context=SimpleNamespace(window_tokens=8192, compaction_window_tokens=90000)
     )
     arguments = dict(
-        inbound=InboundMessage(
-            "one", "message", ScopeType.PRIVATE, SenderIdentity("1001"), "", bot_user_id="8000"
-        ),
         identity=ConversationScope.private("8000", "1001"),
         content="x" * 25_000,
         metadata={},
@@ -456,7 +451,6 @@ async def test_plugin_capacity_reads_hot_snapshot_and_shared_fixed_contract_rese
             timezone="UTC",
         ),
         read_history=False,
-        projection_scope="plugin",
         runtime=runtime,
     )
     with pytest.raises(ConversationCoverageError, match="explicit compaction"):

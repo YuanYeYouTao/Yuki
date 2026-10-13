@@ -178,7 +178,6 @@ _AUTOMATION_READ = frozenset(
         "automation_get",
         "automation_history",
         "time_get_current",
-        "time_get_timezone",
     }
 )
 

@@ -91,7 +91,7 @@ class AutomationService:
         _, _, provenance = await self._creator_context(actor)
         task = prepare_task(
             TaskSpec.model_validate(task_payload),
-            timezone=await self._time.timezone_for(actor.user_id or "self"),
+            timezone=self._time.default_timezone,
             current_group_id=provenance.current_group_id,
         )
         expected = task.model_dump(mode="json", exclude={"name"}, exclude_none=True)
@@ -219,7 +219,7 @@ class AutomationService:
         creator_person_id, permission, provenance = await self._creator_context(actor)
         task = prepare_task(
             task,
-            timezone=await self._time.timezone_for(actor.user_id or "self"),
+            timezone=self._time.default_timezone,
             current_group_id=provenance.current_group_id,
         )
         existing = await self._repository.get_by_creation_key(
@@ -560,14 +560,8 @@ class AutomationService:
         row = await self.require_manageable(automation_id, actor)
         return row, await self._repository.run_history(automation_id, limit=limit)
 
-    async def current_time(self, user_id: str) -> dict[str, str]:
-        return (await self._time.current(user_id)).to_model_dict()
-
-    async def timezone(self, user_id: str) -> str:
-        return await self._time.timezone_for(user_id)
-
-    async def set_timezone(self, user_id: str, timezone: str) -> str:
-        return await self._time.set_timezone(user_id, timezone)
+    def current_time(self) -> dict[str, str]:
+        return self._time.current_default().to_model_dict()
 
     def _control_authority(self, context: ControlAutomationContext) -> DelegatedAuthority:
         return DelegatedAuthority(

@@ -4,6 +4,8 @@
 
 状态：PR #229 已合并为 `b8adc49`，Bot-only 部署及重试已完成；源码、验证与部署证据见[交付记录](../operations/foreground-rollup-sqlite-contention-2026-10-03.md)。本文保留实施前事故和并发复现的范围，不宣称自然聊天延迟或缓存收益已验收。
 
+后续0112退出公共自动note与scope-summary链，一个Conversation共用原事件历史，私有context_note由既有WorkSession读取。本文当时的公共观察整理说明保留为历史，现行实现以[Rollup合同](conversation-rollup.md)为准。
+
 ## 1. 目标与最小方案
 
 完整请求能够装入实际可用容量时，前台先执行原回复，聊天事件的 Rollup 在后台进行。后台完成后发布可用摘要，在下一次明确的上下文整理边界采用；不替换正在执行的请求或工具续接前缀。私有观察线索保持原来源与整理机制，不因此交给公共 Rollup。

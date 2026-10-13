@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+from qq_ai_bot.conversation.observation_models import ContextSelectionModel
 from qq_ai_bot.conversation.projection_models import PromptProjectionModel
 from qq_ai_bot.execution_trace.phases import collect_phase_metrics, model_detail
 from qq_ai_bot.persistence.database import Database
@@ -30,11 +31,8 @@ REBUILD_REASONS = frozenset(
         "rollup",
         "rollup_ready",
         "capacity",
-        "contract_changed",
-        "read_scope_changed",
         "deleted_event",
         "source_changed",
-        "protocol_changed",
     }
 )
 
@@ -53,7 +51,6 @@ class ProjectionSnapshot:
     revision: int
     generation: int
     context_key: str
-    contract_revision: str
     payload_json: str
     rebuild_reason: str
     source_revision: int
@@ -75,7 +72,6 @@ class ProjectionSnapshot:
 @dataclass(frozen=True, slots=True)
 class ProjectionPublication:
     publish: Callable[[AsyncSession], Awaitable[ProjectionSnapshot]]
-    observation_sources: tuple[tuple[str, int], ...]
 
     async def __call__(self, session: AsyncSession) -> ProjectionSnapshot:
         return await self.publish(session)
@@ -135,18 +131,14 @@ class PromptProjectionRepository:
         expected_source_revision: int,
         starts_after_event_id: int,
         context_key: str,
-        contract_revision: str,
         items: list[dict[str, Any]],
         expected_epoch: str | None = None,
         expected_revision: int = 0,
         rebuild_reason: str | None = None,
-        actor_id: str = "",
-        read_scope: str = "",
         selected_summary_text: str | None = None,
         selected_summary_coverage: int = 0,
         selected_summary_kind: str | None = None,
         selected_summary_renderer: int | None = None,
-        replace_event_id: int | None = None,
     ) -> ProjectionSnapshot:
         publication = await self.prepare_commit(
             view_key=view_key,
@@ -155,18 +147,14 @@ class PromptProjectionRepository:
             expected_source_revision=expected_source_revision,
             starts_after_event_id=starts_after_event_id,
             context_key=context_key,
-            contract_revision=contract_revision,
             items=items,
             expected_epoch=expected_epoch,
             expected_revision=expected_revision,
             rebuild_reason=rebuild_reason,
-            actor_id=actor_id,
-            read_scope=read_scope,
             selected_summary_text=selected_summary_text,
             selected_summary_coverage=selected_summary_coverage,
             selected_summary_kind=selected_summary_kind,
             selected_summary_renderer=selected_summary_renderer,
-            replace_event_id=replace_event_id,
         )
         async with self.database.immediate_session() as session:
             return await publication(session)
@@ -180,35 +168,25 @@ class PromptProjectionRepository:
         expected_source_revision: int,
         starts_after_event_id: int,
         context_key: str,
-        contract_revision: str,
         items: list[dict[str, Any]],
         expected_epoch: str | None = None,
         expected_revision: int = 0,
         rebuild_reason: str | None = None,
-        actor_id: str = "",
-        read_scope: str = "",
         selected_summary_text: str | None = None,
         selected_summary_coverage: int = 0,
         selected_summary_kind: str | None = None,
         selected_summary_renderer: int | None = None,
         previous_snapshot: ProjectionSnapshot | None = None,
         previous_item_count: int | None = None,
-        replace_event_id: int | None = None,
     ) -> ProjectionPublication:
         """Append exact items, or explicitly replace an epoch under a compare-and-swap.
 
-        Caller supplies its read-policy view key; this method grants no history
-        access and must only receive already bounded, selected model-input items.
+        The caller supplies canonical Conversation history already selected by
+        the ledger. This publication preserves its original event renderings.
         """
-        for key in (view_key, context_key, contract_revision):
-            if len(key) != 64 or any(char not in "0123456789abcdef" for char in key):
-                raise ValueError("projection keys must be SHA-256 fingerprints")
         if rebuild_reason is not None and rebuild_reason not in REBUILD_REASONS:
             raise ValueError("invalid projection rebuild reason")
         items = deepcopy(items)
-        for position, item in enumerate(items):
-            if not item["event_ids"] and "selection_key" not in item:
-                item["selection_key"] = _selection_key(item, position)
         if len(items) > 262_144 or not all(isinstance(item, dict) for item in items):
             raise ProjectionCapacityError("projection item limit exceeded")
         payload = json.dumps(items, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
@@ -229,37 +207,20 @@ class PromptProjectionRepository:
         # Freeze and encode selected-source rows before taking the writer. Their
         # order is the already prepared model order, never source timestamps.
         from qq_ai_bot.conversation.frozen_fragments import FrozenFragments
-        from qq_ai_bot.conversation.observation_models import (
-            ContextObservationModel,
-            ContextSelectionModel,
-        )
-        from qq_ai_bot.conversation.observations import privacy_generation, validate_observations
+        from qq_ai_bot.conversation.observations import privacy_generation
 
-        fragments = FrozenFragments.load(items) if actor_id and read_scope else None
+        FrozenFragments.load(items)
         prepared_sources = []
-        replaced_selection_ids: list[int] = []
-        summary_parents: dict[str, tuple[str, ...]] = {}
 
         async with self.database.sessions() as prepared_session:
             prepared_privacy = await privacy_generation(prepared_session)
 
-        # Traverse parent references in a read snapshot, never in the journal
-        # writer. Every mutation/deletion advances the canonical source revision
-        # checked by publish, and privacy has its own scalar fence.
+        # Read canonical source facts before taking the writer. Source mutation
+        # and privacy are rechecked by the publication CAS.
         with model_detail("projection_sources_read"):
             async with self.database.sessions() as source_reader:
                 await source_reader.execute(text("BEGIN"))
                 snapshot_privacy = await privacy_generation(source_reader)
-                if not await validate_observations(
-                    source_reader,
-                    conversation_id,
-                    generation,
-                    actor_id,
-                    read_scope,
-                    fragments.observation_sources if fragments is not None else (),
-                    snapshot_privacy_generation=snapshot_privacy,
-                ):
-                    raise ProjectionConflict("projection observation source changed")
                 owner = await source_reader.get(CanonicalConversationModel, conversation_id)
                 if owner is None or (owner.generation, owner.starts_after_event_id) != (
                     generation,
@@ -271,144 +232,76 @@ class PromptProjectionRepository:
                     or snapshot_privacy != prepared_privacy
                 ):
                     raise ProjectionConflict("projection source revision changed")
-                if fragments is not None:
-                    candidates: dict[str, dict[str, Any]] = {}
-                    for position, item in enumerate(items):
-                        key = _selection_key(item, position)
-                        previous_item = candidates.get(key)
-                        if previous_item is not None:
-                            if _encode_item(previous_item) != _encode_item(item):
-                                raise ProjectionConflict(
-                                    "selected representation identity conflict"
-                                )
-                            continue
-                        candidates[key] = item
-                    existing: dict[str, Any] = {}
-                    if replace_event_id is not None:
-                        replaced_selection_ids = list(
-                            await source_reader.scalars(
-                                select(ContextSelectionModel.id)
-                                .where(
-                                    ContextSelectionModel.view_key == view_key,
-                                    ContextSelectionModel.conversation_id == conversation_id,
-                                    ContextSelectionModel.generation == generation,
-                                    text(
-                                        "EXISTS (SELECT 1 FROM json_each("
-                                        "model_context_selections.event_ids_json) "
-                                        "WHERE value = :replace_event_id)"
-                                    ),
-                                )
-                                .params(replace_event_id=replace_event_id)
-                            )
+                candidates: dict[str, dict[str, Any]] = {}
+                for item in items:
+                    key = _selection_key(item)
+                    previous_item = candidates.get(key)
+                    if previous_item is not None:
+                        if _encode_item(previous_item) != _encode_item(item):
+                            raise ProjectionConflict("selected representation identity conflict")
+                        continue
+                    candidates[key] = item
+                existing: dict[str, Any] = {}
+                keys = list(candidates)
+                for offset in range(0, len(keys), 256):
+                    rows = await source_reader.execute(
+                        select(
+                            ContextSelectionModel.source_key,
+                            ContextSelectionModel.id,
+                            ContextSelectionModel.conversation_id,
+                            ContextSelectionModel.generation,
+                            ContextSelectionModel.event_ids_json,
+                        ).where(
+                            ContextSelectionModel.view_key == view_key,
+                            ContextSelectionModel.source_key.in_(keys[offset : offset + 256]),
                         )
-                    keys = list(candidates)
-                    for offset in range(0, len(keys), 256):
-                        rows = await source_reader.execute(
-                            select(
-                                ContextSelectionModel.source_key,
-                                ContextSelectionModel.id,
-                                ContextSelectionModel.conversation_id,
-                                ContextSelectionModel.generation,
-                                ContextSelectionModel.actor_id,
-                                ContextSelectionModel.read_scope,
-                                ContextSelectionModel.event_ids_json,
-                            ).where(
-                                ContextSelectionModel.view_key == view_key,
-                                ContextSelectionModel.source_key.in_(keys[offset : offset + 256]),
-                            )
+                    )
+                    existing.update((row.source_key, row) for row in rows)
+                frozen_keys = prepared_prefix[2] if prepared_prefix is not None else frozenset()
+                inspect_ids = []
+                for key, row in existing.items():
+                    item = candidates[key]
+                    if (
+                        row.conversation_id,
+                        row.generation,
+                        row.event_ids_json,
+                    ) != (
+                        conversation_id,
+                        generation,
+                        json.dumps(item["event_ids"]),
+                    ):
+                        raise ProjectionConflict("selected representation owner changed")
+                    # Existing frozen prefix bytes were already verified against
+                    # the previous projection. Explicit epochs may instead adopt
+                    # raw chat after summarizing a snapshot; retain first-selection
+                    # provenance rather than rewriting it or rejecting that boundary.
+                    if rebuild_reason is None and key not in frozen_keys:
+                        inspect_ids.append(row.id)
+                for offset in range(0, len(inspect_ids), 256):
+                    rows = await source_reader.execute(
+                        select(
+                            ContextSelectionModel.source_key, ContextSelectionModel.payload_json
+                        ).where(ContextSelectionModel.id.in_(inspect_ids[offset : offset + 256]))
+                    )
+                    for key, stored_payload in rows:
+                        if stored_payload != _encode_item(candidates[key]):
+                            raise ProjectionConflict("selected representation is immutable")
+                # Keep actual submitted order, never SQL result/key order. Only
+                # genuinely missing rows carry their full payload into the writer.
+                for key, item in candidates.items():
+                    if key in existing:
+                        continue
+                    prepared_sources.append(
+                        dict(
+                            view_key=view_key,
+                            conversation_id=conversation_id,
+                            generation=generation,
+                            source_key=key,
+                            event_ids_json=json.dumps(item["event_ids"]),
+                            payload_json=_encode_item(item),
+                            created_at=datetime.now(UTC),
                         )
-                        existing.update((row.source_key, row) for row in rows)
-                    existing = {
-                        key: row
-                        for key, row in existing.items()
-                        if row.id not in replaced_selection_ids
-                    }
-                    frozen_keys = prepared_prefix[2] if prepared_prefix is not None else frozenset()
-                    inspect_ids = []
-                    for key, row in existing.items():
-                        item = candidates[key]
-                        if (
-                            row.conversation_id,
-                            row.generation,
-                            row.actor_id,
-                            row.read_scope,
-                            row.event_ids_json,
-                        ) != (
-                            conversation_id,
-                            generation,
-                            actor_id,
-                            read_scope,
-                            json.dumps(item["event_ids"]),
-                        ):
-                            raise ProjectionConflict("selected representation owner changed")
-                        # Existing frozen prefix bytes were already verified against
-                        # the previous projection. Explicit epochs may instead adopt
-                        # raw chat after summarizing a snapshot; retain first-selection
-                        # provenance rather than rewriting it or rejecting that boundary.
-                        if rebuild_reason is None and key not in frozen_keys:
-                            inspect_ids.append(row.id)
-                    for offset in range(0, len(inspect_ids), 256):
-                        rows = await source_reader.execute(
-                            select(
-                                ContextSelectionModel.source_key, ContextSelectionModel.payload_json
-                            ).where(
-                                ContextSelectionModel.id.in_(inspect_ids[offset : offset + 256])
-                            )
-                        )
-                        for key, stored_payload in rows:
-                            if stored_payload != _encode_item(candidates[key]):
-                                raise ProjectionConflict("selected representation is immutable")
-                    new_observations = set()
-                    # Keep actual submitted order, never SQL result/key order. Only
-                    # genuinely missing rows carry their full payload into the writer.
-                    for key, item in candidates.items():
-                        if key in existing:
-                            continue
-                        if "observation_id" in item:
-                            new_observations.add(item["observation_id"])
-                        prepared_sources.append(
-                            dict(
-                                view_key=view_key,
-                                conversation_id=conversation_id,
-                                generation=generation,
-                                actor_id=actor_id,
-                                read_scope=read_scope,
-                                source_key=key,
-                                event_ids_json=json.dumps(item["event_ids"]),
-                                observation_sources_json=json.dumps(
-                                    [[item["observation_id"], item["observation_version"]]]
-                                    if "observation_id" in item
-                                    else []
-                                ),
-                                payload_json=_encode_item(item),
-                                created_at=datetime.now(UTC),
-                            )
-                        )
-                    observation_ids = list(new_observations)
-                    for offset in range(0, len(observation_ids), 256):
-                        summaries = await source_reader.execute(
-                            select(
-                                ContextObservationModel.id,
-                                ContextObservationModel.payload_json,
-                                ContextObservationModel.summary_view_key,
-                            ).where(
-                                ContextObservationModel.id.in_(
-                                    observation_ids[offset : offset + 256]
-                                )
-                            )
-                        )
-                        for identity, payload_json, summary_view in summaries:
-                            if summary_view is not None:
-                                if summary_view != view_key:
-                                    raise ProjectionConflict("observation summary view changed")
-                                from qq_ai_bot.conversation.observations import summary_coverage
-
-                                summary_parents[identity] = tuple(summary_coverage(payload_json))
-
-            parent_summaries: dict[str, set[str]] = {}
-            for summary_id, parents in summary_parents.items():
-                for parent in parents:
-                    parent_summaries.setdefault(parent, set()).add(summary_id)
+                    )
 
         async def publish(session: AsyncSession) -> ProjectionSnapshot:
             # The caller owns a short writer; preparation above does all payload IO.
@@ -454,12 +347,10 @@ class PromptProjectionRepository:
                         old.generation,
                         old.starts_after_event_id,
                         old.context_key,
-                        old.contract_revision,
                     ) != (
                         generation,
                         starts_after_event_id,
                         context_key,
-                        contract_revision,
                     ):
                         raise ProjectionConflict("projection change requires a new epoch")
                     if prepared_prefix is None or prepared_prefix[0] != _prefix_version(old):
@@ -562,7 +453,7 @@ class PromptProjectionRepository:
             row = old or PromptProjectionModel(view_key=view_key, conversation_id=conversation_id)
             row.generation, row.starts_after_event_id = generation, starts_after_event_id
             row.source_revision = expected_source_revision
-            row.context_key, row.contract_revision = context_key, contract_revision
+            row.context_key = context_key
             row.epoch_id = str(uuid4()) if rebuild_reason else row.epoch_id
             row.revision = 1 if rebuild_reason else row.revision + 1
             row.rebuild_reason = rebuild_reason or row.rebuild_reason
@@ -574,17 +465,11 @@ class PromptProjectionRepository:
             row.selected_summary_renderer = selected_summary_renderer
             row.updated_at = datetime.now(UTC)
             session.add(row)
-            if replaced_selection_ids:
-                await session.execute(
-                    delete(ContextSelectionModel).where(
-                        ContextSelectionModel.id.in_(replaced_selection_ids)
-                    )
-                )
             if prepared_sources:
                 from sqlalchemy.dialects.sqlite import insert
 
                 try:
-                    # Ten bound columns per row; keep a batch below even the
+                    # Seven bound columns per row; keep a batch below even the
                     # legacy SQLite 999-variable build limit.
                     for offset in range(0, len(prepared_sources), 64):
                         await session.execute(
@@ -599,40 +484,62 @@ class PromptProjectionRepository:
                     raise ProjectionConflict(
                         "selected representation publication conflict"
                     ) from exc
-            if parent_summaries:
-                from qq_ai_bot.tool_results.schema import artifact_refs
-
-                identities = list(parent_summaries.keys() | summary_parents.keys())
-                refs: dict[str, set[str]] = {}
-                for offset in range(0, len(identities), 256):
-                    rows = await session.execute(
-                        select(artifact_refs.c.owner_id, artifact_refs.c.handle_id).where(
-                            artifact_refs.c.owner_kind == "observation",
-                            artifact_refs.c.owner_id.in_(identities[offset : offset + 256]),
-                        )
-                    )
-                    for owner_id, handle in rows:
-                        refs.setdefault(owner_id, set()).add(handle)
-                release = []
-                for parent, summaries in parent_summaries.items():
-                    handles = refs.get(parent, set())
-                    if any(not handles <= refs.get(identity, set()) for identity in summaries):
-                        raise ProjectionConflict("observation artifact transfer changed")
-                    if handles:
-                        release.append(parent)
-                for offset in range(0, len(release), 256):
-                    await session.execute(
-                        delete(artifact_refs).where(
-                            artifact_refs.c.owner_kind == "observation",
-                            artifact_refs.c.owner_id.in_(release[offset : offset + 256]),
-                        )
-                    )
             await session.flush()
             return _snapshot(row)
 
-        return ProjectionPublication(
-            publish, fragments.observation_sources if fragments is not None else ()
-        )
+        return ProjectionPublication(publish)
+
+    async def selected(
+        self,
+        *,
+        view_key: str,
+        conversation_id: str,
+        generation: int,
+        visible_event_ids: frozenset[int] | None = None,
+    ) -> list[dict[str, Any]]:
+        async with self.database.sessions() as session:
+            await session.execute(text("BEGIN"))
+            needed = []
+            after = 0
+            while True:
+                page = (
+                    await session.execute(
+                        select(
+                            ContextSelectionModel.id,
+                            ContextSelectionModel.event_ids_json,
+                        )
+                        .where(
+                            ContextSelectionModel.view_key == view_key,
+                            ContextSelectionModel.conversation_id == conversation_id,
+                            ContextSelectionModel.generation == generation,
+                            ContextSelectionModel.id > after,
+                        )
+                        .order_by(ContextSelectionModel.id)
+                        .limit(256)
+                    )
+                ).all()
+                if not page:
+                    break
+                for row in page:
+                    if (
+                        visible_event_ids is not None
+                        and not set(json.loads(row.event_ids_json)) <= visible_event_ids
+                    ):
+                        continue
+                    needed.append(row.id)
+                after = page[-1].id
+            payloads: dict[int, dict[str, Any]] = {}
+            for offset in range(0, len(needed), 256):
+                loaded = await session.execute(
+                    select(
+                        ContextSelectionModel.id,
+                        ContextSelectionModel.payload_json,
+                    ).where(ContextSelectionModel.id.in_(needed[offset : offset + 256]))
+                )
+                for identity, payload in loaded:
+                    item = json.loads(payload)
+                    payloads[identity] = item
+            return [payloads[identity] for identity in needed]
 
     async def _prepare_prefix(
         self,
@@ -674,7 +581,7 @@ class PromptProjectionRepository:
             prefix_items, ensure_ascii=False, separators=(",", ":"), allow_nan=False
         )
         keys = (
-            frozenset(_selection_key(item, position) for position, item in enumerate(prefix_items))
+            frozenset(_selection_key(item) for item in prefix_items)
             if all("event_ids" in item for item in prefix_items)
             else frozenset()
         )
@@ -715,17 +622,9 @@ def _encode_item(item: dict[str, Any]) -> str:
     return json.dumps(item, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
 
-def _selection_key(item: dict[str, Any], position: int = 0) -> str:
-    # Chat identity is the original event group; data-only envelopes use their
-    # immutable wire bytes. This is an identity key, never an authorization proof.
-    if not item["event_ids"] and "selection_key" in item:
-        return str(item["selection_key"])
-    value = (
-        json.dumps(item["event_ids"])
-        if item["event_ids"]
-        else _encode_item({"position": position, "fragment": item})
-    )
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+def _selection_key(item: dict[str, Any]) -> str:
+    # Identity is the original canonical event group, not the current reader.
+    return hashlib.sha256(json.dumps(item["event_ids"]).encode("utf-8")).hexdigest()
 
 
 def _prefix_version(row: PromptProjectionModel) -> tuple[object, ...]:
@@ -738,7 +637,6 @@ def _prefix_version(row: PromptProjectionModel) -> tuple[object, ...]:
         row.source_revision,
         row.starts_after_event_id,
         row.context_key,
-        row.contract_revision,
         row.invalidated_reason,
     )
 
@@ -750,7 +648,6 @@ def _snapshot(row: PromptProjectionModel) -> ProjectionSnapshot:
         row.revision,
         row.generation,
         row.context_key,
-        row.contract_revision,
         row.payload_json,
         row.rebuild_reason,
         row.source_revision,

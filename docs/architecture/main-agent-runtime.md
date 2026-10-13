@@ -44,7 +44,10 @@ legacy/semantic 自主机会均以正式 SELF 来源进入这条执行链；
 不注入完整 journal、工具正文或其他主体的任务。既有请求链只追加当前视图，不重写历史状态。
 
 当前场景只用简短的群聊/私聊说明，不预取称呼全集、记忆引用或关系评分。短期记录只展示当前有内容的 slot/text，写入只需要 slot/text，返回本次槽位结果；清空和到期仍沿原存储语义处理。插件资料按实际来源保留不可信标记。
-本轮资料每次准备当前有效值，只在当前触发尾部呈现；为空无标题。它不进入公共 FrozenFragments、自动 dynamic_snapshot、观察或摘要，不再保存首份、变化差量、移除流水和最后展示值。公共投影只冻结实际采用的原事件渲染和有用笔记，保名字、引用、AT与附件事实。
+
+当前时间与历史显示统一默认 UTC+8，个人与 SELF 时区偏好、读取/设置工具和存储已退出。
+明确指定的安排时区仍属于任务本身，真实时间按 UTC 保存；原付费请求中的时间原件不重写。
+本轮资料每次准备当前有效值，放在当前触发消息的正文前面；首次激活新建的当前 Work 块同样前置，并带明确双换行边界，当前正文在最后。为空无标题。它不进入公共 FrozenFragments、自动 dynamic_snapshot、观察或摘要，不再保存首份、变化差量、移除流水和最后展示值。一个 Conversation 的公共投影只冻结实际采用的原事件渲染，保名字、引用、AT与附件事实；当前说话人、入口和个人偏好不建立另一份公共历史。
 
 Provider 会话元数据沿真实 canonical conversation、generation 和已有 Work ID 传递。未接纳 Work 的主请求使用 main 分支，接纳后沿原 Work 分支；分页整理继承原请求的身份。独立公共 Rollup 使用其原候选会话与代际。通用结构化请求与原生搜索辅助请求在已有 Work 控制器时沿原租约传递身份；独立结构化请求可透传已知元数据，没有明确来源时保持空值。该元数据只进入 HTTP header，正文和固定工具合同保持原有装配。
 时间、participation 内部状态、管理权限证明、最近投递包装及空视觉观察不默认注入。
@@ -154,7 +157,7 @@ scene/include_memories/history_limit/context_profile 读取预设或 creator_pri
 检查点、真实预算和效果回执接续。模型最终文字只作内部结束，QQ 可见内容必须显式发送。
 delivery.target 是任务要求与原目标，不裁剪工具或制造另一套静默 Agent。
 
-`task_control(complete)` 可在同一次调用中携带真实内部 `result`（主合同 17、
+`task_control(complete)` 可在同一次调用中携带真实内部 `result`（当前主合同 18、
 worker 合同 4）。direct 与 Code 共用原结束入口，把 Agent 的结束决定写入 Work `checkpoint_json` 的
 `accepted_control`（complete/fail/need_input/wait 各一份，wait(conditions) 与原 wait
 绑定同事务）。配对保存后本次 activation 立即结束，不再请求后续模型。结算 writer 仅复核真实新授权输入及尚在执行的所属执行，等待期间保留结束决定；真正提交 completed 时才把 result 原子转存为 `sync_result`。caller 与子任务通知只读已提交行。need_input/fail 的 reason、context_note 和 reporting 是可选资料，不作为结束审批。
@@ -308,12 +311,12 @@ pending 完成通知可在同一事务退役。未观察的异步结果、staged
 效果仍按原安全边界接入；完成通知按内部 Work 信号解释，不冒充真人追加要求。
 
 选取准备在显式读快照中确定本次缺失的 `(view_key, source_key)`，writer 只插新增项。
-同 epoch 的既有冻结片段保持不变，显式容量或合同 epoch 边界仍保留原 first-selection
-来源和覆盖口径；owner、scope、generation、事件身份冲突不能用忽略重复插入隐藏。
-只有首次选中的摘要转移 parent artifact refs，写时批量核验真实 parent handles 已由
-对应摘要保留，空集不删除；后续 journal 失败与 projection、selection、refs 一起回滚。
-历史观察从实际选取及合法任务笔记确定来源根，再核验其依赖；合法未选的新 work-note仍进入下一请求。自动 snapshot 及只概括自动资料的摘要退出公共回读，没有资料基线恢复或逐轮折叠。未选候选不能充当已观察覆盖。
-0109 一次性清退公共资料和无事件触发选取，删除 visible_material_json；有用 note、原摘要事实及 Work 私有依赖保留，旧冻结迁移不改写。原付费请求、预算、工具与投递回执不被迁移重跑。
+同 epoch 的既有冻结片段保持不变，显式容量边界仍保留原 first-selection 来源和覆盖口径；
+真实 Conversation、generation 与事件身份冲突不能用忽略重复插入隐藏。公共选取只保存原事件，
+不自动采用、整理或发布任务笔记；journal 失败与实际公共 projection/selection 一起回滚。
+0112 一次性清退旧按人建立的公共缓存与选取，删除公共 actor/read_scope、observation 来源和
+contract_revision。原 ContextObservation、来源 DAG、artifact 引用和 Work 私有依赖保留。
+context_note 继续由既有 WorkSession 读取；原付费请求、预算、工具与投递回执不被迁移重跑。
 
 普通 journal 保存因来源标量版本变化而失败时，最多在 writer 之外用原入口授权与来源
 guard 重新核验一次，再重备同一数据库保存；无原 guard 或真实来源变化保持拒绝。
@@ -403,7 +406,7 @@ Work 整理同样取完整输入预算与 `context.compaction_window_tokens` 的
 不设置额外一次续接封口。
 
 普通轮无需接纳 Work 即可在完整工具配对后的安全点整理临时尾部，建立合法新请求；
-公共聊天与有用观察保留原呈现，发送回执和预算不变。普通尾部只删除确实已由另一表示
+公共聊天保留原呈现，当前执行线索沿原私有尾部保留，发送回执和预算不变。普通尾部只删除确实已由另一表示
 保留的重复 portable/mirror 内容；独有的原生信息、引用、状态与效果继续保留。Work 私有
 mirror 与协议检查点不在本轮改造范围。辅助整理失败但原请求仍 fit 时
 继续；真正超限且候选仍不能 fit 时准确停止，不自动 accept、清预算、重发或宣告完成。
@@ -539,8 +542,9 @@ automation_list 的 match_task 按完整目标、约束、时间及交付要求�
 V6 迁移链从 `0064` 接到 `0066`（autonomy 接纳和反馈）→
 `0067`（SELF 工具证据及自省独立回执水位）→ `0068`（内部引用事件）→
 `0069`（Social 发送回执的内部事件关联）→ `0070`（无来源机会与讨论线程）。
-SELF 工具证据以 event/run 二选一归属，
-不通过假聊天事件进入 Memory；自省迟到回执按原 run 的独立水位续读。
+SELF 工具证据沿原真实执行来源归属，不通过假聊天事件进入 Memory。
+定时来源可用已保存的发生、原 Version 和 SDK 执行锚点；0111 退出早期 event/run
+二选一的来源 CHECK。自省迟到回执按原 run 的独立水位续读。
 
 新发送成功的 Social 回执与其内部出站事件在同一短事务中关联。恢复投影只按回执的
 `event_id` 查询并核验会话、来源与因果关系，不按平台消息编号或时间窗口反查。

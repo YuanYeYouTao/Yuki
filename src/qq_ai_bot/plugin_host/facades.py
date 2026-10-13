@@ -94,7 +94,7 @@ from qq_ai_bot.services.native_media import NativeMediaPreparer
 from qq_ai_bot.services.renderer import sanitize_model_output
 from qq_ai_bot.services.vision_service import VisionProcessingError, VisionService
 from qq_ai_bot.social.models import OperationStatus, SocialReceipt
-from qq_ai_bot.time.models import TimeContext
+from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.vision.models import VisualObservation
 from qq_ai_bot.web.base import WebSearchError, WebSearchProvider, normalize_public_url
 from qq_ai_bot.web.models import WebSearchRequest
@@ -202,6 +202,7 @@ class ToolRuntimeProjection(Protocol):
     origin: TurnOrigin
 
     def require_actor(self) -> ToolActor: ...
+
 
 ConfigFacadeFactory = Callable[[str | None, str | None], BoundConfigFacade]
 AgentSessionFacadeFactory = Callable[["PluginInvocation"], BoundAgentSessionFacade]
@@ -642,9 +643,7 @@ class HostPluginContext:
             actor_user_id=actor.user_id,
             actor_person_id=actor.person_id,
             actor=actor,
-            execution_source=cast(
-                dict[str, Any] | None, getattr(runtime, "sandbox_source", None)
-            ),
+            execution_source=cast(dict[str, Any] | None, getattr(runtime, "sandbox_source", None)),
             bot_user_id=actor.bot_user_id,
             inbound=inbound,
             legacy_conversation_key=getattr(runtime, "conversation_key", None),
@@ -2576,16 +2575,11 @@ async def _agent_dependencies(
 ) -> tuple[AgentRunner, AgentRuntime]:
     runner = _require_service(host._services.agent_runner, "LLM/Agent")
     runtime = await _runtime_snapshot(host, invocation)
-    now = datetime.now(UTC)
     contract = runner.main_contract
     current_time = (
-        (
-            await contract.chat._time.current(invocation.actor_user_id)
-            if invocation.actor_user_id
-            else contract.chat._time.current_default()
-        )
+        contract.chat._time.current_default()
         if contract is not None
-        else TimeContext(utc=now, local=now, timezone="UTC")
+        else TimeContextService().current_default()
     )
     return runner, AgentRuntime(
         origin=TurnOrigin.PLUGIN_SESSION,

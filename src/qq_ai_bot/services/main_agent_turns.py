@@ -7,20 +7,18 @@ import hashlib
 import json
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
-from dataclasses import asdict, fields, is_dataclass, replace
+from dataclasses import fields, is_dataclass, replace
 from enum import Enum
-from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.conversation.frozen_fragments import FrozenFragments
-from qq_ai_bot.conversation.observations import ContextObservation
 from qq_ai_bot.conversation.projections import (
     ProjectionCapacityError,
     PromptProjectionRepository,
 )
-from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ChatResponse, InboundMessage
+from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, InboundMessage
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
 from qq_ai_bot.execution_trace.phases import collect_phase_metrics
 from qq_ai_bot.model_runtime.capacity import ModelCapacity, estimate_request_tokens
@@ -118,20 +116,11 @@ class MainAgentTurnService:
         context: AssembledContext,
         runtime: RuntimeConfigSnapshot,
         include_plugin_context: bool = True,
-        read_scope: str | None = None,
         allowed_capabilities: frozenset[str] = frozenset(),
         before_preparation: Callable[[], Awaitable[None]] | None = None,
     ) -> PromptComposition:
         with self.executions.track():
             active = current_work_control.get()
-            if (
-                active is not None
-                and active.current is not None
-                and not getattr(context, "recovery_protocol", False)
-            ):
-                from qq_ai_bot.runtime.work_context_note import publish_pending_note
-
-                await publish_pending_note(active)
             contract = self._runner.main_contract
             state = await asyncio.to_thread(contract.state.snapshot) if contract else None
 
@@ -165,72 +154,7 @@ class MainAgentTurnService:
             conversation_id = version.conversation_id
             assert conversation_id is not None
             repository = self._projections
-            actor_id = (
-                inbound.person_id or "actorless"
-                if inbound is not None
-                else str(
-                    active.source.get("actor_person_id")
-                    or ("self" if active.source.get("principal_kind") == "self" else "actorless")
-                )
-                if active is not None
-                else "actorless"
-            )
-            if read_scope is None:
-                saved_access = (
-                    json.loads(active.current["checkpoint_json"])
-                    .get("context_note", {})
-                    .get("access", {})
-                    if active is not None and active.current is not None
-                    else {}
-                )
-                read_scope = (
-                    str(active.source.get("read_scope") or saved_access.get("read_scope") or "")
-                    if active is not None
-                    else ""
-                ) or json.dumps(
-                    {"memory": [], "plugin_id": None, "delegation_id": None}, sort_keys=True
-                )
-            # Separate per-actor selected memory views. Actorless wakeups cannot inherit
-            # the private dynamic context assembled for a preceding human turn.
-            view_key = _hash(
-                [
-                    "main-history-v2",
-                    version.conversation_id,
-                    context.projection_scope
-                    if context.projection_scope not in {"", "main", "self_initiative"}
-                    else "main",
-                    actor_id,
-                    read_scope,
-                ]
-            )
-            if context.current_message.images:
-                # Inline image bytes are deliberately ephemeral. Retire the old
-                # representation before dispatch instead of silently resuming it on
-                # the next text turn as if this image request had never happened.
-                repository = self._projections
-                retired = False
-
-                async def retire_image_projection() -> None:
-                    nonlocal retired
-                    if not retired:
-                        await repository.invalidate_view(view_key, reason="protocol_changed")
-                        retired = True
-
-                return replace(composition, commit_projection=retire_image_projection)
-            profile_revision = getattr(self._runner._models, "profile_revision", None)
-            contract_revision = _hash(
-                [
-                    composition.metrics.stable_prefix_hash,
-                    contract.revision,
-                    self._runner._models.model_name(self._runner._task),
-                    self._runner._models.protocol(self._runner._task).value,
-                    profile_revision(self._runner._task)
-                    if callable(profile_revision)
-                    else "legacy",
-                    asdict(runtime.llm),
-                    asdict(runtime.web),
-                ]
-            )
+            view_key = conversation_id
             capacity_getter = getattr(self._runner._models, "capacity", None)
             capacity = (
                 capacity_getter(self._runner._task)
@@ -330,86 +254,20 @@ class MainAgentTurnService:
                 )
                 return request_tokens(request) <= input_budget
 
-            preparation_requests = 0
-
-            async def summarize_observations(
-                observations: tuple[ContextObservation, ...],
-            ) -> dict[str, Any]:
-                from qq_ai_bot.model_runtime.dispatch_guard import model_dispatch_guard
-                from qq_ai_bot.model_runtime.models import ModelExecutionPriority
-                from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-                from qq_ai_bot.runtime.work_repository import WorkConflict
-                from qq_ai_bot.services.ordinary_compaction import summarize_records
-
-                async def execute(candidate: ChatRequest) -> ChatResponse:
-                    dispatched = False
-
-                    async def validate() -> None:
-                        nonlocal preparation_requests, dispatched
-                        if before_preparation is not None:
-                            await before_preparation()
-                        if active is not None:
-                            await active.validate()
-                        if not await EventLedgerRepository(
-                            repository.database
-                        ).read_version_matches(version):
-                            raise WorkConflict("observation_compaction_source_changed")
-                        if not dispatched:
-                            if preparation_requests + 1 >= runtime.agent.max_model_requests:
-                                raise WorkConflict("model_request_budget")
-                            if active is not None:
-                                await active.reserve_request(auxiliary=True)
-                            preparation_requests += 1
-                            dispatched = True
-
-                    with model_dispatch_guard(validate):
-                        return await self._runner._models.execute(
-                            self._runner._task,
-                            candidate,
-                            priority=ModelExecutionPriority.FOREGROUND,
-                            canonical_conversation_id=version.conversation_id,
-                        )
-
-                summary = await summarize_records(
-                    [(f"observation:{row.id}", row.payload_json) for row in observations],
-                    main_request=prepared_request,
-                    structured_mode=self._runner._models.structured_output_mode(self._runner._task),
-                    summary_budget=capacity.input_budget(
-                        runtime.context.window_tokens,
-                        output_tokens=runtime.context.compaction_output_tokens,
-                    ),
-                    output_tokens=runtime.context.compaction_output_tokens,
-                    prepare=self._runner._capacity_request,
-                    execute=lambda candidate: self._runner._concurrency.run_llm(
-                        conversation_id, lambda: execute(candidate)
-                    ),
-                )
-                return {
-                    "version": 1,
-                    "facts": summary["facts"],
-                    "unresolved": summary["pending"],
-                    "next_steps": summary["next_steps"],
-                }
-
             prepared = await prepare_history(
                 self._projections,
                 context,
                 view_key=view_key,
-                context_key=_hash(
-                    [version.conversation_id, version.generation, actor_id, read_scope]
-                ),
-                contract_revision=contract_revision,
+                context_key=_hash([version.conversation_id, version.generation]),
                 history_fits=history_fits,
                 context_fits=context_fits,
                 context_hard_fits=context_hard_fits,
-                summarize_observations=summarize_observations,
-                actor_id=actor_id,
-                read_scope=read_scope,
             )
             composition = compose_context(prepared.context)
             fragments = (
                 prepared.fragments.append_current(context.current_event_id, context.current_message)
                 if context.current_event_id is not None
+                and context.current_event_id not in prepared.fragments.event_ids
                 else prepared.fragments
             )
             projection_closed = False
@@ -444,13 +302,12 @@ class MainAgentTurnService:
                 else:
                     valid_layout = sequence.messages[: len(approved_initial)] == approved_initial
                 if not valid_layout:
-                    await prepared.repository.invalidate_view(view_key, reason="protocol_changed")
                     projection_closed = True
                     return
-                # Shared history freezes only approved chat and observations.
+                # Shared history freezes only admitted canonical chat events.
                 # Tool calls, opaque responses and working summaries belong to
                 # the temporary execution tail even for ordinary chat.
-                submitted = fragments.append_protocol(sequence.public_initial_suffix or ())
+                submitted = fragments
                 try:
                     publication = await prepared.prepare_commit(submitted)
                     control = current_work_control.get()
@@ -468,9 +325,7 @@ class MainAgentTurnService:
 
                         selected_guard = WorkSourceGuard.restore(guard.snapshot())
                         try:
-                            valid = await selected_guard.check(
-                                control, observation_sources=publication.observation_sources
-                            )
+                            valid = await selected_guard.check(control)
                             if work_session is not None:
                                 selected_revision = work_session.source_revision
                         finally:
@@ -610,12 +465,9 @@ class MainAgentTurnService:
                         expected_source_revision=current_version.prompt_source_revision,
                         starts_after_event_id=current_version.starts_after_event_id,
                         context_key=prepared.context_key,
-                        contract_revision=prepared.contract_revision,
                         items=list(selected.items),
                         expected_epoch=previous.epoch_id,
                         expected_revision=previous.revision,
-                        actor_id=actor_id,
-                        read_scope=read_scope,
                         selected_summary_text=previous.selected_summary_text,
                         selected_summary_coverage=previous.selected_summary_coverage,
                         selected_summary_kind=previous.selected_summary_kind,
@@ -681,12 +533,7 @@ class MainAgentTurnService:
             return replace(
                 composition,
                 commit_projection=commit_projection,
-                preparation_model_requests=preparation_requests if active is None else 0,
-                observation_boundary=(
-                    observation_boundary
-                    if context.projection_scope in {"", "main", "self_initiative"}
-                    else None
-                ),
+                observation_boundary=observation_boundary,
             )
 
     async def read_result(self, runtime: AgentRuntime) -> AgentRunResult | None:

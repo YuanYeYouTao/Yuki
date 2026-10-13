@@ -346,18 +346,8 @@ def snapshot_controls(snapshot: Path, contexts: Path) -> dict[str, Any]:
                 record = _event_record(dict(event))
                 if not record.content.strip():
                     continue
-                selected = reader.execute(
-                    "SELECT read_scope FROM model_context_selections "
-                    "WHERE conversation_id=? AND generation=? AND actor_id=? "
-                    "ORDER BY id DESC LIMIT 1",
-                    (scope["id"], scope["generation"], event["author_person_id"]),
-                ).fetchone()
-                if selected is None:
-                    continue
                 actors.add(event["author_person_id"])
-                found.append(
-                    {"event": dict(event), "scope": dict(scope), "read_scope": selected[0]}
-                )
+                found.append({"event": dict(event), "scope": dict(scope)})
                 if len(found) == 2:
                     ordinary = sorted(found, key=lambda item: item["event"]["id"])
                     break
@@ -571,7 +561,7 @@ async def run_snapshot_arm(args) -> None:
     os.environ["DATABASE_URL"] = database.url
     cfg = Config()
     cfg.set_main_option("script_location", str(args.source_root / "migrations"))
-    await asyncio.to_thread(command.upgrade, cfg, "0108" if args.child == "old" else "0110")
+    await asyncio.to_thread(command.upgrade, cfg, "0108" if args.child == "old" else "head")
     with sqlite3.connect(target) as reader:
         reader.row_factory = sqlite3.Row
         migrated = database_inventory(reader)
@@ -621,9 +611,9 @@ async def run_snapshot_arm(args) -> None:
     contract.revision = sha([asdict(tool) for tool in common.tools])
     requests, cases, bodies = [], [], defaultdict(list)
 
-    async def capture(name, context, runtime, inbound=None, read_scope=None):
+    async def capture(name, context, runtime, inbound=None):
         composition = await chat.runtime.main_turns.compose(
-            inbound=inbound, context=context, runtime=runtime, read_scope=read_scope
+            inbound=inbound, context=context, runtime=runtime
         )
         if composition.commit_projection is not None:
             with validating_request(TranscriptRequest(composition.messages, None, ())):
@@ -658,7 +648,6 @@ async def run_snapshot_arm(args) -> None:
                 "name": name,
                 "source_event_id": context.current_event_id,
                 "actor_id": inbound.person_id if inbound else None,
-                "read_scope": read_scope,
                 "conversation_id": context.read_version.conversation_id,
                 "generation": context.read_version.generation,
                 "session_control": (
@@ -731,14 +720,12 @@ async def run_snapshot_arm(args) -> None:
             "runtime": runtime,
         }
         context = await chat._context_assembler.assemble(**prepare)
-        ordinary_inputs.append((prepare, runtime, inbound, original["read_scope"]))
-        await capture(
-            f"ordinary_actor_{index + 1}", context, runtime, inbound, original["read_scope"]
-        )
+        ordinary_inputs.append((prepare, runtime, inbound))
+        await capture(f"ordinary_actor_{index + 1}", context, runtime, inbound)
     if ordinary_inputs:
-        prepare, runtime, inbound, read_scope = ordinary_inputs[-1]
+        prepare, runtime, inbound = ordinary_inputs[-1]
         context = await chat._context_assembler.assemble(**prepare)
-        await capture("same_actor_repeat", context, runtime, inbound, read_scope)
+        await capture("same_actor_repeat", context, runtime, inbound)
         state.snapshot = lambda: []
         context = await chat._context_assembler.assemble(**prepare)
         await capture(
@@ -746,7 +733,6 @@ async def run_snapshot_arm(args) -> None:
             replace(context, metadata_payload={}),
             runtime,
             inbound,
-            read_scope,
         )
         state.snapshot = lambda: deepcopy(control["short_state"])
 
@@ -772,7 +758,7 @@ async def run_snapshot_arm(args) -> None:
             content=source["instruction"],
             runtime=runtime,
         )
-        await capture("saved_self_source", context, runtime, read_scope=source.get("read_scope"))
+        await capture("saved_self_source", context, runtime)
         with sqlite3.connect(target) as reader:
             reader.row_factory = sqlite3.Row
             scheduled = reader.execute(
@@ -845,8 +831,7 @@ def compare_snapshot(output: Path) -> dict[str, Any]:
         comparisons.append(
             {
                 "case": case["name"],
-                "actor_and_read_scope_equal": (case["actor_id"], case["read_scope"])
-                == (previous["actor_id"], previous["read_scope"]),
+                "actor_equal": case["actor_id"] == previous["actor_id"],
                 "raw_history_equal": case["raw_history_sha256"] == previous["raw_history_sha256"],
                 "current_event_rendering_equal": case["original_current_sha256"]
                 == previous["original_current_sha256"],

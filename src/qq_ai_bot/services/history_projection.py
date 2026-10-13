@@ -3,16 +3,11 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any
 
 from qq_ai_bot.conversation.frozen_fragments import FrozenFragments
-from qq_ai_bot.conversation.observations import (
-    ContextObservation,
-    ContextObservationRepository,
-    ObservationSummaryError,
-)
 from qq_ai_bot.conversation.projections import (
     SUMMARY_RENDERER_VERSION,
     ProjectionPublication,
@@ -22,9 +17,7 @@ from qq_ai_bot.conversation.projections import (
 from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
 from qq_ai_bot.execution_trace.phases import collect_phase_metrics
-from qq_ai_bot.llm.base import LLMError
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.runtime.work_repository import WorkCapacityError
 from qq_ai_bot.services.context_assembler import AssembledContext
 
 logger = logging.getLogger(__name__)
@@ -35,17 +28,13 @@ class PreparedHistory:
     repository: PromptProjectionRepository
     view_key: str
     context_key: str
-    contract_revision: str
     context: AssembledContext
     fragments: FrozenFragments
     previous: ProjectionSnapshot | None
     reason: str | None
-    actor_id: str = ""
-    read_scope: str = ""
     committed: ProjectionSnapshot | None = None
     committed_input: list[dict[str, Any]] | None = None
     previous_item_count: int | None = None
-    replace_event_id: int | None = None
 
     async def prepare_commit(
         self,
@@ -62,13 +51,10 @@ class PreparedHistory:
             expected_source_revision=version.prompt_source_revision,
             starts_after_event_id=version.starts_after_event_id,
             context_key=self.context_key,
-            contract_revision=self.contract_revision,
             items=list(fragments.items),
             expected_epoch=previous.epoch_id if previous else None,
             expected_revision=previous.revision if previous else 0,
             rebuild_reason=None if self.committed is not None else self.reason,
-            actor_id=self.actor_id,
-            read_scope=self.read_scope,
             selected_summary_text=self.context.rollup_text,
             selected_summary_coverage=self.context.prompt_effective_coverage,
             selected_summary_kind=self.context.metrics.rollup_mode,
@@ -79,7 +65,6 @@ class PreparedHistory:
                 if self.committed is not None
                 else self.previous_item_count
             ),
-            replace_event_id=self.replace_event_id if self.committed is None else None,
         )
 
     async def commit(
@@ -115,21 +100,11 @@ async def prepare_history(
     *,
     view_key: str,
     context_key: str,
-    contract_revision: str,
     history_fits: Callable[[tuple[ChatMessage, ...]], bool],
-    actor_id: str = "",
-    read_scope: str = "",
     context_fits: Callable[[AssembledContext], bool] | None = None,
     context_hard_fits: Callable[[AssembledContext], bool] | None = None,
-    summarize_observations: Callable[[tuple[ContextObservation, ...]], Awaitable[dict[str, Any]]]
-    | None = None,
 ) -> PreparedHistory:
-    """The caller supplies the read-policy identity, never just a sending route.
-
-    An epoch can accumulate only currently selected events. A narrower read
-    window starts a fresh epoch so old private/dynamic material cannot bypass
-    the caller's current selection or capacity limits.
-    """
+    """Append canonical public history in the Conversation's existing epoch."""
     if context.read_version is None or context.read_version.conversation_id is None:
         raise ValueError("projection requires a canonical read version")
     previous = await repository.read(view_key)
@@ -138,30 +113,14 @@ async def prepare_history(
     conversation_id = version.conversation_id
     if conversation_id is None:
         raise ValueError("projection requires a canonical conversation")
-    sources = ContextObservationRepository(repository.database)
-    observations = (
-        await sources.read(
-            conversation_id=conversation_id,
-            generation=version.generation,
-            actor_id=actor_id,
-            read_scope=read_scope,
-            view_key=view_key,
-            frozen_sources=previous_fragments.observation_sources if previous_fragments else None,
-        )
-        if actor_id and read_scope
-        else ()
-    )
     reason = None
     invalidated_reason = None
     previous_item_count = None
-    replace_event_id = None
     frozen = FrozenFragments.load([])
     frozen_event_ids: frozenset[int] = frozenset()
     if previous is None:
         invalidated_reason = await repository.invalidation_reason(view_key)
         reason = invalidated_reason or "bootstrap"
-    elif previous.contract_revision != contract_revision:
-        reason = "contract_changed"
     elif previous.selected_summary_text and (
         previous.selected_summary_kind is None
         or previous.selected_summary_renderer != SUMMARY_RENDERER_VERSION
@@ -169,47 +128,25 @@ async def prepare_history(
         # Legacy text did not record its renderer/kind. Rebuild from currently
         # authorized source instead of guessing a label for the old body.
         reason = "rollup"
-    elif previous.context_key != context_key:
-        reason = "read_scope_changed"
     else:
         assert previous_fragments is not None
         frozen = previous_fragments
         previous_item_count = len(frozen.items)
         frozen_event_ids = frozen.event_ids
-        if not await sources.validate_sources(
-            conversation_id, version.generation, actor_id, read_scope, frozen.observation_sources
-        ):
-            reason = "source_changed"
-            frozen = FrozenFragments.load([])
-            frozen_event_ids = frozenset()
-        elif not frozen_event_ids <= context.visible_event_ids and (
-            previous.selected_summary_text is None
-            or context.projection_scope not in {"", "main", "self_initiative"}
+        if (
+            not frozen_event_ids <= context.visible_event_ids
+            and previous.selected_summary_text is None
         ):
             reason = "capacity"
             frozen = FrozenFragments.load([])
             frozen_event_ids = frozenset()
-        elif context.current_event_id in frozen_event_ids:
-            # A deliberate repeat of an event is a new attempt, not an append of
-            # the same trigger. Preserve that distinction in the epoch reason.
-            reason = "source_changed"
-            replace_event_id = context.current_event_id
-            frozen = FrozenFragments.load([])
-            frozen_event_ids = frozenset()
-    if (
-        not frozen.items
-        and actor_id
-        and read_scope
-        and reason in {"bootstrap", "capacity", "contract_changed"}
-    ):
+    if not frozen.items:
         # Representation provenance outlives the bounded projection cache. A
         # genuine source/reset change clears it; ordinary eviction does not.
-        selected = await sources.selected(
+        selected = await repository.selected(
             view_key=view_key,
             conversation_id=conversation_id,
             generation=version.generation,
-            actor_id=actor_id,
-            read_scope=read_scope,
             visible_event_ids=context.visible_event_ids,
         )
         selected = [
@@ -217,35 +154,6 @@ async def prepare_history(
             for item in selected
             if (not item["event_ids"] or set(item["event_ids"]) <= context.visible_event_ids)
         ]
-        if not await sources.validate_sources(
-            conversation_id,
-            version.generation,
-            actor_id,
-            read_scope,
-            tuple(
-                dict.fromkeys(
-                    (item["observation_id"], item["observation_version"])
-                    for item in selected
-                    if "observation_id" in item
-                )
-            ),
-        ):
-            selected = []
-        if any(context.current_event_id in item["event_ids"] for item in selected):
-            # A contract/capacity rebuild can recover this trigger's older
-            # representation from selection provenance, after the repeat check
-            # above. Treat it as the same explicit new-attempt source boundary.
-            # Keep immutable records and unrelated frozen envelopes unchanged;
-            # history extension below covers the other events of a rejected
-            # group using this attempt's already authorized individual views.
-            # An already invalidated row must retain its exact rebuild reason
-            # for publication CAS; that invalidation is already a new boundary.
-            if invalidated_reason is None:
-                reason = "source_changed"
-            replace_event_id = context.current_event_id
-            selected = [
-                item for item in selected if context.current_event_id not in item["event_ids"]
-            ]
         # Grouping can change across an explicit capacity epoch. Replay each
         # original event only once; use the current event fragment for the new
         # portion of an overlapping group rather than duplicating its envelope.
@@ -271,16 +179,11 @@ async def prepare_history(
             seen.update(ids)
         frozen = FrozenFragments.load(unique)
         frozen_event_ids = frozen.event_ids
-    collect_phase_metrics(F=len(frozen.items), E=len(frozen_event_ids), K=len(observations))
+    collect_phase_metrics(F=len(frozen.items), E=len(frozen_event_ids))
     selected_context = context
     # Preserve a selected summary while it and all chat fit. New derived rows
     # must not silently replace the prefix or omit newly covered unseen chat.
-    if (
-        previous is not None
-        and previous.selected_summary_text is not None
-        and reason is None
-        and context.projection_scope in {"", "main", "self_initiative"}
-    ):
+    if previous is not None and previous.selected_summary_text is not None and reason is None:
         ledger = EventLedgerRepository(repository.database)
         through = max(context.prompt_raw_tail_end_event_id, context.prompt_effective_coverage)
         current_version, missing_rows = await ledger.read_scope_missing_history(
@@ -319,8 +222,6 @@ async def prepare_history(
     extended = frozen.extend_history(
         selected_context.history_fragments, selected_context.history_event_fragments
     )
-    observation_messages = tuple((row.id, row.version, row.message()) for row in observations)
-    extended = extended.append_observations(observation_messages)
 
     selected_context = replace(selected_context, history_messages=extended.messages())
     collect_phase_metrics(candidate_count=1)
@@ -335,8 +236,6 @@ async def prepare_history(
         if context_hard_fits is not None
         else fits
     )
-    original_fragments, original_context, original_reason = extended, selected_context, reason
-    original_messages = extended_messages
     ready_rollup = (
         previous is not None
         and context.prompt_effective_coverage > previous.selected_summary_coverage
@@ -354,8 +253,6 @@ async def prepare_history(
                 if item["event_ids"] and set(item["event_ids"]) <= candidate_events
             ]
         ).extend_history(context.history_fragments, context.history_event_fragments)
-        # Canonical event coverage never proves private clues were summarized.
-        fresh = fresh.append_observations(observation_messages)
         collect_phase_metrics(candidate_count=1)
         if extended.items != fresh.items:
             # A new activation may adopt the already published summary.
@@ -373,76 +270,6 @@ async def prepare_history(
                 if context_hard_fits is not None
                 else fits
             )
-    if not fits and observations and summarize_observations is not None:
-        summary = await sources.prepared_summary(
-            view_key=view_key,
-            observations=observations,
-            conversation_id=conversation_id,
-            generation=version.generation,
-            actor_id=actor_id,
-            read_scope=read_scope,
-        )
-        if summary is None and not hard_fits:
-            try:
-                payload = await summarize_observations(observations)
-                summary = await sources.publish_scope_summary(
-                    view_key=view_key,
-                    observations=observations,
-                    payload=payload,
-                    conversation_id=conversation_id,
-                    generation=version.generation,
-                    actor_id=actor_id,
-                    read_scope=read_scope,
-                    expected_source_revision=version.prompt_source_revision,
-                )
-            except (ObservationSummaryError, WorkCapacityError, LLMError) as exc:
-                if context_hard_fits is None or not context_hard_fits(
-                    replace(original_context, history_messages=original_messages)
-                ):
-                    raise
-                logger.info("observation_summary_deferred category=%s", type(exc).__name__)
-        # A paid candidate is reusable, but not yet observation coverage. Only
-        # the dispatch CAS admits it and transfers its artifact ownership.
-        candidate = extended
-        if summary is not None:
-            collect_phase_metrics(candidate_count=1)
-            from qq_ai_bot.conversation.observations import summary_coverage
-
-            covered = summary_coverage(summary.payload_json)
-            candidate_items: list[dict[str, Any]] = []
-            for item in extended.items:
-                if item.get("observation_id") not in covered:
-                    candidate_items.append(item)
-            candidate = FrozenFragments.load(candidate_items).append_observation(
-                summary.id, summary.version, summary.message()
-            )
-        candidate_messages = (
-            candidate.messages() if candidate is not extended else extended_messages
-        )
-        candidate_fits = (
-            context_fits(replace(selected_context, history_messages=candidate_messages))
-            if context_fits is not None
-            else history_fits(candidate_messages)
-        )
-        if not hard_fits and context_hard_fits is not None:
-            # Required recovery needs to fit the real request, not a smaller
-            # maintenance target. Optional ready summaries still use that target.
-            candidate_fits = context_hard_fits(
-                replace(selected_context, history_messages=candidate_messages)
-            )
-        if summary is not None and candidate_fits:
-            extended, reason = candidate, "capacity"
-            extended_messages = candidate_messages
-            selected_context = replace(selected_context, history_messages=candidate.messages())
-        elif context_hard_fits is not None and context_hard_fits(
-            replace(original_context, history_messages=original_messages)
-        ):
-            extended, selected_context, reason = (
-                original_fragments,
-                original_context,
-                original_reason,
-            )
-            extended_messages = original_messages
     # The original assembler has already selected a bounded history. Its rollup
     # is compiled separately, before these event fragments, in every epoch.
     selected_context = replace(
@@ -457,22 +284,15 @@ async def prepare_history(
                 )
             ),
             selected_summary_text=selected_context.rollup_text,
-            observation_sources=extended.observation_sources,
-            observation_actor_id=actor_id,
-            observation_read_scope=read_scope,
         ),
     )
     return PreparedHistory(
         repository=repository,
         view_key=view_key,
         context_key=context_key,
-        contract_revision=contract_revision,
         context=selected_context,
         fragments=extended,
         previous=previous,
         reason=reason,
-        actor_id=actor_id,
-        read_scope=read_scope,
         previous_item_count=previous_item_count,
-        replace_event_id=replace_event_id,
     )

@@ -10,8 +10,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-from qq_ai_bot.conversation.projection_current_schema import (
-    PROJECTION_TRIGGERS_0109 as PROJECTION_TRIGGERS_CURRENT,
+from qq_ai_bot.conversation.projection_history_schema import (
+    PROJECTION_TRIGGERS_0112 as PROJECTION_TRIGGERS_CURRENT,
 )
 
 
@@ -84,11 +84,8 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "view_key",
             "conversation_id",
             "generation",
-            "actor_id",
-            "read_scope",
             "source_key",
             "event_ids_json",
-            "observation_sources_json",
             "payload_json",
         }
     ),
@@ -174,7 +171,6 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "starts_after_event_id",
             "epoch_id",
             "context_key",
-            "contract_revision",
             "revision",
             "rebuild_reason",
             "invalidated_reason",

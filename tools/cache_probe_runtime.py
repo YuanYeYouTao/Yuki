@@ -40,7 +40,6 @@ class WorkDriver:
         self.lease: Any = None
         self.evidence: dict[str, Any] = {"source": "real WorkRepository + WorkSession fixture"}
         self._token: Any = None
-        self._observed_notes: set[str] = set()
         self._read_call: ToolCall | None = None
         self._read_result: str | None = None
         self._read_key: str | None = None
@@ -51,41 +50,40 @@ class WorkDriver:
             person = await ensure_person(writer, "910000001", display_name="synthetic member")
             await ensure_presence(writer, "910000002")
             await ensure_space(writer, "910000003", name="synthetic cache room")
-        for index in range(2 if self.scenario == "C03" else 1):
-            await self.app.scoped_events.append(
-                scope=ConversationScope.group("910000002", "910000003"),
-                platform_message_id=f"{self.namespace}-{self.scenario}-{index}",
-                sender_user_id="910000001",
-                direction="inbound",
-                content=f"合成请求：比较文档方案 W{index + 1}；只在隔离环境研究。",
+        await self.app.scoped_events.append(
+            scope=ConversationScope.group("910000002", "910000003"),
+            platform_message_id=f"{self.namespace}-{self.scenario}-0",
+            sender_user_id="910000001",
+            direction="inbound",
+            content="合成请求：比较文档方案 W1；只在隔离环境研究。",
+        )
+        async with self.app.database.sessions() as reader:
+            row = await reader.scalar(select(ChatEventModel).order_by(ChatEventModel.id.desc()))
+        assert row is not None
+        self.source_event_ids.append(row.id)
+        if self.lease is None:
+            self.lease = await self.repository.acquire(
+                row.canonical_conversation_id, 1, seconds=300
             )
-            async with self.app.database.sessions() as reader:
-                row = await reader.scalar(select(ChatEventModel).order_by(ChatEventModel.id.desc()))
-            assert row is not None
-            self.source_event_ids.append(row.id)
-            if self.lease is None:
-                self.lease = await self.repository.acquire(
-                    row.canonical_conversation_id, 1, seconds=300
-                )
-                assert self.lease is not None
-            source = {
-                "actor_person_id": person,
-                "principal_kind": "person",
-                "origin": "user_message",
-                "trigger_event_id": row.id,
-                "read_scope": json.dumps(
-                    {"memory": [], "plugin_id": None, "delegation_id": None}, sort_keys=True
-                ),
-            }
-            key = f"event:{row.id}"
-            control = self._control(key, source)
-            control.current = await self.repository.accept(
-                self.lease,
-                source_key=key,
-                source=source,
-                goal=f"比较合成文档方案 W{index + 1}，保留依据与未知事项。",
-            )
-            self.controls.append(control)
+            assert self.lease is not None
+        source = {
+            "actor_person_id": person,
+            "principal_kind": "person",
+            "origin": "user_message",
+            "trigger_event_id": row.id,
+            "read_scope": json.dumps(
+                {"memory": [], "plugin_id": None, "delegation_id": None}, sort_keys=True
+            ),
+        }
+        key = f"event:{row.id}"
+        control = self._control(key, source)
+        control.current = await self.repository.accept(
+            self.lease,
+            source_key=key,
+            source=source,
+            goal="比较合成文档方案 W1，保留依据与未知事项。",
+        )
+        self.controls.append(control)
         self.evidence["original_work_ids"] = [control.current["id"] for control in self.controls]
 
     def _control(self, key: str, source: dict[str, Any]) -> WorkControl:
@@ -100,39 +98,8 @@ class WorkDriver:
         return control
 
     async def prepare(self, index: int) -> TurnTranscript:
-        if self.scenario == "C03" and index > 0:
-            text = f"合成群友新消息 {index}：请保留已核依据，未核内容仍标明未知。"
-            await self.app.scoped_events.append(
-                scope=ConversationScope.group("910000002", "910000003"),
-                platform_message_id=f"{self.namespace}-new-chat-{index}",
-                sender_user_id="910000001",
-                direction="inbound",
-                content=text,
-            )
-            async with self.app.database.sessions() as reader:
-                row = await reader.scalar(select(ChatEventModel).order_by(ChatEventModel.id.desc()))
-            self.source_event_ids.append(row.id)
-            self.prefix = (*self.prefix, ChatMessage("user", f"event:{row.id} {row.content}"))
-            from qq_ai_bot.conversation.observations import ContextObservationRepository
-            from qq_ai_bot.tool_results.access import access_from_source
-
-            # Fixture authority is fixed by the real source actor, never model fields.
-            grant = access_from_source(self.lease.conversation_id, 1, self.controls[0].source)
-            notes = await ContextObservationRepository(self.app.database).read(
-                conversation_id=self.lease.conversation_id,
-                generation=1,
-                actor_id=grant.actor_person_id,
-                read_scope=grant.read_scope,
-            )
-            for note in notes:
-                if note.id not in self._observed_notes:
-                    self.prefix = (*self.prefix, note.message())
-                    self._observed_notes.add(note.id)
-            self.evidence["appended_chat_event_ids"] = self.source_event_ids[2:]
-            self.evidence["selected_observation_ids"] = sorted(self._observed_notes)
-        selected = index % 3 == 1 if self.scenario == "C03" else False
-        self.control = self.controls[int(selected)]
-        if index == 0 or self.scenario == "C03":
+        self.control = self.controls[0]
+        if index == 0:
             session = WorkSession(self.control, self.app.main_agent_contract.revision)
             self.control.session = session
             await session.restore(

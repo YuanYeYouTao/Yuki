@@ -1597,30 +1597,6 @@ class WebSearchSourceModel(Base):
     run: Mapped[WebSearchRunModel] = relationship(back_populates="sources")
 
 
-class PersonTimeSettingModel(Base):
-    """The preferred IANA timezone for one globally identified person."""
-
-    __tablename__ = "person_time_settings"
-    canonical_person_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
-        primary_key=True,
-    )
-    timezone: Mapped[str] = mapped_column(String(64), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
-class SelfTimeSettingModel(Base):
-    __tablename__ = "self_time_settings"
-    __table_args__ = (CheckConstraint("principal_id = 'self'", name="ck_self_time_identity"),)
-
-    principal_id: Mapped[str] = mapped_column(String(4), primary_key=True)
-    timezone: Mapped[str] = mapped_column(String(64), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
 class AutomationModel(Base):
     """A validated, persistent declaration of one scheduled automation."""
 
