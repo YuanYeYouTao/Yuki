@@ -120,7 +120,6 @@ from qq_ai_bot.services.turn_coordinator import (
     TurnSupersededError,
     TurnToken,
 )
-from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.web.models import WebMode
 from qq_ai_bot.web.native_sources import recover_native_web_response
 from yuki_plugin_sdk.events import EventName
@@ -236,7 +235,6 @@ class ChatService:
         tools: AgentToolService,
         web_sources: WebSearchSourceRepository,
         runtime_config: RuntimeConfigService,
-        time_service: TimeContextService,
         memory_context: MemoryContextService | None = None,
         memory_partition_lookup: MemoryPartitionLookup,
         context_assembler: ContextAssembler | None = None,
@@ -273,7 +271,6 @@ class ChatService:
         self._plugin_tools: PluginToolProvider | None = None
         self._tool_artifacts = tool_artifacts
         self._tool_invocations = tool_invocations
-        self._time = time_service
         if memory_context is None:
             memory_repository = MemoryFactRepository(self._ledger._database)
             memory_context = MemoryContextService(

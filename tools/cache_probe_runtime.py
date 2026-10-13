@@ -222,7 +222,6 @@ class WorkDriver:
             bot_user_id="910000002",
             gateway=None,
             runtime_config=await self.app.runtime_config.snapshot(),
-            current_time=self.app.time_context.current_default(),
             allowed_capabilities=frozenset(),
             max_tool_calls=0,
             max_model_requests=24,

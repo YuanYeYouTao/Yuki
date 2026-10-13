@@ -50,7 +50,6 @@ from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
 from qq_ai_bot.services.user_profiles import UserProfileService
 from qq_ai_bot.services.vision_rate_limit import VisionRateLimiter
 from qq_ai_bot.services.vision_service import VisionService
-from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.vision.base import VisionProvider
 from qq_ai_bot.web.base import WebSearchProvider
 from tests.support.model_executor import require_model_executor
@@ -179,7 +178,6 @@ def build_harness(
     models = require_model_executor(None, provider=llm, model=settings.llm_model or "fake")
     concurrency = ConcurrencyManager()
     runtime_config = RuntimeConfigService(settings=settings, database=database)
-    time_service = TimeContextService(default_timezone=settings.default_timezone)
     rollup_service = ConversationRollupService(
         models=models,
         config=rollup_config,
@@ -209,7 +207,6 @@ def build_harness(
         tools=agent_tools,
         web_sources=web_sources,
         runtime_config=runtime_config,
-        time_service=time_service,
         memory_partition_lookup=DatabaseMemoryPartitionLookup(database),
         rollup_repository=conversation_rollups,
         rollup_service=rollup_service,

@@ -10,7 +10,7 @@ from qq_ai_bot.time.models import TimeContext
 
 
 class Clock(Protocol):
-    """Injectable UTC clock used by chat, scheduling, and deterministic tests."""
+    """Injectable UTC clock used by scheduling and deterministic tests."""
 
     def now(self) -> datetime:
         """Return an aware UTC timestamp."""
@@ -53,11 +53,6 @@ class TimeContextService:
     @property
     def default_timezone(self) -> str:
         return self._default_timezone
-
-    def current_in_timezone(self, timezone: str) -> TimeContext:
-        """Refresh the clock using an explicitly selected timezone."""
-
-        return self.at(self._utc_now(), timezone)
 
     def current_default(self) -> TimeContext:
         """Return trusted current time in the common default timezone."""

@@ -4,9 +4,15 @@ import json
 
 import httpx
 import pytest
+from tests.support.work_compaction import summary_json
 from tools import cache_probe
 
-from qq_ai_bot.model_runtime.models import ModelCapability, ModelProfile, ModelProtocol
+from qq_ai_bot.model_runtime.models import (
+    ModelCapability,
+    ModelProfile,
+    ModelProtocol,
+    StructuredOutputMode,
+)
 from qq_ai_bot.model_runtime.pool import ModelClientPool
 
 
@@ -165,6 +171,50 @@ async def test_manual_probe_preserves_profile_wire_and_closes_clients(
                     assert payload["include"] == ["reasoning.encrypted_content"]
     assert all(client.is_closed for pool in pools for client in pool._connection_pools.values())
     assert all(provider._client.is_closed for pool in pools for provider in pool._clients.values())
+
+
+async def test_manual_work_compaction_probe_resumes_the_original_work(tmp_path):
+    stages = []
+
+    def transport(request):
+        body = json.loads(request.content)
+        text = body["contents"][-1]["parts"][-1].get("text", "")
+        payload = answer(ModelProtocol.GEMINI)
+        try:
+            source = json.loads(text)
+        except json.JSONDecodeError:
+            source = None
+        if isinstance(source, dict) and "task_material" in source:
+            stages.append("compaction")
+            payload["candidates"][0]["content"]["parts"][0]["text"] = summary_json(source)
+        else:
+            stages.append("main")
+        return httpx.Response(200, json=payload)
+
+    configured = profile("renamed-gemini-connection", ModelProtocol.GEMINI).model_copy(
+        update={"structured_output_mode": StructuredOutputMode.TEXT_JSON}
+    )
+    report = await cache_probe.run_experiment(
+        profile=configured,
+        api_key="synthetic-key",
+        output=tmp_path / "work-compaction.json",
+        scenarios=("C06",),
+        samples=1,
+        warmups=1,
+        prefix_characters=64,
+        prefix_control=False,
+        compaction_mode="work",
+        transport=httpx.MockTransport(transport),
+    )
+    scenario = report["scenarios"][0]
+    assert scenario["status"] == "complete"
+    evidence = scenario["runtime_evidence"]
+    assert evidence["compaction"]["explicit_boundary"]
+    assert all(
+        identity == evidence["original_work_ids"][0] for identity in evidence["request_work_ids"]
+    )
+    assert stages == ["main", "compaction", "main"]
+    assert report["accounting"]["physical_match"]
 
 
 async def test_manual_probe_keeps_failed_request_and_closes_clients(tmp_path, monkeypatch):
