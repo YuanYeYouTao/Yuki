@@ -80,7 +80,7 @@ class TurnTranscript:
         self._layout_public_initial = public
         self._layout_host_initial = host
         self._layout_current_inputs = current_inputs
-        self._entries[:] = [*public, *host, *current_inputs]
+        self._entries[:] = [*public[:-1], *host, public[-1], *current_inputs]
 
     @property
     def continuation(self) -> ProviderContinuation | None:

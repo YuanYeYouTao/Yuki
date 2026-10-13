@@ -49,6 +49,8 @@ async def test_current_values_repeat_then_clear_without_entering_history(databas
             replace(message, message_id=f"current-{number}", text=f"继续{number}"), MemorySender()
         )
         current = "\n".join(item.content or "" for item in provider.requests[-1].messages)
+        assert (provider.requests[-1].messages[-1].content or "").endswith(f"继续{number}")
+        assert current.index("当前工作：") < current.index(f"继续{number}")
         if value:
             assert current.count(value) == 1
             assert current.index(value) < current.index(f"继续{number}")

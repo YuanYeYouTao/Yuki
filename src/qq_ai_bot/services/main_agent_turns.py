@@ -435,8 +435,9 @@ class MainAgentTurnService:
                 if sequence.layout_public_initial is not None:
                     valid_layout = sequence.layout_public_initial == composition.messages
                     expected = (
-                        *composition.messages,
+                        *composition.messages[:-1],
                         *sequence.layout_host_initial,
+                        composition.messages[-1],
                         *sequence.layout_current_inputs,
                     )
                     valid_layout = valid_layout and sequence.messages[: len(expected)] == expected

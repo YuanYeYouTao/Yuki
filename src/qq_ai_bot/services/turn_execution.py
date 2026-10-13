@@ -779,7 +779,7 @@ class TurnExecution:
         )
         current_inputs = tuple(self._initial_inputs)
         transcript.finalize_initial(initial, hosts, current_inputs)
-        self.initial_messages = (*initial, *hosts, *current_inputs)
+        self.initial_messages = (*initial[:-1], *hosts, initial[-1], *current_inputs)
 
     async def prepare_request(
         self,
