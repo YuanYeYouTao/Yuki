@@ -92,7 +92,6 @@ async def _runtime(database, control, initial, provider, *, contract_workspace=N
         bot_user_id="80001",
         gateway=None,
         runtime_config=await chat._runtime_config.snapshot(),
-        current_time=chat._time.current_default(),
         allowed_capabilities=frozenset(),
         max_tool_calls=8,
         max_model_requests=1,

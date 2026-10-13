@@ -112,7 +112,6 @@ async def test_actual_journal_selects_exact_before_assembler_reads_history(datab
             identity=scope,
             content="new",
             metadata={},
-            current_time=TimeContext(now, now, "UTC"),
             read_history=True,
             runtime=None,
         )
@@ -431,7 +430,6 @@ async def test_response_paid_stage_prepares_current_main_history_before_retiring
             identity=inbound.scope(),
             content="Continue the current Work.",
             metadata={},
-            current_time=chat._time.current_default(),
             read_history=True,
             runtime=config,
         )

@@ -142,7 +142,6 @@ async def test_runner_query_gate_refuses_before_domain_read_and_keeps_lifecycle(
         bot_user_id="8001",
         gateway=None,
         runtime_config=tool_runtime.runtime_config,
-        current_time=chat._time.current_default(),
         allowed_capabilities=frozenset(),
         max_tool_calls=8,
         max_model_requests=8,
@@ -154,9 +153,7 @@ async def test_runner_query_gate_refuses_before_domain_read_and_keeps_lifecycle(
         if action == "get":
             arguments["work_id"] = "original-work"
         call = ToolCall(action, ToolFunction("task_control", json.dumps(arguments)))
-        backend = MainAgentBackend(
-            chat, replace(tool_runtime, tools_closed=not allowed)
-        )
+        backend = MainAgentBackend(chat, replace(tool_runtime, tools_closed=not allowed))
         return await chat.runtime.runner._execute_tool_batch(
             (call,),
             backend,

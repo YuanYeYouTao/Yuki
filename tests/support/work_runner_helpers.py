@@ -95,7 +95,6 @@ async def case(database, tmp_path, responses, *, reporting="interactive", send_s
         bot_user_id="80001",
         gateway=None,
         runtime_config=await chat._runtime_config.snapshot(),
-        current_time=chat._time.current_default(),
         allowed_capabilities=frozenset(),
         max_tool_calls=12,
         max_model_requests=12,

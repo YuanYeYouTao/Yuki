@@ -38,8 +38,6 @@ from qq_ai_bot.runtime.trigger import (
     WorkResumeTrigger,
 )
 from qq_ai_bot.services.rollup_wakeup import rollup_wakeup_history, rollup_wakeup_watermark
-from qq_ai_bot.time.models import TimeContext
-from qq_ai_bot.time.service import TimeContextService
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +63,6 @@ class AssembledContext:
     metadata_payload: dict[str, Any]
     history_messages: tuple[ChatMessage, ...]
     current_message: ChatMessage
-    current_time: TimeContext
     metrics: ContextMetrics
     visible_event_ids: frozenset[int] = frozenset()
     history_anchor_event_id: int | None = None
@@ -142,7 +139,6 @@ class ContextAssembler:
         *,
         settings: Settings,
         ledger: EventLedgerRepository,
-        time_service: TimeContextService,
         rollup_repository: ConversationRollupRepository,
         rollup_service: ConversationRollupService,
         history_budget: Callable[[RuntimeConfigSnapshot], int] | None = None,
@@ -150,7 +146,6 @@ class ContextAssembler:
     ) -> None:
         self._settings = settings
         self._ledger = ledger
-        self._time = time_service
         self._rollups = rollup_repository
         self._rollup_service = rollup_service
         self._history_budget = history_budget
@@ -185,7 +180,6 @@ class ContextAssembler:
             metadata_payload={},
             history_messages=(),
             current_message=ChatMessage(role="user", content=""),
-            current_time=self._time.current_default(),
             metrics=ContextMetrics(0, 0, 0, 0, False),
             visible_event_ids=frozenset(original.visible_event_ids),
             read_version=original,
@@ -247,7 +241,6 @@ class ContextAssembler:
             metadata_payload=metadata,
             history_messages=bounded.history_messages,
             current_message=current,
-            current_time=self._time.current_default(),
             metrics=ContextMetrics(
                 len(json.dumps(metadata, ensure_ascii=False)),
                 sum(len(item.content or "") for item in bounded.history_messages),
@@ -279,7 +272,6 @@ class ContextAssembler:
         identity: ConversationScope,
         content: str,
         metadata: dict[str, Any],
-        current_time: TimeContext,
         read_history: bool,
         runtime: RuntimeConfigSnapshot,
         capacity_budget: int | None = None,
@@ -347,7 +339,6 @@ class ContextAssembler:
             metadata_payload=metadata,
             history_messages=history,
             current_message=ChatMessage(role="user", content=content),
-            current_time=current_time,
             metrics=ContextMetrics(
                 metadata_size,
                 history_size,
@@ -431,7 +422,6 @@ class ContextAssembler:
         ):
             raise ConversationCoverageError("turn trigger event does not match scope snapshot")
         recent = snapshot.recent
-        current_time = self._time.current_default()
 
         total_budget = self._history_token_budget(runtime)
         metadata_payload = {"scene": "群聊" if inbound.group_id else "私聊"}
@@ -517,7 +507,6 @@ class ContextAssembler:
             metadata_payload=metadata_payload,
             history_messages=history_messages,
             current_message=current_message,
-            current_time=current_time,
             metrics=metrics,
             visible_event_ids=bounded_messages.visible_event_ids,
             history_anchor_event_id=bounded_messages.history_anchor_event_id,
@@ -608,13 +597,11 @@ class ContextAssembler:
         )
         history = bounded_messages.history_messages
         current_message = bounded_messages.current_message
-        current_time = self._time.current_default()
         await self._validate_history_source(snapshot, event)
         return AssembledContext(
             metadata_payload=metadata_payload,
             history_messages=history,
             current_message=current_message,
-            current_time=current_time,
             metrics=ContextMetrics(
                 metadata_characters=len(metadata_json),
                 history_characters=sum(len(item.content or "") for item in history),

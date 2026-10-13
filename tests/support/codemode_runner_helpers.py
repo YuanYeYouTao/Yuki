@@ -96,7 +96,6 @@ async def runner_env(database, tmp_path, responses, *, max_tool_calls=8):
         bot_user_id="80001",
         gateway=None,
         runtime_config=await chat._runtime_config.snapshot(),
-        current_time=chat._time.current_default(),
         allowed_capabilities=frozenset(),
         max_tool_calls=max_tool_calls,
         max_model_requests=8,

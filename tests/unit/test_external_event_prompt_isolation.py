@@ -32,7 +32,6 @@ from qq_ai_bot.services.context_assembler import (
     _HistoryPromptWindow,
 )
 from qq_ai_bot.services.prompt_composer import PromptComposer
-from qq_ai_bot.time.models import TimeContext
 
 _OCCURRED = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
 
@@ -96,14 +95,9 @@ def _assembler(**overrides: object) -> ContextAssembler:
     return ContextAssembler(
         settings=settings,
         ledger=MagicMock(),
-        time_service=MagicMock(),
         rollup_repository=MagicMock(),
         rollup_service=MagicMock(),
     )
-
-
-def _time() -> TimeContext:
-    return TimeContext(utc=_OCCURRED, local=_OCCURRED, timezone="Asia/Shanghai")
 
 
 def _assembled(
@@ -117,7 +111,6 @@ def _assembled(
         metadata_payload=metadata or {},
         history_messages=history,
         current_message=current,
-        current_time=_time(),
         metrics=ContextMetrics(
             metadata_characters=0,
             history_characters=0,
@@ -280,7 +273,6 @@ async def _assemble_wakeup(
             rollup_mode="llm",
         )
     )
-    assembler._time.current_default = MagicMock(return_value=_time())
     identity = current.scope
     turn = ConversationTurnSnapshot(
         conversation_id="test-conversation-1",
@@ -321,7 +313,7 @@ def _metadata_items(context: AssembledContext) -> dict[str, object]:
 async def test_private_wakeup_targets_the_person_without_an_actor() -> None:
     current = replace(_external(3, "current trigger"), canonical_conversation_id="conv-private")
 
-    assembler, context = await _assemble_wakeup(current)
+    _assembler, context = await _assemble_wakeup(current)
 
     items = _metadata_items(context)
     assert items["scene"] == "私聊"
@@ -329,7 +321,6 @@ async def test_private_wakeup_targets_the_person_without_an_actor() -> None:
     assert "current_person" not in items
     assert "current_group" not in items
     assert items == {"scene": "私聊"}
-    assembler._time.current_default.assert_called_once_with()
     # Automatic memory recall stays off; the agent must use memory tools explicitly.
 
 
@@ -422,7 +413,6 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
         return_value=snapshot
     )
     ordinary._ledger.get_event = AsyncMock(return_value=ordinary_event)
-    ordinary._time.current_default = MagicMock(return_value=_time())
     ordinary_identity = ordinary_event.scope
     turn = ConversationTurnSnapshot(
         conversation_id="test-conversation-1",
@@ -461,7 +451,6 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     wakeup._load_history_snapshot = AsyncMock(  # type: ignore[method-assign]
         return_value=snapshot
     )
-    wakeup._time.current_default = MagicMock(return_value=_time())
     wakeup_context = await wakeup.assemble(
         inbound=None,
         profile=None,

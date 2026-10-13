@@ -21,7 +21,6 @@ from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.services.context_assembler import AssembledContext, ContextMetrics
 from qq_ai_bot.services.history_projection import prepare_history
 from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
-from qq_ai_bot.time.models import TimeContext
 
 
 @contextmanager
@@ -96,7 +95,6 @@ async def scene(database, count):
         metadata_payload={},
         history_messages=tuple(message for _, message in parts),
         current_message=ChatMessage("user", "current"),
-        current_time=TimeContext(now, now, "UTC"),
         metrics=ContextMetrics(0, 0, 0, 0, False),
         read_version=version,
         history_fragments=parts,

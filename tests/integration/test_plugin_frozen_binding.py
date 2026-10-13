@@ -153,7 +153,6 @@ async def run(*, native_child=False):
                 bot_user_id=tr.inbound.bot_user_id,
                 gateway=None,
                 runtime_config=tr.runtime_config,
-                current_time=chat._time.current_default(),
                 allowed_capabilities=frozenset(),
                 max_model_requests=tr.runtime_config.agent.max_model_requests,
                 max_tool_calls=tr.runtime_config.agent.max_tool_calls,

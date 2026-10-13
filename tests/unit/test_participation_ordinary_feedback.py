@@ -65,7 +65,6 @@ async def ordinary_backend(database, content, *, callback=None):
         bot_user_id="80001",
         gateway=None,
         runtime_config=config,
-        current_time=chat._time.current_default(),
         allowed_capabilities=frozenset(),
         max_tool_calls=8,
         max_model_requests=8,

@@ -9,7 +9,6 @@ import logging
 from collections.abc import Awaitable, Callable
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass, replace
-from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, select
@@ -44,7 +43,6 @@ from qq_ai_bot.services.execution_sources import (
     recover_execution_source,
 )
 from qq_ai_bot.services.invocation_context import InvocationContextFactory
-from qq_ai_bot.time.models import TimeContext
 
 logger = logging.getLogger(__name__)
 
@@ -304,7 +302,6 @@ class SubagentExecution:
                     if not self.required_names() <= names:
                         raise ValueError("incomplete_worker_tool_manifest")
                     backend = self.services.backend_factory(tool_runtime, names)
-                    now = datetime.now(UTC)
                     brief = json.loads(child["brief_json"])
                     brief.update(
                         child_id=identity, cwd=f"/workspace/tasks/{identity}", work_id=identity
@@ -323,7 +320,6 @@ class SubagentExecution:
                         replace(
                             InvocationContextFactory.from_tools(
                                 tool_runtime,
-                                current_time=TimeContext(now, now, "UTC"),
                                 allowed_capabilities=self.services.web_capabilities(config),
                                 max_tool_calls=32,
                                 max_model_requests=24,
