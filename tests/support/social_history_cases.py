@@ -20,7 +20,7 @@ from qq_ai_bot.social.db_models import SocialOperationModel
 from qq_ai_bot.social.models import SocialError
 
 
-async def history_agent_loop(env):
+async def history_agent_loop(env, *, same_batch=False):
     from tests.conftest import MemorySender, build_harness, make_settings
 
     from qq_ai_bot.domain.conversations import ScopeType
@@ -48,6 +48,9 @@ async def history_agent_loop(env):
         if calls == 2:
             assert returned[-1]["ok"], returned[-1]
             assert returned[-1]["data"]["count"] == 1
+            if same_batch:
+                assert len(returned) == 2 and all(r["data"]["count"] == 1 for r in returned)
+                return "读到两份原结果"
             env.bot.history["messages"].append({"message_id": 51, "message": "第二条"})
         if calls == 3:
             assert returned[-1]["data"]["count"] == 2
@@ -55,11 +58,12 @@ async def history_agent_loop(env):
         return ChatResponse(
             content="",
             latency_seconds=0,
-            tool_calls=(
+            tool_calls=tuple(
                 ToolCall(
-                    id=f"history-{calls}",
+                    id=f"history-{calls}-{index}",
                     function=ToolFunction(name="read_conversation_history", arguments=arguments),
-                ),
+                )
+                for index in range(2 if same_batch else 1)
             ),
         )
 
@@ -87,7 +91,7 @@ async def history_agent_loop(env):
         sender,
     )
     assert result.reason == "chat" and not sender.messages
-    assert calls == 3
+    assert calls == (2 if same_batch else 3)
     assert sum(action == "get_friend_msg_history" for action, _ in env.bot.calls) == 2
     async with env.db.sessions() as session:
         assert not await session.scalar(

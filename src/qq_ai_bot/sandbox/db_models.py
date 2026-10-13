@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from qq_ai_bot.persistence.models import Base
@@ -11,6 +11,11 @@ from qq_ai_bot.persistence.models import Base
 class SandboxTaskRunModel(Base):
     __tablename__ = "sandbox_task_runs"
     __table_args__ = (
+        Index(
+            "ix_sandbox_task_runs_waiting_run",
+            "run_id",
+            sqlite_where=text("status='waiting' AND run_id IS NOT NULL"),
+        ),
         CheckConstraint("status IN ('waiting','completed')", name="ck_sandbox_task_run_status"),
     )
 

@@ -305,6 +305,8 @@ class WorkWaitRepository:
         conditions: list[dict[str, Any]],
         reason: str,
         now: float,
+        *,
+        source_event_id: int | None = None,
     ) -> int | None:
         original: Any
         if "work_source_json" in binding:
@@ -384,7 +386,15 @@ class WorkWaitRepository:
                     source_key=f"wait:{binding['id']}",
                     kind="control",
                     work_id=binding["work_id"],
-                    event_id=max(event_ids) if event_ids else None,
+                    # The delivering message owns its admission; every matched
+                    # ref stays in conditions for the Work signal itself.
+                    event_id=(
+                        source_event_id
+                        if source_event_id is not None
+                        else max(event_ids)
+                        if event_ids
+                        else None
+                    ),
                     ready=True,
                     payload_json=encode_json(
                         {"text": json.dumps(payload, ensure_ascii=False), "signal": True}
@@ -417,6 +427,7 @@ class WorkWaitRepository:
         kind: str,
         session: AsyncSession | None = None,
         on_delivery: Callable[[AsyncSession, int], Awaitable[None]] | None = None,
+        prepare_source: Callable[[], Awaitable[bool]] | None = None,
     ) -> int | None:
         if kind not in {"conversation", "plugin_event"}:
             raise ValueError("invalid_wait_event_kind")
@@ -425,15 +436,27 @@ class WorkWaitRepository:
                 event = await observer.get(ChatEventModel, event_id)
                 if event is None or event.canonical_conversation_id is None:
                     return None
-                active = await observer.scalar(
-                    select(waits.c.id)
-                    .where(
-                        waits.c.conversation_id == event.canonical_conversation_id,
-                        waits.c.status == "active",
+                active = list(
+                    await observer.scalars(
+                        select(waits.c.conditions_json).where(
+                            waits.c.conversation_id == event.canonical_conversation_id,
+                            waits.c.status == "active",
+                        )
                     )
-                    .limit(1)
                 )
-                if active is None:
+                if not active:
+                    return None
+            # Prepare media outside the writer, only for an actual wait source.
+            # The writer still rechecks the original wait and event before publishing.
+            if prepare_source is not None:
+                matching = any(
+                    condition["kind"] == kind
+                    and condition["matched"] is None
+                    and event_id > condition["after_event_id"]
+                    for encoded in active
+                    for condition in json.loads(encoded)
+                )
+                if not matching or not await prepare_source():
                     return None
             async with self.repository.database.immediate_session() as owned:
                 return await self.match_event(
@@ -516,7 +539,14 @@ class WorkWaitRepository:
             )
             if done:
                 delivered_input = (
-                    await self._deliver(session, dict(binding), conditions, "signal", now)
+                    await self._deliver(
+                        session,
+                        dict(binding),
+                        conditions,
+                        "signal",
+                        now,
+                        source_event_id=event.id if kind == "conversation" else None,
+                    )
                     or delivered_input
                 )
                 continue
@@ -527,11 +557,7 @@ class WorkWaitRepository:
             )
         if delivered_input is not None and on_delivery is not None:
             await on_delivery(session, delivered_input)
-        return (
-            delivered_input
-            if delivered_input is not None
-            else (0 if matched_any and kind == "plugin_event" else None)
-        )
+        return delivered_input if delivered_input is not None else (0 if matched_any else None)
 
     async def match_user_reply(self, event_id: int) -> int | None:
         """A reply to the Work's own question can resume waiting_user."""
@@ -786,9 +812,7 @@ class WorkWaitRepository:
             while len(candidates) < 128:
                 query = self._due_query().order_by(waits.c.created, waits.c.id).limit(128)
                 if cursor is not None:
-                    query = query.where(
-                        tuple_(waits.c.created, waits.c.id) > cursor
-                    )
+                    query = query.where(tuple_(waits.c.created, waits.c.id) > cursor)
                 rows = (await discovery.execute(query)).mappings().all()
                 if not rows:
                     break

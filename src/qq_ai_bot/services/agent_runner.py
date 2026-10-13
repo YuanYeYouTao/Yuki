@@ -1144,11 +1144,15 @@ class AgentRunner:
                 reused_by_id[call.id] = cached.display
                 reused_evidence[call.id] = cached.evidence
                 continue
-            representative = None if side_effecting else first_call_by_signature.get(signature)
+            representative = (
+                first_call_by_signature.get(signature)
+                if not side_effecting and call.function.name in cacheable_names
+                else None
+            )
             if representative is not None:
                 aliases[call.id] = representative.id
                 continue
-            if not side_effecting:
+            if not side_effecting and call.function.name in cacheable_names:
                 first_call_by_signature[signature] = call
             unique_calls.append(call)
 

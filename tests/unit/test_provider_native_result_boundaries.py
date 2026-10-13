@@ -21,7 +21,6 @@ from tests.support.work_compaction_capacity_helpers import _runtime
 from tests.support.work_session import WorkSession
 from tests.unit.test_runtime_recovery import setup
 
-from qq_ai_bot.agent_core import Continue
 from qq_ai_bot.automation.models import RunStatus
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import (
@@ -101,12 +100,25 @@ async def test_ordinary_truncation_retains_native_declarations_before_settlement
         (NativeToolDefinition(NativeToolType.WEB_SEARCH),) if native else (),
         compacting=False,
     )
-    if native:
-        with pytest.raises(LLMIncompleteResponseError):
-            await execution.settle_truncated(0, response, ())
-    else:
-        assert isinstance(await execution.settle_truncated(0, response, ()), Continue)
+    with pytest.raises(LLMIncompleteResponseError):
+        await execution.settle_truncated(0, response, ())
     assert provider.requests == []
+
+
+async def test_text_only_truncation_spends_no_correction_request(database, tmp_path):
+    provider = FakeLLMProvider(
+        lambda request: ChatResponse(
+            "paid partial answer",
+            0,
+            status=ModelResponseStatus.INCOMPLETE,
+            incomplete_reason="max_output_tokens",
+        )
+    )
+    initial = (ChatMessage("system", "fixed contract"), ChatMessage("user", "answer"))
+    runner, runtime = await _runtime(database, None, initial, provider)
+    with pytest.raises(LLMIncompleteResponseError):
+        await runner.run(initial, replace(runtime, max_model_requests=2), None)
+    assert len(provider.requests) == 1
 
 
 @pytest.mark.parametrize("segment_requests", [1, 2])

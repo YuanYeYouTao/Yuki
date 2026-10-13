@@ -1,0 +1,19 @@
+{
+  "ruff": "passed",
+  "mypy_source_files": 632,
+  "initial_full": {
+    "passed": 1613,
+    "failed": 4,
+    "skipped": 63
+  },
+  "fixed_instruction_cases_passed": 3,
+  "native_and_forward_passed": 125,
+  "forward_final_passed": 23,
+  "api_requests": 3,
+  "base_commit": "c14623c521dab39af702159f0f6460ad87e45730",
+  "known_remaining_failure": "Linux /proc supervisor on macOS",
+  "yuki_committed": false,
+  "yuki_pushed": false,
+  "deployed": false,
+  "recorded_phase": "local_verification_before_pr"
+}

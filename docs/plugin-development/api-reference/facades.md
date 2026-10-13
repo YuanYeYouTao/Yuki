@@ -117,7 +117,7 @@ handle/SHA/expiry。完全相同的重试返回原 receipt；任一字段不同�
 
 ```python
 automation.list_current_owner() -> tuple[Mapping, ...]
-automation.create_task(task: Mapping[str, JsonValue]) -> PluginResult
+automation.create_task(task: Mapping[str, JsonValue], *, request_id: str) -> PluginResult
 automation.update_task(task_id, task: Mapping[str, JsonValue]) -> PluginResult
 automation.pause(task_id) -> PluginResult
 automation.resume(task_id) -> PluginResult
@@ -163,3 +163,5 @@ reason及原统计，同步与异步不因等待时间不同丢字段。普通Pl
 需要补充资料时调用
 `ctx.agent.resume(work_id, text, request_id="稳定的调用标识")`，在原历史后追加并交给 Host 续跑。
 同一 request_id 重放复用原输入，不同内容明确冲突；已归档、取消或完成的工作不会另建新任务。
+
+定時任務 create_task 的 request_id 標識本次插件操作，同一操作重試使用原 ID；不同任務使用不同 ID。Host 與真實插件、來源及原調用共同綁定，改參數重用同 ID 返回 creation key conflict。

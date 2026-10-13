@@ -135,7 +135,30 @@ async def _event(
 
 @pytest.mark.asyncio
 async def test_rebuild_requires_review_then_commits_one_receipt(database: Database) -> None:
+    from types import SimpleNamespace
+
+    from qq_ai_bot.memory.embedding.jobs import MemoryEmbeddingJobRepository
+    from qq_ai_bot.memory.embedding.models import EmbeddingProviderProfile
+    from qq_ai_bot.memory.embedding.repository import MemoryEmbeddingRepository
+    from qq_ai_bot.memory.embedding.text import EmbeddingDocumentBuilder
+    from qq_ai_bot.persistence.models import MemoryEmbeddingJobModel
+
     settings, ledger, facts, provider, service = await _service(database)
+    profile = await MemoryEmbeddingRepository(database).ensure_profile(
+        EmbeddingProviderProfile(
+            provider_id="fake",
+            model_id="test",
+            dimensions=2,
+            document_template_version=1,
+            endpoint_identity="https://example.invalid/embedding",
+        )
+    )
+    jobs = MemoryEmbeddingJobRepository(
+        database,
+        profile=profile,
+        documents=EmbeddingDocumentBuilder(template_version=1, max_characters=4000),
+    )
+    facts.set_embedding_scheduler(SimpleNamespace(schedule=jobs.enqueue_fact))
     await _event(ledger, message_id="history")
     selection = MemoryRebuildSelection(
         all_events=True,
@@ -167,6 +190,8 @@ async def test_rebuild_requires_review_then_commits_one_receipt(database: Databa
     stored = await facts.list_person("1001")
     assert len(stored) == 1 and stored[0].source_type is MemorySourceType.REBUILD
     async with database.sessions() as session:
+        embedding = (await session.scalars(select(MemoryEmbeddingJobModel))).one()
+        assert embedding.fact_id == stored[0].id and embedding.status == "pending"
         receipt = await session.scalar(select(MemoryJobModel))
         assert receipt is not None
         assert receipt.status == "done"

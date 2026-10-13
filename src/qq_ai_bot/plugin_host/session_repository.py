@@ -304,7 +304,7 @@ class PluginAgentSessionRepository:
         session_id: str,
         limit: int = 100,
     ) -> tuple[PluginAgentMessageRecord, ...]:
-        bounded = max(1, min(limit, 10_000))
+        bounded = max(1, limit)
         async with self._database.sessions() as session:
             parent = await session.scalar(
                 select(PluginAgentSessionModel).where(

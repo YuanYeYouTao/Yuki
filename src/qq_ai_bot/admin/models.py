@@ -198,6 +198,8 @@ class ConversationRuntimeConfig:
     autonomous_presence_window_seconds: int
     interrupt_autonomous_on_new_message: bool
     semantic_participation_enabled: bool = False
+    auto_reply_enabled: bool = True
+    proactive_wakeup_enabled: bool = True
 
 
 @dataclass(frozen=True, slots=True)

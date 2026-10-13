@@ -2,7 +2,7 @@
 
 Only a trusted host calls this repository after resolving source revisions, semantic
 support and scene permissions. It does not interpret text or grant SELF tool authority.
-Short transactions only read keyed host records and persist admission/feedback; no
+Short transactions only read keyed host records and persist admission/feedback; no external
 callbacks, network, history scans, model calls or Work execution run under the write lock.
 """
 
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -208,6 +208,7 @@ class AutonomyRepository:
         source_guard: tuple[InitiativeSource, ...] = (),
         trigger_kind: Literal["source", "intrinsic"] = "source",
         thread_key: str | None = None,
+        admission_allowed: Callable[[AsyncSession], Awaitable[bool]] | None = None,
     ) -> AdmissionResult:
         """Persist a host-validated opportunity, not permission to invoke an Agent.
 
@@ -284,6 +285,7 @@ class AutonomyRepository:
                 or conversation.space_id != space_id
                 or space is None
                 or not space.enabled
+                or not space.autonomous_enabled
                 or presence is None
                 or not presence.enabled
             ):
@@ -348,6 +350,8 @@ class AutonomyRepository:
                             or memory_revision(memory_row) != ref.revision
                         ):
                             return AdmissionResult("source_changed")
+            if admission_allowed is not None and not await admission_allowed(session):
+                return AdmissionResult("disabled")
             row = InitiativeRunModel(
                 id=requested.run_id,
                 proposal_id=proposal_id,

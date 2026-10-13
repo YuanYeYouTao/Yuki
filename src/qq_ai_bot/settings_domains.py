@@ -120,6 +120,8 @@ class ConversationSettings(DomainSettings):
     agent_max_model_requests: int = Field(gt=0)
     agent_tool_result_max_characters: int = Field(gt=0)
     reply_hard_max_messages: int = Field(gt=0)
+    conversation_auto_reply_enabled: bool = True
+    conversation_proactive_wakeup_enabled: bool = True
     conversation_autonomous_enabled: bool
     conversation_autonomous_debounce_seconds: float = Field(ge=0)
     conversation_autonomous_admission_threshold: int = Field(ge=0)

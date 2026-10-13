@@ -203,7 +203,7 @@ class MemoryProvenanceHygiene:
                 result = await session.execute(
                     text("""
                     UPDATE memory_facts SET status='invalidated', conflict_state='clear',
-                      invalidated_reason='administrator_invalidated', updated_at=:now
+                      invalidated_reason='invalid_provenance', updated_at=:now
                     WHERE id=:fact_id AND updated_at=:old_time AND status=:from_status
                       AND conflict_state=:from_conflict AND source_type IN ('automatic','rebuild')
                 """),

@@ -36,14 +36,12 @@ class WorkspaceStore:
         self,
         root: Path,
         *,
-        ttl: int = 0,
         capacity: int = 512 * 1024 * 1024,
         max_file: int = 200 * 1024 * 1024,
         max_objects: int = 1000,
     ) -> None:
         self.root = root.absolute()
-        self.ttl, self.capacity, self.max_file, self.max_objects = (
-            ttl,
+        self.capacity, self.max_file, self.max_objects = (
             capacity,
             max_file,
             max_objects,
@@ -135,9 +133,8 @@ class WorkspaceStore:
         }
 
     def _prune_metadata(self, db: sqlite3.Connection) -> int:
-        if self.ttl == 0:
-            # Existing, still-present files become persistent on first activation.
-            db.execute("UPDATE artifacts SET expires_at=253402300799 WHERE expires_at<253402300799")
+        # Existing, still-present legacy files become persistent on first activation.
+        db.execute("UPDATE artifacts SET expires_at=253402300799 WHERE expires_at<253402300799")
         count = db.execute("DELETE FROM artifacts WHERE expires_at<=?", (time.time(),)).rowcount
         db.execute("DELETE FROM artifact_snapshots WHERE id NOT IN (SELECT id FROM artifacts)")
         return count
@@ -306,7 +303,7 @@ class WorkspaceStore:
                             total,
                             now,
                             now,
-                            now + self.ttl if self.ttl else 253402300799,
+                            253402300799,
                         ),
                     )
                     db.execute(

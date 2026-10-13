@@ -964,6 +964,8 @@ class AgentToolService:
                                 ),
                                 detail=(
                                     "读取账号不明确；从 presences 选择 presence_id，勿换号试读"
+                                    if social_result.get("error") == "presence_ambiguous"
+                                    else "网关读取失败，保留已取得的分组状态"
                                     if name == "read_conversation_history"
                                     else "文件已发送成功，附带文字未确认发送；不要重发文件"
                                     if social_result.get("error") == "file_sent_caption_unconfirmed"
@@ -983,7 +985,13 @@ class AgentToolService:
                                 "该回执不属于当前来源会话，或没有可核验的发送账号"
                             ),
                             "history_anchor_unavailable": (
-                                "无法从回执确定原始会话；请明确指定目标、Binding 和 Presence"
+                                "原事件或定位不可用，使用当前会话的真实 event_id 或原回执"
+                            ),
+                            "history_source_changed": (
+                                "来源授权、代次或隐私状态已变化，未发布旧读取正文"
+                            ),
+                            "invalid_history_event_id": (
+                                "event_id 须是当前会话的正整数内部事件 ID"
                             ),
                             "history_presence_unavailable": "原账号不可用，未换号读取",
                             "history_provider_failed": "网关读取失败，不表示没有消息",

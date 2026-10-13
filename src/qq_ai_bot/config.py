@@ -290,6 +290,8 @@ class Settings(BaseSettings):
     tooling_result_artifact_enabled: bool = True
     tooling_result_artifact_retention_seconds: int = 86400
 
+    conversation_auto_reply_enabled: bool = True
+    conversation_proactive_wakeup_enabled: bool = True
     conversation_autonomous_enabled: bool = True
     conversation_semantic_participation_enabled: bool = False
     semantic_participation_api_key: SecretStr = Field(default=SecretStr(""), repr=False)

@@ -165,10 +165,30 @@ class RuntimeConfigRepository:
         *,
         keys: tuple[str, ...] | None = None,
         session: AsyncSession | None = None,
+        scope: MemoryConfigScope | None = None,
     ) -> tuple[RuntimeConfigOverrideRecord, ...]:
         statement = select(RuntimeConfigOverrideModel)
-        if keys:
+        if keys is not None:
             statement = statement.where(RuntimeConfigOverrideModel.config_key.in_(keys))
+        if scope is not None:
+            conditions = [RuntimeConfigOverrideModel.scope_type == ConfigScopeType.GLOBAL.value]
+            for owner_id, kind, column in (
+                (
+                    scope.person_id,
+                    ConfigScopeType.USER,
+                    RuntimeConfigOverrideModel.canonical_person_id,
+                ),
+                (
+                    scope.space_id,
+                    ConfigScopeType.GROUP,
+                    RuntimeConfigOverrideModel.canonical_space_id,
+                ),
+            ):
+                if owner_id is not None:
+                    conditions.append(
+                        (RuntimeConfigOverrideModel.scope_type == kind.value) & (column == owner_id)
+                    )
+            statement = statement.where(or_(*conditions))
         async with optional_session(self._database, session, write=False) as active:
             rows = (await active.scalars(statement)).all()
             return tuple(_record(row) for row in rows)
@@ -586,7 +606,10 @@ class RuntimeConfigService:
     ) -> tuple[ConfigInspection, ...]:
         """Inspect canonical owners without transport identity lookup or writes."""
         scope = scope if scope is not None else MemoryConfigScope()
-        records = await self._repository.list_all(session=session)
+        specs = tuple(self.registry.get(key) for key in keys)
+        records = await self._repository.list_all(
+            keys=tuple(spec.key for spec in specs), scope=scope, session=session
+        )
         async with optional_session(self._database, session, write=False) as active:
             for owner_id, model in (
                 (scope.person_id, CanonicalPersonModel),
@@ -595,8 +618,7 @@ class RuntimeConfigService:
                 if owner_id is not None and await active.get(model, owner_id) is None:
                     raise CanonicalIdentityError("canonical_owner_missing")
         inspections: list[ConfigInspection] = []
-        for key in keys:
-            spec = self.registry.get(key)
+        for spec in specs:
             if spec.sensitive or spec.apply_mode is ConfigApplyMode.SECRET:
                 protected = EffectiveConfigValue(
                     key=spec.key,
@@ -631,7 +653,7 @@ class RuntimeConfigService:
                     [
                         row
                         for row in records
-                        if row.config_key == key and self._valid_stored_record(row)
+                        if row.config_key == spec.key and self._valid_stored_record(row)
                     ],
                     scope=saved.scope_type,
                     person_id=scope.person_id,
@@ -1509,6 +1531,8 @@ class RuntimeConfigService:
                 analysis_version=str(value("emoji.analysis_version")),
             ),
             conversation=ConversationRuntimeConfig(
+                auto_reply_enabled=bool(value("conversation.auto_reply_enabled")),
+                proactive_wakeup_enabled=bool(value("conversation.proactive_wakeup_enabled")),
                 autonomous_enabled=bool(value("conversation.autonomous_enabled")),
                 semantic_participation_enabled=bool(
                     value("conversation.semantic_participation_enabled")

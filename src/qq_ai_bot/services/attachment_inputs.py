@@ -71,6 +71,12 @@ class AttachmentInputService:
         runtime: VisionRuntimeConfig,
         gateway: OneBotMediaGateway | None,
     ) -> NativeInput:
+        kinds = {AttachmentKind.IMAGE, AttachmentKind.VIDEO, AttachmentKind.FILE}
+        selected = tuple(
+            a for a in (*message.attachments, *message.reply_attachments) if a.kind in kinds
+        )
+        if not selected:
+            return NativeInput()
         if self._pending >= self._pending_limit:
             raise VisionProcessingError("queue_full", "图片处理队列已满")
         if not await self._limiter.allow(
@@ -87,22 +93,6 @@ class AttachmentInputService:
                 documents: list[str] = []
                 text_remaining = 20_000
                 size = 0
-                kinds = {
-                    AttachmentKind.IMAGE,
-                    AttachmentKind.VIDEO,
-                    AttachmentKind.FILE,
-                    AttachmentKind.FORWARD,
-                }
-                current = tuple(a for a in message.attachments if a.kind in kinds)
-                replied = tuple(a for a in message.reply_attachments if a.kind in kinds)
-                selected = current + replied
-                if any(a.kind is AttachmentKind.FORWARD for a in selected):
-                    from qq_ai_bot.services.forwarded_inputs import expand_forwarded
-
-                    selected, forward_text = await expand_forwarded(selected, gateway)
-                    if forward_text:
-                        documents.append(forward_text)
-                        text_remaining -= len(forward_text)
 
                 async def consume(attachment: MessageAttachment, index: int) -> None:
                     nonlocal text_remaining, size

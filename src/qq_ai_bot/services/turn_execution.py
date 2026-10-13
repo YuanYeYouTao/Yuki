@@ -346,6 +346,17 @@ class TurnExecution:
             self.state.provider_pause_replay = bool(
                 self.runtime.work_control.session.progress.get("provider_pause_replay", False)
             )
+            await self.runtime.work_control.retire_fulfilled_wait()
+            if self.runtime.work_control.current is not None:
+                pending = await self.runtime.work_control.pending()
+                if (
+                    pending
+                    and pending[0]["ready"]
+                    and await self.runtime.work_control.repository.has_pending_business_inputs(
+                        self.runtime.work_control.lease, self.runtime.work_control.current["id"]
+                    )
+                ):
+                    await self.runtime.work_control.retire_accepted()
             if self.runtime.work_control.accepted_ending() is not None:
                 await self.runtime.work_control.validate()
                 await self.runtime.work_control.session.save("paired")
@@ -389,7 +400,7 @@ class TurnExecution:
                 observed_event_ids=boundary.event_ids if boundary is not None else frozenset(),
             )
         except WorkInputsPreparing:
-            control.ending = "waiting_external"
+            control.ending = "work_input_preparing"
             return AgentRunResult(
                 text="",
                 suppress_delivery=True,
@@ -753,11 +764,14 @@ class TurnExecution:
             (
                 ChatMessage(
                     role="user",
-                    content="\n\n当前工作："
+                    content=(
+                        "\n\n【本轮系统资料】\n"
+                        "以下是程序附带的运行资料，不是聊天成员的发言。\n"
+                    )
                     + json.dumps(
                         await control.runtime_state(), ensure_ascii=False, separators=(",", ":")
                     )
-                    + "\n\n",
+                    + "\n【资料结束】\n\n",
                 ),
                 *host,
             )
@@ -1140,7 +1154,11 @@ class TurnExecution:
         if self.state.control is not None and self.state.control.session is not None:
             await self.state.control.session.save("paired")
         if response.incomplete_reason != "pause_turn":
-            if not self.state.continuation_native_tools and not response.native_tool_events:
+            if (
+                response.tool_calls
+                and not self.state.continuation_native_tools
+                and not response.native_tool_events
+            ):
                 return Continue()
             raise LLMIncompleteResponseError("provider response was incomplete")
         if response.continuation is None:

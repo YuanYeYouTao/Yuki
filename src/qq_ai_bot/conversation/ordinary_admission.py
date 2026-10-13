@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from uuid import uuid4
 
@@ -247,6 +248,53 @@ class OrdinaryAdmissionRepository:
             basis_json,
         )
 
+    def publisher(
+        self, admission: PreparedOrdinaryAdmission
+    ) -> Callable[[AsyncSession, int], Awaitable[None]]:
+        async def publish(session: AsyncSession, input_id: int) -> None:
+            from qq_ai_bot.conversation.ordinary_admission_db_models import (
+                OrdinaryTurnAdmissionModel,
+            )
+            from qq_ai_bot.runtime.work_repository import WorkConflict
+            from qq_ai_bot.runtime.work_schema_v1 import inputs
+
+            existing = await session.get(OrdinaryTurnAdmissionModel, admission.event.id)
+            source = (
+                await session.execute(
+                    select(
+                        inputs.c.work_id,
+                        inputs.c.conversation_id,
+                        inputs.c.generation,
+                        inputs.c.event_id,
+                    ).where(inputs.c.id == input_id)
+                )
+            ).first()
+            if (
+                source is None
+                or source.work_id is None
+                or source.conversation_id != admission.admission.conversation_id
+                or source.generation != admission.admission.generation
+                or source.event_id != admission.event.id
+            ):
+                raise WorkConflict("ordinary_input_source_mismatch")
+            if (
+                existing is not None
+                and existing.activation_id == admission.admission.activation_id
+                and existing.route == "work"
+                and existing.input_id == input_id
+                and existing.work_id == source.work_id
+            ):
+                return
+            if not await self.commit(
+                admission,
+                session=session,
+                work_id=source.work_id,
+                input_id=input_id,
+            ):
+                raise OrdinaryAdmissionDuplicate("ordinary_already_admitted")
+
+        return publish
+
     async def commit(
         self,
         prepared: PreparedOrdinaryAdmission,
@@ -254,13 +302,18 @@ class OrdinaryAdmissionRepository:
         session: AsyncSession | None = None,
         work_id: str | None = None,
         input_id: int | None = None,
+        admission_allowed: Callable[[AsyncSession], Awaitable[bool]] | None = None,
     ) -> bool:
         if session is None:
             if await self.get(prepared.event.id) is not None:
                 return False
             async with self.database.immediate_session() as owned:
                 return await self.commit(
-                    prepared, session=owned, work_id=work_id, input_id=input_id
+                    prepared,
+                    session=owned,
+                    work_id=work_id,
+                    input_id=input_id,
+                    admission_allowed=admission_allowed,
                 )
         a, e = prepared.admission, prepared.event
         if await session.get(OrdinaryTurnAdmissionModel, e.id) is not None:
@@ -293,6 +346,8 @@ class OrdinaryAdmissionRepository:
             or not await _identity_allowed(session, current, conversation)
         ):
             raise OrdinaryAdmissionConflict("ordinary_source_changed")
+        if admission_allowed is not None and not await admission_allowed(session):
+            return False
         binding = a.binding
         result = await session.execute(
             insert(OrdinaryTurnAdmissionModel)

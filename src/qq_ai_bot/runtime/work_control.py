@@ -255,6 +255,29 @@ class WorkControl:
         )
         self.ending = ACCEPTED_ENDINGS[action]
 
+    async def retire_fulfilled_wait(self) -> bool:
+        accepted = self.accepted
+        if accepted is None or accepted.get("action") != "wait":
+            return False
+        from sqlalchemy import select
+
+        from qq_ai_bot.runtime.work_wait_schema import waits
+
+        assert self.current is not None
+        async with self.repository.database.sessions() as reader:
+            status = await reader.scalar(
+                select(waits.c.status).where(
+                    waits.c.id == accepted.get("wait_id"),
+                    waits.c.work_id == self.current["id"],
+                    waits.c.conversation_id == self.lease.conversation_id,
+                    waits.c.generation == self.lease.generation,
+                )
+            )
+        if status in {"delivered", "expired"}:
+            await self.retire_accepted()
+            return True
+        return False
+
     async def retire_accepted(self) -> None:
         """Legal new input or an explicit revision withdraws the accepted decision."""
         self.ending = None
@@ -424,7 +447,16 @@ class WorkControl:
                             if scope and scope.generation == self.lease.generation
                             else []
                         )
-                    bodies = {event.id: event.content for event in events}
+                    from qq_ai_bot.domain.audio import transcript_context
+
+                    bodies = {
+                        event.id: (
+                            f"{event.content}\n{transcript_context(event.audio_transcript)}"
+                            if event.audio_transcript
+                            else event.content
+                        )
+                        for event in events
+                    }
                     signal["events"] = [
                         {"event_id": identity, "text": bodies.get(identity, "原事件正文不可读")}
                         for identity in ids
@@ -435,16 +467,26 @@ class WorkControl:
                             identity for identity in ids if identity in bodies
                         )
 
-            already_visible = item["event_id"] is not None and (
-                item["event_id"] in observed_event_ids
-                or (self.session is not None and item["event_id"] in self.session.public_event_ids)
+            # A signal carries its own wait/conditions; a shown anchor is no
+            # reason to drop it. Only an ordinary message is deduplicated.
+            signal_like = item["kind"] == "completion" or bool(payload.get("signal"))
+            already_visible = (
+                not signal_like
+                and item["event_id"] is not None
+                and (
+                    item["event_id"] in observed_event_ids
+                    or (
+                        self.session is not None
+                        and item["event_id"] in self.session.public_event_ids
+                    )
+                )
             )
             content = (
-                f"[Work input_id={item['id']} event_id={item['event_id']} 已在当前聊天展示；"
+                f"[Work 信号 event_id={item['event_id']}；续原任务]\n{text}"
+                if signal_like
+                else f"[Work input_id={item['id']} event_id={item['event_id']} 已在当前聊天展示；"
                 "关联原输入并按需回答，不重复原文]"
                 if already_visible
-                else f"[Work 信号 event_id={item['event_id']}；续原任务]\n{text}"
-                if item["kind"] == "completion" or payload.get("signal")
                 else f"[新增输入 event_id={item['event_id']}；保持原任务，按内容补充或回答]\n{text}"
             )
             if size + len(content.encode()) > 8192 and selected:

@@ -796,7 +796,7 @@ class MemoryRebuildService:
                     return result
 
                 try:
-                    await self.processor._facts.repository.apply_evidence_write(commit)
+                    result = await self.processor._facts.repository.apply_evidence_write(commit)
                 except Exception:
                     # The proposal is atomic with the fact. Read it before
                     # classifying failure; an unknown outcome does not grant replay authority.
@@ -811,6 +811,11 @@ class MemoryRebuildService:
                             or commit_receipt.actual_reason_code is None
                         ):
                             raise RuntimeError("committed_proposal_receipt_incomplete") from None
+                        result = MemoryClaimProcessResult(
+                            commit_receipt.actual_fact_id,
+                            MemoryResolutionAction(commit_receipt.actual_action),
+                            commit_receipt.actual_reason_code,
+                        )
                     else:
                         raise
             except asyncio.CancelledError:
@@ -822,6 +827,8 @@ class MemoryRebuildService:
                     retry_initial_seconds=self.settings.memory_rebuild_retry_initial_seconds,
                 )
                 continue
+            if result.fact_id is not None:
+                await self.processor._facts.schedule_embedding(result.fact_id)
             processed += 1
         await self.repository.complete_item_receipts(
             run.public_id,

@@ -205,6 +205,7 @@ class AutomationService:
         actor: ToolActor,
         conversation_key: str,
         max_runs: int | None = None,
+        creation_source_key: str | None = None,
     ) -> AutomationRecord:
         if max_runs is not None and (
             isinstance(max_runs, bool) or not isinstance(max_runs, int) or max_runs <= 0
@@ -222,9 +223,8 @@ class AutomationService:
             timezone=self._time.default_timezone,
             current_group_id=provenance.current_group_id,
         )
-        existing = await self._repository.get_by_creation_key(
-            creator_person_id, _creation_key(actor.source_key)
-        )
+        creation_identity = _creation_key(creation_source_key or actor.source_key)
+        existing = await self._repository.get_by_creation_key(creator_person_id, creation_identity)
         if existing is not None:
             if (
                 await self._repository.initial_script_hash(existing.id) != canonical_task_hash(task)
@@ -273,7 +273,7 @@ class AutomationService:
             row = await self._commit_task(
                 task,
                 authority,
-                creation_source_key=_creation_key(actor.source_key),
+                creation_source_key=creation_identity,
                 creator_person_id=creator_person_id,
                 max_runs=max_runs,
                 now=now,

@@ -96,6 +96,7 @@ class MemoryStateAction(StrEnum):
 
 
 class MemoryInvalidationReason(StrEnum):
+    INVALID_PROVENANCE = "invalid_provenance"
     USER_RETRACTED = "user_retracted"
     ADMINISTRATOR_INVALIDATED = "administrator_invalidated"
     EXPIRED = "expired"

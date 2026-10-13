@@ -76,7 +76,7 @@ class PluginAgentSessionService:
         )
         self._bot_user_id = bot_user_id
         self._bot_display_name = bot_display_name
-        self._max_history_messages = max(1, min(max_history_messages, 500))
+        self._max_history_messages = max_history_messages
         self._ephemeral_session_ids: set[str] = set()
 
     async def create(
@@ -130,8 +130,8 @@ class PluginAgentSessionService:
     ) -> PluginSessionRunResult:
         self._require_session_permission(authority)
         normalized_input = user_input.strip()
-        if not normalized_input or len(normalized_input) > 12_000:
-            raise ValueError("user_input must contain 1 to 12000 characters")
+        if not normalized_input:
+            raise ValueError("user_input must contain non-whitespace text")
         conversation_key = self.conversation_key(authority.plugin_id, session_id)
         async with self._concurrency.conversation(conversation_key):
             session = await self._get_authorized(authority, session_id)

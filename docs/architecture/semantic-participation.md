@@ -35,7 +35,12 @@ revision。有效 owner 只有 off、legacy、semantic：总开关关闭始终 o
 尚未建立互动时，单纯名字提及仍是优先观察线索，不等同于 `@`。
 Jev 判断为邀请/续聊且回应楼层留给 Yuki 时，即使无法归入已有讨论，
 Controller 可采用 Host 提供并核验的该作者新讨论单元。真人邀请和已有互动的续聊进入
-原 `USER_MESSAGE` 主入口；普通续接不创建自主 Work，也不逐条等待 Jev 评分。
+原 `USER_MESSAGE` 主入口；核验邀请即时尝试，普通续接与开放群聊的新机会复用
+原 worker 的去抖窗口，窗口为零时直接尝试。普通续接不创建自主 Work，也不逐条等待 Jev 评分。
+尚未开始的机会合并到较新来源；已开始的工作不会仅因后到消息被淘汰，后到输入沿原入口处理。
+原 Work/wait 的获准输入先于新机会分类尝试，逐条发布，不经过此去抖窗口；
+部分匹配保持原 wait，不开第二个普通 Main。新 ordinary writer 核当时的 require_mention，
+原输入 publisher 不因此增加 veto。
 非请求式加入、回忆、联系和无来源参与按[连续概率模型](autonomous-participation-model.md)
 决定时机；Host 继续核验来源、真实停聊边界、代际、权限和发送链。
 活跃/非活跃观察去抖、调用间隔、最长等待分别为 2/8/15 秒和 3/12/20 秒；
@@ -167,13 +172,31 @@ Jev 密钥不得写入公开配置、提示词或验收记录。
 
 | 配置 | 默认值 / 含义 |
 | --- | --- |
-| `conversation.autonomous_enabled` / `CONVERSATION_AUTONOMOUS_ENABLED` | 保留原自主总开关；还要满足群 Space 的 enabled/autonomous_enabled。关闭后不能被 fallback 反启 |
+| `conversation.auto_reply_enabled` / `CONVERSATION_AUTO_REPLY_ENABLED` | 默认 true；只控制新 group_open、语义邀请/续聊及 conversation SELF/legacy 机会 |
+| `conversation.proactive_wakeup_enabled` / `CONVERSATION_PROACTIVE_WAKEUP_ENABLED` | 默认 true；只控制新 recall/contact/intrinsic SELF 机会 |
+| `conversation.autonomous_enabled` / `CONVERSATION_AUTONOMOUS_ENABLED` | 保留 SELF 总开关及群 Space 的 enabled/autonomous_enabled；普通真人接话独立 |
 | `conversation.semantic_participation_enabled` / `CONVERSATION_SEMANTIC_PARTICIPATION_ENABLED` | 默认 false；开启使用 semantic，显式关闭使用 legacy；观测故障不自动回退 |
 | `SEMANTIC_PARTICIPATION_API_KEY` | 默认空；Jev 观测凭据；未配置时不产生新语义观测，不改变 proposer 归属 |
 | `SEMANTIC_PARTICIPATION_MODEL` | 默认 `jev-1.13.0` |
 | `SEMANTIC_PARTICIPATION_STATE_PATH` | 默认 `data/participation.sqlite3`，控制器快照；不代替 Host 的 run/Work/回执数据库 |
 
-前两个配置支持现有全局/群作用域管理接口。当前没有名为 `shadow` 的运行配置开关；
+四个 conversation 配置支持现有全局/群作用域管理接口。两个产品开关都是 HOT，
+unset 沿 group→global→Settings 继承。设置页区分本地 row 与继承值：新建群覆盖用版本 0，
+修改/删除已有覆盖用该 row.version；没有本地 row 时不可 unset，false 保留其实际值。
+canonical inspect_configs 沿传入 session 定键读取 global 与指定 owner，空 keys 不扫描全部配置，
+停用 owner 的控制元数据仍可读取，存在性与真实执行授权分别核验。
+
+两个产品开关不改 binding epoch，不取消已接纳 Work，不限制原 wait/input/repair、明确 @/引用/
+前缀/命令、定时工作或既有工具。新 ordinary 与 SELF 的接纳 writer 读取当前产品键；
+prior/payload 对账先于新接纳 predicate。SELF 仍受原 master/semantic/Space/Presence 约束。
+Host 在原推进边界刷新 scene/runtime，按 auto_reply 允许 conversation，按 proactive_wakeup
+允许 recall/contact 与 intrinsic，先排除候选种类再计算机会率；关 proactive 时不生成新 seed。
+关闭期间继续推进原 last_sample_at，不累计可补采的时间，不删除原反馈或改概率公式。
+尚未接纳的 pending 沿原 discard 返回值及原 proposal/run 查询处理，已接纳身份继续对账。
+
+本分支参与库固定到已发布的 `9e60cb8d59fbab4cacee9af2fbe1ed2932d68c80`；
+上游 [PR #18](https://github.com/YuanYeYouTao/Yuki-Semantic-Participation/pull/18) 尚未合并。来源、正式 pin 与验证见
+[#268 实施记录](../operations/issue-268-implementation-20261013.md)。当前没有名为 `shadow` 的运行配置开关；
 关闭 semantic 表示恢复 legacy，**不等于影子 Jev 仍在后台评分**。影子对照应使用隔离的
 事件重放和观测流程，不提交 proposal、不调用 QQ 发送，不能把它描述成现网已启用模式。
 
@@ -218,3 +241,5 @@ WebUI 的 Jev/Host 时间线沿[执行过程查看合同](execution-trace.md)保
 快照等待写锁不会阻塞普通聊天及健康接口；保存仍等待真实提交结果，不把快照当成可丢弃
 的诊断写入。保存期间取消时先对账实际 revision，再传播取消；缓存加载、淘汰及保存
 串行核验，避免新增 await 后产生重复控制器或用旧 revision 覆盖快照。
+
+控制器按真实会话与 generation 保留，不再以固定 32 个缓存槽拒绝其他会话的机会。旧 generation 在持有者退出后按既有流程保存并清退；并发推进仍使用现有 semaphore。

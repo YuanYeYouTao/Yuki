@@ -55,6 +55,7 @@ async def test_private_session_keeps_long_history_and_complete_sdk_result(
             database=database, settings=make_settings(database.url)
         ),
         repository=repository,
+        max_history_messages=601,
     )
     facade = BoundAgentSessionFacade(
         service=service,
@@ -76,6 +77,15 @@ async def test_private_session_keeps_long_history_and_complete_sdk_result(
             sender_user_id="10001" if role == "user" else None,
             content=content,
         )
+    middle = [f"middle chapter {index}" for index in range(598)]
+    for content in middle:
+        await repository.append_message(
+            plugin_id=plugin_id,
+            session_id=str(session.session_id),
+            role="user",
+            sender_user_id="10001",
+            content=content,
+        )
     request = RunAgentSessionRequest(session_id=session.session_id, user_input="next chapter")
     if input_tokens is not None:
         with pytest.raises(WorkCapacityError, match="model_request_capacity"):
@@ -88,14 +98,16 @@ async def test_private_session_keeps_long_history_and_complete_sdk_result(
         assert [message.content for message in provider.requests[0].messages[1:]] == [
             old_input,
             old_output,
+            *middle,
             "next chapter",
         ]
         stored = await repository.list_messages(
-            plugin_id=plugin_id, session_id=str(session.session_id)
+            plugin_id=plugin_id, session_id=str(session.session_id), limit=700
         )
         assert [message.content for message in stored] == [
             old_input,
             old_output,
+            *middle,
             "next chapter",
             visible_output,
         ]

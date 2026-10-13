@@ -136,7 +136,20 @@ def _message(event):
 
 
 async def _host(database, tmp_path, *, observer=True):
-    policy = SimpleNamespace(autonomous_enabled=True, semantic_participation_enabled=True)
+    policy = SimpleNamespace(
+        autonomous_enabled=True,
+        semantic_participation_enabled=True,
+        auto_reply_enabled=True,
+        proactive_wakeup_enabled=True,
+    )
+    from tests.conftest import make_settings
+
+    from qq_ai_bot.admin.config_service import RuntimeConfigService
+
+    config = RuntimeConfigService(
+        settings=make_settings(database.url, conversation_semantic_participation_enabled=True),
+        database=database,
+    )
     app = SimpleNamespace(
         database=database,
         ledger=EventLedgerRepository(database),
@@ -145,11 +158,12 @@ async def _host(database, tmp_path, *, observer=True):
             semantic_participation_model_config_file=tmp_path / "autonomous-model.json",
         ),
         runtime_config=SimpleNamespace(
+            inspect_configs=config.inspect_configs,
             snapshot=AsyncMock(
                 return_value=SimpleNamespace(
                     conversation_policy=lambda: policy,
                 )
-            )
+            ),
         ),
     )
     host = SemanticParticipationService(app)

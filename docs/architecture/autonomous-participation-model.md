@@ -38,7 +38,7 @@ Yuki Host 固定独立库修订并持有接纳、权限、Work、主 Agent 和�
 ## 决策边界
 
 Jev 确认的明确邀请或直接续答走普通真人消息入口，不计新 SELF Work 密度。已有有效参与
-单元且归属明确的续聊直接交给 Main，不逐轮再问 Jev。直呼 Yuki 只提高语义观察优先级，
+单元且归属明确的续聊进入普通 Main 的原去抖 worker，不逐轮再问 Jev；原 Work 输入及时接回。直呼 Yuki 只提高语义观察优先级，
 不等同 `@`；无法归属旧话题也不能挡住真实邀请。非请求式群聊、回忆、联系和
 无来源机会使用连续机会率。只有自主加入、回忆、联系和无来源机会形成新 SELF proposal；
 一次 proposal 仅表示可启动 SELF 工作，不是发送命令。
@@ -46,6 +46,15 @@ Jev 确认的明确邀请或直接续答走普通真人消息入口，不计新 
 来源有效期、撤回、停止、群授权、唯一 owner、generation、Presence 和活动 Work
 仍由 Host 按事实核验。控制器不产生真人消息、Jev 观测、执行权限或聊天正文。
 Host 不在停机时补采样，不重放历史机会；原已接纳 Work 按原执行 ID 和回执恢复。
+
+## 新机会的产品开关
+
+`auto_reply_enabled` 控制 conversation 候选；`proactive_wakeup_enabled` 控制 recall/contact
+候选及无来源 intrinsic。Host 将实际允许的 CandidateKind 集合传给独立库的 allowed_kinds，
+在原 _eligible_groups/opportunity_scores/advance 中于分组、rate 和取样前筛选。None 表示
+原全部种类，空集仅排除来源候选；intrinsic 仍由独立的 intrinsic_allowed 控制。
+两个开关不切换 proposer，不改变 epoch、公式、原候选与反馈。禁用期间原采样时间继续前进，
+重开不会补抽之前的时间。新 SELF 仍需原 master/scene 授权；明确真人入口及已接纳 Work 独立。
 
 ## 状态与反馈
 

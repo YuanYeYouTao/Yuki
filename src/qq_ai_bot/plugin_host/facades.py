@@ -2056,6 +2056,8 @@ class _AutomationFacade:
     async def create_task(
         self,
         task: Mapping[str, JsonValue],
+        *,
+        request_id: str,
     ) -> PluginResult:
         invocation = self._host._require(
             PluginPermission.AUTOMATION_MANAGE_SELF,
@@ -2063,10 +2065,19 @@ class _AutomationFacade:
         )
         assert invocation is not None
         service = _require_service(self._host._services.automation, "automation")
+        actor = _invocation_actor(invocation)
+        request_id = _bounded_text(request_id, maximum=128, field_name="request_id")
+        identity = (
+            "plugin-task:"
+            + hashlib.sha256(
+                json.dumps([invocation.plugin_id, actor.source_key, request_id]).encode()
+            ).hexdigest()
+        )
         row = await service.create_task(
             dict(task),
-            actor=_invocation_actor(invocation),
+            actor=actor,
             conversation_key=invocation.conversation_key,
+            creation_source_key=identity,
         )
         return PluginResult(data={"automation": _automation_record(row)})
 

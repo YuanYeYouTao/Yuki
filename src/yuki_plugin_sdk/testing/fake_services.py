@@ -397,12 +397,18 @@ class FakeAutomationFacade:
     async def list_current_owner(self) -> tuple[Mapping[str, JsonValue], ...]:
         return tuple(self.tasks)
 
-    async def create_task(self, task: Mapping[str, JsonValue]) -> PluginResult:
+    async def create_task(self, task: Mapping[str, JsonValue], *, request_id: str) -> PluginResult:
+        previous = next((row for row in self.tasks if row["request_id"] == request_id), None)
+        if previous is not None:
+            if previous["task"] != dict(task):
+                raise ValueError("automation_creation_key_conflict")
+            return PluginResult(data={"task_id": previous["id"]})
         task_id = str(uuid4())
         self.tasks.append(
             {
                 "id": task_id,
                 "task": dict(task),
+                "request_id": request_id,
                 "status": "active",
             }
         )
