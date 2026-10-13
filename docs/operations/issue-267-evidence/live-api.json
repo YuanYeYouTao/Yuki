@@ -1,0 +1,36 @@
+{
+  "issue": 267,
+  "model": "deepseek-flash",
+  "endpoint": "https://api.deepseek.com",
+  "source": "real TaskModelExecutor + Main loop; isolated SQLite; synthetic delivery",
+  "requests": [
+    {
+      "seconds": 1.253,
+      "tools_declared": 40,
+      "tool_calls": [
+        "send_message"
+      ],
+      "prompt_tokens": 10345,
+      "completion_tokens": 138,
+      "cached_tokens": 0
+    },
+    {
+      "seconds": 0.492,
+      "tools_declared": 40,
+      "tool_calls": [],
+      "prompt_tokens": 10693,
+      "completion_tokens": 4,
+      "cached_tokens": 10368
+    }
+  ],
+  "ingress_reasons": [
+    "ordinary_deferred",
+    "ordinary_deferred",
+    "ordinary_deferred"
+  ],
+  "admitted_event_ids": [
+    4
+  ],
+  "synthetic_sent_messages": 0,
+  "merged_one_admission": true
+}

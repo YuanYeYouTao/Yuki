@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
+from functools import partial
 from pathlib import Path
 from typing import cast
 
@@ -636,7 +637,9 @@ class ApplicationContainer:
             turn_observations=self.turn_observations,
         )
         self.processor.set_participation(self.semantic_participation)
-        self.semantic_participation.set_promoter(self.processor.promote_committed_event)
+        self.semantic_participation.set_promoter(
+            partial(self.processor.promote_committed_event, reason="semantic_invitation")
+        )
         self._cleanup_stop = asyncio.Event()
         self._cleanup_task: asyncio.Task[None] | None = None
         self._register_lifecycle()

@@ -7,7 +7,7 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from yuki_participation.models import CandidateKind, ScopedEvent, SourceRef
 from yuki_participation.participation import ParticipationUnit
@@ -114,8 +114,11 @@ def invitation_basis(item: _Session, event: ScopedEvent) -> tuple[SourceRef, ...
     return tuple(dict.fromkeys((event.ref, *observation.snapshot.context)))
 
 
+ImplicitReason = Literal["semantic_invitation", "continuation"]
+
+
 async def binding_for_event(
-    service: SemanticParticipationService, event_id: int, *, continuation_only: bool
+    service: SemanticParticipationService, event_id: int
 ) -> OrdinaryParticipationBinding | None:
     async with service._lock, event_scope(service, event_id) as found:
         if found is None:
@@ -136,13 +139,35 @@ async def binding_for_event(
             if all((await service._sources_current(item, basis)).values()):
                 return host_binding(row, item, invited, basis)
             return None
-        if continuation_only:
-            return None
         # A direct real input can establish its own unit. This is Host admission,
         # never an observed semantic interpretation of an unscored focus.
         return host_binding(
             row, item, ParticipationUnit(thread=event.thread, target=event.author), (event.ref,)
         )
+
+
+async def continuation_for_event(
+    service: SemanticParticipationService, event_id: int
+) -> tuple[OrdinaryParticipationBinding, ImplicitReason] | None:
+    """Classify an implicit source: a verified invitation first, then a matched unit."""
+    async with service._lock, event_scope(service, event_id) as found:
+        if found is None:
+            return None
+        row, item, event = found
+        view = item.controller.participation_view(event, time.time())
+        if not view.source_valid:
+            return None
+        invited = invitation_unit(item, event)
+        if invited is not None:
+            basis = invitation_basis(item, event)
+            if all((await service._sources_current(item, basis)).values()):
+                return host_binding(row, item, invited, basis), "semantic_invitation"
+        matched = view.matched_unit
+        if matched is not None:
+            basis = tuple(dict.fromkeys((*matched.binding.basis, event.ref)))
+            if all((await service._sources_current(item, basis)).values()):
+                return host_binding(row, item, matched.unit, basis), "continuation"
+        return None
 
 
 async def on_ordinary_admitted(

@@ -346,6 +346,17 @@ class TurnExecution:
             self.state.provider_pause_replay = bool(
                 self.runtime.work_control.session.progress.get("provider_pause_replay", False)
             )
+            await self.runtime.work_control.retire_fulfilled_wait()
+            if self.runtime.work_control.current is not None:
+                pending = await self.runtime.work_control.pending()
+                if (
+                    pending
+                    and pending[0]["ready"]
+                    and await self.runtime.work_control.repository.has_pending_business_inputs(
+                        self.runtime.work_control.lease, self.runtime.work_control.current["id"]
+                    )
+                ):
+                    await self.runtime.work_control.retire_accepted()
             if self.runtime.work_control.accepted_ending() is not None:
                 await self.runtime.work_control.validate()
                 await self.runtime.work_control.session.save("paired")
@@ -389,7 +400,7 @@ class TurnExecution:
                 observed_event_ids=boundary.event_ids if boundary is not None else frozenset(),
             )
         except WorkInputsPreparing:
-            control.ending = "waiting_external"
+            control.ending = "work_input_preparing"
             return AgentRunResult(
                 text="",
                 suppress_delivery=True,

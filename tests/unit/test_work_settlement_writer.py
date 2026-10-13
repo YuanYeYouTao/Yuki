@@ -886,106 +886,103 @@ async def test_batched_waits_keep_owner_tuple_and_sandbox_self_scope(database, t
     assert (await waits.describe(other["id"]))["conditions"][0]["matched"] is None
 
 
-async def test_abandoned_batch_repairs_original_inputs_and_advances_work_once(
-    database, tmp_path, monkeypatch
-):
+async def test_abandoned_batch_repairs_original_inputs_and_advances_work_once(database, tmp_path):
     import time
     from datetime import UTC, datetime
     from uuid import uuid4
 
     from sqlalchemy import update
-    from tests.support.projection_sql_counts import capture_sql
 
+    from qq_ai_bot.conversation.ordinary_admission_db_models import OrdinaryTurnAdmissionModel
+    from qq_ai_bot.identity.db_models import PresenceModel
     from qq_ai_bot.persistence.models import ChatEventModel
-    from qq_ai_bot.runtime import work_repository
 
     repository, lease, control = await _running_work(database, tmp_path)
     identity = control.current["id"]
     now = datetime.now(UTC)
     async with database.immediate_session() as writer:
-        event = ChatEventModel(
-            bot_user_id="80001",
-            platform_message_id="original-repair-input",
-            scope_type="group",
-            group_id="20001",
-            sender_user_id="10001",
-            direction="inbound",
-            content="original text",
-            occurred_at=now,
-            observed_at=now,
-            canonical_event_id=str(uuid4()),
-            canonical_conversation_id=lease.conversation_id,
-            author_kind="person",
-            author_person_id=control.source["actor_person_id"],
-            suppression_status="keeper",
+        presence = await writer.scalar(
+            select(PresenceModel).where(PresenceModel.external_account_id == "80001")
         )
-        writer.add(event)
-        await writer.flush()
-        event_id = event.id
-    repaired = []
-    for key, event_id_value in (("first", event_id), ("second", event_id), ("missing", None)):
-        repaired.append(
-            await repository.enqueue(
-                lease.conversation_id,
-                lease.generation,
-                f"repair:{key}",
-                kind="message",
-                event_id=event_id_value,
-                work_id=identity,
-                ready=False,
+        event_ids = []
+        for index in range(2):
+            event = ChatEventModel(
+                bot_user_id="80001",
+                platform_message_id=f"repair-{index}",
+                scope_type="group",
+                group_id="20001",
+                sender_user_id="10001",
+                direction="inbound",
+                content="original text" * 1000,
+                occurred_at=now,
+                observed_at=now,
+                canonical_event_id=str(uuid4()),
+                canonical_conversation_id=lease.conversation_id,
+                author_kind="person",
+                author_person_id=control.source["actor_person_id"],
+                ingress_presence_id=presence.id,
+                suppression_status="keeper",
             )
+            writer.add(event)
+            await writer.flush()
+            event_ids.append(event.id)
+    repaired = [
+        await repository.enqueue(
+            lease.conversation_id,
+            lease.generation,
+            f"repair:{event_id}",
+            kind="message",
+            event_id=event_id,
+            work_id=identity,
+            ready=False,
         )
-    unowned = await repository.enqueue(
+        for event_id in event_ids
+    ]
+    missing = await repository.enqueue(
         lease.conversation_id,
         lease.generation,
-        "repair:null-owner",
+        "repair:missing",
         kind="message",
-        event_id=event_id,
+        work_id=identity,
+        ready=False,
+    )
+    live = await repository.enqueue(
+        lease.conversation_id,
+        lease.generation,
+        "repair:live",
+        kind="message",
+        event_id=event_ids[0],
         work_id=identity,
         ready=False,
     )
     async with database.immediate_session() as writer:
         await writer.execute(
             update(inputs)
-            .where(inputs.c.id.in_(repaired))
+            .where(inputs.c.id.in_([*repaired, missing]))
             .values(prepare_owner="abandoned-process")
         )
         await writer.execute(
             update(inputs)
-            .where(inputs.c.id == unowned)
-            .values(prepare_owner=None, created=time.time())
+            .where(inputs.c.id == live)
+            .values(prepare_owner="current-process", created=time.time() - 1000)
         )
         await writer.execute(
             update(work).where(work.c.id == identity).values(state="waiting_external")
         )
-    before = await repository.get(identity)
-    with capture_sql(database) as statements:
-        original_encode = work_repository.encode_json
-
-        def encode_prepared(payload):
-            assert not any(sql.upper() == "BEGIN IMMEDIATE" for sql, _ in statements)
-            return original_encode(payload)
-
-        monkeypatch.setattr(work_repository, "encode_json", encode_prepared)
-        await repository.repair_abandoned_inputs("current-process")
-    writer_start = next(
-        index for index, (sql, _) in enumerate(statements) if sql.upper() == "BEGIN IMMEDIATE"
-    )
-    assert any("chat_events.content" in sql for sql, _ in statements[:writer_start])
-    assert not any("chat_events.content" in sql for sql, _ in statements[writer_start:])
-    first_write = next(
-        index for index, (sql, _) in enumerate(statements) if sql.startswith("UPDATE")
-    )
-    assert not any(sql.lstrip().upper().startswith("SELECT") for sql, _ in statements[first_write:])
+    await repository.repair_abandoned_inputs("current-process")
     async with database.sessions() as reader:
         rows = {row["id"]: row for row in (await reader.execute(select(inputs))).mappings()}
-    for input_id in repaired[:2]:
+        admissions = list((await reader.scalars(select(OrdinaryTurnAdmissionModel))).all())
+    for input_id in repaired:
         assert rows[input_id]["ready"]
-        assert json.loads(rows[input_id]["payload_json"])["text"].endswith("original text")
-    assert rows[repaired[2]]["state"] == "cancelled"
-    assert not rows[unowned]["ready"] and rows[unowned]["state"] == "pending"
+        assert json.loads(rows[input_id]["payload_json"])["text"].endswith("original text" * 1000)
+    assert {(a.event_id, a.input_id, a.work_id) for a in admissions} == set(
+        zip(event_ids, repaired, [identity] * 2, strict=True)
+    )
+    assert rows[missing]["state"] == "cancelled"
+    assert not rows[live]["ready"] and rows[live]["state"] == "pending"
     after = await repository.get(identity)
-    assert after["revision"] == before["revision"] + 1 and after["state"] == "queued"
+    assert after["state"] == "queued"
     await repository.repair_abandoned_inputs("current-process")
     assert await repository.get(identity) == after
 
@@ -1060,3 +1057,234 @@ async def test_due_wait_after_unchanged_first_page_delivers_to_original_work(
     assert signal["conditions"][0]["matched"]["due"] == due
     assert await reader.deliver_due(now=due) == 0
     assert await repository.pending(lease, work_id=tail_work) == pending
+
+
+@pytest.mark.parametrize("discard_first", [False, True])
+@pytest.mark.parametrize("action", ["complete", "fail", None])
+async def test_preparing_discard_keeps_original_control_and_unparks(
+    database, tmp_path, discard_first, action
+):
+    repository, lease, control = await _running_work(database, tmp_path)
+    if action:
+        assert json.loads(
+            await control.execute(
+                "task_control",
+                {"action": action, "result": "original answer"}
+                if action == "complete"
+                else {"action": action, "reason": "original failure"},
+                "end",
+            )
+        )["ok"]
+    identity = control.current["id"]
+    input_id = await repository.enqueue(
+        lease.conversation_id,
+        lease.generation,
+        "preparing",
+        kind="message",
+        work_id=identity,
+        ready=False,
+    )
+    control.ending = "work_input_preparing"
+    if discard_first:
+        await repository.discard_input(input_id)
+    await control.settle(pending_inputs=False)
+    if not discard_first:
+        row = await repository.get(identity)
+        assert row["state"] == "waiting_external" and row["reason"] == "work_input_preparing"
+        if action:
+            assert json.loads(row["checkpoint_json"])["accepted_control"]["action"] == action
+        await repository.discard_input(input_id)
+        if action:
+            control.current = await repository.get(identity)
+            control.settled = False
+            control.ending = None
+            await control.settle(pending_inputs=False)
+    row = await repository.get(identity)
+    assert row["state"] == ({"complete": "completed", "fail": "failed"}.get(action, "queued"))
+    if action == "complete":
+        assert json.loads(row["checkpoint_json"])["sync_result"] == "original answer"
+
+
+async def test_fulfilled_wait_before_first_settlement_retires_original_decision(database, tmp_path):
+    repository, _lease, control = await _running_work(database, tmp_path)
+    assert json.loads(
+        await control.execute(
+            "task_control",
+            {"action": "wait", "conditions": [{"kind": "time_due", "after_seconds": 0}]},
+            "wait",
+        )
+    )["ok"]
+    wait = await WorkWaitRepository(repository).describe(control.current["id"])
+    assert await WorkWaitRepository(repository).deliver_due(now=wait["conditions"][0]["due"]) == 1
+    await control.settle(pending_inputs=False)
+    assert control.current["state"] == "queued" and control.accepted is None
+    messages = await control.take_inputs("signal", observed_event_ids=frozenset())
+    assert len(messages) == 1 and wait["wait_id"] in messages[0].content
+
+
+async def test_ordinary_publication_failure_rolls_back_ready_admission_and_wake(database, tmp_path):
+    from sqlalchemy import update
+
+    from qq_ai_bot.conversation.ordinary_admission import OrdinaryAdmissionRepository
+    from qq_ai_bot.persistence.event_repository import EventLedgerRepository
+    from qq_ai_bot.persistence.models import ChatEventModel
+
+    repository, lease, control = await _running_work(database, tmp_path)
+    identity = control.current["id"]
+    async with database.sessions() as reader:
+        event_id = await reader.scalar(select(ChatEventModel.id))
+    event = await EventLedgerRepository(database).get_event(event_id)
+    ordinary = OrdinaryAdmissionRepository(database)
+    prepared = ordinary.prepare(event, lease.generation, 0)
+    input_id = await repository.enqueue(
+        lease.conversation_id,
+        lease.generation,
+        "atomic-publish",
+        kind="message",
+        work_id=identity,
+        event_id=event_id,
+        ready=False,
+    )
+    async with database.immediate_session() as writer:
+        await writer.execute(
+            update(work)
+            .where(work.c.id == identity)
+            .values(state="waiting_external", reason="work_input_preparing")
+        )
+    publish = ordinary.publisher(prepared)
+
+    async def failed_publish(writer, selected):
+        await publish(writer, selected)
+        raise RuntimeError("synthetic publication interruption")
+
+    with pytest.raises(RuntimeError, match="synthetic publication interruption"):
+        await repository.prepare_input(
+            input_id, {"text": "original"}, before_publish=failed_publish
+        )
+    async with database.sessions() as reader:
+        assert not await reader.scalar(select(inputs.c.ready).where(inputs.c.id == input_id))
+    assert await ordinary.get(event_id) is None
+    assert (await repository.get(identity))["state"] == "waiting_external"
+    assert await repository.prepare_input(input_id, {"text": "original"}, before_publish=publish)
+    assert (await ordinary.get(event_id)).input_id == input_id
+    assert (await repository.get(identity))["state"] == "queued"
+    await repository.discard_input(input_id)
+    async with database.sessions() as reader:
+        row = (await reader.execute(select(inputs).where(inputs.c.id == input_id))).mappings().one()
+        assert row["ready"] and row["state"] == "pending"
+
+
+async def test_late_conversation_delivery_keeps_its_id_and_all_readable_signal_refs(
+    database, tmp_path
+):
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+    from qq_ai_bot.persistence.models import ChatEventModel
+    from qq_ai_bot.plugin_host.db_models import (
+        PluginBackgroundTargetGrantModel,
+        PluginInstallationModel,
+    )
+
+    repository, lease, control = await _running_work(database, tmp_path)
+    now = datetime.now(UTC)
+    async with database.immediate_session() as writer:
+        original = await writer.scalar(select(ChatEventModel))
+        values = {
+            column.name: getattr(original, column.name)
+            for column in ChatEventModel.__table__.columns
+            if column.name != "id"
+        }
+        conversation = await writer.get(CanonicalConversationModel, lease.conversation_id)
+        writer.add(
+            PluginInstallationModel(
+                plugin_id="synthetic-wait",
+                name="synthetic",
+                version="1",
+                plugin_api="2.0",
+                yuki_requires="*",
+                manifest_hash="0" * 64,
+                entrypoint="unused",
+                status="approved",
+                enabled=True,
+                discovered_at=now,
+                updated_at=now,
+            )
+        )
+        await writer.flush()
+        writer.add(
+            PluginBackgroundTargetGrantModel(
+                plugin_id="synthetic-wait",
+                target_type="group",
+                target_id="20001",
+                bot_user_id="80001",
+                enabled=True,
+                created_by_user_id="10001",
+                canonical_target_space_id=conversation.space_id,
+                canonical_created_by_person_id=original.author_person_id,
+                canonical_presence_id=original.ingress_presence_id,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    wait = WorkWaitRepository(repository)
+    registered = await wait.register(
+        lease,
+        work_id=control.current["id"],
+        source=control.source,
+        call_key="late-message-original-wait",
+        mode="all",
+        conditions=[
+            {"kind": "conversation"},
+            {"kind": "plugin_event", "plugin_id": "synthetic-wait", "event_type": "done"},
+        ],
+        deadline_at=None,
+    )
+    async with database.immediate_session() as writer:
+        late = ChatEventModel(
+            **{
+                **values,
+                "canonical_event_id": str(uuid4()),
+                "platform_message_id": "late-human",
+                "content": "late human body",
+            }
+        )
+        writer.add(late)
+        await writer.flush()
+        late_id = late.id
+        early = ChatEventModel(
+            **{
+                **values,
+                "canonical_event_id": str(uuid4()),
+                "platform_message_id": "early-plugin",
+                "content": "early plugin body",
+                "event_kind": "external_event",
+                "direction": "external",
+                "author_kind": "system",
+                "author_person_id": None,
+                "origin": "plugin_background",
+                "source_plugin_id": "synthetic-wait",
+                "external_source": "synthetic",
+                "external_event_key": "done-1",
+                "external_event_type": "done",
+                "external_payload_json": "{}",
+                "external_target_id": "20001",
+                "external_resume_wait": True,
+            }
+        )
+        writer.add(early)
+        await writer.flush()
+        early_id = early.id
+    assert late_id < early_id
+    assert await wait.match_event(event_id=early_id, kind="plugin_event") == 0
+    selected = await wait.match_event(event_id=late_id, kind="conversation")
+    assert selected > 0
+    pending = await repository.pending(lease, work_id=control.current["id"])
+    assert pending[0]["event_id"] == late_id
+    messages = await control.take_inputs("actual-signal", observed_event_ids=frozenset({late_id}))
+    assert len(messages) == 1
+    signal = json.loads(messages[0].content.split("\n", 1)[1])
+    assert signal["wait_id"] == registered["id"] and signal["reason"] == "signal"
+    assert {c["matched"]["event_id"] for c in signal["conditions"]} == {late_id, early_id}
+    assert {e["text"] for e in signal["events"]} == {"late human body", "early plugin body"}

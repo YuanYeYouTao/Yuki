@@ -240,12 +240,26 @@ Journal 保留 dispatched、response、paired 的独立持久边界。不可变�
 其他 Work 的引用不被当前保存回收。恢复仍按原 call、response、预算和执行回执，不因减少媒体
 写放大而跳过请求意图、实际响应或成对工具结果的记录。
 
+新真人 keeper 入账后先尝试原 Work/wait；正 input ID、有效部分匹配 0 和未匹配 None
+保持不同含义。原输入不要求先通过新接话资格，不以去抖窗口延迟已有工作的输入。
+conversation 信号用实际触发该发布的内部事件 ID；全部 matched 引用仍保留在原 wait 条件中。
+已在当前聊天展示的 anchor 不吞掉信号，consumer 仍带 wait_id、reason、conditions 与获准正文。
+匹配到 conversation 等待时，在 reader 之外完成原语音转写和记忆入队，再准备接纳来源；
+原 writer 复核等待、身份和代次后才发布 ready/admission/wake。部分匹配也先保留转写，
+后到信号沿原事件读取真实语音正文。开放群聊逐条准备原语音和记忆，只合并新 Main 机会，
+不把前条语音的准备交给最终候选；未匹配且无接话资格的消息不额外调用 ASR。
+
 Work 发现首个 pending 输入尚未准备完时，立即按原 `WorkInputsPreparing` 退出本轮，
-由既有结算提交 `waiting_external` 并释放 activation，不轮询等待附件处理。
+沿原 ending/reason 传递 `work_input_preparing`，由既有结算提交 `waiting_external` 并释放 activation。
 准备提交按原输入 ID、Work 和 canonical generation 核验所有权，原输入的图像使用既有
 媒体 blob/引用持久化；即使旧 activation 已退出或进程重启，也能恢复。准备完成与结算
 在同一 SQLite writer 边界串行核验首个输入：先准备或先结算均续原 Work 入队；后面的
 ready 输入不能越过未准备的首项。已准备或消费的输入重试只确认原记录，不覆盖内容或预算。
+真人 live/repair 共用原 publisher，将 ready、ordinary admission 和原 Work 入队提交在同一事务。
+repair 在 reader 准备来源，只有原 prepare_owner 证明属于先前进程的未发布输入才可接手；
+不因当前准备超过固定秒数抢占。缺失或真实失效来源清退原未发布输入；清退与停放反序也由
+原 writer 读取实际 mailbox，不保留已经清退的 preparing 等待。原 complete/fail 决定在准备
+期间保留；同一 fulfilled wait 的旧结束决定沿原 wait_id 撤下，接续原预算，不重注册或重发。
 
 普通聊天的 context prepare 与前台 rollup 等待在 effect gate 外执行。准备完成后，
 gate 内只复核 turn snapshot、read version 或原 Work source guard 并提交有界 projection；

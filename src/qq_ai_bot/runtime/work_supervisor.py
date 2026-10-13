@@ -152,6 +152,7 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
             updated=time.time(),
         )
         committed: dict[str, Any] | None
+        requested_state = state
         try:
             committed = await control.repository.commit_state(
                 session,
@@ -161,12 +162,20 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
                 revision=None,
                 reason=failure.code if proposed is None else None,
                 recovery_detail=values,
+                exit_reason=reason.value,
             )
         except WorkConflict:
             committed = None
         if committed is None:
             raise WorkConflict("work_recovery_obsolete")
         state = committed["state"]
+        if state != requested_state:
+            if state == "queued":
+                reason = ExitReason.INPUT
+            elif state == "waiting_external":
+                reason = ExitReason.EXTERNAL
+            elif state == "suspended":
+                reason = ExitReason.PAUSED
     control.current = committed
     control.ending = state
     control.settled = True
@@ -197,6 +206,8 @@ async def settle(control: WorkControl, *, pending_inputs: bool) -> None:
     if control.settled or control.current is None:
         return
     await control.refresh_effects()
+    if await control.retire_fulfilled_wait():
+        pending_inputs = bool(await control.pending())
     proposed = control.accepted_ending()
     if control.handoff_work_id is not None:
         state = "queued" if pending_inputs else await control.background_state()
@@ -211,6 +222,8 @@ async def settle(control: WorkControl, *, pending_inputs: bool) -> None:
         pending = await control.pending()
         ready = bool(pending and pending[0]["ready"])
         state, reason = ("queued" if ready else "waiting_external"), ExitReason.INPUT
+    elif control.ending == "work_input_preparing":
+        state, reason = "waiting_external", ExitReason.EXTERNAL
     elif control.ending in {"waiting_external", "waiting_user"}:
         # Host-owned waits (input preparation, a child's question) are not
         # business controls and carry no accepted decision.
@@ -229,7 +242,11 @@ async def settle(control: WorkControl, *, pending_inputs: bool) -> None:
         control.current["id"],
         control.current["revision"],
         state,
-        reason=reason.value,
+        reason=(
+            "work_input_preparing"
+            if control.ending == "work_input_preparing" and proposed is None
+            else reason.value
+        ),
         exit_reason=reason.value,
     )
     if control.current["state"] == "queued" and state != "queued":

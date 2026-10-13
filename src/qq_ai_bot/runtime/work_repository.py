@@ -23,6 +23,7 @@ from sqlalchemy import (
     select,
     table,
     text,
+    true,
     update,
 )
 from sqlalchemy.dialects.sqlite import insert
@@ -660,12 +661,18 @@ class WorkRepository:
                     .where(
                         inputs.c.work_id == identity,
                         inputs.c.state.in_(("pending", "staged")),
-                        self._business_input_clause(),
+                        true()
+                        if reason == "work_input_preparing"
+                        else self._business_input_clause(),
                     )
                     .order_by(inputs.c.id)
                     .limit(1)
                 )
             ).first()
+            if mailbox is None and reason == "work_input_preparing":
+                values.update(state="queued", reason="input_preparation_cleared")
+                if exit_reason is not None:
+                    exit_reason = "waiting_input"
             if mailbox is not None:
                 business_arrived = True
                 # Admitted input keeps a live owner. A failure is retained in
@@ -686,7 +693,11 @@ class WorkRepository:
                 )
                 if exit_reason is not None:
                     exit_reason = "waiting_external"
-        if values["state"] != "running" and not draining:
+        if (
+            values["state"] != "running"
+            and not draining
+            and values["reason"] != "work_input_preparing"
+        ):
             # Settlement consumes the accepted control; its durable payload moves
             # to the existing result/reason slots only when the state it proposed
             # is the state actually committed.
@@ -1916,100 +1927,88 @@ class WorkRepository:
             return results
 
     async def repair_abandoned_inputs(self, process_id: str) -> None:
+        from qq_ai_bot.conversation.ordinary_admission import (
+            OrdinaryAdmissionConflict,
+            OrdinaryAdmissionDuplicate,
+            OrdinaryAdmissionRepository,
+            PreparedOrdinaryAdmission,
+            _identity_allowed,
+        )
         from qq_ai_bot.persistence.models import ChatEventModel
+        from qq_ai_bot.persistence.repository_helpers import _event_record
 
-        async with self.database.sessions() as discovery:
-            await discovery.execute(text("BEGIN"))
+        async with self.database.sessions() as reader:
+            await reader.execute(text("BEGIN"))
             rows = (
                 (
-                    await discovery.execute(
-                        select(
-                            inputs.c.id,
-                            ChatEventModel.id.label("event_id"),
-                            ChatEventModel.content,
-                        )
-                        .outerjoin(ChatEventModel, ChatEventModel.id == inputs.c.event_id)
+                    await reader.execute(
+                        select(inputs)
                         .where(
                             inputs.c.state == "pending",
                             inputs.c.ready.is_(False),
-                            or_(
-                                inputs.c.prepare_owner != process_id,
-                                inputs.c.created < time.time() - 120,
-                            ),
+                            inputs.c.prepare_owner != process_id,
                         )
+                        .order_by(inputs.c.id)
                         .limit(128)
                     )
                 )
                 .mappings()
                 .all()
             )
-        if not rows:
-            return
-        prepared = {
-            row["id"]: encode_json(
-                {
-                    "text": "[输入准备因重启中断；附件尚未读取，按 event_id 查询原消息]\n"
-                    f"{row['content'][:5000]}"
-                }
-            )
-            for row in rows
-            if row["event_id"] is not None
-        }
-        candidate_ids = tuple(row["id"] for row in rows)
-        async with self.database.immediate_session() as session:
-            rows = (
-                (
-                    await session.execute(
-                        select(
-                            inputs.c.id,
-                            inputs.c.work_id,
-                            ChatEventModel.id.label("event_id"),
+            prepared: list[tuple[int, dict[str, Any] | None, PreparedOrdinaryAdmission | None]] = []
+            for row in rows:
+                admission = None
+                payload = json.loads(row["payload_json"])
+                if row["kind"] == "message" and row["event_id"] is not None:
+                    event = await reader.get(ChatEventModel, row["event_id"])
+                    conversation = await reader.get(
+                        CanonicalConversationModel, row["conversation_id"]
+                    )
+                    if (
+                        event is None
+                        or conversation is None
+                        or event.suppression_status != "keeper"
+                        or event.canonical_conversation_id != conversation.id
+                        or conversation.generation != row["generation"]
+                        or event.id <= conversation.starts_after_event_id
+                        or not await _identity_allowed(reader, event, conversation)
+                    ):
+                        prepared.append((row["id"], None, None))
+                        continue
+                    event_record = _event_record(event)
+                    try:
+                        admission = OrdinaryAdmissionRepository.prepare(
+                            event_record, row["generation"], 0
                         )
-                        .outerjoin(ChatEventModel, ChatEventModel.id == inputs.c.event_id)
-                        .where(
-                            inputs.c.state == "pending",
-                            inputs.c.id.in_(candidate_ids),
-                            inputs.c.ready.is_(False),
-                            or_(
-                                inputs.c.prepare_owner != process_id,
-                                inputs.c.created < time.time() - 120,
-                            ),
-                        )
-                        .limit(128)
-                    )
+                    except OrdinaryAdmissionConflict:
+                        prepared.append((row["id"], None, None))
+                        continue
+                    payload = {
+                        "text": "[输入准备因重启中断；附件尚未读取，按 event_id 查询原消息]\n"
+                        + event.content
+                    }
+                elif row["kind"] == "message" and not payload:
+                    prepared.append((row["id"], None, None))
+                    continue
+                prepared.append((row["id"], payload, admission))
+        admissions = OrdinaryAdmissionRepository(self.database)
+        for identity, payload, admission in prepared:
+            if payload is None:
+                await self.discard_input(identity)
+                continue
+            try:
+                await self.prepare_input(
+                    identity,
+                    payload,
+                    before_publish=admissions.publisher(admission) if admission else None,
                 )
-                .mappings()
-                .all()
-            )
-            prepared = {
-                row["id"]: prepared[row["id"]] for row in rows if row["event_id"] is not None
-            }
-            cancelled = [row["id"] for row in rows if row["event_id"] is None]
-            work_ids = {row["work_id"] for row in rows if row["id"] in prepared and row["work_id"]}
-            if cancelled:
-                await session.execute(
-                    update(inputs).where(inputs.c.id.in_(cancelled)).values(state="cancelled")
-                )
-            if prepared:
-                await session.execute(
-                    update(inputs)
-                    .where(inputs.c.id.in_(prepared))
-                    .values(ready=True, payload_json=case(prepared, value=inputs.c.id))
-                )
-            if work_ids:
-                await session.execute(
-                    update(work)
-                    .where(
-                        work.c.id.in_(work_ids),
-                        work.c.state.in_(("waiting_external", "waiting_user")),
-                    )
-                    .values(
-                        state="queued",
-                        reason="input_repaired",
-                        revision=work.c.revision + 1,
-                        updated=time.time(),
-                    )
-                )
+            except OrdinaryAdmissionDuplicate:
+                # The original publisher may have won; never alter a ready receipt.
+                await self.discard_input(identity)
+            except OrdinaryAdmissionConflict:
+                # A derived source may have changed while preparing. Re-read next
+                # maintenance pass; true source withdrawal is checked by that reader.
+                continue
 
     async def reclaim_unreferenced_media(self) -> None:
         """Collect unreferenced transient media without deleting execution receipts."""
@@ -2038,11 +2037,34 @@ class WorkRepository:
             )
 
     async def discard_input(self, identity: int) -> None:
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
+            changed = (
+                await session.execute(
+                    update(inputs)
+                    .where(
+                        inputs.c.id == identity,
+                        inputs.c.state == "pending",
+                        inputs.c.ready.is_(False),
+                    )
+                    .values(state="cancelled", payload_json="{}")
+                    .returning(inputs.c.work_id)
+                )
+            ).first()
+            if changed is None or changed.work_id is None:
+                return
             await session.execute(
-                update(inputs)
-                .where(inputs.c.id == identity, inputs.c.state == "pending")
-                .values(state="cancelled", payload_json="{}")
+                update(work)
+                .where(
+                    work.c.id == changed.work_id,
+                    work.c.state == "waiting_external",
+                    work.c.reason == "work_input_preparing",
+                )
+                .values(
+                    state="queued",
+                    reason="input_preparation_cleared",
+                    revision=work.c.revision + 1,
+                    updated=time.time(),
+                )
             )
 
     async def prepare_effect(

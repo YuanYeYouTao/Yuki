@@ -15,7 +15,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -223,12 +223,14 @@ class SemanticParticipationService:
     async def binding_for_event(self, event_id: int) -> OrdinaryParticipationBinding | None:
         from qq_ai_bot.services.participation_ordinary import binding_for_event
 
-        return await binding_for_event(self, event_id, continuation_only=False)
+        return await binding_for_event(self, event_id)
 
-    async def continuation_for_event(self, event_id: int) -> OrdinaryParticipationBinding | None:
-        from qq_ai_bot.services.participation_ordinary import binding_for_event
+    async def continuation_for_event(
+        self, event_id: int
+    ) -> tuple[OrdinaryParticipationBinding, Literal["semantic_invitation", "continuation"]] | None:
+        from qq_ai_bot.services.participation_ordinary import continuation_for_event
 
-        return await binding_for_event(self, event_id, continuation_only=True)
+        return await continuation_for_event(self, event_id)
 
     async def on_ordinary_admitted(
         self, binding: OrdinaryParticipationBinding | None, admission: OrdinaryAdmission
