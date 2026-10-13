@@ -172,13 +172,31 @@ Jev 密钥不得写入公开配置、提示词或验收记录。
 
 | 配置 | 默认值 / 含义 |
 | --- | --- |
-| `conversation.autonomous_enabled` / `CONVERSATION_AUTONOMOUS_ENABLED` | 保留原自主总开关；还要满足群 Space 的 enabled/autonomous_enabled。关闭后不能被 fallback 反启 |
+| `conversation.auto_reply_enabled` / `CONVERSATION_AUTO_REPLY_ENABLED` | 默认 true；只控制新 group_open、语义邀请/续聊及 conversation SELF/legacy 机会 |
+| `conversation.proactive_wakeup_enabled` / `CONVERSATION_PROACTIVE_WAKEUP_ENABLED` | 默认 true；只控制新 recall/contact/intrinsic SELF 机会 |
+| `conversation.autonomous_enabled` / `CONVERSATION_AUTONOMOUS_ENABLED` | 保留 SELF 总开关及群 Space 的 enabled/autonomous_enabled；普通真人接话独立 |
 | `conversation.semantic_participation_enabled` / `CONVERSATION_SEMANTIC_PARTICIPATION_ENABLED` | 默认 false；开启使用 semantic，显式关闭使用 legacy；观测故障不自动回退 |
 | `SEMANTIC_PARTICIPATION_API_KEY` | 默认空；Jev 观测凭据；未配置时不产生新语义观测，不改变 proposer 归属 |
 | `SEMANTIC_PARTICIPATION_MODEL` | 默认 `jev-1.13.0` |
 | `SEMANTIC_PARTICIPATION_STATE_PATH` | 默认 `data/participation.sqlite3`，控制器快照；不代替 Host 的 run/Work/回执数据库 |
 
-前两个配置支持现有全局/群作用域管理接口。当前没有名为 `shadow` 的运行配置开关；
+四个 conversation 配置支持现有全局/群作用域管理接口。两个产品开关都是 HOT，
+unset 沿 group→global→Settings 继承。设置页区分本地 row 与继承值：新建群覆盖用版本 0，
+修改/删除已有覆盖用该 row.version；没有本地 row 时不可 unset，false 保留其实际值。
+canonical inspect_configs 沿传入 session 定键读取 global 与指定 owner，空 keys 不扫描全部配置，
+停用 owner 的控制元数据仍可读取，存在性与真实执行授权分别核验。
+
+两个产品开关不改 binding epoch，不取消已接纳 Work，不限制原 wait/input/repair、明确 @/引用/
+前缀/命令、定时工作或既有工具。新 ordinary 与 SELF 的接纳 writer 读取当前产品键；
+prior/payload 对账先于新接纳 predicate。SELF 仍受原 master/semantic/Space/Presence 约束。
+Host 在原推进边界刷新 scene/runtime，按 auto_reply 允许 conversation，按 proactive_wakeup
+允许 recall/contact 与 intrinsic，先排除候选种类再计算机会率；关 proactive 时不生成新 seed。
+关闭期间继续推进原 last_sample_at，不累计可补采的时间，不删除原反馈或改概率公式。
+尚未接纳的 pending 沿原 discard 返回值及原 proposal/run 查询处理，已接纳身份继续对账。
+
+本分支参与库固定到已发布的 `9e60cb8d59fbab4cacee9af2fbe1ed2932d68c80`；
+上游 [PR #18](https://github.com/YuanYeYouTao/Yuki-Semantic-Participation/pull/18) 尚未合并。来源、正式 pin 与验证见
+[#268 实施记录](../operations/issue-268-implementation-20261013.md)。当前没有名为 `shadow` 的运行配置开关；
 关闭 semantic 表示恢复 legacy，**不等于影子 Jev 仍在后台评分**。影子对照应使用隔离的
 事件重放和观测流程，不提交 proposal、不调用 QQ 发送，不能把它描述成现网已启用模式。
 

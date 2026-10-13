@@ -1,0 +1,18 @@
+{
+  "repository": "https://github.com/YuanYeYouTao/Yuki-Semantic-Participation",
+  "base_commit": "63522288e9829fc71dce955e041d5ae49f919c5a",
+  "local_commit": "9e60cb8d59fbab4cacee9af2fbe1ed2932d68c80",
+  "branch": "codex/issue-268-allowed-kinds",
+  "published": true,
+  "verification": {
+    "pytest_passed": 203,
+    "pytest_skipped": 6,
+    "ruff": "passed",
+    "mypy_source_files": 12
+  },
+  "published_commit": "9e60cb8d59fbab4cacee9af2fbe1ed2932d68c80",
+  "published_repository": "https://github.com/Hilbert-beinghappy/Yuki-Semantic-Participation",
+  "pull_request": "https://github.com/YuanYeYouTao/Yuki-Semantic-Participation/pull/18",
+  "merged": false,
+  "pin_archive_verified": true
+}

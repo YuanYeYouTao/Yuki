@@ -53,6 +53,7 @@ from qq_ai_bot.conversation.ordinary_admission import (
 )
 from qq_ai_bot.conversation.self_initiative import validate_self_initiative
 from qq_ai_bot.domain.conversations import ConversationScope
+from qq_ai_bot.domain.memory_config import MemoryConfigScope
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.execution_trace.recorder import TraceRecorder, trace_span
 from qq_ai_bot.identity.db_models import CanonicalSpaceModel, PresenceModel, SpaceBindingModel
@@ -910,6 +911,29 @@ class SemanticParticipationService:
         ) as span:
             span.result = await self._admit_proposal(item, binding, proposal)
 
+    async def _admission_allowed(
+        self, session: AsyncSession, space_id: str, kind: CandidateKind, *, legacy: bool = False
+    ) -> bool:
+        flag = (
+            "auto_reply_enabled"
+            if kind is CandidateKind.CONVERSATION
+            else "proactive_wakeup_enabled"
+        )
+        master, semantic, product = await self.app.runtime_config.inspect_configs(
+            (
+                "conversation.autonomous_enabled",
+                "conversation.semantic_participation_enabled",
+                f"conversation.{flag}",
+            ),
+            scope=MemoryConfigScope(space_id=space_id),
+            session=session,
+        )
+        return bool(
+            master.effective.value
+            and product.effective.value
+            and (not semantic.effective.value if legacy else semantic.effective.value)
+        )
+
     async def _admit_proposal(
         self, item: _Session, binding: AutonomyBinding, proposal: Proposal
     ) -> dict[str, object]:
@@ -987,6 +1011,9 @@ class SemanticParticipationService:
             support_refs=tuple(sorted({s.observation_id for s in supports})),
             trigger_kind="intrinsic" if intrinsic else "source",
             thread_key=proposal.thread,
+            admission_allowed=lambda session: self._admission_allowed(
+                session, item.scene.space_id, proposal.kind
+            ),
         )
         if result.run is not None:
             item.controller.observe_run_feedback(
@@ -998,6 +1025,25 @@ class SemanticParticipationService:
                     at=now,
                 )
             )
+        elif result.outcome == "disabled":
+            if not item.controller.discard_unaccepted_proposal(proposal.proposal_id):
+                existing = await self.repository.query_proposal(
+                    conversation_id=binding.conversation_id,
+                    generation=binding.generation,
+                    owner=AutonomyOwner.SEMANTIC,
+                    controller_epoch=proposal.controller_epoch,
+                    proposal_id=proposal.proposal_id,
+                )
+                if existing is not None:
+                    item.controller.observe_run_feedback(
+                        Feedback(
+                            run_ref=existing.run_id,
+                            proposal_id=proposal.proposal_id,
+                            sequence=1,
+                            outcome="accepted",
+                            at=now,
+                        )
+                    )
         else:
             item.controller.observe_run_feedback(
                 Feedback(
@@ -1078,6 +1124,9 @@ class SemanticParticipationService:
                     presence_id=scene.presence_id,
                     sources=(self._source(item, event.ref),),
                     source_guard=(self._source(item, event.ref),),
+                    admission_allowed=lambda session: self._admission_allowed(
+                        session, scene.space_id, CandidateKind.CONVERSATION, legacy=True
+                    ),
                 )
                 if result.run is not None:
                     item.controller.state.consumed[event.ref.event_id] = event.ref.revision
@@ -1314,7 +1363,7 @@ class SemanticParticipationService:
         # After observer/external work below, _binding reads current policy again.
         binding = await self._binding(item, runtime=runtime)
         if item.observation is not None and scene.enabled and binding.external_enabled:
-            if binding.master_enabled:
+            if binding.master_enabled and runtime.conversation_policy().proactive_wakeup_enabled:
                 await self._seeds(item)
             await item.observation.evaluate_due(
                 time.time(), active=bool(item.controller.participating_units(time.time()))
@@ -1323,10 +1372,27 @@ class SemanticParticipationService:
             # remaining candidate, so invalidate their original dependencies
             # before promotion, scheduling or saving the derived snapshot.
             await self._validate_boundaries(item)
-            binding = await self._binding(item)
+        current_scene = await self._scene(scene.conversation_id)
+        if current_scene is None or current_scene.generation != scene.generation:
+            return
+        item.scene = current_scene
+        runtime = await self.app.runtime_config.snapshot(
+            group_id=current_scene.group_id if current_scene.enabled else None
+        )
+        binding = await self._binding(item, runtime=runtime)
+        policy = runtime.conversation_policy()
+        allowed_kinds = frozenset(
+            kind
+            for kind, allowed in (
+                (CandidateKind.CONVERSATION, policy.auto_reply_enabled),
+                (CandidateKind.RECALL, policy.proactive_wakeup_enabled),
+                (CandidateKind.CONTACT, policy.proactive_wakeup_enabled),
+            )
+            if allowed
+        )
         from qq_ai_bot.services.participation_ordinary import invitation_unit, promote_invitations
 
-        if scene.enabled and binding.external_enabled:
+        if current_scene.enabled and binding.external_enabled and policy.auto_reply_enabled:
             await promote_invitations(self, item)
         await self._sources_current(
             item,
@@ -1353,6 +1419,13 @@ class SemanticParticipationService:
                         at=pending.created_at,
                     )
                 )
+            elif (
+                pending.kind is CandidateKind.INTRINSIC and not policy.proactive_wakeup_enabled
+            ) or (
+                pending.kind is not CandidateKind.INTRINSIC and pending.kind not in allowed_kinds
+            ):
+                if not item.controller.discard_unaccepted_proposal(pending.proposal_id):
+                    await self._admit(item, binding, pending)
             elif pending.kind == CandidateKind.CONVERSATION and any(
                 (event := item.controller.state.events.get(ref.event_id)) is not None
                 and invitation_unit(item, event) is not None
@@ -1368,8 +1441,10 @@ class SemanticParticipationService:
             max(time.time(), item.controller.state.now),
             controller_epoch=binding.controller_epoch,
             host_available=binding.effective_owner is AutonomyOwner.SEMANTIC,
-            intrinsic_allowed=binding.effective_owner is AutonomyOwner.SEMANTIC,
+            intrinsic_allowed=binding.effective_owner is AutonomyOwner.SEMANTIC
+            and policy.proactive_wakeup_enabled,
             include_addressed=False,
+            allowed_kinds=allowed_kinds,
         )
         await self._save(item)
         if proposal is not None:

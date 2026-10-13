@@ -1,0 +1,21 @@
+{
+  "ruff": "passed",
+  "mypy_source_files": 633,
+  "pinned_full": {
+    "passed": 1682,
+    "failed": 1,
+    "skipped": 0
+  },
+  "targeted_passed": 124,
+  "flags_including_self_passed": 12,
+  "frontend_passed": 20,
+  "api_requests": 11,
+  "dependency_commit": "9e60cb8d59fbab4cacee9af2fbe1ed2932d68c80",
+  "dependency_pr": "https://github.com/YuanYeYouTao/Yuki-Semantic-Participation/pull/18",
+  "base_commit": "c14623c521dab39af702159f0f6460ad87e45730",
+  "known_remaining_failure": "Linux /proc supervisor on macOS",
+  "yuki_committed": false,
+  "yuki_pushed": false,
+  "deployed": false,
+  "recorded_phase": "local_verification_before_pr"
+}

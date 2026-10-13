@@ -47,6 +47,15 @@ Jev 确认的明确邀请或直接续答走普通真人消息入口，不计新 
 仍由 Host 按事实核验。控制器不产生真人消息、Jev 观测、执行权限或聊天正文。
 Host 不在停机时补采样，不重放历史机会；原已接纳 Work 按原执行 ID 和回执恢复。
 
+## 新机会的产品开关
+
+`auto_reply_enabled` 控制 conversation 候选；`proactive_wakeup_enabled` 控制 recall/contact
+候选及无来源 intrinsic。Host 将实际允许的 CandidateKind 集合传给独立库的 allowed_kinds，
+在原 _eligible_groups/opportunity_scores/advance 中于分组、rate 和取样前筛选。None 表示
+原全部种类，空集仅排除来源候选；intrinsic 仍由独立的 intrinsic_allowed 控制。
+两个开关不切换 proposer，不改变 epoch、公式、原候选与反馈。禁用期间原采样时间继续前进，
+重开不会补抽之前的时间。新 SELF 仍需原 master/scene 授权；明确真人入口及已接纳 Work 独立。
+
 ## 状态与反馈
 
 真人活动 `q`、来源候选的慢群情境 `ℓ`、无来源机会的真人活动量 `H`、实际计算 `f`、无来源真实 `NO_REPLY` 的 `n`

@@ -1,0 +1,45 @@
+{
+  "issue": 268,
+  "model": "deepseek-flash",
+  "endpoint": "https://api.deepseek.com",
+  "source": "real TaskModelExecutor + Main loop; isolated SQLite; synthetic delivery",
+  "requests": [
+    {
+      "seconds": 1.177,
+      "tools_declared": 40,
+      "tool_calls": [
+        "send_message"
+      ],
+      "prompt_tokens": 10361,
+      "completion_tokens": 96,
+      "cached_tokens": 10112
+    },
+    {
+      "seconds": 0.902,
+      "tools_declared": 40,
+      "tool_calls": [],
+      "prompt_tokens": 10665,
+      "completion_tokens": 19,
+      "cached_tokens": 10368
+    }
+  ],
+  "disabled_requests": 0,
+  "disabled_admissions": 0,
+  "social_receipts": [
+    {
+      "action": "send_message",
+      "status": "succeeded"
+    }
+  ],
+  "gateway_sent_messages": 1,
+  "ingress_reasons": [
+    "ordinary_deferred",
+    "ordinary_deferred",
+    "ordinary_deferred"
+  ],
+  "admitted_event_ids": [
+    5
+  ],
+  "synthetic_sent_messages": 0,
+  "merged_one_admission": true
+}

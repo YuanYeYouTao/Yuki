@@ -1375,9 +1375,10 @@ class MessageProcessor:
             )
 
         async def admission_allowed(session: AsyncSession) -> bool:
-            if decision.reason != "group_open":
+            if decision.reason not in {"group_open", "semantic_invitation", "continuation"}:
                 return True
             from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+            from qq_ai_bot.domain.memory_config import MemoryConfigScope
             from qq_ai_bot.identity.db_models import CanonicalSpaceModel
 
             conversation = await session.get(
@@ -1388,7 +1389,17 @@ class MessageProcessor:
                 if conversation
                 else None
             )
-            return space is not None and not space.require_mention
+            if space is None:
+                return False
+            keys: tuple[str, ...] = ("conversation.auto_reply_enabled",)
+            if decision.reason != "group_open":
+                keys += ("conversation.semantic_participation_enabled",)
+            values = await self._runtime_config.inspect_configs(
+                keys, scope=MemoryConfigScope(space_id=space.id), session=session
+            )
+            return all(value.effective.value for value in values) and (
+                decision.reason != "group_open" or not space.require_mention
+            )
 
         try:
             if not await self.ordinary_admissions.commit(

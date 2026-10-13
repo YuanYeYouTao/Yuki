@@ -54,6 +54,8 @@ async def web(database, tmp_path, monkeypatch):
             "control.work.mutate",
             "control.automation.read",
             "control.memory.metadata.read",
+            "control.config.read",
+            "control.config.mutate",
         ),
     )
     settings = make_settings(
@@ -795,3 +797,53 @@ async def test_config_spec_page_preserves_schema_and_secret_configured_fields(da
         assert item.sensitive == spec.sensitive and item.apply_mode == spec.apply_mode.value
     assert "private-provider-secret" not in repr(items)
     assert not any("value_json" in sql for sql, _ in statements)
+
+
+async def test_group_config_inheritance_create_conflict_edit_unset_uses_real_http_writer(
+    web, database, tmp_path
+):
+    from tests.unit.test_participation_flags import override
+
+    client, _, _ = web
+    env = await social_env(database, tmp_path)
+    key = "conversation.auto_reply_enabled"
+    await override(database, None, key, False, version=5)
+    headers = await signed_in(client)
+
+    async def read():
+        response = await client.post(
+            "/api/control/queries/list_effective_configs",
+            json={"scope": {"space_id": env.space}, "page": {"limit": 100}},
+            headers=headers,
+        )
+        assert response.status_code == 200
+        return next(row for row in response.json()["data"]["items"] if row["key"] == key)
+
+    async def command(method, revision, value=None):
+        identity = str(uuid4())
+        payload = {"key": key, "scope_type": "group", "scope_id": env.space}
+        if method == "set_config":
+            payload["value"] = value
+        return await client.post(
+            f"/api/control/commands/{method}",
+            json={"request_id": identity, "expected_revision": revision, "payload": payload},
+            headers={**headers, "X-Request-ID": identity},
+        )
+
+    inherited = await read()
+    assert inherited["scope_type"] == "global" and inherited["version"] == 5
+    assert inherited["value"] is False
+    created = await command("set_config", 0, True)
+    assert created.status_code == 200 and created.json()["data"]["success"]
+    local = await read()
+    assert local["scope_type"] == "group" and local["version"] == 1 and local["value"] is True
+    conflict = await command("set_config", 0, False)
+    assert conflict.json()["problem"]["code"] == "version_conflict"
+    assert await read() == local
+    edited = await command("set_config", local["version"], False)
+    assert edited.status_code == 200 and edited.json()["data"]["success"]
+    local = await read()
+    assert local["version"] == 2 and local["value"] is False
+    deleted = await command("unset_config", local["version"])
+    assert deleted.status_code == 200 and deleted.json()["data"]["success"]
+    assert await read() == inherited
