@@ -3,13 +3,20 @@
 import asyncio
 import hashlib
 import json
+import os
+import shutil
+import sqlite3
+import subprocess
+import sys
 import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import select, text
 from tests.support.projection_sql_counts import capture_sql
 from tests.support.social_identity_cases import social_env
@@ -530,6 +537,57 @@ def test_upgrade_retires_public_packages_without_deleting_real_occurrences_or_pr
             await database.close()
 
     asyncio.run(verify())
+
+
+def test_installed_cli_upgrades_copy_without_repository_pythonpath(tmp_path, monkeypatch):
+    original = tmp_path / "original-0108.db"
+    url = f"sqlite+aiosqlite:///{original.as_posix()}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    config = Config("alembic.ini")
+    command.upgrade(config, "0108")
+    head = ScriptDirectory.from_config(config).get_current_head()
+    asyncio.run(seed_0107(url, tmp_path, "protocol", outdated_config=False))
+    private = (
+        "runtime_work",
+        "runtime_work_journal",
+        "runtime_work_effects",
+        "runtime_protocol_objects",
+        "runtime_protocol_refs",
+        "runtime_protocol_usage",
+        "memory_facts",
+        "memory_evidence",
+        "memory_mutation_receipts",
+        "memory_tool_receipts",
+    )
+    runtime = tmp_path / "installed-runtime"
+    runtime.mkdir()
+    shutil.copy("alembic.ini", runtime)
+    shutil.copytree("migrations", runtime / "migrations")
+    (runtime / "config").mkdir()
+    shutil.copy("config/persona.md", runtime / "config/persona.md")
+    copied = runtime / "copied.db"
+    with sqlite3.connect(original) as before, sqlite3.connect(copied) as after:
+        before.backup(after)
+        original_rows = {
+            table: before.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+            for table in private
+        }
+    cli = Path(sys.executable).parent / (
+        "qq-ai-bot-cli.exe" if os.name == "nt" else "qq-ai-bot-cli"
+    )
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    env["DATABASE_URL"] = f"sqlite+aiosqlite:///{copied.as_posix()}"
+    result = subprocess.run(
+        [str(cli), "init-db"], cwd=runtime, env=env, capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    with sqlite3.connect(copied) as after:
+        assert after.execute("SELECT version_num FROM alembic_version").fetchone() == (head,)
+        assert after.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert not after.execute("PRAGMA foreign_key_check").fetchall()
+        for table, rows in original_rows.items():
+            assert after.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall() == rows
 
 
 def test_failed_upgrade_rolls_back_ddl_public_retirement_and_original_triggers(

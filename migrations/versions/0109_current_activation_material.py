@@ -1,10 +1,11 @@
 """Remove public activation material; retain original private execution evidence."""
 
 import json
-from importlib import import_module
+from pathlib import Path
 
 import sqlalchemy as sa
 from alembic import op
+from alembic.util import load_python_file
 
 from qq_ai_bot.conversation.projection_current_schema import PROJECTION_TRIGGERS_0109
 from qq_ai_bot.conversation.projection_material_schema import PROJECTION_TRIGGERS_0108
@@ -19,7 +20,7 @@ def upgrade() -> None:
     connection = op.get_bind()
     # The frozen 0108 preparation already walks observation dependencies and
     # protects original Work journals, protocol references and useful notes.
-    retirement = import_module("migrations.versions.0108_material_delta_projection")
+    retirement = load_python_file(Path(__file__).parent, "0108_material_delta_projection.py")
     observations, affected, removable, _ = retirement._prepare_retirement(connection)
     selections = [
         dict(row)
