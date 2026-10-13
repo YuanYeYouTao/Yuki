@@ -51,6 +51,7 @@ async def test_current_values_repeat_then_clear_without_entering_history(databas
         current = "\n".join(item.content or "" for item in provider.requests[-1].messages)
         if value:
             assert current.count(value) == 1
+            assert current.index(value) < current.index(f"继续{number}")
         else:
             assert "短记录：" not in current
             assert "new-value" not in current

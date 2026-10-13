@@ -100,5 +100,5 @@ def _with_current_material(message: ChatMessage, dynamic_text: str) -> ChatMessa
     body = message.content or ""
     return replace(
         message,
-        content=f"{body}\n\n{dynamic_text}" if body else dynamic_text,
+        content=f"{dynamic_text}\n\n{body}" if body else dynamic_text,
     )
