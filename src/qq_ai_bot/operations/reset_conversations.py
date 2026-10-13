@@ -67,8 +67,6 @@ async def reset_all(database: Database, batch_id: str, *, apply: bool) -> dict[s
     }
     if not apply:
         return summary
-    if running_automation or running_work:
-        raise RuntimeError("active_execution_must_drain_before_generation_reset")
     for conversation_id in ids:
         async with database.immediate_session() as session:
             existing = await session.get(CanonicalGenerationResetModel, (batch_id, conversation_id))

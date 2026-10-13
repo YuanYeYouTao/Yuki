@@ -33,7 +33,7 @@ from qq_ai_bot.conversation.observations import (
     encode,
     validate_observations,
 )
-from qq_ai_bot.conversation.projection_history_schema import PROJECTION_TRIGGERS_0112
+from qq_ai_bot.conversation.projection_history_schema import PROJECTION_TRIGGERS_0113
 from qq_ai_bot.conversation.projection_models import PromptProjectionModel
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.identity.canonical_repository import ensure_space
@@ -505,7 +505,7 @@ def test_installed_cli_upgrades_copy_without_repository_pythonpath(tmp_path, mon
     config = Config("alembic.ini")
     command.upgrade(config, "0108")
     head = ScriptDirectory.from_config(config).get_current_head()
-    asyncio.run(seed_0107(url, tmp_path, "protocol", outdated_config=False))
+    seeded = asyncio.run(seed_0107(url, tmp_path, "protocol", outdated_config=False))
     private = (
         "runtime_work",
         "runtime_work_journal",
@@ -517,6 +517,10 @@ def test_installed_cli_upgrades_copy_without_repository_pythonpath(tmp_path, mon
         "memory_evidence",
         "memory_mutation_receipts",
         "memory_tool_receipts",
+        "chat_events",
+        "model_context_observations",
+        "tool_artifacts",
+        "tool_artifact_refs",
     )
     runtime = tmp_path / "installed-runtime"
     runtime.mkdir()
@@ -524,6 +528,44 @@ def test_installed_cli_upgrades_copy_without_repository_pythonpath(tmp_path, mon
     shutil.copytree("migrations", runtime / "migrations")
     (runtime / "config").mkdir()
     shutil.copy("config/persona.md", runtime / "config/persona.md")
+    protocol_body = b"original protocol"
+    protocol_key = hashlib.sha256(protocol_body).hexdigest()
+    protocol_file = runtime / "data/work-protocol" / protocol_key[:2] / protocol_key[2:]
+    protocol_file.parent.mkdir(parents=True)
+    protocol_file.write_bytes(protocol_body)
+    artifact_body = b"original note artifact"
+    artifact_file = runtime / "data/tool_artifacts/retained-note.txt"
+    artifact_file.parent.mkdir(parents=True)
+    artifact_file.write_bytes(artifact_body)
+    with sqlite3.connect(original) as before:
+        before.execute("UPDATE runtime_work SET state='running'")
+        before.execute(
+            "INSERT INTO runtime_protocol_objects(sha256,byte_size,prepared_at,deleting) "
+            "VALUES (?,?,?,0)",
+            (protocol_key, len(protocol_body), time.time()),
+        )
+        before.execute("UPDATE runtime_protocol_refs SET sha256=?", (protocol_key,))
+        before.execute("DELETE FROM runtime_protocol_objects WHERE sha256=?", ("e" * 64,))
+        before.execute(
+            "INSERT INTO tool_artifacts(handle_id,provider_id,tool_name,relative_path,media_type,"
+            "byte_size,sha256,created_at,expires_at,deleting) VALUES (?,?,?,?,?,?,?,?,?,0)",
+            (
+                "retained-note",
+                "original-provider",
+                "read_original",
+                "retained-note.txt",
+                "text/plain",
+                len(artifact_body),
+                hashlib.sha256(artifact_body).hexdigest(),
+                datetime.now(UTC).isoformat(),
+                (datetime.now(UTC) + timedelta(days=1)).isoformat(),
+            ),
+        )
+        before.execute(
+            "INSERT INTO tool_artifact_refs(owner_kind,owner_id,handle_id) VALUES (?,?,?)",
+            ("observation", seeded["identities"][0], "retained-note"),
+        )
+        before.commit()
     copied = runtime / "copied.db"
     with sqlite3.connect(original) as before, sqlite3.connect(copied) as after:
         before.backup(after)
@@ -547,6 +589,65 @@ def test_installed_cli_upgrades_copy_without_repository_pythonpath(tmp_path, mon
         assert not after.execute("PRAGMA foreign_key_check").fetchall()
         for table, rows in original_rows.items():
             assert after.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall() == rows
+        assert not after.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='context_observation_reset'"
+        ).fetchall()
+        conversations = after.execute(
+            "SELECT id,generation,last_event_id FROM canonical_conversations ORDER BY id"
+        ).fetchall()
+    reset_argv = [
+        sys.executable,
+        "-m",
+        "qq_ai_bot.operations.reset_conversations",
+        "--batch-id",
+        "original-context-reset",
+        "--apply-offline",
+    ]
+    result = subprocess.run(
+        reset_argv, cwd=runtime, env=env, capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads(result.stdout)
+    assert receipt["running_work"] == 1
+    assert receipt["newly_reset"] == len(conversations)
+    with sqlite3.connect(copied) as after:
+        for table, rows in original_rows.items():
+            if table != "runtime_work":
+                assert after.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall() == rows
+        assert after.execute(
+            "SELECT state,reason,source_json,checkpoint_json,model_requests,tool_calls "
+            "FROM runtime_work WHERE id=?",
+            (seeded["work_id"],),
+        ).fetchone() == (
+            "cancelled",
+            "hard_boundary",
+            '{"original":"source"}',
+            '{"paid":"original"}',
+            5,
+            8,
+        )
+        for identity, generation, floor in conversations:
+            assert after.execute(
+                "SELECT generation,starts_after_event_id FROM canonical_conversations WHERE id=?",
+                (identity,),
+            ).fetchone() == (generation + 1, floor)
+        assert not after.execute("SELECT * FROM canonical_conversation_rollups").fetchall()
+        assert not after.execute("SELECT * FROM canonical_conversation_rollup_jobs").fetchall()
+        assert not after.execute(
+            "SELECT * FROM canonical_conversation_rollup_emergency_overlays"
+        ).fetchall()
+        assert after.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert not after.execute("PRAGMA foreign_key_check").fetchall()
+    assert protocol_file.read_bytes() == protocol_body
+    assert artifact_file.read_bytes() == artifact_body
+    repeated = subprocess.run(
+        reset_argv, cwd=runtime, env=env, capture_output=True, text=True, check=False
+    )
+    assert repeated.returncode == 0, repeated.stderr
+    assert json.loads(repeated.stdout)["newly_reset"] == 0
+    with sqlite3.connect(original) as before:
+        for table, rows in original_rows.items():
+            assert before.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall() == rows
 
 
 def test_0112_removes_reader_cache_and_timezones_without_changing_private_rows(
@@ -715,7 +816,7 @@ async def test_metadata_trigger_invalidates_selected_chat_and_preserves_ordinary
                 )
             ).all()
         )
-        for name, expected in PROJECTION_TRIGGERS_0112.items():
+        for name, expected in PROJECTION_TRIGGERS_0113.items():
             assert " ".join(installed[name].replace("IF NOT EXISTS ", "").split()) == " ".join(
                 expected.split()
             )
@@ -837,7 +938,7 @@ _TRIGGER_OPERATIONS = (
     ("prompt_projection_owner_update", "owner", "source_changed", 1, 0),
     ("prompt_projection_event_metadata_update", "nickname", "source_changed", 1, 0),
     ("context_selection_source_changed", "source_revision", None, 1, 0),
-    ("context_observation_reset", "cut", "reset", 1, 0),
+    ("prompt_projection_reset", "cut", "reset", 1, 0),
     ("context_observation_privacy", "privacy_update", None, 0, 0),
     ("context_observation_privacy_initial", "privacy_insert", None, 0, 0),
     ("context_observation_delete", "observation_delete", None, 0, 0),
@@ -871,7 +972,7 @@ _TRIGGER_OPERATIONS = (
 async def test_current_trigger_sql_keeps_material_and_source_boundaries(
     database, tmp_path, trigger, operation, reason, main_increment, other_increment
 ):
-    assert trigger in PROJECTION_TRIGGERS_0112
+    assert trigger in PROJECTION_TRIGGERS_0113
     env, event, other, identities, moved_space = await _trigger_sources(
         database, tmp_path, operation == "privacy_update"
     )
@@ -1015,12 +1116,11 @@ async def test_current_trigger_sql_keeps_material_and_source_boundaries(
                 )
             )
             assert not retained
-        elif operation in {
-            "generation",
-            "cut",
-            "event_delete",
-        }:
-            assert await reader.get(ContextObservationModel, identities[0]) is None
+        elif operation in {"generation", "cut", "event_delete"}:
+            if operation == "event_delete":
+                assert await reader.get(ContextObservationModel, identities[0]) is None
+            else:
+                assert await reader.get(ContextObservationModel, identities[0]) is not None
             assert not list(
                 await reader.scalars(
                     select(ContextSelectionModel.id).where(

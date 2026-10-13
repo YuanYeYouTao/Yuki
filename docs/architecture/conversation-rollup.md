@@ -185,6 +185,8 @@ Rollup 永不进入 system instructions。一个 canonical Conversation 只建�
 
 0112 一次清退旧公共 projections/selections 并删除其个人范围、自动观察来源与请求合同字段。旧 Work/journal/protocol、ContextObservation 原件及来源 DAG、artifact 和原引用保留；原私有笔记继续由 WorkSession 读取，不自动回读、整理或发布到公共聊天。旧付费私有请求不被改写或重发。
 
+0113 删除 generation/reset 时自动删除 ContextObservation 的旧触发器。`/ai new` 取消旧来源的非终态 Work、释放租约并清退当前 Rollup 与公共选取；原观察、来源 DAG、任务回执和产物引用仍是已发生事实，保留原件。真实隐私删除继续沿原隐私语义处理。
+
 普通投影在派发前按完整初始 composition 与固定函数工具，使用 Runner 同一请求估算器
 核对真实容量；压缩比例及 4096 token 余量仅用于安排整理，不能成为另一层硬容量。
 旧冻结快照真正超限时，沿 `capacity` 原因建立新 epoch，使用当前获准的 raw/rollup；

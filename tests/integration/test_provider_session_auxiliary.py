@@ -6,7 +6,7 @@ from dataclasses import replace
 import httpx
 import pytest
 from pydantic import BaseModel
-from tests.integration.test_current_material_main_contract import _catalog, _deployment, _profile
+from tests.integration.test_current_material_main_contract import _catalog, _profile
 from tests.support.social_identity_cases import social_env
 from tests.support.work_compaction import summary_json
 from tests.support.work_compaction_capacity_helpers import _runtime, _session
@@ -113,7 +113,6 @@ async def test_auxiliary_session_header_keeps_original_body(database, tmp_path, 
                     )
                     assert compacted.chain_id != session.compaction_anchor.chain_id
                 else:
-
                     await control.reserve_request(auxiliary=True)
                     token = current_work_control.set(control)
                     try:
@@ -281,111 +280,3 @@ async def test_native_search_uses_actual_work_owner_without_changing_body(databa
         finally:
             await control.repository.release(control.lease)
             await bridge.close()
-
-
-async def test_main_observation_summary_inherits_actual_read_owner(database, tmp_path):
-    wire, headers, neutral = [], [], []
-    note = {"facts": [{"text": "已核对的原目标资料。" * 20000, "refs": ["goal"]}]}
-
-    def transport(request):
-        body = json.loads(request.content)
-        wire.append(body)
-        headers.append(request.headers.get("x-session-id"))
-        if len(wire) == 1:
-            parts = [
-                {
-                    "functionCall": {
-                        "id": "accept-original-note",
-                        "name": "task_control",
-                        "args": {"action": "accept", "goal": "保存原资料"},
-                    }
-                },
-                {
-                    "functionCall": {
-                        "id": "update-original-note",
-                        "name": "task_control",
-                        "args": {"action": "update", "context_note": note},
-                    }
-                },
-                {
-                    "functionCall": {
-                        "id": "complete-original-note",
-                        "name": "task_control",
-                        "args": {"action": "complete"},
-                    }
-                },
-            ]
-        elif "整理资料为 JSON" in json.dumps(body.get("systemInstruction", {}), ensure_ascii=False):
-            source = json.loads(body["contents"][-1]["parts"][-1]["text"])
-            parts = [
-                {
-                    "text": json.dumps(
-                        {
-                            "facts": [
-                                {
-                                    "text": "ORIGINAL_NOTE_DERIVED_SUMMARY",
-                                    "refs": source["source_refs"],
-                                }
-                            ]
-                        }
-                    )
-                }
-            ]
-        else:
-            parts = [{"text": "NO_REPLY"}]
-        return httpx.Response(
-            200,
-            json={
-                "candidates": [
-                    {"finishReason": "STOP", "content": {"role": "model", "parts": parts}}
-                ]
-            },
-        )
-
-    class ObservedGemini(GeminiProvider):
-        async def complete(self, request):
-            neutral.append(request)
-            return await super().complete(request)
-
-    async with httpx.AsyncClient(
-        base_url="https://wire.invalid/", transport=httpx.MockTransport(transport)
-    ) as client:
-        provider = ObservedGemini(
-            base_url="https://wire.invalid/",
-            api_key="synthetic",
-            timeout_seconds=2,
-            max_retries=0,
-            client=client,
-        )
-        app, env, message, sender = await _deployment(
-            database, tmp_path, provider, context_window_tokens=65536
-        )
-        try:
-            assert (await app.processor.handle(message, sender)).reason == "chat"
-            assert len(wire) == 1
-            assert (
-                await app.processor.handle(
-                    replace(message, message_id="next-read-original-note", text="继续原资料"),
-                    sender,
-                )
-            ).reason == "chat"
-            summaries = [
-                index
-                for index, body in enumerate(wire)
-                if "整理资料为 JSON"
-                in json.dumps(body.get("systemInstruction", {}), ensure_ascii=False)
-            ]
-            assert summaries
-            owner = f"yuki:{env.context.conversation_id}:g1:main"
-            for index in summaries:
-                assert headers[index] == owner
-                assert wire[index] == provider._build_payload(
-                    replace(neutral[index], provider_session_id=None)
-                )
-                assert "observation:" in json.dumps(wire[index])
-            assert "ORIGINAL_NOTE_DERIVED_SUMMARY" in json.dumps(wire[-1])
-            assert not sender.messages and not any(
-                action.startswith("send_") for action, _ in env.bot.calls
-            )
-        finally:
-            assert not await app.lifecycle._close_entries(app.lifecycle._entries)

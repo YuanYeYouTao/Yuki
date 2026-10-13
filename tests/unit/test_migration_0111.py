@@ -44,6 +44,8 @@ def test_0111_preserves_original_receipts_and_writes_real_scheduled_self_source(
                 mode="silent",
                 self_memory_enabled=True,
             )
+            # This fixture exercises 0110/0111 receipts, before the 0112 public schema.
+            case.chat.runtime.main_turns._projections = None
             mutations, _, ledger, _ = _service(database, self_memory_enabled=True)
             async with database.sessions() as session:
                 event_id = await session.scalar(select(ChatEventModel.id))

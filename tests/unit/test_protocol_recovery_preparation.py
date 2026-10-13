@@ -106,17 +106,14 @@ async def test_actual_journal_selects_exact_before_assembler_reads_history(datab
         load_prompt_snapshot=AsyncMock(side_effect=AssertionError("fresh history must not be read"))
     )
     scope = ConversationScope.group(selected.bot_user_id, selected.group_id)
-    inbound = SimpleNamespace(scope=lambda: scope)
 
     async def builder():
         return await assembler.assemble_plugin(
-            inbound=inbound,
             identity=scope,
             content="new",
             metadata={},
             current_time=TimeContext(now, now, "UTC"),
             read_history=True,
-            projection_scope="plugin",
             runtime=None,
         )
 
@@ -345,7 +342,7 @@ async def test_saved_steer_source_is_checked_before_session_restore(database, ch
 
 
 @pytest.mark.parametrize("changed", [False, True])
-async def test_dispatch_observations_extend_only_unchanged_original_guard(database, changed):
+async def test_private_observations_extend_only_unchanged_original_guard(database, changed):
     control, session, selected, _unselected = await _session(database)
     guard = session.source_guard
     assert selected.author_person_id
@@ -378,6 +375,7 @@ async def test_dispatch_observations_extend_only_unchanged_original_guard(databa
     else:
         assert guard.version.observation_sources == ((identity, 1),)
         assert guard.fingerprint != before["fingerprint"]
+        session.progress["provider_pause_replay"] = True
         await session.save("paired")
         control.session = None
         async with database.sessions() as writer, writer.begin():
@@ -387,7 +385,13 @@ async def test_dispatch_observations_extend_only_unchanged_original_guard(databa
         loaded = await session.journal.load(
             control.lease, control.current["id"], session.contract, source_control=control
         )
-        assert loaded.reason == "source_changed" and loaded.record is None
+        # Private source deletion leaves the public revision and original journal intact.
+        # Exact recovery still checks that original source before building fresh history.
+        assert loaded.reason == "resume" and loaded.record is not None
+        builder = AsyncMock(return_value="fresh history cannot replace the deleted original")
+        with pytest.raises(WorkConflict, match="work_source_changed"):
+            await prepare_context(builder, control, recovery_contract=session.contract)
+        builder.assert_not_awaited()
 
 
 async def test_response_paid_stage_prepares_current_main_history_before_retiring_private_tail(
@@ -424,14 +428,11 @@ async def test_response_paid_stage_prepares_current_main_history_before_retiring
 
     async def assemble():
         return await chat._context_assembler.assemble_plugin(
-            inbound=inbound,
             identity=inbound.scope(),
-            source_event_id=inbound.source_event_id,
             content="Continue the current Work.",
             metadata={},
             current_time=chat._time.current_default(),
             read_history=True,
-            projection_scope="main",
             runtime=config,
         )
 

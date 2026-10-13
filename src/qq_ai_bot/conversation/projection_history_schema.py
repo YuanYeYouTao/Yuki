@@ -1,6 +1,6 @@
 """Common chat projection SQL; retain original private observation dependencies."""
 
-PROJECTION_TRIGGERS_0112 = {
+PROJECTION_TRIGGERS_0113 = {
     "prompt_projection_reset": """
         CREATE TRIGGER prompt_projection_reset AFTER UPDATE OF generation, starts_after_event_id
         ON canonical_conversations
@@ -113,15 +113,6 @@ CREATE TRIGGER context_selection_source_changed
     AFTER UPDATE OF prompt_source_revision ON canonical_conversations
     WHEN OLD.prompt_source_revision IS NOT NEW.prompt_source_revision
     BEGIN
-        DELETE FROM model_context_selections WHERE conversation_id=NEW.id;
-    END""",
-    "context_observation_reset": """
-CREATE TRIGGER context_observation_reset
-    AFTER UPDATE OF generation, starts_after_event_id ON canonical_conversations
-    WHEN OLD.generation IS NOT NEW.generation
-        OR OLD.starts_after_event_id IS NOT NEW.starts_after_event_id
-    BEGIN
-        DELETE FROM model_context_observations WHERE conversation_id=NEW.id;
         DELETE FROM model_context_selections WHERE conversation_id=NEW.id;
     END""",
     "context_observation_privacy": """

@@ -317,6 +317,7 @@ pending 完成通知可在同一事务退役。未观察的异步结果、staged
 0112 一次性清退旧按人建立的公共缓存与选取，删除公共 actor/read_scope、observation 来源和
 contract_revision。原 ContextObservation、来源 DAG、artifact 引用和 Work 私有依赖保留。
 context_note 继续由既有 WorkSession 读取；原付费请求、预算、工具与投递回执不被迁移重跑。
+0113 退出 generation/reset 自动删除原观察及 DAG 的旧触发器。显式新会话只撤销旧来源的新执行并清退公共历史；保留事实不会使旧 generation 重新获得执行资格。
 
 普通 journal 保存因来源标量版本变化而失败时，最多在 writer 之外用原入口授权与来源
 guard 重新核验一次，再重备同一数据库保存；无原 guard 或真实来源变化保持拒绝。

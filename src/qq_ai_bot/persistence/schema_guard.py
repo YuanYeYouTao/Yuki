@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
 from qq_ai_bot.conversation.projection_history_schema import (
-    PROJECTION_TRIGGERS_0112 as PROJECTION_TRIGGERS_CURRENT,
+    PROJECTION_TRIGGERS_0113 as PROJECTION_TRIGGERS_CURRENT,
 )
 
 
