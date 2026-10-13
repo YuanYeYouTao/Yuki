@@ -1,6 +1,7 @@
 """The opt-in probe uses actual configured adapters over mock HTTP only."""
 
 import json
+import re
 
 import httpx
 import pytest
@@ -14,6 +15,7 @@ from qq_ai_bot.model_runtime.models import (
     StructuredOutputMode,
 )
 from qq_ai_bot.model_runtime.pool import ModelClientPool
+from qq_ai_bot.persistence.database import Database
 
 
 def track_pool(monkeypatch):
@@ -239,3 +241,65 @@ async def test_manual_probe_keeps_failed_request_and_closes_clients(tmp_path, mo
     assert report["physical_calls"][0]["unknown_usage"] is True
     assert all(client.is_closed for pool in pools for client in pool._connection_pools.values())
     assert all(provider._client.is_closed for pool in pools for provider in pool._clients.values())
+
+
+async def test_manual_work_restart_probe_preserves_receipt_and_closes_database(
+    tmp_path, monkeypatch
+):
+    databases = []
+    closed = []
+    initialize = Database.__init__
+    close = Database.close
+
+    def observe_initialize(self, url):
+        initialize(self, url)
+        databases.append(self)
+
+    async def observe_close(self):
+        closed.append(self)
+        await close(self)
+
+    monkeypatch.setattr(Database, "__init__", observe_initialize)
+    monkeypatch.setattr(Database, "close", observe_close)
+    requests = []
+
+    def transport(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        payload = answer(ModelProtocol.GEMINI)
+        if len(requests) == 1:
+            text = body["contents"][-1]["parts"][-1]["text"]
+            handle = re.search(r"handle=([^，]+)", text).group(1)
+            payload["candidates"][0]["content"]["parts"] = [
+                {
+                    "thoughtSignature": "synthetic-original-read",
+                    "functionCall": {
+                        "id": "original-read",
+                        "name": "read_tool_artifact",
+                        "args": {"handle": handle, "operation": "text", "limit": 100},
+                    },
+                }
+            ]
+        return httpx.Response(200, json=payload)
+
+    report = await cache_probe.run_experiment(
+        profile=profile("renamed-gemini-connection", ModelProtocol.GEMINI),
+        api_key="synthetic-key",
+        output=tmp_path / "work-restart.json",
+        scenarios=("C05",),
+        samples=1,
+        warmups=1,
+        prefix_characters=64,
+        prefix_control=False,
+        transport=httpx.MockTransport(transport),
+    )
+    scenario = report["scenarios"][0]
+    assert scenario["status"] == "complete"
+    evidence = scenario["runtime_evidence"]
+    assert evidence["restart"]["work_id_unchanged"]
+    for counter in ("model_requests", "tool_calls"):
+        assert evidence["restart"][f"{counter}_before"] == evidence["restart"][f"{counter}_after"]
+    assert evidence["accepted_read"]["same_receipt"]
+    assert evidence["accepted_read"]["business_invocations"] == 1
+    assert databases and all(database in closed for database in databases)
+    assert report["accounting"]["physical_match"]

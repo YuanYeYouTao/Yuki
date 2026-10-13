@@ -167,11 +167,7 @@ class WorkDriver:
         original = await self.repository.get(self.control.current["id"])
         await self.repository.release(self.lease)
         await self.app.database.engine.dispose()
-        from qq_ai_bot.persistence.database import Database
-
-        database = Database(self.app.database.url)
-        self.app.database = database
-        self.repository = WorkRepository(database)
+        self.repository = WorkRepository(self.app.database)
         self.lease = await self.repository.acquire(
             original["conversation_id"], original["generation"], seconds=300
         )
