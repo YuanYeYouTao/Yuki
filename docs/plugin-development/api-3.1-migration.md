@@ -1,6 +1,6 @@
 # Plugin API 3.1 历史迁移
 
-> 本文记录 MCP 退出时的 3.1 合同。当前 Host 只接受 3.4，完成这些历史步骤后继续 [API 3.2 历史迁移](api-3.2-migration.md) 和 [API 3.3 迁移](api-3.3-migration.md)。
+> 本文记录 MCP 退出时的 3.1 历史合同。当前 Host 只接受精确的 3.5；完成这些历史步骤后继续 [API 3.2 历史迁移](api-3.2-migration.md)、[API 3.3 迁移](api-3.3-migration.md)及后续步骤，最终按 [API 3.5 迁移](api-3.5-migration.md)更新声明与实际代码。下面的 3.1 示例属于当时版本。
 
 Plugin API 3.1 删除 `ctx.mcp`、`MCPFacade`、`mcp.read`、`mcp.call` 和
 `mcp.facade.v1`。Host 不再连接或调用 MCP Server，也没有空 facade 兼容层。

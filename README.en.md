@@ -1,4 +1,4 @@
-<!-- release-baseline: version=3.9.0 schema=0111 -->
+<!-- release-baseline: version=3.9.0 schema=0118 -->
 
 [简体中文](README.md) · English
 
@@ -24,32 +24,39 @@
 
 Yuki is an open-source, self-hosted social AI agent exploring what a persistent digital life can be in real conversations. She currently runs in QQ private chats and groups, remembers people and shared experiences, uses tools and a persistent workspace to carry work across messages. Her identity and memory live in Yuki's own database and can survive a change of model, QQ account, or gateway.
 
-**The current release is 3.8.4.** In this release, the main agent sends visible messages explicitly through `send_message`, and optional group semantic observation, SELF initiative, and SELF automation are available. Yuki can choose to speak, split a reply, or remain silent. Autonomous participation is disabled by default, and long-term behavior in real QQ groups is still being evaluated. The workspace is deployed separately; the official 3.8.4 bundle does not include the management WebUI.
+**The current release is 3.8.4.** In this release, the main agent sends visible messages explicitly through `send_message`, and optional group semantic observation, SELF initiative, and SELF automation are available. Yuki can choose to speak, split a reply, or remain silent. Autonomous participation in 3.8.4 is disabled by default, and long-term behavior in real QQ groups is still being evaluated. The workspace is deployed separately; the official 3.8.4 bundle does not include the management WebUI.
 
 **The current development baseline is 3.9.0 and is not released.** See the [draft 3.9.0 release notes](docs/releases/v3.9.0.md) for every merged PR and the [draft upgrade guide](docs/upgrade-3.9.0.md) for preparation. The 3.8.4 Release above remains the official download.
 
 ## Main changes in 3.9.0
 
-- **Direct build by default:** The same main-agent loop exposes the fixed complete tool declaration without a Monty binding, worker, or launcher in the image. Code Mode requires an explicitly selected image and opt-in; validate resource headroom on the target host before enabling it.
+- **Direct build by default:** The same main-agent loop exposes the fixed complete tool declaration. The default image contains no Monty binding, worker, or launcher. Code Mode is an optional tool-calling mode using a separately built `codemode` target and explicit opt-in; both modes share tool implementations and the execution backend.
 - **Management WebUI and a shared execution runtime:** The journal-style interface shows actual conversations, execution traces, tool receipts, model usage, and workspace files, and manages model connections and task routes. Chat, SELF, plugins, automation, and Work resumption share the main agent. WebUI is disabled by default.
-- **Recoverable long tasks:** Work retains its original goal, cumulative budget, protocol checkpoints, and delivery receipts. Context is condensed against actual request capacity, and research material is read on demand. Terminal waits, subtasks, and additional user requirements continue the original task; restarts do not repeat confirmed effects.
-- **Simpler memory policy:** Independent facts can share a key; changes and deletion use fact IDs. Attribution/reinforcement scoring, automatic promotion, and capacity-driven eviction are removed. Extraction, SELF, and Dream can use separate model profiles, with partial and unresolved results retained.
+- **Group participation controls:** Automatic replies, proactive wakeups, and autonomous participation default to enabled in current source and can be controlled separately through configuration. Ordinary message bursts are combined over a configurable wait before starting a new reply; explicit calls and original Work inputs bypass it. Disabling new opportunities does not cancel accepted tasks or schedules. The optional Jev semantic controller remains disabled by default.
+- **Recoverable long tasks:** Work retains its goals, parent/child relationships, cumulative budget, original checkpoints, and actual receipts. Context is condensed against actual request capacity. The agent can finish its goal without every historical failure or unknown result vetoing completion. Waiting and explicit continuation preserve the original task; continuing a child does not reopen a finished ancestor, and confirmed effects are not repeated.
+- **Simpler memory policy:** Independent facts can share a key; changes and deletion use fact IDs. Attribution/reinforcement scoring, automatic promotion, capacity-driven eviction, and the old affection/trust scores are removed. Extraction, SELF, and Dream can use separate model profiles, with partial and unresolved results retained. Automatic extraction accepts new factual assertions.
 - **Agent-directed retrieval:** The agent uses `search_memory` when past facts are needed instead of injecting them every turn. Current, quoted, historical, workspace, and authorized tool images enter the original main model's native multimodal input.
-- **Material for the current activation:** Necessary scene material and short notes use their current effective values for this activation. Empty material adds no wrapper. Public history retains original chat and useful task notes; private Work protocol checkpoints and actual receipts stay with their original execution.
-- **Web access and protocol feedback:** New installations enable model search by default while respecting explicit disablement and connection capabilities. Adapters do not manufacture tool calls from text or silently add paid continuations. Real errors and known usage are retained; dispatched or unknown effects require reconciliation with their original receipts.
+- **Shared public history and current material:** A Conversation keeps one history of original events rather than rebuilding it for each speaker, entry point, or personal preference. Program-provided material has explicit source and end markers before the current message. It is used only for that activation and stays out of public history, automatic snapshots, and summaries; task notes remain private to their original Work.
+- **Forwarded messages on demand:** The agent can read the first layer of forwarded nodes through the original conversation event, preserving order and partial failures. Ingestion does not automatically expand forwards, and nested forwards are not recursively fetched.
+- **Multiple protocols and web access:** Chat Completions, Responses, Claude Messages, and Gemini GenerateContent use explicit task routes. New installations enable model search by default while respecting explicit disablement and actual connection capabilities. New profiles default to medium reasoning; existing explicit settings are preserved.
+- **Actual failures and receipts:** Model errors, failed tools, and unknown effects retain their original call records. Late results can still be reconciled against the original execution. Paid truncated output remains an incomplete result; Yuki does not automatically buy another model request to explain an error or repair plain-text truncation, or insert a fixed error message into QQ.
 - **Less database waiting before replies:** History reads, context preparation, and optional diagnostic writes are moved out of critical write transactions. Background maintenance uses indexes, bounded pages, and short transactions. Actual latency still depends on model responses, tool requests, and host resources.
-- **Legacy MCP removal:** Connections, tool discovery, management pages, SDK capabilities, and automation entry points are retired together. Shared tool results, media, and receipts remain. Plugin API is now **3.4**, the current development database head is **0111**, and old plugins require adaptation and renewed approval.
+- **Retired capabilities and interfaces:** Legacy MCP connections, discovery, management pages, SDK capabilities, and automation entry points are removed together. Model-side administration tools and unused auxiliary action logs are also retired; shared tool results, media, and original receipts remain. Plugin API is now **3.5**, removing unimplemented event and permission declarations. The current development database head is **0118**.
 - **Speech output retirement:** Genie synthesis, voice profiles/preferences, tool parameters, SDK/management features, the Worker and release dependencies are removed. Incoming/quoted ASR, historical audio and original receipts remain. Reconcile old executions and verify a cold backup of speech facts and referenced files before migrating the dedicated tables; no automatic resend or conversion to text occurs.
 
 These describe the current source. Real provider API behavior, natural-chat latency, and long-task outcomes require their respective acceptance evidence. Optional Code Mode isolation checks do not establish production capacity or long-term memory behavior.
+
+**Future plan: The current WebUI in 3.9.0 is temporary; the next major release will completely redesign it around multiple clients.**
+
+Conversation compact ([#417](https://github.com/YuanYeYouTao/Yuki/issues/417), [#418](https://github.com/YuanYeYouTao/Yuki/issues/418)) and full inheritance of main-agent capabilities by subagents are not implemented yet. Current source still uses Rollup and a separate subagent tool subset. See the [design review](docs/architecture/Yuki-Work摘要退役与会话Compact及任务树设计审查报告-2026-10-14.md) for the planned replacement.
 
 ## Current source capabilities
 
 | Capability | How it is used |
 | --- | --- |
 | Conversation and long-term memory | Chat in groups or privately, look up past events, and explicitly ask Yuki to remember, correct, or delete facts |
-| Images, voice, and attachments | Receive images, voice, video, or documents and ask follow-up questions in the same conversation without quoting the attachment |
-| QQ social actions | Look up members, use structured mentions, send group/private messages, and recall Yuki's own messages; the backend checks targets and permissions |
+| Images, voice, and attachments | Receive images, voice, video, or documents, ask follow-up questions without quoting the attachment, and read forwarded messages on demand |
+| QQ social actions | Look up members, use structured mentions and pokes, send group/private messages, and recall Yuki's own messages; the backend checks targets and permissions |
 | Search and plugins | Use configured online tools and approved plugins |
 | Persistent workspace | Save projects and files, run Python, Node.js, or Shell, install dependencies, and deliver results |
 | Background work and automation | Start work while continuing the conversation, check progress later, and run scheduled work within granted permissions |
@@ -74,28 +81,27 @@ This is an **optional, separately deployed capability** requiring a Linux host, 
 
 Long-term memory stores stable facts, preferences, and meaningful experiences. Routine extraction aggregates messages; explicit requests to remember, correct, or delete are handled immediately. The main agent decides when to call `search_memory` instead of automatically searching every turn or injecting all long-term facts. Retrieval respects the current actor's visible scope and work budget, and reports truncation or incomplete results. Keys are labels rather than unique slots; facts retain their IDs and evidence. Extraction, SELF reflection, and Dream can each select a model connection. Rollup condenses long conversation history, while raw history remains independently searchable.
 
-`short_state` is a shared, bounded, expiring area for temporary cross-conversation notes. Writes need only slot/text; empty text clears the slot. Each activation shows the current effective content. It is distinct from long-term memory and workspace files. Group and private chats are not automatically combined into one complete history.
+`short_state` is a shared, bounded, expiring area for temporary cross-conversation notes. Writes need only slot/text; empty text clears the slot. Each activation shows only current effective content, without retaining an initial snapshot or subsequent change deltas. It is distinct from long-term memory and workspace files. Group and private chats are not automatically combined into one complete history.
 
 Memory reads have a specific privacy boundary: a past shared-group relationship can expose structured facts about a person, **including facts sourced from private chat**, but not another person's raw private messages or private evidence. Read [Memory scope and permissions](docs/architecture/memory-v2.md) before deployment. Model extraction and recall can be wrong; verify important claims against their sources.
 
 ## Images, voice, files, and web access
 
 - **Images and video:** Current, quoted, and historical attachments, along with agent-selected workspace and authorized tool images, share the original main model's native image input. Historical reads check internal event IDs, conversation ownership, and cache expiry. A model without image input reports the material as unread; Yuki does not silently switch models or request a separate Qwen visual summary. MP4/MOV video is sampled into frames by FFmpeg for the same main agent. Audio tracks are not analyzed, and sampling may miss moments. Background sticker classification and explicit plugin vision capabilities can still use a separate vision connection.
-- **Incoming voice:** Private messages, group messages that meet the reply policy, and quoted voice can be transcribed with Qwen ASR and included in chat history, search, and Rollup. Qwen connectivity can be reused; speech synthesis and sending are retired. See [speech recognition](docs/speech/recognition.md).
+- **Incoming voice:** Private messages, group messages that meet the reply policy, and quoted voice can be transcribed with Qwen ASR and included in chat history, search, and Rollup. Recognized text and sources are retained in attachment order, including completed transcriptions when another attachment fails. Qwen connectivity can be reused; speech synthesis and sending are retired. See [speech recognition](docs/speech/recognition.md).
 - **Files:** Bounded extraction supports text, code, CSV/JSON, PDF text, DOCX, and XLSX. Scanned PDFs do not receive OCR; spreadsheet formulas are not recalculated; reading does not execute macros or embedded code. Within the same conversation, later questions can read the original attachment's 24-hour temporary cache without quoting it.
 - **Web:** New installations without an explicit web switch default to `WEB_MODE=native`. Explicit `disabled` remains disabled, and existing connection search choices are preserved. Enabling web access does not grant every model search capability: native search requires a truthful capability declaration, Gemini can use an explicitly selected search bridge, and external `web_search` requires a configured backend. External search defaults to Tavily. Set `WEB_MODE=tavily` and `WEB_SEARCH_BACKEND=deepseek_anthropic` to use the [DeepSeek search bridge](docs/deepseek-search-bridge.md), with an optional Tavily key for failure fallback. The DeepSeek main agent currently does not declare native search. See the [provider contract](docs/architecture/model-providers.md) for protocol and configuration boundaries.
 
 Chat, plugin wakeups, automation, and task resumption use the same main agent with its complete tool declarations. The tool schema stays fixed within a deployment; permissions and budgets are checked at execution time. This reduces request-prefix variation but does not guarantee provider cache hits.
 
-In historical samples, three requests within one natural Gemini group-chat reply had an input-weighted cached-token ratio of **90.55%**. A manual DeepSeek Responses cumulative-chat experiment measured **95.11%** across nine requests, or **99.02%** for its eight warm continuations. Dates, scenarios, and measurement coverage differ; these are neither current production rates nor before/after latency comparisons. See the [3.9.0 cache measurements](docs/releases/v3.9.0.md#缓存与用量) for complete samples and multi-scenario results.
+Historical Gemini / DeepSeek samples, accounting coverage, and experiment limits are recorded in the [3.9.0 cache measurements](docs/releases/v3.9.0.md#缓存与用量). They do not establish current production cache rates, faster replies, or lower costs in the new version. Missing cache fields remain unknown.
 
 ## Configuration and startup
 
-Basic deployment requires Linux amd64 or Windows Docker Desktop running Linux containers, Docker Engine with Compose v2, a configured model service using one of the supported Chat Completions or Responses integrations, and a logged-in SnowLuma QQ gateway. Yuki no longer supports NapCat; its existing gateway abstraction remains available for other implementations.
+Basic deployment requires Linux amd64 or Windows Docker Desktop running Linux containers, Docker Engine with Compose v2, and a configured model service using one of the supported Chat Completions or Responses integrations. Current development source uses a logged-in SnowLuma QQ gateway; NapCat is retired on this branch, while the existing gateway abstraction remains available for other implementations.
 
-The development branch adds native Claude Messages, Gemini GenerateContent, and common Chat vendor dialects.
-Providers can be explicitly assigned to tasks; see the [protocol contract](docs/architecture/model-providers.md)
-and [multi-provider example](config/model_profiles.providers.example.toml). These additions do not describe the existing 3.8.4 deployment archive.
+The development branch supports Chat Completions, Responses, Claude Messages, Gemini GenerateContent, and common vendor parameter dialects. Profiles explicitly select models, reasoning, structured output, and search; message content does not secretly select a provider. After WebUI saves a connection, new tasks use it, while dispatched requests retain their original connection and protocol state.
+See the [protocol contract](docs/architecture/model-providers.md) and [multi-provider example](config/model_profiles.providers.example.toml) for capability and recovery boundaries. These describe current source; use the official 3.8.4 bundle's instructions for its gateway, model, and deployment configuration.
 
 Download the deployment bundle from the [3.8.4 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.4). After extraction, fill in `.env` and model configuration manually or use the guided setup.
 
@@ -133,7 +139,7 @@ The Bot image is `ghcr.io/yuanyeyoutao/yuki-qqbot:3.8.4`; historical 3.8.4 TTS W
 
 ## Upgrading and maintenance
 
-The 3.9.0 source uses Plugin API **3.4** and current development database head **0111**; the official 3.8.4 package has head **0072**. Follow the migrations bundled with the actual target image. An application version does not replace a schema check, and `stamp` must not skip migrations. Plugins must remove MCP dependencies, adapt to API 3.4, and receive renewed approval. Legacy `llm.generate` / `agent.run` calls now use the unified main entry point.
+The 3.9.0 source uses Plugin API **3.5** and current development database head **0118**; the official 3.8.4 package has head **0072**. Follow the migrations bundled with the actual target image. An application version does not replace a schema check, and `stamp` must not skip migrations. Remove legacy MCP, retired event/permission, and relationship-service dependencies, follow the [API 3.5 migration](docs/plugin-development/api-3.5-migration.md), and renew plugin approval. The Host matches the API version and manifest exactly.
 
 Before deploying a 3.9.0 development commit, use the [draft upgrade guide](docs/upgrade-3.9.0.md) to check old MCP mounts, environment settings, and operator grants. Retired operator capabilities fail strict validation. After committing the new database head, an image-only rollback is insufficient; an old backup must not overwrite new messages or receipts.
 
@@ -177,11 +183,12 @@ Routine regressions use fake providers and isolated databases. Paid Gemini and D
 | [Development contract](docs/architecture/development-contract.md) | Event IDs, boundaries, fixed tools, resumption, and transactions |
 | [Rollup](docs/architecture/conversation-rollup.md) | Long-conversation condensation |
 | [Memory](docs/architecture/memory-v2.md) | Extraction, retrieval, and permissions |
-| [Plugin API 3.4](docs/plugin-development/index.md) | Plugin development and capability boundaries |
+| [Plugin API 3.5](docs/plugin-development/index.md) | Plugin development and capability boundaries |
+| [Work, compact, and subagent design](docs/architecture/Yuki-Work摘要退役与会话Compact及任务树设计审查报告-2026-10-14.md) | Planned summary retirement, conversation compaction, and full capability inheritance |
 | [Tool results](docs/architecture/tool-results.md) | Result budgets, media, and durable receipts |
 | [Versioned releases](docs/operations/versioned-docker-release.md) | Images, bundles, and the release process |
 | [CHANGELOG](CHANGELOG.md) | Historical changes |
 
 ## License
 
-Yuki is licensed under [AGPL-3.0-only](LICENSE) (GNU Affero General Public License, version 3 only).
+Current source is licensed under [AGPL-3.0-only](LICENSE) (GNU Affero General Public License, version 3 only). Historical releases use the LICENSE distributed with that version.

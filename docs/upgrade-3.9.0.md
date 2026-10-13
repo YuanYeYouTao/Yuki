@@ -2,9 +2,11 @@
 
 <!-- release-baseline: version=3.9.0 schema=0118 -->
 
-本指南随当前开发源码更新；PR列表的历史截止基线为 main `0ddd7eee`（2026-10-09）。**3.9.0 尚未正式发布**，正式下载仍为 [3.8.4 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.4)。源码版本号不代表已有 `:3.9.0` 正式镜像；历史109个已合并PR、后续修改及各自交付状态见[发布说明](releases/v3.9.0.md)。
+本指南按 main `abf25c1e924b6ba7c2087d3dc9039bf87801066f`（2026-10-14）核对当前开发源码与随包迁移。**3.9.0 尚未正式发布**，正式下载仍为 [3.8.4 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.4)。源码版本号不代表已有 `:3.9.0` 正式镜像；完整合并范围、后续修改及各自交付状态统一见[发布说明](releases/v3.9.0.md)，本页不另维护 PR 数量或旧截止。
 
-默认构建与发行使用 direct：同一 Agent loop 提供固定完整工具声明，不包含 Monty binding、worker 或 launcher，`CODE_MODE_ENABLED=false`。Code Mode 已合入主线，是显式 `--target codemode` 构建与启用的可选能力。切换模式保留原 Work、composition、预算和回执，不能取得重派发资格。
+默认构建与发行使用 direct：同一 Agent loop 提供固定完整工具声明，不包含 Monty binding、原生 worker 或 launcher，`CODE_MODE_ENABLED=false`。Code Mode 已合入主线，是显式 `--target codemode` 构建与启用的可选能力；持久子 Agent 与这个可选原生组件是不同模块。切换模式保留原 Work、composition、预算和回执，不能取得重派发资格。
+
+3.9.0 的现有 WebUI 定位为**临时管理界面**，仍使用当前控制面、认证与业务入口。下一个大版本将进行彻底的多客户端重构；这是未来计划，当前 WebUI 尚未退役，也没有要求现有部署现在迁移到新客户端。当前实现见[WebUI 合同](architecture/webui-console.md)。
 
 后续 NapCat 退役已通过 [PR #276](https://github.com/YuanYeYouTao/Yuki/pull/276) 合并，并按开发提交部署；另见[任务书与交付状态](architecture/Yuki-NapCat删除与既有网关抽象保留任务书-2026-10-09.md)及[上线回执](operations/napcat-retirement-20261009.md)。下述旧部署处理适用于包含该修改的源码；3.9.0仍未正式发布。
 
@@ -14,7 +16,7 @@
 | --- | --- | --- |
 | 数据库 head | `0072` | 当前开发单一 head `0118` |
 | Plugin API | 3.0 | 3.5，需适配并重新批准 |
-| 管理 WebUI | 不包含 | 默认关闭，共用控制面 |
+| 管理 WebUI | 不包含 | 临时管理界面，默认关闭，共用控制面；多客户端重构属于下一大版本 |
 | MCP / Genie 输出 | 旧实现 / 可选组件 | 专属入口、配置和服务退役；共享回执、媒体与 ASR 保留 |
 | 长期记忆 | 旧策略 | fact ID 为身份，同 key 独立事实可共存 |
 
@@ -54,6 +56,8 @@
 
 迁移不重建原任务，不重置累计预算、不回填未知用量或重放效果。DDL 和索引成本在停写副本演练，回退使用能读取现行 schema 的兼容代码或向前修补。
 
+源码运行要求 Python 3.12，安装时使用随包锁文件及其固定的 Yuki-Semantic-Participation 依赖。项目当前声明的许可证为 [AGPL-3.0-only](../LICENSE)；第三方组件与素材保留各自许可，见[第三方声明](../THIRD_PARTY_NOTICES.md)。Pi 是设计参考，不是安装依赖；Monty 随可选 Code Mode 构建提供，来源与许可见[对应说明](architecture/pi-port-provenance.md)。
+
 ## 升级前整理配置
 
 保留实际 Compose 项目名、全部覆盖文件、挂载、模型连接和插件目录。模板只作对照，不覆盖现有部署。
@@ -62,6 +66,7 @@
 - **结构化输出与思考**：任务沿 Profile 的 `function_tool`、`text_json` 或 `json_schema`；Gemini JSON Schema 使用 `responseJsonSchema`。旧 `responseSchema` projector 与降级开关退役。思考沿显式设置，不再强制开启或抬档；正文 DSML 不再转工具，Claude 适配器不隐式追加付费续跑。核对端点实际协议响应，不能靠配置名证明可用。
 - **Memory 策略**：删除仅服务自动注入、归因/强化/意图评分、治理、容量腾位与经验过时的旧设置，对照当前 `.env.example`。`valid_until`、用户显式变更和真实权限仍有效。同 key 不是唯一槽位，管理修改和删除沿 fact ID；不要把多条旧事实压成一个值。
 - **本轮资料配置**：撤去 `CONTEXT_METADATA_BUDGET_RATIO`、`PLUGIN_MAX_PROMPT_FRAGMENT_CHARACTERS`、`PLUGIN_MAX_PROMPT_CHARACTERS_PER_PLUGIN` 和 `PLUGIN_MAX_TOTAL_PROMPT_CHARACTERS`；0108 清退三项插件字符配置对应的 override，不以其他字符阈值替代。完整模型请求仍沿原容量检查。
+- **参与配置**：当前新安装的 `conversation.auto_reply_enabled`、`conversation.proactive_wakeup_enabled`、`conversation.autonomous_enabled` 默认均为 true。旧 3.8.4 的默认关闭说明不适用于这份源码；已有显式环境设置和群级覆写继续生效，升级不把原停用群改成启用。`0114` 将旧停用状态迁入同一配置入口。
 - **联网**：新安装未设联网开关时默认 native，显式 disabled 与既有搜索连接保持有效。原生搜索、Gemini 搜索桥及外部后端按[Provider 合同](architecture/model-providers.md)配置；默认开启不能补出模型缺少的能力。
 - **持久环境 / WebUI**：保留原 Manager、共享 volume 和执行回执；普通包不会安装新 Manager 或 gVisor。WebUI 默认关闭，认证与管理授权见[WebUI 合同](architecture/webui-console.md)。
 
@@ -97,7 +102,11 @@ token、用户配置与插件，不能默认删除；Git/镜像 ignore 暂时保
 
 ### Plugin API 3.5
 
-更新插件 manifest 与代码，移除 `ctx.mcp`、`ctx.speech` 和专属权限/事件/TTS 注册，通过现有批准流程重新核对权限，保持原启用意图。迁移范围见 [API 3.1](plugin-development/api-3.1-migration.md)、[API 3.2](plugin-development/api-3.2-migration.md)、[API 3.4](plugin-development/api-3.4-migration.md) 和 [API 3.5](plugin-development/api-3.5-migration.md)。宿主挂载的插件代码不会随镜像自动更新。
+当前 Host **只接受精确的 API 3.5**。旧插件先完成 [API 3.1 的 MCP 退役](plugin-development/api-3.1-migration.md)、[API 3.2 的语音输出退役](plugin-development/api-3.2-migration.md)、[API 3.3 的共同 Main 入口](plugin-development/api-3.3-migration.md)和 [API 3.4 的关系接口退役](plugin-development/api-3.4-migration.md)，再按 [API 3.5](plugin-development/api-3.5-migration.md)移除从未发布的事件订阅及未实现的 `runtime.config.read/write` 权限，最终声明 `plugin_api = "3.5"`。插件自身配置仍用 `plugin.config.read/write`，当前事件以 [Event Catalog](plugin-development/api-reference/events.md)为准。
+
+实际代码与 manifest 变更后，沿现有发现、审阅和批准流程核对新的精确合同，保持原启用意图；旧批准不自动授权新 API。历史批准读取只忽略 3.5 明确退役的两个权限，不扩大其他授权。宿主挂载的插件代码不会随镜像自动更新，不能只改版本号而继续使用已删除的 Facade。
+
+[PR #412](https://github.com/YuanYeYouTao/Yuki/pull/412)要求 `ctx.automation.create_task(task, request_id="...")` 提供明确、稳定的操作 ID，不再用整轮调用 ID 合并创建。同一调用创建不同任务使用不同 ID；同一插件与来源下，相同 ID 和参数的重试返回原任务与创建回执，重用 ID 改参数则报冲突。
 
 本轮资料删减同时移除 `limits.prompt_characters`、`PromptFragment.max_characters/cache_key`、
 无人消费的 `PromptTarget.PLUGIN_SESSION`，以及恒空的 `get_current_observation` 与
@@ -168,8 +177,24 @@ token、用户配置与插件，不能默认删除；Git/镜像 ignore 暂时保
 
 0112 清空可重建的公共投影和选取，移除个人范围、自动观察来源与公共 contract_revision，并删除 person_time_settings/self_time_settings 两张偏好表；原 ContextObservation、来源 DAG、Work/checkpoint/journal、不可变版本、protocol objects、tool artifacts/refs 保持原件。明确设置的任务调度时区及已发生时间事实保留。任务笔记只由原 Work 私有路径读取，取消其公共自动发布与付费 scope-summary 链。
 
-0113 随后删除 generation/reset 时清除原观察和 DAG 的旧触发器。部署升完整 head 后再执行批量 `/ai new`，只清公共历史并取消旧来源的新执行，保留原来源、私有回执、原聊天、Memory 与引用文件。
+0113 随后删除 generation/reset 时清除原观察和 DAG 的旧触发器，保留原来源、私有回执、原聊天、Memory 与引用文件。会话 reset 是独立管理操作，不是数据库升级步骤；历史批量 `/ai new` 的范围只属于对应交付记录，升级不重复该次取消或重置。
 
 迁移前保存一份当前停写冷备，迁移后逐值核对私有表、旧版本、全部 observation/DAG 和 artifact 引用，沿原文件校验器核实际被引用文件。不能将升级前的旧候选镜像直接换回读取新 schema，也不能覆盖上线后的新事实；使用兼容新 schema 的代码或向前修补。
 
 管理操作使用 WebUI、CLI 或 `/ai`。`admin_*` 不再属于主 Agent 工具清单；原 Work 的历史调用与效果回执保留，尚未执行的退役调用返回工具不可用。迁移 `0114` 在升级库中保留旧群停用状态，之后可通过现有群配置编辑。
+
+## 0114—0118 管理入口与恢复收尾
+
+`0114` 把 `spaces.autonomous_enabled=0` 的旧群写入共享配置 `conversation.autonomous_enabled=false`，随后重置旧列，退出两个停用入口并存的状态。已有停用意图、配置历史、审计和工具回执保留；管理操作沿当前控制面进行，不恢复管理员 Agent 工具。
+
+`0115` 只删除 Self Reflection 的五项无人消费诊断列，不重建 owner、水位、原 run、模型请求或记忆 mutation 回执。`0116` 仅把旧 detached continuation 的 `claimed` 状态一次性标为 `blocked / legacy_continuation_retired`；原 request/run、次数和回执继续保存。这不是外部执行失败证明，也不授予重新提交命令的资格。已有命令仍按原 run ID 和完成回执对账。
+
+`0117` 删除无人读取的 `agent_actions` 通用 OneBot 诊断表，实际工具权限、Work effects 和发送回执仍由原执行链持有。`0118` 新建 `status='waiting' AND run_id IS NOT NULL` 的部分索引，让取消对账直接读取仍需处理的原 run；不改完成结果，也不把所有历史执行重新领取。
+
+应用启动要求数据库 revision 与随包单一 head 一致。`0114`、`0117` 不提供事实重建型 downgrade，`0115`、`0116` 的 downgrade 也不恢复旧列或旧 claim；撤 `0118` 索引不代表旧镜像能读取整份新 schema。回退沿兼容版本或向前修补处理，保全升级后新增的消息、文件与效果。
+
+## 尚未实施的替换设计
+
+[Work 摘要退役、会话 Compact 与任务树报告](architecture/Yuki-Work摘要退役与会话Compact及任务树设计审查报告-2026-10-14.md)是 #417/#418 与子 Agent 完整能力继承的待实施方案。当前源码仍有 Conversation Rollup、独立 Work/ordinary 摘要及 worker 工具子集；迁移到 `0118` 不会自动完成这些替换。当前有效的摘要路由、配置与原任务资料按现行合同保留，实施时再同步退役全部消费者。
+
+同样，下一大版本的多客户端重构尚未交付。当前部署继续使用现有 WebUI/控制面；未来接口、升级和数据处理以对应版本的实现及升级说明为准。日期部署、真实模型与 QQ 验收仍按各自原证据读取，不把这份升级文档当作已经上线。

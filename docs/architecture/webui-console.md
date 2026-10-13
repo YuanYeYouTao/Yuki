@@ -1,5 +1,7 @@
 # WebUI 管理界面
 
+> 3.9.0 的现有 WebUI 是临时管理界面。下一大版本将进行彻底的多客户端重构；该规划尚未实现，当前 WebUI、认证与控制面入口仍有效，本文继续描述其现行实现。
+
 遵守 [development-contract](development-contract.md) 与
 [Control Plane 合同](control-plane-foundation.md)。这是当前源码的实现边界，
 描述当前完整管理界面的源码边界；发布、部署和线上验收分别记录。

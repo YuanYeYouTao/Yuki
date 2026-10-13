@@ -2,6 +2,8 @@
 
 开发先读[共同开发约束](development-contract.md)，再读涉及模块。以下是当前源码合同；发现源码不符合合同，记录具体缺口，不把历史设计或验收结论当成现行实现。
 
+本入口按 2026-10-14 的 3.9.0 开发源码整理，当前迁移 head 为 `0118`、Plugin API 为 `3.5`。完整合并范围与发行状态见[3.9.0 发布草案](../releases/v3.9.0.md)，实际升级与配置变更见[升级指南](../upgrade-3.9.0.md)。文档更新不代表新的正式 Release、镜像或生产部署。
+
 | 现行文档 | 范围 |
 | --- | --- |
 | [开发约束](development-contract.md) | 删除优先、身份/授权、恢复、事务和交付原则 |
@@ -10,9 +12,9 @@
 | [Tool Kernel](tool-kernel.md) | 固定完整清单、direct / Code Mode、目录与执行授权 |
 | [模型供应商与协议](model-providers.md) | 显式 Profile、结构化模式、思考、方言和私有续跑状态 |
 | [Provider 输出](provider-output-boundary.md) | 思考、正文、真实工具调用与显式发送 |
-| [持久工作者](persistent-subagents.md) | 子任务生命周期、权限与根预算 |
+| [持久工作者](persistent-subagents.md) | 当前子任务生命周期、工具子集、恢复与根预算；完整能力继承见下方待实施方案 |
 | [工具结果](tool-results.md) | 结果预算、共享 artifact、媒体和证据 |
-| [Conversation Rollup](conversation-rollup.md) | 原始事件、真实历史投影、压缩与 generation |
+| [Conversation Rollup](conversation-rollup.md) | 当前原始事件、公共历史投影、独立摘要与 generation；#418 的替换尚未实施 |
 | [聊天媒体](chat-media-workspace.md) | 附件索引、缓存、工作区提升与发送 |
 | [Memory](memory-v2.md) | 独立事实、证据、读取和写入权限 |
 | [记忆变更](memory-change.md) | 按 fact ID 的日常修改和原回执 |
@@ -20,16 +22,17 @@
 | [语义参与宿主](semantic-participation.md) | 普通持续接话、SELF 自主行动、Jev 与真实反馈 |
 | [自主参与模型](autonomous-participation-model.md) | 连续状态、回执与机会参数 |
 | [Control Plane](control-plane-foundation.md) | 管理主体、装配、执行回执与业务服务 |
-| [WebUI](webui-console.md) | 同源管理界面、认证、业务页面和实际覆盖 |
+| [WebUI](webui-console.md) | 3.9.0 临时管理界面、认证、业务页面和实际覆盖 |
 | [执行过程](execution-trace.md) | 实际模型请求、工具、消息与投递的限期查询 |
-| [插件架构](../plugin-development/architecture.md) | SDK、Host 与隔离插件会话 |
+| [插件架构](../plugin-development/architecture.md) | Plugin API 3.5、Host、SDK 与隔离插件会话 |
 | [持久环境](../operations/persistent-environment.zh-CN.md) | 工作区、终端、Manager 与交付 |
 | [Code Mode 运维](../operations/pi-codemode-operations.md) | 可选构建、隔离、原数据和切换 |
 | [搜索适配](../deepseek-search-bridge.md) | 显式独立连接、协议适配与真实失败兜底 |
 
-## 当前上下文与 Work 设计审查
+## 未实施的替换计划
 
-- [10-14 Work 摘要退役、会话 Compact 与任务树设计审查报告](Yuki-Work摘要退役与会话Compact及任务树设计审查报告-2026-10-14.md)：关联 Issue #417/#418，包含 PR #228 追溯、当前源码与 Pi durable 对照、旧摘要/Rollup 全链路删除索引、公共与私有窗口、原任务恢复及子 Agent 能力扩展、待实施验证与成本数据表，以及真实聊天摘录。当前为设计报告，未实施、部署或证明生产节省。
+- [10-14 Work 摘要退役、会话 Compact 与任务树设计审查报告](Yuki-Work摘要退役与会话Compact及任务树设计审查报告-2026-10-14.md)：关联 Issue #417/#418，包含 PR #228 追溯、当前源码与 Pi durable 对照、旧摘要/Rollup 全链路删除索引、公共与私有窗口、原任务恢复、子 Agent 完整继承 Main 能力、待实施验证与成本数据表，以及真实聊天摘录。当前为设计报告；统一 compact、摘要链退役和完整子能力继承均未实施，也没有证明生产节省。
+- **下一大版本多客户端重构**：3.9.0 现有 WebUI 是临时管理界面；下一大版本将彻底重构为多客户端。当前 WebUI 与控制面仍有效，这项未来规划不表示现有实现已退役或已经提供新客户端接口。
 
 ## 当前查询审查
 
