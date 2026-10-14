@@ -193,8 +193,28 @@ token、用户配置与插件，不能默认删除；Git/镜像 ignore 暂时保
 
 应用启动要求数据库 revision 与随包单一 head 一致。`0114`、`0117` 不提供事实重建型 downgrade，`0115`、`0116` 的 downgrade 也不恢复旧列或旧 claim；撤 `0118` 索引不代表旧镜像能读取整份新 schema。回退沿兼容版本或向前修补处理，保全升级后新增的消息、文件与效果。
 
-## 尚未实施的替换设计
+## 会话 Compact 与 Rollup 退役
 
-[Work 摘要退役、会话 Compact 与任务树报告](architecture/Yuki-Work摘要退役与会话Compact及任务树设计审查报告-2026-10-14.md)是 #417/#418 与子 Agent 完整能力继承的待实施方案。当前源码仍有 Conversation Rollup、独立 Work/ordinary 摘要及 worker 工具子集；迁移到 `0118` 不会自动完成这些替换。当前有效的摘要路由、配置与原任务资料按现行合同保留，实施时再同步退役全部消费者。
+[统一实施任务书](architecture/Yuki-417-418统一Compact实施任务书.md)规定 #417/#418 的完整替换范围。
+`0119` 把有效旧公共摘要的正文和覆盖点转入 `prompt_projections.selected_summary_*`，统一使用
+`kind=compact`、renderer 2；已有有效已选检查点保留原正文和覆盖点。旧 emergency overlay 退役。
+迁移清除原 Work 的 Rollup 等待条件并重新排队，保留目标、来源、预算、journal、原请求与执行回执。
+三张 Rollup 表、信号表和 canonical Conversation 的三项覆盖计数列一并删除；迁移不可逆向重建。
 
-同样，下一大版本的多客户端重构尚未交付。当前部署继续使用现有 WebUI/控制面；未来接口、升级和数据处理以对应版本的实现及升级说明为准。日期部署、真实模型与 QQ 验收仍按各自原证据读取，不把这份升级文档当作已经上线。
+从实际 `.env` 和 Bot 环境删除 `CONVERSATION_ROLLUP_*`、`CONTEXT_COMPACTION_WINDOW_TOKENS`、
+`WORK_COMPACTION_MAX_OUTPUT_TOKENS`、`WORK_COMPACTION_TRIGGER_RATIO`、`WORK_COMPACTION_TARGET_RATIO`。
+`0119` 同时删除对应的旧热配置 override。聊天和 Work 窗口配置继续有效，compact 使用当前 Main
+的模型设置与真实请求容量。Memory evidence compaction 是独立功能，保留其配置与工作者。
+旧 `model_profiles.toml` 的 `conversation_compaction` 路由读取时跳过并给出警告，应从文件中删除。
+
+Control API 的 ConversationView 删除 `covered_through_event_id` 和 `uncovered_event_count`；
+health 删除 Rollup 组件，`/ai status` 显示已选公共 compact 的覆盖点和公共窗口更新时间。
+窗口更新时间也会随普通历史追加变化，不等同于最近一次 compact 的付费请求时间。
+CLI 的 `conversation recount-uncovered` 与旧专用摘要探针退役；实际请求重放见
+[手动模型缓存核查](../tools/cache_probe.md)。
+
+上线前用生产库副本只读盘点非终态 Work 的旧来源指纹，确认仍依赖 Rollup 的精确恢复范围。
+这些 Work 按当前公共历史与原任务材料进行业务恢复，已付响应与效果沿原调用 ID 对账，不能重新购买或重发。
+迁移演练、真实模型、QQ 验收和部署按各自证据记录；文档不代替实际上线。
+
+下一大版本的多客户端重构尚未交付。当前部署继续使用现有 WebUI/控制面；未来接口、升级和数据处理以对应版本的实现及升级说明为准。

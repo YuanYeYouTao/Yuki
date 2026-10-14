@@ -2,6 +2,8 @@
 
 from alembic import op
 
+from qq_ai_bot.conversation.projection_compact_schema import PROJECTION_TRIGGERS_0119
+
 revision = "0119"
 down_revision = "0118"
 branch_labels = None
@@ -98,6 +100,11 @@ def upgrade() -> None:
         )
     for _name, sql in retained:
         connection.exec_driver_sql(sql)
+    # Erase private compact material while retaining its content-free dispatch
+    # fact, so privacy invalidation cannot authorise another paid request.
+    for name in ("context_observation_privacy", "context_observation_privacy_initial"):
+        connection.exec_driver_sql(f'DROP TRIGGER IF EXISTS "{name}"')
+        connection.exec_driver_sql(PROJECTION_TRIGGERS_0119[name])
 
 
 def downgrade() -> None:

@@ -38,16 +38,16 @@ Presence 与 canonical Conversation。事件账本保留平台 message ID、send
 读取固化的 primary alias。换 QQ、换 Provider、连接重建或路由接管都不得更改 Conversation
 generation。
 
-Rollup 是 Conversation 的可重建提示投影：原始 `chat_events` 始终是证据源，摘要不进入
-Memory，也不被当作可信指令。热尾同时受事件数和实际 Prompt 字符预算约束；后台模型不可用时
-可以使用 emergency overlay，但不会覆盖语义检查点。
+公共历史由该 Conversation 的已选 compact 检查点和覆盖点后的原消息组成；原始
+`chat_events` 始终是证据源。检查点是不可信输入，不进入 Memory，也不授予权限。
+容量判断沿 Main 的真实完整请求，装配阶段不截短历史或等待独立后台摘要。
 
 插件外部事件保持 `external_event` 独立账本类型，不伪装为 Person 发言。插件的主动触发只是一个
 可靠 WakeupRequest：它加载同一 canonical Conversation 下普通聊天使用的完整稳定 snapshot、
-Rollup、raw history、Memory、Prompt compiler、工具 schema 和模型 profile，事件摘要只作为本轮
+compact 检查点、raw history、按需 Memory 工具、Prompt compiler、工具 schema 和模型 profile，事件摘要只作为本轮
 最后一条临时 user input，既不落入聊天历史，也不形成插件专属短上下文。Yuki 成功发送的主动消息
 仍是普通 outbound `message`，并通过 `caused_by_event_id` 永久指向来源 external event。模型历史与
-Rollup source projection 会显示有界因果标签，平台正文不被改写。
+公共消息渲染保留因果来源标签，平台正文不被改写。
 
 ## 三类平台收发路由
 

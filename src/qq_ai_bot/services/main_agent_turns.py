@@ -397,7 +397,9 @@ class MainAgentTurnService:
                 )
                 prepared.fragments = retained
                 prepared.committed = await repository.read(view_key)
-                prepared.committed_input = list(retained.items)
+                prepared.committed_input = (
+                    prepared.committed.items() if prepared.committed is not None else None
+                )
                 prepared.reason = None
                 composition = compose_context(prepared.context)
                 fragments = (
@@ -420,6 +422,7 @@ class MainAgentTurnService:
                 prepared.context_key,
                 repository,
                 adopt_compact,
+                prepared.context.history_event_fragments,
             )
             return replace(
                 composition,

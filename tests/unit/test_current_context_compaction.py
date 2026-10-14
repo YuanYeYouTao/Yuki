@@ -5,14 +5,22 @@ from dataclasses import replace
 import pytest
 from tests.support.work_compaction_capacity_helpers import _runtime, _session
 
-from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ChatTool, ToolCall, ToolFunction
+from qq_ai_bot.domain.messages import (
+    ChatMessage,
+    ChatRequest,
+    ChatResponse,
+    ChatTool,
+    ModelResponseStatus,
+    ToolCall,
+    ToolFunction,
+)
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.model_runtime.capacity import estimate_request_tokens
 from qq_ai_bot.model_runtime.models import ModelExecutionPriority
 from qq_ai_bot.runtime.work_journal import JournalUnavailable
 from qq_ai_bot.runtime.work_repository import WorkConflict
 from qq_ai_bot.runtime.work_session import WorkSession
-from qq_ai_bot.services.context_compaction import execution_compact_plan
+from qq_ai_bot.services.context_compaction import CompactReceipt, execution_compact_plan
 from qq_ai_bot.services.turn_execution import TurnExecution
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 
@@ -34,9 +42,17 @@ async def _public_context(database, control, initial):
     )
 
     async def adopt(summary, coverage, retained):
-        return initial
+        from qq_ai_bot.services.context_compaction import render_context_checkpoint
 
-    return PublicCompactContext(
+        context.messages = (
+            initial[0],
+            render_context_checkpoint(summary, coverage),
+            *retained.messages(),
+        )
+        context.fragments = retained
+        return (*context.messages, initial[-1])
+
+    context = PublicCompactContext(
         (initial[0], *fragments.messages()),
         1,
         fragments,
@@ -45,6 +61,7 @@ async def _public_context(database, control, initial):
         PromptProjectionRepository(database),
         adopt,
     )
+    return context
 
 
 async def test_public_prefix_excludes_current_and_private_material(database, tmp_path):
@@ -135,6 +152,140 @@ async def test_short_work_does_not_buy_summary_at_soft_watermark(database, tmp_p
     assert result.text == "finished"
     assert len(provider.requests) == 1
     assert provider.requests[0].messages[:2] == initial[:2]
+
+
+async def _append_public(database, text):
+    from qq_ai_bot.domain.conversations import ConversationScope
+    from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+
+    return await ScopedEventLedgerUnitOfWork(database).append(
+        scope=ConversationScope.group("80001", "20001"),
+        platform_message_id="new-public-event",
+        sender_user_id="10001",
+        direction="inbound",
+        content=text,
+    )
+
+
+async def test_ordinary_cold_compact_keeps_new_history_and_fresh_runtime_material(
+    database, tmp_path
+):
+    control, _, initial = await _session(database, tmp_path)
+    context = await _public_context(database, control, initial)
+    initial = (*context.messages, initial[-1])
+    provider = FakeLLMProvider(lambda request: "Public paid checkpoint.")
+    runner, runtime = await _runtime(database, control, initial, provider)
+    runtime = replace(
+        runtime,
+        work_control=None,
+        public_compaction=context,
+        execution_id="event:cold-public",
+        compact_focus="",
+        auxiliary_requests=[0],
+    )
+    execution = TurnExecution(runner, initial, runtime, None)
+    execution.state.transcript.append(ChatMessage("user", "old activation material"))
+    await execution._finalize_initial_layout()
+    await execution.compact_current(
+        0,
+        ChatRequest(messages=execution.state.transcript.request().messages),
+        ModelExecutionPriority.FOREGROUND,
+        10000,
+    )
+    await _append_public(database, "A new public correction after the paid request.")
+    fresh = await _public_context(database, control, initial)
+    fresh_initial = (*fresh.messages, initial[-1])
+    recovered = TurnExecution(
+        runner, fresh_initial, replace(runtime, public_compaction=fresh), None
+    )
+    recovered.state.transcript.append(ChatMessage("user", "fresh activation material"))
+    await recovered.restore_compact_receipt()
+    text = "\n".join(
+        message.content or "" for message in recovered.state.transcript.request().messages
+    )
+    assert "A new public correction" in text
+    assert "Public paid checkpoint." in text
+    assert "fresh activation material" in text and "old activation material" not in text
+    assert len(provider.requests) == 1
+
+
+async def test_privacy_erases_compact_body_without_authorising_repurchase(database, tmp_path):
+    from sqlalchemy import select, text
+
+    from qq_ai_bot.conversation.observation_models import ContextObservationModel
+
+    control, _, initial = await _session(database, tmp_path)
+    context = await _public_context(database, control, initial)
+    initial = (*context.messages, initial[-1])
+    provider = FakeLLMProvider(lambda request: "Private paid-body erasure sentinel.")
+    runner, runtime = await _runtime(database, control, initial, provider)
+    runtime = replace(
+        runtime,
+        work_control=None,
+        public_compaction=context,
+        execution_id="event:privacy-compact",
+        compact_focus="",
+        auxiliary_requests=[0],
+    )
+    execution = TurnExecution(runner, initial, runtime, None)
+    await execution.compact_current(
+        0, ChatRequest(messages=initial), ModelExecutionPriority.FOREGROUND, 10000
+    )
+    async with database.immediate_session() as writer:
+        await writer.execute(
+            text(
+                "INSERT INTO execution_trace_state(id,privacy_generation) VALUES(1,1) "
+                "ON CONFLICT(id) DO UPDATE SET privacy_generation=1"
+            )
+        )
+    async with database.sessions() as reader:
+        rows = (await reader.scalars(select(ContextObservationModel))).all()
+        assert len(rows) == 3
+        assert all(row.payload_json == '{"phase":"invalidated"}' for row in rows)
+        assert all(row.actor_id == row.read_scope == "" for row in rows)
+        assert all(row.parent_sources_json == "[]" and row.summary_view_key is None for row in rows)
+    recovered = TurnExecution(runner, initial, runtime, None)
+    with pytest.raises(WorkConflict, match="context_compaction_source_changed"):
+        await recovered.restore_compact_receipt()
+    assert len(provider.requests) == 1
+
+
+async def test_work_cold_public_compact_adopts_paid_prefix_before_business_rebase(
+    database, tmp_path, monkeypatch
+):
+    import qq_ai_bot.services.context_compaction as compaction
+
+    control, session, initial = await _session(database, tmp_path)
+    context = await _public_context(database, control, initial)
+    initial = (*context.messages, initial[-1])
+    session.transcript = TurnTranscript(initial)
+    provider = FakeLLMProvider(lambda request: "Paid Work public checkpoint.")
+    runner, runtime = await _runtime(database, control, initial, provider)
+    runtime = replace(runtime, public_compaction=context, compact_focus="", auxiliary_requests=[0])
+    execution = TurnExecution(runner, initial, runtime, None)
+    execution.state.transcript = session.transcript
+    publish = compaction.public_compact_publication
+
+    async def fail_publication(*args, **kwargs):
+        raise WorkConflict("publication_failed")
+
+    monkeypatch.setattr(compaction, "public_compact_publication", fail_publication)
+    with pytest.raises(WorkConflict, match="publication_failed"):
+        await execution.compact_current(
+            0, ChatRequest(messages=initial), ModelExecutionPriority.FOREGROUND, 10000
+        )
+    await _append_public(database, "Fresh history after Work compact payment.")
+    fresh = await _public_context(database, control, initial)
+    monkeypatch.setattr(compaction, "public_compact_publication", publish)
+    restored = WorkSession(control, session.contract)
+    control.session = restored
+    await restored.restore(TurnTranscript((*fresh.messages, initial[-1])), public_compaction=fresh)
+    text = "\n".join(message.content or "" for message in restored.transcript.request().messages)
+    assert "Paid Work public checkpoint." in text
+    assert "Fresh history after Work compact payment." in text
+    assert len(provider.requests) == 1
+    assert (await control.repository.get(control.current["id"]))["model_requests"] == 1
+    assert "context_compaction" not in restored.progress
 
 
 def test_compact_prefix_retains_real_tool_pairs_and_main_settings():
@@ -310,3 +461,159 @@ async def test_manual_compact_uses_public_main_and_existing_authority(
         assert "decisions" in messages[-1].content
     else:
         assert "权限不足" in sender.messages[0].text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["paired", "response"])
+async def test_incomplete_ordinary_compact_restores_fresh_history_and_runtime_material(
+    database, tmp_path, monkeypatch, phase
+):
+    from qq_ai_bot.services.context_compaction import CompactReceipt
+
+    control, _, initial = await _session(database, tmp_path)
+    context = await _public_context(database, control, initial)
+    initial = (*context.messages, initial[-1])
+    provider = FakeLLMProvider(
+        lambda request: ChatResponse(
+            content="An incomplete paid checkpoint.",
+            latency_seconds=0,
+            status=ModelResponseStatus.INCOMPLETE,
+            incomplete_reason="max_output_tokens",
+        )
+    )
+    runner, runtime = await _runtime(database, control, initial, provider)
+    runtime = replace(
+        runtime,
+        work_control=None,
+        public_compaction=context,
+        execution_id="event:invalid-cold-review",
+        compact_focus="",
+        auxiliary_requests=[0],
+    )
+    execution = TurnExecution(runner, initial, runtime, None)
+    execution.state.transcript.append(ChatMessage("user", "old activation material"))
+    await execution._finalize_initial_layout()
+    request = ChatRequest(messages=execution.state.transcript.request().messages)
+    if phase == "response":
+        write = CompactReceipt.write
+
+        async def fail_pairing(self, payload, **kwargs):
+            if payload["phase"] == "paired":
+                raise WorkConflict("pairing_failed")
+            await write(self, payload, **kwargs)
+
+        monkeypatch.setattr(CompactReceipt, "write", fail_pairing)
+        with pytest.raises(WorkConflict, match="pairing_failed"):
+            await execution.compact_current(0, request, ModelExecutionPriority.FOREGROUND, 10000)
+        monkeypatch.setattr(CompactReceipt, "write", write)
+    else:
+        await execution.compact_current(0, request, ModelExecutionPriority.FOREGROUND, 10000)
+    await _append_public(database, "New public correction after incomplete paid response.")
+    fresh = await _public_context(database, control, initial)
+    recovered = TurnExecution(
+        runner, (*fresh.messages, initial[-1]), replace(runtime, public_compaction=fresh), None
+    )
+    recovered.state.transcript.append(ChatMessage("user", "fresh activation material"))
+    await recovered.restore_compact_receipt()
+    text = "\n".join(
+        message.content or "" for message in recovered.state.transcript.request().messages
+    )
+    assert len(provider.requests) == 1
+    assert "New public correction" in text
+    assert "fresh activation material" in text
+    assert "old activation material" not in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["paired", "response"])
+async def test_ordinary_e_cold_keeps_checkpoint_and_fresh_material(
+    database, tmp_path, monkeypatch, phase
+):
+    control, _, initial = await _session(database, tmp_path)
+    context = await _public_context(database, control, initial)
+    initial = (*context.messages, initial[-1])
+    provider = FakeLLMProvider(lambda request: "The paid private checkpoint.")
+    runner, runtime = await _runtime(database, control, initial, provider)
+    runtime = replace(
+        runtime,
+        work_control=None,
+        public_compaction=context,
+        execution_id="event:e-cold-review",
+        auxiliary_requests=[0],
+    )
+    execution = TurnExecution(runner, initial, runtime, None)
+    execution.state.transcript.append(ChatMessage("user", "old activation material"))
+    await execution._finalize_initial_layout()
+    execution.state.transcript.append(ChatMessage("assistant", "old investigation " * 100))
+    request = ChatRequest(messages=execution.state.transcript.request().messages)
+    if phase == "response":
+        write = CompactReceipt.write
+
+        async def fail_pairing(self, payload, **kwargs):
+            if payload["phase"] == "paired":
+                raise WorkConflict("pairing_failed")
+            await write(self, payload, **kwargs)
+
+        monkeypatch.setattr(CompactReceipt, "write", fail_pairing)
+        with pytest.raises(WorkConflict, match="pairing_failed"):
+            await execution.compact_current(0, request, ModelExecutionPriority.FOREGROUND, 10000)
+        monkeypatch.setattr(CompactReceipt, "write", write)
+    else:
+        await execution.compact_current(0, request, ModelExecutionPriority.FOREGROUND, 10000)
+    await _append_public(database, "New public correction after private paid response.")
+    fresh = await _public_context(database, control, initial)
+    recovered = TurnExecution(
+        runner, (*fresh.messages, initial[-1]), replace(runtime, public_compaction=fresh), None
+    )
+    recovered.state.transcript.append(ChatMessage("user", "fresh activation material"))
+    await recovered.restore_compact_receipt()
+    text = "\n".join(
+        message.content or "" for message in recovered.state.transcript.request().messages
+    )
+    assert len(provider.requests) == 1
+    assert text.count("The paid private checkpoint.") == 1
+    assert "New public correction" in text
+    assert "fresh activation material" in text
+    assert "old activation material" not in text
+
+
+@pytest.mark.asyncio
+async def test_work_p_response_keeps_fresh_extras(database, tmp_path, monkeypatch):
+    import qq_ai_bot.services.context_compaction as compaction
+
+    control, session, initial = await _session(database, tmp_path)
+    context = await _public_context(database, control, initial)
+    initial = (*context.messages, initial[-1])
+    session.transcript = TurnTranscript(initial)
+    provider = FakeLLMProvider(lambda request: "The paid public checkpoint.")
+    runner, runtime = await _runtime(database, control, initial, provider)
+    runtime = replace(runtime, public_compaction=context, compact_focus="", auxiliary_requests=[0])
+    execution = TurnExecution(runner, initial, runtime, None)
+    execution.state.transcript = session.transcript
+    publish = compaction.public_compact_publication
+
+    async def fail_publication(*args, **kwargs):
+        raise WorkConflict("publication_failed")
+
+    monkeypatch.setattr(compaction, "public_compact_publication", fail_publication)
+    with pytest.raises(WorkConflict, match="publication_failed"):
+        await execution.compact_current(
+            0, ChatRequest(messages=initial), ModelExecutionPriority.FOREGROUND, 10000
+        )
+    await _append_public(database, "New public correction after Work paid response.")
+    fresh = await _public_context(database, control, initial)
+    monkeypatch.setattr(compaction, "public_compact_publication", publish)
+    restored = WorkSession(control, session.contract)
+    control.session = restored
+    await restored.restore(
+        TurnTranscript(
+            (*fresh.messages, initial[-1], ChatMessage("user", "fresh activation material"))
+        ),
+        public_compaction=fresh,
+    )
+    text = "\n".join(message.content or "" for message in restored.transcript.request().messages)
+    assert len(provider.requests) == 1
+    assert text.count("The paid public checkpoint.") == 1
+    assert "New public correction" in text
+    assert text.count("fresh activation material") == 1
+    assert "context_compaction" not in restored.progress

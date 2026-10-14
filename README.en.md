@@ -48,7 +48,7 @@ These describe the current source. Real provider API behavior, natural-chat late
 
 **Future plan: The current WebUI in 3.9.0 is temporary; the next major release will completely redesign it around multiple clients.**
 
-Conversation compact ([#417](https://github.com/YuanYeYouTao/Yuki/issues/417), [#418](https://github.com/YuanYeYouTao/Yuki/issues/418)) and full inheritance of main-agent capabilities by subagents are not implemented yet. Current source still uses Rollup and a separate subagent tool subset. See the [design review](docs/architecture/Yuki-Work摘要退役与会话Compact及任务树设计审查报告-2026-10-14.md) for the planned replacement.
+[Conversation compact](docs/architecture/conversation-compact.md) ([#417](https://github.com/YuanYeYouTao/Yuki/issues/417), [#418](https://github.com/YuanYeYouTao/Yuki/issues/418)) uses the current Main model to condense public history or private execution context when the complete request exceeds its actual capacity. Subagents share Main's tool contract and execute under their own real source and authorization. The independent Rollup and Work/ordinary summary pipelines are retired.
 
 ## Current source capabilities
 
@@ -79,7 +79,7 @@ This is an **optional, separately deployed capability** requiring a Linux host, 
 
 ## Memory and continuity
 
-Long-term memory stores stable facts, preferences, and meaningful experiences. Routine extraction aggregates messages; explicit requests to remember, correct, or delete are handled immediately. The main agent decides when to call `search_memory` instead of automatically searching every turn or injecting all long-term facts. Retrieval respects the current actor's visible scope and work budget, and reports truncation or incomplete results. Keys are labels rather than unique slots; facts retain their IDs and evidence. Extraction, SELF reflection, and Dream can each select a model connection. Rollup condenses long conversation history, while raw history remains independently searchable.
+Long-term memory stores stable facts, preferences, and meaningful experiences. Routine extraction aggregates messages; explicit requests to remember, correct, or delete are handled immediately. The main agent decides when to call `search_memory` instead of automatically searching every turn or injecting all long-term facts. Retrieval respects the current actor's visible scope and work budget, and reports truncation or incomplete results. Keys are labels rather than unique slots; facts retain their IDs and evidence. Extraction, SELF reflection, and Dream can each select a model connection. Main compact checkpoints retain long conversation context, while raw history remains independently searchable.
 
 `short_state` is a shared, bounded, expiring area for temporary cross-conversation notes. Writes need only slot/text; empty text clears the slot. Each activation shows only current effective content, without retaining an initial snapshot or subsequent change deltas. It is distinct from long-term memory and workspace files. Group and private chats are not automatically combined into one complete history.
 
@@ -88,7 +88,7 @@ Memory reads have a specific privacy boundary: a past shared-group relationship 
 ## Images, voice, files, and web access
 
 - **Images and video:** Current, quoted, and historical attachments, along with agent-selected workspace and authorized tool images, share the original main model's native image input. Historical reads check internal event IDs, conversation ownership, and cache expiry. A model without image input reports the material as unread; Yuki does not silently switch models or request a separate Qwen visual summary. MP4/MOV video is sampled into frames by FFmpeg for the same main agent. Audio tracks are not analyzed, and sampling may miss moments. Background sticker classification and explicit plugin vision capabilities can still use a separate vision connection.
-- **Incoming voice:** Private messages, group messages that meet the reply policy, and quoted voice can be transcribed with Qwen ASR and included in chat history, search, and Rollup. Recognized text and sources are retained in attachment order, including completed transcriptions when another attachment fails. Qwen connectivity can be reused; speech synthesis and sending are retired. See [speech recognition](docs/speech/recognition.md).
+- **Incoming voice:** Private messages, group messages that meet the reply policy, and quoted voice can be transcribed with Qwen ASR and included in chat history, search, and public compact. Recognized text and sources are retained in attachment order, including completed transcriptions when another attachment fails. Qwen connectivity can be reused; speech synthesis and sending are retired. See [speech recognition](docs/speech/recognition.md).
 - **Files:** Bounded extraction supports text, code, CSV/JSON, PDF text, DOCX, and XLSX. Scanned PDFs do not receive OCR; spreadsheet formulas are not recalculated; reading does not execute macros or embedded code. Within the same conversation, later questions can read the original attachment's 24-hour temporary cache without quoting it.
 - **Web:** New installations without an explicit web switch default to `WEB_MODE=native`. Explicit `disabled` remains disabled, and existing connection search choices are preserved. Enabling web access does not grant every model search capability: native search requires a truthful capability declaration, Gemini can use an explicitly selected search bridge, and external `web_search` requires a configured backend. External search defaults to Tavily. Set `WEB_MODE=tavily` and `WEB_SEARCH_BACKEND=deepseek_anthropic` to use the [DeepSeek search bridge](docs/deepseek-search-bridge.md), with an optional Tavily key for failure fallback. The DeepSeek main agent currently does not declare native search. See the [provider contract](docs/architecture/model-providers.md) for protocol and configuration boundaries.
 
@@ -181,10 +181,10 @@ Routine regressions use fake providers and isolated databases. Paid Gemini and D
 | [Help](docs/help.md) | Chat, commands, and everyday use |
 | [Architecture](docs/architecture/canonical-runtime.md) | People, spaces, accounts, and conversations |
 | [Development contract](docs/architecture/development-contract.md) | Event IDs, boundaries, fixed tools, resumption, and transactions |
-| [Rollup](docs/architecture/conversation-rollup.md) | Long-conversation condensation |
+| [Conversation compact](docs/architecture/conversation-compact.md) | Long-conversation condensation |
 | [Memory](docs/architecture/memory-v2.md) | Extraction, retrieval, and permissions |
 | [Plugin API 3.5](docs/plugin-development/index.md) | Plugin development and capability boundaries |
-| [Work, compact, and subagent design](docs/architecture/Yuki-Work摘要退役与会话Compact及任务树设计审查报告-2026-10-14.md) | Planned summary retirement, conversation compaction, and full capability inheritance |
+| [Work, compact, and subagent design](docs/architecture/Yuki-Work摘要退役与会话Compact及任务树设计审查报告-2026-10-14.md) | Historical design for summary retirement, compact, and capability inheritance |
 | [Tool results](docs/architecture/tool-results.md) | Result budgets, media, and durable receipts |
 | [Versioned releases](docs/operations/versioned-docker-release.md) | Images, bundles, and the release process |
 | [CHANGELOG](CHANGELOG.md) | Historical changes |

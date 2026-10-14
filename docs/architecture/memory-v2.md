@@ -7,7 +7,7 @@
 
 一个数据库是一个永久 Yuki。Person、Space 使用 canonical UUID；QQ 号仅通过 Binding
 解析，Presence/Provider 是传输身份，不划分记忆所有权。更换网关实现或 Yuki 账号
-不重建记忆或 Conversation/Rollup 所有权，也不因账号切换重置聊天 generation；
+不重建记忆或 Conversation 所有权，也不因账号切换重置聊天 generation；
 Route 有独立的 `route_generation`，有效发送路由迁移、暂停或恢复可推进它。
 
 SELF 主入口、Work 和保留的子任务沿实际发起来源解析分区：主动轮用原 initiative，定时任务用原 occurrence、版本和 execution。原主动轮结束、任务后来被编辑不单独阻止已接纳任务继续读取。仍核对真实 run 归属、当前 generation、Space、Presence 与 Binding，执行授权由原 Work 租约和领域入口核验；不重开祖先或把目标 Person 当作私聊授权。
@@ -21,7 +21,7 @@ SELF 主入口、Work 和保留的子任务沿实际发起来源解析分区：�
 | Group | canonical Space 的共同事实与经历 |
 | SELF | Yuki 的动态自我事实、偏好、经历；global/current-private/current-group 可见性 |
 
-History 是不可变事件账本；Rollup 是短期上下文压缩，不等于长期事实。
+History 是不可变事件账本；公共 compact 检查点压缩当前上下文，不等于长期事实。
 事实的版本、证据、来源、可信度、争议和 canonical 所有权保留在长期 Memory。
 external_event 保持 external_untrusted，不伪装成人类聊天，不自动进入人物记忆。
 插件的受控读取也不产生普通用户社会关系授权。

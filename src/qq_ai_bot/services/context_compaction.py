@@ -11,7 +11,7 @@ from uuid import uuid4
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from qq_ai_bot.conversation.frozen_fragments import FrozenFragments
+from qq_ai_bot.conversation.frozen_fragments import EventFragment, FrozenFragments
 from qq_ai_bot.conversation.observation_models import ContextObservationModel
 from qq_ai_bot.conversation.projections import PromptProjectionRepository
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, FunctionCallOutput
@@ -57,6 +57,7 @@ class PublicCompactContext:
     context_key: str
     repository: PromptProjectionRepository
     adopt: Callable[[str, int, FrozenFragments], Awaitable[tuple[ChatMessage, ...]]]
+    individual: tuple[EventFragment, ...] = ()
 
 
 class CompactReceipt:
@@ -74,7 +75,7 @@ class CompactReceipt:
     async def read(self) -> dict[str, Any] | None:
         import json
 
-        from sqlalchemy import select
+        from sqlalchemy import or_, select
 
         from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
         from qq_ai_bot.conversation.observations import privacy_generation
@@ -87,7 +88,10 @@ class CompactReceipt:
                     ContextObservationModel.source_key.startswith(self.key + ":", autoescape=True),
                     ContextObservationModel.conversation_id == self.context.version.conversation_id,
                     ContextObservationModel.generation == self.context.version.generation,
-                    ContextObservationModel.actor_id == self.actor_id,
+                    or_(
+                        ContextObservationModel.actor_id == self.actor_id,
+                        ContextObservationModel.payload_json == '{"phase":"invalidated"}',
+                    ),
                 )
                 .order_by(ContextObservationModel.created_at.desc())
                 .limit(1)
@@ -95,6 +99,8 @@ class CompactReceipt:
             if row is None:
                 return None
             payload: dict[str, Any] = json.loads(row.payload_json)
+            if payload["phase"] == "invalidated":
+                raise WorkConflict("context_compaction_source_changed")
             owner = await reader.get(CanonicalConversationModel, row.conversation_id)
             if (
                 owner is None
@@ -154,6 +160,44 @@ class CompactReceipt:
             )
             if result.scalar_one_or_none() is None:
                 raise WorkConflict("context_compaction_owner_changed")
+
+
+async def current_public_compact(
+    context: PublicCompactContext, public: dict[str, Any], summary: str
+) -> tuple[dict[str, Any], str]:
+    """Keep frozen paid history and append currently authorised newer events."""
+    previous = await context.repository.read(public["conversation_id"])
+    coverage = public["coverage"]
+    retained = FrozenFragments.load(public["items"])
+    if (
+        previous is not None
+        and previous.selected_summary_text is not None
+        and previous.selected_summary_coverage > coverage
+    ):
+        # A later published checkpoint already owns this prefix. Restoring an
+        # older paid response must not replace it with an earlier coverage.
+        coverage = previous.selected_summary_coverage
+        summary = previous.selected_summary_text
+        retained = FrozenFragments.load(previous.items())
+    grouped: list[EventFragment] = []
+    for item, message in zip(context.fragments.items, context.fragments.messages(), strict=True):
+        ids = tuple(item["event_ids"])
+        fresh = tuple(identity for identity in ids if identity > coverage)
+        if not fresh:
+            continue
+        if fresh == ids:
+            grouped.append((ids, message))
+        else:
+            selected = tuple(
+                (keys, value) for keys, value in context.individual if set(keys) <= set(fresh)
+            )
+            if {identity for keys, _ in selected for identity in keys} != set(fresh):
+                from qq_ai_bot.conversation.projections import ProjectionConflict
+
+                raise ProjectionConflict("new event fragment coverage is incomplete")
+            grouped.extend(selected)
+    retained = retained.extend_history(tuple(grouped), context.individual)
+    return {**public, "coverage": coverage, "items": list(retained.items)}, summary
 
 
 async def public_compact_publication(
