@@ -261,7 +261,6 @@ class TurnExecution:
             self.runtime.work_control.session = WorkSession(self.runtime.work_control, contract)
             self.state.transcript = await self.runtime.work_control.session.restore(
                 self.state.transcript,
-                compaction_brief=self.runtime.compaction_brief,
                 visible_event_ids=self.runtime.visible_event_ids,
             )
             pending_code = self.runtime.work_control.session.pending_compositions

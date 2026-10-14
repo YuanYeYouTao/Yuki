@@ -8,10 +8,13 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 
-from qq_ai_bot.runtime.work_compaction import SourcedFact
-
 if TYPE_CHECKING:
     from qq_ai_bot.runtime.work_control import WorkControl
+
+
+class SourcedFact(BaseModel):
+    text: str
+    refs: list[str] = Field(min_length=1)
 
 
 class ContextNote(BaseModel):

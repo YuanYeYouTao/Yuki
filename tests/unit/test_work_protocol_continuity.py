@@ -58,8 +58,8 @@ from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.protocol_schema import objects, refs, usage
 from qq_ai_bot.runtime.protocol_store import ProtocolStore
 from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_journal import JournalUnavailable, encode_transcript
-from qq_ai_bot.runtime.work_repository import WorkCapacityError, WorkRepository
+from qq_ai_bot.runtime.work_journal import encode_transcript
+from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import journal
 from qq_ai_bot.services.agent_runner import AgentRunResult, AgentRuntime
 from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
@@ -250,7 +250,7 @@ async def test_root_resume_uses_current_chat_and_task_material(
         ChatMessage("user", "transient work status"),
     )
     first = WorkSession(control, "original")
-    transcript = await first.restore(TurnTranscript(initial), compaction_brief=task)
+    transcript = await first.restore(TurnTranscript(initial))
     await control.repository.checkpoint(
         control.lease, control.current["id"], None, models=3, tools=2
     )
@@ -289,9 +289,7 @@ async def test_root_resume_uses_current_chat_and_task_material(
         "system", "new fixed contract" if contract_changed else initial[0].content
     )
     resumed = WorkSession(control, "new-contract" if contract_changed else "original")
-    restored = await resumed.restore(
-        TurnTranscript((fresh_system, fresh_task)), compaction_brief=fresh_task
-    )
+    restored = await resumed.restore(TurnTranscript((fresh_system, fresh_task)))
     assert restored.chain_id != transcript.chain_id
     assert restored.request().messages[:2] == (fresh_system, fresh_task)
     assert all(
@@ -307,27 +305,31 @@ async def test_root_resume_uses_current_chat_and_task_material(
         assert "Public search excerpt from the earlier investigation" in source_message
         assert '"truncated": false' in source_message
         assert "file:///private/secret" not in source_message
+    current_initial = restored.request().messages
     for _ in range(20):
         restored.append(ChatMessage("assistant", "Completed public investigation notes. " * 200))
     for _ in range(16):
         restored.append(ChatMessage("assistant", "Recent completed check."))
-    from tests.support.work_compaction import session_summary
+    from tests.support.current_compact import compact_session
 
-    compacted = await resumed.compact(await session_summary(resumed))
+    control.session = resumed
+    compacted, provider = await compact_session(database, control, current_initial)
+    assert len(provider.requests) == 1
     assert compacted.chain_id != restored.chain_id
     assert compacted.request().messages[:2] == (fresh_system, fresh_task)
-    summary = json.loads(compacted.request().messages[-1].content)
-    assert summary["execution_evidence"][0]["run_id"] == "original-execution"
+    assert resumed.progress["task_material"]["execution_checkpoint"].startswith("Verified results")
     row = await control.repository.get(control.current["id"])
-    assert row["model_requests"] == 3 and row["tool_calls"] == 2
+    assert row["model_requests"] == 4 and row["tool_calls"] == 2
     again = WorkSession(control, resumed.contract)
-    await again.restore(TurnTranscript((fresh_system, fresh_task)), compaction_brief=fresh_task)
+    control.session = again
+    again_initial = (fresh_system, fresh_task)
+    await again.restore(TurnTranscript(again_initial))
+    assert "execution_checkpoint" in again.progress["task_material"]
     for _ in range(20):
         again.transcript.append(ChatMessage("assistant", "Further completed checks. " * 200))
-    for _ in range(16):
-        again.transcript.append(ChatMessage("assistant", "Recent completed check."))
-    twice = await again.compact(await session_summary(again))
-    assert twice.request().messages[:2] == (fresh_system, fresh_task)
+    twice, provider = await compact_session(database, control, again_initial)
+    assert len(provider.requests) == 1
+    assert twice.request().messages[:2] == again_initial
     await control.repository.release(control.lease)
 
 
@@ -421,9 +423,7 @@ async def test_native_provider_brand_rename_resumes_paid_work(
     first_contract = models.profile_revision(ModelTask.CHAT_AGENT)
     first = WorkSession(control, first_contract)
     task = ChatMessage("user", "original task")
-    transcript = await first.restore(
-        TurnTranscript((ChatMessage("system", "fixed"), task)), compaction_brief=task
-    )
+    transcript = await first.restore(TurnTranscript((ChatMessage("system", "fixed"), task)))
     session_id = f"yuki:{control.lease.conversation_id}:g1:work:{work_id}"
     initial = ChatRequest(
         messages=transcript.request().messages,
@@ -563,7 +563,6 @@ async def test_work_changes_from_deepseek_to_gemini_without_replaying_old_effect
     first = WorkSession(control, first_contract)
     previous = await first.restore(
         TurnTranscript((ChatMessage("system", "Old DeepSeek contract"), task)),
-        compaction_brief=task,
     )
     previous.accept(
         ProviderContinuation("deepseek", "responses", ({"id": "opaque-old-provider"},), "pro")
@@ -652,7 +651,6 @@ async def test_work_changes_from_deepseek_to_gemini_without_replaying_old_effect
         fresh_task = ChatMessage("user", "Fresh wakeup")
         restored = await resumed.restore(
             TurnTranscript((ChatMessage("system", "New Gemini contract"), fresh_task)),
-            compaction_brief=fresh_task,
         )
         sequence = restored.request()
         assert sequence.continuation is None and not sequence.items
@@ -749,7 +747,6 @@ async def test_runner_resumes_gemini_work_on_deepseek_without_old_send_or_native
     first = WorkSession(control, "gemini-contract")
     transcript = await first.restore(
         TurnTranscript((ChatMessage("system", "old Gemini contract"), task)),
-        compaction_brief=task,
     )
     transcript.accept(
         ProviderContinuation(
@@ -885,7 +882,6 @@ async def test_runner_resumes_gemini_work_on_deepseek_without_old_send_or_native
             max_model_requests=1,
             fixed_tools=common_tools,
             work_control=resumed,
-            compaction_brief=task,
         )
         result = await chat.runtime.runner.run(
             (ChatMessage("system", "new DeepSeek contract"), ChatMessage("user", "wakeup")),
@@ -922,7 +918,6 @@ async def test_provider_change_keeps_original_sequence_unknown_and_allows_new_ow
     first = WorkSession(control, "deepseek-contract")
     await first.restore(
         TurnTranscript((ChatMessage("system", "DeepSeek"), task)),
-        compaction_brief=task,
     )
     call = ToolCall("sequence-call", ToolFunction("send_message", '{"text":"four parts"}'))
     effect_key = first.call_key(call.id)
@@ -991,7 +986,6 @@ async def test_provider_change_keeps_original_sequence_unknown_and_allows_new_ow
         )
         transcript = await resumed.restore(
             TurnTranscript((ChatMessage("system", "Gemini"), ChatMessage("user", "wakeup"))),
-            compaction_brief=ChatMessage("user", "wakeup"),
         )
         return restarted_control, resumed, transcript
 
@@ -1041,9 +1035,7 @@ async def test_native_checkpoint_replays_exact_http_after_sqlite_restart(
     control = await _control(database, tmp_path, worker=True)
     task = ChatMessage("user", "original task")
     first = WorkSession(control, "unchanged-profile")
-    transcript = await first.restore(
-        TurnTranscript((ChatMessage("system", "fixed"), task)), compaction_brief=task
-    )
+    transcript = await first.restore(TurnTranscript((ChatMessage("system", "fixed"), task)))
     if provider_type is AnthropicMessagesProvider:
         tail = (
             {
@@ -1152,13 +1144,13 @@ async def test_native_checkpoint_replays_exact_http_after_sqlite_restart(
 @pytest.mark.parametrize(
     "bad_anchor", [[], encode_transcript(TurnTranscript((ChatMessage("invalid", "invalid role"),)))]
 )
-async def test_corrupt_compaction_anchor_is_unavailable(
+async def test_retired_compaction_anchor_does_not_block_original_recovery(
     database, tmp_path, contract_changed, bad_anchor
 ):
     control = await _control(database, tmp_path, worker=True)
     task = ChatMessage("user", "task")
     first = WorkSession(control, "same")
-    await first.restore(TurnTranscript((task,)), compaction_brief=task)
+    await first.restore(TurnTranscript((task,)))
     await first.save("paired")
     async with database.sessions() as session, session.begin():
         raw = await session.scalar(
@@ -1171,23 +1163,15 @@ async def test_corrupt_compaction_anchor_is_unavailable(
             .where(journal.c.work_id == control.current["id"])
             .values(payload_json=json.dumps(payload))
         )
-    if contract_changed:
-        resumed = WorkSession(control, "changed")
-        refreshed = await resumed.restore(TurnTranscript((task,)), compaction_brief=task)
-        assert refreshed.request().messages[0] == task
-        assert resumed.compaction_anchor.request().messages == (task,)
-    else:
-        with pytest.raises(JournalUnavailable, match="compaction_anchor_corrupt"):
-            await WorkSession(control, "same").restore(
-                TurnTranscript((task,)), compaction_brief=task
-            )
+    resumed = WorkSession(control, "changed" if contract_changed else "same")
+    refreshed = await resumed.restore(TurnTranscript((task,)))
+    assert refreshed.request().messages[0] == task
+    assert "compaction_anchor" not in resumed.__dict__
     await control.repository.release(control.lease)
 
 
 @pytest.mark.asyncio
-async def test_journal_without_task_anchor_resumes_and_soft_compaction_does_not_block(
-    database, tmp_path, monkeypatch
-):
+async def test_worker_without_legacy_anchor_resumes_original_task(database, tmp_path, monkeypatch):
     control = await _control(database, tmp_path, worker=True)
     first = WorkSession(control, "same")
     transcript = await first.restore(TurnTranscript((ChatMessage("user", "historical input"),)))
@@ -1195,18 +1179,12 @@ async def test_journal_without_task_anchor_resumes_and_soft_compaction_does_not_
     resumed = WorkSession(control, "same")
     restored = await resumed.restore(
         TurnTranscript((ChatMessage("user", "fresh wakeup"),)),
-        compaction_brief=ChatMessage("user", "fresh wakeup"),
     )
     assert restored.request() == transcript.request()
-    with pytest.raises(WorkCapacityError, match="compaction_anchor_unavailable"):
-        await resumed.compact("Summary cannot invent the original task")
-    assert resumed.transcript is restored
-    # A real new static contract takes the caller's explicit child brief, not
-    # an inferred historical message. Missing legacy anchors do not veto it.
     actual_brief = ChatMessage("user", control.current["goal"])
     changed = WorkSession(control, "changed-contract")
-    await changed.restore(TurnTranscript((actual_brief,)), compaction_brief=actual_brief)
-    assert changed.compaction_anchor.request().messages == (actual_brief,)
+    refreshed = await changed.restore(TurnTranscript((actual_brief,)))
+    assert refreshed.request().messages[0] == actual_brief
     original = await WorkSession(control, "same").restore(TurnTranscript(()))
     assert original.request() == transcript.request()
     row = await control.repository.get(control.current["id"])
@@ -1217,13 +1195,6 @@ async def test_journal_without_task_anchor_resumes_and_soft_compaction_does_not_
     initial = (ChatMessage("system", "fixed"), ChatMessage("user", "current task"))
     runner, runtime = await _runtime(database, control, initial, provider)
     monkeypatch.setattr(runner, "work_contract", lambda *_args, **_kwargs: "same")
-    runtime = replace(
-        runtime,
-        runtime_config=replace(
-            runtime.runtime_config,
-            context=replace(runtime.runtime_config.context, work_compaction_trigger_ratio=0.00001),
-        ),
-    )
     result = await runner.run(
         initial,
         runtime,
@@ -1233,7 +1204,7 @@ async def test_journal_without_task_anchor_resumes_and_soft_compaction_does_not_
     )
     assert result.text == "valid internal final" and len(provider.requests) == 1
     assert control.accepted_ending() == "completed"
-    assert control.session.compaction_anchor is None
+    assert "context_compaction" not in control.session.progress
     await control.repository.release(control.lease)
 
 
@@ -1243,9 +1214,7 @@ async def test_responses_journal_replays_identical_http_bytes(database, tmp_path
     control = await _control(database, tmp_path, worker=True)
     task = ChatMessage("user", "task", images=(ChatImage("data:image/png;base64,YXVkaXQ="),))
     first = WorkSession(control, "same")
-    transcript = await first.restore(
-        TurnTranscript((ChatMessage("system", "fixed"), task)), compaction_brief=task
-    )
+    transcript = await first.restore(TurnTranscript((ChatMessage("system", "fixed"), task)))
     transcript.accept(
         ProviderContinuation(
             provider_type.provider_name,
@@ -1361,7 +1330,7 @@ async def test_main_entry_captures_current_task_before_work_status(database, tmp
         (ChatMessage("system", "fixed"), ChatMessage("user", "history"), current), runtime, None
     )
     messages, prepared, _backend = runner.run.call_args.args
-    assert prepared.compaction_brief == current
+    assert prepared.work_control is control
     assert messages[-1] == current  # Host state freezes later, at first prepare_request.
     await control.repository.release(control.lease)
 
@@ -1370,8 +1339,6 @@ async def test_main_entry_captures_current_task_before_work_status(database, tmp
 async def test_original_trigger_requirements_survive_goal_rewrite_and_business_resume(
     database, tmp_path
 ):
-    from tests.support.work_compaction import summary_json
-
     from qq_ai_bot.persistence.models import ChatEventModel
 
     control = await _control(database, tmp_path)
@@ -1384,7 +1351,7 @@ async def test_original_trigger_requirements_survive_goal_rewrite_and_business_r
     initial = (ChatMessage("system", "fixed"), ChatMessage("user", "current conversation"))
     first = WorkSession(control, "same")
     control.session = first
-    await first.restore(TurnTranscript(initial), compaction_brief=initial[-1])
+    await first.restore(TurnTranscript(initial))
     result = json.loads(
         await control.execute(
             "task_control", {"action": "update", "goal": "Verify the source"}, "rewrite"
@@ -1395,32 +1362,21 @@ async def test_original_trigger_requirements_survive_goal_rewrite_and_business_r
     fresh = (initial[0], ChatMessage("user", "latest chat, with no copy of the old request"))
     resumed = WorkSession(control, "same")
     control.session = resumed
-    restored = await resumed.restore(TurnTranscript(fresh), compaction_brief=fresh[-1])
+    restored = await resumed.restore(TurnTranscript(fresh))
     assert restored.request().messages[:2] == fresh
     material = json.loads(restored.request().messages[-1].content)
     assert material["goal"] == "Verify the source"
     assert material["original_request"] == {"event_id": event_id, "text": original}
-    source = json.loads(await resumed.summary_source())
-    reference = f"event:{event_id}"
-    assert source["original_request_ref"] == reference
-    assert reference in source["source_refs"]
-    assert any(
-        record.get("original_request_event_id") == event_id and record["content"] == original
-        for record in source["records"]
-    )
-    summary = json.loads(summary_json(source))
-    summary["task_directives"] = [{"text": original, "refs": [reference]}]
+    current_initial = restored.request().messages
     for _ in range(20):
         restored.append(ChatMessage("assistant", "Old investigation body. " * 500))
-    # Re-capture the source after new records are appended, while retaining the
-    # exact originating event as a supported summary reference.
-    resumed._compaction_source = None
-    await resumed.summary_source()
-    candidate = await resumed.compact(json.dumps(summary))
-    capsule = json.loads(candidate.request().messages[-1].content)
-    assert capsule["task_material"]["directives"][0]["text"] == original
-    assert capsule["task_material"]["directives"][0]["refs"] == [reference]
-    assert capsule["task_material"]["original_request_ref"] == reference
+    from tests.support.current_compact import compact_session
+
+    candidate, provider = await compact_session(database, control, current_initial)
+    assert len(provider.requests) == 1
+    body = "\n".join(message.content or "" for message in candidate.request().messages)
+    assert original in body
+    assert str(event_id) in body
     await control.repository.release(control.lease)
 
 
@@ -1439,7 +1395,7 @@ async def test_pending_recovery_uses_original_evidence_not_display(
     control = await _control(database, tmp_path)
     initial = (ChatMessage("system", "fixed"), ChatMessage("user", "retain task"))
     first = WorkSession(control, "original")
-    await first.restore(TurnTranscript(initial), compaction_brief=initial[-1])
+    await first.restore(TurnTranscript(initial))
     call = ToolCall("original-call", ToolFunction("terminal_exec", "{}"))
     first.transcript.append(ChatMessage("assistant", tool_calls=(call,)))
     await first.save("response", (call,))
@@ -1483,7 +1439,7 @@ async def test_pending_recovery_uses_original_evidence_not_display(
     monkeypatch.setattr(type(control), "observe_evidence", record)
     before = await control.repository.get(control.current["id"])
     resumed = WorkSession(control, "changed" if changed else "original")
-    await resumed.restore(TurnTranscript(initial), compaction_brief=initial[-1])
+    await resumed.restore(TurnTranscript(initial))
     assert observed
     original = observed[0]
     assert original["run_id"] == run_id

@@ -128,7 +128,6 @@ class AgentRuntime:
     script_api: ScriptApi | None = None
     invocation_source: dict[str, Any] | None = None
     invocation_goal: str | None = None
-    compaction_brief: ChatMessage | None = None
     visible_event_ids: frozenset[int] = frozenset()
     auxiliary_requests: list[int] | None = None
     preparation_model_requests: int = 0

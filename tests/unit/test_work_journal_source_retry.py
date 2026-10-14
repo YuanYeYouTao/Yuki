@@ -1,7 +1,6 @@
 """Journal CAS retries prove the original selected source without replaying effects."""
 
 import json
-from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
@@ -12,7 +11,6 @@ from tests.unit.test_work_source_guard import _guard
 
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
-    CanonicalConversationRollupModel,
 )
 from qq_ai_bot.domain.messages import ChatMessage, ToolCall, ToolFunction
 from qq_ai_bot.identity.canonical_repository import ensure_space
@@ -120,33 +118,6 @@ async def test_real_source_mutation_cannot_retry_journal(database, change):
     with pytest.raises(WorkConflict):
         await session.save("response")
     assert await _saved(database, control) == before
-
-
-async def test_legacy_guard_still_checks_summary_without_derived_revision_fence(database):
-    control, session, selected, _unselected = await _session(database)
-    revision = session.source_revision
-    now = datetime.now(UTC)
-    async with database.sessions() as writer, writer.begin():
-        writer.add(
-            CanonicalConversationRollupModel(
-                conversation_id=control.lease.conversation_id,
-                generation=1,
-                covered_through_event_id=selected.id,
-                summary_text="new semantic source",
-                summary_kind="model",
-                source_fingerprint="a" * 64,
-                revision=1,
-                created_at=now,
-                updated_at=now,
-            )
-        )
-    async with database.sessions() as reader:
-        source = await reader.get(CanonicalConversationModel, control.lease.conversation_id)
-        assert source.prompt_source_revision == revision
-    # Old journals without a frozen selected summary still compare their actual
-    # effective Rollup. A new pure derived row is not a global CAS mutation.
-    assert session.source_guard.version.selected_summary_text is None
-    assert not await session.source_guard.check(control)
 
 
 async def test_retry_preserves_upstream_authorization(database):

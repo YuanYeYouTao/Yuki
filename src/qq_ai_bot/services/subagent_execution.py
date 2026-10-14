@@ -332,7 +332,6 @@ class SubagentExecution:
                                 enabled=self.code_enabled,
                             ),
                             script_api=self.script_api,
-                            compaction_brief=brief_message,
                         ),
                         backend,
                     )
