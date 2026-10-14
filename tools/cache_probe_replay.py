@@ -12,14 +12,24 @@ from contextlib import AsyncExitStack
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import httpx
 from pydantic import TypeAdapter
-from tools.cache_probe import route_from_stdin
 
 from qq_ai_bot.domain.messages import ChatRequest
-from qq_ai_bot.model_runtime.models import ModelProtocol
+from qq_ai_bot.model_runtime.models import ModelProfile, ModelProtocol
 from qq_ai_bot.model_runtime.pool import ModelClientPool
+
+
+def route_from_stdin(stream: Any) -> tuple[ModelProfile, str]:
+    """Read the explicitly selected route from a private credential pipe."""
+    raw = json.load(stream)
+    profile = ModelProfile.model_validate(raw["profile"])
+    key = raw["api_key"]
+    if not isinstance(key, str) or not key:
+        raise ValueError("selected profile credential is unavailable")
+    return profile, key
 
 
 def digest(value: object) -> str:
