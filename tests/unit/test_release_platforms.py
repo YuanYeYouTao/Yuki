@@ -171,11 +171,7 @@ def test_smoke_checks_the_selected_image_before_running_it(
 
     def execute(command, **kwargs):
         commands.append(command)
-        if command[1] == "create":
-            return "owned-probe\n"
-        if command[1] == "inspect":
-            return "selected-image-id\n"
-        assert command == ["docker", "image", "inspect", "selected-image-id"]
+        assert command == ["docker", "image", "inspect", "--platform", platform, "image:3.9.0"]
         return json.dumps([metadata])
 
     monkeypatch.setattr(subprocess, "check_output", execute)
@@ -185,6 +181,4 @@ def test_smoke_checks_the_selected_image_before_running_it(
     else:
         with pytest.raises(SmokeError):
             verify_image_identity(compose, "3.9.0", platform, "expected-commit")
-    assert commands[0] == ["docker", "create", "--platform", platform, "image:3.9.0"]
-    assert commands[-1] == ["docker", "rm", "owned-probe"]
-    assert not any(command[1] in {"run", "start"} for command in commands)
+    assert commands == [["docker", "image", "inspect", "--platform", platform, "image:3.9.0"]]
