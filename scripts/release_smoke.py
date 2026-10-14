@@ -17,10 +17,19 @@ class SmokeError(RuntimeError):
 
 
 class Compose:
-    def __init__(self, deploy_directory: Path, project: str, version: str) -> None:
+    def __init__(
+        self,
+        deploy_directory: Path,
+        project: str,
+        version: str,
+        *,
+        platform: str | None = None,
+    ) -> None:
         self.deploy_directory = deploy_directory
         self.environment = os.environ.copy()
         self.environment["YUKI_VERSION"] = version
+        if platform is not None:
+            self.environment["DOCKER_DEFAULT_PLATFORM"] = platform
         self.command = ["docker", "compose", "--project-name", project]
 
     def run(self, *arguments: str, capture: bool = False) -> str:
@@ -34,6 +43,43 @@ class Compose:
             errors="replace",
         )
         return completed.stdout.strip() if capture else ""
+
+
+def verify_image_identity(
+    compose: Compose,
+    version: str,
+    platform: str | None,
+    revision: str | None,
+) -> None:
+    """Check the selected image before executing it, including rerun artifacts."""
+    configuration = json.loads(compose.run("config", "--format", "json", capture=True))
+    image = configuration["services"]["bot"]["image"]
+    command = ["docker", "create"]
+    if platform is not None:
+        command.extend(["--platform", platform])
+    probe = subprocess.check_output([*command, image], env=compose.environment, text=True).strip()
+    try:
+        image_id = subprocess.check_output(
+            ["docker", "inspect", "--format", "{{.Image}}", probe],
+            env=compose.environment,
+            text=True,
+        ).strip()
+        metadata = json.loads(
+            subprocess.check_output(
+                ["docker", "image", "inspect", image_id],
+                env=compose.environment,
+                text=True,
+            )
+        )[0]
+        labels = metadata["Config"]["Labels"]
+        if labels.get("org.opencontainers.image.version") != version:
+            raise SmokeError("release image version does not match the deployment package")
+        if revision is not None and labels.get("org.opencontainers.image.revision") != revision:
+            raise SmokeError("existing release image comes from a different commit")
+        if platform is not None and f"{metadata['Os']}/{metadata['Architecture']}" != platform:
+            raise SmokeError("release image does not match the requested platform")
+    finally:
+        subprocess.run(["docker", "rm", probe], env=compose.environment, check=True)
 
 
 def _read_healthz(compose: Compose) -> dict[str, Any]:
@@ -148,11 +194,24 @@ def prepare_deployment(deploy_directory: Path) -> dict[Path, str]:
     return {sentinel: "data"}
 
 
-def run_smoke(deploy_directory: Path, version: str, *, full: bool = False) -> None:
+def run_smoke(
+    deploy_directory: Path,
+    version: str,
+    *,
+    full: bool = False,
+    platform: str | None = None,
+    revision: str | None = None,
+) -> None:
     if (deploy_directory / "src").exists() or (deploy_directory / "pyproject.toml").exists():
         raise SmokeError("deployment smoke directory contains project source")
-    compose = Compose(deploy_directory, f"yuki-release-smoke-{os.getpid()}", version)
+    compose = Compose(
+        deploy_directory,
+        f"yuki-release-smoke-{os.getpid()}",
+        version,
+        platform=platform,
+    )
     sentinels = prepare_deployment(deploy_directory)
+    verify_image_identity(compose, version, platform, revision)
     try:
         compose.run("up", "-d", "--no-deps", "--pull", "never", "bot")
         verify_bot(compose, deploy_directory, version)
@@ -165,9 +224,16 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--deploy-dir", type=Path, required=True)
     parser.add_argument("--version", required=True)
+    parser.add_argument("--platform", choices=("linux/amd64", "linux/arm64"))
+    parser.add_argument("--revision")
     args = parser.parse_args()
-    run_smoke(args.deploy_dir.resolve(), args.version)
-    print(f"source-free smoke passed for Yuki {args.version}")
+    run_smoke(
+        args.deploy_dir.resolve(), args.version, platform=args.platform, revision=args.revision
+    )
+    print(
+        f"source-free smoke passed for Yuki {args.version} "
+        f"({args.platform or 'Docker host platform'})"
+    )
     return 0
 
 

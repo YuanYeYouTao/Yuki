@@ -100,12 +100,14 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 
 基础部署需要：
 
-- Linux amd64，或运行 Linux 容器的 Windows Docker Desktop；
+- Linux amd64 或 arm64（包括 Apple Silicon 上的 Linux 虚拟机），或运行 Linux 容器的 Docker Desktop；
 - Docker Engine 和 Docker Compose v2；
 - 可用的模型服务配置，支持项目接入的 Chat Completions 或 Responses 协议；
 - 当前开发主线使用 SnowLuma QQ 网关及登录账号；NapCat 已在开发主线退役，现有网关抽象仍可用于其他实现。
 
 从 [3.8.4 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.4) 下载部署包，解压后可以手动填写 `.env` 和模型配置，也可以使用配置向导。
+
+多架构支持属于当前开发源码和后续发行：Bot 与 SnowLuma 按 Docker 主机架构选择镜像，两套安装器识别 amd64/x86_64 和 arm64/aarch64。已发布的旧安装器与镜像不会由源码修改自动更新；ARM 部署应使用包含该修复的新发行，或以 `docker buildx build --platform linux/arm64 --target direct --load -t yuki:local .` 从当前源码构建，并将部署目录中 Bot 的 `image` 改为 `yuki:local`。
 
 开发主线支持 Chat Completions、Responses、Claude Messages、Gemini GenerateContent 和常见供应商参数方言。模型、思考、结构化输出及搜索按 Profile 显式配置，不按消息内容暗中换 Provider。WebUI 保存连接后，新任务采用新配置，已派发请求仍沿原连接与协议状态继续。
 能力与恢复边界见[模型协议说明](docs/architecture/model-providers.md)及[多供应商示例](config/model_profiles.providers.example.toml)。这些是当前源码能力；3.8.4 的网关、模型和部署配置仍以正式发布包为准。

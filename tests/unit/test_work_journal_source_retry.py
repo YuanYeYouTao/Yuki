@@ -151,9 +151,9 @@ async def test_retry_requires_original_guard_and_excludes_compaction(database, p
     assert await _saved(database, control) == before
 
 
-async def test_retry_is_bounded_and_guard_runs_outside_writer(database):
+async def test_repeated_source_changes_reprepare_same_journal_outside_writer(database):
     control, session, _selected, unselected = await _session(database)
-    before = await _saved(database, control)
+    session.transcript.append(ChatMessage("assistant", "response not yet saved"))
     await _change(database, unselected)
     guard_check = session.source_guard.check
     checks = 0
@@ -164,11 +164,17 @@ async def test_retry_is_bounded_and_guard_runs_outside_writer(database):
         assert await guard_check(current)
         # A separate real writer can complete here; the failed journal writer
         # must have released its lock before source fingerprint revalidation.
-        await _change(database, unselected, "another concurrent update")
+        if checks <= 2:
+            await _change(database, unselected, f"concurrent update {checks}")
         return True
 
     session.source_guard.check = check_then_race
-    with pytest.raises(WorkConflict, match="work_journal_source_changed"):
-        await session.save("response")
-    assert checks == 1
-    assert await _saved(database, control) == before
+    await session.save("response")
+    assert checks == 3
+    saved = await _saved(database, control)
+    assert saved["phase"] == "response"
+    assert saved["chain_id"] == session.transcript.chain_id
+    restored = await session.journal.load(control.lease, control.current["id"], session.contract)
+    assert restored.reason == "resume"
+    payload = json.loads(restored.record["payload_json"])
+    assert decode_transcript(payload["transcript"]).request() == session.transcript.request()

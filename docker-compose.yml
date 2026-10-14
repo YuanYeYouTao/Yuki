@@ -3,7 +3,6 @@ name: qq-ai-bot
 services:
   bot:
     image: ghcr.io/yuanyeyoutao/yuki-qqbot:${YUKI_VERSION:?missing}
-    platform: linux/amd64
     pull_policy: missing
     init: true
     restart: unless-stopped
@@ -54,7 +53,6 @@ services:
   snowluma:
     profiles: ["snowluma"]
     image: ${SNOWLUMA_IMAGE:-motricseven7/snowluma:latest}
-    platform: linux/amd64
     restart: unless-stopped
     init: true
     depends_on:

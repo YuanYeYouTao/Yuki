@@ -6,6 +6,8 @@
 
 默认构建与发行使用 direct：同一 Agent loop 提供固定完整工具声明，不包含 Monty binding、原生 worker 或 launcher，`CODE_MODE_ENABLED=false`。Code Mode 已合入主线，是显式 `--target codemode` 构建与启用的可选能力；持久子 Agent 与这个可选原生组件是不同模块。切换模式保留原 Work、composition、预算和回执，不能取得重派发资格。
 
+当前源码的后续默认发行支持 linux/amd64 与 linux/arm64，安装器按 Docker Engine 架构选择配置镜像。新 Compose 模板已删除 Bot、SnowLuma 的固定 `platform: linux/amd64`。安装器仍不覆盖现有 Compose；已有 ARM 部署需要核对实际 Bot/网关镜像支持 arm64，再从自己的 service 配置中去掉该固定平台。保留原挂载、配置和业务数据，不因此重置会话或迁移 owner；旧正式镜像不会由源码变更自动更新。
+
 3.9.0 的现有 WebUI 定位为**临时管理界面**，仍使用当前控制面、认证与业务入口。下一个大版本将进行彻底的多客户端重构；这是未来计划，当前 WebUI 尚未退役，也没有要求现有部署现在迁移到新客户端。当前实现见[WebUI 合同](architecture/webui-console.md)。
 
 后续 NapCat 退役已通过 [PR #276](https://github.com/YuanYeYouTao/Yuki/pull/276) 合并，并按开发提交部署；另见[任务书与交付状态](architecture/Yuki-NapCat删除与既有网关抽象保留任务书-2026-10-09.md)及[上线回执](operations/napcat-retirement-20261009.md)。下述旧部署处理适用于包含该修改的源码；3.9.0仍未正式发布。
