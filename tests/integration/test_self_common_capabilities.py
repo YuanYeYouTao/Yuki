@@ -357,50 +357,6 @@ async def test_self_sdk_main_isolates_existing_work_and_reports_actual_scope_lea
 
 
 @pytest.mark.asyncio
-async def test_self_sdk_main_context_rollup_wait_returns_original_durable_work(
-    database, tmp_path, monkeypatch
-):
-    from tests.unit.test_history_dispatch_ownership import _scene
-
-    from qq_ai_bot.llm.fake import FakeLLMProvider
-    from qq_ai_bot.runtime.context_preparation import ContextRollupRequired
-    from qq_ai_bot.runtime.work_activation import current_work_control
-    from qq_ai_bot.runtime.work_repository import WorkRepository
-
-    provider = FakeLLMProvider()
-    env, harness, chat, _, _ = await _scene(database, tmp_path, provider)
-    host = HostPluginContext(
-        plugin_id="test.self-main",
-        approved_permissions=(PluginPermission.AGENT_RUN, PluginPermission.MESSAGE_HISTORY_READ),
-        services=PluginFacadeServices(
-            ledger=harness.ledger,
-            agent_runner=chat.runtime.runner,
-            runtime_config=chat._runtime_config,
-        ),
-    )
-    actor = await self_actor(database, env)
-    source = replace(runtime(actor, env), runtime_config=await chat._runtime_config.snapshot())
-
-    async def prepare(**kwargs):
-        control = current_work_control.get()
-        assert control is not None and control.current is not None
-        assert await control.repository.valid(control.lease)
-        version, events = await harness.ledger.read_scope_context(kwargs["identity"], limit=50)
-        raise ContextRollupRequired(version, max((event.id for event in events), default=0), 60)
-
-    monkeypatch.setattr(chat._context_assembler, "assemble_plugin", prepare)
-    with host.invocation_scope(host.plugin_id, source):
-        first = await host.agent.run("沿原工作等待上下文准备")
-        original = await WorkRepository(database).get(first.data["work_id"])
-        repeated = await host.agent.run("沿原工作等待上下文准备")
-    assert first.ok and first.data["state"] == "waiting_external"
-    assert repeated.data["work_id"] == first.data["work_id"]
-    assert await WorkRepository(database).get(first.data["work_id"]) == original
-    assert original["model_requests"] == 0 and provider.requests == []
-    assert "context_rollup" in json.loads(original["checkpoint_json"])
-
-
-@pytest.mark.asyncio
 async def test_self_sdk_main_resume_keeps_original_actor_source_and_work(database, tmp_path):
     from tests.unit.test_history_dispatch_ownership import _scene, _tool
 

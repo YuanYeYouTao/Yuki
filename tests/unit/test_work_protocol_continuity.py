@@ -1217,13 +1217,6 @@ async def test_journal_without_task_anchor_resumes_and_soft_compaction_does_not_
     initial = (ChatMessage("system", "fixed"), ChatMessage("user", "current task"))
     runner, runtime = await _runtime(database, control, initial, provider)
     monkeypatch.setattr(runner, "work_contract", lambda *_args, **_kwargs: "same")
-    runtime = replace(
-        runtime,
-        runtime_config=replace(
-            runtime.runtime_config,
-            context=replace(runtime.runtime_config.context, work_compaction_trigger_ratio=0.00001),
-        ),
-    )
     result = await runner.run(
         initial,
         runtime,

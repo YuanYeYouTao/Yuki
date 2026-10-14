@@ -10,10 +10,7 @@ from tests.integration.test_current_material_main_contract import _catalog, _pro
 from tests.support.social_identity_cases import social_env
 from tests.support.work_compaction import summary_json
 from tests.support.work_compaction_capacity_helpers import _runtime, _session
-from tests.unit.rollup_test_helpers import _output
 
-from qq_ai_bot.conversation.rollup.models import RollupCandidate, RollupPolicyConfig
-from qq_ai_bot.conversation.rollup.service import ConversationRollupService
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest
 from qq_ai_bot.llm.gemini import GeminiProvider
@@ -38,7 +35,7 @@ class _StructuredResult(BaseModel):
 
 
 @pytest.mark.parametrize(
-    "kind", ["work", "ordinary", "rollup", "structured", "structured_work", "utility"]
+    "kind", ["work", "ordinary", "structured", "structured_work", "utility"]
 )
 async def test_auxiliary_session_header_keeps_original_body(database, tmp_path, kind):
     wire, headers, neutral = [], [], []
@@ -53,11 +50,6 @@ async def test_auxiliary_session_header_keeps_original_body(database, tmp_path, 
             content = json.dumps(
                 {"facts": [{"text": "原资料的摘要", "refs": json.loads(source)["source_refs"]}]}
             )
-        elif kind == "rollup":
-            ids = json.loads(
-                source.split("Available internal source_event_ids: ", 1)[1].split("\n", 1)[0]
-            )
-            content = _output(ids, "保留原对话来源")
         else:
             content = '{"value":"original structured result"}'
         return httpx.Response(
@@ -151,21 +143,6 @@ async def test_auxiliary_session_header_keeps_original_body(database, tmp_path, 
                         execute=lambda request: models.execute(ModelTask.CHAT_AGENT, request),
                     )
                     assert summary["facts"][0]["refs"] == [f"event:{events[0].id}"]
-                elif kind == "rollup":
-                    candidate = RollupCandidate(
-                        conversation_id=version.conversation_id,
-                        generation=version.generation,
-                        source_coverage=0,
-                        source_rollup_revision=0,
-                        previous_summary="",
-                        events=events,
-                        fingerprint="actual-source-fixture",
-                    )
-                    service = ConversationRollupService(
-                        models=models, config=RollupPolicyConfig(), timeout_seconds=2
-                    )
-                    text, _kind = await service.summarize_candidate(candidate)
-                    assert "保留原对话来源" in text
                 else:
                     result = await StructuredTaskRunner(models).run(
                         task=ModelTask.UTILITY_STRUCTURED,

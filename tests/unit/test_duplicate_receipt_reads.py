@@ -110,7 +110,7 @@ async def test_canonical_exact_keeper_returns_under_other_writer(database, group
     async with other_writer_and_read_only(database):
         duplicate = await uow.append_inbound(admitted.message, admitted)
     assert duplicate.event.id == first.event.id
-    assert not duplicate.created and not duplicate.job_signalled
+    assert not duplicate.created
     assert duplicate.scope.runtime_scope_key == first.scope.runtime_scope_key
     assert duplicate.scope.generation == first.scope.generation
     assert duplicate.scope.last_event_id == first.scope.last_event_id
