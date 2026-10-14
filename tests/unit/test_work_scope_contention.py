@@ -178,7 +178,6 @@ async def test_busy_scope_with_many_qualified_work_does_not_hide_independent_sco
     import json
     import time
 
-    from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
     from qq_ai_bot.domain.conversations import ConversationScope
     from qq_ai_bot.persistence.models import ChatEventModel
     from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
@@ -187,7 +186,7 @@ async def test_busy_scope_with_many_qualified_work_does_not_hide_independent_sco
     from qq_ai_bot.runtime.work_schema_v1 import work
 
     env = await social_env(database, tmp_path)
-    ledger = ScopedEventLedgerUnitOfWork(database, config=RollupPolicyConfig())
+    ledger = ScopedEventLedgerUnitOfWork(database)
     await ledger.append(
         scope=ConversationScope.private("80001", "10001"),
         platform_message_id="independent-private-source",
@@ -247,9 +246,7 @@ async def test_busy_scope_with_many_qualified_work_does_not_hide_independent_sco
         lease = await repository.acquire(item["conversation_id"], item["generation"])
         assert lease is not None
         try:
-            current = await repository.transition(
-                lease, item["id"], item["revision"], "running"
-            )
+            current = await repository.transition(lease, item["id"], item["revision"], "running")
             assert current["goal"] == item["goal"]
 
             async def validate():

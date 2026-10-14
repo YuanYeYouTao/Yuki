@@ -45,6 +45,7 @@ from qq_ai_bot.web.base import WebSearchValidationError, normalize_public_url
 if TYPE_CHECKING:
     from qq_ai_bot.runtime.work_control import WorkControl
     from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
+    from qq_ai_bot.services.context_compaction import PublicCompactContext
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +114,7 @@ class WorkSession:
         initial: TurnTranscript,
         *,
         visible_event_ids: frozenset[int] = frozenset(),
+        public_compaction: PublicCompactContext | None = None,
     ) -> TurnTranscript:
         control = self.control
         self.public_event_ids = set(visible_event_ids)
@@ -280,7 +282,40 @@ class WorkSession:
             self.source_keys = list(metadata.get("source_keys", []))
             self.input_ids = list(metadata.get("input_ids", []))
             if self.progress.get("context_compaction") is not None:
+                compact = self.progress["context_compaction"]
+                if (
+                    public_compaction is not None
+                    and compact.get("valid")
+                    and compact.get("public") is not None
+                ):
+                    public_count = len(public_compaction.messages)
+                    from qq_ai_bot.conversation.frozen_fragments import FrozenFragments
+                    from qq_ai_bot.services.context_compaction import current_public_compact
+
+                    public, summary = await current_public_compact(
+                        public_compaction, compact["public"], compact["response"]
+                    )
+                    # The original response is already durable in the model
+                    # checkpoint. Select the current public prefix for resume.
+                    self.progress["context_compaction"] = {
+                        **compact,
+                        "public": public,
+                        "response": summary,
+                    }
                 await self.finish_context_compaction()
+                if (
+                    public_compaction is not None
+                    and compact.get("valid")
+                    and compact.get("public") is not None
+                ):
+                    adopted = await public_compaction.adopt(
+                        summary, public["coverage"], FrozenFragments.load(public["items"])
+                    )
+                    extras = initial.request().messages[public_count:]
+                    # adopt returns the fresh trigger too; it is already the
+                    # first item after the old public prefix.
+                    extras = extras[1:]
+                    initial = TurnTranscript((*adopted, *extras))
             await control.refresh_effects()
             if row["phase"] in {"delivery", "delivered"} and self.progress.get("delivery_plan"):
                 # A legacy frozen final-delivery plan is never executed online;

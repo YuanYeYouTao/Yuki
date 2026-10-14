@@ -120,6 +120,14 @@ CREATE TRIGGER context_observation_privacy
     AFTER UPDATE OF privacy_generation ON execution_trace_state
     WHEN OLD.privacy_generation IS NOT NEW.privacy_generation
     BEGIN
+        UPDATE model_context_observations
+        SET actor_id='', read_scope='', source_work_id=NULL, source_event_id=NULL,
+            payload_json='{"phase":"invalidated"}', parent_sources_json='[]',
+            summary_view_key=NULL, privacy_generation=NEW.privacy_generation
+        WHERE privacy_generation != NEW.privacy_generation
+          AND source_key GLOB 'compact:*'
+          AND json_extract(payload_json,'$.phase') IN
+              ('dispatched','response','paired','invalidated');
         DELETE FROM model_context_observations WHERE privacy_generation !=
         NEW.privacy_generation;
     END""",
@@ -127,6 +135,14 @@ CREATE TRIGGER context_observation_privacy
 CREATE TRIGGER context_observation_privacy_initial
     AFTER INSERT ON execution_trace_state
     BEGIN
+        UPDATE model_context_observations
+        SET actor_id='', read_scope='', source_work_id=NULL, source_event_id=NULL,
+            payload_json='{"phase":"invalidated"}', parent_sources_json='[]',
+            summary_view_key=NULL, privacy_generation=NEW.privacy_generation
+        WHERE privacy_generation != NEW.privacy_generation
+          AND source_key GLOB 'compact:*'
+          AND json_extract(payload_json,'$.phase') IN
+              ('dispatched','response','paired','invalidated');
         DELETE FROM model_context_observations WHERE privacy_generation !=
         NEW.privacy_generation;
     END""",

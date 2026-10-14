@@ -259,10 +259,21 @@ class TurnExecution:
                 script_api=self.runtime.script_api,
             )
             self.runtime.work_control.session = WorkSession(self.runtime.work_control, contract)
+            public_count = (
+                len(self.runtime.public_compaction.messages)
+                if self.runtime.public_compaction is not None
+                else 0
+            )
             self.state.transcript = await self.runtime.work_control.session.restore(
                 self.state.transcript,
                 visible_event_ids=self.runtime.visible_event_ids,
+                public_compaction=self.runtime.public_compaction,
             )
+            if self.runtime.public_compaction is not None:
+                self.initial_messages = (
+                    *self.runtime.public_compaction.messages,
+                    *self.initial_messages[public_count:],
+                )
             pending_code = self.runtime.work_control.session.pending_compositions
             if pending_code:
                 # The original owner continues the same composition before any
@@ -339,6 +350,7 @@ class TurnExecution:
 
     async def restore_compact_receipt(self) -> AgentRunResult | None:
         """Reuse ordinary maintenance by its internal execution owner."""
+        from qq_ai_bot.conversation.frozen_fragments import FrozenFragments
         from qq_ai_bot.runtime.work_journal import (
             JournalUnavailable,
             decode_transcript,
@@ -347,6 +359,7 @@ class TurnExecution:
         from qq_ai_bot.services.context_compaction import (
             CompactReceipt,
             compacted_transcript,
+            current_public_compact,
             public_compact_publication,
         )
 
@@ -374,29 +387,49 @@ class TurnExecution:
             from qq_ai_bot.runtime.work_repository import WorkConflict
 
             raise WorkConflict("context_compaction_contract_changed")
+        public = saved.get("public")
+        summary = saved.get("response", "")
+        if saved["valid"] and public is not None:
+            public, summary = await current_public_compact(context, public, summary)
         if saved["phase"] == "response":
             candidate = (
                 compacted_transcript(saved)
                 if saved["valid"]
                 else decode_transcript(saved["original"])
             )
-            public = saved.get("public")
             publication = (
-                await public_compact_publication(context.repository, public, saved["response"])
+                await public_compact_publication(context.repository, public, summary)
                 if saved["valid"] and public is not None
                 else None
             )
             saved.update(phase="paired", candidate=encode_transcript(candidate))
             await receipt.write(saved, publication=publication)
-        self.state.transcript = decode_transcript(saved["candidate"])
-        self.initial_messages = decode_transcript(saved["prefix"]).request().messages
-        self._initial_layout_finalized = (
-            self.state.transcript.request().layout_public_initial is not None
-        )
+        candidate = decode_transcript(saved["candidate"])
+        if saved["valid"] or candidate.continuation is None:
+            fresh = self.state.transcript.request().messages
+            if saved["valid"] and public is not None:
+                adopted = await context.adopt(
+                    summary, public["coverage"], FrozenFragments.load(public["items"])
+                )
+                self.state.transcript = TurnTranscript(
+                    (*adopted, *fresh[len(self.initial_messages) :])
+                )
+                self.initial_messages = adopted
+                tail = decode_transcript(saved["retained"]).request().messages
+            else:
+                # The saved initial block is paid-request evidence. Current
+                # history and activation material belong to this fresh run.
+                old_count = len(decode_transcript(saved["prefix"]).request().messages)
+                tail = candidate.request().messages[old_count:]
+            await self._finalize_initial_layout()
+            for message in tail:
+                self.state.transcript.append(message)
+        else:
+            self.state.transcript = candidate
+            self.initial_messages = decode_transcript(saved["prefix"]).request().messages
         if self.runtime.auxiliary_requests is not None:
             self.runtime.auxiliary_requests[0] = saved["model_requests"]
         if saved["valid"] and saved.get("public") is not None:
-            await self.adopt_public_compact(saved["public"], saved["response"])
             if self.runtime.compact_focus is not None:
                 return AgentRunResult(
                     text="已压缩当前会话的公共上下文。",

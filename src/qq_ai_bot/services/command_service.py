@@ -228,7 +228,7 @@ class CommandService:
                 checkpoint = await session.get(PromptProjectionModel, scope.id) if scope else None
                 compact_line = (
                     f"Compact 覆盖点：{checkpoint.selected_summary_coverage}，"
-                    f"时间：{checkpoint.updated_at.isoformat()}"
+                    f"公共窗口更新时间：{checkpoint.updated_at.isoformat()}"
                     if checkpoint is not None
                     and checkpoint.selected_summary_text
                     and scope is not None

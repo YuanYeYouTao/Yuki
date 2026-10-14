@@ -127,8 +127,9 @@ docker compose logs --tail 200 bot
 - @、reply 与 mention-only 消息从 OneBot `original_message` 保序投影；任一 Yuki Presence 都
   被识别为 Yuki。
 
-Rollup 只压缩 Prompt 历史，原始 `chat_events` 不被摘要替代。摘要是不可信输入，不进入 Memory。
-详见 [Conversation Rollup](architecture/conversation-rollup.md)。
+会话 compact 替换 Main 已覆盖的输入窗口，原始 `chat_events` 与私有执行回执继续保存。
+公共检查点是不可信输入，不进入 Memory。手动 `/ai compact` 与自动整理共用当前 Main 路径。
+详见 [会话 Compact](architecture/conversation-compact.md)。
 
 ## Memory
 
@@ -200,11 +201,10 @@ Control Plane、Capability 或 Gateway Registry。
 
 插件发布的主动事件继续以独立 `external_event` 落账，不伪装成真人聊天。插件若请求 Yuki
 点评，只会创建可靠 WakeupRequest；Worker 加载该 canonical Conversation 与普通聊天完全相同的
-Rollup、raw history、当前人物与场景资料、Prompt compiler、工具合同和模型 profile，再把当前事件摘要作为
+compact 检查点、raw history、本轮资料、Prompt compiler、工具合同和模型 profile，再把当前事件摘要作为
 唯一的临时 user 尾部。这个提醒不写入 history；成功发送的 Yuki 主动消息会用
-`caused_by_event_id` 指向来源事件。pending/processing 唤醒任务会阻止 Rollup 提前覆盖来源，任务
-终态后自动解除。没有真实用户事件证明时，管理员与 mutation 能力继续失败关闭，当前目标允许的
-Web、Memory read 和 history read 仍可使用。
+`caused_by_event_id` 指向来源事件。compact 不删除这些原件，也不改变唤醒任务的来源、授权或回执。
+工具执行继续核验该提醒的真实来源、当前授权与目标范围。
 
 开发入口：
 
@@ -266,7 +266,7 @@ docker compose logs --tail 200 bot
 
 ### 回复很慢
 
-分别检查 Gateway 延迟、模型首 token、工具循环、Web/插件调用、Rollup backlog、Memory worker
+分别检查 Gateway 延迟、模型首 token、工具循环、Web/插件调用、Main compact 请求、Memory worker
 和发送回执。不要只根据最终回复时间判断网络不稳定。管理健康可提供分类状态，但不包含 secret
 或模型 reasoning。
 

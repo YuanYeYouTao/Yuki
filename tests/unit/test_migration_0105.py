@@ -10,6 +10,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import Column, Integer, MetaData, Table, select, text
+from tests.support.legacy_conversation_seed import seed_pre_0119_social_conversations
 from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.automation.authority import DelegatedAuthority, PermissionLevel
@@ -58,7 +59,7 @@ def test_0106_query_migration_removes_retired_overrides_without_removing_other_c
                     ("global", None, None, "memory.max_referenced_targets"),
                     ("user", person, None, "memory.max_referenced_targets"),
                     ("group", None, space, "memory.max_referenced_targets"),
-                    ("global", None, None, "context.compaction_window_tokens"),
+                    ("global", None, None, "context.window_tokens"),
                 ):
                     writer.add(
                         RuntimeConfigOverrideModel(
@@ -86,7 +87,7 @@ def test_0106_query_migration_removes_retired_overrides_without_removing_other_c
             async with database.sessions() as reader:
                 rows = (await reader.scalars(select(RuntimeConfigOverrideModel))).all()
                 assert [(row.config_key, row.value_json) for row in rows] == [
-                    ("context.compaction_window_tokens", "60000")
+                    ("context.window_tokens", "60000")
                 ]
                 assert not list(await reader.execute(text("PRAGMA foreign_key_check")))
         finally:
@@ -113,6 +114,7 @@ def test_fresh_and_0104_upgrade_preserve_work_identity_source_receipts_and_budge
     async def seed_0104():
         database = Database(url)
         try:
+            await seed_pre_0119_social_conversations(database)
             env = await social_env(database, tmp_path)
             async with database.immediate_session() as session:
                 for identity, parent, state, checkpoint in (
@@ -312,6 +314,7 @@ def test_0105_upgrade_keeps_missing_original_version_and_new_admission_freezes_c
     async def seed():
         database = Database(url)
         try:
+            await seed_pre_0119_social_conversations(database)
             env = await social_env(database, tmp_path)
             authority = DelegatedAuthority(
                 creator_user_id="10001",

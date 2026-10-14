@@ -7,13 +7,10 @@
 `subagent_message` 补充要求，通过 `subagent_control` 查询、取消或恢复同一目标。
 派生本身已经登记工作，工作者无需再次 `task_control.accept`。
 
-工作者沿本部署的工具模式执行：默认 direct 直接声明工作者的完整获准子集；显式启用
-Code 时才使用与主 Agent 相同的编排指引和固定直调集合，已知多步流程可在脚本内
-过滤聚合。终端、联网和生命周期能力保留在该模式的直调集合；其余按原 schema 经
-Code 调用。完整 API 从 `WORKER_NAMES` 和实际已声明工具取交集，Code 模式的
-`lookup_tools` 只查询这个子集，不继承主 Agent 的目录或授权。
-指引不扩展父任务授权或根预算；pending
-继续按原 run_id 等待，同一原 VM 在段边界续跑，不以新脚本重做已提交子调用。
+工作者沿部署的 direct / Code Mode 执行，复用 `MainAgentContract` 的完整声明、核心 system、
+同一 ScriptApi 和 `MainAgentBackend`。`lookup_tools` 查询同一已提交目录，不维护独立工具
+上限。子目标、父子关系和 cwd 作为 brief 资料；实际来源与权限由 Host 绑定，模型不能
+通过资料包取得额外身份或授权。pending 沿原 run_id 等待，不以新脚本重做已提交子调用。
 
 用户要求继续聊天不表示取消后台工作。主 Yuki 发言使用 `send_message`；
 `task_control.answer` 不在公开 action 中。Agent 提交结束决定后，原 writer 只收拢真正活动的所属执行；没有活动执行的暂停/等待子目标保留自身状态，不否决父目标完成。fail/cancel 直接复用指定子树撤权，无需先逐一取消后代或等待远端全部确认。
@@ -24,23 +21,23 @@ Code 调用。完整 API 从 `WORKER_NAMES` 和实际已声明工具取交集，
 
 ## 工具与授权
 
-工作者使用代码管理的固定合同和工作工具集合（以 `runtime/subagent_tools.py` 的
-`WORKER_NAMES` 为上限），复用主 Agent 的执行器，不在文档中另维护容易过期的工具数量。
-外部联网工具仅在当前部署声明了对应能力时纳入工作者合同；仅原生搜索的连接不会暴露
-`web_search` 或 `read_webpage`。
-初始资料包包含目标、可选参考资料和建议目录 `/workspace/tasks/<child_id>`。
-目录用于组织文件，不限制共享工作环境。终端修改仍需协商，只有结构化文件编辑有版本检查。
+工作者使用 Main 的固定工具合同，完整 schema 和工具顺序保持一致。原生或外部联网能力
+沿当前部署与 Profile 的实际声明，不在 worker 路径额外裁剪。工具执行按 child Work 保存
+原 invocation、调用键、结果和来源；direct 与 Code 路径共用原执行后端。
+
 `workspace_inspect` 读取获准工作文件或不可变 artifact，图片及视频帧交原工作者模型，
 不另调视觉 Provider。媒体读取最多 20 MiB，主请求仍计入根预算；更大视频可先通过
 终端提取帧或生成较小文件。来源和版本规则见[聊天媒体](chat-media-workspace.md)。
 
-工作者能运行代码、安装依赖、发布文件、管理内部服务、使用外部联网工具，
-并沿父任务原有授权读取聊天历史与记忆。不能发送 QQ、撤回、戳人、写长期记忆、
-修改 short_state 或创建自动化。工作者可沿现有 task_control.derive 继承自己的目标、合同和预算派生子目标；树查询不会扩大工具权限。主 Agent 负责最终交付。
-不修改用户的 `system_prompt.md`。工作者默认跟随主 Agent 的模型配置；当前 DeepSeek
-适配层关闭主请求的原生联网声明，这不是所有 Provider 或模型的永久能力结论。
-外部 `web_search` 可通过 [Anthropic 搜索适配器](../deepseek-search-bridge.md) 调用搜索；
-这是工具执行中的独立请求，不切换主链协议或 continuation。
+工作者可沿真实来源与授权发送 QQ、撤回、戳人、写长期记忆、修改 short_state、管理
+自动化和使用已批准插件。Person、SELF、automation 与插件来源分别核验自己的 actor、
+目标、能力批准和权限；普通 Person 不因成为 worker 获得 generic OneBot 管理权限。
+主、子 Agent 在同一群交错发言时，正文与回执仍归各自原执行，已确认发送不重复交付。
+
+子 Agent 用自己的 Work 作为嵌套子任务的父节点。`subagent_message` 指定 child_id 时联系
+自己的子任务；省略时联系自己的父任务，向父任务提问才进入等待。子孙通信和管理核验
+真实方向与树关系。只读 Work 目录使用 Main 的同一范围，目录信息不授予修改或取消权限。
+工作者默认跟随 Main 模型；Provider/合同变化沿原合法边界恢复，不暗换协议。
 
 工作者也可用 `task_control.wait(conditions)` 等待时间、当前会话、获准插件事件或自己的 run；信号仍投递到原 child Work，由现有调度器恢复，不另建任务。
 
@@ -48,7 +45,7 @@ Code 调用。完整 API 从 `WORKER_NAMES` 和实际已声明工具取交集，
 
 `YukiRuntime` 与所有会话共用主 Runner，拥有 `SubagentScheduler` 的启停。
 调度器负责有界候选与容量；`SubagentExecution` 显式取得工作者需要的能力，
-负责来源恢复、Memory session、工作者合同与原结果回传。它不访问整个应用定位器。
+负责来源恢复、Memory session、Main 合同绑定与原结果回传。它不访问整个应用定位器。
 child 使用自己的 lease，在取得执行权后复用 root 的激活监督、续租、恢复和释放骨架；
 关闭 runtime 收拢执行时仍保留原 child/root ID、预算、回执与未知效果。
 
@@ -87,7 +84,7 @@ child Work ID、父子归属和通知 revision 读取对应 checkpoint；恢复�
 
 固定提示词、完整工具顺序/schema 和 Provider 设置在资料包之前。
 工作者的固定提示词包含与主 Agent 相同的 Memory 使用规则，新的记忆查询回执不重复附带该规则。
-工作者不注入变化的时间、short_state 或目录列表到旧历史前部。
+工作者按 Main 的方式准备当前运行资料；既有私有协议不被新 short_state 或目录改写。
 每条链保存实际协议 continuation；普通唤醒只追加，合同或 Provider 改变时建立新链。
 图片按内容哈希单独保存，恢复时还原原始协议内容，不能因内联图片丢掉整条链。
 
@@ -104,8 +101,14 @@ child Work ID、父子归属和通知 revision 读取对应 checkpoint；恢复�
 不能由较早的 save 准备快照删除并发新输入。终态归档及 canonical 隐私清理释放对应引用，
 GC 有界标记未引用对象 deleting，再在 SQLite writer 外删除文件并收尾；中断可续清。
 
-接近模型上下文阈值时进行显式总结，保留初始合同、原资料包、执行证据和新旧链关联。
+完整请求超过真实容量时走 Main 的 compact_current，保留初始材料、原回执与新旧链关联；最近一次执行检查点仍归该 child Work。
 缓存由 Provider 决定；续跑持久化不代表 Provider 缓存永久有效。
+
+插件后台 child 沿原 Job 及持久后代关系恢复，不把后台工作伪造成真人消息。
+SDK child 使用原 plugin_invocation 来源，并核当前 live Host 的批准版本、允许工具、Memory
+范围和上下文读取合同；插件退出、批准变化或权限失效不授予新执行。SELF 和定时来源
+保留原主体、run 与执行来源，网关按真实 Presence 解析，不能伪造 automation_id。
+
 
 ## 配置、验证与回退
 

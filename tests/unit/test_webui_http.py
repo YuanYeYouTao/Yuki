@@ -755,7 +755,7 @@ async def test_config_spec_page_preserves_schema_and_secret_configured_fields(da
         database.url, llm_api_key="private-provider-secret", onebot_access_token=""
     )
     queries = ControlQueryAdapter(database, settings=settings)
-    keys = ("context.compaction_window_tokens", "llm.api_key", "onebot.access_token")
+    keys = ("context.window_tokens", "llm.api_key", "onebot.access_token")
     specs = [queries._registry.get(key) for key in keys]
     queries._registry = ConfigRegistry(specs)
     now = datetime.now(UTC)

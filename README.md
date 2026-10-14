@@ -48,7 +48,7 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 
 **后续计划：3.9.0 当前的 WebUI 是临时的，下个大版本会彻底以多客户端的方式重构。**
 
-会话 compact（[#417](https://github.com/YuanYeYouTao/Yuki/issues/417)、[#418](https://github.com/YuanYeYouTao/Yuki/issues/418)）和子 Agent 完整继承主 Agent 能力仍未实施。当前源码仍使用现行 Rollup，子 Agent 仍有独立工具子集；替换范围见[设计审查报告](docs/architecture/Yuki-Work摘要退役与会话Compact及任务树设计审查报告-2026-10-14.md)。
+会话 [Compact](docs/architecture/conversation-compact.md)（[#417](https://github.com/YuanYeYouTao/Yuki/issues/417)、[#418](https://github.com/YuanYeYouTao/Yuki/issues/418)）由当前 Main 模型按真实容量整理公共历史或私有执行尾部。子 Agent 共用 Main 的完整工具合同，执行按自己的真实来源与授权核验；旧独立 Rollup 和 Work/ordinary 摘要链已退役。
 
 ## 当前源码能做什么
 
@@ -79,7 +79,7 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 
 ## 记忆与跨会话连续性
 
-长期记忆用于保存稳定事实、偏好和有意义的经历；普通自动提取会聚合消息，明确要求记住、纠正和删除时则即时处理。主 Agent 自主判断何时调用 `search_memory`，不再每轮自动搜索或把全部长期事实塞入上下文。检索受当前主体的可见范围和工作预算约束，结果会说明截断或不完整状态。同 key 不是唯一槽位，事实按 ID 和真实证据保存；提取、SELF 自省和 Dream 整理可在模型配置中分别绑定连接。长会话通过 Rollup 压缩历史，原始历史仍有独立查询入口。
+长期记忆用于保存稳定事实、偏好和有意义的经历；普通自动提取会聚合消息，明确要求记住、纠正和删除时则即时处理。主 Agent 自主判断何时调用 `search_memory`，不再每轮自动搜索或把全部长期事实塞入上下文。检索受当前主体的可见范围和工作预算约束，结果会说明截断或不完整状态。同 key 不是唯一槽位，事实按 ID 和真实证据保存；提取、SELF 自省和 Dream 整理可在模型配置中分别绑定连接。长会话通过 Main compact 检查点接续历史，原始历史仍有独立查询入口。
 
 `short_state` 是全局共用、有界且会过期的短期记录区，用于暂存跨会话信息。写入只需要 slot/text，空正文清空对应槽位；每次激活只展示当前有效内容，不再保存首份或变化差量。它与长期记忆、持久文件分开，群聊和私聊不会自动拼成同一份完整聊天历史。
 
@@ -88,7 +88,7 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 ## 图片、语音、文件与联网
 
 - **图片与视频**：当前、引用和历史附件，以及 Agent 选取的工作区或获准工具图片，共用原主模型的原生图片输入。历史附件按内部事件索引、会话和缓存有效期核验；缺少图片能力时明确报告未读，不隐式换模型或调用独立 Qwen 视觉摘要。MP4/MOV 视频通过 FFmpeg 抽帧进入同一个主 Agent，不分析音轨，也不保证覆盖所有瞬间。后台表情分类和插件显式视觉能力仍可使用独立视觉连接。
-- **接收语音**：私聊、符合回复策略的群聊及引用语音经 Qwen ASR 转写，进入聊天历史、搜索和 Rollup。按附件顺序保留已识别全文与来源，部分失败保留已完成转写。可复用千问连接，不依赖本地合成服务；语音合成与发送已退役。见[语音识别说明](docs/speech/recognition.md)。
+- **接收语音**：私聊、符合回复策略的群聊及引用语音经 Qwen ASR 转写，进入聊天历史、搜索和公共 compact。按附件顺序保留已识别全文与来源，部分失败保留已完成转写。可复用千问连接，不依赖本地合成服务；语音合成与发送已退役。见[语音识别说明](docs/speech/recognition.md)。
 - **文件阅读**：支持文本、代码、CSV/JSON、PDF 文字、DOCX 和 XLSX 的有界提取。扫描 PDF 不做 OCR，表格公式不重算，宏和附件中的代码不会因阅读而执行。在同一会话中，后续提问可不引用原附件；Yuki 按需读取 24 小时临时缓存。
 - **联网**：新安装未设置联网开关时默认 `WEB_MODE=native`；显式 `disabled` 继续禁用，既有连接的搜索选择不被改写。开启不代表任意模型支持搜索：原生搜索需要连接声明实际能力，Gemini 可显式使用独立搜索桥；外部 `web_search` 需要配置后端。外部搜索默认使用 Tavily，也可设置 `WEB_MODE=tavily`、`WEB_SEARCH_BACKEND=deepseek_anthropic` 使用 [DeepSeek 搜索桥](docs/deepseek-search-bridge.md)，Tavily 密钥仅用于可选失败兜底。DeepSeek 主 Agent 当前不声明原生搜索。协议和配置边界见[模型供应商说明](docs/architecture/model-providers.md)。
 
@@ -192,7 +192,7 @@ uv run pytest
 | [使用帮助](docs/help.md) | 聊天、命令与日常操作 |
 | [架构说明](docs/architecture/canonical-runtime.md) | 人物、空间、账号和会话的关系 |
 | [开发约束](docs/architecture/development-contract.md) | 事件 ID、解耦边界、固定工具、续跑和事务原则 |
-| [Rollup](docs/architecture/conversation-rollup.md) | 长会话的历史压缩 |
+| [会话 Compact](docs/architecture/conversation-compact.md) | 长会话的历史压缩 |
 | [Memory](docs/architecture/memory-v2.md) | 记忆提取、检索和权限 |
 | [Plugin API 3.5](docs/plugin-development/index.md) | 插件开发与能力边界 |
 | [Work、compact 与子 Agent 设计](docs/architecture/Yuki-Work摘要退役与会话Compact及任务树设计审查报告-2026-10-14.md) | 尚未实施的摘要退役、会话压缩与完整能力继承 |
