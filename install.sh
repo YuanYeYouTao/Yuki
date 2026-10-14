@@ -50,8 +50,9 @@ architecture=$(docker info --format '{{.Architecture}}' 2>/dev/null || true)
 operating_system=$(docker info --format '{{.OSType}}' 2>/dev/null || true)
 [ "$operating_system" = linux ] || fail "Docker must be running Linux containers"
 case "$architecture" in
-    amd64|x86_64) ;;
-    *) fail "Yuki $VERSION officially supports linux/amd64; Docker reports $architecture" ;;
+    amd64|x86_64) platform=linux/amd64 ;;
+    arm64|aarch64) platform=linux/arm64 ;;
+    *) fail "Yuki $VERSION supports linux/amd64 and linux/arm64; Docker reports $architecture" ;;
 esac
 
 if [ -z "$INSTALL_DIR" ]; then
@@ -111,10 +112,11 @@ if [ "$existing" = false ]; then
 fi
 
 image="$BOT_IMAGE:$VERSION"
-printf '%s\n' "Pulling $image"
-docker pull "$image"
+printf '%s\n' "Pulling $image for $platform"
+docker pull --platform "$platform" "$image"
 
 docker run --rm -it \
+    --platform "$platform" \
     --user "$(id -u):$(id -g)" \
     --entrypoint qq-ai-bot-cli \
     --volume "$INSTALL_DIR:/deploy" \

@@ -23,21 +23,45 @@ _RETIRED_CONFIG_KEYS = (
 
 def upgrade() -> None:
     connection = op.get_bind()
+    # A cache row may already have been evicted while the durable old Rollup
+    # remains valid. Establish its existing Conversation owner before retirement.
+    connection.exec_driver_sql("""
+        INSERT INTO prompt_projections (
+            view_key, conversation_id, generation, source_revision, starts_after_event_id,
+            epoch_id, context_key, revision, rebuild_reason, invalidated_reason,
+            payload_json, byte_size, updated_at, selected_summary_text,
+            selected_summary_coverage, selected_summary_kind, selected_summary_renderer
+        )
+        SELECT c.id, c.id, c.generation, c.prompt_source_revision, c.starts_after_event_id,
+            lower(hex(randomblob(16))), 'compact-upgrade', 1, 'compact', 'compact',
+            '[]', 2, r.updated_at, r.summary_text, r.covered_through_event_id, 'compact', 2
+        FROM canonical_conversation_rollups AS r
+        JOIN canonical_conversations AS c ON c.id=r.conversation_id
+        WHERE r.generation=c.generation AND trim(r.summary_text) <> ''
+          AND r.summary_kind IN ('model', 'extractive', 'migration')
+          AND r.covered_through_event_id BETWEEN c.starts_after_event_id AND c.last_event_id
+        ON CONFLICT(view_key) DO NOTHING
+    """)
     connection.exec_driver_sql("""
         UPDATE prompt_projections AS p
-        SET selected_summary_text=r.summary_text,
+        SET generation=c.generation, source_revision=c.prompt_source_revision,
+            starts_after_event_id=c.starts_after_event_id,
+            selected_summary_text=r.summary_text,
             selected_summary_coverage=r.covered_through_event_id,
             selected_summary_kind='compact', selected_summary_renderer=2,
             payload_json='[]', byte_size=2, revision=p.revision+1,
             invalidated_reason='compact'
         FROM canonical_conversation_rollups AS r
         JOIN canonical_conversations AS c ON c.id=r.conversation_id
-        WHERE p.conversation_id=c.id AND p.generation=c.generation
-          AND p.starts_after_event_id=c.starts_after_event_id
-          AND p.source_revision=c.prompt_source_revision
-          AND p.selected_summary_text IS NULL AND r.generation=c.generation
+        WHERE p.view_key=c.id AND p.conversation_id=c.id AND r.generation=c.generation
+          AND trim(r.summary_text) <> ''
           AND r.summary_kind IN ('model', 'extractive', 'migration')
           AND r.covered_through_event_id BETWEEN c.starts_after_event_id AND c.last_event_id
+          AND NOT (p.generation=c.generation
+            AND p.starts_after_event_id=c.starts_after_event_id
+            AND p.source_revision=c.prompt_source_revision
+            AND coalesce(trim(p.selected_summary_text), '') <> ''
+            AND p.selected_summary_coverage BETWEEN c.starts_after_event_id AND c.last_event_id)
     """)
     connection.exec_driver_sql("""
         UPDATE runtime_work

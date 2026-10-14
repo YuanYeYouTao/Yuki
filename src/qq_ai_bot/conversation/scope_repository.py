@@ -6,6 +6,7 @@ from dataclasses import replace
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
@@ -13,6 +14,7 @@ from qq_ai_bot.conversation.canonical_db_models import (
 )
 from qq_ai_bot.conversation.hydrate import hydrate_scope_state_from_canonical
 from qq_ai_bot.conversation.projection_models import PromptProjectionModel
+from qq_ai_bot.conversation.projections import current_checkpoint_query
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot, turn_matches_hydrated_scope
 from qq_ai_bot.conversation.scope_models import (
     ConversationCoverageError,
@@ -125,14 +127,10 @@ class ConversationScopeRepository:
                 runtime_key=state.runtime_scope_key,
             ):
                 raise ConversationCoverageError("turn identity changed before prompt snapshot")
-            projection = await session.get(PromptProjectionModel, conversation.id)
-            checkpoint = (
-                projection
-                if projection is not None
-                and projection.generation == state.generation
-                and projection.source_revision == conversation.prompt_source_revision
-                and projection.starts_after_event_id == state.starts_after_event_id
-                else None
+            checkpoint = await session.scalar(
+                current_checkpoint_query(conversation.id).options(
+                    defer(PromptProjectionModel.payload_json)
+                )
             )
             coverage = (
                 checkpoint.selected_summary_coverage

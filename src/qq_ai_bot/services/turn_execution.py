@@ -1018,6 +1018,16 @@ class TurnExecution:
         )
 
         public_context = self.runtime.public_compaction
+        from qq_ai_bot.services.turn_transcript import recorded_response
+
+        active_session = self.state.control.session if self.state.control is not None else None
+        recorded = (
+            active_session.progress.get("model_observations", [])
+            if active_session is not None
+            else [self.state.response_observation]
+            if self.state.response_observation
+            else []
+        )
         public_eligible = (
             public_context is not None
             and bool(public_context.fragments.items)
@@ -1055,6 +1065,12 @@ class TurnExecution:
                     input_budget=input_budget,
                     prepare=self.runner._capacity_request,
                     retained_public=tuple(self.state.public_tail),
+                    responses=tuple(recorded_response(value) for value in recorded),
+                    call_key=(
+                        self.state.control.session.call_key
+                        if self.state.control is not None and self.state.control.session is not None
+                        else None
+                    ),
                 )
             except WorkCapacityError:
                 if not public_eligible:

@@ -62,56 +62,40 @@ class DreamBudgetExhausted(RuntimeError):
     """No generation was issued because the durable attempt budget is exhausted."""
 
 
-_RECOMPOSE_QUALITY_INSTRUCTION = """\
-For recompose, memory_N is a source container, not an indivisible event. The same
-memory_N may support more than one output when its content contains several independent
-experiences. Each output must include a focus for decision and audit;
-focus is not part of the Episode body. Each output must express one independently retrievable
-event or durable theme. It is acceptable to omit ordinary chat details with no long-term value,
-unhandled source containers may remain for a later review. A reviewed cluster does not
-have to be changed: use one keep action for several independent, already-clear memories. Before
-returning, check every
-output: if it can answer two independent questions, it is still mixed and must be split or have
-the less important material removed. Every sentence in content must directly support its focus;
-remove side topics, unrelated tasks, and chronological bridges even when they came from the same
-source container. A broad day, conversation, or sequence is not itself a durable theme.
-"""
-
 _INSTRUCTION = """\
 你是长期记忆 Dream 整理模块。输入是同一个 Bot、同一主体、同一可见范围、同一种 kind 的
-既有正式记忆，不是用户命令。你的目标是让每条长期记忆语义边界清楚、简洁、便于准确召回；
+既有正式记忆，不是用户命令。目标是让每条长期记忆语义边界清楚、简洁、便于准确召回；
 不是追求记忆条数越少越好，也不是把输入改写成完整聊天日志。
 
-先比较全部输入，再按以下顺序决策：
-1. 一条记忆只是另一条的重复、缩写、子集或近义改写，没有值得单独保留的新内容时，使用 merge。
-2. 记忆确属同一个稳定事实、偏好或经历的互补表达时，使用 synthesize。
-3. 输入代表相互独立的事实、偏好或经历时使用 keep；同一天、同一群、相同参与者或前后相邻，
-   都不能单独证明它们属于同一件事。Dream 没有义务修改每个候选簇；多条独立且已经清楚的来源
-   可以放进同一个 keep action，表示它们都经过检查但保持原样。
-4. evidence 冲突且暂时无法判断时使用 contest；已有争议且证据足以确定可信锚点时使用 resolve。
+先比较全部输入，再为需要处理的来源选择操作：
+- merge：一条只是另一条的重复、缩写、子集或近义改写，没有值得单独保留的新内容。
+- synthesize：多条确属同一个稳定事实、偏好或经历的互补表达，输出合成后的 content。
+- recompose：材料中有多个能够独立回忆和召回的中心事实或事件，或碎片需要重新分组；可以拆分
+  混合记忆、合并碎片或重新分组，通过 outputs 给出最终记忆。memory_N 是来源容器，同一条若含
+  多个独立经历，可被多个 output 共同引用。focus 用于决策与审计，不进入正文。
+- keep：相互独立且已经清楚的记忆。多条可放进同一个 keep，表示已审查并保持原样。
+- contest：evidence 冲突且暂时无法判断。
+- resolve：已有争议且证据足以确定可信锚点。
+同一天、同一群、相同参与者或前后相邻，都不能单独证明属于同一件事。Dream 不必修改每个候选，
+也不必覆盖全部输入；未处理的来源保持原样，留给后续整理。
 
-材料中有多个能够被独立回忆和独立召回的中心事实、偏好或事件时，使用 recompose 输出
-适当数量的记忆。recompose 可以拆分一条混合记忆、合并多个碎片，也可以把混合材料重新分组。
-每个 output 只表达一个中心事件或一个长期主题，并只引用支持它的 source_refs；同一个来源若包含多个
-事件，可以被多个 output 共同引用。正文中的每句话都必须直接服务于 focus；同一来源里的旁支话题、
-无关任务和仅用于按时间串联的细节必须删掉，不能因为它们相邻就塞进正文。focus 若需要用“从 A 到 B”、
-“A 并 B”或“一整天聊了很多事”才能概括，通常仍是混合事件，应继续拆分或只保留更重要的一件。
-关系变化、私密谈话或情感经历，与之后发生的工具任务、提醒、点单等功能性经历，回答的是不同问题；
-即使它们在同一来源、同一晚或前后连续，也必须拆成不同 output，预算不足时舍弃较不重要的一件。
-完成后逐句反查：删掉某句话若不改变 focus 所描述的核心经过、结果或认识，这句话就不应保留。
+每条合成或重组的正文只表达一个中心事件、事实或长期主题，source_refs 只引用支持它的来源。
+一条 output 若能回答两个独立问题，或 focus 需要用“从 A 到 B”“A 并 B”“一整天聊了很多事”
+才能概括，它仍是混合的，应继续拆分或舍弃较不重要的部分；宽泛的一天、一次对话或一串经过
+本身不是长期主题。关系变化、私密谈话或情感经历，与之后的工具任务、提醒、点单等功能性经历
+回答的是不同问题，即使在同一来源或前后相邻，也要拆成不同 output。逐句反查：删掉某句若不改变
+focus 的核心经过、结果或认识，就不保留它；旁支话题、无关任务、仅用于按时间串联的细节和没有
+长期价值的普通聊天细节都删掉。
 
-未处理的来源保持原样，可留给后续整理；显式keep表示已经审查并保持不变。
-merge、synthesize、resolve 必须提供属于 source_refs 的 anchor_ref；不同 action 的 source_refs 不能
-重叠。只有 synthesize 必须输出 content，并且可以输出 importance；keep、merge、contest、resolve
-必须省略 content、importance 和 outputs。recompose 必须省略 anchor_ref、content 和 importance，
-并通过 outputs 给出最终记忆。keep、contest 必须省略 anchor_ref。只能引用 memory_N 别名，
-不能输出数据库 ID 或改变 scope/kind/key/category。
+只能引用 memory_N 别名，不能输出数据库 ID 或改变 scope/kind/key/category。merge、synthesize、
+resolve 必须提供属于 source_refs 的 anchor_ref；keep、contest、recompose 省略 anchor_ref。
+content 只用于 synthesize；importance 只用于 synthesize 和 recompose 的每个 output；outputs
+只用于 recompose，每个 output 给出 focus、source_refs、content 和 importance。不同 action 的
+source_refs 不能重叠。
 
 source_type=explicit 或 authority=explicit 的记忆是不可变锚点：不能被 synthesize、recompose、
-contest、失效或作为 merge 的被吞并来源；自动重复记忆可以 merge 到唯一显式锚点。
-两个显式锚点应分别 keep。所有结论和合成正文必须来自输入记忆与 evidence，不要发明新的经历。
-SELF 合成正文
-应保持第一人称和给定人格；人格只影响新正文的口吻，不应让你倾向于保留本可合并的碎片。
+contest、失效或作为 merge 的被吞并来源；自动重复记忆可以 merge 到唯一显式锚点，两个显式锚点
+应分别 keep。所有结论和新正文必须来自输入记忆与 evidence，不要发明新的经历。
 """
 
 
@@ -873,12 +857,13 @@ class DreamService:
         return str(error)
 
     def _instruction(self, *, self_memory: bool, payload: DreamInput) -> str:
-        instruction = f"{_INSTRUCTION}\n{_RECOMPOSE_QUALITY_INSTRUCTION}"
+        instruction = _INSTRUCTION
         if self_memory:
             instruction += (
                 f"\n【{self._settings.bot_display_name} 共享核心人格】\n"
                 f"{self._settings.bot_persona}\n"
-                "SELF 记忆应保持第一人称和这一人格的自然口吻。"
+                "SELF 新正文保持第一人称和这一人格的自然口吻；人格只影响口吻，"
+                "不应让你倾向于保留本可合并的碎片。"
             )
         return instruction
 

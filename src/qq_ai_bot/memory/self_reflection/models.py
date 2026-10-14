@@ -137,19 +137,11 @@ class SelfEpisodePassage(_Contract):
 
     evidence_refs: tuple[str, ...] = Field(
         min_length=1,
-        description=(
-            "先选择能支持一个核心经历的 event_N/tool_N，再撰写 content。"
-            "只选问题不能证明回答内容；聊天中声称查过不能证明工具确实执行。"
-            "未选中的窗口消息不是该条正文的证据。"
-        ),
+        description="直接支持本段 content 的 event_N/tool_N。",
     )
     content: str = Field(
         min_length=1,
-        description=(
-            "只写一个核心经历及其直接进展，保留实际来源支持的经历。"
-            "话题无因果关联时选最有价值的一件，舍弃其余；"
-            "同一天、同一群或都是自己参与不足以合并。正文须由本条 evidence_refs 支持。"
-        ),
+        description="本段正文，只写本段 evidence_refs 支持的内容。",
     )
 
     @model_validator(mode="after")
@@ -162,11 +154,7 @@ class SelfEpisodePassage(_Contract):
 class SelfEpisodeProposal(_Contract):
     passages: tuple[SelfEpisodePassage, ...] = Field(
         min_length=1,
-        description=(
-            "同一个核心经历的连续叙述片段；每段先绑定直接支持它的来源，再写正文。"
-            "提问与回答使用各自来源；旧回复中的外部说法须表述为当时的说法。"
-            "不是多个独立经历，不需要凑满片段。后端按顺序连接正文，不另写总述。"
-        ),
+        description="同一个核心经历的连续叙述片段，不需要凑满片段；后端按顺序连接。",
     )
     importance: int = Field(ge=1, le=5)
 

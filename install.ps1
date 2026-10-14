@@ -32,8 +32,10 @@ $DockerOs = (& docker info --format '{{.OSType}}').Trim()
 if ($DockerOs -ne 'linux') {
     Fail "Docker Desktop must be running Linux containers."
 }
-if ($Architecture -notin @('amd64', 'x86_64')) {
-    Fail "Yuki $Version officially supports linux/amd64; Docker reports $Architecture."
+$Platform = switch ($Architecture) {
+    { $_ -in @('amd64', 'x86_64') } { 'linux/amd64' }
+    { $_ -in @('arm64', 'aarch64') } { 'linux/arm64' }
+    default { Fail "Yuki $Version supports linux/amd64 and linux/arm64; Docker reports $Architecture." }
 }
 
 if (-not $InstallDir) {
@@ -99,11 +101,12 @@ try {
     }
 
     $Image = "${BotImage}:$Version"
-    Write-Host "Pulling $Image" -ForegroundColor Cyan
-    & docker pull $Image
+    Write-Host "Pulling $Image for $Platform" -ForegroundColor Cyan
+    & docker pull --platform $Platform $Image
     if ($LASTEXITCODE -ne 0) { Fail "Unable to pull $Image." }
 
     & docker run --rm -it `
+        --platform $Platform `
         --entrypoint qq-ai-bot-cli `
         --volume "${InstallDir}:/deploy" `
         --workdir /deploy `

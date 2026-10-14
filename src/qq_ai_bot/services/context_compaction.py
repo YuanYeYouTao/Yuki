@@ -14,11 +14,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from qq_ai_bot.conversation.frozen_fragments import EventFragment, FrozenFragments
 from qq_ai_bot.conversation.observation_models import ContextObservationModel
 from qq_ai_bot.conversation.projections import PromptProjectionRepository
-from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, FunctionCallOutput
+from qq_ai_bot.domain.messages import (
+    ChatMessage,
+    ChatRequest,
+    FunctionCallOutput,
+    ProviderContinuation,
+)
 from qq_ai_bot.model_runtime.capacity import estimate_request_tokens
 from qq_ai_bot.persistence.event_repository import ConversationReadVersion
 from qq_ai_bot.runtime.work_repository import WorkCapacityError
-from qq_ai_bot.services.turn_transcript import TurnTranscript
+from qq_ai_bot.services.turn_transcript import TurnTranscript, tool_result_evidence
 
 EXECUTION_COMPACT_INSTRUCTION = (
     "[Host 上下文压缩要求]\n"
@@ -166,13 +171,13 @@ async def current_public_compact(
     context: PublicCompactContext, public: dict[str, Any], summary: str
 ) -> tuple[dict[str, Any], str]:
     """Keep frozen paid history and append currently authorised newer events."""
-    previous = await context.repository.read(public["conversation_id"])
+    previous = await context.repository.read_checkpoint(public["conversation_id"])
     coverage = public["coverage"]
     retained = FrozenFragments.load(public["items"])
     if (
         previous is not None
         and previous.selected_summary_text is not None
-        and previous.selected_summary_coverage > coverage
+        and previous.selected_summary_coverage >= coverage
     ):
         # A later published checkpoint already owns this prefix. Restoring an
         # older paid response must not replace it with an earlier coverage.
@@ -247,7 +252,10 @@ def public_compact_plan(
 ) -> ExecutionCompactPlan:
     instruction = PUBLIC_COMPACT_INSTRUCTION + ("\n整理重点：" + focus if focus else "")
     leading = context.messages[: len(context.messages) - len(context.fragments.items)]
-    for boundary in range(len(context.fragments.items), 0, -1):
+    low, high = 1, len(context.fragments.items)
+    fitting: tuple[int, FrozenFragments, TurnTranscript, ChatRequest] | None = None
+    while low <= high:
+        boundary = (low + high) // 2
         covered = FrozenFragments.load(list(context.fragments.items[:boundary]))
         prefix = TurnTranscript((*leading, *covered.messages()))
         prefix.chain_id = original.chain_id
@@ -259,7 +267,12 @@ def public_compact_plan(
             continuation_items=(),
         )
         if estimate_request_tokens(prepare(request)) > input_budget:
+            high = boundary - 1
             continue
+        fitting = boundary, covered, prefix, request
+        low = boundary + 1
+    if fitting is not None:
+        boundary, covered, prefix, request = fitting
         retained = FrozenFragments.load(list(context.fragments.items[boundary:]))
         private = original.entries()[len(initial) :]
         if any(not isinstance(item, ChatMessage) for item in private):
@@ -336,6 +349,8 @@ def execution_compact_plan(
     input_budget: int,
     prepare: Callable[[ChatRequest], ChatRequest],
     retained_public: tuple[ChatMessage, ...] = (),
+    call_key: Callable[[str], str] | None = None,
+    responses: tuple[ChatMessage, ...] = (),
 ) -> ExecutionCompactPlan:
     """Cover the latest fitting paired prefix, preserving its exact protocol.
 
@@ -343,19 +358,48 @@ def execution_compact_plan(
     is never split and a provider checkpoint is never rewritten or flattened.
     """
     entries = transcript.entries()
+    checkpoints = [
+        index for index, entry in enumerate(entries) if isinstance(entry, ProviderContinuation)
+    ]
+    recorded = (
+        dict(zip(checkpoints[-len(responses) :], responses[-len(checkpoints) :], strict=False))
+        if responses
+        else {}
+    )
     pending: set[str] = set()
     candidates: list[int] = []
     for index, entry in enumerate(entries):
-        if isinstance(entry, ChatMessage):
+        if index in recorded:
+            pending.update(call.id for call in recorded[index].tool_calls)
+        elif isinstance(entry, ChatMessage):
             pending.update(call.id for call in entry.tool_calls)
             if entry.tool_call_id:
                 pending.discard(entry.tool_call_id)
         elif isinstance(entry, FunctionCallOutput):
             pending.discard(entry.call_id)
-        if index + 1 > len(initial) and not pending:
+        if (
+            index + 1 > len(initial)
+            and not pending
+            and not isinstance(entry, ProviderContinuation)
+            and not (
+                index + 1 < len(entries) and isinstance(entries[index + 1], FunctionCallOutput)
+            )
+        ):
             candidates.append(index + 1)
     if pending:
         raise WorkCapacityError("model_request_capacity")
+    last_response = (
+        recorded[checkpoints[-1]]
+        if checkpoints and checkpoints[-1] in recorded
+        else next(
+            (
+                entry
+                for entry in reversed(entries)
+                if isinstance(entry, ChatMessage) and entry.role == "assistant"
+            ),
+            None,
+        )
+    )
     for boundary in reversed(candidates):
         prefix = transcript.prefix(boundary)
         prefix.append(ChatMessage("user", EXECUTION_COMPACT_INSTRUCTION))
@@ -369,13 +413,81 @@ def execution_compact_plan(
         if estimate_request_tokens(prepare(request)) > input_budget:
             continue
         suffix = entries[boundary:]
-        # A later opaque checkpoint owns earlier protocol entries. It cannot
-        # be transferred to a new compacted chain as a generic text suffix.
-        if any(not isinstance(item, ChatMessage) for item in suffix):
-            continue
-        kept = tuple(item for item in suffix if isinstance(item, ChatMessage))
+        native_suffix = any(not isinstance(item, ChatMessage) for item in suffix)
+        kept_items: list[ChatMessage] = []
+        required: list[ChatMessage] = []
+        unobserved = False
+        if native_suffix:
+            results: dict[str, str] = {}
+            response: ChatMessage | None = None
+
+            def flush_round(
+                results: dict[str, str] = results,
+                kept_items: list[ChatMessage] = kept_items,
+                required: list[ChatMessage] = required,
+            ) -> None:
+                nonlocal response, unobserved
+                if results:
+                    message = tool_result_evidence(
+                        response, results, call_key=call_key if response is last_response else None
+                    )
+                elif response is not None and response.content:
+                    message = replace(response, reasoning_content=None)
+                else:
+                    response = None
+                    return
+                kept_items.append(message)
+                if response is last_response:
+                    unobserved = bool(response.tool_calls) if response else True
+                if unobserved:
+                    required.append(message)
+                results.clear()
+                response = None
+
+            for index, item in enumerate(suffix, start=boundary):
+                if isinstance(item, ProviderContinuation):
+                    flush_round()
+                    response = recorded.get(index)
+                elif isinstance(item, FunctionCallOutput):
+                    results[item.call_id] = item.output
+                elif item.tool_call_id:
+                    results[item.tool_call_id] = item.content or ""
+                elif item.tool_calls:
+                    response = item
+                else:
+                    flush_round()
+                    kept_items.append(replace(item, reasoning_content=None))
+                    if unobserved:
+                        required.append(kept_items[-1])
+            flush_round()
+        else:
+            for item in suffix:
+                assert isinstance(item, ChatMessage)
+                kept_items.append(item)
+                if item is last_response:
+                    unobserved = bool(item.tool_calls)
+                if unobserved:
+                    required.append(item)
+        kept = tuple(kept_items)
         public = tuple(
             message for message in retained_public if message not in initial and message not in kept
         )
+        # Older retained findings can be covered by another legitimate batch.
+        # The unobserved last round must fit as actual evidence; compacting only
+        # its earlier prefix cannot make an oversized result usable.
+        if (
+            estimate_request_tokens(
+                prepare(
+                    replace(
+                        main_request,
+                        messages=(*initial, *public, *required),
+                        continuation=None,
+                        continuation_items=(),
+                    )
+                )
+            )
+            > input_budget
+        ):
+            continue
         return ExecutionCompactPlan(request, prefix, (*public, *kept))
     raise WorkCapacityError("model_request_capacity")

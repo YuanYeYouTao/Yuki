@@ -7,6 +7,8 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from sqlalchemy.orm import load_only
+
 from qq_ai_bot import __version__
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.control_resolution import ControlAccess, audit_ref_from_actor
@@ -17,6 +19,7 @@ from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.automation.worker import AutomationWorker
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.projection_models import PromptProjectionModel
+from qq_ai_bot.conversation.projections import current_checkpoint_query
 from qq_ai_bot.conversation.scope import runtime_conversation_key
 from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
@@ -225,14 +228,22 @@ class CommandService:
         elif command is CommandName.STATUS:
             scope = await self._conversation_scopes.get(identity)
             async with self._people._database.sessions() as session:
-                checkpoint = await session.get(PromptProjectionModel, scope.id) if scope else None
+                checkpoint = (
+                    await session.scalar(
+                        current_checkpoint_query(scope.id).options(
+                            load_only(
+                                PromptProjectionModel.selected_summary_coverage,
+                                PromptProjectionModel.updated_at,
+                            )
+                        )
+                    )
+                    if scope
+                    else None
+                )
                 compact_line = (
                     f"Compact 覆盖点：{checkpoint.selected_summary_coverage}，"
                     f"公共窗口更新时间：{checkpoint.updated_at.isoformat()}"
                     if checkpoint is not None
-                    and checkpoint.selected_summary_text
-                    and scope is not None
-                    and checkpoint.generation == scope.generation
                     else "Compact 检查点：无"
                 )
             pending_restart = await self._runtime_config.pending_restart_count()
