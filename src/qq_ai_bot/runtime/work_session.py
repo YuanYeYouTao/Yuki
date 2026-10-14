@@ -960,7 +960,6 @@ class WorkSession:
             for call in calls
         ]
         try:
-            source_rechecked = False
             while await self.control.repository.valid(self.control.lease):
                 try:
                     await self.journal.save(
@@ -1011,9 +1010,12 @@ class WorkSession:
                 except WorkConflict as exc:
                     if (
                         exc.code != "work_journal_source_changed"
-                        or source_rechecked
                         or compaction_versions is not None
                         or self.source_guard is None
+                        or any(
+                            note.startswith(("rollback_failed:", "invalidation_failed:"))
+                            for note in getattr(exc, "__notes__", ())
+                        )
                     ):
                         raise
                     # The failed publication/writer has closed. A conversation
@@ -1022,7 +1024,6 @@ class WorkSession:
                     await self.control.validate()
                     if not await self.source_guard.check(self.control):
                         raise
-                    source_rechecked = True
                     # Retry this same journal, never the model or tool effects.
             else:
                 raise WorkConflict("work_activation_obsolete")
