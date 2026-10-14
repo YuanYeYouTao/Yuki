@@ -10,15 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import select, text
 
-from qq_ai_bot.conversation.canonical_db_models import (
-    CanonicalConversationModel,
-    CanonicalConversationRollupEmergencyOverlayModel,
-    CanonicalConversationRollupModel,
-)
-from qq_ai_bot.conversation.rollup.coverage import (
-    valid_same_generation_overlay,
-    valid_same_generation_semantic,
-)
+from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
 from qq_ai_bot.execution_trace.phases import model_detail
@@ -74,7 +66,7 @@ class WorkSourceGuard:
         scope["scope_type"] = ScopeType(scope["scope_type"])
         data["scope"] = ConversationScope(**scope)
         data["visible_event_ids"] = tuple(data.get("visible_event_ids", ()))
-        data["rollup_stamp"] = tuple(data.get("rollup_stamp", (0, 0)))
+        data.pop("rollup_stamp", None)
         if "observation_sources" in data:
             data["observation_sources"] = tuple(tuple(item) for item in data["observation_sources"])
         result = cls(ConversationReadVersion(**data))
@@ -196,61 +188,6 @@ class WorkSourceGuard:
                 identity = (source.kind, source.person_id, source.space_id)
                 selected_summary = version.selected_summary_text
                 summary: object = selected_summary
-                if selected_summary is None:
-                    semantic = await session.get(
-                        CanonicalConversationRollupModel, version.conversation_id
-                    )
-                    overlay = await session.get(
-                        CanonicalConversationRollupEmergencyOverlayModel, version.conversation_id
-                    )
-                    # Match prompt snapshot selection. A background semantic checkpoint
-                    # below the still-effective overlay is not a new input to this Work.
-                    if semantic is not None and semantic.generation != source.generation:
-                        return False
-                    effective: (
-                        CanonicalConversationRollupEmergencyOverlayModel
-                        | CanonicalConversationRollupModel
-                        | None
-                    )
-                    if valid_same_generation_overlay(
-                        overlay,
-                        generation=source.generation,
-                        starts_after=source.starts_after_event_id,
-                        last_event_id=source.last_event_id,
-                        semantic_revision=semantic.revision if semantic is not None else 0,
-                    ):
-                        effective = overlay
-                        kind = "emergency"
-                    elif valid_same_generation_semantic(
-                        semantic,
-                        generation=source.generation,
-                        starts_after=source.starts_after_event_id,
-                        last_event_id=source.last_event_id,
-                    ):
-                        effective = semantic
-                        assert semantic is not None
-                        kind = semantic.summary_kind
-                    else:
-                        if semantic is not None:
-                            # Snapshot fallback still carries an existing semantic
-                            # summary. An invalid coverage must not turn it into an
-                            # apparently empty read set and omit its payload fence.
-                            return False
-                        effective = None
-                        kind = None
-                    summary = (
-                        (
-                            effective.conversation_id,
-                            effective.generation,
-                            effective.covered_through_event_id,
-                            effective.summary_text,
-                            kind,
-                            effective.source_fingerprint,
-                            effective.revision,
-                        )
-                        if effective is not None
-                        else None
-                    )
                 privacy = (
                     await session.scalar(
                         select(ExecutionTraceStateModel.privacy_generation).where(
@@ -259,11 +196,6 @@ class WorkSourceGuard:
                     )
                     or 0
                 )
-                selected_summary = getattr(version, "selected_summary_text", None)
-                # Frozen selection owns the summary used by this request. A newer
-                # derived Rollup is not an edit of that already submitted snapshot.
-                if selected_summary is not None:
-                    summary = selected_summary
                 from qq_ai_bot.conversation.observations import validate_observations
 
                 original_observations = version.observation_sources

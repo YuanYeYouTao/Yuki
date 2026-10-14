@@ -12,8 +12,8 @@ from sqlalchemy import select
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.config import Settings
-from qq_ai_bot.conversation.rollup.repository import ConversationScopeRepository
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
+from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.identity.routing import PresenceRouter
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository

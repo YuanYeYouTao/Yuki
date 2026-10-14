@@ -15,11 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
-    CanonicalConversationRollupEmergencyOverlayModel,
-    CanonicalConversationRollupModel,
 )
-from qq_ai_bot.conversation.rollup.coverage import session_effective_coverage
-from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.identity.errors import CanonicalIdentityError
@@ -159,7 +155,6 @@ class PluginNotificationRepository:
         self._database = database
         self._scoped_events = scoped_events or ScopedEventLedgerUnitOfWork(
             database,
-            config=RollupPolicyConfig(),
         )
 
     async def grant_target(
@@ -745,7 +740,6 @@ class PluginNotificationRepository:
                 session,
                 row,
                 expected_generation=generation,
-                include_coverage=True,
             )
             if category is not None:
                 await _retire_turn(session, row, status="cancelled", category=category, now=now)
@@ -774,7 +768,6 @@ class PluginNotificationRepository:
                     session,
                     job,
                     expected_generation=generation,
-                    include_coverage=True,
                 )
                 if category is None:
                     job.lease_until = now + timedelta(seconds=max(1, lease_seconds))
@@ -803,7 +796,6 @@ class PluginNotificationRepository:
                 session,
                 job,
                 expected_generation=generation,
-                include_coverage=True,
             )
             if category is not None:
                 await _retire_turn(session, job, status="cancelled", category=category, now=now)
@@ -1103,7 +1095,6 @@ class PluginNotificationRepository:
                     session,
                     stored,
                     expected_generation=job.generation,
-                    include_coverage=True,
                 )
             if category is None:
                 assert stored is not None
@@ -1150,7 +1141,7 @@ class PluginNotificationRepository:
                 else:
                     assert stored is not None
                     current = await _turn_fence_category(
-                        writer, stored, expected_generation=job.generation, include_coverage=True
+                        writer, stored, expected_generation=job.generation
                     )
                     if current is not None:
                         category = current
@@ -1365,9 +1356,7 @@ async def admit_background_turn_work(
                 or lease.generation != generation
             ):
                 raise WorkConflict("plugin_turn_source_mismatch")
-            category = await _turn_fence_category(
-                session, job, expected_generation=generation, include_coverage=True
-            )
+            category = await _turn_fence_category(session, job, expected_generation=generation)
             if category is not None:
                 await _retire_turn(session, job, status="cancelled", category=category, now=now)
             else:
@@ -1417,7 +1406,6 @@ async def _turn_fence_category(
     job: PluginBackgroundTurnJobModel,
     *,
     expected_generation: int,
-    include_coverage: bool,
 ) -> str | None:
     if not await background_authority_live(
         session,
@@ -1450,21 +1438,6 @@ async def _turn_fence_category(
         # An admitted Work owns this event now. New input reaches its mailbox;
         # coverage/later-human staleness only filters new opportunities.
         return None
-    if include_coverage:
-        semantic = await session.get(CanonicalConversationRollupModel, conversation.id)
-        overlay = await session.get(
-            CanonicalConversationRollupEmergencyOverlayModel,
-            conversation.id,
-        )
-        coverage = session_effective_coverage(
-            generation=int(conversation.generation),
-            starts_after=int(conversation.starts_after_event_id),
-            last_event_id=int(conversation.last_event_id),
-            overlay=overlay,
-            semantic=semantic,
-        )
-        if source.id <= coverage:
-            return TURN_ERROR_SUPERSEDED_COVERED
     if await _has_later_human_message(
         session,
         source=source,

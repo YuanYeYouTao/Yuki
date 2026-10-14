@@ -374,11 +374,6 @@ async def _execute_plugin_main_turn(
                         metadata=payload,
                         read_history=can_read_history,
                         runtime=runtime.runtime_config,
-                        capacity_budget=contract.chat._history_input_budget(
-                            runtime.runtime_config,
-                            maintenance=False,
-                            allowed_capabilities=runtime.allowed_capabilities,
-                        ),
                     ),
                     current_work_control.get(),
                     recovery_contract=await main.recovery_contract(runtime.runtime_config),

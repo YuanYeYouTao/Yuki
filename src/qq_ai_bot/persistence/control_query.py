@@ -1321,9 +1321,7 @@ class ControlQueryAdapter:
                         generation=ConversationGeneration(int(row.generation)),
                         last_event_id=int(row.last_event_id),
                         starts_after_event_id=int(row.starts_after_event_id),
-                        covered_through_event_id=int(row.covered_through_event_id),
                         last_generation_change_event_id=int(row.last_generation_change_event_id),
-                        uncovered_event_count=int(row.uncovered_event_count),
                         revision=int(row.revision),
                     )
                     for row in rows

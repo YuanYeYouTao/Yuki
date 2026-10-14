@@ -6,10 +6,6 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from qq_ai_bot.conversation.frozen_fragments import FrozenFragments
-from qq_ai_bot.conversation.rollup.prompt_accounting import (
-    durable_uncovered_event_characters,
-    prompt_accounting_characters,
-)
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
 from qq_ai_bot.persistence.repository_records import EventRecord
@@ -88,10 +84,6 @@ def test_current_event_time_is_visible_without_changing_single_event_watermark()
         == "[14:02:11｜阿明|QQ:1001]\n#6912>当前输入"
     )
     assert renderer.render_reference_event(event) == "[阿明|QQ:1001]\n#6912>原文"
-    assert durable_uncovered_event_characters(event) == len(renderer.render_reference_event(event))
-    assert prompt_accounting_characters((event,)) == len(
-        renderer.main_agent_history((event,))[0][2].content or ""
-    )
 
 
 def test_frozen_old_fragment_keeps_its_text_when_new_event_is_appended() -> None:

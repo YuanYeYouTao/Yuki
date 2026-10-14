@@ -64,7 +64,6 @@ async def test_history_around_keeps_original_event_across_presence_switch(
         conversation = await session.get(CanonicalConversationModel, old.canonical_conversation_id)
         assert conversation is not None
         conversation.starts_after_event_id = old.id
-        conversation.covered_through_event_id = old.id
     assert (
         await ledger.list_scope_around(
             new_scope, event_id=old.id, before=0, after=0, message_only=True
@@ -111,7 +110,6 @@ async def test_history_around_keeps_one_snapshot_and_rejects_duplicate_center(
                     .values(
                         generation=2,
                         starts_after_event_id=events[-1].id,
-                        covered_through_event_id=events[-1].id,
                     )
                 )
         return result
@@ -139,6 +137,6 @@ async def test_history_around_keeps_one_snapshot_and_rejects_duplicate_center(
             .where(ChatEventModel.id == duplicate.id)
             .values(suppression_status="duplicate", utterance_fingerprint="d" * 64)
         )
-    assert (
-        await ledger.list_scope_around(scope, event_id=duplicate.id, before=1, after=1)
-    )[0] is None
+    assert (await ledger.list_scope_around(scope, event_id=duplicate.id, before=1, after=1))[
+        0
+    ] is None

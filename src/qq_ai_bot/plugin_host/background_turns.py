@@ -12,9 +12,9 @@ from typing import Any
 from sqlalchemy import select
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
-from qq_ai_bot.conversation.rollup.repository import ConversationScopeRepository
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
+from qq_ai_bot.conversation.scope_models import ConversationCoverageError
+from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.identity.routing import PresenceRouter, RouteSendError
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository

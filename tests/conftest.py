@@ -12,13 +12,7 @@ import pytest_asyncio
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.config import Settings
-from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
-from qq_ai_bot.conversation.rollup.origins import parse_rollup_llm_origins
-from qq_ai_bot.conversation.rollup.repository import (
-    ConversationRollupRepository,
-    ConversationScopeRepository,
-)
-from qq_ai_bot.conversation.rollup.service import ConversationRollupService
+from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
 from qq_ai_bot.domain.messages import OutboundMessage, OutboundSendReceipt
 from qq_ai_bot.llm.base import LLMProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
@@ -83,7 +77,6 @@ class Harness:
     ledger: EventLedgerRepository
     scoped_events: ScopedEventLedgerUnitOfWork
     conversation_scopes: ConversationScopeRepository
-    conversation_rollups: ConversationRollupRepository
     groups: GroupSettingsRepository
     private_users: PrivateUserSettingsRepository
     profiles: PeopleRepository
@@ -133,21 +126,10 @@ def build_harness(
         database,
     )
     user_profiles = UserProfileService(profiles)
-    rollup_config = RollupPolicyConfig(
-        context_token_budget=settings.context_window_tokens,
-        trigger_ratio=settings.conversation_rollup_trigger_ratio,
-        target_ratio=settings.conversation_rollup_target_ratio,
-        batch_max_events=settings.conversation_rollup_batch_max_events,
-        batch_max_characters=settings.conversation_rollup_batch_max_characters,
-        bot_display_name=settings.bot_display_name,
-        timezone=settings.default_timezone,
-        llm_origins=parse_rollup_llm_origins(settings.conversation_rollup_llm_origins),
-    )
-    scoped_events = ScopedEventLedgerUnitOfWork(database, config=rollup_config)
+    scoped_events = ScopedEventLedgerUnitOfWork(database)
     ledger = EventLedgerRepository(database)
     ledger.set_scoped_writer(scoped_events)
     conversation_scopes = ConversationScopeRepository(database)
-    conversation_rollups = ConversationRollupRepository(database, rollup_config)
     memories = MemoryFactService(MemoryFactRepository(database))
     web_sources = WebSearchSourceRepository(database)
     vision = (
@@ -178,11 +160,6 @@ def build_harness(
     models = require_model_executor(None, provider=llm, model=settings.llm_model or "fake")
     concurrency = ConcurrencyManager()
     runtime_config = RuntimeConfigService(settings=settings, database=database)
-    rollup_service = ConversationRollupService(
-        models=models,
-        config=rollup_config,
-        timeout_seconds=settings.conversation_rollup_model_timeout_seconds,
-    )
     turn_coordinator = ConversationTurnCoordinator(
         interrupt_autonomous_on_new_message=(
             settings.conversation_interrupt_autonomous_on_new_message
@@ -208,8 +185,6 @@ def build_harness(
         web_sources=web_sources,
         runtime_config=runtime_config,
         memory_partition_lookup=DatabaseMemoryPartitionLookup(database),
-        rollup_repository=conversation_rollups,
-        rollup_service=rollup_service,
         conversation_scopes=conversation_scopes,
         effect_gate=effect_gate,
         turn_coordinator=turn_coordinator,
@@ -223,7 +198,6 @@ def build_harness(
         settings=settings,
         ledger=ledger,
         conversation_scopes=conversation_scopes,
-        conversation_rollups=conversation_rollups,
         effect_gate=effect_gate,
         groups=groups,
         private_users=private_users,
@@ -250,7 +224,6 @@ def build_harness(
         ledger,
         scoped_events,
         conversation_scopes,
-        conversation_rollups,
         groups,
         private_users,
         profiles,

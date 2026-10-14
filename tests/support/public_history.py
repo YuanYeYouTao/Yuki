@@ -1,23 +1,12 @@
-"""Adversarial coverage for the 3.7 single-checkpoint rollup contract."""
+"""Canonical identity and public history fixtures."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from qq_ai_bot.conversation.rollup.models import (
-    RollupPolicyConfig,
-)
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
-
-
-def _policy(*, batch_max_events: int = 100) -> RollupPolicyConfig:
-    return RollupPolicyConfig(
-        context_token_budget=100,
-        batch_max_events=batch_max_events,
-        batch_max_characters=100_000,
-    )
 
 
 async def _append(
@@ -65,3 +54,33 @@ async def _prepare_v2_private(
         await ensure_presence(session, bot)
         await ensure_person(session, peer, now=_NOW)
     return ConversationScope.private(bot, peer)
+
+
+async def _publish_checkpoint(database, conversation_id, coverage, text="selected checkpoint"):
+    from uuid import uuid4
+
+    from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+    from qq_ai_bot.conversation.projection_models import PromptProjectionModel
+
+    async with database.immediate_session() as session:
+        owner = await session.get(CanonicalConversationModel, conversation_id)
+        session.add(
+            PromptProjectionModel(
+                view_key=owner.id,
+                conversation_id=owner.id,
+                generation=owner.generation,
+                source_revision=owner.prompt_source_revision,
+                starts_after_event_id=owner.starts_after_event_id,
+                epoch_id=str(uuid4()),
+                context_key="fixture",
+                revision=1,
+                rebuild_reason="compact",
+                payload_json="[]",
+                byte_size=2,
+                updated_at=datetime.now(UTC),
+                selected_summary_text=text,
+                selected_summary_coverage=coverage,
+                selected_summary_kind="compact",
+                selected_summary_renderer=2,
+            )
+        )

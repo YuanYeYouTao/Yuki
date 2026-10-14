@@ -7,6 +7,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import select, text
 from tests.support.automation_unified_delivery_helpers import setup_run
+from tests.support.legacy_conversation_seed import seed_pre_0119_social_conversations
 from tests.unit.test_self_initiative_memory import _service, record
 
 from qq_ai_bot.automation.models import RunStatus
@@ -36,6 +37,7 @@ def test_0111_preserves_original_receipts_and_writes_real_scheduled_self_source(
     async def verify():
         database = Database(url)
         try:
+            await seed_pre_0119_social_conversations(database)
             case = await setup_run(
                 database,
                 tmp_path,

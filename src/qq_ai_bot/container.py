@@ -130,7 +130,6 @@ class ApplicationContainer:
             config_registry=self.runtime_config.registry,
         )
         self.conversation_scopes = persistence.conversation_scopes
-        self.conversation_rollups = persistence.conversation_rollups
         self.scoped_events = persistence.scoped_events
         self.groups = persistence.groups
         self.private_users = persistence.private_users
@@ -390,8 +389,6 @@ class ApplicationContainer:
         self.memory_self_reflection_worker.social = self.social_service
         self.memory_dream_worker = conversation.memory_dream_worker
         self.memory_evidence_compaction_worker = conversation.memory_evidence_compaction_worker
-        self.conversation_rollup_worker = conversation.conversation_rollup_worker
-        self.conversation_rollup_service = conversation.conversation_rollup_service
         admin = AdminModule(
             settings=settings,
             database=self.database,
@@ -529,7 +526,6 @@ class ApplicationContainer:
         self.emoji_delivery.set_event_publisher(self.plugin_events)
         self.emoji_selector.set_plugin_signals(self.plugin_emoji_signals)
         self.chat.set_plugin_tools(self.plugin_tools)
-        self.conversation_rollup_worker.on_finished = self.chat.rollup_wakeups.notify
         from qq_ai_bot.services.semantic_participation import SemanticParticipationService
 
         self.semantic_participation = SemanticParticipationService(self, traces=self.models.traces)
@@ -543,10 +539,8 @@ class ApplicationContainer:
             turn_observations=self.turn_observations,
             participation=self.semantic_participation,
         )
-        self.chat.rollup_wakeups.on_consumed = self.autonomous_groups.consume_rollup_history
         self.command_service = CommandService(
             settings=settings,
-            rollups=self.conversation_rollups,
             people=self.people,
             memories=self.memories,
             concurrency=self.concurrency,
@@ -575,7 +569,6 @@ class ApplicationContainer:
         self.canonical_uow = CanonicalIngressUnitOfWork(
             self.database,
             self.presence_router,
-            config=self.conversation_rollups.config,
         )
         self.processor = MessageProcessor(
             conversation_media=self.conversation_media,
@@ -597,7 +590,6 @@ class ApplicationContainer:
             settings=settings,
             ledger=self.ledger,
             conversation_scopes=self.conversation_scopes,
-            conversation_rollups=self.conversation_rollups,
             effect_gate=self.conversation_effect_gate,
             groups=self.groups,
             private_users=self.private_users,
@@ -1001,7 +993,6 @@ class ApplicationContainer:
             EventName.APPLICATION_STOPPING,
             {"version": __version__},
         )
-        self.chat.rollup_wakeups.close()
         await self.lifecycle.close()
 
 

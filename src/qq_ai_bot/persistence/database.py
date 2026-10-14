@@ -79,7 +79,6 @@ class Database:
         # Declare current read indexes without changing the frozen 0056 schema.
         from sqlalchemy import Index
 
-        from qq_ai_bot.conversation.rollup import signals as _signals  # noqa: F401
         from qq_ai_bot.runtime import work_recovery_schema as _recovery  # noqa: F401
         from qq_ai_bot.runtime import work_schema_v1 as _work_schema
 

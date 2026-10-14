@@ -7,18 +7,15 @@ from datetime import UTC, datetime
 from typing import cast
 from uuid import uuid4
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
-    CanonicalConversationRollupEmergencyOverlayModel,
-    CanonicalConversationRollupJobModel,
-    CanonicalConversationRollupModel,
     ConversationLegacyAliasModel,
 )
-from qq_ai_bot.conversation.rollup.models import ConversationScopeState
+from qq_ai_bot.conversation.scope_models import ConversationScopeState
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.identity.errors import CanonicalIdentityError
 
@@ -138,9 +135,6 @@ async def ensure_canonical_conversation(
                         starts_after_event_id=0,
                         last_event_id=0,
                         last_generation_change_event_id=0,
-                        covered_through_event_id=0,
-                        uncovered_event_count=0,
-                        uncovered_character_count=0,
                         revision=1,
                         created_at=now,
                         updated_at=now,
@@ -254,37 +248,13 @@ async def bump_canonical_generation(
     row.starts_after_event_id = event_id
     row.last_generation_change_event_id = event_id
     row.last_event_id = max(int(row.last_event_id), event_id)
-    row.covered_through_event_id = max(int(row.covered_through_event_id), event_id)
-    row.uncovered_event_count = 0
-    row.uncovered_character_count = 0
     row.revision += 1
     row.updated_at = now
     from qq_ai_bot.runtime.work_repository import WorkRepository
 
     await WorkRepository.cancel_in_session(session, conversation_id, generation=int(row.generation))
-    await delete_canonical_rollup_projections(session, conversation_id)
     await session.flush()
     return int(row.generation)
-
-
-async def delete_canonical_rollup_projections(session: AsyncSession, conversation_id: str) -> None:
-    """Delete canonical semantic, job, and emergency overlay in one session."""
-
-    await session.execute(
-        delete(CanonicalConversationRollupModel).where(
-            CanonicalConversationRollupModel.conversation_id == conversation_id
-        )
-    )
-    await session.execute(
-        delete(CanonicalConversationRollupJobModel).where(
-            CanonicalConversationRollupJobModel.conversation_id == conversation_id
-        )
-    )
-    await session.execute(
-        delete(CanonicalConversationRollupEmergencyOverlayModel).where(
-            CanonicalConversationRollupEmergencyOverlayModel.conversation_id == conversation_id
-        )
-    )
 
 
 async def touch_canonical_watermarks(
@@ -292,14 +262,11 @@ async def touch_canonical_watermarks(
     conversation_id: str,
     *,
     event_id: int,
-    characters: int,
 ) -> None:
     row = await session.get(CanonicalConversationModel, conversation_id)
     if row is None:
         return
     row.last_event_id = max(int(row.last_event_id), event_id)
-    row.uncovered_event_count += 1
-    row.uncovered_character_count += max(0, characters)
     row.updated_at = _utcnow()
 
 
@@ -322,8 +289,6 @@ def scope_state_from_canonical(
         starts_after_event_id=int(conversation.starts_after_event_id),
         last_event_id=int(conversation.last_event_id),
         last_generation_change_event_id=int(conversation.last_generation_change_event_id),
-        uncovered_event_count=int(conversation.uncovered_event_count),
-        uncovered_character_count=int(conversation.uncovered_character_count),
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
         runtime_scope_key=runtime_scope_key,

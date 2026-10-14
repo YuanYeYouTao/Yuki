@@ -50,7 +50,6 @@ class HealthPayload(TypedDict):
     memory_rebuild: dict[str, object]
     memory_self_reflection: dict[str, object]
     memory_dream: dict[str, object]
-    conversation_rollup: dict[str, object]
     conversation_generation_superseded_effects: int
     uptime_seconds: int
 
@@ -71,7 +70,6 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
     )
     self_reflection_health = await container.memory_self_reflection_worker.health()
     dream_health = await container.memory_dream_worker.health()
-    rollup_health = await container.conversation_rollup_worker.health()
     return HealthPayload(
         status="ok" if database_ok and background_health["running"] else "degraded",
         version=__version__,
@@ -123,7 +121,6 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
         memory_rebuild=rebuild_health.model_dump(mode="json"),
         memory_self_reflection=self_reflection_health.model_dump(mode="json"),
         memory_dream=dream_health.model_dump(mode="json"),
-        conversation_rollup=rollup_health,
         conversation_generation_superseded_effects=(
             container.conversation_effect_gate.superseded_rejections
         ),

@@ -12,7 +12,7 @@ from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.automation.tools import AutomationToolService
 from qq_ai_bot.automation.worker import AutomationWorker
 from qq_ai_bot.config import Settings
-from qq_ai_bot.conversation.rollup.repository import ConversationScopeRepository
+from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
 from qq_ai_bot.identity.routing import PresenceRouter
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.runtime.work_repository import WorkRepository

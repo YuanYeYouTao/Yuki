@@ -10,8 +10,6 @@ from tests.support.semantic_participation_host_helpers import _event_and_route
 
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
-    CanonicalConversationRollupEmergencyOverlayModel,
-    CanonicalConversationRollupModel,
 )
 from qq_ai_bot.conversation.projection_revision_schema import EVENT_METADATA_COLUMNS_0082
 from qq_ai_bot.domain.conversations import ConversationScope
@@ -58,9 +56,7 @@ async def test_source_scans_finish_before_recheck_and_new_enrichment_remains_all
         sql_event.remove(database.engine.sync_engine, "before_cursor_execute", record)
     recheck = [index for index, statement in enumerate(sql) if statement == "BEGIN"][1]
     assert any("chat_events" in statement for statement in sql[:recheck])
-    assert not any(
-        "chat_events" in statement or "rollups" in statement for statement in sql[recheck:]
-    )
+    assert not any("chat_events" in statement for statement in sql[recheck:])
     assert all(statement.startswith(("BEGIN", "SELECT")) for statement in sql)
     assert sql[0] == "BEGIN"
     additional = await _event_and_route(database, ledger, content="new event")
@@ -173,49 +169,6 @@ async def test_owner_mutation_before_first_check_rejects_stale_read_version(data
     assert guard.fingerprint is None
 
 
-@pytest.mark.parametrize(
-    "model", [CanonicalConversationRollupModel, CanonicalConversationRollupEmergencyOverlayModel]
-)
-async def test_moving_rollup_invalidates_old_owner_during_read_write_gap(
-    database, monkeypatch, model
-):
-    ledger = EventLedgerRepository(database)
-    source = await _event_and_route(database, ledger)
-    target = await _event_and_route(database, ledger, group="2002")
-    now = datetime.now(UTC)
-    values = dict(
-        conversation_id=source.canonical_conversation_id,
-        generation=1,
-        covered_through_event_id=0,
-        summary_text="original snapshot",
-        source_fingerprint="a" * 64,
-        revision=1,
-        created_at=now,
-        updated_at=now,
-    )
-    values.update(summary_kind="model" if model is CanonicalConversationRollupModel else None)
-    if model is CanonicalConversationRollupEmergencyOverlayModel:
-        values.pop("summary_kind")
-        values["base_semantic_revision"] = 0
-    async with database.sessions() as session, session.begin():
-        session.add(model(**values))
-    guard, control = await _guard(database, source)
-    original = control.repository._assert_lease_readonly
-
-    async def move(session, lease):
-        async with database.sessions() as other, other.begin():
-            await other.execute(
-                update(model)
-                .where(model.conversation_id == source.canonical_conversation_id)
-                .values(conversation_id=target.canonical_conversation_id)
-            )
-        await original(session, lease)
-
-    monkeypatch.setattr(control.repository, "_assert_lease_readonly", move)
-    assert not await guard.check(control)
-    assert guard.fingerprint is None
-
-
 async def test_metadata_trigger_closure_and_noop_preserve_revision(database):
     columns = set(ChatEventModel.__table__.columns.keys())
     content_columns = {
@@ -248,25 +201,3 @@ async def test_metadata_trigger_closure_and_noop_preserve_revision(database):
             )
         )
     assert before == after
-
-
-async def test_invalid_semantic_coverage_is_not_an_empty_summary_read_set(database):
-    source = await _event_and_route(database, EventLedgerRepository(database))
-    now = datetime.now(UTC)
-    async with database.sessions() as writer, writer.begin():
-        writer.add(
-            CanonicalConversationRollupModel(
-                conversation_id=source.canonical_conversation_id,
-                generation=1,
-                covered_through_event_id=source.id + 100,
-                summary_text="invalid coverage but nonempty compiler summary",
-                summary_kind="model",
-                source_fingerprint="a" * 64,
-                revision=1,
-                created_at=now,
-                updated_at=now,
-            )
-        )
-    guard, control = await _guard(database, source)
-    assert not await guard.check(control)
-    assert guard.fingerprint is None

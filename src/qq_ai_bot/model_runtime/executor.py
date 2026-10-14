@@ -293,7 +293,6 @@ class TaskModelExecutor:
         invocations: ModelInvocationRepository | None = None,
         traces: TraceRecorder | None = None,
         max_concurrency: int | None = None,
-        compaction_timeout_seconds: float = 600.0,
         self_reflection_timeout_seconds: float = 180.0,
     ) -> None:
         if max_concurrency is not None and max_concurrency <= 0:
@@ -308,7 +307,6 @@ class TaskModelExecutor:
         self._pool_lease_counts: dict[int, int] = {}
         self._pool_close_tasks: set[asyncio.Task[None]] = set()
         self._closing = False
-        self._compaction_timeout_seconds = compaction_timeout_seconds
         self._self_reflection_timeout_seconds = self_reflection_timeout_seconds
         self._invocations = invocations
         self.traces = traces
@@ -537,9 +535,7 @@ class TaskModelExecutor:
                     "request exceeds configured provider input capacity"
                 )
         provider = (
-            pool.get(profile, timeout_seconds=self._compaction_timeout_seconds)
-            if task is ModelTask.CONVERSATION_COMPACTION
-            else pool.get(profile, timeout_seconds=self._self_reflection_timeout_seconds)
+            pool.get(profile, timeout_seconds=self._self_reflection_timeout_seconds)
             if task is ModelTask.MEMORY_SELF_REFLECTION
             else pool.get(profile)
         )

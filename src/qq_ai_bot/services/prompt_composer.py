@@ -10,7 +10,6 @@ from typing import Any
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.config import Settings
-from qq_ai_bot.conversation.rollup.renderer import render_rollup_message
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage
 from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE
 from qq_ai_bot.persistence.event_repository import ConversationReadVersion
@@ -137,19 +136,10 @@ class PromptComposer:
 
     @staticmethod
     def _conversation_history(context: AssembledContext) -> tuple[ChatMessage, ...]:
-        if not context.rollup_text.strip():
+        if not context.checkpoint_text.strip():
             return context.history_messages
-        if context.metrics.rollup_mode == "compact":
-            return (
-                render_context_checkpoint(context.rollup_text, context.prompt_effective_coverage),
-                *context.history_messages,
-            )
         return (
-            render_rollup_message(
-                context.rollup_text,
-                kind=context.metrics.rollup_mode,
-                covered_through_event_id=context.prompt_effective_coverage,
-            ),
+            render_context_checkpoint(context.checkpoint_text, context.prompt_effective_coverage),
             *context.history_messages,
         )
 
@@ -163,7 +153,7 @@ class PromptComposer:
             "scope_key": context.prompt_scope_key,
             "generation": context.prompt_generation,
             "coverage": context.prompt_effective_coverage,
-            "rollup_revision": context.prompt_rollup_revision,
+            "checkpoint_revision": context.prompt_checkpoint_revision,
             "raw_tail_end_event_id": context.prompt_raw_tail_end_event_id,
             "conversation_prefix_hash": compiled.metrics.conversation_prefix_hash,
         }

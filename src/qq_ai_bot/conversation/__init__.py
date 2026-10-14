@@ -1,1 +1,1 @@
-"""Canonical conversation identity, history, rollup, and admission domain."""
+"""Canonical conversation identity, history, public history, and admission domain."""

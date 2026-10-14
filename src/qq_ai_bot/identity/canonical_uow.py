@@ -21,8 +21,6 @@ from qq_ai_bot.conversation.hydrate import (
     hydrate_scope_state_from_canonical,
     touch_canonical_watermarks,
 )
-from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
-from qq_ai_bot.conversation.rollup.prompt_accounting import durable_uncovered_event_characters
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.domain.messages import InboundMessage
@@ -62,12 +60,9 @@ class CanonicalIngressUnitOfWork:
         self,
         database: Database,
         router: PresenceRouter,
-        *,
-        config: RollupPolicyConfig | None = None,
     ) -> None:
         self._database = database
         self._router = router
-        self._config = config or RollupPolicyConfig()
 
     async def append_inbound(
         self,
@@ -249,11 +244,6 @@ class CanonicalIngressUnitOfWork:
                 session,
                 admitted.conversation_id,
                 event_id=row.id,
-                characters=durable_uncovered_event_characters(
-                    event,
-                    bot_display_name=self._config.bot_display_name,
-                    timezone=self._config.timezone,
-                ),
             )
             if new_generation:
                 await bump_canonical_generation(
@@ -274,15 +264,10 @@ class CanonicalIngressUnitOfWork:
                     generation=int(conversation.generation),
                     segments=segments,
                 )
-            from qq_ai_bot.conversation.canonical_rollup import signal_canonical_rollup_if_needed
-
-            signalled = await signal_canonical_rollup_if_needed(
-                session, conversation, force_existing=True
-            )
             trip("after_canonical_append")
             state = await hydrate_scope_state_from_canonical(session, scope, conversation)
         return ScopedAppendResult(
-            event=event, scope=state, created=created, job_signalled=signalled
+            event=event, scope=state, created=created
         )
 
     async def append_new_generation(
@@ -384,7 +369,6 @@ async def _reuse_claimed_inbound(
         event=_event_record(existing),
         scope=await hydrate_scope_state_from_canonical(session, scope, conversation),
         created=False,
-        job_signalled=False,
     )
 
 

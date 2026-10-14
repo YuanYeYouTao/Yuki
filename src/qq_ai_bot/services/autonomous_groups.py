@@ -93,16 +93,6 @@ class AutonomousGroupService:
         self._states: dict[str, _GroupState] = {}
         self._closed = False
 
-    def consume_rollup_history(self, conversation_id: str, event_id: int) -> None:
-        """Do not schedule another observation for history a recovery already handled."""
-        for state in self._states.values():
-            if (
-                state.message.conversation_id == conversation_id
-                and state.message.source_event_id is not None
-                and state.message.source_event_id <= event_id
-            ):
-                state.consumed_revision = state.revision
-
     def observe(
         self,
         message: InboundMessage,

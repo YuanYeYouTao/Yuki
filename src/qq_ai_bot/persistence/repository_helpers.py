@@ -24,7 +24,7 @@ def suppression_is_canonical_live(status: str | None) -> bool:
 
 
 def keeper_event_clause() -> ColumnElement[bool]:
-    """SQLAlchemy live-event filter shared by canonical history, rollup, and Memory."""
+    """SQLAlchemy live-event filter shared by canonical history and Memory."""
 
     return or_(
         ChatEventModel.suppression_status.is_(None),

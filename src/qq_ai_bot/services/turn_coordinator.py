@@ -26,7 +26,7 @@ class TurnSupersededError(RuntimeError):
 
 
 class HistorySourceChangedError(TurnSupersededError):
-    """Source changed; the caller may recover only a verified rollup change."""
+    """Source changed before the selected context could be dispatched."""
 
     def __init__(self, version: ConversationReadVersion) -> None:
         super().__init__("context source changed before model invocation or history assembly")

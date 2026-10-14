@@ -32,8 +32,6 @@ from qq_ai_bot.model_runtime.models import ModelExecutionPriority
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.runtime.context_preparation import (
-    ContextPreparationMode,
-    context_preparation_mode,
     prepare_context,
     protocol_recovery_preparation,
     select_protocol_recovery,
@@ -72,7 +70,7 @@ async def as_child(control, original):
     return child, child.session
 
 
-@pytest.mark.parametrize("kind", ["pause", "staging", "child", "delivery"])
+@pytest.mark.parametrize("kind", ["pause", "child", "delivery"])
 async def test_actual_journal_selects_exact_before_assembler_reads_history(database, kind):
     control, session, selected, _ = await _session(database)
     if kind == "child":
@@ -93,12 +91,10 @@ async def test_actual_journal_selects_exact_before_assembler_reads_history(datab
     )
     if kind == "pause":
         session.progress["provider_pause_replay"] = True
-    if kind == "staging":
-        session.progress["compaction_staging"] = {"cursor": 1}
     await session.save("delivery" if kind == "delivery" else "paired")
     assembler = ContextAssembler.__new__(ContextAssembler)
     assembler._ledger = EventLedgerRepository(database)
-    assembler._rollups = SimpleNamespace(
+    assembler._scopes = SimpleNamespace(
         load_prompt_snapshot=AsyncMock(side_effect=AssertionError("fresh history must not be read"))
     )
     scope = ConversationScope.group(selected.bot_user_id, selected.group_id)
@@ -118,18 +114,19 @@ async def test_actual_journal_selects_exact_before_assembler_reads_history(datab
     assert result.read_version.visible_event_ids == session.source_guard.version.visible_event_ids
     assert result.history_messages == () and result.metadata_payload == {}
     assert result.current_message.content == ""
-    assembler._rollups.load_prompt_snapshot.assert_not_awaited()
+    assembler._scopes.load_prompt_snapshot.assert_not_awaited()
     loaded = await session.journal.load(control.lease, control.current["id"], "fixed-contract")
     assert "original-signature" in loaded.record["payload_json"]
     assert protocol_recovery_preparation.get() is None
-    assert context_preparation_mode.get() is ContextPreparationMode.FOREGROUND
 
 
-@pytest.mark.parametrize("kind", ["paired", "contract", "legacy_guard", "source"])
+@pytest.mark.parametrize("kind", ["paired", "contract", "legacy_guard", "source", "staging"])
 async def test_normal_business_or_changed_contract_builds_fresh(database, kind):
     control, session, selected, _ = await _session(database)
     if kind == "legacy_guard":
         session.source_guard = None
+    if kind == "staging":
+        session.progress["compaction_staging"] = {"cursor": 1}
     await session.save("paired")
     if kind == "source":
         await _change(database, selected)
@@ -156,7 +153,6 @@ async def test_child_real_deleted_source_cannot_be_certified_by_fresh_history(da
         await prepare_context(builder, control, recovery_contract="fixed-contract")
     builder.assert_not_awaited()
     assert protocol_recovery_preparation.get() is None
-    assert context_preparation_mode.get() is ContextPreparationMode.FOREGROUND
 
 
 async def test_unobserved_edit_preserves_actual_private_pause_across_reopen(database):

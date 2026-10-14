@@ -10,8 +10,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-from qq_ai_bot.conversation.projection_history_schema import (
-    PROJECTION_TRIGGERS_0113 as PROJECTION_TRIGGERS_CURRENT,
+from qq_ai_bot.conversation.projection_compact_schema import (
+    PROJECTION_TRIGGERS_0119 as PROJECTION_TRIGGERS_CURRENT,
 )
 
 
@@ -109,9 +109,6 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "receipt_json",
             "message_count",
         }
-    ),
-    "canonical_rollup_signals": frozenset(
-        {"conversation_id", "generation", "event_id", "revision"}
     ),
     "runtime_automation_cursors": frozenset({"run_id", "script_hash", "phase", "payload_json"}),
     "runtime_subagents": frozenset(
@@ -244,6 +241,10 @@ _FORBIDDEN_TABLES = frozenset(
         "conversation_rollups",
         "conversation_rollup_jobs",
         "conversation_rollup_emergency_overlays",
+        "canonical_conversation_rollups",
+        "canonical_conversation_rollup_jobs",
+        "canonical_conversation_rollup_emergency_overlays",
+        "canonical_rollup_signals",
         "identity_runtime_state",
         "identity_backfill_runs",
         "identity_conflicts",

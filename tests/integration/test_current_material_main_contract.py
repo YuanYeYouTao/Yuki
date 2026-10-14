@@ -625,10 +625,9 @@ async def test_sdk_history_grant_uses_common_conversation_without_scope_fork(
     else:
         actor = await self_actor(database, env)
         source = replace(runtime(actor, env), runtime_config=await chat._runtime_config.snapshot())
-    from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
     from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
-    scoped = ScopedEventLedgerUnitOfWork(database, config=RollupPolicyConfig())
+    scoped = ScopedEventLedgerUnitOfWork(database)
     added = await scoped.append(
         scope=ConversationScope.group("80001", "20001"),
         platform_message_id="new-public-source-before-sdk",

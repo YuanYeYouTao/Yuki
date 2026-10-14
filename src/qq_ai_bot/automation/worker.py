@@ -17,8 +17,8 @@ from qq_ai_bot.automation.models import AutomationRecord, RunStatus
 from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.task_spec import TaskSpec
 from qq_ai_bot.config import Settings
-from qq_ai_bot.conversation.rollup.repository import ConversationScopeRepository
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
+from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.identity.routing import PresenceRouter
 from qq_ai_bot.runtime.activation_bindings import ActiveWorkBindings

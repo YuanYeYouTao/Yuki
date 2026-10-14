@@ -171,13 +171,7 @@ class Settings(BaseSettings):
     processed_event_cleanup_seconds: int = 3600
     # Active request windows are token capacities, resolved again from hot config.
     context_window_tokens: int = Field(default=96000, ge=8192)
-    context_compaction_window_tokens: int = Field(default=90000, ge=1)
     work_context_window_tokens: int = Field(default=128000, ge=8192)
-    work_compaction_max_output_tokens: int = Field(default=32768, ge=1024)
-    work_compaction_trigger_ratio: float = Field(default=0.90, gt=0, lt=1)
-    work_compaction_target_ratio: float = Field(default=0.50, gt=0, lt=1)
-    conversation_rollup_trigger_ratio: float = Field(default=0.90, gt=0, lt=1)
-    conversation_rollup_target_ratio: float = Field(default=0.60, gt=0, lt=1)
 
     global_llm_concurrency: int = 4
     per_user_requests_per_minute: int = 10
@@ -190,9 +184,6 @@ class Settings(BaseSettings):
 
     observe_enabled_groups: bool = True
     recent_history_tool_limit: int = 20
-    # Safety ceiling for loaded raw events. Must be able to hold the protected
-    # rollup tail plus the background trigger, otherwise foreground extractive
-    # rewrites the checkpoint every turn in the gap below trigger.
     local_context_event_limit: int = 2_048
     memory_batch_seconds: float = 30.0
     memory_batch_trigger_count: int = Field(default=12, gt=0)
@@ -309,20 +300,6 @@ class Settings(BaseSettings):
     conversation_autonomous_batch_limit: int = 8
     conversation_autonomous_presence_window_seconds: int = 300
     conversation_interrupt_autonomous_on_new_message: bool = True
-    conversation_rollup_enabled: bool = True
-    conversation_rollup_worker_concurrency: int = Field(default=1, ge=1, le=2)
-    conversation_rollup_poll_seconds: float = Field(default=1.0, gt=0)
-    conversation_rollup_lease_seconds: int = Field(default=180, gt=0)
-    conversation_rollup_model_timeout_seconds: float = Field(default=600.0, gt=0)
-    conversation_rollup_max_output_tokens: int = Field(default=32768, ge=1024)
-    conversation_rollup_batch_max_events: int = Field(default=256, ge=1)
-    conversation_rollup_batch_max_characters: int = Field(default=32_768, ge=1)
-    conversation_rollup_worker_max_batches_per_claim: int = Field(default=5, ge=1)
-    conversation_rollup_summary_max_characters: int = Field(default=16384, ge=1)
-    conversation_rollup_retry_max_seconds: int = Field(default=960, ge=1)
-    conversation_rollup_lease_heartbeat_seconds: float = Field(default=60.0, gt=0)
-    conversation_rollup_llm_origins: str = "user_message"
-    conversation_rollup_prompt_version: str = "conversation-rollup-v2"
     conversation_effect_gate_timeout_seconds: float = Field(default=30.0, gt=0)
     conversation_history_around_before: int = Field(default=6, ge=0)
     conversation_history_around_after: int = Field(default=6, ge=0)

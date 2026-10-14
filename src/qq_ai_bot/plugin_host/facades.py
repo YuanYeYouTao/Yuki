@@ -2714,12 +2714,6 @@ async def _send_onebot(
             if not isinstance(exc, Exception):
                 raise
             return _delivery_result(state.unknown)
-        # A post-commit wakeup is not part of the network result. Never downgrade
-        # an already confirmed receipt if a best-effort notifier is unavailable.
-        try:
-            ledger._writer.notify_committed(appended)
-        except Exception as exc:
-            host._logger.warning("plugin_send_notify_failed category=%s", type(exc).__name__)
         receipt = await repository.get(receipt.operation_id)
         result = _delivery_result(receipt)
         return result.model_copy(update={"data": {**result.data, "result": _safe_json(raw)}})
