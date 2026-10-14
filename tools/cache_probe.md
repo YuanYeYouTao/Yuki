@@ -27,7 +27,8 @@ uv run python -m tools.cache_probe --live --profiles private-model-profiles.toml
 默认 tools 来自隔离应用的完整 MainAgentContract。生产扩展声明可能更多，报告给出
 实际数量与 hash。`--manifest ignored-export.json` 可加载只读导出的固定
 `{ "tools": [{ "name", "description", "parameters" }] }`，不运行插件。
-每个主请求保持相同完整声明与 Profile 设置；摘要请求按正式合同独立无工具。
+每个主请求保持相同完整声明与 Profile 设置。普通摘要仍按正式合同独立无工具；
+Work 整理通过 `TurnExecution.compact_current` 调用 Main，保留实际前缀和完整工具声明。
 
 | 场景 | 实际路径与范围 |
 | --- | --- |
@@ -42,12 +43,12 @@ uv run python -m tools.cache_probe --live --profiles private-model-profiles.toml
 C03 按人选择公共笔记与手写公共前缀的场景已退役，旧报告只作历史记录。统一公共历史
 由实际 Main 装配回归和真实 Provider 边界验收。C05 是 SQLite/repository/session 重开，
 不冒称完整进程重启。C06 默认是普通
-整理；`--compaction-mode work` 可另查原 Work 摘要路径，不改变默认场景。普通两次发送后
+整理；`--compaction-mode work` 可另查统一的 Work 上下文整理入口，不改变默认场景。普通两次发送后
 整理另有完整离线 Processor/Runner 回归。模型不选择预期工具、非法摘要
 或请求失败会保留原结果，不能换样本只选最好一次。
 
 报告不含请求正文、模型正文、签名、headers、凭证。它逐次记录 HTTP 物理请求，
-Work 辅助页另存合成的 section/允许引用与来源类别；非标准引用仅存散列。
+Work 整理仅记录文本格式、字符数和实际请求消息数。
 包括配置重试、错误响应、无响应与辅助摘要；与 model_invocations 的计数交叉核对。
 Gemini input 已含 cached，已知输入加权比例是 `sum(cached)/sum(input)`。
 显式零、缺字段和不合法计数分开；缺 cache write 不造零。冷、热、对照和摘要各自汇总，
@@ -62,7 +63,7 @@ Gemini input 已含 cached，已知输入加权比例是 `sum(cached)/sum(input)
 与 generation 设置，contents 按实际 role/part 顺序展开，避免连续 user 合并造成假差异。
 记录内部 request_chain_id；它不等于 Provider session header。C08 不注入会话 header。
 相同输入片段和规范化 JSON 的最长公共字节只报长度，不保存正文。
-相邻物理请求与同场景主/摘要各自序列分别比较，避免把无工具摘要链的设置当成主链变化。
+相邻物理请求与同场景主/摘要各自序列分别比较；普通摘要链无工具，Work 整理保留 Main 声明。
 经上游代理时，这只证明 Yuki 发往配置 endpoint 的 wire，不证明最终上游完全相同，也不证明账单。
 本实验是受控合成流量，不能当自然群聊平均值或设置固定命中率门槛。
 

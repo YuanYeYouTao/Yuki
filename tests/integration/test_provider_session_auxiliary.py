@@ -8,7 +8,6 @@ import pytest
 from pydantic import BaseModel
 from tests.integration.test_current_material_main_contract import _catalog, _profile
 from tests.support.social_identity_cases import social_env
-from tests.support.work_compaction import summary_json
 from tests.support.work_compaction_capacity_helpers import _runtime, _session
 
 from qq_ai_bot.domain.conversations import ConversationScope
@@ -45,7 +44,7 @@ async def test_auxiliary_session_header_keeps_original_body(database, tmp_path, 
         headers.append(request.headers.get("x-session-id"))
         source = wire[-1]["contents"][-1]["parts"][-1]["text"]
         if kind == "work":
-            content = summary_json(source)
+            content = "Keep the original goal, sources and verified investigation."
         elif kind == "ordinary":
             content = json.dumps(
                 {"facts": [{"text": "原资料的摘要", "refs": json.loads(source)["source_refs"]}]}
@@ -95,15 +94,17 @@ async def test_auxiliary_session_header_keeps_original_body(database, tmp_path, 
                     session.transcript.append(ChatMessage("assistant", "原先的调查过程" * 1000))
                     runner, runtime = await _runtime(database, control, initial, provider)
                     runner._models = models
-                    prepared = await TurnExecution(
-                        runner, session.transcript.request().messages, runtime, None
-                    ).prepare_request(0, (), WebMode.DISABLED)
+                    execution = TurnExecution(runner, initial, runtime, None)
+                    execution.state.transcript = session.transcript
+                    prepared = await execution.prepare_request(0, (), WebMode.DISABLED)
                     main = prepared.request
                     assert main.provider_session_id == owner
-                    compacted = await runner._compact_work(
-                        runtime, ModelExecutionPriority.FOREGROUND, 128000, main
+                    compacted = await execution.compact_current(
+                        0, main, ModelExecutionPriority.FOREGROUND, 128000
                     )
-                    assert compacted.chain_id != session.compaction_anchor.chain_id
+                    assert compacted.request_chain_id != main.request_chain_id
+                    assert neutral[0].messages[:-1] == main.messages
+                    assert neutral[0].tools == main.tools
                 else:
                     await control.reserve_request(auxiliary=True)
                     token = current_work_control.set(control)

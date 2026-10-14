@@ -5,7 +5,6 @@ import re
 
 import httpx
 import pytest
-from tests.support.work_compaction import summary_json
 from tools import cache_probe
 
 from qq_ai_bot.model_runtime.models import (
@@ -182,13 +181,9 @@ async def test_manual_work_compaction_probe_resumes_the_original_work(tmp_path):
         body = json.loads(request.content)
         text = body["contents"][-1]["parts"][-1].get("text", "")
         payload = answer(ModelProtocol.GEMINI)
-        try:
-            source = json.loads(text)
-        except json.JSONDecodeError:
-            source = None
-        if isinstance(source, dict) and "task_material" in source:
+        if "Host 上下文压缩要求" in text:
             stages.append("compaction")
-            payload["candidates"][0]["content"]["parts"][0]["text"] = summary_json(source)
+            payload["candidates"][0]["content"]["parts"][0]["text"] = "Continue the original work."
         else:
             stages.append("main")
         return httpx.Response(200, json=payload)
