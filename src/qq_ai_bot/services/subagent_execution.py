@@ -8,26 +8,25 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import ExitStack
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 from sqlalchemy import func, select
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
-from qq_ai_bot.codemode.api_projection import ScriptApi, project
-from qq_ai_bot.codemode.contract import CODE_API_REVISION
-from qq_ai_bot.codemode.tool_visibility import DIRECT_TOOL_NAMES, model_definitions
-from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.codemode.api_projection import ScriptApi
+from qq_ai_bot.codemode.tool_visibility import model_definitions
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import (
     ChatMessage,
     ChatTool,
 )
+from qq_ai_bot.identity.routing import PresenceRouter
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.runtime.activation_bindings import ActiveWorkBindings
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-from qq_ai_bot.runtime.subagent_tools import WORKER_NAMES, WORKER_REQUIRED_NAMES, worker_prompt
 from qq_ai_bot.runtime.work_activation import bind_work_activation
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
@@ -35,9 +34,10 @@ from qq_ai_bot.runtime.work_schema_v1 import work
 from qq_ai_bot.sandbox.client import SandboxClient
 from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
 from qq_ai_bot.services.agent_runner import AgentRunner, AgentToolBackend
-from qq_ai_bot.services.agent_tools import ToolRuntime
+from qq_ai_bot.services.agent_tools import OneBotToolGateway, ToolRuntime
 from qq_ai_bot.services.execution_sources import (
     AutomationTaskSource,
+    BackgroundTaskSource,
     MessageTaskSource,
     SelfTaskSource,
     recover_execution_source,
@@ -58,9 +58,11 @@ class SubagentExecutionDependencies:
     load_tools: Callable[[], Awaitable[tuple[ChatTool, ...]]]
     open_memory: Callable[..., Any]
     open_self_memory: Callable[..., Awaitable[Any]]
-    # The real backend receives the worker's complete frozen tool contract as
-    # its execution ceiling; there is no separate worker wrapper.
-    backend_factory: Callable[[ToolRuntime, frozenset[str]], AgentToolBackend]
+    static_messages: Callable[[], tuple[ChatMessage, ...]]
+    presence_router: PresenceRouter
+    lookup_plugin_host: Callable[[str], Any]
+    gateway_factory: Callable[[object, bool, str], OneBotToolGateway]
+    backend_factory: Callable[[ToolRuntime, frozenset[str] | None], AgentToolBackend]
     web_capabilities: Callable[[RuntimeConfigSnapshot], frozenset[str]]
 
 
@@ -82,38 +84,11 @@ class SubagentExecution:
         contract = self.services.runner.main_contract
         return contract is not None and contract.mode == "code"
 
-    def required_names(self) -> frozenset[str]:
-        return WORKER_REQUIRED_NAMES | (
-            {"execute_code", "lookup_tools"} if self.code_enabled else set()
-        )
-
-    async def prepare(self, *, admission_enabled: bool) -> None:
+    async def prepare(self) -> None:
         if self.definitions is None:
-            self.definitions = tuple(
-                t for t in await self.services.load_tools() if t.name in WORKER_NAMES
-            )
-        if admission_enabled and not self.required_names() <= frozenset(
-            t.name for t in self.definitions
-        ):
-            raise ValueError("incomplete_worker_tool_manifest")
-        if not self.code_enabled:
-            self.script_api = None
-            return
-        if self.script_api is not None:
-            return
-        revision = hashlib.sha256(
-            json.dumps(
-                {
-                    "worker_contract": 4,
-                    "code_api": CODE_API_REVISION,
-                    "direct_names": sorted(DIRECT_TOOL_NAMES),
-                    "tools": [asdict(tool) for tool in self.definitions],
-                },
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ).encode()
-        ).hexdigest()
-        self.script_api = project(self.definitions, revision)
+            self.definitions = await self.services.load_tools()
+        contract = self.services.runner.main_contract
+        self.script_api = contract.script_api if contract is not None else None
 
     async def cancel_commands(self) -> None:
         """Reconcile cancellation outside the database transaction, by original run ID."""
@@ -170,11 +145,7 @@ class SubagentExecution:
                     assert row is not None
                     control.current = row
                     source = json.loads(row["source_json"])
-                    settings = (
-                        self.services.runner.code_mode_settings
-                        if source.get("origin") == TurnOrigin.SCHEDULED_AUTOMATION.value
-                        else None
-                    )
+                    settings = self.services.runner.code_mode_settings
                     control.source_key = row["source_key"]
                     control.source = source
                     recovered = await recover_execution_source(
@@ -183,6 +154,10 @@ class SubagentExecution:
                         source,
                         request_id=identity,
                         settings=settings,
+                        lookup_plugin_host=self.services.lookup_plugin_host,
+                    )
+                    resolved = await self.services.presence_router.resolve_presence(
+                        recovered.presence_id
                     )
                     from qq_ai_bot.runtime.observability import (
                         RuntimeTurnCorrelation,
@@ -216,10 +191,16 @@ class SubagentExecution:
                                 source,
                                 request_id=identity,
                                 settings=settings,
+                                lookup_plugin_host=self.services.lookup_plugin_host,
                             )
                             != recovered
                         ):
                             raise WorkConflict("worker_authority_changed")
+                        fresh = await self.services.presence_router.resolve_presence(
+                            recovered.presence_id
+                        )
+                        if fresh.connection.snapshot != resolved.connection.snapshot:
+                            raise WorkConflict("worker_connection_changed")
 
                     async def command(run_id: str) -> dict[str, Any] | None:
                         record = await self.services.sandbox_tasks.by_run(run_id)
@@ -246,16 +227,16 @@ class SubagentExecution:
                         else None
                     )
 
-                    if isinstance(recovered, AutomationTaskSource):
+                    if isinstance(recovered, (AutomationTaskSource, BackgroundTaskSource)):
                         from qq_ai_bot.memory.runtime.resolver import resolve_memory_access
                         from qq_ai_bot.memory.runtime.turn_session import TurnMemorySession
                         from qq_ai_bot.runtime.keys import ResolvedMemoryScope
 
                         memory = TurnMemorySession(
-                            decision=resolve_memory_access(origin=TurnOrigin.SCHEDULED_AUTOMATION),
+                            decision=resolve_memory_access(origin=TurnOrigin(recovered.origin)),
                             scope=ResolvedMemoryScope.for_group(recovered.external_target_id)
                             if recovered.target_space_id
-                            else ResolvedMemoryScope.for_private(recovered.actor_user_id),
+                            else ResolvedMemoryScope.for_private(recovered.external_target_id),
                         )
                     elif isinstance(recovered, SelfTaskSource):
                         memory = await self.services.open_self_memory(recovered.trigger())
@@ -270,11 +251,57 @@ class SubagentExecution:
                         if isinstance(recovered, (SelfTaskSource, AutomationTaskSource))
                         else None
                     )
+                    actor_is_superuser = (
+                        recovered.actor_user_id in settings.superusers
+                        if isinstance(recovered, MessageTaskSource) and settings is not None
+                        else getattr(recovered, "actor_is_superuser", False)
+                    )
+                    bot = resolved.connection.bot
+                    gateway = (
+                        self.services.gateway_factory(
+                            bot, recovered.target_space_id is not None, recovered.external_target_id
+                        )
+                        if bot is not None
+                        else None
+                    )
+                    if isinstance(recovered, AutomationTaskSource):
+                        from qq_ai_bot.automation.gateway import OneBotAutomationGateway
+
+                        gateway = OneBotAutomationGateway(
+                            bot_user_id=recovered.bot_user_id,
+                            automation_id=source.get("automation_id")
+                            or source["execution_source"]["automation_id"],
+                            automation_run_id=recovered.automation_run_id,
+                            router=self.services.presence_router,
+                        )
+                    delegated = source.get("owner") == "plugin_invocation"
+                    allowed = (
+                        frozenset(source["allowed_tools"])
+                        | {"update_short_state", "read_tool_artifact"}
+                        if delegated
+                        else None
+                    )
+                    memory_scopes = None
+                    if delegated:
+                        from qq_ai_bot.memory.enums import MemoryScopeType
+                        from yuki_plugin_sdk.permissions import PluginPermission
+
+                        host = self.services.lookup_plugin_host(source["plugin_id"])
+                        memory_scopes = (
+                            (MemoryScopeType.PERSON, MemoryScopeType.PERSON_GROUP)
+                            if PluginPermission.MEMORY_PERSON_READ in host._approved_permissions
+                            else ()
+                        ) + (
+                            (MemoryScopeType.GROUP,)
+                            if PluginPermission.MEMORY_GROUP_READ in host._approved_permissions
+                            else ()
+                        )
                     tool_runtime = ToolRuntime(
                         inbound=inbound,
                         actor_context=actor,
-                        gateway=None,
-                        allow_generic_onebot=False,
+                        gateway=gateway if callable(getattr(gateway, "call_api", None)) else None,
+                        allow_generic_onebot=actor_is_superuser and not delegated,
+                        actor_is_superuser=actor_is_superuser,
                         conversation_key=f"worker:{identity}",
                         trigger_message_id=original.platform_message_id if original else "",
                         trigger_event_id=original.id if original else None,
@@ -282,9 +309,14 @@ class SubagentExecution:
                             recovered.run_id if isinstance(recovered, SelfTaskSource) else None
                         ),
                         runtime_config=config,
-                        origin=TurnOrigin(recovered.origin),
+                        origin=TurnOrigin.PLUGIN_SESSION
+                        if delegated and inbound is not None
+                        else TurnOrigin(recovered.origin),
                         execution_id=identity,
-                        sandbox_source={**source, "work_id": identity},
+                        sandbox_source={
+                            **(source.get("execution_source") or source),
+                            "work_id": identity,
+                        },
                         memory_session=memory,
                         conversation_id=recovered.conversation_id,
                         person_id=recovered.actor_person_id,
@@ -293,34 +325,54 @@ class SubagentExecution:
                         if recovered.target_space_id
                         else ScopeType.PRIVATE,
                         external_target_id=recovered.external_target_id,
+                        read_scope=ConversationScope.group(recovered.bot_user_id, group_id)
+                        if group_id is not None
+                        else ConversationScope.private(
+                            recovered.bot_user_id, recovered.external_target_id
+                        ),
+                        target_presence_id=recovered.presence_id,
+                        before_model_request=validate,
+                        context_plugin_id=source.get("plugin_id") if delegated else None,
+                        memory_allowed_scopes=memory_scopes,
+                        context_read_contract=hashlib.sha256(
+                            json.dumps(
+                                [
+                                    source["permission"],
+                                    source["context_profile"],
+                                    source["allowed_tools"],
+                                ],
+                                separators=(",", ":"),
+                            ).encode()
+                        ).hexdigest()
+                        if delegated
+                        else None,
                     )
                     runner = self.services.runner
                     if self.definitions is None:
-                        await self.prepare(admission_enabled=True)
+                        await self.prepare()
                     assert self.definitions is not None
-                    names = frozenset(t.name for t in self.definitions)
-                    if not self.required_names() <= names:
-                        raise ValueError("incomplete_worker_tool_manifest")
-                    backend = self.services.backend_factory(tool_runtime, names)
+                    backend = self.services.backend_factory(tool_runtime, allowed)
                     brief = json.loads(child["brief_json"])
                     brief.update(
-                        child_id=identity, cwd=f"/workspace/tasks/{identity}", work_id=identity
+                        child_id=identity,
+                        cwd=f"/workspace/tasks/{identity}",
+                        work_id=identity,
+                        parent_work_id=row["parent_work_id"],
                     )
                     brief_message = ChatMessage(
                         role="user", content=json.dumps(brief, ensure_ascii=False)
                     )
                     await runner.run(
                         (
-                            ChatMessage(
-                                role="system",
-                                content=worker_prompt(code_enabled=self.code_enabled),
-                            ),
+                            *self.services.static_messages(),
                             brief_message,
                         ),
                         replace(
                             InvocationContextFactory.from_tools(
                                 tool_runtime,
-                                allowed_capabilities=self.services.web_capabilities(config),
+                                allowed_capabilities=frozenset(source["allowed_tools"])
+                                if delegated
+                                else self.services.web_capabilities(config),
                                 max_tool_calls=None,
                                 max_model_requests=None,
                             ),

@@ -622,11 +622,9 @@ class AgentRunner:
 
         control = runtime.work_control
         assert control is not None
-        # Worker execution supplies its separately frozen subset. The shared
-        # runner never substitutes the main API for that explicitly bound view.
         api = runtime.script_api or (
             self.main_contract.script_api
-            if self.main_contract is not None and control.lease.work_id is None
+            if self.main_contract is not None
             else None
         )
         settings = self.code_mode_settings
@@ -658,7 +656,7 @@ class AgentRunner:
         async def execute_business(invocation: Invocation, side_effecting: bool) -> str:
             call = invocation.call
             # Children use the full frozen execution API, independently of the
-            # compact Provider declaration. Worker APIs are already restricted.
+            # compact Provider declaration.
             if api is None or call.function.name not in api.schemas:
                 return _unexecuted_tool_result(call.function.name, "tool_not_declared")
 
@@ -831,9 +829,7 @@ class AgentRunner:
             else:
                 api = runtime.script_api
                 if api is None and self.main_contract is not None:
-                    # Never substitute the main catalog for a worker scope.
-                    if control is None or control.lease.work_id is None:
-                        api = self.main_contract.script_api
+                    api = self.main_contract.script_api
                 if api is not None:
                     return CoordinatedToolResult(
                         tuple(
@@ -934,7 +930,6 @@ class AgentRunner:
                 api = runtime.script_api or (
                     self.main_contract.script_api
                     if self.main_contract is not None
-                    and (control is None or control.lease.work_id is None)
                     else None
                 )
                 metadata_results[call.id] = (

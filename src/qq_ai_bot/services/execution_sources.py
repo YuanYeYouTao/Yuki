@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -145,6 +146,80 @@ class AutomationTaskSource:
             principal_kind=self.principal_kind,
             automation_run_id=self.automation_run_id if self.principal_kind == "self" else None,
         )
+
+
+@dataclass(frozen=True)
+class BackgroundTaskSource:
+    """Original plugin Job and canonical target, without a fabricated Person."""
+
+    request_id: str
+    conversation_id: str
+    generation: int
+    event_id: int
+    plugin_id: str
+    job_id: int
+    target_person_id: str | None
+    target_space_id: str | None
+    presence_id: str
+    bot_user_id: str
+    external_target_id: str
+    content: str
+    origin: str = TurnOrigin.PLUGIN_BACKGROUND.value
+    actor_person_id: None = None
+    actor_user_id: str = ""
+    actor_is_superuser: bool = False
+
+
+async def recover_background_source(
+    database: Database, conversation_id: str, source: dict[str, Any], *, request_id: str
+) -> BackgroundTaskSource:
+    from qq_ai_bot.conversation.scope import ConversationScope
+    from qq_ai_bot.plugin_host.db_models import PluginBackgroundTurnJobModel
+    from qq_ai_bot.plugin_host.notification_repository import (
+        PluginNotificationRepository,
+        _turn_record,
+    )
+
+    async with database.sessions() as session:
+        job = await session.scalar(
+            select(PluginBackgroundTurnJobModel).where(
+                PluginBackgroundTurnJobModel.source_event_id == source.get("trigger_event_id"),
+                PluginBackgroundTurnJobModel.plugin_id == source.get("plugin_id"),
+                PluginBackgroundTurnJobModel.canonical_conversation_id == conversation_id,
+            )
+        )
+        if job is None:
+            raise ValueError("plugin_turn_work_source_mismatch")
+        record = _turn_record(job, generation=source["generation"])
+    context = await PluginNotificationRepository(database).load_background_context(
+        record, work_id=request_id
+    )
+    scope = ConversationScope.parse(context.primary_alias)
+    async with database.sessions() as session:
+        presence = await session.get(PresenceModel, source.get("presence_id"))
+        event = await session.get(ChatEventModel, record.source_event_id)
+        if (
+            event is None
+            or presence is None
+            or not presence.enabled
+            or presence.platform != "qq"
+            or presence.external_account_id != scope.bot_user_id
+        ):
+            raise ValueError("task_presence_disabled")
+    return BackgroundTaskSource(
+        request_id,
+        conversation_id,
+        context.generation,
+        record.source_event_id,
+        record.plugin_id,
+        record.id,
+        context.person_id,
+        context.space_id,
+        presence.id,
+        presence.external_account_id,
+        scope.group_id or scope.private_peer_user_id or "",
+        event.content,
+    )
 
 
 async def recover_automation_source(
@@ -355,7 +430,32 @@ async def recover_execution_source(
     *,
     request_id: str,
     settings: Settings | None = None,
-) -> MessageTaskSource | SelfTaskSource | AutomationTaskSource:
+    lookup_plugin_host: Callable[[str], Any] | None = None,
+) -> MessageTaskSource | SelfTaskSource | AutomationTaskSource | BackgroundTaskSource:
+    if source.get("owner") == "plugin_invocation":
+        from yuki_plugin_sdk.permissions import PluginPermission
+
+        host = lookup_plugin_host(source["plugin_id"]) if lookup_plugin_host is not None else None
+        if host is None or source.get("approval_revision") != host._services.approval_revision:
+            raise ValueError("plugin_work_owner_changed")
+        host._require(PluginPermission(source["permission"]), require_invocation=False)
+        if not frozenset(source["allowed_tools"]) <= host._services.agent_capabilities:
+            raise ValueError("plugin_work_capabilities_changed")
+        underlying = source.get("execution_source")
+        if underlying is None:
+            underlying = {**source, "owner": None, "origin": source["actor_source"]["origin"]}
+        return await recover_execution_source(
+            database,
+            conversation_id,
+            underlying,
+            request_id=request_id,
+            settings=settings,
+            lookup_plugin_host=lookup_plugin_host,
+        )
+    if source.get("owner") == "plugin_background":
+        return await recover_background_source(
+            database, conversation_id, source, request_id=request_id
+        )
     if source.get("origin") == TurnOrigin.SCHEDULED_AUTOMATION.value:
         return await recover_automation_source(
             database, conversation_id, source, request_id=request_id, settings=settings

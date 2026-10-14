@@ -302,7 +302,9 @@ class SubagentRepository:
                             ),
                         )
                         .join(work, children.c.work_id == work.c.id)
-                        .where(work.c.parent_work_id == parent_id, children.c.work_id == identity)
+                        .where(
+                            work.c.id.in_(descendants(parent_id)), children.c.work_id == identity
+                        )
                     )
                 )
                 .mappings()
@@ -346,7 +348,7 @@ class SubagentRepository:
                         work.c.tool_calls,
                     )
                     .join(work, children.c.work_id == work.c.id)
-                    .where(work.c.parent_work_id == parent_id)
+                    .where(work.c.id.in_(descendants(parent_id)))
                 )
                 if cursor is not None:
                     query = query.where(children.c.work_id > cursor)
@@ -384,13 +386,15 @@ class SubagentRepository:
         *,
         ask: bool = False,
         reply_to: str | None = None,
+        to_parent: bool = False,
     ) -> str:
         if text is not None and not text.strip():
             raise ValueError("invalid_subagent_message")
-        if lease.work_id and lease.work_id != identity:
+        sender = identity if to_parent else parent_id
+        if lease.work_id and lease.work_id != sender:
             raise ValueError("subagent_not_owned")
         await self.related(parent_id, identity)
-        destination = parent_id if lease.work_id else identity
+        destination = parent_id if to_parent else identity
         async with self.database.immediate_session() as session:
             await self.repository._assert_lease(session, lease)
             child = (
@@ -412,7 +416,7 @@ class SubagentRepository:
                 or target["generation"] != lease.generation
             ):
                 raise ValueError("subagent_not_owned")
-            if not lease.work_id and target["state"] == "cancelled":
+            if not to_parent and target["state"] == "cancelled":
                 raise ValueError("subagent_message_target_terminal")
             payload = {
                 "text": encode_json(
@@ -420,6 +424,8 @@ class SubagentRepository:
                         "kind": "subagent_question" if ask else "subagent_message",
                         "child_id": identity,
                         "message_id": key,
+                        "sender_work_id": sender,
+                        "target_work_id": destination,
                         "reply_to": reply_to,
                         "text": text,
                     }
@@ -450,10 +456,10 @@ class SubagentRepository:
             )
             if inserted is not None and (
                 target["state"] == "waiting_external" and waiting is None
-                if lease.work_id
+                if to_parent
                 else target["state"] != "running"
             ):
-                if not lease.work_id:
+                if not to_parent:
                     await session.execute(
                         update(waits)
                         .where(waits.c.work_id == identity, waits.c.status == "active")
@@ -468,7 +474,7 @@ class SubagentRepository:
                         checkpoint_json=func.json_remove(
                             work.c.checkpoint_json, "$.accepted_control"
                         )
-                        if not lease.work_id
+                        if not to_parent
                         else work.c.checkpoint_json,
                         updated=time.time(),
                     )
@@ -495,7 +501,7 @@ class SubagentRepository:
                     await session.execute(
                         select(work, children.c.archived_at)
                         .join(children, children.c.work_id == work.c.id)
-                        .where(work.c.id == identity)
+                        .where(work.c.id == identity, work.c.id.in_(descendants(parent_id)))
                     )
                 )
                 .mappings()
@@ -506,8 +512,7 @@ class SubagentRepository:
             if row["state"] == "cancelled":
                 raise ValueError("subagent_not_resumable")
             if (
-                row["parent_work_id"] != parent_id
-                or row["conversation_id"] != lease.conversation_id
+                row["conversation_id"] != lease.conversation_id
                 or row["generation"] != lease.generation
             ):
                 raise ValueError("subagent_not_owned")

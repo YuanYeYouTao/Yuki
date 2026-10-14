@@ -30,6 +30,13 @@ class OneBotRouteSender:
         self._group = group
         self._target_id = target_id
 
+    async def call_api(self, action: str, params: dict[str, Any]) -> Any:
+        """Translate the common tool gateway call on this exact connection."""
+        call_api = getattr(self._route_bot, "call_api", None)
+        if not callable(call_api):
+            raise ValueError("work_gateway_unavailable")
+        return await call_api(action, **params)
+
     async def send(self, message: OutboundMessage) -> OutboundSendReceipt:
         call_api = getattr(self._route_bot, "call_api", None)
         if not callable(call_api):

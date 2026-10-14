@@ -285,7 +285,7 @@ async def test_scheduler_counts_execution_without_reconcile_lease(database, tmp_
     class Executor:
         definitions = ()
 
-        async def prepare(self, *, admission_enabled):
+        async def prepare(self):
             pass
 
         async def cancel_commands(self):
@@ -696,12 +696,14 @@ async def test_three_level_creation_queries_budget_and_direct_parent_recovery(da
     )
     assert [item["work_id"] for item in listed["works"]] == [nested_id]
     for outside in (root["id"], branch_id, sibling):
-        denied = json.loads(
+        directory_read = json.loads(
             await worker_control.execute(
                 "task_control", {"action": "get", "work_id": outside}, f"read-outside:{outside}"
             )
         )
-        assert not denied["ok"] and denied["error"] == "work_not_found_or_not_authorized"
+        assert directory_read["ok"] and directory_read["work"]["work_id"] == outside
+        assert "checkpoint_json" not in directory_read["work"]
+        assert "source_json" not in directory_read["work"]
         denied_stop = json.loads(
             await worker_control.execute(
                 "task_control",

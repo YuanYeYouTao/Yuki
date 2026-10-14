@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 class ChildExecutor(Protocol):
     definitions: tuple[ChatTool, ...] | None
 
-    async def prepare(self, *, admission_enabled: bool) -> None: ...
+    async def prepare(self) -> None: ...
     async def cancel_commands(self) -> None: ...
     async def run(self, identity: str) -> str | None: ...
 
@@ -60,7 +60,7 @@ class SubagentScheduler:
 
     async def start(self) -> None:
         if self.task is None:
-            await self.executor.prepare(admission_enabled=self.admission_enabled)
+            await self.executor.prepare()
             self.task = asyncio.create_task(self.loop(), name="subagent-scheduler")
 
     async def close(self) -> None:

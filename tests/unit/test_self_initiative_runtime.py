@@ -481,7 +481,6 @@ async def test_self_worker_runs_with_one_model_slot_without_synthetic_inbound(da
         load_model_profile_catalog,
     )
     from qq_ai_bot.runtime.subagent_scheduler import SubagentScheduler
-    from qq_ai_bot.runtime.subagent_tools import WORKER_NAMES
     from qq_ai_bot.services.main_agent_backend import MainAgentBackend
 
     source, _, _ = await self_source(database)
@@ -515,7 +514,7 @@ async def test_self_worker_runs_with_one_model_slot_without_synthetic_inbound(da
     async def run(messages, runtime, backend):
         # The real backend carries the frozen worker contract; no wrapper.
         assert isinstance(backend, MainAgentBackend)
-        assert backend._allowed_tools == WORKER_NAMES
+        assert backend._allowed_tools is None
         assert runtime.execution_id == child_id
         assert runtime.actor_user_id == "" and runtime.origin is TurnOrigin.SELF_INITIATIVE
         inner = backend._runtime
@@ -536,7 +535,9 @@ async def test_self_worker_runs_with_one_model_slot_without_synthetic_inbound(da
         responded.set()
         return SimpleNamespace(text="checked")
 
-    runner = SimpleNamespace(run=AsyncMock(side_effect=run), main_contract=None)
+    runner = SimpleNamespace(
+        run=AsyncMock(side_effect=run), main_contract=None, code_mode_settings=None
+    )
     chat = SimpleNamespace(
         _agent_runner=runner,
         open_self_memory_session=AsyncMock(return_value=memory),
@@ -556,9 +557,9 @@ async def test_self_worker_runs_with_one_model_slot_without_synthetic_inbound(da
         config=app.runtime_config,
         runner=runner,
         load_tools=AsyncMock(
-            # A worker now freezes the complete schema for its Code Mode subset.
             return_value=tuple(
-                ChatTool(name, name, {"type": "object"}) for name in sorted(WORKER_NAMES)
+                ChatTool(name, name, {"type": "object"})
+                for name in ("task_control", "send_message", "subagent_start")
             )
         ),
     )

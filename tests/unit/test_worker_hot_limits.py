@@ -26,7 +26,9 @@ async def test_child_obeys_hot_limit_without_resetting_original_work(
 
     def respond(request):
         nonlocal worker_requests
-        if "你是 Yuki 派出的持久工作者" in request.messages[0].content:
+        if any(
+            m.role == "user" and '"cwd": "/workspace/tasks/' in m.content for m in request.messages
+        ):
             worker_requests += 1
             return ChatResponse(
                 "",

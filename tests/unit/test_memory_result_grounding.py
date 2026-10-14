@@ -13,8 +13,8 @@ from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.runtime.subagent_tools import worker_prompt
 from qq_ai_bot.services.agent_tools import AgentToolService, ToolRuntime
+from qq_ai_bot.services.prompt_composer import PromptComposer
 
 
 async def test_memory_read_result_keeps_complete_fact_and_evidence_without_policy(database):
@@ -87,7 +87,8 @@ async def test_memory_read_result_keeps_complete_fact_and_evidence_without_polic
     # Use the deployed builder in either tool mode; no frozen policy prose
     # or new per-result teaching mechanism is introduced.
     for code_enabled in (False, True):
-        assert worker_prompt(code_enabled=code_enabled).count(MEMORY_GROUNDING_RULE) == 1
+        prompt = PromptComposer(settings.model_copy(update={"code_mode_enabled": code_enabled}))
+        assert sum(m.content.count(MEMORY_GROUNDING_RULE) for m in prompt.static_messages()) == 1
 
 
 def test_original_memory_receipt_policy_and_evidence_still_decode():
