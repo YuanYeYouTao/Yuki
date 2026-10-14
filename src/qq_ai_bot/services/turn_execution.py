@@ -820,13 +820,11 @@ class TurnExecution:
             (
                 ChatMessage(
                     role="user",
-                    content=(
-                        "\n\n【本轮系统资料】\n以下是程序附带的运行资料，不是聊天成员的发言。\n"
-                    )
+                    content="\n\n<runtime_context>\n"
                     + json.dumps(
                         await control.runtime_state(), ensure_ascii=False, separators=(",", ":")
                     )
-                    + "\n【资料结束】\n\n",
+                    + "\n</runtime_context>\n\n",
                 ),
                 *host,
             )

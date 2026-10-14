@@ -204,19 +204,20 @@ async def test_actual_main_http_separates_host_material_before_final_user_body(
                 texts = [item["content"] for item in wire[-1]["input"]]
             joined = "".join(texts)
             host = texts[-2]
-            assert host.startswith("\n\n【本轮系统资料】\n")
-            assert "以下是程序附带的运行资料，不是聊天成员的发言。" in host
-            assert host.endswith("\n【资料结束】\n\n")
-            state_json = host.split("\n", 4)[-1].removesuffix("\n【资料结束】\n\n")
+            assert host.startswith("\n\n<runtime_context>\n")
+            assert host.endswith("\n</runtime_context>\n\n")
+            state_json = host.partition("<runtime_context>\n")[2].removesuffix(
+                "\n</runtime_context>\n\n"
+            )
             assert json.loads(state_json)["state"] == "no_active_work"
-            assert joined.count("【本轮系统资料】") == joined.count("CURRENT_MATERIAL_VALUE") == 1
-            assert joined.index("【资料结束】") < joined.index("CURRENT_MATERIAL_VALUE")
+            assert joined.count("<runtime_context>") == joined.count("CURRENT_MATERIAL_VALUE") == 1
+            assert joined.index("</runtime_context>") < joined.index("CURRENT_MATERIAL_VALUE")
             assert joined.index("CURRENT_MATERIAL_VALUE") < joined.index(current.text)
             assert joined.endswith(current.text) and texts[-1].endswith(current.text)
             assert texts[-3] + host + texts[-1] in joined
             async with database.sessions() as reader:
                 saved = (await reader.scalars(select(PromptProjectionModel))).one()
-                assert "【本轮系统资料】" not in saved.payload_json
+                assert "<runtime_context>" not in saved.payload_json
                 assert "CURRENT_MATERIAL_VALUE" not in saved.payload_json
         finally:
             assert not await app.lifecycle._close_entries(app.lifecycle._entries)
