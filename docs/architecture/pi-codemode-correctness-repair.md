@@ -22,6 +22,8 @@ Pi 语义实现仍是本地代码，Monty 是实际 worker 依赖。没有部署
 | F11 | UI 缓存比例使用同一完整 input 覆盖集合的 cache_reported_cached_tokens，原 cached_input_tokens 独立保留。真实 React DOM 总览/模型卡组合回归。 |
 | F12 | 每个物理响应 usage 只归并一次，包含错误重试及 Claude pause；完整 input/cache 覆盖缺失保留未知，output/total 已知小计保留，另列 unknown 请求数。四协议 503→成功/失败、未知错误、显式零、单次、pause+retry 回归。 |
 
+F1 的普通 need_input、wait、complete 与交接导致程序停止，是 10-07 的历史实现及验收事实；该规则由 [10-15 收尾截断删除任务书](Yuki-Work收尾截断删除任务书-2026-10-15.md) 纠正。新规则先收拢原程序与回执再结算，旧已保存 `code_stop` 仍按原 VM 关闭事实读取，不复活或重放。本报告的原测试、worker 与部署范围记录保持不变，现行语义见 [Tool Kernel](tool-kernel.md)。
+
 证据包 SHA256 为
 `09e2436808bdcb9f03d30c738af436ec8e8ab98e485a68113f7fc38e941f1724`。
 分支红色回归在修改前的清洁 worktree 运行；main 对照、插件及摘要两树对照使用精确

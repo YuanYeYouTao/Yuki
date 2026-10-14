@@ -331,9 +331,23 @@ class SubagentRepository:
             return result
 
     async def list(
-        self, parent_id: str, *, limit: int | None = None, cursor: str | None = None
+        self,
+        parent_id: str | None,
+        *,
+        lease: WorkLease | None = None,
+        source: dict[str, Any] | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
     ) -> list[dict[str, Any]]:
         """Internal consumers read all owned children; model directory is explicitly paged."""
+        if parent_id is None:
+            from qq_ai_bot.runtime.work_queries import WorkQueries
+
+            assert lease is not None and source is not None
+            scope = WorkQueries._query(lease, source, local=True, include_workers=True)
+            owned = scope.with_only_columns(work.c.id)
+        else:
+            owned = descendants(parent_id)
         result: list[dict[str, Any]] = []
         async with self.database.sessions() as session:
             while True:
@@ -348,7 +362,7 @@ class SubagentRepository:
                         work.c.tool_calls,
                     )
                     .join(work, children.c.work_id == work.c.id)
-                    .where(work.c.id.in_(descendants(parent_id)))
+                    .where(work.c.id.in_(owned))
                 )
                 if cursor is not None:
                     query = query.where(children.c.work_id > cursor)
@@ -387,7 +401,7 @@ class SubagentRepository:
         ask: bool = False,
         reply_to: str | None = None,
         to_parent: bool = False,
-    ) -> str:
+    ) -> dict[str, Any]:
         if text is not None and not text.strip():
             raise ValueError("invalid_subagent_message")
         sender = identity if to_parent else parent_id
@@ -404,8 +418,6 @@ class SubagentRepository:
             )
             if child["archived_at"] is not None:
                 raise ValueError("subagent_archived")
-            if text is None:
-                return key
             target = (
                 (await session.execute(select(work).where(work.c.id == destination)))
                 .mappings()
@@ -418,6 +430,9 @@ class SubagentRepository:
                 raise ValueError("subagent_not_owned")
             if not to_parent and target["state"] == "cancelled":
                 raise ValueError("subagent_message_target_terminal")
+            waiting_parent = ask and to_parent and target["state"] not in TERMINAL
+            if text is None:
+                return {"message_id": key, "waiting_parent": waiting_parent}
             payload = {
                 "text": encode_json(
                     {
@@ -454,15 +469,18 @@ class SubagentRepository:
                 .where(waits.c.work_id == destination, waits.c.status == "active")
                 .limit(1)
             )
+            business_input = ask or not to_parent
             if inserted is not None and (
-                target["state"] == "waiting_external" and waiting is None
+                target["state"] in {"waiting_external", "waiting_user"}
+                if to_parent and ask
+                else target["state"] == "waiting_external" and waiting is None
                 if to_parent
                 else target["state"] != "running"
             ):
-                if not to_parent:
+                if business_input:
                     await session.execute(
                         update(waits)
-                        .where(waits.c.work_id == identity, waits.c.status == "active")
+                        .where(waits.c.work_id == destination, waits.c.status == "active")
                         .values(status="cancelled", updated=time.time())
                     )
                 await session.execute(
@@ -474,12 +492,15 @@ class SubagentRepository:
                         checkpoint_json=func.json_remove(
                             work.c.checkpoint_json, "$.accepted_control"
                         )
-                        if not to_parent
+                        if business_input
                         else work.c.checkpoint_json,
                         updated=time.time(),
                     )
                 )
-            return key
+            return {
+                "message_id": key,
+                "waiting_parent": waiting_parent,
+            }
 
     async def resume(
         self,

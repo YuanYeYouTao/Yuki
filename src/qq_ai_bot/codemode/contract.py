@@ -7,7 +7,7 @@ from qq_ai_bot.domain.messages import ChatTool
 EXECUTE_CODE_NAME = "execute_code"
 # Wrapper template, receipt view and control rules. A change is a new API
 # revision: saved snapshots of the previous revision are never resumed.
-CODE_API_REVISION = "yuki.codemode.api.v1"
+CODE_API_REVISION = "yuki.codemode.api.v2"
 DUMP_FORMAT = "monty-1.0.1"
 
 CODE_MODE_POLICY = (
@@ -51,8 +51,9 @@ EXECUTE_CODE_TOOL = ChatTool(
         "有依赖、发送与修改按顺序 await。只能导入 Monty 内置支持的模块（例如 asyncio、math），"
         "不能导入宿主 Python 包；没有宿主文件系统、网络或环境变量访问。"
         "最后一个表达式是脚本结果，print/stdout 也会交给模型。"
-        "task_control 结束/等待、新要求或权限变化会由宿主"
-        "停止脚本并交回模型，脚本无法捕获后继续。脚本结果不会自动发送给任何人。"
+        "task_control 完成、等待或请求补充信息后，程序继续收拢原获准步骤，再结算工作。"
+        "单项权限拒绝返回该项回执；真实当前工作取消、失败、来源失效、新要求或资源耗尽时"
+        "宿主停止脚本，脚本不能绕过这些事实继续。脚本结果不会自动发送给任何人。"
     ),
     parameters={
         "type": "object",
@@ -79,18 +80,17 @@ EXECUTE_CODE_TOOL = ChatTool(
 # before any of these is reported; a script cannot catch and continue.
 STOP_ADMISSION_CLOSED = "admission_closed"
 STOP_UNKNOWN_EFFECT = "unknown_effect"
+# Kept only to read an original stop recorded by an older Code API.
 STOP_HOST_CONTROL = "host_control"
 STOP_NEW_INPUT = "new_input"
 STOP_BUDGET = "work_total_budget_exhausted"
 STOP_SNAPSHOT = "snapshot_unavailable"
 
-# Direct-call refusals that also close a script's admission (C05). Ordinary
-# argument/validation errors stay ordinary receipts the script may handle.
+# Refusals of the execution source itself close script admission. Refusal of
+# one tool stays an ordinary receipt; every later call checks its own authority.
 ADMISSION_CLOSING_ERRORS = frozenset(
     {
         "accept_work_before_execution",
-        "capability_no_longer_authorized",
-        "capability_not_allowed",
         "main_agent_contract_unavailable",
         "tools_closed",
         "work_activation_obsolete",

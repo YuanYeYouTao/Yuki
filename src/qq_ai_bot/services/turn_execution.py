@@ -274,12 +274,12 @@ class TurnExecution:
                     *self.runtime.public_compaction.messages,
                     *self.initial_messages[public_count:],
                 )
-            pending_code = self.runtime.work_control.session.pending_compositions
-            if pending_code:
-                # The original owner continues the same composition before any
-                # generic pairing or new model request (P02 restore split).
-                if await self.runner._resume_compositions(
-                    pending_code,
+            pending_response = self.runtime.work_control.session.pending
+            if pending_response:
+                # Original undispatched calls and open programs finish before
+                # an ending can settle or another model request can be bought.
+                if await self.runner._resume_tool_response(
+                    pending_response,
                     self.state.transcript,
                     self.tools,
                     self.runtime,
@@ -292,9 +292,10 @@ class TurnExecution:
                         suppress_delivery=True,
                         work_state="queued",
                     )
-            if pending_code:
+            if pending_response:
                 session = self.runtime.work_control.session
-                # _resume_compositions paired every original parent and saved the
+                self.state.calls_used = self.runtime.work_control.tools_started
+                # _resume_tool_response paired the original response and saved the
                 # old signed chain. Continue this activation on current public
                 # history, carrying only its unobserved portable round.
                 if await session.rebase_business(TurnTranscript(self.initial_messages)):

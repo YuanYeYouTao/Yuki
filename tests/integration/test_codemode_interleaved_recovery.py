@@ -164,7 +164,9 @@ async def test_pending_code_interleave(database, tmp_path, monkeypatch, kind, pa
             ("search_chat_history", {"query": "inert-first"}),
             ("search_chat_history", {"query": "inert-second"}),
         ]
-        assert MARK in json.dumps(wires[2], ensure_ascii=False)
+        # A neutral turn may use current public history, but does not publish
+        # another Work's private note into ordinary input.
+        assert MARK not in json.dumps(wires[2], ensure_ascii=False)
         final = json.dumps(wires[-2], ensure_ascii=False)
         next_round = json.dumps(wires[-1], ensure_ascii=False)
         print(
@@ -180,10 +182,11 @@ async def test_pending_code_interleave(database, tmp_path, monkeypatch, kind, pa
             pause,
             {m: next_round.count(m) for m in [MARK, ORD, OTHER, "PROGRAM_RESULT_EXACTLY_ONCE"]},
         )
-        assert ORD in final and OTHER in final, (
+        assert ORD in final, (
             "Settled Code Mode resume must use currently authorized interleaved history"
         )
-        assert ORD in next_round and OTHER in next_round
+        assert ORD in next_round
+        assert OTHER not in final and OTHER not in next_round
         assert MARK in final and MARK in next_round
         assert final.count("PROGRAM_RESULT_EXACTLY_ONCE") == 1
         assert next_round.count("PROGRAM_RESULT_EXACTLY_ONCE") == 1
