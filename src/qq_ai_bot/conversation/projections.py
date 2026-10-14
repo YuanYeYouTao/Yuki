@@ -400,7 +400,7 @@ class PromptProjectionRepository:
                 )
             if used + size > self.total_bytes or count >= self.maximum_views:
                 raise ProjectionCapacityError("projection global budget exceeded")
-            if old is not None and not rebuild_reason and old.selected_summary_text is not None:
+            if old is not None and not rebuild_reason and old.selected_summary_text:
                 if (
                     old.selected_summary_text,
                     old.selected_summary_coverage,
