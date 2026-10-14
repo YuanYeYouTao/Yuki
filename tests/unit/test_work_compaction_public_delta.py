@@ -57,17 +57,27 @@ async def test_actual_main_keeps_public_delta_and_reuses_paid_response(
         monkeypatch.setattr(session, "finish_context_compaction", fail_candidate)
         with pytest.raises(WorkConflict, match="candidate_publish_failed"):
             await execution.compact_current(0, main, ModelExecutionPriority.FOREGROUND, 128000)
-        assert session.progress["context_compaction"]["response"]
+        assert (
+            session.progress["context_compaction"]["response"]
+            == "Verified findings. Continue original task."
+        )
         assert len(provider.requests) == 1
         await database.close()
         restored = WorkSession(control, session.contract)
         control.session = restored
         await restored.restore(TurnTranscript((*initial[:-1], ambient, initial[-1])))
+        assert not restored.uses_recovery_transcript
+        assert (
+            restored.progress["task_material"]["execution_checkpoint"]
+            == "Verified findings. Continue original task."
+        )
+        assert "context_compaction" not in restored.progress
         session = restored
     else:
         await execution.compact_current(0, main, ModelExecutionPriority.FOREGROUND, 128000)
     candidate = session.transcript
     assert len(provider.requests) == 1
+    assert provider.requests[0].messages[:-1] == main.messages
     assert sum(message == ambient for message in candidate.request().messages) == 1
     assert candidate.chain_id != original_chain
     adapter = GeminiProvider(
