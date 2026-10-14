@@ -54,32 +54,19 @@ def verify_image_identity(
     """Check the selected image before executing it, including rerun artifacts."""
     configuration = json.loads(compose.run("config", "--format", "json", capture=True))
     image = configuration["services"]["bot"]["image"]
-    command = ["docker", "create"]
+    command = ["docker", "image", "inspect"]
     if platform is not None:
         command.extend(["--platform", platform])
-    probe = subprocess.check_output([*command, image], env=compose.environment, text=True).strip()
-    try:
-        image_id = subprocess.check_output(
-            ["docker", "inspect", "--format", "{{.Image}}", probe],
-            env=compose.environment,
-            text=True,
-        ).strip()
-        metadata = json.loads(
-            subprocess.check_output(
-                ["docker", "image", "inspect", image_id],
-                env=compose.environment,
-                text=True,
-            )
-        )[0]
-        labels = metadata["Config"]["Labels"]
-        if labels.get("org.opencontainers.image.version") != version:
-            raise SmokeError("release image version does not match the deployment package")
-        if revision is not None and labels.get("org.opencontainers.image.revision") != revision:
-            raise SmokeError("existing release image comes from a different commit")
-        if platform is not None and f"{metadata['Os']}/{metadata['Architecture']}" != platform:
-            raise SmokeError("release image does not match the requested platform")
-    finally:
-        subprocess.run(["docker", "rm", probe], env=compose.environment, check=True)
+    metadata = json.loads(
+        subprocess.check_output([*command, image], env=compose.environment, text=True)
+    )[0]
+    labels = metadata["Config"]["Labels"]
+    if labels.get("org.opencontainers.image.version") != version:
+        raise SmokeError("release image version does not match the deployment package")
+    if revision is not None and labels.get("org.opencontainers.image.revision") != revision:
+        raise SmokeError("existing release image comes from a different commit")
+    if platform is not None and f"{metadata['Os']}/{metadata['Architecture']}" != platform:
+        raise SmokeError("release image does not match the requested platform")
 
 
 def _read_healthz(compose: Compose) -> dict[str, Any]:

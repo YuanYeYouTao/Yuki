@@ -22,6 +22,8 @@ Quality workflow 检查 Python 的 Ruff、Mypy、pytest 与前端测试及构建
 
 两套安装器读取 Docker Engine 的 Linux 架构，识别 amd64/x86_64 与 arm64/aarch64，并用该平台拉取、运行配置向导；不使用客户端 CPU 猜测远端 Docker 主机。Compose 不再固定 Bot 或 SnowLuma 为 amd64。复用已有版本时也逐架构核对同一提交，缺少任一架构即失败，不覆盖旧版本资产。`latest` 用 `buildx imagetools create` 复制已验证的完整索引，不能把最后拉取的单架构镜像重新 push 成 latest。
 
+发布任务通过 `setup-docker-action` 安装当前 Docker Engine，使用 `docker image inspect --platform` 检查目标架构；[该检查](https://docs.docker.com/reference/cli/docker/image/inspect/)需要 Docker API 1.49 或更新版本，仅作用于发布验证，不改变安装器的用户端要求。
+
 该修改仅规定后续发布流程，不说明旧 Release 已拥有 arm64 镜像。多架构构建与索引行为见 [Docker 文档](https://docs.docker.com/build/ci/github-actions/multi-platform/)。
 
 Code Mode 是显式可选构建：使用 `docker build --target codemode`，按 [Code 运维](pi-codemode-operations.md) 通过原生隔离门禁后，显式设置 `YUKI_CODE_IMAGE` 并叠加 `docker-compose.codemode.yml`。默认发行不安装或加载 Code 专用 AppArmor/seccomp。
