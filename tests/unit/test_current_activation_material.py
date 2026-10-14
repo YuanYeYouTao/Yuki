@@ -66,7 +66,7 @@ async def test_current_values_repeat_then_clear_without_entering_history(databas
         )
         current = "\n".join(item.content or "" for item in provider.requests[-1].messages)
         assert (provider.requests[-1].messages[-1].content or "").endswith(f"继续{number}")
-        assert current.index("【资料结束】") < current.index(f"继续{number}")
+        assert current.index("</runtime_context>") < current.index(f"继续{number}")
         if value:
             assert current.count(value) == 1
             assert current.index(value) < current.index(f"继续{number}")
