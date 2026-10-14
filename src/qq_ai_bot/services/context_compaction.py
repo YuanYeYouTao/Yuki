@@ -177,7 +177,7 @@ async def current_public_compact(
     if (
         previous is not None
         and previous.selected_summary_text is not None
-        and previous.selected_summary_coverage > coverage
+        and previous.selected_summary_coverage >= coverage
     ):
         # A later published checkpoint already owns this prefix. Restoring an
         # older paid response must not replace it with an earlier coverage.

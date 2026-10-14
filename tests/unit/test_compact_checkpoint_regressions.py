@@ -512,7 +512,12 @@ async def test_status_does_not_report_source_invalidated_checkpoint(database, tm
     assert line == "Compact 检查点：无"
 
 
-async def test_paid_public_recovery_keeps_newer_checkpoint_after_cache_eviction(database, tmp_path):
+@pytest.mark.parametrize("same_coverage", [False, True])
+async def test_paid_public_recovery_keeps_newer_checkpoint_after_cache_eviction(
+    database,
+    tmp_path,
+    same_coverage,
+):
     from dataclasses import replace
 
     from tests.support.work_compaction_capacity_helpers import _session
@@ -538,7 +543,8 @@ async def test_paid_public_recovery_keeps_newer_checkpoint_after_cache_eviction(
         "coverage": old_coverage,
         "items": [],
     }
-    await _append_public(database, "newer public correction")
+    if not same_coverage:
+        await _append_public(database, "newer public correction")
     scope = ConversationScope.group("80001", "20001")
     version, events = await EventLedgerRepository(database).read_scope_context(scope, limit=100)
     latest_coverage = max(event.id for event in events)

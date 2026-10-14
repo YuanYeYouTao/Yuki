@@ -325,7 +325,13 @@ class PromptProjectionRepository:
                     old.selected_summary_text
                     and (old.generation, old.starts_after_event_id, old.source_revision)
                     == (generation, starts_after_event_id, expected_source_revision)
-                    and old.selected_summary_coverage > selected_summary_coverage
+                    and (
+                        old.selected_summary_coverage > selected_summary_coverage
+                        or (
+                            old.selected_summary_coverage == selected_summary_coverage
+                            and old.selected_summary_text != selected_summary_text
+                        )
+                    )
                 ):
                     raise ProjectionConflict("a newer checkpoint already owns this history")
                 if rebuild_reason is None:
