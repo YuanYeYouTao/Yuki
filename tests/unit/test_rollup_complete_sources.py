@@ -54,7 +54,6 @@ def test_source_preserves_internal_identity_reply_and_segment_only_mentions() ->
 
 
 def test_oversized_source_cannot_be_silently_truncated() -> None:
-    from qq_ai_bot.conversation.rollup.prompt_accounting import source_accounting_characters
     from qq_ai_bot.conversation.rollup.repository import take_batch
 
     source_event = replace(event(), content="先不要发布。" * 30 + "必须等用户批准。", segments=())
@@ -62,7 +61,7 @@ def test_oversized_source_cannot_be_silently_truncated() -> None:
     source = serialize_compaction_source_events(batch)
     assert batch == (source_event,)
     assert source.endswith("必须等用户批准。")
-    assert source_accounting_characters(batch) == len(source) > 80
+    assert len(source) > 80
 
 
 class RecordingModel:

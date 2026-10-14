@@ -1,18 +1,14 @@
-"""Prompt-visible, durable-watermark, and compression-source character accounting.
+"""Prompt-visible and durable-watermark character accounting.
 
 Grouped main-agent history characters remain useful for diagnostics. Stored
 ``uncovered_character_count`` uses an additive per-message durable ruler that
-does not group senders or look up neighbors. Active windows use token capacity;
-source batches use the complete serialized New source events string.
+does not group senders or look up neighbors. Active windows use token capacity.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 
-from qq_ai_bot.conversation.rollup.renderer import (
-    serialize_compaction_source_events,
-)
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
 from qq_ai_bot.persistence.repository_records import EventRecord
 
@@ -128,12 +124,3 @@ def durable_uncovered_characters(
         )
         for event in events
     )
-
-
-def source_accounting_characters(
-    events: Iterable[EventRecord],
-    *,
-    timezone: str = DEFAULT_TIMEZONE,
-) -> int:
-    """Account every serialized source character, including oversized events."""
-    return len(serialize_compaction_source_events(tuple(events), timezone=timezone))
