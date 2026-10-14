@@ -247,18 +247,23 @@ async def test_partial_summary_recovers_original_work_without_format_policies(
     await control.repository.release(control.lease)
 
 
-@pytest.mark.parametrize("covered_prefix", [0, 2])
+@pytest.mark.parametrize("retained_inputs", [0, 2])
 @pytest.mark.parametrize("provider_incomplete", [False, True])
-async def test_partial_summary_keeps_uncovered_inputs_across_paid_pages_and_business_resume(
-    database, tmp_path, covered_prefix, provider_incomplete
+async def test_current_compact_retains_original_inputs_and_business_resume(
+    database, tmp_path, retained_inputs, provider_incomplete
 ):
+    from dataclasses import replace
+
     from tests.support.work_compaction_capacity_helpers import _runtime
 
-    from qq_ai_bot.domain.messages import ChatRequest, ChatResponse, ModelResponseStatus
+    from qq_ai_bot.domain.messages import ChatResponse, ModelResponseStatus
     from qq_ai_bot.llm.fake import FakeLLMProvider
     from qq_ai_bot.model_runtime.models import ModelExecutionPriority
+    from qq_ai_bot.runtime.work_repository import WorkCapacityError
+    from qq_ai_bot.services.context_compaction import EXECUTION_COMPACT_INSTRUCTION
+    from qq_ai_bot.services.turn_execution import TurnExecution
 
-    control, first, _, _ = await _staged_root(database, tmp_path, stage=False)
+    control, first, transcript, _ = await _staged_root(database, tmp_path, stage=False)
     identity = control.current["id"]
     first.progress["task_material"] = {
         "directives": [
@@ -268,98 +273,93 @@ async def test_partial_summary_keeps_uncovered_inputs_across_paid_pages_and_busi
     original_request = await first._original_request()
     input_ids = []
     for index in range(19):
+        text = f"original requirement {index}: " + "specific requirement " * 100
         input_id = await control.repository.enqueue(
             control.lease.conversation_id,
             control.lease.generation,
-            f"partial-summary-input:{index}",
+            f"current-compact-input:{index}",
             kind="message",
             work_id=identity,
             ready=False,
         )
-        assert await control.repository.prepare_input(
-            input_id, {"text": f"original requirement {index}"}
-        )
+        assert await control.repository.prepare_input(input_id, {"text": text})
         input_ids.append(input_id)
+        transcript.append(ChatMessage("user", text))
     await control.repository.stage(control.lease, input_ids, "original-inputs")
     await control.repository.consume(control.lease, "original-inputs")
-    supplied_pages = []
-
-    def respond(request):
-        source = json.loads(request.messages[-1].content)
-        supplied_pages.append([item["input_id"] for item in source["task_inputs"]])
-        references = input_ids[:covered_prefix] if len(supplied_pages) == 1 else input_ids[16:]
-        content = json.dumps(
-            {
-                "pending": [
-                    {
-                        "text": "still checking",
-                        "refs": ["goal", *(f"input:{item}" for item in references)],
-                    }
-                ]
-            }
-        )
-        return ChatResponse(
-            content=content,
+    await first.save("paired")
+    initial = first.compaction_anchor.request().messages
+    original = transcript.request()
+    checkpoint = "Keep the original restriction and all uncompleted requirements."
+    provider = FakeLLMProvider(
+        lambda request: ChatResponse(
+            content=checkpoint,
             latency_seconds=0,
             status=ModelResponseStatus.INCOMPLETE
             if provider_incomplete
             else ModelResponseStatus.COMPLETED,
             incomplete_reason="max_output_tokens" if provider_incomplete else None,
         )
-
-    provider = FakeLLMProvider(respond)
-    initial = first.compaction_anchor.request().messages
+    )
     runner, runtime = await _runtime(database, control, initial, provider)
-    candidate = await runner._compact_work(
-        runtime,
-        ModelExecutionPriority.FOREGROUND,
-        128000,
-        ChatRequest(messages=first.transcript.request().messages, max_output_tokens=8192),
+    execution = TurnExecution(runner, initial, runtime, None)
+    execution.state.transcript = transcript
+    main = ChatRequest(messages=original.messages, max_output_tokens=8192)
+    boundary = len(original.messages) - retained_inputs
+    paid_prefix = (
+        *original.messages[:boundary],
+        ChatMessage("user", EXECUTION_COMPACT_INSTRUCTION),
     )
-    assert supplied_pages == [input_ids[:16], input_ids[16:]]
-    capsule = json.loads(candidate.request().messages[-1].content)
-    material = capsule["task_material"]
-    assert material["covered_input_id"] == (input_ids[covered_prefix - 1] if covered_prefix else 0)
-    assert {item["input_id"] for item in material["recent_inputs"]} == set(
-        input_ids[covered_prefix:]
-    )
-    assert material["directives"][0]["text"] == "keep the original restriction"
-    assert material["original_request_ref"] is None
-    assert "paid_observations" not in material
-
+    budget = estimate_request_tokens(runner._capacity_request(replace(main, messages=paid_prefix)))
+    if provider_incomplete and estimate_request_tokens(runner._capacity_request(main)) > budget:
+        with pytest.raises(WorkCapacityError, match="model_request_capacity"):
+            await execution.compact_current(0, main, ModelExecutionPriority.FOREGROUND, budget)
+    else:
+        candidate = await execution.compact_current(
+            0, main, ModelExecutionPriority.FOREGROUND, budget
+        )
+        if provider_incomplete:
+            assert candidate == main
+        else:
+            assert candidate.messages[: len(initial)] == initial
+            if retained_inputs:
+                assert candidate.messages[-retained_inputs:] == original.messages[-retained_inputs:]
+    assert len(provider.requests) == 1
+    assert provider.requests[0].messages == paid_prefix
+    assert provider.requests[0].tools == main.tools
+    if provider_incomplete:
+        assert first.transcript.request() == original
+        assert "execution_checkpoint" not in first.progress["task_material"]
+    else:
+        assert first.progress["task_material"]["execution_checkpoint"] == checkpoint
     resumed = WorkSession(control, first.contract)
     control.session = resumed
     restored = await resumed.restore(TurnTranscript((ChatMessage("user", "fresh business input"),)))
-    current_material = json.loads(restored.request().messages[-1].content)
-    assert current_material["original_request"] == original_request
-    assert current_material["original_inputs"] == []  # Already present once in task_material.
-    assert current_material["task_material"]["recent_inputs"] == material["recent_inputs"]
-    for index in range(covered_prefix, 19):
-        assert restored.request().messages[-1].content.count(f'"original requirement {index}"') == 1
-    assert (
-        current_material["task_material"]["paid_observations"]["pending"]
-        == capsule["summary"]["pending"]
-    )
+    material = json.loads(restored.request().messages[-1].content)
+    assert material["original_request"] == original_request
+    assert material["task_material"]["directives"][0]["text"] == "keep the original restriction"
+    for index in range(19):
+        assert restored.request().messages[-1].content.count(f"original requirement {index}:") == 1
+    assert len(provider.requests) == 1
     saved = await control.repository.get(identity)
-    assert (saved["model_requests"], saved["tool_calls"]) == (5, 1)
+    assert saved["goal"] == "finish the original audit"
+    assert (saved["model_requests"], saved["tool_calls"]) == (4, 1)
     await control.repository.release(control.lease)
 
 
-async def test_truncated_json_summary_keeps_original_paired_work_and_paid_budget(
-    database, tmp_path
-):
+async def test_incomplete_compact_keeps_original_paired_work_and_paid_budget(database, tmp_path):
     from tests.support.work_compaction_capacity_helpers import _runtime
 
-    from qq_ai_bot.domain.messages import ChatRequest, ChatResponse, ModelResponseStatus
+    from qq_ai_bot.domain.messages import ChatResponse, ModelResponseStatus
     from qq_ai_bot.llm.fake import FakeLLMProvider
     from qq_ai_bot.model_runtime.models import ModelExecutionPriority
-    from qq_ai_bot.runtime.work_repository import WorkCapacityError
+    from qq_ai_bot.services.turn_execution import TurnExecution
 
     control, first, original, _ = await _staged_root(database, tmp_path, stage=False)
     before = original.request()
     provider = FakeLLMProvider(
         lambda request: ChatResponse(
-            content='{"pending":[',
+            content="Incomplete paid checkpoint",
             latency_seconds=0,
             status=ModelResponseStatus.INCOMPLETE,
             incomplete_reason="max_output_tokens",
@@ -368,13 +368,12 @@ async def test_truncated_json_summary_keeps_original_paired_work_and_paid_budget
     runner, runtime = await _runtime(
         database, control, first.compaction_anchor.request().messages, provider
     )
-    with pytest.raises(WorkCapacityError, match="work_compaction_invalid_structure"):
-        await runner._compact_work(
-            runtime,
-            ModelExecutionPriority.FOREGROUND,
-            128000,
-            ChatRequest(messages=first.transcript.request().messages, max_output_tokens=8192),
-        )
+    execution = TurnExecution(runner, first.compaction_anchor.request().messages, runtime, None)
+    execution.state.transcript = first.transcript
+    main = ChatRequest(messages=before.messages, max_output_tokens=8192)
+    assert (
+        await execution.compact_current(0, main, ModelExecutionPriority.FOREGROUND, 128000) == main
+    )
     assert first.transcript.request() == before
     assert first.transcript.chain_id == original.chain_id
     assert len(provider.requests) == 1
@@ -495,75 +494,56 @@ async def test_optional_note_does_not_reject_repeated_references_or_extra_metada
     await control.repository.release(control.lease)
 
 
-async def test_actual_compaction_request_has_monotone_complete_unit_pages(
-    database, tmp_path, monkeypatch
+async def test_current_compact_selects_a_fitting_prefix_without_splitting_tool_pairs(
+    database, tmp_path
 ):
-    from copy import deepcopy
+    from dataclasses import replace
 
     from tests.support.work_compaction_capacity_helpers import _runtime
 
     from qq_ai_bot.llm.fake import FakeLLMProvider
     from qq_ai_bot.model_runtime.models import ModelExecutionPriority
+    from qq_ai_bot.services.context_compaction import EXECUTION_COMPACT_INSTRUCTION
+    from qq_ai_bot.services.turn_execution import TurnExecution
 
     control, session, transcript, _ = await _staged_root(database, tmp_path, stage=False)
     for index in range(60):
-        transcript.append(
-            ChatMessage("assistant", f"Record {index}: " + '中文\\" observation ' * 120)
-        )
+        transcript.append(ChatMessage("assistant", f"Record {index}: " + "中文 observation " * 120))
+    call = ToolCall("original-paired-call", ToolFunction("terminal_exec", "{}"))
+    transcript.append(ChatMessage("assistant", "", tool_calls=(call,)))
+    invoked = []
+
+    async def invoke():
+        invoked.append(call.id)
+        return json.dumps({"ok": True, "data": "original real result " * 1000})
+
+    await session.save("response", (call,))
+    result = await invoke_tool(session, call, invoke)
+    original_call_key = session.call_key(call.id)
+    transcript.append_result(call.id, result)
     await session.save("paired")
-    provider = FakeLLMProvider()
-    runner, runtime = await _runtime(
-        database,
-        control,
-        session.compaction_anchor.request().messages,
-        provider,
-        work_context_window_tokens=8192,
+    original = transcript.request()
+    initial = session.compaction_anchor.request().messages
+    provider = FakeLLMProvider(
+        lambda request: "Verified prior records; keep the original tool receipt."
     )
-    original = session.summary_source
-    checked = []
-
-    class PagePrepared(Exception):
-        pass
-
-    async def inspect_page(**arguments):
-        source = json.loads(await original(**arguments))
-        fits = arguments["fits"]
-        units = (await session.journal.objects.get(source["paging"]["snapshot_ref"]))["units"]
-        unit_refs = {unit["ref"] for unit in units}
-        inherited = set(source["source_refs"]) - unit_refs
-        baseline = deepcopy(source)
-        for key in (
-            "records",
-            "record_source_indices",
-            "model_observations",
-            "effects",
-            "source_fragments",
-        ):
-            baseline.pop(key, None)
-        for end in range(len(units) + 1):
-            candidate = deepcopy(baseline)
-            references = set(inherited)
-            for unit in units[:end]:
-                candidate.setdefault(unit["kind"], []).append(unit["value"])
-                references.add(unit["ref"])
-                if unit["kind"] == "records":
-                    candidate.setdefault("record_source_indices", []).append(unit["index"])
-            candidate["source_refs"] = sorted(references)
-            candidate["paging"]["next_cursor"] = [end, 0]
-            checked.append(fits(json.dumps(candidate, ensure_ascii=False)))
-        assert fits(json.dumps(source, ensure_ascii=False))
-        assert source["paging"]["next_cursor"] < [len(units), 0]
-        assert set(source["source_refs"]) >= inherited
-        raise PagePrepared
-
-    monkeypatch.setattr(session, "summary_source", inspect_page)
-    with pytest.raises(PagePrepared):
-        await runner._compact_work(
-            runtime,
-            ModelExecutionPriority.FOREGROUND,
-            128000,
-            ChatRequest(messages=transcript.request().messages, max_output_tokens=8192),
-        )
-    assert checked[0] and not checked[-1]
-    assert checked == sorted(checked, reverse=True)
-    assert not provider.requests
+    runner, runtime = await _runtime(database, control, initial, provider)
+    execution = TurnExecution(runner, initial, runtime, None)
+    execution.state.transcript = transcript
+    main = ChatRequest(messages=original.messages, max_output_tokens=8192)
+    # This real capacity fits the call's declaration but not its result. A paired
+    # prefix must therefore stop before both messages, not between them.
+    halfway = (*original.messages[:-1], ChatMessage("user", EXECUTION_COMPACT_INSTRUCTION))
+    budget = estimate_request_tokens(runner._capacity_request(replace(main, messages=halfway)))
+    candidate = await execution.compact_current(0, main, ModelExecutionPriority.FOREGROUND, budget)
+    assert len(provider.requests) == 1
+    assert provider.requests[0].messages[:-1] == original.messages[:-2]
+    assert estimate_request_tokens(runner._capacity_request(provider.requests[0])) <= budget
+    assert not any(message.tool_calls for message in provider.requests[0].messages)
+    assert candidate.messages[-2:] == original.messages[-2:]
+    assert candidate.messages[-2].tool_calls == (call,)
+    assert candidate.messages[-1].tool_call_id == call.id
+    assert await session.journal.effect_result(original_call_key) == result
+    assert invoked == [call.id]
+    assert (await control.repository.get(control.current["id"]))["model_requests"] == 4
+    await control.repository.release(control.lease)

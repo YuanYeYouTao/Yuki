@@ -12,7 +12,6 @@ from sqlalchemy import delete, select
 from tests.conftest import build_harness, make_settings
 from tests.support.agent_backend import StubAgentBackend
 from tests.support.semantic_participation_host_helpers import _event_and_route
-from tests.support.work_compaction import summary_json
 from tests.support.work_compaction_capacity_helpers import _grow, _runtime
 from tests.support.work_session import WorkSession, invoke_tool
 from tests.unit.test_work_journal_source_retry import _change, _session
@@ -394,13 +393,7 @@ async def test_response_paid_stage_prepares_current_main_history_before_retiring
 ):
     """The real preparation/composer must supply H, not the exact-replay placeholder."""
     control, session, selected, _ = await _session(database)
-    provider = FakeLLMProvider(
-        lambda request: (
-            summary_json(request.messages[-1].content)
-            if request.structured_output
-            else "Continue the original task."
-        )
-    )
+    provider = FakeLLMProvider(lambda request: "Continue the original task.")
     harness = build_harness(
         database, make_settings(database.url, runtime_work_enabled=True), provider
     )
@@ -449,18 +442,24 @@ async def test_response_paid_stage_prepares_current_main_history_before_retiring
         _, runtime = await _runtime(database, control, first.messages, provider)
         runtime = replace(runtime, runtime_config=config, fixed_tools=definitions)
         from qq_ai_bot.domain.messages import ChatMessage, ChatRequest
+        from qq_ai_bot.services.turn_execution import TurnExecution
 
         main = ChatRequest(messages=session.transcript.request().messages, tools=definitions)
         save = session.save
 
         async def fail_candidate(phase, *args, **kwargs):
-            if phase == "paired" and session.compaction_ready_summary is None:
+            if phase == "paired" and "context_compaction" not in session.progress:
                 raise WorkConflict("candidate_publish_failed")
             await save(phase, *args, **kwargs)
 
         monkeypatch.setattr(session, "save", fail_candidate)
+        execution = TurnExecution(runner, first.messages, runtime, None)
+        execution.state.transcript = session.transcript
+        execution.state.definitions = definitions
+        execution.state.fixed_definitions = definitions
         with pytest.raises(WorkConflict):
-            await runner._compact_work(runtime, ModelExecutionPriority.FOREGROUND, 128000, main)
+            await execution.compact_current(0, main, ModelExecutionPriority.FOREGROUND, 128000)
+        assert session.progress["context_compaction"]["response"] == "Continue the original task."
         call = ToolCall("recorded-call", ToolFunction("read_probe", "{}"))
         session.transcript.append(
             ChatMessage("assistant", "Complete original response", tool_calls=(call,))
@@ -515,8 +514,11 @@ async def test_response_paid_stage_prepares_current_main_history_before_retiring
         assert not wire.structured_output
         body = "\n".join(message.content or "" for message in wire.messages)
         assert body.count(ambient_text) == body.count(steer_text) == 1
-        assert "compaction_staging" not in resumed.session.progress
-        assert resumed.session.progress["task_material"]["paid_observations"]
+        assert "context_compaction" not in resumed.session.progress
+        assert (
+            resumed.session.progress["task_material"]["execution_checkpoint"]
+            == "Continue the original task."
+        )
         invoke.assert_awaited_once()
         from qq_ai_bot.runtime.work_schema_v1 import inputs
 
