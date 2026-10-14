@@ -353,6 +353,7 @@ class ApplicationContainer:
         )
         self.database.subagents_enabled = self.settings.subagents_enabled
         children = SubagentRepository(works)
+        self._plugin_contexts: dict[str, HostPluginContext] = {}
         self.subagent_execution = SubagentExecution(
             works,
             children,
@@ -445,7 +446,6 @@ class ApplicationContainer:
         self.automation_tools = automation.tools
         self.chat.set_automation_tools(self.automation_tools)
         self.automation_worker = automation.worker
-        self._plugin_contexts: dict[str, HostPluginContext] = {}
         self.plugin_notification_repository = PluginNotificationRepository(
             self.database,
             self.scoped_events,
