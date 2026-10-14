@@ -98,6 +98,7 @@ from qq_ai_bot.services.chat_preparation_timings import (
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.context_assembler import ContextAssembler
 from qq_ai_bot.services.context_boundary import ContextBoundaryReader
+from qq_ai_bot.services.context_compaction import PublicCompactContext
 from qq_ai_bot.services.effect_gate import (
     ConversationEffectGate,
     EffectGateTimeoutError,
@@ -975,6 +976,7 @@ class ChatService:
                     read_version,
                     commit_projection,
                     observation_boundary,
+                    public_compaction,
                 ) = await self._build_messages(
                     inbound,
                     identity,
@@ -1019,6 +1021,7 @@ class ChatService:
                     prompt_diagnostics=prompt_diagnostics,
                     before_model_request=validate_context,
                     observation_boundary=observation_boundary,
+                    public_compaction=public_compaction,
                 )
                 if turn_token is not None:
                     async with self._turn_coordinator.track(turn_token, "generation"):
@@ -1109,6 +1112,56 @@ class ChatService:
             # synchronously; only a committed original Work effect permits deferral.
             await record()
 
+    async def compact(
+        self,
+        inbound: InboundMessage,
+        identity: ConversationScope,
+        profile: UserProfileSnapshot,
+        focus: str,
+        turn_snapshot: ConversationTurnSnapshot,
+    ) -> str:
+        """Maintain public history in the existing Main slot, without accepting Work."""
+        key = runtime_conversation_key(identity=identity, turn=turn_snapshot, inbound=inbound)
+        async with self._turn_coordinator.hold(key), self._concurrency.conversation(key):
+            config = await self._runtime_config.snapshot(
+                user_id=inbound.sender.user_id,
+                group_id=inbound.group_id,
+            )
+            (
+                messages,
+                visible,
+                diagnostics,
+                version,
+                commit,
+                boundary,
+                public,
+            ) = await self._build_messages(
+                inbound,
+                identity,
+                profile,
+                inbound.text,
+                config,
+                turn_snapshot=turn_snapshot,
+            )
+            validate = self._context_validator(version, commit_projection=commit)
+            runtime = ToolRuntime(
+                inbound=inbound,
+                gateway=None,
+                allow_generic_onebot=inbound.sender.user_id in self._settings.superusers,
+                conversation_key=key,
+                actor_is_superuser=inbound.sender.user_id in self._settings.superusers,
+                runtime_config=config,
+                turn_snapshot=turn_snapshot,
+                visible_event_ids=visible,
+                prompt_diagnostics=diagnostics,
+                before_model_request=validate,
+                observation_boundary=boundary,
+                public_compaction=public,
+                compact_focus=focus,
+            )
+            result = await self._run_agent(key, messages, runtime)
+            return result.result.text
+
     async def handle_turn(
         self,
         inbound: InboundMessage,
@@ -1140,6 +1193,7 @@ class ChatService:
         ConversationReadVersion | None,
         Callable[[], Awaitable[None]] | None,
         ContextBoundaryReader | None,
+        PublicCompactContext | None,
     ]:
         if turn_snapshot is None:
             raise ConversationCoverageError("chat turn requires a conversation snapshot")
@@ -1215,6 +1269,7 @@ class ChatService:
             composition.read_version,
             composition.commit_projection,
             composition.observation_boundary,
+            composition.public_compaction,
         )
 
     def _context_validator(
@@ -1437,6 +1492,7 @@ class ChatService:
                 memory_session=memory_session,
                 visible_event_ids=composition.visible_event_ids,
                 observation_boundary=composition.observation_boundary,
+                public_compaction=composition.public_compaction,
                 selection_query=content,
                 prompt_diagnostics=PromptRequestDiagnostics(
                     conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
@@ -1565,6 +1621,7 @@ class ChatService:
                 turn_snapshot=turn_snapshot,
                 visible_event_ids=composition.visible_event_ids,
                 observation_boundary=composition.observation_boundary,
+                public_compaction=composition.public_compaction,
                 selection_query=f"{event.content}\n{trigger.agent_intent}".strip(),
                 prompt_diagnostics=PromptRequestDiagnostics(
                     conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
@@ -1591,6 +1648,7 @@ class ChatService:
                     prompt_diagnostics=tool_runtime.prompt_diagnostics,
                     visible_event_ids=tool_runtime.visible_event_ids,
                     observation_boundary=tool_runtime.observation_boundary,
+                    public_compaction=tool_runtime.public_compaction,
                     turn_token=turn_token,
                     turn_snapshot=turn_snapshot,
                     selection_query=tool_runtime.selection_query,

@@ -32,6 +32,7 @@ from qq_ai_bot.services.agent_runner import (
 )
 from qq_ai_bot.services.context_assembler import AssembledContext
 from qq_ai_bot.services.context_boundary import ContextBoundary, PreparedContextBoundary
+from qq_ai_bot.services.context_compaction import PublicCompactContext
 from qq_ai_bot.services.durable_invocations import DurableInvocations
 from qq_ai_bot.services.history_projection import prepare_history
 from qq_ai_bot.services.prompt_composer import PromptComposer, PromptComposition
@@ -124,18 +125,6 @@ class MainAgentTurnService:
             input_budget = capacity.input_budget(
                 runtime.context.window_tokens, output_tokens=runtime.llm.max_output_tokens
             )
-            # Plan before dispatch, using the same complete-request estimator.
-            # Keep the existing rollup margin and 4096-token reserve for native
-            # declarations/public runtime state and subsequent response pairing.
-            # Runner still checks its actual request, including those additions.
-            planning_budget = max(
-                1,
-                int(
-                    min(input_budget, runtime.context.compaction_window_tokens)
-                    * runtime.context.compaction_trigger_ratio
-                )
-                - 4096,
-            )
             owner_conversation = active.lease.conversation_id if active else version.conversation_id
             owner_generation = active.lease.generation if active else version.generation
             owner_work = (
@@ -161,30 +150,12 @@ class MainAgentTurnService:
                     native_tools=native_definitions,
                 )
             )
-            # The maintenance target may choose an already prepared summary;
-            # it cannot require a foreground model while the original fits.
-            fixed_request = replace(
-                prepared_request,
-                messages=compose_context(
-                    replace(context, history_messages=(), rollup_text="")
-                ).messages,
-            )
-            fixed_tokens = estimate_request_tokens(fixed_request)
-            collect_phase_metrics(estimate_count=1)
-            maintenance_budget = max(planning_budget, fixed_tokens)
 
             def request_tokens(request: ChatRequest) -> int:
                 collect_phase_metrics(estimate_count=1)
                 return estimate_request_tokens(request)
 
             def context_fits(candidate: AssembledContext) -> bool:
-                request = replace(
-                    prepared_request,
-                    messages=compose_context(candidate).messages,
-                )
-                return request_tokens(request) <= maintenance_budget
-
-            def context_hard_fits(candidate: AssembledContext) -> bool:
                 request = replace(
                     prepared_request,
                     messages=compose_context(candidate).messages,
@@ -197,7 +168,7 @@ class MainAgentTurnService:
                 view_key=view_key,
                 context_key=_hash([version.conversation_id, version.generation]),
                 context_fits=context_fits,
-                context_hard_fits=context_hard_fits,
+                context_hard_fits=context_fits,
             )
             composition = compose_context(prepared.context)
             fragments = (
@@ -463,10 +434,50 @@ class MainAgentTurnService:
 
                 return ContextBoundary(delta, commit_boundary, prepare_boundary)
 
+            async def adopt_compact(
+                summary: str, coverage: int, retained: FrozenFragments
+            ) -> tuple[ChatMessage, ...]:
+                nonlocal composition, fragments, version, projection_closed
+                version = replace(version, selected_summary_text=summary)
+                prepared.context = replace(
+                    prepared.context,
+                    history_messages=retained.messages(),
+                    rollup_text=summary,
+                    prompt_effective_coverage=coverage,
+                    metrics=replace(prepared.context.metrics, rollup_mode="compact"),
+                    read_version=version,
+                )
+                prepared.fragments = retained
+                prepared.committed = await repository.read(view_key)
+                prepared.committed_input = list(retained.items)
+                prepared.reason = None
+                composition = compose_context(prepared.context)
+                fragments = (
+                    retained.append_current(context.current_event_id, context.current_message)
+                    if context.current_event_id is not None
+                    and context.current_event_id not in retained.event_ids
+                    else retained
+                )
+                projection_closed = False
+                public_compaction.messages = composition.messages[:-1]
+                public_compaction.fragments = retained
+                public_compaction.version = version
+                return composition.messages
+
+            public_compaction = PublicCompactContext(
+                composition.messages[:-1],
+                len(self._composer.static_messages()),
+                prepared.fragments,
+                version,
+                prepared.context_key,
+                repository,
+                adopt_compact,
+            )
             return replace(
                 composition,
                 commit_projection=commit_projection,
                 observation_boundary=observation_boundary,
+                public_compaction=public_compaction,
             )
 
     async def read_result(self, runtime: AgentRuntime) -> AgentRunResult | None:
@@ -504,6 +515,10 @@ class MainAgentTurnService:
         # The compiler places the current task after history. Capture that exact
         # message before the separate work-status input is appended below.
         with self.executions.track():
+            if runtime.compact_focus is not None:
+                return await self._run_prepared(
+                    messages, replace(runtime, work_control=None), backend
+                )
             if runtime.compaction_brief is None and messages:
                 if messages[-1].role != "user":
                     raise ValueError("main_agent_current_task_message_required")

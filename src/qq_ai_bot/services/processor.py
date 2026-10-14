@@ -768,10 +768,16 @@ class MessageProcessor:
                 observation=not direct_turn,
                 protect_from_observations=direct_turn,
                 preserve_active=(
-                    self._settings.runtime_work_enabled
-                    and decision.command is None
-                    and direct_match is None
-                    and self._chat.work_is_active(coordinator_key)
+                    (
+                        decision.command is CommandName.COMPACT
+                        and self._chat.work_is_active(coordinator_key)
+                    )
+                    or (
+                        self._settings.runtime_work_enabled
+                        and decision.command is None
+                        and direct_match is None
+                        and self._chat.work_is_active(coordinator_key)
+                    )
                 ),
                 preempt_private=(
                     message.scope_type is ScopeType.PRIVATE
@@ -1728,6 +1734,29 @@ class MessageProcessor:
                 ),
             )
 
+        if command is CommandName.COMPACT:
+            execution = await execute()
+            if execution.compact_focus is not None:
+                if turn_snapshot is None:
+                    raise ValueError("compact requires a canonical turn snapshot")
+                text = await self._chat.compact(
+                    message,
+                    identity,
+                    profile,
+                    execution.compact_focus,
+                    turn_snapshot,
+                )
+                execution = CommandExecution(text, record_reply=False)
+            return await self._deliver_command_execution(
+                execution=execution,
+                message=message,
+                identity=identity,
+                sender=sender,
+                event_key=event_key,
+                started=started,
+                handler="command_compact",
+                turn_snapshot=turn_snapshot,
+            )
         if turn_snapshot is None:
             execution = await execute()
             return await self._deliver_command_execution(

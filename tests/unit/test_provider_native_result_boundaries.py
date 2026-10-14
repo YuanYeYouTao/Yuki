@@ -98,7 +98,6 @@ async def test_ordinary_truncation_retains_native_declarations_before_settlement
         0,
         response,
         (NativeToolDefinition(NativeToolType.WEB_SEARCH),) if native else (),
-        compacting=False,
     )
     with pytest.raises(LLMIncompleteResponseError):
         await execution.settle_truncated(0, response, ())
