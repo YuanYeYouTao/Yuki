@@ -19,7 +19,7 @@ from qq_ai_bot.capabilities.coordinator import (
     CoordinatedToolResult,
     ToolInvocationCoordinator,
 )
-from qq_ai_bot.capabilities.invocation import Invocation
+from qq_ai_bot.capabilities.invocation import Invocation, direct_invocations
 from qq_ai_bot.capabilities.media import result_images
 from qq_ai_bot.capabilities.results import ToolExecutionResult
 from qq_ai_bot.codemode.contract import EXECUTE_CODE_NAME
@@ -54,7 +54,7 @@ from qq_ai_bot.runtime.work_control import WORK_CONTROL_NAMES, WorkControl
 from qq_ai_bot.runtime.work_repository import WorkCapacityError
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.context_boundary import ContextBoundaryReader
-from qq_ai_bot.services.invocation_service import BatchPlan
+from qq_ai_bot.services.invocation_service import BatchPlan, InvocationService
 from qq_ai_bot.services.native_tool_binder import NativeToolBinder
 from qq_ai_bot.services.turn_transcript import (
     TranscriptRequest,
@@ -492,7 +492,7 @@ class AgentRunner:
             span.result = asdict(result)
             return result
 
-    async def _resume_compositions(
+    async def _resume_tool_response(
         self,
         pending: list[Any],
         transcript: TurnTranscript,
@@ -500,55 +500,101 @@ class AgentRunner:
         runtime: AgentRuntime,
         definitions: tuple[ChatTool, ...] | None,
     ) -> bool:
-        """Resume restored compositions; True means the segment yielded again."""
-        from qq_ai_bot.capabilities.invocation import (
-            Invocation,
-            InvocationIdentity,
-            TrustedInvocationContext,
-        )
-        from qq_ai_bot.codemode.driver import CodeCompositionYield, CodeModeDriver
-
+        """Finish the original response; True means its Code segment yielded."""
         control = runtime.work_control
         assert control is not None and control.session is not None
         session = control.session
         declared = frozenset(tool.name for tool in definitions or ())
         tooling = runtime.runtime_config.tooling
-        host = self._code_host(
-            tools,
-            runtime,
-            declared_names=declared,
-            max_parallel_calls=tooling.max_parallel_calls if tooling is not None else 1,
+        calls = tuple(
+            ToolCall(item["id"], ToolFunction(item["name"], item["arguments"])) for item in pending
         )
+        paired = session.paired_call_ids()
+        results = []
         for item in pending:
-            call = ToolCall(item.call_id, ToolFunction(item.name, item.arguments))
-            if isinstance(host, str):
-                result = host
-            else:
-                assert control.current is not None and session.transcript is not None
-                outer = Invocation(
-                    InvocationIdentity(
-                        item.operation_id,
-                        str(control.current["id"]),
-                        session.transcript.chain_id,
-                        session.sequence,
-                        item.call_id,
-                    ),
-                    call,
-                    TrustedInvocationContext(
-                        runtime, host.api.manifest_revision if host.api is not None else ""
-                    ),
+            call = ToolCall(item["id"], ToolFunction(item["name"], item["arguments"]))
+            key = await session._pending_result_key(item, session.call_key(call.id))
+            composition = await session.journal.unsettled_composition(
+                control.current["id"] if control.current else None, key
+            )
+            if call.id in paired:
+                result = await session.journal.effect_result(key, original_tool=call.function.name)
+            elif composition is not None:
+                # This is the original open program's settlement/recovery,
+                # including a recorded cancellation, rather than a new call.
+                from qq_ai_bot.capabilities.invocation import (
+                    InvocationIdentity,
+                    TrustedInvocationContext,
                 )
-                try:
-                    result = await CodeModeDriver(host, outer).resume()
-                except CodeCompositionYield:
-                    control.yield_segment = True
+                from qq_ai_bot.codemode.driver import CodeCompositionYield, CodeModeDriver
+
+                host = self._code_host(
+                    tools,
+                    runtime,
+                    declared_names=declared,
+                    max_parallel_calls=tooling.max_parallel_calls if tooling is not None else 1,
+                )
+                if isinstance(host, str):
+                    result = await session.journal.effect_result(
+                        key, original_tool=call.function.name
+                    )
+                else:
+                    assert control.current is not None
+                    outer = Invocation(
+                        InvocationIdentity(
+                            composition["operation_id"],
+                            str(control.current["id"]),
+                            transcript.chain_id,
+                            session.sequence,
+                            call.id,
+                        ),
+                        call,
+                        TrustedInvocationContext(
+                            runtime, host.api.manifest_revision if host.api is not None else ""
+                        ),
+                    )
+                    try:
+                        result = await CodeModeDriver(host, outer).resume()
+                    except CodeCompositionYield:
+                        control.yield_segment = True
+                        control.ending = "queued"
+                        return True
+            elif "readonly_result_key" not in item and (
+                await session.journal.effect_state(key) is None
+                or (
+                    control.current is not None
+                    and await control.repository.undispatched_intent(control.current["id"], key)
+                )
+            ):
+                coordinated = await self._execute_tool_batch_impl(
+                    (call,),
+                    tools,
+                    runtime,
+                    remaining_calls=None
+                    if runtime.max_tool_calls is None
+                    else max(0, runtime.max_tool_calls - control.tools_started),
+                    max_parallel_calls=tooling.max_parallel_calls if tooling is not None else 1,
+                    reusable_results={},
+                    cacheable_names=frozenset(),
+                    declared_names=declared,
+                    batch_calls=calls,
+                )
+                result = coordinated.calls[0][1]
+                if result == CODE_COMPOSITION_YIELDED:
                     control.ending = "queued"
                     return True
-            result = self._budget_tool_media(((call, result, True),), transcript, runtime, tools)[
-                0
-            ][1]
-            transcript.append_result(item.call_id, result)
-            transcript.append_tool_media(((item.call_id, result),))
+                fact = coordinated.evidence.get(call.id)
+                if fact is not None:
+                    control.observe_evidence(fact)
+            else:
+                result = await session.journal.effect_result(key, original_tool=call.function.name)
+            results.append((call, result, True))
+
+        results = list(self._budget_tool_media(tuple(results), transcript, runtime, tools))
+        for call, result, _executed in results:
+            if call.id not in paired:
+                transcript.append_result(call.id, result)
+        transcript.append_tool_media(tuple((call.id, result) for call, result, _ in results))
 
         session.pending_compositions = []
         await session.save("paired")
@@ -623,9 +669,7 @@ class AgentRunner:
         control = runtime.work_control
         assert control is not None
         api = runtime.script_api or (
-            self.main_contract.script_api
-            if self.main_contract is not None
-            else None
+            self.main_contract.script_api if self.main_contract is not None else None
         )
         settings = self.code_mode_settings
         if tools is None:
@@ -700,6 +744,7 @@ class AgentRunner:
         runtime: AgentRuntime,
         declared_names: frozenset[str],
         key: str,
+        invocation: Invocation | None = None,
     ) -> tuple[str, bool]:
         """One lifecycle control with the original checks; shared by direct and code calls."""
         control = runtime.work_control
@@ -724,7 +769,13 @@ class AgentRunner:
             and not tools.work_query_allowed(action)
         ):
             return _unexecuted_tool_result(call.function.name, "work_query_not_authorized"), False
-        return await control.execute(call.function.name, arguments, key), True
+
+        async def execute() -> str:
+            return await control.execute(call.function.name, arguments, key, invocation=invocation)
+
+        if invocation is None:
+            return await execute(), True
+        return await InvocationService().invoke(invocation, execute, side_effecting=True), True
 
     async def _execute_tool_batch_impl(
         self,
@@ -759,29 +810,31 @@ class AgentRunner:
             )
             return CoordinatedToolResult(tuple((call, result, False) for call in calls), 0)
 
+        if control is not None and control.accepted_ending() in {"failed", "cancelled"}:
+            await save_response()
+            return CoordinatedToolResult(
+                tuple(
+                    (
+                        call,
+                        _unexecuted_tool_result(call.function.name, "work_control_closed"),
+                        False,
+                    )
+                    for call in calls
+                ),
+                0,
+            )
+
         if len(calls) > 1 and any(
             call.function.name in WORK_CONTROL_NAMES or call.function.name == EXECUTE_CODE_NAME
             for call in calls
         ):
             # Controls and compositions are ordered barriers. Keep every original
-            # call pending until the complete response is paired, including calls
-            # after an accepted ending that will receive non-execution receipts.
+            # call pending until the complete response is paired. A normal
+            # lifecycle decision does not revoke the remaining original calls.
             mixed_calls: list[tuple[ToolCall, str, bool]] = []
             mixed_evidence: dict[str, dict[str, Any]] = {}
             mixed_executed = mixed_reused = index = 0
             while index < len(calls):
-                if control is not None and (
-                    control.ending is not None or control.handoff_work_id is not None
-                ):
-                    mixed_calls.extend(
-                        (
-                            call,
-                            _unexecuted_tool_result(call.function.name, "work_control_closed"),
-                            False,
-                        )
-                        for call in calls[index:]
-                    )
-                    break
                 end = index + 1
                 if (
                     calls[index].function.name not in WORK_CONTROL_NAMES
@@ -885,6 +938,19 @@ class AgentRunner:
         if control_calls:
             await save_response()
             call = calls[0]
+            invocation = direct_invocations(
+                (call,),
+                runtime,
+                chain_id=chain_id,
+                request_sequence=request_sequence,
+                manifest_revision=(
+                    runtime.script_api.manifest_revision
+                    if runtime.script_api is not None
+                    else self.main_contract.revision
+                    if self.main_contract is not None
+                    else ""
+                ),
+            )[0]
             capture = ResultCapture("", call.id)
             token = current_result_capture.set(capture)
             try:
@@ -898,6 +964,7 @@ class AgentRunner:
                     else f"{runtime.work_control.lease.owner}:{call.id}"
                     if runtime.work_control is not None
                     else call.id,
+                    invocation,
                 )
             finally:
                 current_result_capture.reset(token)
@@ -925,12 +992,23 @@ class AgentRunner:
                     runtime,
                     declared_names,
                     session.call_key(call.id) if session is not None else call.id,
+                    direct_invocations(
+                        (call,),
+                        runtime,
+                        chain_id=chain_id,
+                        request_sequence=request_sequence,
+                        manifest_revision=(
+                            runtime.script_api.manifest_revision
+                            if runtime.script_api is not None
+                            else self.main_contract.revision
+                            if self.main_contract is not None
+                            else ""
+                        ),
+                    )[0],
                 )
             elif call.function.name == TOOL_LOOKUP_NAME:
                 api = runtime.script_api or (
-                    self.main_contract.script_api
-                    if self.main_contract is not None
-                    else None
+                    self.main_contract.script_api if self.main_contract is not None else None
                 )
                 metadata_results[call.id] = (
                     lookup_tools(api, call.function.arguments, declared_names=declared_names)

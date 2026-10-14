@@ -90,6 +90,8 @@ Pi 的 completing 是 outcome 已定、不再执行父 phase；Yuki 当前候选
 
 同批 send→complete 按原调用顺序执行、逐条配对；结束接纳后不执行后面的新业务调用，为未执行调用保留明确结果。前面已经发送不能回滚，后面控制失败不能造成重发。删除 memory_change 阻止整批 send 的特殊轮次政策。
 
+以上为 10-10 的设计与当时实现记录。普通结束提案提前截断后续原调用的规定由 [10-15 收尾截断删除任务书](Yuki-Work收尾截断删除任务书-2026-10-15.md) 纠正；子任务提问、旧目标管理与单项权限拒绝的终审缺口也见该任务书。现行执行规则以 [主 Agent](main-agent-runtime.md)、[Tool Kernel](tool-kernel.md) 和 [持久工作者](persistent-subagents.md) 为准，不改写本文的历史测试和上线事实。
+
 Pi 默认收齐工具轮，所有 slot 都要求 terminate 才结束。上述顺序和显式发送是 Yuki 的适配，不声称原样复制 Pi。
 
 ### 3.3 任务树先完善，执行归属继续复用
@@ -273,7 +275,7 @@ Pi 默认收齐工具轮，所有 slot 都要求 terminate 才结束。上述顺
 | tests/unit/test_provider_native_result_boundaries.py:362 | 合法 completed 空响应走正常收尾；实际原生执行未结束和 paid opaque 恢复单独按协议验证 |
 | tests/unit/test_work_protocol_continuity.py:998 | 仍能装入请求时缺软 anchor 不挂起；不拿缺失原请求内容的损坏情况替代软整理 |
 | tests/unit/test_subagent_result_checkpoint.py:234 | 删除 state_fact 完成审批断言；验证真实结果、子任务状态和父通知消费 |
-| 现有 direct/Code 工具批次测试 | 同批 send→complete、业务失败→complete、complete→后续调用不执行、每个 call 都配对 |
+| 现有 direct/Code 工具批次测试 | 同批 send→complete、业务失败→complete、complete→后续调用不执行、每个 call 都配对；这是 10-10 的历史验收，普通结束后截断部分由 [10-15 任务书](Yuki-Work收尾截断删除任务书-2026-10-15.md) 替代 |
 | 现有 automation/SELF/plugin 测试 | 内部结果与 QQ 发送分别断言；不用正文、完成状态或健康检查冒充交付 |
 | test_history_dispatch_ownership.py、test_history_time_projection.py、test_codemode_interleaved_recovery.py | 沿用公共前缀冻结、普通聊天/多 Work 交错、原私有协议恢复样本，不重写另一套冻结测试框架 |
 | test_work_settlement_writer.py:354、现有控制/发送案例 | 改掉可选汇报元数据否决合法发送、complete 附带可选字段即拒绝的预期；实际 Social 授权与回执分别验证 |

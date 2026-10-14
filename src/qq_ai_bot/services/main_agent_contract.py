@@ -98,8 +98,8 @@ class MainAgentContract:
                 json.dumps(
                     {
                         # 14: retired MCP and fixed direct view, discovery and full execution API.
-                        # 18: retire personal timezone tools; keep the common trusted clock.
-                        "version": 18,
+                        # 19: lifecycle decisions settle after the original tool round.
+                        "version": 19,
                         "mode": self.mode,
                         "code_api": CODE_API_REVISION,
                         "direct_names": sorted(DIRECT_TOOL_NAMES),

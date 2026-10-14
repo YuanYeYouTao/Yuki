@@ -27,7 +27,7 @@ Provider 原生工具还有独立的协议和配置合同，不能只检查函�
 `lookup_tools(query=...)` 搜索名称/说明或分页列出简短目录；`name` 精确读取单项原参数
 schema、脚本调用名及本轮直调可见性。搜索不返回全部 schema，详情不会注册新工具。
 查询只读启动时冻结的 API，不加载或升级插件，不接触业务资源或取得执行授权；工作者
-只能查询自己的完整执行子集。`lookup_tools` 可与业务调用同批，仍按原调用顺序、
+查询本部署相同的完整执行合同。`lookup_tools` 可与业务调用同批，仍按原调用顺序、
 执行权限及效果屏障处理。查询结果按原 call_id 配对保存，但不计业务效果或业务调用额度；查询自身仍受模型请求、输入容量及原 Work journal 合同约束。
 Capability Runtime 的执行集合不是模型声明的真源，也不能在请求链中添加 schema 或扩大权限。
 能力目录不另建 FTS 搜索、别名配置或 schema 成本索引；工具查询统一使用冻结合同上的 `lookup_tools`。
@@ -78,7 +78,7 @@ flowchart LR
 
 默认部署为 direct：不包含 Monty binding、worker 或 launcher，主 Agent 直接使用部署内固定完整工具清单。启用 Code 必须显式选择 codemode 镜像及配置；以下组合政策只用于已启用 Code 的固定合同。
 
-Code 模式冻结清单包含固定的 `execute_code` 和 `lookup_tools`（`yuki.codemode.api.v1`）。
+Code 模式冻结清单包含固定的 `execute_code` 和 `lookup_tools`（`yuki.codemode.api.v2`）。
 `terminal_exec`、`terminal_read`、`terminal_write`、`terminal_control`、`environment_status` 常驻固定直调视图；
 包管理和服务管理仍经 Code Mode。direct 模式声明部署内固定完整工具清单，不生成 ScriptApi 或加载 worker；模式变更只在合法新链应用。直调复用同一 Manager、来源权限、
 原 request/run ID 和未知结果恢复，不建立宿主执行通道，也不自动重提 pending 命令。
@@ -134,9 +134,9 @@ Work 中的 Agent 记忆写把 `memory:<mutation_id>` 与原 effect 在领域提
 插件在异步 scope 等待后再次检查当前定义与批准状态；已派发的未知写入不重放。
 
 宿主而非脚本决定并发：只读子调用受 `max_parallel_calls` 约束，发送、修改、记忆写和控制为
-屏障；同一响应的 `execute_code` 和直接调用沿原顺序执行。生命周期控制接纳结束后停止后续新业务调用并配齐结果；
-记忆写不强制停止脚本，历史未知不阻止新的独立调用。原调用本身处于未知时继续保留恢复边界，
-权限与撤权不能通过脚本 `try/except` 绕过。段工具额度用尽且程序仍未结束时外层 call 保持未配对，下一段由原 Work 从同一快照续跑；
+屏障；同一响应的 `execute_code` 和直接调用沿原顺序执行。普通 complete、wait、need_input 与交接返回原控制回执，程序继续执行仍获准的语句，原批次和程序收拢后由共同 writer 结算；取消另一个目标不停止当前程序。
+记忆写不强制停止脚本，历史未知不阻止新的独立调用。原调用本身处于未知时继续保留恢复边界。
+单项能力不允许或不再授权时，该项如实拒绝，程序可处理其回执，后续独立调用各自核验；不把单项拒绝扩大为整个 Work 撤权。真实当前目标取消/失败、全局来源或租约失效、工具关闭与资源拒绝仍按原事实停止旧来源的新效果，脚本不能通过 `try/except` 取得失效授权。段工具额度用尽且程序仍未结束时外层 call 保持未配对，下一段由原 Work 从同一快照续跑；
 已配对的 partial 永不恢复 VM。程序完整结果超出预算时保存为授权 artifact，模型只得预览。
 
 程序恰好在段末结束（或报错）时，外层结果已配对，但模型尚未看到。新业务激活保留
@@ -183,8 +183,7 @@ Invocation 的 owner、原链、序号与完整 ID。长短键之间的别名复
 `media_artifacts` 才交给主 Agent；Host 按真实插件/工具和原 manifest、委托、TTL/hash 核验。
 私有副本不能绕过原句柄删除、过期或插件禁用。图片未读不改变已接受的外部效果回执。
 
-Code Mode 控制子回执保存其 Host 停止决定。恢复先读取 accepted 回执的停止、未知与
-观察门，再允许 VM settle；不重做控制，也不继续停止后的副作用。等待 owned pending
+Code Mode 恢复先读取原 accepted 控制及业务回执；普通生命周期提案和单项能力拒绝不制造新的 VM 停止决定，也不重做控制。旧回执中已保存的 `code_stop` 仍是旧 VM 已关闭的事实，不复活该 VM 或重放其剩余调用。新版 API 只在合法新链应用，不兼容的未完成快照返回 `snapshot_unavailable` 并保留原回执、来源与预算；已配对原件保持不变。等待 owned pending
 执行沿同一 WorkControl 和 owned_run 查询；external run 不取得该 Work 所属身份。unknown 保留原调用事实，不全局禁止完成和其他新调用。
 累计 stdout 与截断标记通过同一 snapshot owner/privacy/引用发布和 GC 持久化；旧边界
 若仅有输出计数而无文本，标记缺失，不重新 print。父结果按

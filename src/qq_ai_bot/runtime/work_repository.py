@@ -562,14 +562,21 @@ class WorkRepository:
 
     @staticmethod
     def _business_input_clause() -> Any:
-        # Input ownership is already typed by its producer. Worker instructions
-        # target that child; child results/notifications target their parent.
+        # Child instructions and questions are business input. Progress and
+        # completion notices remain auxiliary, including receipts saved before upgrade.
+        child_text = func.json_extract(inputs.c.payload_json, "$.text")
+        child_kind = func.json_extract(
+            case((func.json_valid(child_text), child_text), else_="{}"), "$.kind"
+        )
         return and_(
             or_(
                 inputs.c.kind == "message",
                 and_(
                     inputs.c.kind == "subagent",
-                    func.json_extract(inputs.c.payload_json, "$.child_id") == inputs.c.work_id,
+                    or_(
+                        func.json_extract(inputs.c.payload_json, "$.child_id") == inputs.c.work_id,
+                        child_kind == "subagent_question",
+                    ),
                 ),
             ),
             func.coalesce(func.json_extract(inputs.c.payload_json, "$.signal"), 0) == 0,
@@ -693,6 +700,7 @@ class WorkRepository:
             values["state"] != "running"
             and not draining
             and values["reason"] != "work_input_preparing"
+            and not (values["state"] == "queued" and exit_reason == "segment_budget")
         ):
             # Settlement consumes the accepted control; its durable payload moves
             # to the existing result/reason slots only when the state it proposed

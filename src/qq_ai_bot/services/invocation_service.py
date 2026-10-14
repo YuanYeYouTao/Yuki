@@ -92,6 +92,7 @@ class InvocationService:
             readonly_call_signature,
         )
         from qq_ai_bot.runtime.work_budget import WorkBudgetExceeded
+        from qq_ai_bot.runtime.work_control import WORK_CONTROL_NAMES
         from qq_ai_bot.runtime.work_repository import WorkConflict
 
         runtime: Any = invocation.context.runtime
@@ -112,7 +113,8 @@ class InvocationService:
             raise ValueError("invocation_journal_identity_conflict")
         # Direct sends retain the original boundary for responding to steer.
         allow_pending = (
-            call.function.name == "send_message" and identity.parent_operation_id is None
+            call.function.name in WORK_CONTROL_NAMES
+            or (call.function.name == "send_message" and identity.parent_operation_id is None)
         )
         journal = session.journal
         # The original Host operation, including a composition child's identity.
@@ -138,11 +140,10 @@ class InvocationService:
             return json.dumps(outcome.model_payload(), ensure_ascii=False)
 
         if call.function.name == "send_message" and control.current is not None:
-            child_intent = (
-                identity.parent_operation_id is not None
-                and await control.repository.undispatched_intent(control.current["id"], key)
+            original_intent = await control.repository.undispatched_intent(
+                control.current["id"], key
             )
-            if not child_intent and await journal.effect_state(key) is not None:
+            if not original_intent and await journal.effect_state(key) is not None:
                 if not await control.repository.valid(control.lease):
                     raise WorkConflict("work_activation_obsolete")
                 return await journal.effect_result(key)
@@ -177,14 +178,16 @@ class InvocationService:
             },
         ):
             await control.repository.validate_invocation(key, invocation.durable_metadata())
-            # A composition child's intent was published at T1 with its snapshot;
-            # only that exact undispatched intent continues to T2. Anything else
-            # (dispatched, settled, legacy) returns the original receipt.
-            if identity.parent_operation_id is None or not (
+            # The exact original T1 intent may continue to T2. Dispatched,
+            # settled and legacy calls only return their original receipt.
+            if not (
                 await control.repository.undispatched_intent(control.current["id"], key)
             ):
                 return await journal.effect_result(key)
-        charged = counts_toward_business_limit(call.function.name)
+        charged = (
+            call.function.name not in WORK_CONTROL_NAMES
+            and counts_toward_business_limit(call.function.name)
+        )
         try:
             if not await control.repository.admit_dispatch(
                 control.lease, control.current["id"], key, charge=charged

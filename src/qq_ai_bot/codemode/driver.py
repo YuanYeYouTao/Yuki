@@ -69,12 +69,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Lifecycle actions that end or yield the original Work. After any of them the
-# remaining code is never executed (design §8 control table).
-TERMINAL_CONTROL_ACTIONS = frozenset(
-    {"wait", "need_input", "complete", "fail", "cancel", "accept", "handoff", "resume"}
-)
-
 
 class CodeCompositionYield(Exception):
     """Resource yield: the outer call stays pending on the original journal."""
@@ -349,6 +343,7 @@ class CodeModeDriver:
         try:
             # A committed stop is an original result, not an activation-local
             # flag. Restore it before answering even one VM future.
+            control.ending = control.accepted_ending()
             for child in sorted(state.children.values(), key=lambda item: item.ordinal):
                 if child.receipt is None:
                     continue
@@ -358,12 +353,9 @@ class CodeModeDriver:
                     control.ending = control.accepted_ending(child.operation_id)
                     control.handoff_work_id = child.stop.get("handoff_work_id")
                     raise _Stop(child.stop["reason"], child.operation_id, child.stop["payload"])
-                if self._terminal_control(child):
-                    control.ending = control.accepted_ending(child.operation_id)
-                    raise _Stop(
-                        STOP_HOST_CONTROL, child.operation_id, {"control": _loads(child.receipt)}
-                    )
                 self._closing(child)
+            if control.accepted_ending() in {"failed", "cancelled"}:
+                raise _Stop(STOP_ADMISSION_CLOSED, str(control.accepted_ending()))
         except _Stop as stop:
             return await self._settle(state, stop=stop)
         return await self._drive(state, restore=(dump, composition["boundary_call"], counters))
@@ -712,7 +704,6 @@ class CodeModeDriver:
             child.receipt = await self._original_receipt(child)
             raise _Stop(STOP_UNKNOWN_EFFECT, child.operation_id)
         child.dispatched = True
-        ending_before, handoff_before = control.ending, control.handoff_work_id
         capture = ResultCapture(control.current["id"], child.operation_id)
         token = current_result_capture.set(capture)
         try:
@@ -720,19 +711,17 @@ class CodeModeDriver:
             child.evidence = self._captured_evidence(child, capture)
         finally:
             current_result_capture.reset(token)
-        terminal = (
-            control.ending != ending_before
-            or control.handoff_work_id != handoff_before
-            or (self._terminal_control(child))
-        )
+        # Ordinary completion/waiting is a proposal to the settlement writer.
+        # Only revocation of this execution stops its remaining VM statements.
+        revoked = control.ending in {"failed", "cancelled"}
         stop = (
             {
-                "reason": STOP_HOST_CONTROL,
+                "reason": STOP_ADMISSION_CLOSED,
                 "payload": {"control": _loads(result)},
                 "ending": control.ending,
                 "handoff_work_id": control.handoff_work_id,
             }
-            if terminal
+            if revoked
             else None
         )
         await control.repository.record_effect(
@@ -750,8 +739,8 @@ class CodeModeDriver:
             result, evidence=child.evidence, operation_id=child.operation_id, executed=executed
         )
         self.usage.control_calls += 1
-        if terminal:
-            raise _Stop(STOP_HOST_CONTROL, child.operation_id, {"control": _loads(result)})
+        if revoked:
+            raise _Stop(STOP_ADMISSION_CLOSED, child.operation_id, {"control": _loads(result)})
         self._closing(child)
 
     async def _not_dispatched(self, child: _Child, error: str = "") -> None:
@@ -795,15 +784,6 @@ class CodeModeDriver:
             return False
         metadata = json.loads(raw).get("invocation", {})
         return bool(metadata.get("dispatch_started"))
-
-    def _terminal_control(self, child: _Child) -> bool:
-        if child.tool != "task_control":
-            return False
-        try:
-            action = json.loads(child.arguments).get("action")
-        except (ValueError, AttributeError):
-            return False
-        return action in TERMINAL_CONTROL_ACTIONS and child.evidence.get("ok") is True
 
     # -- settlement ----------------------------------------------------------------
 
@@ -1191,7 +1171,7 @@ class CodeModeDriver:
 _STOP_DETAIL = {
     STOP_ADMISSION_CLOSED: "宿主已关闭本脚本的后续调用；已发生的子调用回执保留，需由模型重新规划。",
     STOP_UNKNOWN_EFFECT: "有子调用结果未知；脚本已停止，先按原 operation_id 核对，禁止重发。",
-    STOP_HOST_CONTROL: "生命周期控制已执行，脚本余下代码不再运行。",
+    STOP_HOST_CONTROL: "原程序已按保存的控制回执关闭；保留原回执，不恢复其后语句。",
     STOP_NEW_INPUT: "新输入到达；脚本已停止，按新要求继续。",
     STOP_BUDGET: "工作总预算已用尽；脚本已停止。",
     STOP_SNAPSHOT: "可信恢复点不可用；脚本以部分结果结束，不从头重跑。",

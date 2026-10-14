@@ -325,11 +325,17 @@ class WorkSession:
                 # the offline importer reconciles it (see runtime/work_delivery).
                 self.recovered_delivery = row["phase"]
 
-            # Never run calls from a recovered model response. Attach persisted
-            # outcomes, or uncertainty, before any fresh input/model dispatch.
-            # An unsettled code composition is not an ordinary unknown: its
-            # original owner resumes the same program, then pairs exactly once.
+            # Pair recorded/unknown outcomes. A definitely undispatched call or
+            # open composition still belongs to the original paid response;
+            # retain the whole batch until its receipts and media are paired.
+            self.pending = []
             self.pending_compositions = []
+            self.pending_readonly_keys = {
+                call["id"]: call["readonly_result_key"]
+                for call in value["pending"]
+                if "readonly_result_key" in call
+            }
+            paired = self.paired_call_ids()
             recovered_results = []
             for call in value["pending"]:
                 # Code Mode needs an admitted Work; turn-local calls keep the generic path.
@@ -349,8 +355,26 @@ class WorkSession:
                             **composition,
                         )
                     )
-                    continue
                 key = await self._pending_result_key(call, self.call_key(call["id"]))
+                if (
+                    self.pending
+                    or composition is not None
+                    or (
+                        row["phase"] == "response"
+                        and "readonly_result_key" not in call
+                        and (
+                            await self.journal.effect_state(key) is None
+                            or (
+                                control.current is not None
+                                and await control.repository.undispatched_intent(
+                                    control.current["id"], key
+                                )
+                            )
+                        )
+                    )
+                ):
+                    self.pending.append(call)
+                    continue
                 capture = ResultCapture(control.current["id"] if control.current else "", key)
                 token = current_result_capture.set(capture)
                 try:
@@ -359,13 +383,17 @@ class WorkSession:
                     current_result_capture.reset(token)
                 if capture.evidence is None:
                     raise JournalUnavailable("original_effect_evidence_missing")
-                self.transcript.append_result(call["id"], result)
+                if call["id"] not in paired:
+                    self.transcript.append_result(call["id"], result)
                 recovered_results.append((call["id"], result))
                 recovered_evidence = dict(capture.evidence)
                 recovered_evidence.setdefault("tool", call["name"])
                 recovered_evidence["effect_key"] = key
                 control.observe_evidence(recovered_evidence)
-            self.transcript.append_tool_media(tuple(recovered_results))
+            if self.pending:
+                self.pending = list(value["pending"])
+            else:
+                self.transcript.append_tool_media(tuple(recovered_results))
             if not self._source_present():
                 if control.current_message is not None:
                     self.transcript.append(control.current_message)
@@ -373,7 +401,7 @@ class WorkSession:
                 not control.lease.work_id
                 and self.recovered_delivery is None
                 and row["phase"] in {"response", "paired"}
-                and not self.pending_compositions
+                and not self.pending
                 and not self.progress.get("provider_pause_replay")
             ):
                 # Resolve the old response against its original call keys before
@@ -426,6 +454,7 @@ class WorkSession:
             or control.lease.work_id
             or self.recovered_delivery is not None
             or self.pending_compositions
+            or self.pending
             or self.progress.get("provider_pause_replay")
         ):
             return False
@@ -787,6 +816,23 @@ class WorkSession:
     def call_key(self, call_id: str) -> str:
         assert self.transcript is not None
         return direct_operation_id(self.transcript.chain_id, self.sequence, call_id)
+
+    def paired_call_ids(self) -> set[str]:
+        """Read only this response's pairing; Provider IDs may repeat later."""
+        from qq_ai_bot.domain.messages import ProviderContinuation
+
+        assert self.transcript is not None
+        paired = set()
+        for entry in reversed(self.transcript.entries()):
+            if isinstance(entry, ProviderContinuation) or (
+                isinstance(entry, ChatMessage) and entry.role == "assistant"
+            ):
+                break
+            if isinstance(entry, FunctionCallOutput):
+                paired.add(entry.call_id)
+            elif entry.role == "tool" and entry.tool_call_id is not None:
+                paired.add(entry.tool_call_id)
+        return paired
 
     async def _pending_result_key(self, call: dict[str, Any], original: str) -> str:
         """Follow only a Host-persisted readonly link owned by this original Work."""
