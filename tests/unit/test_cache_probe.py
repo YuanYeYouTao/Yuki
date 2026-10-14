@@ -1,32 +1,21 @@
 """The opt-in probe uses actual configured adapters over mock HTTP only."""
 
+import io
 import json
-import re
+from types import SimpleNamespace
 
 import httpx
 import pytest
-from tools import cache_probe
+from pydantic import TypeAdapter
+from tools import cache_probe_replay as cache_probe
 
+from qq_ai_bot.domain.messages import ChatMessage, ChatRequest
 from qq_ai_bot.model_runtime.models import (
     ModelCapability,
     ModelProfile,
     ModelProtocol,
-    StructuredOutputMode,
 )
 from qq_ai_bot.model_runtime.pool import ModelClientPool
-from qq_ai_bot.persistence.database import Database
-
-
-def track_pool(monkeypatch):
-    selected = []
-
-    def pool(**kwargs):
-        value = ModelClientPool(**kwargs)
-        selected.append(value)
-        return value
-
-    monkeypatch.setattr(cache_probe, "ModelClientPool", pool)
-    return selected
 
 
 def profile(provider, protocol):
@@ -111,7 +100,6 @@ def answer(protocol):
 async def test_manual_probe_preserves_profile_wire_and_closes_clients(
     tmp_path, monkeypatch, vendor, protocol
 ):
-    pools = track_pool(monkeypatch)
     configured = profile(vendor, protocol)
     wires = []
 
@@ -119,27 +107,64 @@ async def test_manual_probe_preserves_profile_wire_and_closes_clients(
         wires.append((request, json.loads(request.content)))
         return httpx.Response(200, json=answer(protocol))
 
-    report = await cache_probe.run_experiment(
-        profile=configured,
-        api_key="synthetic-key",
-        output=tmp_path / "probe.json",
-        samples=1,
-        warmups=1,
-        prefix_characters=64,
-        prefix_control=False,
-        transport=httpx.MockTransport(transport),
+    pools = []
+
+    def pool_factory(**kwargs):
+        pool = ModelClientPool(**kwargs)
+        client = httpx.AsyncClient(
+            base_url=configured.base_url, transport=httpx.MockTransport(transport)
+        )
+        pool._connection_pools[
+            (
+                configured.provider.casefold(),
+                configured.base_url.rstrip("/"),
+                configured.api_key_env,
+            )
+        ] = client
+        pools.append(pool)
+        return pool
+
+    monkeypatch.setattr(cache_probe, "ModelClientPool", pool_factory)
+    monkeypatch.setattr(
+        cache_probe.sys,
+        "stdin",
+        io.StringIO(
+            json.dumps({"profile": configured.model_dump(mode="json"), "api_key": "synthetic-key"})
+        ),
     )
-    assert report["scenarios"][0]["status"] == "complete"
-    assert report["provider"] == vendor and report["protocol"] == protocol.value
-    assert report["profile_settings"]["reasoning_effort"] == (
-        configured.reasoning_effort.value if configured.reasoning_effort is not None else None
+    root = tmp_path / "replay"
+    current = root / "current"
+    current.mkdir(parents=True)
+    request = ChatRequest(
+        messages=(ChatMessage("user", "synthetic input"),),
+        model=configured.model,
+        max_output_tokens=1024,
+        thinking_enabled=configured.thinking_enabled,
+        reasoning_effort=configured.reasoning_effort,
     )
-    assert report["totals"]["known_input_tokens"] == 40
-    assert report["totals"]["cached_input_tokens"] == 10
-    assert all(
-        report["accounting"][name]
-        for name in ("physical_match", "unknown_usage_match", "logical_match")
+    (current / "chatrequests.jsonl").write_bytes(
+        TypeAdapter(ChatRequest).dump_json(request) + b"\n"
     )
+    (current / "cases.json").write_text(json.dumps([{"name": "sample"}]))
+    if protocol is ModelProtocol.GEMINI:
+        fixture_pool = ModelClientPool(secret_overrides={configured.api_key_env: "synthetic-key"})
+        try:
+            payload = fixture_pool.get(configured)._build_payload(request)
+            (current / "gemini.bodies.jsonl").write_text(json.dumps(payload) + "\n")
+        finally:
+            await fixture_pool.close()
+    output = tmp_path / "result"
+    await cache_probe.replay(
+        SimpleNamespace(
+            replay_root=root, variant="current", output=output, sequence="0", name="isolated-test"
+        )
+    )
+    report = json.loads((output / "results.json").read_text())
+    assert len(report) == len(wires) == 1
+    assert report[0]["provider"] == vendor
+    assert report[0]["protocol"] == protocol.value
+    assert report[0]["http_status"] == 200
+    assert report[0]["client_dispatches"] == 1
     for request, payload in wires:
         assert request.headers["x-connection-label"] == "original-setting"
         assert all(value == 17 for value in request.extensions["timeout"].values())
@@ -172,129 +197,3 @@ async def test_manual_probe_preserves_profile_wire_and_closes_clients(
                     assert payload["include"] == ["reasoning.encrypted_content"]
     assert all(client.is_closed for pool in pools for client in pool._connection_pools.values())
     assert all(provider._client.is_closed for pool in pools for provider in pool._clients.values())
-
-
-async def test_manual_work_compaction_probe_resumes_the_original_work(tmp_path):
-    stages = []
-
-    def transport(request):
-        body = json.loads(request.content)
-        text = body["contents"][-1]["parts"][-1].get("text", "")
-        payload = answer(ModelProtocol.GEMINI)
-        if "Host 上下文压缩要求" in text:
-            stages.append("compaction")
-            payload["candidates"][0]["content"]["parts"][0]["text"] = "Continue the original work."
-        else:
-            stages.append("main")
-        return httpx.Response(200, json=payload)
-
-    configured = profile("renamed-gemini-connection", ModelProtocol.GEMINI).model_copy(
-        update={"structured_output_mode": StructuredOutputMode.TEXT_JSON}
-    )
-    report = await cache_probe.run_experiment(
-        profile=configured,
-        api_key="synthetic-key",
-        output=tmp_path / "work-compaction.json",
-        scenarios=("C06",),
-        samples=1,
-        warmups=1,
-        prefix_characters=64,
-        prefix_control=False,
-        compaction_mode="work",
-        transport=httpx.MockTransport(transport),
-    )
-    scenario = report["scenarios"][0]
-    assert scenario["status"] == "complete"
-    evidence = scenario["runtime_evidence"]
-    assert evidence["compaction"]["explicit_boundary"]
-    assert all(
-        identity == evidence["original_work_ids"][0] for identity in evidence["request_work_ids"]
-    )
-    assert stages == ["main", "compaction", "main"]
-    assert report["accounting"]["physical_match"]
-
-
-async def test_manual_probe_keeps_failed_request_and_closes_clients(tmp_path, monkeypatch):
-    pools = track_pool(monkeypatch)
-
-    def transport(request):
-        raise httpx.ReadError("synthetic transport failure", request=request)
-
-    report = await cache_probe.run_experiment(
-        profile=profile("renamed-gemini-connection", ModelProtocol.GEMINI),
-        api_key="synthetic-key",
-        output=tmp_path / "failed.json",
-        samples=1,
-        warmups=1,
-        prefix_characters=64,
-        prefix_control=False,
-        transport=httpx.MockTransport(transport),
-    )
-    assert report["scenarios"][0]["status"] == "failed"
-    assert report["totals"]["requests"] == 1
-    assert report["totals"]["reported_input_tokens"] is None
-    assert report["physical_calls"][0]["unknown_usage"] is True
-    assert all(client.is_closed for pool in pools for client in pool._connection_pools.values())
-    assert all(provider._client.is_closed for pool in pools for provider in pool._clients.values())
-
-
-async def test_manual_work_restart_probe_preserves_receipt_and_closes_database(
-    tmp_path, monkeypatch
-):
-    databases = []
-    closed = []
-    initialize = Database.__init__
-    close = Database.close
-
-    def observe_initialize(self, url):
-        initialize(self, url)
-        databases.append(self)
-
-    async def observe_close(self):
-        closed.append(self)
-        await close(self)
-
-    monkeypatch.setattr(Database, "__init__", observe_initialize)
-    monkeypatch.setattr(Database, "close", observe_close)
-    requests = []
-
-    def transport(request):
-        body = json.loads(request.content)
-        requests.append(body)
-        payload = answer(ModelProtocol.GEMINI)
-        if len(requests) == 1:
-            text = body["contents"][-1]["parts"][-1]["text"]
-            handle = re.search(r"handle=([^，]+)", text).group(1)
-            payload["candidates"][0]["content"]["parts"] = [
-                {
-                    "thoughtSignature": "synthetic-original-read",
-                    "functionCall": {
-                        "id": "original-read",
-                        "name": "read_tool_artifact",
-                        "args": {"handle": handle, "operation": "text", "limit": 100},
-                    },
-                }
-            ]
-        return httpx.Response(200, json=payload)
-
-    report = await cache_probe.run_experiment(
-        profile=profile("renamed-gemini-connection", ModelProtocol.GEMINI),
-        api_key="synthetic-key",
-        output=tmp_path / "work-restart.json",
-        scenarios=("C05",),
-        samples=1,
-        warmups=1,
-        prefix_characters=64,
-        prefix_control=False,
-        transport=httpx.MockTransport(transport),
-    )
-    scenario = report["scenarios"][0]
-    assert scenario["status"] == "complete"
-    evidence = scenario["runtime_evidence"]
-    assert evidence["restart"]["work_id_unchanged"]
-    for counter in ("model_requests", "tool_calls"):
-        assert evidence["restart"][f"{counter}_before"] == evidence["restart"][f"{counter}_after"]
-    assert evidence["accepted_read"]["same_receipt"]
-    assert evidence["accepted_read"]["business_invocations"] == 1
-    assert databases and all(database in closed for database in databases)
-    assert report["accounting"]["physical_match"]

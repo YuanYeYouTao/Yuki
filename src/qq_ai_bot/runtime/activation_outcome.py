@@ -28,7 +28,6 @@ _JOURNAL_FAILURE_CODES = frozenset(
         "work_response_not_persisted",
         "work_journal_corrupt",
         "work_journal_media_missing",
-        "work_compaction_anchor_corrupt",
         "work_readonly_reuse_corrupt",
         "work_effect_media_corrupt",
         "work_effect_media_missing",

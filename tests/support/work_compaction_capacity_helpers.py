@@ -63,7 +63,7 @@ async def _session(database, tmp_path, *, worker=False):
     initial = (ChatMessage("system", "fixed contract"), task)
     session = WorkSession(control, "capacity-contract")
     control.session = session
-    await session.restore(TurnTranscript(initial), compaction_brief=task)
+    await session.restore(TurnTranscript(initial))
     return control, session, initial
 
 
@@ -96,6 +96,5 @@ async def _runtime(database, control, initial, provider, *, contract_workspace=N
         max_tool_calls=8,
         max_model_requests=1,
         work_control=control,
-        compaction_brief=initial[-1],
     )
     return chat.runtime.runner, runtime

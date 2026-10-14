@@ -969,10 +969,9 @@ async def test_runner_preserves_paid_native_boundary_without_requeue_or_local_ex
             max_model_requests=8,
             fixed_tools=fixed,
             work_control=control,
-            compaction_brief=ChatMessage("user", "audit sources"),
         )
         result = await chat.runtime.runner.run(
-            (ChatMessage("system", "fixed"), runtime.compaction_brief), runtime, backend
+            (ChatMessage("system", "fixed"), ChatMessage("user", "audit sources")), runtime, backend
         )
     assert len(wire) == 1
     backend.execute_call.assert_not_awaited()
@@ -1164,11 +1163,10 @@ async def test_native_transport_unknown_fails_original_activation_without_automa
             max_model_requests=8,
             fixed_tools=fixed,
             work_control=control,
-            compaction_brief=ChatMessage("user", "audit sources"),
             before_model_request=before,
         )
         result = await chat.runtime.runner.run(
-            (ChatMessage("system", "fixed"), runtime.compaction_brief), runtime, backend
+            (ChatMessage("system", "fixed"), ChatMessage("user", "audit sources")), runtime, backend
         )
     backend.execute_call.assert_not_awaited()
     persisted = await repository.get(control.current["id"])

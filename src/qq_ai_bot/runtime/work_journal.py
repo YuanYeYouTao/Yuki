@@ -104,7 +104,6 @@ class JournalSnapshot:
     reason: str
     record: dict[str, Any] | None = None
     previous_chain: str | None = None
-    compaction_anchor: dict[str, Any] | None = None
     portable_search: tuple[dict[str, str], ...] = ()
     portable_search_truncated: bool = False
     pending_calls: tuple[dict[str, str], ...] = ()
@@ -152,13 +151,12 @@ class WorkJournal:
         except (KeyError, TypeError, ValueError) as exc:
             raise JournalUnavailable("work_journal_corrupt") from exc
         if not await guard.check(source_control):
-            return replace(loaded, record=None, compaction_anchor=None)
+            return replace(loaded, record=None)
         if loaded.record["contract"] != contract:
             return replace(
                 loaded,
                 reason="contract_changed",
                 record=None,
-                compaction_anchor=payload["metadata"].get("compaction_anchor"),
             )
         return JournalSnapshot("resume", loaded.record, loaded.previous_chain)
 
@@ -307,11 +305,7 @@ class WorkJournal:
                 source_changed and retain_source and bool(payload["metadata"].get("source_guard"))
             )
             if (contract_changed or source_changed) and not retain_original:
-                payload = (
-                    payload.get("metadata", {}).get("compaction_anchor")
-                    if not source_changed
-                    else None
-                )
+                payload = None
             try:
                 refs = references(payload)
                 if delivery_record is not None:
@@ -359,7 +353,6 @@ class WorkJournal:
                 return JournalSnapshot(
                     "contract_changed",
                     previous_chain=row["chain_id"],
-                    compaction_anchor=payload,
                     portable_search=portable_search,
                     portable_search_truncated=bool(progress.get("portable_search_truncated", False))
                     if isinstance(progress, dict)
@@ -464,7 +457,7 @@ class WorkJournal:
                         source.prompt_source_revision != frozen_revision
                         or privacy != frozen_privacy
                     ):
-                        raise WorkConflict("work_compaction_source_changed")
+                        raise WorkConflict("context_compaction_source_changed")
                 if publication is not None:
                     await publication(session)
                 if phase == "response":

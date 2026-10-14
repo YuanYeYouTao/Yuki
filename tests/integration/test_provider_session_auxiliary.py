@@ -10,8 +10,10 @@ from tests.integration.test_current_material_main_contract import _catalog, _pro
 from tests.support.social_identity_cases import social_env
 from tests.support.work_compaction_capacity_helpers import _runtime, _session
 
+from qq_ai_bot.conversation.frozen_fragments import FrozenFragments
+from qq_ai_bot.conversation.projections import PromptProjectionRepository
 from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.domain.messages import ChatMessage, ChatRequest
+from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.llm.gemini import GeminiProvider
 from qq_ai_bot.model_runtime.dispatch_guard import model_dispatch_guard
 from qq_ai_bot.model_runtime.executor import TaskModelExecutor
@@ -21,7 +23,7 @@ from qq_ai_bot.model_runtime.routes import ModelRouter
 from qq_ai_bot.model_runtime.structured import StructuredTaskRunner
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.runtime.work_activation import current_work_control
-from qq_ai_bot.services.ordinary_compaction import summarize_records
+from qq_ai_bot.services.context_compaction import PublicCompactContext, render_context_checkpoint
 from qq_ai_bot.services.turn_execution import TurnExecution
 from qq_ai_bot.web.bridge_state import BridgeState
 from qq_ai_bot.web.deepseek_bridge import DeepSeekSearchBridge
@@ -31,26 +33,56 @@ from qq_ai_bot.web.models import WebMode, WebSearchRequest
 
 class _StructuredResult(BaseModel):
     value: str
+    source_ref: str
+
+
+async def _public_context(database, initial):
+    version, events = await EventLedgerRepository(database).read_scope_context(
+        ConversationScope.group("80001", "20001"), limit=80
+    )
+    fragments = FrozenFragments.load([]).extend_history(
+        tuple(((event.id,), ChatMessage("user", event.content)) for event in events), ()
+    )
+
+    async def adopt(summary, coverage, retained):
+        return (
+            initial[0],
+            render_context_checkpoint(summary, coverage),
+            *retained.messages(),
+            ChatMessage("user", "private runtime and trigger"),
+        )
+
+    return PublicCompactContext(
+        (initial[0], *fragments.messages()),
+        1,
+        fragments,
+        version,
+        "provider-session-test",
+        PromptProjectionRepository(database),
+        adopt,
+    )
 
 
 @pytest.mark.parametrize(
-    "kind", ["work", "ordinary", "structured", "structured_work", "utility"]
+    "kind", ["execution_compact", "public_compact", "structured_main", "work_summary", "utility"]
 )
 async def test_auxiliary_session_header_keeps_original_body(database, tmp_path, kind):
-    wire, headers, neutral = [], [], []
+    wire, headers, neutral, responses = [], [], [], []
 
     def transport(request):
         wire.append(json.loads(request.content))
         headers.append(request.headers.get("x-session-id"))
         source = wire[-1]["contents"][-1]["parts"][-1]["text"]
-        if kind == "work":
-            content = "Keep the original goal, sources and verified investigation."
-        elif kind == "ordinary":
-            content = json.dumps(
-                {"facts": [{"text": "原资料的摘要", "refs": json.loads(source)["source_refs"]}]}
-            )
+        if kind in {"execution_compact", "public_compact"}:
+            content = "保留原目标、已验证发现和原内部来源引用。"
         else:
-            content = '{"value":"original structured result"}'
+            original = json.loads(source)
+            source_ref = (
+                f"work:{original['work_id']}"
+                if "work_id" in original
+                else f"event:{original['event_id']}"
+            )
+            content = json.dumps({"value": "original structured result", "source_ref": source_ref})
         return httpx.Response(
             200,
             json={
@@ -59,14 +91,23 @@ async def test_auxiliary_session_header_keeps_original_body(database, tmp_path, 
                         "finishReason": "STOP",
                         "content": {"role": "model", "parts": [{"text": content}]},
                     }
-                ]
+                ],
+                "usageMetadata": {
+                    "promptTokenCount": 137,
+                    "candidatesTokenCount": 21,
+                    "cachedContentTokenCount": 53,
+                    "thoughtsTokenCount": 7,
+                    "totalTokenCount": 165,
+                },
             },
         )
 
     class ObservedGemini(GeminiProvider):
         async def complete(self, request):
             neutral.append(request)
-            return await super().complete(request)
+            response = await super().complete(request)
+            responses.append(response)
+            return response
 
     async with httpx.AsyncClient(
         base_url="https://wire.invalid/", transport=httpx.MockTransport(transport)
@@ -84,27 +125,70 @@ async def test_auxiliary_session_header_keeps_original_body(database, tmp_path, 
         )
         control = None
         try:
-            if kind in {"work", "structured_work"}:
+            if kind in {"execution_compact", "public_compact", "work_summary"}:
                 control, session, initial = await _session(database, tmp_path)
-                owner = (
+                work_owner = (
                     f"yuki:{control.lease.conversation_id}:g{control.lease.generation}:"
                     f"work:{control.current['id']}"
                 )
-                if kind == "work":
+                owner = work_owner
+                if kind in {"execution_compact", "public_compact"}:
                     session.transcript.append(ChatMessage("assistant", "原先的调查过程" * 1000))
-                    runner, runtime = await _runtime(database, control, initial, provider)
+                    runner, runtime = await _runtime(
+                        database,
+                        control,
+                        initial,
+                        provider,
+                        contract_workspace=tmp_path / "contract",
+                    )
                     runner._models = models
+                    if kind == "public_compact":
+                        context = await _public_context(database, initial)
+                        initial = (
+                            *context.messages,
+                            ChatMessage("user", "private runtime and trigger"),
+                        )
+                        runtime = replace(
+                            runtime,
+                            work_control=None,
+                            public_compaction=context,
+                            execution_id="event:public-compact",
+                            canonical_conversation_id=context.version.conversation_id,
+                            conversation_generation=context.version.generation,
+                            auxiliary_requests=[0],
+                        )
+                        owner = (
+                            f"yuki:{context.version.conversation_id}:"
+                            f"g{context.version.generation}:main"
+                        )
                     execution = TurnExecution(runner, initial, runtime, None)
-                    execution.state.transcript = session.transcript
+                    if kind == "execution_compact":
+                        execution.state.transcript = session.transcript
+                    execution.state.definitions = await runner.main_contract.model_definitions()
+                    execution.state.fixed_definitions = execution.state.definitions
                     prepared = await execution.prepare_request(0, (), WebMode.DISABLED)
                     main = prepared.request
                     assert main.provider_session_id == owner
+                    if kind == "public_compact":
+                        execution.runtime = replace(execution.runtime, compact_focus="原决定")
                     compacted = await execution.compact_current(
                         0, main, ModelExecutionPriority.FOREGROUND, 128000
                     )
-                    assert compacted.request_chain_id != main.request_chain_id
-                    assert neutral[0].messages[:-1] == main.messages
+                    if kind == "execution_compact":
+                        assert compacted.request_chain_id != main.request_chain_id
+                        assert neutral[0].messages[:-1] == main.messages
+                        assert not any("原先的调查过程" in m.content for m in compacted.messages)
+                    else:
+                        assert neutral[0].messages[:-1] == context.messages
+                        assert not any("private" in m.content for m in neutral[0].messages)
+                        snapshot = await context.repository.read(context.version.conversation_id)
+                        assert snapshot.selected_summary_text == responses[0].content
+                        assert any(
+                            "Conversation compact checkpoint" in m.content
+                            for m in compacted.messages
+                        )
                     assert neutral[0].tools == main.tools
+                    assert neutral[0].response_format is None
                 else:
                     await control.reserve_request(auxiliary=True)
                     token = current_work_control.set(control)
@@ -113,14 +197,20 @@ async def test_auxiliary_session_header_keeps_original_body(database, tmp_path, 
                             result = await StructuredTaskRunner(models).run(
                                 task=ModelTask.UTILITY_STRUCTURED,
                                 instruction="读取所提供的原资料并返回结果。",
-                                structured_input={"work_id": control.current["id"]},
+                                structured_input={
+                                    "work_id": control.current["id"],
+                                    "source_event_id": control.source["trigger_event_id"],
+                                },
                                 output_model=_StructuredResult,
                                 mode=StructuredOutputMode.TEXT_JSON,
                             )
                         assert result.value == "original structured result"
+                        assert result.source_ref == f"work:{control.current['id']}"
                     finally:
                         current_work_control.reset(token)
-                assert (await control.repository.get(control.current["id"]))["model_requests"] == 1
+                assert (await control.repository.get(control.current["id"]))[
+                    "model_requests"
+                ] == int(kind != "public_compact")
             else:
                 env = await social_env(database, tmp_path)
                 version, events = await EventLedgerRepository(database).read_scope_context(
@@ -132,31 +222,24 @@ async def test_auxiliary_session_header_keeps_original_body(database, tmp_path, 
                     if kind != "utility"
                     else None
                 )
-                if kind == "ordinary":
-                    main = ChatRequest(messages=(), provider_session_id=owner)
-                    summary = await summarize_records(
-                        [(f"event:{events[0].id}", events[0].content)],
-                        main_request=main,
-                        structured_mode=StructuredOutputMode.TEXT_JSON,
-                        summary_budget=32768,
-                        output_tokens=4096,
-                        prepare=lambda request: request,
-                        execute=lambda request: models.execute(ModelTask.CHAT_AGENT, request),
-                    )
-                    assert summary["facts"][0]["refs"] == [f"event:{events[0].id}"]
-                else:
-                    result = await StructuredTaskRunner(models).run(
-                        task=ModelTask.UTILITY_STRUCTURED,
-                        instruction="读取所提供的原资料并返回结果。",
-                        structured_input={"event_id": events[0].id},
-                        output_model=_StructuredResult,
-                        mode=StructuredOutputMode.TEXT_JSON,
-                        provider_session_id=owner,
-                    )
-                    assert result.value == "original structured result"
+                result = await StructuredTaskRunner(models).run(
+                    task=ModelTask.UTILITY_STRUCTURED,
+                    instruction="读取所提供的原资料并返回结果。",
+                    structured_input={"event_id": events[0].id},
+                    output_model=_StructuredResult,
+                    mode=StructuredOutputMode.TEXT_JSON,
+                    provider_session_id=owner,
+                )
+                assert result.value == "original structured result"
+                assert result.source_ref == f"event:{events[0].id}"
             assert headers == [owner] and len(wire) == 1
             assert wire[0] == provider._build_payload(replace(neutral[0], provider_session_id=None))
             assert "x-session-id" not in json.dumps(wire[0])
+            assert responses[0].prompt_tokens == 137
+            assert responses[0].completion_tokens == 28
+            assert responses[0].cached_prompt_tokens == 53
+            assert responses[0].reasoning_tokens == 7
+            assert responses[0].total_tokens == 165
         finally:
             if control is not None:
                 await control.repository.release(control.lease)

@@ -120,12 +120,12 @@ async def test_actual_journal_selects_exact_before_assembler_reads_history(datab
     assert protocol_recovery_preparation.get() is None
 
 
-@pytest.mark.parametrize("kind", ["paired", "contract", "legacy_guard", "source", "staging"])
+@pytest.mark.parametrize("kind", ["paired", "contract", "legacy_guard", "source", "legacy_staging"])
 async def test_normal_business_or_changed_contract_builds_fresh(database, kind):
     control, session, selected, _ = await _session(database)
     if kind == "legacy_guard":
         session.source_guard = None
-    if kind == "staging":
+    if kind == "legacy_staging":
         session.progress["compaction_staging"] = {"cursor": 1}
     await session.save("paired")
     if kind == "source":
@@ -384,12 +384,12 @@ async def test_private_observations_extend_only_unchanged_original_guard(databas
         builder.assert_not_awaited()
 
 
-async def test_response_paid_stage_prepares_current_main_history_before_retiring_private_tail(
+async def test_paid_current_compact_recovery_prepares_latest_public_history(
     database, tmp_path, monkeypatch
 ):
     """The real preparation/composer must supply H, not the exact-replay placeholder."""
     control, session, selected, _ = await _session(database)
-    provider = FakeLLMProvider(lambda request: "Continue the original task.")
+    provider = FakeLLMProvider(lambda request: "Continue the original task with verified findings.")
     harness = build_harness(
         database, make_settings(database.url, runtime_work_enabled=True), provider
     )
@@ -430,39 +430,32 @@ async def test_response_paid_stage_prepares_current_main_history_before_retiring
         definitions = await runner.main_contract.definitions()
         session.contract = runner.work_contract(config, first.messages, definitions)
         session.transcript = TurnTranscript(first.messages)
-        session.compaction_anchor = TurnTranscript(first.messages)
         session.source_guard = WorkSourceGuard(first.read_version)
         assert await session.source_guard.check(control)
+        call = ToolCall("recorded-call", ToolFunction("read_probe", "{}"))
+        session.transcript.append(ChatMessage("assistant", "Original probe", tool_calls=(call,)))
+        invoke = AsyncMock(return_value='{"ok":true,"data":"Original recorded effect"}')
+        result = await invoke_tool(session, call, invoke)
+        session.transcript.append_result(call.id, result)
         _grow(session.transcript)
         await session.save("paired")
         _, runtime = await _runtime(database, control, first.messages, provider)
-        runtime = replace(runtime, runtime_config=config, fixed_tools=definitions)
-        from qq_ai_bot.domain.messages import ChatMessage, ChatRequest
+        runtime = replace(
+            runtime, runtime_config=config, fixed_tools=definitions, auxiliary_requests=[0]
+        )
+        from qq_ai_bot.domain.messages import ChatRequest
         from qq_ai_bot.services.turn_execution import TurnExecution
 
         main = ChatRequest(messages=session.transcript.request().messages, tools=definitions)
-        save = session.save
-
-        async def fail_candidate(phase, *args, **kwargs):
-            if phase == "paired" and "context_compaction" not in session.progress:
-                raise WorkConflict("candidate_publish_failed")
-            await save(phase, *args, **kwargs)
-
-        monkeypatch.setattr(session, "save", fail_candidate)
         execution = TurnExecution(runner, first.messages, runtime, None)
         execution.state.transcript = session.transcript
-        execution.state.definitions = definitions
-        execution.state.fixed_definitions = definitions
+
+        async def fail_candidate():
+            raise WorkConflict("candidate_publish_failed")
+
+        monkeypatch.setattr(session, "finish_context_compaction", fail_candidate)
         with pytest.raises(WorkConflict):
             await execution.compact_current(0, main, ModelExecutionPriority.FOREGROUND, 128000)
-        assert session.progress["context_compaction"]["response"] == "Continue the original task."
-        call = ToolCall("recorded-call", ToolFunction("read_probe", "{}"))
-        session.transcript.append(
-            ChatMessage("assistant", "Complete original response", tool_calls=(call,))
-        )
-        await save("response", (call,))
-        invoke = AsyncMock(return_value='{"ok":true,"data":"Original recorded effect"}')
-        await invoke_tool(session, call, invoke)
         ledger = EventLedgerRepository(database)
         ambient_text = "Ambient group history after the paid candidate."
         steer_text = "Directed input after the saved original response."
@@ -513,7 +506,7 @@ async def test_response_paid_stage_prepares_current_main_history_before_retiring
         assert "context_compaction" not in resumed.session.progress
         assert (
             resumed.session.progress["task_material"]["execution_checkpoint"]
-            == "Continue the original task."
+            == "Continue the original task with verified findings."
         )
         invoke.assert_awaited_once()
         from qq_ai_bot.runtime.work_schema_v1 import inputs
