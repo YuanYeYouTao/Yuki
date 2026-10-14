@@ -20,7 +20,7 @@ Quality workflow 检查 Python 的 Ruff、Mypy、pytest 与前端测试及构建
 
 默认 Bot 镜像使用 Dockerfile 的 `direct` target，`runtime` 也继承它：不包含 Monty binding、worker 或 launcher，`CODE_MODE_ENABLED=false`。安装器和默认 Compose 采用同一 direct 发行物，全部获准工具仍由原 Agent loop 直接声明，授权与恢复不变。发布 smoke 在镜像内执行 `scripts/verify_monty_packaging.py direct` 核验无 Monty 与默认关闭。
 
-两套安装器读取 Docker Engine 的 Linux 架构，识别 amd64/x86_64 与 arm64/aarch64，并用该平台拉取、运行配置向导；不使用客户端 CPU 猜测远端 Docker 主机。Compose 不再固定 Bot 或 SnowLuma 为 amd64。复用已有版本时也逐架构核对同一提交，缺少任一架构即失败，不覆盖旧版本资产。`latest` 用 `buildx imagetools create` 复制已验证的完整索引，不能把最后拉取的单架构镜像重新 push 成 latest。
+两套安装器读取 Docker Engine 的 Linux 架构，识别 amd64/x86_64 与 arm64/aarch64，并用该平台拉取、运行配置向导；不使用客户端 CPU 猜测远端 Docker 主机。Compose 不再固定 Bot 或 SnowLuma 为 amd64，删除会跳过显式 `compose pull` 的 `pull_policy: missing`，已有另一平台镜像时也能拉取目标架构。复用已有版本时也逐架构核对同一提交，缺少任一架构即失败，不覆盖旧版本资产。`latest` 用 `buildx imagetools create` 复制已验证的完整索引，不能把最后拉取的单架构镜像重新 push 成 latest。
 
 发布任务通过 `setup-docker-action` 安装当前 Docker Engine，使用 `docker image inspect --platform` 检查目标架构；[该检查](https://docs.docker.com/reference/cli/docker/image/inspect/)需要 Docker API 1.49 或更新版本，仅作用于发布验证，不改变安装器的用户端要求。
 

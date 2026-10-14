@@ -3,7 +3,6 @@ name: qq-ai-bot
 services:
   bot:
     image: ghcr.io/yuanyeyoutao/yuki-qqbot:${YUKI_VERSION:?missing}
-    pull_policy: missing
     init: true
     restart: unless-stopped
     env_file:
