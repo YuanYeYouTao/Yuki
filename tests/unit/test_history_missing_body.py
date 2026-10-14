@@ -129,6 +129,59 @@ async def legacy_missing(
     return expected, tuple(rows)
 
 
+@pytest.mark.parametrize("legacy_renderer", [None, 1])
+async def test_empty_legacy_checkpoint_appends_without_rebuilding_frozen_history(
+    database, legacy_renderer
+):
+    _ledger, context, _seed = await scene(database, 4)
+    original = FrozenFragments.load([]).extend_history(
+        (
+            (
+                tuple(identity for ids, _ in context.history_fragments[:2] for identity in ids),
+                ChatMessage("user", "original frozen group rendering"),
+            ),
+        ),
+        context.history_event_fragments,
+    )
+    repository = PromptProjectionRepository(database)
+    version = context.read_version
+    publication = await repository.prepare_commit(
+        view_key=version.conversation_id,
+        conversation_id=version.conversation_id,
+        generation=version.generation,
+        expected_source_revision=version.prompt_source_revision,
+        starts_after_event_id=version.starts_after_event_id,
+        context_key="existing-public-window",
+        items=list(original.items),
+        rebuild_reason="bootstrap",
+        selected_summary_text="",
+        selected_summary_coverage=version.starts_after_event_id,
+        selected_summary_renderer=legacy_renderer,
+    )
+    async with database.immediate_session() as writer:
+        previous = await publication(writer)
+
+    prepared = await prepare_history(
+        repository,
+        context,
+        view_key=version.conversation_id,
+        context_key="existing-public-window",
+    )
+    assert prepared.reason is None
+    publication = await prepared.prepare_commit(prepared.fragments)
+    async with database.immediate_session() as writer:
+        appended = await publication(writer)
+
+    assert appended.epoch_id == previous.epoch_id
+    assert appended.revision == previous.revision + 1
+    assert appended.selected_summary_text == ""
+    assert appended.selected_summary_renderer == 2
+    assert appended.items()[: len(original.items)] == list(original.items)
+    assert FrozenFragments.load(appended.items()).event_ids == frozenset(
+        identity for ids, _ in context.history_fragments for identity in ids
+    )
+
+
 @pytest.mark.parametrize(
     "case", ["16", "64", "160", "600", "coverage", "holes", "grouped", "summary"]
 )
