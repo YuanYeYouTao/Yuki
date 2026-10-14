@@ -28,6 +28,7 @@ REBUILD_REASONS = frozenset(
     {
         "bootstrap",
         "reset",
+        "compact",
         "rollup",
         "rollup_ready",
         "capacity",

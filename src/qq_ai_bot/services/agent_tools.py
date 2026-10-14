@@ -66,6 +66,7 @@ from qq_ai_bot.persistence.repositories import (
 from qq_ai_bot.runtime.errors import InvalidTurnContextError
 from qq_ai_bot.sandbox.environment_tools import EXECUTION_TOOLS, SANDBOX_TOOLS
 from qq_ai_bot.services.context_boundary import ContextBoundaryReader
+from qq_ai_bot.services.context_compaction import PublicCompactContext
 from qq_ai_bot.services.evidence_state import evidence_state
 from qq_ai_bot.services.turn_coordinator import TurnToken
 from qq_ai_bot.time.formatting import local_iso
@@ -178,6 +179,8 @@ class ToolRuntime:
     prompt_diagnostics: PromptRequestDiagnostics | None = None
     before_model_request: Callable[[], Awaitable[None]] | None = None
     observation_boundary: ContextBoundaryReader | None = None
+    public_compaction: PublicCompactContext | None = None
+    compact_focus: str | None = None
     scope_type: ScopeType | None = None
     conversation_id: str | None = None
     person_id: str | None = None
@@ -264,7 +267,6 @@ class ToolRuntime:
     @property
     def effective_presence_id(self) -> str | None:
         return self.inbound.presence_id if self.inbound is not None else self.presence_id
-
 
     def require_actor(self) -> ToolActor:
         if self.inbound is not None:

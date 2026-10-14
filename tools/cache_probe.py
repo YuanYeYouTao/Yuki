@@ -696,14 +696,14 @@ async def run_experiment(
             try:
                 response = await original_execute(task, request, **options)
                 logical.update(success=True, response_status=response.status.value)
-                logical["summary_shape"] = summary_shape(
-                    response.content,
-                    ordinary=compaction_mode == "ordinary",
-                )
                 if compaction_mode == "work":
-                    logical["summary_reference_shape"] = summary_reference_shape(
-                        response.content, json.loads(request.messages[-1].content)
-                    )
+                    logical["context_checkpoint"] = {
+                        "format": "text",
+                        "characters": len(response.content),
+                        "request_messages": len(request.messages),
+                    }
+                else:
+                    logical["summary_shape"] = summary_shape(response.content, ordinary=True)
                 physical.finish_logical_call(None)
                 return response
             except Exception as error:

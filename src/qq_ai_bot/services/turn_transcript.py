@@ -88,6 +88,20 @@ class TurnTranscript:
     def append(self, message: ChatMessage) -> None:
         self._entries.append(message)
 
+    def entries(self) -> tuple[ChatMessage | FunctionCallOutput | ProviderContinuation, ...]:
+        """The original ordered entries, including their owned checkpoints."""
+        return tuple(self._entries)
+
+    def prefix(self, boundary: int) -> TurnTranscript:
+        """Select an existing input prefix without editing provider state."""
+        result = TurnTranscript(())
+        result.chain_id = self.chain_id
+        result._entries = deepcopy(self._entries[:boundary])
+        result._layout_public_initial = self._layout_public_initial
+        result._layout_host_initial = self._layout_host_initial
+        result._layout_current_inputs = self._layout_current_inputs
+        return result
+
     def portable_entries(self) -> tuple[ChatMessage | FunctionCallOutput, ...]:
         """Public input/output records; opaque provider state is never summary text."""
         return tuple(

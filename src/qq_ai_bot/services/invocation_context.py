@@ -41,6 +41,8 @@ class InvocationContextFactory:
             prompt_diagnostics=source.prompt_diagnostics,
             before_model_request=source.before_model_request,
             observation_boundary=source.observation_boundary,
+            public_compaction=source.public_compaction,
+            compact_focus=source.compact_focus,
             canonical_conversation_id=source.effective_conversation_id,
             conversation_generation=source.turn_snapshot.generation
             if source.turn_snapshot is not None

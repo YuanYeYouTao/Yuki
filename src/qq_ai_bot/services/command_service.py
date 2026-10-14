@@ -55,6 +55,7 @@ class CommandExecution:
     text: str
     record_reply: bool = True
     outbound: OutboundMessage | None = None
+    compact_focus: str | None = None
 
 
 class CommandService:
@@ -151,6 +152,7 @@ class CommandService:
             CommandName.GROUP,
             CommandName.PRIVATE,
             CommandName.FORGETME,
+            CommandName.COMPACT,
         }:
             return True
         operation = argument.split(maxsplit=1)[0].casefold() if argument.strip() else ""
@@ -201,11 +203,17 @@ class CommandService:
         elif command is CommandName.HELP:
             text = self._help_text()
         elif (
-            command is CommandName.NEW
+            command in {CommandName.NEW, CommandName.COMPACT}
             and message.scope_type is ScopeType.GROUP
             and not is_superuser
         ):
-            text = "权限不足：群聊新会话仅限超级管理员。"
+            text = (
+                "权限不足：群聊新会话仅限超级管理员。"
+                if command is CommandName.NEW
+                else "权限不足：群聊上下文压缩仅限超级管理员。"
+            )
+        elif command is CommandName.COMPACT:
+            return CommandExecution("", record_reply=False, compact_focus=argument)
         elif command is CommandName.NEW:
             text = (
                 "已为当前群开始新的会话；永久聊天账本和长期记忆仍然保留。"
@@ -445,7 +453,8 @@ class CommandService:
     def _help_text() -> str:
         return (
             "QQ AI 助手命令：\n"
-            "/ai help | new | status | stop | ping | whoami | forgetme\n"
+            "/ai help | new | compact [重点] | status | stop | ping | whoami | forgetme\n"
+            "/ai compact [重点] 压缩当前会话公共历史；群内仅超级管理员可用。\n"
             "/ai new 重置当前 Conversation；群内影响全部参与者，仅超级管理员可用。\n"
             "/ai memory list|add|update|delete|evidence\n"
             "自然语言也可查历史共同群友/旧群的结构记忆，支持昵称和群名；同名需澄清。\n"

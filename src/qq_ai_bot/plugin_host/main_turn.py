@@ -483,6 +483,7 @@ async def _execute_plugin_main_turn(
                         invocation_goal=instruction,
                         invocation_source=invocation_source,
                         before_model_request=validate_and_commit,
+                        public_compaction=composition.public_compaction,
                     ),
                     tools,
                 )

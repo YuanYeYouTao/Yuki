@@ -26,6 +26,7 @@ from qq_ai_bot.prompting.contributors import static_text
 from qq_ai_bot.prompting.models import CompiledPrompt, PromptMetrics
 from qq_ai_bot.services.context_assembler import AssembledContext
 from qq_ai_bot.services.context_boundary import ContextBoundaryReader
+from qq_ai_bot.services.context_compaction import PublicCompactContext, render_context_checkpoint
 from qq_ai_bot.services.model_context_projection import project_short_state
 from qq_ai_bot.services.prompt_registry import PromptRegistry, PromptTarget
 
@@ -39,6 +40,7 @@ class PromptComposition:
     commit_projection: Callable[[], Awaitable[None]] | None = None
     preparation_model_requests: int = 0
     observation_boundary: ContextBoundaryReader | None = None
+    public_compaction: PublicCompactContext | None = None
 
 
 class PromptComposer:
@@ -137,6 +139,11 @@ class PromptComposer:
     def _conversation_history(context: AssembledContext) -> tuple[ChatMessage, ...]:
         if not context.rollup_text.strip():
             return context.history_messages
+        if context.metrics.rollup_mode == "compact":
+            return (
+                render_context_checkpoint(context.rollup_text, context.prompt_effective_coverage),
+                *context.history_messages,
+            )
         return (
             render_rollup_message(
                 context.rollup_text,

@@ -15,6 +15,7 @@ class CommandName(StrEnum):
 
     HELP = "help"
     NEW = "new"
+    COMPACT = "compact"
     STATUS = "status"
     STOP = "stop"
     ON = "on"

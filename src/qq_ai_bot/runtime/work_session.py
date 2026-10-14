@@ -291,6 +291,8 @@ class WorkSession:
             self.event_ids = list(metadata.get("event_ids", []))
             self.source_keys = list(metadata.get("source_keys", []))
             self.input_ids = list(metadata.get("input_ids", []))
+            if self.progress.get("context_compaction") is not None:
+                await self.finish_context_compaction()
             await control.refresh_effects()
             if row["phase"] in {"delivery", "delivered"} and self.progress.get("delivery_plan"):
                 # A legacy frozen final-delivery plan is never executed online;
@@ -1255,6 +1257,97 @@ class WorkSession:
         )
         recent = await repository.effect_evidence(self.control.lease, identity, limit=32)
         return list({item["effect_key"]: item for item in [*recent, *pending]}.values())
+
+    async def prepare_context_compaction(
+        self,
+        initial: tuple[ChatMessage, ...],
+        retained: tuple[ChatMessage, ...],
+        public: dict[str, Any] | None = None,
+    ) -> None:
+        """Keep the original input before dispatching its maintenance request."""
+        assert self.transcript is not None
+        guard = await self._compaction_guard()
+        original = await self.journal.objects.manifest(
+            {
+                "transcript": encode_transcript(self.transcript),
+                "pending": self.pending,
+                "metadata": {
+                    "sequence": self.sequence,
+                    "event_ids": self.event_ids,
+                    "source_keys": self.source_keys,
+                    "input_ids": self.input_ids,
+                    "progress": deepcopy(self.progress),
+                    "source_guard": self.source_guard.snapshot() if self.source_guard else None,
+                },
+            }
+        )
+        self.progress["context_compaction"] = {
+            "previous_protocol_ref": await self.journal.objects.put(original),
+            "prefix": encode_transcript(TurnTranscript(initial)),
+            "retained": encode_transcript(TurnTranscript(retained)),
+            "source_revision": guard["source_revision"],
+            "privacy_generation": guard["privacy_generation"],
+            "public": public,
+        }
+        sequence = self.transcript.request()
+        if sequence.layout_public_initial is not None:
+            self.progress["context_compaction"]["layout"] = {
+                "public": encode_transcript(TurnTranscript(sequence.layout_public_initial)),
+                "host": encode_transcript(TurnTranscript(sequence.layout_host_initial)),
+                "inputs": encode_transcript(TurnTranscript(sequence.layout_current_inputs)),
+            }
+
+    async def finish_context_compaction(self) -> TurnTranscript:
+        """Publish an already durable response; never dispatch another model."""
+        state = self.progress["context_compaction"]
+        summary = state.get("response")
+        if summary is None:
+            raise JournalUnavailable("context_compaction_outcome_unknown")
+        from qq_ai_bot.services.context_compaction import (
+            compacted_transcript,
+            public_compact_publication,
+        )
+
+        original = self.transcript
+        old_progress = deepcopy(self.progress)
+        publication = None
+        if state.get("valid"):
+            self.transcript = compacted_transcript(state)
+            if state.get("public") is not None:
+                from qq_ai_bot.conversation.projections import PromptProjectionRepository
+
+                publication = await public_compact_publication(
+                    PromptProjectionRepository(self.control.repository.database),
+                    state["public"],
+                    summary,
+                )
+            else:
+                self.progress.setdefault("task_material", {})["execution_checkpoint"] = summary
+            self.progress.setdefault("chain_links", []).append(
+                {
+                    "from": original.chain_id if original else None,
+                    "to": self.transcript.chain_id,
+                    "reason": "compact",
+                }
+            )
+            self.progress.pop("model_observations", None)
+        else:
+            manifest = await self.journal.objects.get(state["previous_protocol_ref"])
+            hydrated = await self.journal.objects.hydrate(manifest)
+            self.transcript = decode_transcript(hydrated["transcript"])
+        self.progress.pop("context_compaction", None)
+        try:
+            await self.save(
+                "paired",
+                compaction_versions=(state["source_revision"], state["privacy_generation"]),
+                publication=publication,
+            )
+        except BaseException:
+            self.transcript = original
+            self.progress = old_progress
+            raise
+        assert self.transcript is not None
+        return self.transcript
 
     async def compact(
         self,

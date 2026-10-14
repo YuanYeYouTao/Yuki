@@ -92,15 +92,10 @@ class TurnState:
     continuation_native_tools: tuple[NativeToolDefinition, ...] = ()
     reusable_tool_results: dict[tuple[str, str], ReusableToolResult] = field(default_factory=dict)
     provider_pause_replay: bool = False
-    ordinary_compaction_tokens: int = 0
-    ordinary_observations: list[dict[str, Any]] = field(default_factory=list)
-    ordinary_evidence: list[dict[str, Any]] = field(default_factory=list)
     observed_event_ids: set[int] = field(default_factory=set)
     public_tail: list[ChatMessage] = field(default_factory=list)
-    deferred_paid_compaction: bool = False
     control: WorkControl | None = None
     boundary: ContextBoundary | None = None
-    paid_staging: bool = False
     definitions: tuple[ChatTool, ...] = ()
     response_observation: dict[str, Any] = field(default_factory=dict)
     coordinated: CoordinatedToolResult = field(default_factory=lambda: CoordinatedToolResult((), 0))
@@ -112,57 +107,6 @@ class _PreparedRequest:
     sequence: TranscriptRequest
     request: ChatRequest
     priority: ModelExecutionPriority
-    compacting: bool
-
-
-@dataclass(slots=True)
-class _OrdinarySummaryDispatch:
-    """One tool-free summary admission; HTTP retries reuse its paid reservation."""
-
-    runner: AgentRunner
-    runtime: AgentRuntime
-    request: ChatRequest
-    request_index: int
-    sequence: TranscriptRequest
-    control: WorkControl | None
-    priority: ModelExecutionPriority
-    tools: AgentToolBackend | None = None
-    prepared: bool = field(default=False, init=False)
-
-    async def complete(self) -> ChatResponse:
-        with model_dispatch_guard(self.admit):
-            return await self.runner._models.execute(
-                self.runner._task,
-                self.request,
-                priority=self.priority,
-                canonical_conversation_id=self.runtime.canonical_conversation_id,
-            )
-
-    async def admit(self) -> None:
-        if self.prepared:
-            if self.runtime.before_model_request is not None:
-                with validating_request(self.sequence):
-                    await self.runtime.before_model_request()
-            return
-        assert self.runtime.auxiliary_requests is not None
-        if (
-            self.runtime.max_model_requests is not None
-            and self.request_index + self.runtime.auxiliary_requests[0] + 1
-            >= self.runtime.max_model_requests
-        ):
-            raise WorkCapacityError("model_request_budget")
-        if self.runtime.before_model_request is not None:
-            with validating_request(self.sequence):
-                await self.runtime.before_model_request()
-        if self.control is not None:
-            await self.control.reserve_request(auxiliary=True)
-        self.runtime.auxiliary_requests[0] += 1
-        self.runner._record_failure_usage(
-            self.tools,
-            tool_calls=0,
-            model_requests=self.request_index + self.runtime.auxiliary_requests[0],
-        )
-        self.prepared = True
 
 
 @dataclass(slots=True)
@@ -179,6 +123,7 @@ class _PrimaryDispatch:
     tools: AgentToolBackend | None = None
     selected_media: tuple[ChatImage, ...] = ()
     has_native_effects: bool = False
+    on_dispatch: Callable[[], Awaitable[None]] | None = None
     prepared: bool = field(default=False, init=False)
     selected_boundary: ContextBoundary | None = field(default=None, init=False)
 
@@ -261,6 +206,8 @@ class _PrimaryDispatch:
             protect_native = getattr(self.tools, "protect_native_dispatch", None)
             if callable(protect_native):
                 await protect_native(self.runtime)
+        if self.on_dispatch is not None:
+            await self.on_dispatch()
         self.runner._record_failure_usage(
             self.tools,
             tool_calls=0,
@@ -379,6 +326,9 @@ class TurnExecution:
                     suppress_delivery=True,
                 )
 
+        recovered = await self.restore_compact_receipt()
+        if recovered is not None:
+            return recovered
         result = await run_agent_loop(
             max_requests=self.runtime.max_model_requests,
             model=self,
@@ -387,6 +337,89 @@ class TurnExecution:
         )
         assert isinstance(result, AgentRunResult)
         return result
+
+    async def restore_compact_receipt(self) -> AgentRunResult | None:
+        """Reuse ordinary maintenance by its internal execution owner."""
+        from qq_ai_bot.runtime.work_journal import (
+            JournalUnavailable,
+            decode_transcript,
+            encode_transcript,
+        )
+        from qq_ai_bot.services.context_compaction import (
+            CompactReceipt,
+            compacted_transcript,
+            public_compact_publication,
+        )
+
+        context = self.runtime.public_compaction
+        control = self.state.control
+        if (
+            context is None
+            or not self.runtime.execution_id
+            or (control is not None and control.current is not None)
+        ):
+            return None
+        receipt = CompactReceipt(context, self.runtime.execution_id, self.runtime.actor_user_id)
+        saved = await receipt.read()
+        if saved is None:
+            return None
+        if saved["phase"] == "dispatched":
+            raise JournalUnavailable("context_compaction_outcome_unknown")
+        contract = self.runner.work_contract(
+            self.runtime.runtime_config,
+            self.initial_messages,
+            self.state.fixed_definitions,
+            script_api=self.runtime.script_api,
+        )
+        if saved["main_contract"] != contract:
+            from qq_ai_bot.runtime.work_repository import WorkConflict
+
+            raise WorkConflict("context_compaction_contract_changed")
+        if saved["phase"] == "response":
+            candidate = (
+                compacted_transcript(saved)
+                if saved["valid"]
+                else decode_transcript(saved["original"])
+            )
+            public = saved.get("public")
+            publication = (
+                await public_compact_publication(context.repository, public, saved["response"])
+                if saved["valid"] and public is not None
+                else None
+            )
+            saved.update(phase="paired", candidate=encode_transcript(candidate))
+            await receipt.write(saved, publication=publication)
+        self.state.transcript = decode_transcript(saved["candidate"])
+        self.initial_messages = decode_transcript(saved["prefix"]).request().messages
+        self._initial_layout_finalized = (
+            self.state.transcript.request().layout_public_initial is not None
+        )
+        if self.runtime.auxiliary_requests is not None:
+            self.runtime.auxiliary_requests[0] = saved["model_requests"]
+        if saved["valid"] and saved.get("public") is not None:
+            await self.adopt_public_compact(saved["public"], saved["response"])
+            if self.runtime.compact_focus is not None:
+                return AgentRunResult(
+                    text="已压缩当前会话的公共上下文。",
+                    tool_calls_used=0,
+                    model_requests=saved["model_requests"],
+                    suppress_delivery=True,
+                )
+        return None
+
+    async def adopt_public_compact(self, public: dict[str, Any], summary: str) -> None:
+        from qq_ai_bot.conversation.frozen_fragments import FrozenFragments
+
+        context = self.runtime.public_compaction
+        assert context is not None
+        self.initial_messages = self.state.transcript.request().messages[
+            : len(self.initial_messages)
+            - public["public_count"]
+            + public["static_count"]
+            + 1
+            + len(public["items"])
+        ]
+        await context.adopt(summary, public["coverage"], FrozenFragments.load(public["items"]))
 
     async def take_boundary_inputs(
         self, request_index: int, boundary: ContextBoundary | None
@@ -507,19 +540,10 @@ class TurnExecution:
                     ),
                 )
             )
-        self.state.paid_staging = bool(
-            self.state.control
-            and self.state.control.session
-            and self.state.control.session.progress.get("compaction_staging")
-        )
         return None
 
     async def steer(self, request_index: int) -> End | None:
-        if (
-            self.state.control is not None
-            and not self.state.provider_pause_replay
-            and not self.state.paid_staging
-        ):
+        if self.state.control is not None and not self.state.provider_pause_replay:
             waiting = await self.take_boundary_inputs(request_index, self.state.boundary)
             if waiting is not None:
                 return End(waiting)
@@ -692,7 +716,7 @@ class TurnExecution:
                 await self.state.control.session.save("paired")
             raise
         response = await self.observe_response(
-            request_index, response, candidate.request.native_tools, compacting=candidate.compacting
+            request_index, response, candidate.request.native_tools
         )
         await self.guard_native_response(request_index, response)
         return response
@@ -765,8 +789,7 @@ class TurnExecution:
                 ChatMessage(
                     role="user",
                     content=(
-                        "\n\n【本轮系统资料】\n"
-                        "以下是程序附带的运行资料，不是聊天成员的发言。\n"
+                        "\n\n【本轮系统资料】\n以下是程序附带的运行资料，不是聊天成员的发言。\n"
                     )
                     + json.dumps(
                         await control.runtime_state(), ensure_ascii=False, separators=(",", ":")
@@ -790,7 +813,6 @@ class TurnExecution:
     ) -> _PreparedRequest | End | LoopSignal:
         """Prepare capacity/compaction before the original request admission."""
         await self._finalize_initial_layout()
-        compacting = False
         diagnostics = self.runtime.prompt_diagnostics
         sequence = self.state.transcript.request()
         if self.state.control is not None and self.state.control.session is not None:
@@ -899,195 +921,273 @@ class TurnExecution:
             output_tokens=request.max_output_tokens,
         )
         predicted_tokens = estimate_request_tokens(self.runner._capacity_request(request))
-        maintenance_budget = min(input_budget, context.compaction_window_tokens)
-        compaction_threshold = maintenance_budget * context.work_compaction_trigger_ratio
-        if self.state.control is not None and self.state.control.session is not None:
-            compacted_tokens = self.state.control.session.progress.get(
-                "compaction_request_tokens", 0
-            )
-            if isinstance(compacted_tokens, int) and compacted_tokens > 0:
-                # A compacted request may legitimately sit above the soft
-                # target. Wait for growth into its remaining headroom,
-                # rather than summarizing the same checkpoint again.
-                compaction_threshold = max(
-                    compaction_threshold,
-                    compacted_tokens
-                    + max(
-                        1,
-                        maintenance_budget * (1 - context.work_compaction_trigger_ratio),
-                        (maintenance_budget - compacted_tokens)
-                        * context.work_compaction_trigger_ratio,
-                    ),
+        if self.runtime.compact_focus is not None:
+            public = self.runtime.public_compaction
+            if public is None or not public.fragments.items:
+                return End(
+                    AgentRunResult(
+                        text="当前会话没有可压缩的公共历史。",
+                        tool_calls_used=0,
+                        model_requests=0,
+                        suppress_delivery=True,
+                    )
                 )
-        if (
-            self.state.control is not None
-            and self.state.control.session is not None
-            and self.state.control.current is not None
-            and self.state.control.ending is None
-            and not self.state.deferred_paid_compaction
-            and (
-                self.state.paid_staging
-                or predicted_tokens >= compaction_threshold
-                or predicted_tokens > input_budget
+            original = self.state.transcript
+            await self.compact_current(request_index, request, priority, input_budget)
+            return End(
+                AgentRunResult(
+                    text="已压缩当前会话的公共上下文。"
+                    if self.state.transcript is not original
+                    else "本次压缩没有产生有效检查点。",
+                    tool_calls_used=0,
+                    model_requests=sum(self.runtime.auxiliary_requests or ()),
+                    suppress_delivery=True,
+                )
             )
-        ):
-            try:
-                self.state.transcript = await self.runner._compact_work(
-                    self.runtime,
-                    priority,
-                    input_budget,
+        while predicted_tokens > input_budget:
+            if self.state.provider_pause_replay:
+                raise WorkCapacityError("model_request_capacity")
+            request = await self.compact_current(request_index, request, priority, input_budget)
+            if (
+                self.runtime.max_model_requests is not None
+                and request_index + sum(self.runtime.auxiliary_requests or ())
+                >= self.runtime.max_model_requests
+            ):
+                return STOP
+            sequence = self.state.transcript.request()
+            request = replace(
+                request,
+                messages=sequence.messages,
+                continuation=sequence.continuation,
+                continuation_items=sequence.items,
+                request_chain_id=self.state.transcript.chain_id,
+            )
+            predicted_tokens = estimate_request_tokens(self.runner._capacity_request(request))
+            self.state.continuation_tools = ()
+            self.state.continuation_native_tools = ()
+        return _PreparedRequest(sequence, request, priority)
+
+    async def compact_current(
+        self,
+        request_index: int,
+        request: ChatRequest,
+        priority: ModelExecutionPriority,
+        input_budget: int,
+    ) -> ChatRequest:
+        """Maintain the actual Main chain under its original dispatch and journal."""
+        from qq_ai_bot.conversation.observations import privacy_generation
+        from qq_ai_bot.runtime.work_journal import encode_transcript
+        from qq_ai_bot.services.context_compaction import (
+            CompactReceipt,
+            compacted_transcript,
+            execution_compact_plan,
+            public_compact_plan,
+            public_compact_publication,
+        )
+
+        public_context = self.runtime.public_compaction
+        public_eligible = (
+            public_context is not None
+            and bool(public_context.fragments.items)
+            and request.continuation is None
+            and request.messages[: len(public_context.messages)] == public_context.messages
+        )
+        initial_tokens = estimate_request_tokens(
+            self.runner._capacity_request(
+                replace(
                     request,
+                    messages=self.initial_messages,
+                    continuation=None,
+                    continuation_items=(),
+                )
+            )
+        )
+        public_requested = self.runtime.compact_focus is not None
+        if public_eligible and (public_requested or initial_tokens >= input_budget):
+            assert public_context is not None
+            plan = public_compact_plan(
+                public_context,
+                self.state.transcript,
+                request,
+                initial=self.initial_messages,
+                input_budget=input_budget,
+                prepare=self.runner._capacity_request,
+                focus=self.runtime.compact_focus or "",
+            )
+        else:
+            try:
+                plan = execution_compact_plan(
+                    self.state.transcript,
+                    self.initial_messages,
+                    request,
+                    input_budget=input_budget,
+                    prepare=self.runner._capacity_request,
                     retained_public=tuple(self.state.public_tail),
                 )
-            except (WorkCapacityError, LLMError) as exc:
-                candidate_failure = isinstance(exc, LLMError) or str(exc) in {
-                    "work_compaction_source_capacity",
-                    "work_compaction_capacity",
-                    "work_compaction_incomplete",
-                    "work_compaction_invalid_structure",
-                    "work_compaction_invalid_reference",
-                    "work_compaction_invalid_correction",
-                    "work_compaction_anchor_unavailable",
-                }
-                if predicted_tokens > input_budget or not candidate_failure:
+            except WorkCapacityError:
+                if not public_eligible:
                     raise
-                # A soft maintenance target cannot prohibit a complete
-                # request that still fits. The failed candidate preserves
-                # the original transcript and paired receipts.
-                self.state.control.session.progress["compaction_request_tokens"] = predicted_tokens
-                self.state.deferred_paid_compaction = self.state.paid_staging
-                logger.info("work_compaction_deferred category=%s", type(exc).__name__)
-            else:
-                # The paid source is now safely paired. New inputs can
-                # enter this new request without invalidating its cursor.
-                if (
-                    self.runtime.max_model_requests is not None
-                    and self.state.control.requests_started >= self.runtime.max_model_requests
-                ):
-                    return STOP
-                if self.state.paid_staging and not self.state.provider_pause_replay:
-                    waiting = await self.take_boundary_inputs(request_index, self.state.boundary)
-                    if waiting is not None:
-                        return End(waiting)
-                # Keep this prepared public delta through the explicit
-                # private-tail replacement; dispatch it once below.
-                sequence = self.state.transcript.request()
-                request = replace(
+                assert public_context is not None
+                plan = public_compact_plan(
+                    public_context,
+                    self.state.transcript,
                     request,
-                    messages=sequence.messages,
-                    request_chain_id=self.state.transcript.chain_id,
-                    continuation=sequence.continuation,
-                    continuation_items=sequence.items,
+                    initial=self.initial_messages,
+                    input_budget=input_budget,
+                    prepare=self.runner._capacity_request,
                 )
-                predicted_tokens = estimate_request_tokens(self.runner._capacity_request(request))
-                self.state.continuation_tools = ()
-                self.state.continuation_native_tools = ()
-        ordinary_threshold = max(
-            maintenance_budget * context.compaction_trigger_ratio,
-            estimate_request_tokens(
-                self.runner._capacity_request(
-                    replace(
-                        request,
-                        messages=self.initial_messages,
-                        continuation=None,
-                        continuation_items=(),
-                    )
-                )
+        original = self.state.transcript
+        control = self.state.control
+        session = control.session if control is not None and control.current is not None else None
+        receipt = (
+            CompactReceipt(public_context, self.runtime.execution_id, self.runtime.actor_user_id)
+            if session is None and public_context is not None and self.runtime.execution_id
+            else None
+        )
+        if session is not None:
+            await session.prepare_context_compaction(
+                self.initial_messages,
+                plan.retained,
+                plan.public,
             )
-            + maintenance_budget * (1 - context.compaction_trigger_ratio),
-            self.state.ordinary_compaction_tokens
-            + maintenance_budget * (1 - context.compaction_trigger_ratio),
+            state = session.progress["context_compaction"]
+            session.transcript = plan.transcript
+        else:
+            state = {
+                "ordinal": sum(self.runtime.auxiliary_requests or ()) + 1,
+                "prefix": encode_transcript(TurnTranscript(self.initial_messages)),
+                "retained": encode_transcript(TurnTranscript(plan.retained)),
+                "public": plan.public,
+                "original": encode_transcript(original),
+                "phase": "dispatched",
+            }
+            sequence = original.request()
+            if sequence.layout_public_initial is not None:
+                state["layout"] = {
+                    "public": encode_transcript(TurnTranscript(sequence.layout_public_initial)),
+                    "host": encode_transcript(TurnTranscript(sequence.layout_host_initial)),
+                    "inputs": encode_transcript(TurnTranscript(sequence.layout_current_inputs)),
+                }
+            if public_context is not None:
+                state["source_revision"] = public_context.version.prompt_source_revision
+                async with public_context.repository.database.sessions() as reader:
+                    state["privacy_generation"] = await privacy_generation(reader)
+        state["request"] = asdict(plan.request)
+        state["covered_entries"] = len(plan.transcript.entries()) - 1
+        state["main_contract"] = self.runner.work_contract(
+            self.runtime.runtime_config,
+            self.initial_messages,
+            self.state.fixed_definitions,
+            script_api=self.runtime.script_api,
         )
-        ordinary_maintenance = (
-            (self.state.control is None or self.state.control.current is None)
-            and not self.state.provider_pause_replay
-            and len(self.state.transcript.portable_entries()) > len(self.initial_messages)
-            and predicted_tokens >= ordinary_threshold
+        self.state.transcript = plan.transcript
+
+        async def execute() -> ChatResponse:
+            return await self.runner._models.execute(
+                self.runner._task,
+                plan.request,
+                priority=priority,
+                canonical_conversation_id=self.runtime.canonical_conversation_id,
+            )
+
+        async def persist_dispatch() -> None:
+            if receipt is not None:
+                await receipt.write(state)
+
+        dispatch = _PrimaryDispatch(
+            self.runner,
+            self.runtime,
+            request_index,
+            execute,
+            plan.transcript.request(),
+            self.state.boundary,
+            self.state.observed_event_ids,
+            self.tools,
+            has_native_effects=bool(plan.request.native_tools),
+            on_dispatch=persist_dispatch if receipt is not None else None,
         )
-        if predicted_tokens > input_budget or ordinary_maintenance:
-            if (
-                (self.state.control is None or self.state.control.current is None)
-                and not self.state.provider_pause_replay
-                and len(self.state.transcript.portable_entries()) > len(self.initial_messages)
-            ):
-                from qq_ai_bot.services.ordinary_compaction import compact_ordinary
-
-                async def summarize(candidate: ChatRequest) -> ChatResponse:
-                    dispatch = _OrdinarySummaryDispatch(
-                        self.runner,
-                        self.runtime,
-                        candidate,
-                        request_index,
-                        sequence,
-                        self.state.control,
-                        priority,
-                        self.tools,
-                    )
-                    return await self.runner._concurrency.run_llm(
-                        self.runtime.conversation_key, dispatch.complete
-                    )
-
-                try:
-                    compacted = await compact_ordinary(
-                        self.initial_messages,
-                        self.state.transcript,
-                        main_request=request,
-                        structured_mode=self.runner._models.structured_output_mode(
-                            self.runner._task
-                        ),
-                        summary_budget=capacity.input_budget(
-                            context.window_tokens,
-                            output_tokens=context.compaction_output_tokens,
-                        ),
-                        input_budget=input_budget,
-                        output_tokens=context.compaction_output_tokens,
-                        prepare=self.runner._capacity_request,
-                        execute=summarize,
-                        evidence=self.state.ordinary_evidence,
-                        model_observations=self.state.ordinary_observations,
-                        retained_public=tuple(self.state.public_tail),
-                    )
-                except (WorkCapacityError, LLMError):
-                    if predicted_tokens > input_budget:
-                        raise
-                    logger.info("ordinary_compaction_deferred_with_available_capacity")
-                    compacted = self.state.transcript
-                if compacted is not self.state.transcript:
-                    self.state.ordinary_observations.clear()
-                self.state.transcript = compacted
-                self.state.ordinary_compaction_tokens = estimate_request_tokens(
-                    self.runner._capacity_request(
-                        replace(
-                            request,
-                            messages=self.state.transcript.request().messages,
-                            continuation=self.state.transcript.continuation,
-                            continuation_items=self.state.transcript.request().items,
-                        )
-                    )
+        try:
+            response = await self.runner._concurrency.run_llm(
+                self.runtime.conversation_key,
+                dispatch.complete,
+            )
+        except BaseException:
+            if not dispatch.prepared:
+                self.state.transcript = original
+                if session is not None:
+                    session.transcript = original
+                    session.progress.pop("context_compaction", None)
+            raise
+        finally:
+            if dispatch.prepared and self.runtime.auxiliary_requests is not None:
+                self.runtime.auxiliary_requests[0] += 1
+        valid = (
+            bool(response.content.strip())
+            and not response.tool_calls
+            and response.status is ModelResponseStatus.COMPLETED
+        )
+        if response.continuation is not None:
+            plan.transcript.accept(response.continuation)
+        plan.transcript.append(
+            ChatMessage("assistant", response.content, tool_calls=response.tool_calls),
+        )
+        state.update(
+            response=response.content,
+            valid=valid,
+            model_response=asdict(response),
+            phase="response",
+            model_requests=sum(self.runtime.auxiliary_requests or ()),
+        )
+        if session is not None:
+            await session.save("response")
+            self.state.transcript = await session.finish_context_compaction()
+        else:
+            if receipt is not None:
+                await receipt.write(state)
+            self.state.transcript = compacted_transcript(state) if valid else original
+            if valid and plan.public is not None:
+                assert public_context is not None
+                publication = await public_compact_publication(
+                    public_context.repository,
+                    plan.public,
+                    response.content,
                 )
-                if self.state.control is not None and self.state.control.session is not None:
-                    self.state.control.session.transcript = self.state.transcript
-                sequence = self.state.transcript.request()
-                request = replace(
-                    request,
-                    messages=sequence.messages,
-                    request_chain_id=self.state.transcript.chain_id,
-                    continuation=sequence.continuation,
-                    continuation_items=sequence.items,
-                )
-                self.state.continuation_tools = ()
-                self.state.continuation_native_tools = ()
             else:
+                publication = None
+            if receipt is not None:
+                state.update(phase="paired", candidate=encode_transcript(self.state.transcript))
+                await receipt.write(state, publication=publication)
+            elif publication is not None:
+                assert public_context is not None
+                async with public_context.repository.database.immediate_session() as writer:
+                    await publication(writer)
+        if not valid:
+            if estimate_request_tokens(self.runner._capacity_request(request)) > input_budget:
                 raise WorkCapacityError("model_request_capacity")
-        return _PreparedRequest(sequence, request, priority, compacting)
+            return request
+        if plan.public is not None:
+            await self.adopt_public_compact(plan.public, response.content)
+        sequence = self.state.transcript.request()
+        candidate = replace(
+            request,
+            messages=sequence.messages,
+            continuation=sequence.continuation,
+            continuation_items=sequence.items,
+            request_chain_id=self.state.transcript.chain_id,
+        )
+        if (
+            not plan.retained
+            and plan.public is None
+            and estimate_request_tokens(self.runner._capacity_request(candidate)) > input_budget
+        ):
+            raise WorkCapacityError("model_request_capacity")
+        return candidate
 
     async def observe_response(
         self,
         request_index: int,
         response: ChatResponse,
         native_definitions: tuple[NativeToolDefinition, ...],
-        *,
-        compacting: bool,
     ) -> ChatResponse:
         """Record the response and original private/provider continuation once."""
         self.state.native_events.extend(response.native_tool_events)
@@ -1115,7 +1215,6 @@ class TurnExecution:
             "native_tool_events": [asdict(item) for item in response.native_tool_events],
             "status": response.status.value,
         }
-        self.state.ordinary_observations.append(self.state.response_observation)
         if self.state.control is not None and self.state.control.session is not None:
             if self.state.provider_pause_replay:
                 self.state.control.session.progress["provider_pause_replay"] = True
@@ -1177,16 +1276,6 @@ class TurnExecution:
             reasoning_content=response.reasoning_content,
         )
         self.state.control = self.runtime.work_control
-        if (
-            self.state.deferred_paid_compaction
-            and self.state.control is not None
-            and self.state.control.session is not None
-        ):
-            if response.continuation is None:
-                self.state.transcript.append(assistant_message)
-                assistant_recorded = True
-            await self.state.control.session.retire_paid_compaction()
-            self.state.deferred_paid_compaction = False
         if (
             self.state.control is not None
             and await self.state.control.has_pending_business_inputs()
@@ -1340,25 +1429,12 @@ class TurnExecution:
                 "output": result,
                 "executed": was_executed,
             }
-            fact = self.state.coordinated.evidence.get(call.id, {})
-            if (
-                was_executed
-                and fact.get("executed") is True
-                and (fact["side_effecting"] or fact["run_id"] or fact["artifacts"])
-            ):
-                # This is a turn-local model view of the existing execution
-                # receipt, not another effect ledger or replay authority.
-                self.state.ordinary_evidence.append({"call_id": call.id, **fact})
             public_results.append(public_result)
         self.state.response_observation["results"] = public_results
         if self.runtime.work_control is not None and self.runtime.work_control.session is not None:
             control = self.runtime.work_control
             assert control.session is not None
-            if self.state.deferred_paid_compaction:
-                await self.runtime.work_control.session.retire_paid_compaction()
-                self.state.deferred_paid_compaction = False
-            else:
-                await self.runtime.work_control.session.save("paired")
+            await self.runtime.work_control.session.save("paired")
             if self.runtime.work_control.handoff_work_id is not None:
                 return End(
                     AgentRunResult(
