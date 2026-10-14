@@ -9,7 +9,6 @@ from typing import Any, cast
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.memory.eligibility import MemoryEventEligibilityPolicy
 from qq_ai_bot.memory.rebuild.models import (
@@ -53,7 +52,6 @@ class ConversationReadVersion:
     starts_after_event_id: int
     prompt_source_revision: int = 0
     visible_event_ids: tuple[int, ...] = field(default=(), compare=False)
-    rollup_stamp: tuple[int, int] = field(default=(0, 0), compare=False)
     selected_summary_text: str | None = field(default=None, compare=False)
     observation_sources: tuple[tuple[str, int], ...] = field(default=(), compare=False)
     observation_actor_id: str = field(default="", compare=False)
@@ -94,7 +92,7 @@ class EventLedgerRepository:
     def __init__(self, database: Database) -> None:
         self._database = database
         self._memory_eligibility = MemoryEventEligibilityPolicy()
-        self._writer = ScopedEventLedgerUnitOfWork(database, config=RollupPolicyConfig())
+        self._writer = ScopedEventLedgerUnitOfWork(database)
 
     def set_scoped_writer(self, writer: ScopedEventLedgerUnitOfWork) -> None:
         self._writer = writer

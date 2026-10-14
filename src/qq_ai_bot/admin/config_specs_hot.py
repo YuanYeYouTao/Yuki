@@ -13,18 +13,6 @@ from qq_ai_bot.admin.models import ConfigSpec
 
 def hot_config_specs() -> tuple[ConfigSpec, ...]:
     return (
-        _spec(
-            "context.compaction_window_tokens",
-            "上下文软整理窗口",
-            "本地估算的整理基准，乘既有触发/目标比例；普通历史、Rollup 与 Work 共用。"
-            "不增加模型输入上限，未达到整理目标不拒绝能装入真实容量的请求。",
-            value_type="integer",
-            minimum=1,
-            scopes=_GGU,
-            getter=_field("context_compaction_window_tokens"),
-            settings_fields=("context_compaction_window_tokens",),
-            category="context",
-        ),
         *tuple(
             _spec(
                 key,
@@ -78,64 +66,6 @@ def hot_config_specs() -> tuple[ConfigSpec, ...]:
                     "work_context_window_tokens",
                     8192,
                     2097152,
-                ),
-                (
-                    "context.compaction_output_tokens",
-                    "Work 摘要输出预算",
-                    "work_compaction_max_output_tokens",
-                    1024,
-                    None,
-                ),
-                (
-                    "context.rollup_output_tokens",
-                    "群史摘要输出预算",
-                    "conversation_rollup_max_output_tokens",
-                    1024,
-                    None,
-                ),
-                (
-                    "context.rollup_summary_characters",
-                    "群史摘要完整正文上限",
-                    "conversation_rollup_summary_max_characters",
-                    1024,
-                    65536,
-                ),
-            )
-        ),
-        *tuple(
-            _spec(
-                key,
-                title,
-                "按输入容量与独立整理窗口中的较小值计算；目标水位必须低于触发水位，"
-                "均为软整理政策。",
-                value_type="number",
-                minimum=0.10,
-                maximum=0.95,
-                scopes=_GGU,
-                getter=_field(field),
-                settings_fields=(field,),
-                category="context",
-            )
-            for key, title, field in (
-                (
-                    "context.compaction_trigger_ratio",
-                    "聊天/群史压缩触发水位",
-                    "conversation_rollup_trigger_ratio",
-                ),
-                (
-                    "context.compaction_target_ratio",
-                    "聊天/群史压缩目标水位",
-                    "conversation_rollup_target_ratio",
-                ),
-                (
-                    "context.work_compaction_trigger_ratio",
-                    "Work 压缩触发水位",
-                    "work_compaction_trigger_ratio",
-                ),
-                (
-                    "context.work_compaction_target_ratio",
-                    "Work 压缩目标水位",
-                    "work_compaction_target_ratio",
                 ),
             )
         ),

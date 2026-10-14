@@ -20,7 +20,6 @@ from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
     ConversationLegacyAliasModel,
 )
-from qq_ai_bot.conversation.hydrate import delete_canonical_rollup_projections
 from qq_ai_bot.domain.audio import parse_transcripts, serialize_transcripts
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
@@ -725,14 +724,10 @@ class PeopleRepository:
                 from qq_ai_bot.runtime.work_repository import WorkRepository
 
                 await WorkRepository.purge_scope(session, conversation.id)
-                await delete_canonical_rollup_projections(session, conversation.id)
                 if not is_private_target:
                     conversation.generation += 1
                     conversation.starts_after_event_id = conversation.last_event_id
-                    conversation.covered_through_event_id = conversation.last_event_id
                     conversation.last_generation_change_event_id = 0
-                    conversation.uncovered_event_count = 0
-                    conversation.uncovered_character_count = 0
                     conversation.revision += 1
                     conversation.updated_at = now
         await self._forget_person_plugin(session, person_id, owner_externals)
@@ -1011,7 +1006,7 @@ class PeopleRepository:
         tool_invocations, runtime_turn_observations,
         plugin_notification_outbox, plugin_background_turn_jobs,
         model_invocations.
-        CASCADE: canonical rollup / job / emergency overlay.
+        CASCADE: canonical Conversation projections.
         Deferred NO ACTION: conversation aliases (deleted later).
 
         Ledger retain: attributable chat_events are deleted later; leftover

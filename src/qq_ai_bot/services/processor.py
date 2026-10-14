@@ -39,11 +39,8 @@ from qq_ai_bot.conversation.ordinary_admission import (
     OrdinaryParticipationBinding,
     PreparedOrdinaryAdmission,
 )
-from qq_ai_bot.conversation.rollup.repository import (
-    ConversationRollupRepository,
-    ConversationScopeRepository,
-)
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot, runtime_conversation_key
+from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.domain.messages import (
@@ -321,7 +318,6 @@ class MessageProcessor:
         settings: Settings,
         ledger: EventLedgerRepository,
         conversation_scopes: ConversationScopeRepository,
-        conversation_rollups: ConversationRollupRepository,
         effect_gate: ConversationEffectGate,
         groups: GroupSettingsRepository,
         private_users: PrivateUserSettingsRepository,
@@ -365,7 +361,6 @@ class MessageProcessor:
         self._settings = settings
         self._asr = asr_service
         self._conversation_scopes = conversation_scopes
-        self._conversation_rollups = conversation_rollups
         self._effect_gate = effect_gate
         self._groups = groups
         self._group_name_refreshes: OrderedDict[str, float] = OrderedDict()
@@ -428,7 +423,6 @@ class MessageProcessor:
         self._automation_worker = automation_worker
         self._commands = command_service or CommandService(
             settings=settings,
-            rollups=conversation_rollups,
             people=self._people,
             memories=self._memories,
             concurrency=concurrency,

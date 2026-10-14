@@ -54,7 +54,6 @@ class WorkScheduler:
             name: TimingSummary()
             for name in (
                 "repair_inputs",
-                "wake_rollups",
                 "reclaim",
                 "protocol_cleanup",
                 "settle_schedules",
@@ -211,8 +210,6 @@ class WorkScheduler:
 
         with self._timed("repair_inputs"):
             await self.repository.repair_abandoned_inputs(PROCESS_ID)
-        with self._timed("wake_rollups"):
-            await self.repository.wake_context_rollups()
         if time.monotonic() - self._last_reclaim > 600:
             from qq_ai_bot.runtime.protocol_store import ProtocolStore
 

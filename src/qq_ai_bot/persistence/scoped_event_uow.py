@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -13,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
-    CanonicalConversationRollupModel,
     CanonicalEventReceiptModel,
 )
 from qq_ai_bot.conversation.hydrate import (
@@ -21,12 +19,7 @@ from qq_ai_bot.conversation.hydrate import (
     hydrate_scope_state_from_canonical,
     touch_canonical_watermarks,
 )
-from qq_ai_bot.conversation.rollup.metrics import ConversationRollupMetrics
-from qq_ai_bot.conversation.rollup.models import ConversationScopeState, RollupPolicyConfig
-from qq_ai_bot.conversation.rollup.prompt_accounting import (
-    durable_uncovered_event_characters,
-)
-from qq_ai_bot.conversation.rollup.repository import calculate_canonical_uncovered
+from qq_ai_bot.conversation.scope_models import ConversationScopeState
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.identity.canonical_repository import (
     apply_event_identity,
@@ -55,7 +48,6 @@ class ScopedAppendResult:
     event: EventRecord
     scope: ConversationScopeState
     created: bool
-    job_signalled: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,10 +61,6 @@ class NewGenerationResult:
 class _DerivedTextUpdate:
     event: EventRecord
     source_token: tuple[Any, ...] | None
-    rollup_token: tuple[int, int, int] | None
-    counters: tuple[int, int] | None
-    repaired: bool
-    reset_rollup: bool
 
 
 def _derived_source_token(conversation: CanonicalConversationModel) -> tuple[Any, ...]:
@@ -81,48 +69,18 @@ def _derived_source_token(conversation: CanonicalConversationModel) -> tuple[Any
         conversation.prompt_source_revision,
         conversation.starts_after_event_id,
         conversation.last_event_id,
-        conversation.covered_through_event_id,
         conversation.revision,
-        conversation.uncovered_event_count,
-        conversation.uncovered_character_count,
         conversation.kind,
         conversation.person_id,
         conversation.space_id,
     )
 
 
-def _derived_rollup_token(
-    rollup: CanonicalConversationRollupModel | None,
-) -> tuple[int, int, int] | None:
-    return (
-        (rollup.generation, rollup.covered_through_event_id, rollup.revision)
-        if rollup is not None
-        else None
-    )
-
-
 class ScopedEventLedgerUnitOfWork:
-    """Commit event, scope counters, and the single job signal atomically."""
+    """Commit source events and canonical identity watermarks atomically."""
 
-    def __init__(
-        self,
-        database: Database,
-        *,
-        config: RollupPolicyConfig,
-        notify_worker: Callable[[], None] | None = None,
-        metrics: ConversationRollupMetrics | None = None,
-    ) -> None:
+    def __init__(self, database: Database) -> None:
         self._database = database
-        self._config = config
-        self._notify_worker = notify_worker
-        self.metrics = metrics or ConversationRollupMetrics()
-
-    def set_worker_notifier(self, notify_worker: Callable[[], None] | None) -> None:
-        self._notify_worker = notify_worker
-
-    def notify_committed(self, result: ScopedAppendResult) -> None:
-        """Notify only after an external caller committed its shared ledger transaction."""
-        self._notify_after_commit(result.job_signalled)
 
     async def append_external(
         self,
@@ -246,7 +204,6 @@ class ScopedEventLedgerUnitOfWork:
                 external_target_id=external_target_id,
                 caused_by_event_id=caused_by_event_id,
             )
-        self._notify_after_commit(result.job_signalled)
         return result
 
     async def set_visual_summary(self, event_id: int, summary: str) -> bool:
@@ -299,54 +256,9 @@ class ScopedEventLedgerUnitOfWork:
                     return False
                 if row.audio_transcript:
                     return row.audio_transcript == normalized
-            old = _event_record(row)
-            if conversation is None:
-                return _DerivedTextUpdate(old, None, None, None, False, False)
-            rollup = await reader.get(CanonicalConversationRollupModel, conversation.id)
-            coverage = (
-                rollup.covered_through_event_id
-                if rollup is not None and rollup.generation == conversation.generation
-                else conversation.starts_after_event_id
-            )
-            new = (
-                replace(old, audio_transcript=normalized)
-                if audio
-                else replace(old, visual_summary=normalized)
-            )
-            counters = None
-            repaired = False
-            reset_rollup = audio and row.id <= coverage
-            if row.id > coverage:
-                kwargs = {
-                    "bot_display_name": self._config.bot_display_name,
-                    "timezone": self._config.timezone,
-                }
-                next_characters = conversation.uncovered_character_count + (
-                    durable_uncovered_event_characters(new, **kwargs)
-                    - durable_uncovered_event_characters(old, **kwargs)
-                )
-                if next_characters < 0:
-                    counters = await calculate_canonical_uncovered(
-                        reader, conversation, self._config, event_override=new
-                    )
-                    repaired = True
-                else:
-                    counters = (conversation.uncovered_event_count, next_characters)
-            elif reset_rollup:
-                counters = await calculate_canonical_uncovered(
-                    reader,
-                    conversation,
-                    self._config,
-                    coverage=conversation.starts_after_event_id,
-                    event_override=new,
-                )
             return _DerivedTextUpdate(
-                old,
-                _derived_source_token(conversation),
-                _derived_rollup_token(rollup),
-                counters,
-                repaired,
-                reset_rollup,
+                _event_record(row),
+                _derived_source_token(conversation) if conversation is not None else None,
             )
 
     async def _set_derived_text(
@@ -357,16 +269,12 @@ class ScopedEventLedgerUnitOfWork:
         audio: bool,
         generation: int | None = None,
     ) -> bool:
-        from qq_ai_bot.conversation.canonical_rollup import signal_canonical_rollup_if_needed
-        from qq_ai_bot.conversation.hydrate import delete_canonical_rollup_projections
-
         while True:
             prepared = await self._prepare_derived_text(
                 event_id, normalized, audio=audio, generation=generation
             )
             if isinstance(prepared, bool):
                 return prepared
-            signalled = False
             async with self._database.immediate_session() as session:
                 row = await session.get(ChatEventModel, event_id)
                 if row is None:
@@ -384,45 +292,19 @@ class ScopedEventLedgerUnitOfWork:
                     return False
                 if audio and row.audio_transcript:
                     return row.audio_transcript == normalized
-                rollup = (
-                    await session.get(CanonicalConversationRollupModel, conversation.id)
-                    if conversation is not None
-                    else None
-                )
                 if (
                     _event_record(row) != prepared.event
                     or (_derived_source_token(conversation) if conversation is not None else None)
                     != prepared.source_token
-                    or _derived_rollup_token(rollup) != prepared.rollup_token
                 ):
                     continue
                 # The writer has validated the exact snapshot; only bounded PK
-                # writes and job signalling remain. Never recount after flush.
+                # writes remain. No source scan or rendering occurs after flush.
                 if audio:
                     row.audio_transcript = normalized
                 else:
                     row.visual_summary = normalized
                 await session.flush()
-                if conversation is not None:
-                    now = datetime.now(UTC)
-                    if prepared.reset_rollup:
-                        await delete_canonical_rollup_projections(session, conversation.id)
-                        conversation.covered_through_event_id = conversation.starts_after_event_id
-                        conversation.revision += 1
-                    if prepared.counters is not None:
-                        (
-                            conversation.uncovered_event_count,
-                            conversation.uncovered_character_count,
-                        ) = prepared.counters
-                        conversation.updated_at = now
-                        signalled = await signal_canonical_rollup_if_needed(
-                            session, conversation, force_existing=True
-                        )
-                    else:
-                        self.metrics.late_visual_after_coverage += 1
-            if prepared.repaired:
-                self.metrics.counter_repairs += 1
-            self._notify_after_commit(signalled)
             return True
 
     async def _find_existing_live(
@@ -701,7 +583,6 @@ class ScopedEventLedgerUnitOfWork:
             event=_event_record(existing),
             scope=await hydrate_scope_state_from_canonical(session, scope, conversation),
             created=False,
-            job_signalled=False,
         )
 
     async def _append_on_session(
@@ -1014,16 +895,10 @@ class ScopedEventLedgerUnitOfWork:
                 external_payload=external_payload,
                 caused_by_event_id=caused_by_event_id,
             )
-        event = _event_record(row)
         await touch_canonical_watermarks(
             session,
             hydrated.conversation_id,
             event_id=row.id,
-            characters=durable_uncovered_event_characters(
-                event,
-                bot_display_name=self._config.bot_display_name,
-                timezone=self._config.timezone,
-            ),
         )
         conversation = await session.get(type(conversation), hydrated.conversation_id)
         if conversation is None:
@@ -1038,23 +913,8 @@ class ScopedEventLedgerUnitOfWork:
                 generation=int(conversation.generation),
                 segments=segments,
             )
-        from qq_ai_bot.conversation.canonical_rollup import signal_canonical_rollup_if_needed
-
-        signalled = await signal_canonical_rollup_if_needed(
-            session, conversation, force_existing=not plugin_external
-        )
         return ScopedAppendResult(
             event=_event_record(row),
             scope=await hydrate_scope_state_from_canonical(session, scope, conversation),
             created=True,
-            job_signalled=signalled,
         )
-
-    def _notify_after_commit(self, signalled: bool) -> None:
-        if signalled and self._notify_worker is not None:
-            try:
-                self._notify_worker()
-            except Exception:
-                # Durable polling is authoritative; the process-local wakeup
-                # is only a latency optimization.
-                return

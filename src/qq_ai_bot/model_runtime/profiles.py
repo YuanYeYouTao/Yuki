@@ -92,7 +92,6 @@ _DEFAULT_REQUIREMENTS: dict[ModelTask, frozenset[ModelCapability]] = {
     ModelTask.EMOJI_REPLACEMENT: frozenset(),
     ModelTask.PLUGIN_AGENT_SESSION: frozenset({ModelCapability.TOOLS}),
     ModelTask.UTILITY_STRUCTURED: frozenset(),
-    ModelTask.CONVERSATION_COMPACTION: frozenset(),
 }
 
 
@@ -129,6 +128,11 @@ def parse_model_profile_catalog(
             for profile_id, payload in document.profiles.items()
         }
         raw_routes = dict(document.routes)
+        if raw_routes.pop("conversation_compaction", None) is not None:
+            logger.warning(
+                "Ignoring retired model route conversation_compaction; "
+                "remove it from model_profiles.toml"
+            )
         routes = {
             ModelTask(task_name): ModelRoute(
                 task=ModelTask(task_name),

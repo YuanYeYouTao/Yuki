@@ -170,8 +170,8 @@ async def test_full_prepare_equivalence_and_only_missing_body_reads(database, mo
         rebuild_reason="bootstrap",
         # Current producer records the full representation. Legacy NULL metadata
         # is separately tested as an explicit epoch rebuild, never silent reuse.
-        selected_summary_kind="model" if case == "summary" else context.metrics.rollup_mode,
-        selected_summary_renderer=1,
+        selected_summary_kind="model" if case == "summary" else context.metrics.checkpoint_kind,
+        selected_summary_renderer=2,
         selected_summary_text="selected summary" if case == "summary" else "",
         selected_summary_coverage=5 if case == "summary" else 0,
     )
@@ -184,15 +184,13 @@ async def test_full_prepare_equivalence_and_only_missing_body_reads(database, mo
             history_fragments=suffix,
             history_event_fragments=suffix,
             history_messages=tuple(message for _, message in suffix),
-            rollup_text="new derived summary",
+            checkpoint_text="new derived summary",
             prompt_effective_coverage=400,
             visible_event_ids=frozenset(range(401, context.current_event_id + 1)),
         )
     args = dict(
         view_key="a" * 64,
         context_key="b" * 64,
-        context_fits=lambda _: True,
-        context_hard_fits=lambda _: True,
     )
     with monkeypatch.context() as patch:
         patch.setattr(EventLedgerRepository, "read_scope_missing_history", legacy_missing)
@@ -252,8 +250,6 @@ async def test_changed_source_before_snapshot_loads_no_body(database, change):
             "erase": "prompt_source_revision",
         }[change]
         values = {field: getattr(version, field) + 1}
-        if change == "boundary":
-            values["covered_through_event_id"] = version.starts_after_event_id + 1
         await writer.execute(
             update(CanonicalConversationModel)
             .where(CanonicalConversationModel.id == version.conversation_id)
@@ -394,8 +390,6 @@ async def test_history_preparation_version_change_is_source_error(database, monk
             context,
             view_key="a" * 64,
             context_key="b" * 64,
-            context_fits=lambda _: True,
-            context_hard_fits=lambda _: True,
         )
 
 
@@ -513,8 +507,6 @@ async def test_publication_still_rejects_change_after_missing_history_prepare(da
         context,
         view_key="a" * 64,
         context_key="b" * 64,
-        context_fits=lambda _: True,
-        context_hard_fits=lambda _: True,
     )
     publication = await prepared.prepare_commit(
         prepared.fragments.append_current(context.current_event_id, context.current_message)

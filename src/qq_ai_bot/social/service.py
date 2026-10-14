@@ -1494,12 +1494,6 @@ class SocialService:
                 raise
         else:
             if appended is not None:
-                try:
-                    self.writer.notify_committed(appended)
-                except Exception:
-                    # The send and ledger already committed. A wakeup failure
-                    # cannot downgrade success or create a retryable delivery.
-                    logging.getLogger(__name__).exception("social_post_commit_notify_failed")
                 from qq_ai_bot.execution_trace.recorder import record_confirmed_delivery
 
                 await record_confirmed_delivery(operation_id, appended.event.id)

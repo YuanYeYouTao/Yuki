@@ -24,7 +24,6 @@ class ModelTask(StrEnum):
     EMOJI_REPLACEMENT = "emoji_replacement"
     PLUGIN_AGENT_SESSION = "plugin_agent_session"
     UTILITY_STRUCTURED = "utility_structured"
-    CONVERSATION_COMPACTION = "conversation_compaction"
 
 
 class ModelExecutionPriority(StrEnum):

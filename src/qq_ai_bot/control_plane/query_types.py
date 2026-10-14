@@ -807,9 +807,7 @@ class ConversationView:
     generation: ConversationGeneration | None
     last_event_id: int
     starts_after_event_id: int
-    covered_through_event_id: int | None
     last_generation_change_event_id: int
-    uncovered_event_count: int
     revision: int | None
 
     def __post_init__(self) -> None:
@@ -838,15 +836,8 @@ class ConversationView:
             "last_event_id",
             "starts_after_event_id",
             "last_generation_change_event_id",
-            "uncovered_event_count",
         ):
             object.__setattr__(self, name, _require_int(getattr(self, name), name))
-        if self.covered_through_event_id is not None:
-            object.__setattr__(
-                self,
-                "covered_through_event_id",
-                _require_int(self.covered_through_event_id, "covered_through_event_id"),
-            )
         if self.revision is not None:
             object.__setattr__(self, "revision", _require_int(self.revision, "revision", minimum=1))
 

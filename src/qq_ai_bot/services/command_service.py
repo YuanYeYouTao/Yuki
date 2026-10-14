@@ -16,9 +16,9 @@ from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.automation.worker import AutomationWorker
 from qq_ai_bot.config import Settings
-from qq_ai_bot.conversation.rollup.renderer import render_rollup_status_lines
-from qq_ai_bot.conversation.rollup.repository import ConversationRollupRepository
+from qq_ai_bot.conversation.projection_models import PromptProjectionModel
 from qq_ai_bot.conversation.scope import runtime_conversation_key
+from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, OutboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
@@ -65,7 +65,7 @@ class CommandService:
         self,
         *,
         settings: Settings,
-        rollups: ConversationRollupRepository,
+        conversation_scopes: ConversationScopeRepository | None = None,
         people: PeopleRepository,
         memories: MemoryFactService,
         concurrency: ConcurrencyManager,
@@ -88,7 +88,9 @@ class CommandService:
         memory_rebuild: MemoryRebuildService | None = None,
     ) -> None:
         self._settings = settings
-        self._rollups = rollups
+        self._conversation_scopes = conversation_scopes or ConversationScopeRepository(
+            people._database
+        )
         self._people = people
         self._concurrency = concurrency
         self._onebot_connected = onebot_connected
@@ -221,7 +223,18 @@ class CommandService:
                 else "已开始新的私聊会话；永久聊天账本和长期记忆仍然保留。"
             )
         elif command is CommandName.STATUS:
-            rollup_status = await self._rollups.detailed_status(identity)
+            scope = await self._conversation_scopes.get(identity)
+            async with self._people._database.sessions() as session:
+                checkpoint = await session.get(PromptProjectionModel, scope.id) if scope else None
+                compact_line = (
+                    f"Compact 覆盖点：{checkpoint.selected_summary_coverage}，"
+                    f"时间：{checkpoint.updated_at.isoformat()}"
+                    if checkpoint is not None
+                    and checkpoint.selected_summary_text
+                    and scope is not None
+                    and checkpoint.generation == scope.generation
+                    else "Compact 检查点：无"
+                )
             pending_restart = await self._runtime_config.pending_restart_count()
             vision_busy = self._vision is not None and self._vision.busy
             vision_queue_depth = self._vision.queue_depth if self._vision is not None else 0
@@ -250,7 +263,6 @@ class CommandService:
             )
             automation_last_text = automation_last_run.isoformat() if automation_last_run else "无"
             automation_next_text = automation_next_run.isoformat() if automation_next_run else "无"
-            rollup_lines = render_rollup_status_lines(rollup_status, scope_key=conversation_key)
             text = (
                 f"OneBot 连接：{'已连接' if self._onebot_connected() else '未连接'}\n"
                 f"模型：{self._settings.llm_model or '未配置'}\n"
@@ -263,7 +275,7 @@ class CommandService:
                 f"表情候选/已采用/待处理："
                 f"{emoji_counts.get('candidate', 0)}/"
                 f"{emoji_counts.get('adopted', 0)}/"
-                f"{emoji_counts.get('jobs_pending', 0)}\n" + "\n".join(rollup_lines) + "\n"
+                f"{emoji_counts.get('jobs_pending', 0)}\n" + compact_line + "\n"
                 f"请求处理中："
                 f"{'是' if self._concurrency.is_processing(conversation_key) else '否'}\n"
                 f"待重启配置数：{pending_restart}\n"

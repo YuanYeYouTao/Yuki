@@ -28,16 +28,12 @@ from qq_ai_bot.conversation.ordinary_admission import (
     OrdinaryAdmissionRepository,
     PreparedOrdinaryAdmission,
 )
-from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
-from qq_ai_bot.conversation.rollup.repository import (
-    ConversationRollupRepository,
-    ConversationScopeRepository,
-)
-from qq_ai_bot.conversation.rollup.service import ConversationRollupService
 from qq_ai_bot.conversation.scope import (
     ConversationTurnSnapshot,
     runtime_conversation_key,
 )
+from qq_ai_bot.conversation.scope_models import ConversationCoverageError
+from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import (
     AttachmentKind,
@@ -244,8 +240,6 @@ class ChatService:
         event_publisher: LifecycleEventPublisher | None = None,
         tool_artifacts: ToolArtifactWriter | None = None,
         tool_invocations: ToolInvocationRecorder | None = None,
-        rollup_repository: ConversationRollupRepository | None = None,
-        rollup_service: ConversationRollupService | None = None,
         conversation_scopes: ConversationScopeRepository | None = None,
         effect_gate: ConversationEffectGate | None = None,
     ) -> None:
@@ -286,15 +280,10 @@ class ChatService:
         if context_assembler is not None:
             self._context_assembler = context_assembler
         else:
-            if rollup_repository is None or rollup_service is None:
-                raise TypeError("rollup_repository and rollup_service are required")
             self._context_assembler = ContextAssembler(
                 settings=settings,
                 ledger=self._ledger,
-                rollup_repository=rollup_repository,
-                rollup_service=rollup_service,
-                history_budget=self._history_input_budget,
-                history_capacity=partial(self._history_input_budget, maintenance=False),
+                conversation_scopes=self._conversation_scopes,
             )
         self._prompt_composer = prompt_composer or PromptComposer(settings)
         from qq_ai_bot.runtime.activation_bindings import ActiveWorkBindings
@@ -314,9 +303,6 @@ class ChatService:
         from qq_ai_bot.runtime.work_repository import WorkRepository
 
         self._work_repository = WorkRepository(self._ledger._database)
-        from qq_ai_bot.services.rollup_wakeup import RollupWakeups
-
-        self.rollup_wakeups = RollupWakeups(self._ledger._database)
         self._turn_coordinator = turn_coordinator or ConversationTurnCoordinator(
             interrupt_autonomous_on_new_message=(
                 settings.conversation_interrupt_autonomous_on_new_message
@@ -339,7 +325,6 @@ class ChatService:
         self,
         runtime: RuntimeConfigSnapshot,
         *,
-        maintenance: bool = True,
         allowed_capabilities: frozenset[str] | None = None,
     ) -> int:
         from qq_ai_bot.model_runtime.capacity import (
@@ -352,10 +337,6 @@ class ChatService:
         budget = capacity.input_budget(
             runtime.context.window_tokens, output_tokens=runtime.llm.max_output_tokens
         )
-        # History preparation follows the maintenance policy, not the larger
-        # request reserve. This also bounds fresh history after a restart.
-        if maintenance:
-            budget = min(budget, runtime.context.compaction_window_tokens)
         contract = getattr(self.runtime.runner, "main_contract", None)
         tools = getattr(contract, "_tools", None)
         if tools:
@@ -383,9 +364,7 @@ class ChatService:
             )
         )
         fixed = estimate_request_tokens(template) + (0 if tools else 32768)
-        if maintenance:
-            budget = int(budget * runtime.context.compaction_trigger_ratio)
-        return max(1, budget - fixed - (4096 if maintenance else 0))
+        return max(1, budget - fixed)
 
     def _build_tool_registry(self, runtime: ToolRuntime) -> ToolProviderRegistry:
         """Adapt every domain service once; execution later uses bindings only."""
@@ -728,11 +707,6 @@ class ChatService:
     ) -> int:
         """Coalesce unowned chat retries; accepted work keeps its own recovery."""
         with self.runtime.executions.track():
-            from qq_ai_bot.runtime.activation_outcome import (
-                WorkActivationHandled,
-                WorkRecoveryDeferred,
-            )
-            from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
 
             arguments: dict[str, Any] = dict(
                 runtime_snapshot=runtime_snapshot,
@@ -742,70 +716,7 @@ class ChatService:
                 turn_token=turn_token,
                 turn_snapshot=turn_snapshot,
             )
-            ticket = self.rollup_wakeups.enter(inbound.conversation_id)
-            changed = None
-            original_event = None
-            try:
-                if turn_snapshot is not None and turn_snapshot.trigger_event_id is not None:
-                    original_event = await self._ledger.get_event(turn_snapshot.trigger_event_id)
-                result = await self._respond(
-                    inbound, identity, profile, content, sender, **arguments
-                )
-            except HistorySourceChangedError as exc:
-                if self._turn_coordinator.can_retry_uncommitted(turn_token):
-                    changed = exc.version
-                else:
-                    logger.info("rollup_chat_wakeup_skipped reason=effect_or_superseded")
-            except (WorkActivationHandled, WorkRecoveryDeferred):
-                self.rollup_wakeups.handled(ticket)
-                raise
-            else:
-                self.rollup_wakeups.handled(ticket)
-                return result
-            finally:
-                self.rollup_wakeups.leave(ticket, deferred=changed is not None)
-            if changed is None or turn_snapshot is None:
-                self.rollup_wakeups.discard(ticket)
-                return 0
-            if not await self.rollup_wakeups.wait(changed, ticket):
-                return 0
-            if original_event is None or (
-                await self._ledger.get_event(original_event.id) != original_event
-            ):
-                logger.info("rollup_chat_wakeup_skipped reason=trigger_changed")
-                return 0
-            # Original actor/event/generation remain authoritative. Never replay ingress.
-            token = await self._turn_coordinator.begin_background(turn_snapshot.scope_key)
-            if token is None:
-                return 0
-            arguments["turn_token"] = token
-            arguments["turn_snapshot"] = replace(turn_snapshot, coordinator_version=token.version)
-            arguments["runtime_snapshot"] = None
-            from qq_ai_bot.services.rollup_wakeup import (
-                rollup_wakeup_history,
-                rollup_wakeup_watermark,
-            )
-
-            history_token = rollup_wakeup_history.set(True)
-            watermark_token = rollup_wakeup_watermark.set(0)
-            ticket = self.rollup_wakeups.enter(inbound.conversation_id)
-            try:
-                result = await self._respond(
-                    inbound, identity, profile, content, sender, **arguments
-                )
-                self.rollup_wakeups.handled(ticket)
-                if self.rollup_wakeups.on_consumed is not None and inbound.conversation_id:
-                    self.rollup_wakeups.on_consumed(
-                        inbound.conversation_id, rollup_wakeup_watermark.get()
-                    )
-                return result
-            except HistorySourceChangedError:
-                logger.info("rollup_wakeup_deferred_again")
-                return 0
-            finally:
-                self.rollup_wakeups.leave(ticket)
-                rollup_wakeup_history.reset(history_token)
-                rollup_wakeup_watermark.reset(watermark_token)
+            return await self._respond(inbound, identity, profile, content, sender, **arguments)
 
     async def _respond(
         self,
@@ -990,7 +901,7 @@ class ChatService:
                 preparation.advance("work_activation")
                 if start_work is not None and work_control is None:
                     work_control = await start_work()
-                # Required rollup/model preparation must not hold reset/privacy's
+                # Context preparation must not hold reset/privacy's
                 # effect gate. Linearize only the completed snapshot and projection;
                 # dispatch retains this same source guard across subsequent requests.
                 preparation.advance("context_validation")

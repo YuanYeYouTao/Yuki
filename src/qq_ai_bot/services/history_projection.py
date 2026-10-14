@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -54,9 +53,9 @@ class PreparedHistory:
             expected_epoch=previous.epoch_id if previous else None,
             expected_revision=previous.revision if previous else 0,
             rebuild_reason=None if self.committed is not None else self.reason,
-            selected_summary_text=self.context.rollup_text,
+            selected_summary_text=self.context.checkpoint_text,
             selected_summary_coverage=self.context.prompt_effective_coverage,
-            selected_summary_kind=self.context.metrics.rollup_mode,
+            selected_summary_kind=self.context.metrics.checkpoint_kind,
             selected_summary_renderer=SUMMARY_RENDERER_VERSION,
             previous_snapshot=previous,
             previous_item_count=(
@@ -73,8 +72,6 @@ async def prepare_history(
     *,
     view_key: str,
     context_key: str,
-    context_fits: Callable[[AssembledContext], bool],
-    context_hard_fits: Callable[[AssembledContext], bool],
 ) -> PreparedHistory:
     """Append canonical public history in the Conversation's existing epoch."""
     if context.read_version is None or context.read_version.conversation_id is None:
@@ -99,7 +96,7 @@ async def prepare_history(
     ):
         # Legacy text did not record its renderer/kind. Rebuild from currently
         # authorized source instead of guessing a label for the old body.
-        reason = "rollup"
+        reason = "source_changed"
     else:
         assert previous_fragments is not None
         frozen = previous_fragments
@@ -185,8 +182,8 @@ async def prepare_history(
         )
         selected_context = replace(
             context,
-            rollup_text=previous.selected_summary_text,
-            metrics=replace(context.metrics, rollup_mode=previous.selected_summary_kind),
+            checkpoint_text=previous.selected_summary_text,
+            metrics=replace(context.metrics, checkpoint_kind=previous.selected_summary_kind),
             prompt_effective_coverage=previous.selected_summary_coverage,
             history_fragments=additions,
             history_event_fragments=individual,
@@ -198,38 +195,7 @@ async def prepare_history(
     selected_context = replace(selected_context, history_messages=extended.messages())
     collect_phase_metrics(candidate_count=1)
     extended_messages = extended.messages()
-    fits = context_fits(replace(selected_context, history_messages=extended_messages))
-    hard_fits = context_hard_fits(replace(selected_context, history_messages=extended_messages))
-    ready_rollup = (
-        previous is not None
-        and context.prompt_effective_coverage > previous.selected_summary_coverage
-        and bool(context.rollup_text.strip())
-        and context.metrics.rollup_mode != "emergency"
-    )
-    if not hard_fits or (not fits and ready_rollup):
-        candidate_events = {
-            identity for ids, _message in context.history_fragments for identity in ids
-        }
-        fresh = FrozenFragments.load(
-            [
-                item
-                for item in frozen.items
-                if item["event_ids"] and set(item["event_ids"]) <= candidate_events
-            ]
-        ).extend_history(context.history_fragments, context.history_event_fragments)
-        collect_phase_metrics(candidate_count=1)
-        if extended.items != fresh.items:
-            # A new activation may adopt the already published summary.
-            reason = "capacity" if not hard_fits else "rollup_ready"
-            extended = fresh
-            selected_context = replace(context, history_messages=fresh.messages())
-            extended_messages = extended.messages()
-            fits = context_fits(replace(selected_context, history_messages=extended_messages))
-            hard_fits = context_hard_fits(
-                replace(selected_context, history_messages=extended_messages)
-            )
-    # The original assembler has already selected a bounded history. Its rollup
-    # is compiled separately, before these event fragments, in every epoch.
+    # Capacity is decided once by Main against its complete request.
     selected_context = replace(
         selected_context,
         history_messages=extended_messages,
@@ -241,7 +207,7 @@ async def prepare_history(
                     | ({context.current_event_id} if context.current_event_id else set())
                 )
             ),
-            selected_summary_text=selected_context.rollup_text,
+            selected_summary_text=selected_context.checkpoint_text,
         ),
     )
     return PreparedHistory(

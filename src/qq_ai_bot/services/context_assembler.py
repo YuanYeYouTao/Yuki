@@ -2,31 +2,24 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC
 from typing import Any
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.config import Settings
-from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
-from qq_ai_bot.conversation.rollup.models import ConversationRollupState
-from qq_ai_bot.conversation.rollup.prompt_accounting import prompt_visible_event_count
-from qq_ai_bot.conversation.rollup.repository import ConversationRollupRepository
-from qq_ai_bot.conversation.rollup.service import ConversationRollupService
 from qq_ai_bot.conversation.scope import (
     ConversationTurnSnapshot,
     turn_matches_hydrated_scope,
 )
+from qq_ai_bot.conversation.scope_models import ConversationCoverageError
+from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
-from qq_ai_bot.execution_trace.phases import collect_phase_metrics
-from qq_ai_bot.model_runtime.capacity import estimate_text_tokens
 from qq_ai_bot.persistence.event_repository import ConversationReadVersion
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
@@ -37,7 +30,6 @@ from qq_ai_bot.runtime.trigger import (
     SandboxTaskTurnTrigger,
     WorkResumeTrigger,
 )
-from qq_ai_bot.services.rollup_wakeup import rollup_wakeup_history, rollup_wakeup_watermark
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +43,8 @@ class ContextMetrics:
     history_messages: int
     current_message_characters: int
     raw_history_window_shifted: bool
-    rollup_characters: int = 0
-    rollup_mode: str | None = None
+    checkpoint_characters: int = 0
+    checkpoint_kind: str | None = None
     covered_to: int | None = None
 
 
@@ -66,12 +58,12 @@ class AssembledContext:
     metrics: ContextMetrics
     visible_event_ids: frozenset[int] = frozenset()
     history_anchor_event_id: int | None = None
-    rollup_text: str = ""
+    checkpoint_text: str = ""
     prompt_conversation_id: str = ""
     prompt_scope_key: str = ""
     prompt_generation: int = 0
     prompt_effective_coverage: int = 0
-    prompt_rollup_revision: int = 0
+    prompt_checkpoint_revision: int = 0
     prompt_raw_tail_end_event_id: int = 0
     read_version: ConversationReadVersion | None = None
     history_fragments: tuple[tuple[tuple[int, ...], ChatMessage], ...] = ()
@@ -99,23 +91,21 @@ class _BoundedMessages:
 
 @dataclass(frozen=True, slots=True)
 class _HistoryPromptWindow:
-    """One consistent rollup checkpoint plus its continuous uncovered suffix."""
+    """One consistent public checkpoint plus its continuous uncovered suffix."""
 
     recent: tuple[EventRecord, ...]
-    rollup_text: str
+    checkpoint_text: str
     coverage_end: int
     revision: int
-    rollup: ConversationRollupState | None
-    rollup_mode: str | None
+    checkpoint_kind: str | None
     starts_after_event_id: int = 0
     read_version: ConversationReadVersion | None = None
-    raw_complete: bool = True
     uncovered_view: _UncoveredPromptView | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class _UncoveredPromptView:
-    """Rendered uncovered history used to decide sync extractive."""
+    """Rendered authorized history reused when building the current Main input."""
 
     history_rows: tuple[EventRecord, ...]
     rendered: tuple[tuple[int, tuple[int, ...], ChatMessage], ...]
@@ -123,8 +113,6 @@ class _UncoveredPromptView:
     fallback_event_id: int | None
     current_characters: int
     rendered_characters: int
-    current_tokens: int
-    history_tokens: int
     current_message: ChatMessage
     individual: tuple[tuple[int, tuple[int, ...], ChatMessage], ...]
     recent: tuple[EventRecord, ...]
@@ -139,29 +127,11 @@ class ContextAssembler:
         *,
         settings: Settings,
         ledger: EventLedgerRepository,
-        rollup_repository: ConversationRollupRepository,
-        rollup_service: ConversationRollupService,
-        history_budget: Callable[[RuntimeConfigSnapshot], int] | None = None,
-        history_capacity: Callable[[RuntimeConfigSnapshot], int] | None = None,
+        conversation_scopes: ConversationScopeRepository,
     ) -> None:
         self._settings = settings
         self._ledger = ledger
-        self._rollups = rollup_repository
-        self._rollup_service = rollup_service
-        self._history_budget = history_budget
-        self._history_capacity = history_capacity
-
-    def _history_token_budget(self, runtime: RuntimeConfigSnapshot) -> int:
-        if self._history_budget is not None:
-            return max(1, self._history_budget(runtime))
-        return min(runtime.context.window_tokens, runtime.context.compaction_window_tokens)
-
-    def _history_capacity_token_budget(self, runtime: RuntimeConfigSnapshot) -> int:
-        if self._history_capacity is not None:
-            return max(1, self._history_capacity(runtime))
-        if self._history_budget is not None:
-            return self._history_token_budget(runtime)
-        return runtime.context.window_tokens
+        self._scopes = conversation_scopes
 
     async def _protocol_recovery_context(
         self,
@@ -199,27 +169,20 @@ class ContextAssembler:
         snapshot = await self._load_history_snapshot(identity, turn=turn, before_event_id=None)
         metadata = {"scene": "群聊" if identity.scope_type is ScopeType.GROUP else "私聊"}
         current = ChatMessage(role="user", content=content)
-        remaining = max(
-            0,
-            self._history_token_budget(runtime)
-            - estimate_text_tokens(json.dumps(metadata, ensure_ascii=False)),
-        )
-        snapshot, recent, rollup, shifted = await self._ensure_uncovered_fits_budget(
-            snapshot=snapshot,
-            recent=snapshot.recent,
-            current_event_id=None,
-            content=content,
-            yuki_account_ids=frozenset({identity.bot_user_id}),
-            current_message_override=current,
-            remainder=remaining,
-            capacity_remainder=max(
-                0,
-                self._history_capacity_token_budget(runtime)
-                - estimate_text_tokens(json.dumps(metadata, ensure_ascii=False)),
+        recent = snapshot.recent
+        snapshot = replace(
+            snapshot,
+            uncovered_view=self._uncovered_prompt_view(
+                recent,
+                current_event_id=None,
+                content=content,
+                yuki_account_ids=frozenset({identity.bot_user_id}),
+                current_message_override=current,
+                current_event=None,
             ),
-            identity=identity,
-            turn=turn,
         )
+        checkpoint = snapshot.checkpoint_text
+        shifted = False
         bounded = self._bounded_history(
             recent,
             current_event_id=None,
@@ -247,18 +210,18 @@ class ContextAssembler:
                 len(bounded.history_messages),
                 len(current.content or ""),
                 shifted,
-                rollup_characters=len(rollup),
-                rollup_mode=snapshot.rollup_mode,
+                checkpoint_characters=len(checkpoint),
+                checkpoint_kind=snapshot.checkpoint_kind,
                 covered_to=snapshot.coverage_end or None,
             ),
             visible_event_ids=bounded.visible_event_ids,
             history_anchor_event_id=bounded.history_anchor_event_id,
-            rollup_text=rollup,
+            checkpoint_text=checkpoint,
             prompt_conversation_id=turn.conversation_id,
             prompt_scope_key=turn.scope_key,
             prompt_generation=turn.generation,
             prompt_effective_coverage=snapshot.coverage_end,
-            prompt_rollup_revision=snapshot.revision,
+            prompt_checkpoint_revision=snapshot.revision,
             prompt_raw_tail_end_event_id=recent[-1].id if recent else snapshot.coverage_end,
             read_version=snapshot.read_version,
             history_fragments=bounded.history_fragments,
@@ -274,40 +237,22 @@ class ContextAssembler:
         metadata: dict[str, Any],
         read_history: bool,
         runtime: RuntimeConfigSnapshot,
-        capacity_budget: int | None = None,
     ) -> AssembledContext:
-        """Use the canonical Rollup/raw-tail projection within the plugin read grant."""
+        """Use the canonical checkpoint/raw-tail projection within the plugin read grant."""
         scope = identity
         recovery = await self._protocol_recovery_context(scope)
         if recovery is not None:
             return recovery
         version, _ = await self._ledger.read_scope_context(scope, limit=0)
         rows: tuple[EventRecord, ...] = ()
-        rollup = ""
-        rollup_mode = None
+        checkpoint = ""
+        checkpoint_kind = None
         coverage = 0
-        capacity_budget = (
-            self._history_capacity_token_budget(runtime)
-            if capacity_budget is None
-            else capacity_budget
-        )
         if read_history:
-            loaded = await self._rollups.load_prompt_snapshot(scope)
-            if not loaded.raw_complete:
-                loaded = await self._rollups.load_prompt_snapshot(
-                    scope,
-                    token_budget=max(
-                        0,
-                        capacity_budget
-                        - estimate_text_tokens(json.dumps(metadata, ensure_ascii=False))
-                        - estimate_text_tokens(content),
-                    ),
-                )
-            if not loaded.raw_complete:
-                raise ConversationCoverageError("plugin context requires explicit compaction")
+            loaded = await self._scopes.load_prompt_snapshot(scope)
             rows = loaded.raw_events
-            rollup = loaded.rollup.summary_text if loaded.rollup else ""
-            rollup_mode = loaded.rollup.summary_kind.value if loaded.rollup else None
+            checkpoint = loaded.checkpoint_text
+            checkpoint_kind = loaded.checkpoint_kind
             coverage = loaded.effective_coverage
             version = ConversationReadVersion(
                 scope,
@@ -316,7 +261,7 @@ class ContextAssembler:
                 loaded.scope.starts_after_event_id,
                 loaded.prompt_source_revision,
                 tuple(row.id for row in rows),
-                loaded.rollup_stamp,
+                selected_summary_text=loaded.checkpoint_text,
             )
         renderer = ChatEventPromptRenderer(
             rows,
@@ -327,14 +272,6 @@ class ContextAssembler:
         history = tuple(message for _, _, message in rendered)
         metadata_size = len(json.dumps(metadata, ensure_ascii=False))
         history_size = sum(len(message.content or "") for message in history)
-        if (
-            sum(estimate_text_tokens(message.content or "") for message in history)
-            + estimate_text_tokens(json.dumps(metadata, ensure_ascii=False))
-            + estimate_text_tokens(content)
-            + estimate_text_tokens(rollup)
-            > capacity_budget
-        ):
-            raise ConversationCoverageError("plugin context requires explicit compaction")
         return AssembledContext(
             metadata_payload=metadata,
             history_messages=history,
@@ -345,12 +282,12 @@ class ContextAssembler:
                 len(history),
                 len(content),
                 False,
-                rollup_characters=len(rollup),
-                rollup_mode=rollup_mode,
+                checkpoint_characters=len(checkpoint),
+                checkpoint_kind=checkpoint_kind,
                 covered_to=coverage or None,
             ),
             read_version=version,
-            rollup_text=rollup,
+            checkpoint_text=checkpoint,
             prompt_effective_coverage=coverage,
             prompt_raw_tail_end_event_id=max((row.id for row in rows), default=coverage),
             visible_event_ids=frozenset(row.id for row in rows),
@@ -423,7 +360,6 @@ class ContextAssembler:
             raise ConversationCoverageError("turn trigger event does not match scope snapshot")
         recent = snapshot.recent
 
-        total_budget = self._history_token_budget(runtime)
         metadata_payload = {"scene": "群聊" if inbound.group_id else "私聊"}
         metadata_json = json.dumps(
             metadata_payload,
@@ -431,23 +367,20 @@ class ContextAssembler:
             separators=(",", ":"),
             default=str,
         )
-        remainder = max(0, total_budget - estimate_text_tokens(metadata_json))
-        snapshot, recent, rollup_text, shifted = await self._ensure_uncovered_fits_budget(
-            snapshot=snapshot,
-            recent=recent,
-            current_event_id=current_event.id,
-            content=content,
-            yuki_account_ids=inbound.yuki_account_ids,
-            current_message_override=None,
-            remainder=remainder,
-            capacity_remainder=max(
-                0,
-                self._history_capacity_token_budget(runtime) - estimate_text_tokens(metadata_json),
+        recent = recent
+        snapshot = replace(
+            snapshot,
+            uncovered_view=self._uncovered_prompt_view(
+                recent,
+                current_event_id=current_event.id,
+                content=content,
+                yuki_account_ids=inbound.yuki_account_ids,
+                current_message_override=None,
+                current_event=current_event,
             ),
-            identity=identity,
-            current_event=current_event,
-            turn=turn,
         )
+        checkpoint_text = snapshot.checkpoint_text
+        shifted = False
         metadata_json = json.dumps(
             metadata_payload,
             ensure_ascii=False,
@@ -469,38 +402,29 @@ class ContextAssembler:
         history_messages = bounded_messages.history_messages
         current_message = bounded_messages.current_message
         history_characters = sum(len(message.content or "") for message in history_messages)
-        uncovered_events = prompt_visible_event_count(
-            tuple(row for row in recent if row.id != current_event.id)
-        )
-        over_budget = int(
-            sum(estimate_text_tokens(message.content or "") for message in history_messages)
-            + estimate_text_tokens(current_message.content or "")
-            + estimate_text_tokens(rollup_text)
-            > remainder
-        )
+        uncovered_events = len(tuple(row for row in recent if row.id != current_event.id))
         metrics = ContextMetrics(
             metadata_characters=len(metadata_json),
             history_characters=history_characters,
             history_messages=len(history_messages),
             current_message_characters=len(current_message.content or ""),
             raw_history_window_shifted=bounded_messages.raw_history_window_shifted,
-            rollup_characters=len(rollup_text),
-            rollup_mode=snapshot.rollup_mode,
+            checkpoint_characters=len(checkpoint_text),
+            checkpoint_kind=snapshot.checkpoint_kind,
             covered_to=snapshot.coverage_end or None,
         )
         logger.debug(
             "context_assembled metadata_characters=%d history_characters=%d "
             "history_messages=%d current_message_characters=%d "
-            "raw_history_window_shifted=%s rollup_characters=%d "
-            "uncovered_events=%d over_budget=%d",
+            "raw_history_window_shifted=%s checkpoint_characters=%d "
+            "history_events=%d",
             metrics.metadata_characters,
             metrics.history_characters,
             metrics.history_messages,
             metrics.current_message_characters,
             metrics.raw_history_window_shifted,
-            metrics.rollup_characters,
+            metrics.checkpoint_characters,
             uncovered_events,
-            over_budget,
         )
         await self._validate_history_source(snapshot, current_event)
         return AssembledContext(
@@ -510,12 +434,12 @@ class ContextAssembler:
             metrics=metrics,
             visible_event_ids=bounded_messages.visible_event_ids,
             history_anchor_event_id=bounded_messages.history_anchor_event_id,
-            rollup_text=rollup_text,
+            checkpoint_text=checkpoint_text,
             prompt_conversation_id=turn.conversation_id,
             prompt_scope_key=turn.scope_key,
             prompt_generation=turn.generation,
             prompt_effective_coverage=snapshot.coverage_end,
-            prompt_rollup_revision=snapshot.revision,
+            prompt_checkpoint_revision=snapshot.revision,
             prompt_raw_tail_end_event_id=(recent[-1].id if recent else snapshot.coverage_end),
             read_version=snapshot.read_version,
             history_fragments=bounded_messages.history_fragments,
@@ -563,25 +487,20 @@ class ContextAssembler:
         recent = snapshot.recent
         metadata_payload = {"scene": "群聊" if event.group_id else "私聊"}
         metadata_json = json.dumps(metadata_payload, ensure_ascii=False, separators=(",", ":"))
-        remainder = max(
-            0, self._history_token_budget(runtime) - estimate_text_tokens(metadata_json)
-        )
-        snapshot, recent, rollup_text, shifted = await self._ensure_uncovered_fits_budget(
-            snapshot=snapshot,
-            recent=recent,
-            current_event_id=None,
-            content=event.content,
-            yuki_account_ids=frozenset({event.bot_user_id}),
-            current_message_override=self._external_wakeup_message(event, trigger),
-            remainder=remainder,
-            capacity_remainder=max(
-                0,
-                self._history_capacity_token_budget(runtime) - estimate_text_tokens(metadata_json),
+        recent = recent
+        snapshot = replace(
+            snapshot,
+            uncovered_view=self._uncovered_prompt_view(
+                recent,
+                current_event_id=None,
+                content=event.content,
+                yuki_account_ids=frozenset({event.bot_user_id}),
+                current_message_override=self._external_wakeup_message(event, trigger),
+                current_event=None,
             ),
-            identity=identity,
-            current_event=None,
-            turn=turn,
         )
+        checkpoint_text = snapshot.checkpoint_text
+        shifted = False
         metadata_json = json.dumps(metadata_payload, ensure_ascii=False, separators=(",", ":"))
         bounded_messages = self._bounded_history(
             recent,
@@ -608,18 +527,18 @@ class ContextAssembler:
                 history_messages=len(history),
                 current_message_characters=len(current_message.content or ""),
                 raw_history_window_shifted=bounded_messages.raw_history_window_shifted,
-                rollup_characters=len(rollup_text),
-                rollup_mode=snapshot.rollup_mode,
+                checkpoint_characters=len(checkpoint_text),
+                checkpoint_kind=snapshot.checkpoint_kind,
                 covered_to=snapshot.coverage_end or None,
             ),
             visible_event_ids=bounded_messages.visible_event_ids,
             history_anchor_event_id=bounded_messages.history_anchor_event_id,
-            rollup_text=rollup_text,
+            checkpoint_text=checkpoint_text,
             prompt_conversation_id=turn.conversation_id,
             prompt_scope_key=turn.scope_key,
             prompt_generation=turn.generation,
             prompt_effective_coverage=snapshot.coverage_end,
-            prompt_rollup_revision=snapshot.revision,
+            prompt_checkpoint_revision=snapshot.revision,
             prompt_raw_tail_end_event_id=(recent[-1].id if recent else snapshot.coverage_end),
             read_version=snapshot.read_version,
             history_fragments=bounded_messages.history_fragments,
@@ -666,15 +585,6 @@ class ContextAssembler:
             ),
         )
 
-    @staticmethod
-    def _uncovered_tokens(view: _UncoveredPromptView, rollup_text: str) -> int:
-        return (
-            view.history_tokens
-            + view.current_tokens
-            + estimate_text_tokens(rollup_text)
-            + (128 if rollup_text else 0)
-        )
-
     async def _validate_history_source(
         self,
         snapshot: _HistoryPromptWindow,
@@ -715,15 +625,10 @@ class ContextAssembler:
         *,
         turn: ConversationTurnSnapshot,
         before_event_id: int | None,
-        token_budget: int | None = None,
     ) -> _HistoryPromptWindow:
-        read_options = {"token_budget": token_budget} if token_budget is not None else {}
-        loaded = await self._rollups.load_prompt_snapshot(
-            scope, before_event_id=before_event_id, expected_turn=turn, **read_options
+        loaded = await self._scopes.load_prompt_snapshot(
+            scope, before_event_id=before_event_id, expected_turn=turn
         )
-        if rollup_wakeup_history.get():
-            rollup_wakeup_watermark.set(loaded.raw_tail_end_event_id)
-        rollup = loaded.rollup
         if not turn_matches_hydrated_scope(
             turn,
             conversation_id=loaded.scope.id,
@@ -734,11 +639,10 @@ class ContextAssembler:
             raise ConversationCoverageError("prompt snapshot generation changed")
         return _HistoryPromptWindow(
             recent=loaded.raw_events,
-            rollup_text=rollup.summary_text if rollup is not None else "",
+            checkpoint_text=loaded.checkpoint_text,
             coverage_end=loaded.effective_coverage,
-            revision=rollup.revision if rollup is not None else 0,
-            rollup=rollup,
-            rollup_mode=rollup.summary_kind.value if rollup is not None else None,
+            revision=loaded.checkpoint_revision,
+            checkpoint_kind=loaded.checkpoint_kind,
             starts_after_event_id=loaded.scope.starts_after_event_id,
             read_version=ConversationReadVersion(
                 scope,
@@ -747,9 +651,8 @@ class ContextAssembler:
                 loaded.scope.starts_after_event_id,
                 loaded.prompt_source_revision,
                 tuple(event.id for event in loaded.raw_events),
-                loaded.rollup_stamp,
+                selected_summary_text=loaded.checkpoint_text,
             ),
-            raw_complete=loaded.raw_complete,
         )
 
     def _uncovered_prompt_view(
@@ -776,7 +679,6 @@ class ContextAssembler:
             history_rows = recent
             current_message = current_message_override
             current_characters = len(current_message_override.content or "")
-            current_tokens = estimate_text_tokens(current_message_override.content or "")
             record = None
             fallback = None
         elif current_event is not None:
@@ -787,7 +689,6 @@ class ContextAssembler:
                 current_content=content,
             )
             current_characters = len(current_message.content or "")
-            current_tokens = estimate_text_tokens(current_message.content or "")
             record = current_event
             fallback = current_event.id
         else:
@@ -805,7 +706,6 @@ class ContextAssembler:
             )
             current_text = current_message.content or ""
             current_characters = len(current_text)
-            current_tokens = estimate_text_tokens(current_text)
             record = current_row
             fallback = current_row.id
         rendered, individual = renderer.main_agent_history_views(history_rows)
@@ -816,10 +716,6 @@ class ContextAssembler:
             fallback_event_id=fallback,
             current_characters=current_characters,
             rendered_characters=sum(len(item.content or "") for _, _, item in rendered),
-            current_tokens=current_tokens,
-            history_tokens=sum(
-                estimate_text_tokens(item.content or "") + 8 for _, _, item in rendered
-            ),
             current_message=current_message_override or current_message,
             individual=individual,
             recent=recent,
@@ -834,169 +730,14 @@ class ContextAssembler:
             ),
         )
 
-    async def _ensure_uncovered_fits_budget(
-        self,
-        *,
-        snapshot: _HistoryPromptWindow,
-        recent: tuple[EventRecord, ...],
-        current_event_id: int | None,
-        content: str,
-        yuki_account_ids: frozenset[str],
-        current_message_override: ChatMessage | None,
-        remainder: int,
-        identity: ConversationScope,
-        current_event: EventRecord | None = None,
-        turn: ConversationTurnSnapshot,
-        capacity_remainder: int | None = None,
-    ) -> tuple[_HistoryPromptWindow, tuple[EventRecord, ...], str, bool]:
-        from qq_ai_bot.runtime.context_preparation import (
-            ContextPreparationMode,
-            ContextRollupRequired,
-            context_preparation_mode,
-        )
-
-        preparation_mode = context_preparation_mode.get()
-        started = asyncio.get_running_loop().time()
-        expanded = not snapshot.raw_complete
-        waited_batches = 0
-        coverage_before = snapshot.coverage_end
-        rollup_text = snapshot.rollup_text
-        capacity_remainder = remainder if capacity_remainder is None else capacity_remainder
-        if not self._settings.conversation_rollup_enabled:
-            return snapshot, recent, rollup_text, False
-        if not snapshot.raw_complete:
-            # The small startup read is not a capacity verdict. Re-read all pages
-            # in a new consistent snapshot, bounded by this request's real reserve.
-            snapshot = await self._load_history_snapshot(
-                identity, turn=turn, before_event_id=None, token_budget=capacity_remainder
-            )
-            recent, rollup_text = snapshot.recent, snapshot.rollup_text
-        rollup_deadline = (
-            asyncio.get_running_loop().time()
-            + self._settings.conversation_rollup_model_timeout_seconds
-        )
-        view: _UncoveredPromptView | None = None
-        view_tokens = 0
-        while True:
-            view = self._uncovered_prompt_view(
-                recent,
-                current_event_id=current_event_id,
-                content=content,
-                yuki_account_ids=yuki_account_ids,
-                current_message_override=current_message_override,
-                current_event=current_event,
-            )
-            if view is None:
-                break
-            view_tokens = self._uncovered_tokens(view, rollup_text)
-            if snapshot.raw_complete and view_tokens <= capacity_remainder:
-                # Appends already signal the existing background worker. Never
-                # wait for auxiliary models merely to meet its maintenance target.
-                # Main composition and Runner still check the complete request.
-                break
-            deadline = rollup_deadline
-            requires_coverage = not snapshot.raw_complete or view_tokens > capacity_remainder
-            if (
-                requires_coverage
-                and preparation_mode is ContextPreparationMode.DURABLE
-                and snapshot.read_version
-            ):
-                raise ContextRollupRequired(
-                    snapshot.read_version,
-                    snapshot.coverage_end,
-                    self._settings.conversation_rollup_model_timeout_seconds,
-                    token_budget=capacity_remainder,
-                )
-            if preparation_mode is ContextPreparationMode.FALLBACK:
-                # The original prerequisite deadline/error uses the established
-                # timeout fallback, without another long foreground model wait.
-                deadline = asyncio.get_running_loop().time()
-            logger.info(
-                "history_coverage_wait raw_complete=%s estimated_tokens=%d capacity=%d "
-                "soft_budget=%d coverage=%d",
-                snapshot.raw_complete,
-                view_tokens,
-                capacity_remainder,
-                remainder,
-                snapshot.coverage_end,
-            )
-            waited_batches += 1
-            committed = await self._rollup_service.ensure_required_coverage(
-                repository=self._rollups,
-                scope=identity,
-                lease_seconds=self._settings.conversation_rollup_lease_seconds,
-                max_batches=1,
-                deadline=deadline,
-                token_budget=capacity_remainder,
-            )
-            if not committed:
-                raise ConversationCoverageError(
-                    "raw history is over budget but no continuous prefix is compressible"
-                )
-            snapshot = await self._load_history_snapshot(
-                identity,
-                turn=turn,
-                before_event_id=None,
-                token_budget=capacity_remainder,
-            )
-            recent = snapshot.recent
-            rollup_text = snapshot.rollup_text
-            view = None
-        final_view = view
-        if final_view is None:
-            final_view = self._uncovered_prompt_view(
-                recent,
-                current_event_id=current_event_id,
-                content=content,
-                yuki_account_ids=yuki_account_ids,
-                current_message_override=current_message_override,
-                current_event=current_event,
-            )
-            if final_view is not None:
-                view_tokens = self._uncovered_tokens(final_view, rollup_text)
-        if final_view is not None:
-            collect_phase_metrics(N=len(final_view.history_rows))
-            if not snapshot.raw_complete or view_tokens > capacity_remainder:
-                raise ConversationCoverageError(
-                    "foreground coverage limit exhausted before prompt became bounded"
-                )
-            logger.info(
-                "history_preparation raw_complete=%s expanded=%s estimated_tokens=%d "
-                "capacity=%d soft_budget=%d soft_exceeded=%s waited_batches=%d "
-                "coverage=%d revision=%d seconds=%.3f",
-                snapshot.raw_complete,
-                expanded,
-                view_tokens,
-                capacity_remainder,
-                remainder,
-                view_tokens > remainder,
-                waited_batches,
-                snapshot.coverage_end,
-                snapshot.revision,
-                asyncio.get_running_loop().time() - started,
-            )
-        return (
-            replace(snapshot, uncovered_view=final_view),
-            recent,
-            rollup_text,
-            snapshot.coverage_end > coverage_before,
-        )
-
     async def _ensure_turn_generation(
         self,
         scope: ConversationScope,
         turn: ConversationTurnSnapshot,
     ) -> None:
-        """Check generation before loading bodies. Do not compact from stored count.
+        """Check the original canonical identity before selecting source bodies."""
 
-        Durable counts are diagnostics and do not decide active prompt capacity.
-        Foreground compact/fail is decided by hydrated grouped visible history
-        in ``_ensure_uncovered_fits_budget``.
-        """
-
-        if not self._settings.conversation_rollup_enabled:
-            return
-        state = await self._rollups.scope_state(scope)
+        state = await self._scopes.get(scope)
         if state is None:
             raise ConversationCoverageError("conversation scope does not exist")
         if not turn_matches_hydrated_scope(

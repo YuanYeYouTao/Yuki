@@ -9,7 +9,6 @@ from sqlalchemy import select
 from tests.support.workspace_snapshots import snapshot_bytes
 
 from qq_ai_bot.conversation.canonical_db_models import SpaceActiveRouteModel
-from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.gateway.providers import builtin_provider_catalog
 from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
@@ -51,7 +50,7 @@ async def social_env(database, tmp_path):
     bot = Bot("80001")
     registry = GatewayConnectionRegistry(providers=builtin_provider_catalog())
     router = PresenceRouter(database, registry)
-    writer = ScopedEventLedgerUnitOfWork(database, config=RollupPolicyConfig())
+    writer = ScopedEventLedgerUnitOfWork(database)
     async with database.sessions() as session, session.begin():
         person = await ensure_person(session, "10001")
         presence = await ensure_presence(session, bot.self_id)

@@ -22,15 +22,13 @@ from qq_ai_bot.conversation.projection_models import PromptProjectionModel
 from qq_ai_bot.execution_trace.phases import collect_phase_metrics, model_detail
 from qq_ai_bot.persistence.database import Database
 
-SUMMARY_RENDERER_VERSION = 1
+SUMMARY_RENDERER_VERSION = 2
 
 REBUILD_REASONS = frozenset(
     {
         "bootstrap",
         "reset",
         "compact",
-        "rollup",
-        "rollup_ready",
         "capacity",
         "deleted_event",
         "source_changed",

@@ -1371,24 +1371,6 @@ class RuntimeConfigService:
                 local_event_limit=int(cast(int, value("context.local_event_limit"))),
                 window_tokens=int(cast(int, value("context.window_tokens"))),
                 work_window_tokens=int(cast(int, value("context.work_window_tokens"))),
-                compaction_trigger_ratio=float(
-                    cast(float, value("context.compaction_trigger_ratio"))
-                ),
-                compaction_target_ratio=float(
-                    cast(float, value("context.compaction_target_ratio"))
-                ),
-                work_compaction_trigger_ratio=float(
-                    cast(float, value("context.work_compaction_trigger_ratio"))
-                ),
-                work_compaction_target_ratio=float(
-                    cast(float, value("context.work_compaction_target_ratio"))
-                ),
-                compaction_output_tokens=int(cast(int, value("context.compaction_output_tokens"))),
-                rollup_output_tokens=int(cast(int, value("context.rollup_output_tokens"))),
-                rollup_summary_characters=int(
-                    cast(int, value("context.rollup_summary_characters"))
-                ),
-                compaction_window_tokens=int(cast(int, value("context.compaction_window_tokens"))),
             ),
             memory=MemoryRetrievalRuntimeConfig(
                 retrieval_enabled=bool(value("memory.retrieval_enabled")),

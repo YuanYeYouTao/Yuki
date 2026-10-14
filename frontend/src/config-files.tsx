@@ -38,7 +38,6 @@ export const taskNames: Record<string, string> = {
   emoji_replacement: "表情替换",
   plugin_agent_session: "插件会话",
   utility_structured: "结构化任务",
-  conversation_compaction: "会话压缩",
 };
 const providerPresets = [
   {

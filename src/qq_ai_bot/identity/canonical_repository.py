@@ -22,7 +22,6 @@ from qq_ai_bot.conversation.canonical_db_models import (
     ConversationLegacyAliasModel,
     PersonActiveRouteModel,
 )
-from qq_ai_bot.conversation.hydrate import delete_canonical_rollup_projections
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
@@ -549,7 +548,6 @@ async def forget_person_for_external_account(session: AsyncSession, user_id: str
         )
     )
     if conversation is not None:
-        await delete_canonical_rollup_projections(session, conversation.id)
         aliases = list(
             await session.scalars(
                 select(ConversationLegacyAliasModel).where(

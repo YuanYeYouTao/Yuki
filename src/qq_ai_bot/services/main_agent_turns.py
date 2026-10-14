@@ -16,10 +16,8 @@ from qq_ai_bot.conversation.projections import (
     ProjectionCapacityError,
     PromptProjectionRepository,
 )
-from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, InboundMessage
+from qq_ai_bot.domain.messages import ChatMessage, InboundMessage
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
-from qq_ai_bot.execution_trace.phases import collect_phase_metrics
-from qq_ai_bot.model_runtime.capacity import estimate_request_tokens
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.runtime.activation_tasks import ActivationTasks
@@ -86,7 +84,6 @@ class MainAgentTurnService:
         before_preparation: Callable[[], Awaitable[None]] | None = None,
     ) -> PromptComposition:
         with self.executions.track():
-            active = current_work_control.get()
             contract = self._runner.main_contract
             state = await asyncio.to_thread(contract.state.snapshot) if contract else None
 
@@ -110,65 +107,16 @@ class MainAgentTurnService:
                 or context.read_version.conversation_id is None
             ):
                 return composition
-            definitions = await contract.model_definitions()
-            definitions, native_definitions = self._runner.prepare_request_tools(
-                definitions,
-                runtime_config=runtime,
-                allowed_capabilities=allowed_capabilities,
-            )
             version = context.read_version
             conversation_id = version.conversation_id
             assert conversation_id is not None
             repository = self._projections
             view_key = conversation_id
-            capacity = self._runner._models.capacity(self._runner._task)
-            input_budget = capacity.input_budget(
-                runtime.context.window_tokens, output_tokens=runtime.llm.max_output_tokens
-            )
-            owner_conversation = active.lease.conversation_id if active else version.conversation_id
-            owner_generation = active.lease.generation if active else version.generation
-            owner_work = (
-                active.current["id"]
-                if active is not None and active.current is not None
-                else active.lease.work_id
-                if active is not None
-                else None
-            )
-            prepared_request = self._runner._capacity_request(
-                ChatRequest(
-                    messages=composition.messages,
-                    provider_session_id=(
-                        f"yuki:{owner_conversation}:g{owner_generation}:"
-                        + (f"work:{owner_work}" if owner_work else "main")
-                    ),
-                    model=runtime.llm.model or "fake",
-                    temperature=runtime.llm.temperature,
-                    max_output_tokens=runtime.llm.max_output_tokens,
-                    thinking_enabled=runtime.llm.thinking_enabled,
-                    tools=definitions,
-                    tool_choice="auto" if definitions or native_definitions else None,
-                    native_tools=native_definitions,
-                )
-            )
-
-            def request_tokens(request: ChatRequest) -> int:
-                collect_phase_metrics(estimate_count=1)
-                return estimate_request_tokens(request)
-
-            def context_fits(candidate: AssembledContext) -> bool:
-                request = replace(
-                    prepared_request,
-                    messages=compose_context(candidate).messages,
-                )
-                return request_tokens(request) <= input_budget
-
             prepared = await prepare_history(
                 self._projections,
                 context,
                 view_key=view_key,
                 context_key=_hash([version.conversation_id, version.generation]),
-                context_fits=context_fits,
-                context_hard_fits=context_fits,
             )
             composition = compose_context(prepared.context)
             fragments = (
@@ -442,9 +390,9 @@ class MainAgentTurnService:
                 prepared.context = replace(
                     prepared.context,
                     history_messages=retained.messages(),
-                    rollup_text=summary,
+                    checkpoint_text=summary,
                     prompt_effective_coverage=coverage,
-                    metrics=replace(prepared.context.metrics, rollup_mode="compact"),
+                    metrics=replace(prepared.context.metrics, checkpoint_kind="compact"),
                     read_version=version,
                 )
                 prepared.fragments = retained

@@ -57,13 +57,6 @@ async def control_runtime_health(app: ApplicationContainer) -> tuple[ComponentHe
             stamp,
             maintenance_error,
         ),
-        ComponentHealthView(
-            "rollup",
-            app.settings.conversation_rollup_enabled,
-            app.conversation_rollup_worker.running,
-            None,
-            stamp,
-        ),
     ]
     try:
         semantic = await app.semantic_participation.health()
