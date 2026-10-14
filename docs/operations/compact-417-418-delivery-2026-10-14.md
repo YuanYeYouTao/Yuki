@@ -12,7 +12,7 @@
 | B + D + E | 公共 projection 检查点，Rollup 读写／装配／配置／控制面清退，迁移 0119 | [#424](https://github.com/YuanYeYouTao/Yuki/pull/424) |
 | C | Work 与 ordinary 独立摘要链、brief、staging／anchor 门槛退役 | [#425](https://github.com/YuanYeYouTao/Yuki/pull/425) |
 | F | Main 完整能力合同，真实子／孙所有权、来源与插件冷恢复 | [#426](https://github.com/YuanYeYouTao/Yuki/pull/426) |
-| G | 现行文档、退休工具／测试消费者、冷恢复修复与整体验证 | `codex/417-418-compact-validation` |
+| G | 现行文档、退休工具／测试消费者、冷恢复修复与整体验证 | [#427](https://github.com/YuanYeYouTao/Yuki/pull/427) |
 
 B、D、E 一起提交，因为删读接口与运行时装配、配置、迁移必须同时成立。PR 按依赖堆叠；中间版本用于审查，最终整体版本才是部署候选。
 
@@ -25,9 +25,11 @@ B、D、E 一起提交，因为删读接口与运行时装配、配置、迁移�
 最终分支 Ruff 通过，mypy 605 个源码文件通过；前端 20 项测试及生产构建通过。
 第一次整体 pytest 为 1722 passed、63 skipped、1 failed。失败是 Linux 容器 Supervisor 的 `/proc` 扫描在 macOS 上不可用；原测试和生产代码保留。63 个 skip 包含尚未构建的固定 Monty worker／binding，不表示已验证 Code Mode 运行。
 
-随后审查补齐 incomplete 响应在 `response`／`paired` 两个崩溃点的恢复，以及普通 E 与 Work P 的当前资料恢复；相关 55 项定向测试通过。修复后再跑完整 pytest：1727 passed、63 skipped，仅同一个 macOS `/proc` 失败。各 PR 的最新 GitHub Quality 结果在交付时补记。
+随后审查补齐 incomplete 响应在 `response`／`paired` 两个崩溃点的恢复，以及普通 E 与 Work P 的当前资料恢复；相关 55 项定向测试通过。修复后再跑完整 pytest：1727 passed、63 skipped，仅同一个 macOS `/proc` 失败。各 PR 的最新 GitHub Quality 结果沿上表链接核对，本文保留这些本地实测记录。
 
 另有 1 项实际 Main 入口回归通过：公共 compact 响应持久化后中断，沿原内部接纳来源恢复并发布；后续 Main 同时读取公共检查点、新公共纠正和当前 short_state，物理请求为 1 次 compact + 1 次正常 Main。没有从平台消息号重新建立业务所有权。
+
+合入前阶段 CI 修复的真实祖先后，新增 6 项当前 compact 的来源、输入、预算与回执回归一并进入最终分支；相关 52 项链整合检查通过。合并没有更改运行时代码。日期报告仍指向原 Git 基线，现行合同的入口统一为会话 Compact。
 
 ## 冷恢复与隐私
 
