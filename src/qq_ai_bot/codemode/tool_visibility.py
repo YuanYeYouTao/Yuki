@@ -89,7 +89,7 @@ def model_definitions(tools: tuple[ChatTool, ...], *, enabled: bool = True) -> t
 
 
 def lookup_tools(api: ScriptApi, raw: str, *, declared_names: frozenset[str] | None = None) -> str:
-    """Read one frozen API; workers never fall back to the main catalog."""
+    """Read the deployment's frozen API without changing execution authority."""
     try:
         args = json.loads(raw)
         if not isinstance(args, dict) or set(args) - {"query", "name", "offset", "limit"}:

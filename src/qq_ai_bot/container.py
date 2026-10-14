@@ -305,6 +305,7 @@ class ApplicationContainer:
         self.agent_tools.short_state = self.main_agent_contract.state
         self.runtime.runner.main_contract = self.main_agent_contract
         self.runtime.runner.code_mode_settings = settings
+        from qq_ai_bot.adapters.onebot.sender import OneBotRouteSender
         from qq_ai_bot.runtime.subagent_repository import SubagentRepository
         from qq_ai_bot.runtime.subagent_scheduler import SubagentScheduler
         from qq_ai_bot.runtime.work_repository import WorkRepository
@@ -352,6 +353,7 @@ class ApplicationContainer:
         )
         self.database.subagents_enabled = self.settings.subagents_enabled
         children = SubagentRepository(works)
+        self._plugin_contexts: dict[str, HostPluginContext] = {}
         self.subagent_execution = SubagentExecution(
             works,
             children,
@@ -365,6 +367,12 @@ class ApplicationContainer:
                 load_tools=self.main_agent_contract.definitions,
                 open_memory=self.chat.open_memory_session,
                 open_self_memory=self.chat.open_self_memory_session,
+                static_messages=self.chat._prompt_composer.static_messages,
+                presence_router=self.presence_router,
+                lookup_plugin_host=self._plugin_contexts.get,
+                gateway_factory=lambda bot, group, target: OneBotRouteSender(
+                    bot, group=group, target_id=target
+                ),
                 backend_factory=lambda runtime, allowed: MainAgentBackend(
                     self.chat, runtime, allowed_tools=allowed
                 ),
@@ -438,7 +446,6 @@ class ApplicationContainer:
         self.automation_tools = automation.tools
         self.chat.set_automation_tools(self.automation_tools)
         self.automation_worker = automation.worker
-        self._plugin_contexts: dict[str, HostPluginContext] = {}
         self.plugin_notification_repository = PluginNotificationRepository(
             self.database,
             self.scoped_events,

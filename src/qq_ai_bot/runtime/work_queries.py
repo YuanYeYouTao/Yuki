@@ -80,7 +80,9 @@ class WorkQueries:
                 ),
             )
         )
-        if local or lease.work_id:
+        # Directory metadata uses the same read scope for Main and children.
+        # Mutation callers request local=True and retain source/tree authority.
+        if local:
             query = query.where(
                 work.c.conversation_id == lease.conversation_id,
                 work.c.generation == lease.generation,
@@ -92,7 +94,7 @@ class WorkQueries:
                 .exists(),
                 *(source_scope_column(key).is_(source.get(key)) for key in SOURCE_SCOPE_FIELDS),
             )
-        if lease.work_id:
+        if local and lease.work_id:
             query = query.where(work.c.id.in_(descendants(lease.work_id, include_self=True)))
         elif not include_workers:
             query = query.where(
@@ -142,8 +144,6 @@ class WorkQueries:
 
     async def available(self, lease: WorkLease, source: dict[str, Any]) -> list[dict[str, Any]]:
         """Only current scoped resumable work facts belong in the per-turn view."""
-        if lease.work_id:
-            return []
         query = (
             self._prompt_query(lease, source)
             .add_columns(

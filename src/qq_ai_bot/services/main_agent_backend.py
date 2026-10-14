@@ -139,9 +139,6 @@ class MainAgentBackend(AgentToolBackend):
     def work_control_allowed(self, name: str) -> bool:
         # Lifecycle tools are declared globally, but remain subject to the
         # currently executing backend's mutation and delivery restrictions.
-        if self._child_work():
-            # A child's lifecycle controls follow its frozen tool contract.
-            return self._allowed_tools is not None and name in self._allowed_tools
         if name == "task_control":
             # Recording lifecycle state grants no business or send authority.
             # Even a restricted calculation must be able to answer or stop.
@@ -152,12 +149,6 @@ class MainAgentBackend(AgentToolBackend):
 
     def work_query_allowed(self, action: str) -> bool:
         """Read Work facts using the original actor and tree scope."""
-        if self._child_work():
-            return (
-                action in {"get", "list"}
-                and self._allowed_tools is not None
-                and "task_control" in self._allowed_tools
-            )
         if self._runtime.tools_closed:
             return False
         try:
@@ -166,16 +157,6 @@ class MainAgentBackend(AgentToolBackend):
         except (PermissionError, ValueError):
             return False
         return True
-
-    @staticmethod
-    def _child_work(runtime: AgentRuntime | None = None) -> bool:
-        """A persistent child lease is a trusted fact, never a constructor flag."""
-        control = getattr(runtime, "work_control", None) if runtime is not None else None
-        if control is None:
-            from qq_ai_bot.runtime.work_activation import current_work_control
-
-            control = current_work_control.get()
-        return control is not None and control.lease.work_id is not None
 
     def refresh_catalog(self, runtime: AgentRuntime) -> None:
         """Refresh execution policy without constructing discarded declarations."""
@@ -268,12 +249,6 @@ class MainAgentBackend(AgentToolBackend):
         call = invocation.call
         name, arguments_json = call.function.name, call.function.arguments
         runtime: AgentRuntime = invocation.context.runtime
-        if self._child_work(runtime) and (
-            self._allowed_tools is None or name not in self._allowed_tools
-        ):
-            # A child's frozen tool contract is its execution ceiling. Refuse
-            # before any source validation or binding, in the original shape.
-            return _worker_tool_not_declared(name)
         if name != "send_message" and self._runtime.before_model_request is not None:
             await self._runtime.before_model_request()
         if self._allowed_tools is not None and name not in self._allowed_tools:
@@ -691,23 +666,3 @@ def _refused_result(
     if capture is not None:
         capture.outcome = outcome
     return json.dumps(outcome.model_payload(), ensure_ascii=False)
-
-
-_WORKER_TOOL_NOT_DECLARED = '{"ok":false,"error":"worker_tool_not_declared"}'
-
-
-def _worker_tool_not_declared(name: str) -> str:
-    """Child refusal keeps its original model shape and publishes typed evidence."""
-    from qq_ai_bot.runtime.effect_outcomes import current_result_capture
-
-    capture = current_result_capture.get()
-    if capture is not None:
-        capture.outcome = ToolExecutionResult(
-            ok=False,
-            error_code="worker_tool_not_declared",
-            mutation_committed=False,
-            data={"executed": False},
-            provider_id="core",
-            tool_name=name,
-        )
-    return _WORKER_TOOL_NOT_DECLARED
