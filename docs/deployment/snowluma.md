@@ -5,6 +5,8 @@ Catalog、Registry 与 OneBot 合同继续保留，其他网关实现沿这些�
 Yuki 的 Presence、Conversation、Memory 和路由保存在 Bot 自己的身份与数据层，不属于任何 Provider。
 更换网关实现不复制业务 owner、重置会话或迁移记忆。
 
+当前官方 `motricseven7/snowluma:latest` 同时提供 linux/amd64 与 linux/arm64，见[官方 Docker 说明](https://snowluma.github.io/en/docs/guide/deploy/docker)。默认 Compose 让 Docker 按主机选择 Bot 和 SnowLuma 镜像，不强制 x86 模拟。自定义 `SNOWLUMA_IMAGE` 的实际平台以该镜像为准。
+
 ## 选择与首次登录
 
 运行 `install.sh` 或 `install.ps1`，在 QQ Gateway 页面选择 SnowLuma；也可以不选择附带网关。

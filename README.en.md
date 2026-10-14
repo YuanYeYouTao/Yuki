@@ -98,12 +98,14 @@ Historical Gemini / DeepSeek samples, accounting coverage, and experiment limits
 
 ## Configuration and startup
 
-Basic deployment requires Linux amd64 or Windows Docker Desktop running Linux containers, Docker Engine with Compose v2, and a configured model service using one of the supported Chat Completions or Responses integrations. Current development source uses a logged-in SnowLuma QQ gateway; NapCat is retired on this branch, while the existing gateway abstraction remains available for other implementations.
+Basic deployment requires Linux amd64 or arm64 (including Linux VMs on Apple Silicon), or Docker Desktop running Linux containers, Docker Engine with Compose v2, and a configured model service using one of the supported Chat Completions or Responses integrations. Current development source uses a logged-in SnowLuma QQ gateway; NapCat is retired on this branch, while the existing gateway abstraction remains available for other implementations.
 
 The development branch supports Chat Completions, Responses, Claude Messages, Gemini GenerateContent, and common vendor parameter dialects. Profiles explicitly select models, reasoning, structured output, and search; message content does not secretly select a provider. After WebUI saves a connection, new tasks use it, while dispatched requests retain their original connection and protocol state.
 See the [protocol contract](docs/architecture/model-providers.md) and [multi-provider example](config/model_profiles.providers.example.toml) for capability and recovery boundaries. These describe current source; use the official 3.8.4 bundle's instructions for its gateway, model, and deployment configuration.
 
 Download the deployment bundle from the [3.8.4 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.4). After extraction, fill in `.env` and model configuration manually or use the guided setup.
+
+Multi-platform support belongs to current development source and future releases: Bot and SnowLuma select their image for the Docker host, and both installers recognize amd64/x86_64 and arm64/aarch64. This source change does not update previously published artifacts. ARM deployments need a release containing this fix, or a source build with `docker buildx build --platform linux/arm64 --target direct --load -t yuki:local .` and the Bot service's `image` set to `yuki:local` in the deployment directory.
 
 Linux:
 
