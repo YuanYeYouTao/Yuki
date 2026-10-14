@@ -26,6 +26,7 @@ from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import work
 from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.services.agent_runner import AgentRuntime
+from qq_ai_bot.services.turn_execution import TurnExecution
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 
 
@@ -230,10 +231,12 @@ class WorkDriver:
         token = current_work_control.set(self.control)
         sequence = session.transcript.request()
         try:
-            compacted = await runner._compact_work(
-                runtime,
-                ModelExecutionPriority.FOREGROUND,
-                budget,
+            execution = TurnExecution(runner, self.prefix, runtime, None)
+            execution.state.transcript = session.transcript
+            execution.state.definitions = template.tools
+            execution.state.fixed_definitions = template.tools
+            compacted = await execution.compact_current(
+                0,
                 replace(
                     template,
                     messages=sequence.messages,
@@ -241,14 +244,16 @@ class WorkDriver:
                     continuation_items=sequence.items,
                     request_chain_id=session.transcript.chain_id,
                 ),
+                ModelExecutionPriority.FOREGROUND,
+                budget,
             )
         finally:
             current_work_control.reset(token)
         self.evidence["compaction"] = {
             "old_chain_id": previous,
-            "new_chain_id": compacted.chain_id,
-            "explicit_boundary": previous != compacted.chain_id,
-            "source": "real Runner._compact_work and TaskModelExecutor summary calls",
+            "new_chain_id": compacted.request_chain_id,
+            "explicit_boundary": previous != compacted.request_chain_id,
+            "source": "real TurnExecution.compact_current and Main TaskModelExecutor dispatch",
         }
 
     async def close(self) -> None:
