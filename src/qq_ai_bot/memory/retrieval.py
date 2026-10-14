@@ -74,10 +74,6 @@ class MemoryRetriever:
         self._embedding_metrics = embedding_metrics
         self._query_embedding_cache = query_embedding_cache
 
-    @property
-    def metrics(self) -> MemoryRetrievalMetrics:
-        return self._metrics
-
     def configure_semantic(
         self,
         *,
