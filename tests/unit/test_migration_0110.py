@@ -12,6 +12,7 @@ from alembic.config import Config
 from pydantic import ValidationError
 from sqlalchemy import insert, select, text, update
 from tests.conftest import build_harness, make_settings
+from tests.support.legacy_conversation_seed import seed_pre_0119_social_conversations
 from tests.support.runtime_execution import make_work_resumer
 from tests.support.social_identity_cases import social_env
 
@@ -19,7 +20,6 @@ from qq_ai_bot.automation.models import AutomationStatus, RunStatus
 from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.automation.task_spec import TaskSpec, canonical_task_hash
-from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import ChatMessage, ChatResponse, ToolCall, ToolFunction
 from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
@@ -115,6 +115,7 @@ def test_legacy_publication_keeps_hash_receipts_and_resumes_original_main_work(
         database = Database(url)
         client = None
         try:
+            await seed_pre_0119_social_conversations(database, private=private_read)
             env = await social_env(database, tmp_path)
             settings = make_settings(
                 url,
@@ -335,9 +336,7 @@ def test_legacy_publication_keeps_hash_receipts_and_resumes_original_main_work(
             chat.runtime.runner.main_contract = MainAgentContract(chat, ShortState(env.store))
             if private_read:
                 private_scope = ConversationScope.private(env.bot.self_id, "10001")
-                private = await ScopedEventLedgerUnitOfWork(
-                    database, config=RollupPolicyConfig()
-                ).append(
+                private = await ScopedEventLedgerUnitOfWork(database).append(
                     scope=private_scope,
                     platform_message_id="original-private",
                     sender_user_id="10001",

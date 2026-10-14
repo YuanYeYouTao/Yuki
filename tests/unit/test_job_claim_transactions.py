@@ -103,8 +103,6 @@ async def test_memory_claim_rechecks_reset_between_prepare_and_commit(
         async with database.sessions() as session, session.begin():
             source = await session.get(ChatEventModel, identity)
             values = {watermark: identity}
-            if watermark == "starts_after_event_id":
-                values["covered_through_event_id"] = identity
             await session.execute(
                 update(CanonicalConversationModel)
                 .where(CanonicalConversationModel.id == source.canonical_conversation_id)

@@ -503,8 +503,11 @@ async def test_paid_current_compact_recovery_prepares_latest_public_history(
         assert not wire.structured_output
         body = "\n".join(message.content or "" for message in wire.messages)
         assert body.count(ambient_text) == body.count(steer_text) == 1
-        assert "compaction_staging" not in resumed.session.progress
-        assert resumed.session.progress["task_material"]["execution_checkpoint"]
+        assert "context_compaction" not in resumed.session.progress
+        assert (
+            resumed.session.progress["task_material"]["execution_checkpoint"]
+            == "Continue the original task with verified findings."
+        )
         invoke.assert_awaited_once()
         from qq_ai_bot.runtime.work_schema_v1 import inputs
 

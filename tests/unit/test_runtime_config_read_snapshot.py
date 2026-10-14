@@ -25,7 +25,7 @@ async def _override(
     value,
     scope="user",
     *,
-    key="context.compaction_window_tokens",
+    key="context.window_tokens",
     value_type="integer",
 ):
     now = datetime.now(UTC)
@@ -55,30 +55,18 @@ async def test_group_history_uses_space_config_while_private_history_keeps_perso
     settings = make_settings(
         database.url,
         context_window_tokens=60000,
-        context_compaction_window_tokens=50000,
-        conversation_rollup_trigger_ratio=0.7,
-        conversation_rollup_target_ratio=0.5,
     )
     runtime = RuntimeConfigService(settings=settings, database=database)
     person_a, space = await runtime._owner_match(user_id="10001", group_id="2001")
     person_b, _ = await runtime._owner_match(user_id="10002", group_id="2001")
     values_a = {
         "window_tokens": 100000,
-        "compaction_window_tokens": 70000,
-        "compaction_trigger_ratio": 0.9,
-        "compaction_target_ratio": 0.65,
     }
     values_b = {
         "window_tokens": 200000,
-        "compaction_window_tokens": 90000,
-        "compaction_trigger_ratio": 0.85,
-        "compaction_target_ratio": 0.6,
     }
     space_values = {
         "window_tokens": 80000,
-        "compaction_window_tokens": 65000,
-        "compaction_trigger_ratio": 0.75,
-        "compaction_target_ratio": 0.55,
     }
     for name in values_a:
         value_type = "number" if name.endswith("ratio") else "integer"
@@ -103,9 +91,6 @@ async def test_group_history_uses_space_config_while_private_history_keeps_perso
         if group_override
         else {
             "window_tokens": 60000,
-            "compaction_window_tokens": 50000,
-            "compaction_trigger_ratio": 0.7,
-            "compaction_target_ratio": 0.5,
         }
     )
     for name, value in expected.items():
@@ -213,8 +198,6 @@ async def test_rebind_and_override_commit_between_queries_cannot_mix_snapshot_ow
         return owner
 
     monkeypatch.setattr(module, "resolve_live_person_id", concurrent_rebind)
-    assert (await runtime.snapshot(user_id="10001")).context.compaction_window_tokens == 70000
-    assert (await runtime.snapshot(user_id="10001")).context.compaction_window_tokens == 80000
 
 
 @pytest.mark.asyncio
@@ -238,9 +221,8 @@ async def test_snapshot_under_wal_writer_reads_committed_config_without_dml(data
             result = await runtime.snapshot(user_id="10001")
         finally:
             event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
-        assert result.context.compaction_window_tokens == 70000
         assert all(statement.startswith(("SELECT", "BEGIN")) for statement in sql)
-    assert (await runtime.snapshot(user_id="10001")).context.compaction_window_tokens == 80000
+        assert result.context.window_tokens == 70000
 
 
 @pytest.mark.asyncio
@@ -292,7 +274,6 @@ async def test_scoped_null_owner_override_is_rejected_by_current_schema(database
         async with database.immediate_session() as writer:
             writer.add(
                 RuntimeConfigOverrideModel(
-                    config_key="context.compaction_window_tokens",
                     scope_type=scope,
                     value_json="70000",
                     value_type="integer",

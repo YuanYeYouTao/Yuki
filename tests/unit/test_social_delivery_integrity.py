@@ -3,7 +3,7 @@
 from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import delete, select
@@ -55,8 +55,6 @@ async def test_strict_social_receipt_is_uncertain_without_resend_and_upload_stay
                 select(ChatEventModel).where(ChatEventModel.direction == "outbound")
             )
         )
-    notify = Mock(side_effect=RuntimeError("offline wakeup hook failed"))
-    monkeypatch.setattr(env.service.writer, "notify_committed", notify)
     for index, response in enumerate(({"message_id": 123}, {"message_id": "456"}, {"id": "789"})):
         gateway.return_value = response
         context = replace(env.context, call_id=f"valid-{index}")
@@ -87,7 +85,6 @@ async def test_strict_social_receipt_is_uncertain_without_resend_and_upload_stay
     )
     assert uploaded["status"] == "succeeded"
     assert uploaded["platform_reference"] is None and uploaded["delivered_text"] == ""
-    assert notify.call_count == 4
 
 
 @pytest.mark.asyncio

@@ -39,10 +39,29 @@ def test_upgrade_removes_only_agent_action_diagnostics(tmp_path, monkeypatch):
             await database.close()
 
     original = asyncio.run(inspect(seed=True))
-    command.upgrade(config, "head")
+    command.upgrade(config, "0117")
     current = asyncio.run(inspect())
     assert "agent_actions" not in current
     assert current == {name: sql for name, sql in original.items() if name != "agent_actions"}
     assert "runtime_work_effects" in current
-    command.upgrade(config, "head")
+    command.upgrade(config, "0117")
     assert asyncio.run(inspect()) == current
+    # Check 0117's exact table change before the later Compact retirement
+    # legitimately changes the canonical layout and removes Rollup storage.
+    command.upgrade(config, "head")
+    upgraded = asyncio.run(inspect())
+    retired = {
+        "canonical_conversation_rollup_emergency_overlays",
+        "canonical_conversation_rollups",
+        "canonical_conversation_rollup_jobs",
+        "canonical_rollup_signals",
+    }
+    assert not retired.intersection(upgraded)
+    assert "agent_actions" not in upgraded
+    assert {name: sql for name, sql in upgraded.items() if name != "canonical_conversations"} == {
+        name: sql
+        for name, sql in current.items()
+        if name not in retired and name != "canonical_conversations"
+    }
+    command.upgrade(config, "head")
+    assert asyncio.run(inspect()) == upgraded
