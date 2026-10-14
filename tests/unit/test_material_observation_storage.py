@@ -24,8 +24,6 @@ from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
-    CanonicalConversationRollupEmergencyOverlayModel,
-    CanonicalConversationRollupModel,
 )
 from qq_ai_bot.conversation.observation_models import ContextObservationModel, ContextSelectionModel
 from qq_ai_bot.conversation.observation_schema import PROJECTION_TRIGGERS_0089
@@ -33,7 +31,7 @@ from qq_ai_bot.conversation.observations import (
     encode,
     validate_observations,
 )
-from qq_ai_bot.conversation.projection_history_schema import PROJECTION_TRIGGERS_0113
+from qq_ai_bot.conversation.projection_compact_schema import PROJECTION_TRIGGERS_0119
 from qq_ai_bot.conversation.projection_models import PromptProjectionModel
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.identity.canonical_repository import ensure_space
@@ -124,6 +122,32 @@ def selected_0109(env, identity, payload, event_ids=()):
 async def seed_0107(url, tmp_path, protection, malformed=False, outdated_config=True):
     database = Database(url)
     try:
+        # Frozen 0107 rows still require the retired coverage columns. Seed this
+        # old shape explicitly; the current writer must not recreate old fields.
+        async with database.immediate_session() as writer:
+            space = await ensure_space(writer, "20001")
+            conversation = str(uuid4())
+            alias = str(uuid4())
+            now = datetime.now(UTC)
+            await writer.execute(
+                text(
+                    "INSERT INTO canonical_conversations("
+                    "id,kind,space_id,primary_alias_id,primary_marker,generation,"
+                    "starts_after_event_id,last_event_id,last_generation_change_event_id,"
+                    "covered_through_event_id,uncovered_event_count,uncovered_character_count,"
+                    "revision,created_at,updated_at) "
+                    "VALUES(:id,'space',:space,:alias,1,1,0,0,0,0,0,0,1,:now,:now)"
+                ),
+                {"id": conversation, "space": space, "alias": alias, "now": now},
+            )
+            await writer.execute(
+                text(
+                    "INSERT INTO conversation_legacy_aliases("
+                    "id,conversation_id,scope_key,is_primary,created_at,updated_at) "
+                    "VALUES(:alias,:id,'bot:80001:group:20001',1,:now,:now)"
+                ),
+                {"id": conversation, "alias": alias, "now": now},
+            )
         env = await social_env(database, tmp_path)
         identities = [str(uuid4()) for _ in range(3)]
         summary = str(uuid4())
@@ -631,10 +655,10 @@ def test_installed_cli_upgrades_copy_without_repository_pythonpath(tmp_path, mon
                 "SELECT generation,starts_after_event_id FROM canonical_conversations WHERE id=?",
                 (identity,),
             ).fetchone() == (generation + 1, floor)
-        assert not after.execute("SELECT * FROM canonical_conversation_rollups").fetchall()
-        assert not after.execute("SELECT * FROM canonical_conversation_rollup_jobs").fetchall()
         assert not after.execute(
-            "SELECT * FROM canonical_conversation_rollup_emergency_overlays"
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+            "('canonical_conversation_rollups','canonical_conversation_rollup_jobs',"
+            "'canonical_conversation_rollup_emergency_overlays')"
         ).fetchall()
         assert after.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert not after.execute("PRAGMA foreign_key_check").fetchall()
@@ -756,7 +780,7 @@ def test_failed_upgrade_rolls_back_ddl_public_retirement_and_original_triggers(
     asyncio.run(verify())
 
 
-async def test_metadata_trigger_invalidates_selected_chat_and_preserves_ordinary_rollup_updates(
+async def test_metadata_trigger_invalidates_selected_chat_and_keeps_private_sources(
     database, tmp_path
 ):
     env = await social_env(database, tmp_path)
@@ -778,27 +802,7 @@ async def test_metadata_trigger_invalidates_selected_chat_and_preserves_ordinary
                 updated_at=datetime.now(UTC),
             )
         )
-        writer.add(
-            CanonicalConversationRollupModel(
-                conversation_id=owner.id,
-                generation=1,
-                covered_through_event_id=0,
-                summary_text="original semantic",
-                summary_kind="model",
-                source_fingerprint="f" * 64,
-                revision=1,
-                created_at=datetime.now(UTC),
-                updated_at=datetime.now(UTC),
-            )
-        )
         original_revision = owner.prompt_source_revision
-    async with database.immediate_session() as writer:
-        await writer.execute(
-            text(
-                "UPDATE canonical_conversation_rollups SET summary_text='new semantic',"
-                "revision=revision+1"
-            )
-        )
     async with database.sessions() as reader:
         current = await reader.get(PromptProjectionModel, VIEW)
         owner = await reader.get(CanonicalConversationModel, env.context.conversation_id)
@@ -816,7 +820,7 @@ async def test_metadata_trigger_invalidates_selected_chat_and_preserves_ordinary
                 )
             ).all()
         )
-        for name, expected in PROJECTION_TRIGGERS_0113.items():
+        for name, expected in PROJECTION_TRIGGERS_0119.items():
             assert " ".join(installed[name].replace("IF NOT EXISTS ", "").split()) == " ".join(
                 expected.split()
             )
@@ -826,10 +830,8 @@ async def test_metadata_trigger_invalidates_selected_chat_and_preserves_ordinary
 
 
 async def _trigger_sources(database, tmp_path, privacy_update):
-    from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
-
     env = await social_env(database, tmp_path)
-    ledger = ScopedEventLedgerUnitOfWork(database, config=RollupPolicyConfig())
+    ledger = ScopedEventLedgerUnitOfWork(database)
     async with database.immediate_session() as writer:
         await ensure_space(writer, "20002")
         other_space = await ensure_space(writer, "20003")
@@ -902,31 +904,6 @@ async def _trigger_sources(database, tmp_path, privacy_update):
                     updated_at=datetime.now(UTC),
                 )
             )
-        writer.add(
-            CanonicalConversationRollupModel(
-                conversation_id=env.context.conversation_id,
-                generation=1,
-                covered_through_event_id=0,
-                summary_text="semantic",
-                summary_kind="model",
-                source_fingerprint="f" * 64,
-                revision=1,
-                created_at=datetime.now(UTC),
-                updated_at=datetime.now(UTC),
-            )
-        )
-        writer.add(
-            CanonicalConversationRollupEmergencyOverlayModel(
-                conversation_id=env.context.conversation_id,
-                generation=1,
-                covered_through_event_id=0,
-                summary_text="overlay",
-                source_fingerprint="e" * 64,
-                revision=1,
-                created_at=datetime.now(UTC),
-                updated_at=datetime.now(UTC),
-            )
-        )
     return env, main_event, other_event, identities, other_space
 
 
@@ -943,24 +920,8 @@ _TRIGGER_OPERATIONS = (
     ("context_observation_privacy_initial", "privacy_insert", None, 0, 0),
     ("context_observation_delete", "observation_delete", None, 0, 0),
     ("context_observation_update", "observation_payload", None, 0, 0),
-    ("context_source_canonical_conversation_rollups_owner", "rollup_owner", "source_changed", 1, 0),
-    (
-        "context_source_canonical_conversation_rollup_emergency_overlays_owner",
-        "overlay_owner",
-        "source_changed",
-        1,
-        0,
-    ),
     ("prompt_projection_event_update", "event_move", "source_changed", 1, 1),
     ("context_observation_update", "observation_move", None, 0, 0),
-    ("context_source_canonical_conversation_rollups_owner", "rollup_move", "source_changed", 1, 1),
-    (
-        "context_source_canonical_conversation_rollup_emergency_overlays_owner",
-        "overlay_move",
-        "source_changed",
-        1,
-        1,
-    ),
 )
 
 
@@ -972,7 +933,7 @@ _TRIGGER_OPERATIONS = (
 async def test_current_trigger_sql_keeps_material_and_source_boundaries(
     database, tmp_path, trigger, operation, reason, main_increment, other_increment
 ):
-    assert trigger in PROJECTION_TRIGGERS_0113
+    assert trigger in PROJECTION_TRIGGERS_0119
     env, event, other, identities, moved_space = await _trigger_sources(
         database, tmp_path, operation == "privacy_update"
     )
@@ -1004,8 +965,7 @@ async def test_current_trigger_sql_keeps_material_and_source_boundaries(
     statements = {
         "generation": "UPDATE canonical_conversations SET generation=generation+1 WHERE id=:owner",
         "cut": (
-            "UPDATE canonical_conversations SET starts_after_event_id=last_event_id, "
-            "covered_through_event_id=last_event_id WHERE id=:owner"
+            "UPDATE canonical_conversations SET starts_after_event_id=last_event_id WHERE id=:owner"
         ),
         "event_delete": "DELETE FROM chat_events WHERE id=:event",
         "event_content": "UPDATE chat_events SET content='changed real source' WHERE id=:event",
@@ -1022,24 +982,9 @@ async def test_current_trigger_sql_keeps_material_and_source_boundaries(
         "observation_payload": (
             "UPDATE model_context_observations SET payload_json=:payload WHERE id=:source"
         ),
-        "rollup_owner": (
-            "UPDATE canonical_conversation_rollups SET generation=2 WHERE conversation_id=:owner"
-        ),
-        "overlay_owner": (
-            "UPDATE canonical_conversation_rollup_emergency_overlays SET generation=2 "
-            "WHERE conversation_id=:owner"
-        ),
         "event_move": "UPDATE chat_events SET canonical_conversation_id=:other WHERE id=:event",
         "observation_move": (
             "UPDATE model_context_observations SET conversation_id=:other WHERE id=:source"
-        ),
-        "rollup_move": (
-            "UPDATE canonical_conversation_rollups SET conversation_id=:other "
-            "WHERE conversation_id=:owner"
-        ),
-        "overlay_move": (
-            "UPDATE canonical_conversation_rollup_emergency_overlays SET conversation_id=:other "
-            "WHERE conversation_id=:owner"
         ),
     }
     async with database.immediate_session() as writer:
@@ -1072,7 +1017,6 @@ async def test_current_trigger_sql_keeps_material_and_source_boundaries(
                     expected["generation"] += 1
                 elif operation == "cut":
                     expected["starts_after_event_id"] = expected["last_event_id"]
-                    expected["covered_through_event_id"] = expected["last_event_id"]
                 elif operation == "owner":
                     expected["space_id"] = moved_space
             assert after_owners[identity] == expected

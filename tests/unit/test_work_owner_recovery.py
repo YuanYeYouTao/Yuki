@@ -922,8 +922,6 @@ async def test_derived_sdk_plugin_work_resumes_original_id_and_permissions(
         event_ids = set(await reader.scalars(select(ChatEventModel.id)))
     assert child["state"] == "queued" and child["source_json"] == parent["source_json"]
     if authority in {"original", "suspended"}:
-        from qq_ai_bot.services.context_assembler import ConversationCoverageError
-
         if authority == "suspended":
             lease = await repository.acquire(parent["conversation_id"], parent["generation"])
             await repository.transition(
@@ -943,8 +941,9 @@ async def test_derived_sdk_plugin_work_resumes_original_id_and_permissions(
         assert waiting_result.data["state"] == parent["state"]
         assert calls == 2 and await repository.get(parent["id"]) == parent_before
 
-        with pytest.raises(ConversationCoverageError, match="explicit compaction"):
-            await assemble_plugin(**{**prepared_context, "capacity_budget": 0})
+        # The assembler selects current authorised sources. Capacity is checked
+        # by the actual Main request, including its fixed tools and protocol.
+        await assemble_plugin(**prepared_context)
         waits = WorkWaitRepository(repository)
         wait_before = await waits.describe(parent["id"])
         with monkeypatch.context() as constrained:

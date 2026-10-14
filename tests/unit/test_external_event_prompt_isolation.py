@@ -11,9 +11,8 @@ import pytest
 from tests.conftest import build_harness, make_settings
 
 from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
-from qq_ai_bot.conversation.rollup.renderer import rollup_source_projection
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
+from qq_ai_bot.conversation.scope_models import ConversationCoverageError
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, InboundMessage, SenderIdentity
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
@@ -95,8 +94,7 @@ def _assembler(**overrides: object) -> ContextAssembler:
     return ContextAssembler(
         settings=settings,
         ledger=MagicMock(),
-        rollup_repository=MagicMock(),
-        rollup_service=MagicMock(),
+        conversation_scopes=MagicMock(),
     )
 
 
@@ -105,7 +103,7 @@ def _assembled(
     history: tuple[ChatMessage, ...],
     current: ChatMessage,
     metadata: dict[str, object] | None = None,
-    rollup_text: str = "",
+    checkpoint_text: str = "",
 ) -> AssembledContext:
     return AssembledContext(
         metadata_payload=metadata or {},
@@ -118,12 +116,12 @@ def _assembled(
             current_message_characters=len(current.content or ""),
             raw_history_window_shifted=False,
         ),
-        rollup_text=rollup_text,
+        checkpoint_text=checkpoint_text,
         prompt_conversation_id="00000000-0000-4000-8000-000000000001",
         prompt_scope_key="private:8000:1001",
         prompt_generation=1,
         prompt_effective_coverage=0,
-        prompt_rollup_revision=0,
+        prompt_checkpoint_revision=0,
         prompt_raw_tail_end_event_id=3,
     )
 
@@ -197,7 +195,7 @@ def test_proactive_history_groups_by_origin_and_cause_without_changing_body() ->
     assert second_part.content == "second proactive part"
 
 
-def test_rollup_source_projection_preserves_proactive_cause_label() -> None:
+def test_public_source_projection_preserves_proactive_cause_label() -> None:
     event = replace(
         _message(9, "release note", sender="8000", direction="outbound"),
         author_kind="yuki",
@@ -207,7 +205,7 @@ def test_rollup_source_projection_preserves_proactive_cause_label() -> None:
         caused_by_external_event_type="ReleaseEvent",
     )
 
-    projected = rollup_source_projection(event)
+    projected = ChatEventPromptRenderer((event,)).render_reference_event(event)
 
     assert "由外部事件 #8 触发" in projected
     assert "source=github" in projected
@@ -266,11 +264,10 @@ async def _assemble_wakeup(
     assembler._load_history_snapshot = AsyncMock(  # type: ignore[method-assign]
         return_value=_HistoryPromptWindow(
             recent=recent,
-            rollup_text="",
+            checkpoint_text="",
             coverage_end=0,
             revision=1,
-            rollup=None,
-            rollup_mode="llm",
+            checkpoint_kind="llm",
         )
     )
     identity = current.scope
@@ -285,7 +282,6 @@ async def _assemble_wakeup(
     runtime = MagicMock()
     runtime.context.local_event_limit = 2_048
     runtime.context.window_tokens = 96_000
-    runtime.context.compaction_window_tokens = 90_000
     context = await assembler.assemble(
         inbound=None,
         profile=None,
@@ -391,17 +387,15 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     )
     snapshot = _HistoryPromptWindow(
         recent=recent,
-        rollup_text="stable rollup before both current turns",
+        checkpoint_text="stable checkpoint before both current turns",
         coverage_end=5,
         revision=9,
-        rollup=None,
-        rollup_mode="llm",
+        checkpoint_kind="llm",
         starts_after_event_id=0,
     )
     runtime = MagicMock()
     runtime.context.local_event_limit = 2_048
     runtime.context.window_tokens = 96_000
-    runtime.context.compaction_window_tokens = 90_000
 
     ordinary_event = replace(
         _message(10, "ordinary current turn"),
@@ -474,7 +468,11 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     assert early_marker in "\n".join(
         message.content or "" for message in wakeup_context.history_messages
     )
-    assert wakeup_context.rollup_text == ordinary_context.rollup_text == snapshot.rollup_text
+    assert (
+        wakeup_context.checkpoint_text
+        == ordinary_context.checkpoint_text
+        == snapshot.checkpoint_text
+    )
     assert (
         wakeup_context.prompt_conversation_id
         == ordinary_context.prompt_conversation_id
@@ -485,7 +483,11 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     assert (
         wakeup_context.prompt_effective_coverage == ordinary_context.prompt_effective_coverage == 5
     )
-    assert wakeup_context.prompt_rollup_revision == ordinary_context.prompt_rollup_revision == 9
+    assert (
+        wakeup_context.prompt_checkpoint_revision
+        == ordinary_context.prompt_checkpoint_revision
+        == 9
+    )
     assert wakeup_context.prompt_raw_tail_end_event_id == (
         ordinary_context.prompt_raw_tail_end_event_id
     )
@@ -506,7 +508,6 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
     )
     runtime = MagicMock()
     runtime.context.window_tokens = 96_000
-    runtime.context.compaction_window_tokens = 90_000
     composed = composer.compose(
         inbound=None,
         context=context,
@@ -894,7 +895,7 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
 def _covered_external_turn(
     *,
     coverage_end: int,
-    rollup_mode: str,
+    checkpoint_kind: str,
     marker: str,
     starts_after_event_id: int = 0,
 ) -> tuple[ContextAssembler, EventRecord, ConversationTurnSnapshot, MagicMock]:
@@ -907,11 +908,10 @@ def _covered_external_turn(
     assembler._load_history_snapshot = AsyncMock(  # type: ignore[method-assign]
         return_value=_HistoryPromptWindow(
             recent=(),
-            rollup_text=f"rollup already contains {marker}",
+            checkpoint_text=f"checkpoint already contains {marker}",
             coverage_end=coverage_end,
             revision=1,
-            rollup=None,
-            rollup_mode=rollup_mode,
+            checkpoint_kind=checkpoint_kind,
             starts_after_event_id=starts_after_event_id,
         )
     )
@@ -926,26 +926,25 @@ def _covered_external_turn(
     runtime = MagicMock()
     runtime.context.local_event_limit = 2_048
     runtime.context.window_tokens = 96_000
-    runtime.context.compaction_window_tokens = 90_000
     return assembler, event, turn, runtime
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("coverage_end", "rollup_mode"),
+    ("coverage_end", "checkpoint_kind"),
     (
         (10, "extractive"),
         (12, "emergency"),
     ),
 )
-async def test_actorless_current_source_is_not_cancelled_by_history_rollup_coverage(
+async def test_actorless_current_source_is_not_cancelled_by_history_checkpoint_coverage(
     coverage_end: int,
-    rollup_mode: str,
+    checkpoint_kind: str,
 ) -> None:
     marker = "UNIQUE-CURRENT-EXTERNAL-MARKER"
     assembler, event, turn, runtime = _covered_external_turn(
         coverage_end=coverage_end,
-        rollup_mode=rollup_mode,
+        checkpoint_kind=checkpoint_kind,
         marker=marker,
     )
     context = await assembler.assemble(
@@ -967,13 +966,16 @@ async def test_actorless_current_source_is_not_cancelled_by_history_rollup_cover
     assert context.current_event_id is None and context.projection_scope == "main"
     assert marker in context.current_message.content
     assert context.prompt_effective_coverage == coverage_end
-    assert context.rollup_text == f"rollup already contains {marker}"
+    assert context.checkpoint_text == f"checkpoint already contains {marker}"
 
 
 @pytest.mark.asyncio
 async def test_actorless_current_source_still_obeys_the_canonical_reset_boundary():
     assembler, event, turn, runtime = _covered_external_turn(
-        coverage_end=12, rollup_mode="emergency", marker="original source", starts_after_event_id=10
+        coverage_end=12,
+        checkpoint_kind="emergency",
+        marker="original source",
+        starts_after_event_id=10,
     )
     with pytest.raises(ConversationCoverageError, match="precedes the reset boundary"):
         await assembler.assemble(
