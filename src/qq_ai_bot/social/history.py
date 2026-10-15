@@ -209,9 +209,9 @@ async def read_history(
             if current is None or current.status != "active" or current.person_id != str(target.id):
                 raise SocialError("binding_unavailable")
         if history_binding.history_starts_at is not None:
-            from qq_ai_bot.identity.ownership_interval import BindingOwnership
+            from qq_ai_bot.persistence.command_receipts import aware
 
-            interval = BindingOwnership.of(history_binding)
+            start_second = aware(history_binding.history_starts_at).replace(microsecond=0)
             attributed = []
             for item in raw:
                 timestamp = item.get("time")
@@ -223,7 +223,7 @@ async def read_history(
                     )
                 except (ValueError, OverflowError, OSError):
                     occurred = None
-                if occurred is not None and interval.contains(occurred):
+                if occurred is not None and occurred.replace(microsecond=0) > start_second:
                     attributed.append(item)
                 else:
                     withheld += 1

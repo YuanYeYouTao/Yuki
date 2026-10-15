@@ -190,8 +190,10 @@ async def test_live_history_uses_current_row_even_after_previous_owner_is_forgot
         code["code"], platform="qq", account="10001", display_name="B", message_id=str(uuid4())
     )
     await append(database, "new owner's message", account="10001")
-    async with database.sessions() as session:
+    async with database.immediate_session() as session:
         binding = await find_identity_binding(session, "10001")
+        # Exactly on a whole-second boundary must still withhold that second.
+        binding.history_starts_at = binding.history_starts_at.replace(microsecond=0)
         boundary = binding.history_starts_at.replace(tzinfo=UTC).timestamp()
         new_binding = binding.id
     if forget_previous:
@@ -204,6 +206,7 @@ async def test_live_history_uses_current_row_even_after_previous_owner_is_forgot
     env.bot.history = {
         "messages": [
             {"message_id": 1, "time": boundary - 1, "message": "before"},
+            {"message_id": 4, "time": boundary, "message": "boundary second"},
             {"message_id": 2, "time": boundary + 1, "message": "after"},
             {"message_id": 3, "message": "unknown"},
         ]
@@ -220,7 +223,7 @@ async def test_live_history_uses_current_row_even_after_previous_owner_is_forgot
             context,
         )
         assert [item["text"] for item in result["messages"]] == ["after"]
-        assert result["withheld_unattributed"] == 2
+        assert result["withheld_unattributed"] == 3
 
 
 async def test_forget_gate_scope_does_not_cancel_previous_owner_group_work(database):
